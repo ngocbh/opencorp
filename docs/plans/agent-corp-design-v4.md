@@ -7,7 +7,7 @@
   (after [review 1](agent-corp-design-review-1.md)), [v1](2026-09-27-agent-corp-design.md)
 - Decision record: [issue #1](https://github.com/ngocbh/agent-corp/issues/1)
 - Engine issues: agent-composer #324, #325, #327–#330 (open), #326 (closed, not needed),
-  plus one new issue for streaming and usage (§8)
+  and #331 (streaming and usage, §8)
 
 Paths are relative to `agent-composer/` unless they start with `packages/` (OpenCode,
 `~/workspace/opencode/`) or name an agent-corp directory.
@@ -721,8 +721,8 @@ Each milestone's journey runs in CI with no API keys, using fakes at the edges.
 `ask_user`, [#328](https://github.com/ngocbh/agent-composer/issues/328) multiple
 `backward()`, [#329](https://github.com/ngocbh/agent-composer/issues/329)
 `NotebookMemory` with the JSONL backend,
-[#330](https://github.com/ngocbh/agent-composer/issues/330) CLI rename, and the new
-streaming and usage issue. [#325](https://github.com/ngocbh/agent-composer/issues/325)
+[#330](https://github.com/ngocbh/agent-composer/issues/330) CLI rename, and
+[#331](https://github.com/ngocbh/agent-composer/issues/331) streaming and usage. [#325](https://github.com/ngocbh/agent-composer/issues/325)
 (toolbox) and [#327](https://github.com/ngocbh/agent-composer/issues/327) (steer and
 interrupt) can land during M1.
 
@@ -788,7 +788,7 @@ All are generic. None mentions companies, people, or permissions.
 | [#328](https://github.com/ngocbh/agent-composer/issues/328) | Multiple `backward()` attempts per run (today one, `runtime/backward.py:221-223`) | M0 |
 | [#329](https://github.com/ngocbh/agent-composer/issues/329) | `NotebookMemory`: instance-scoped op log, provenance, recall-time compaction, host `render`/`list`/`add`/`edit`/`delete`, JSONL file backend. **Adds:** snapshots are op-id sets; op ids are minted monotonically; a malformed trailing line is ignored; only the outermost frame of an instance recalls and learns | M0 |
 | [#330](https://github.com/ngocbh/agent-composer/issues/330) | Rename CLI `ac` → `composer` | M0 |
-| new | AGENT token streaming through `on_stream` (no node streams today, `nodes/base.py:1005-1007`); observer events for in-loop model and tool calls; per-call token usage in events | M0 |
+| [#331](https://github.com/ngocbh/agent-composer/issues/331) | AGENT token streaming through `on_stream` (no node streams today, `nodes/base.py:1005-1007`); observer events for in-loop model and tool calls; per-call token usage in events | M0 |
 
 Closed: [#326](https://github.com/ngocbh/agent-composer/issues/326) (public cancel).
 Stopping a run is host-side: kill the worker process, then `resume_flow`.
