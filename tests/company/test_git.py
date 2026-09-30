@@ -228,3 +228,13 @@ def test_broken_symlink_is_committed_not_deleted(g, company):
     (company / "link").symlink_to("elsewhere")
     g.commit(["link"], "move link")
     assert _git(company, "cat-file", "-p", "HEAD:link") == "elsewhere"
+
+
+def test_non_utf8_paths_round_trip(g, company):
+    odd = "people/b\udcffd/profile.md"  # b"\xff" as os.fsdecode spells it; APFS can't hold it
+    blob = _git(company, "hash-object", "-w", PROFILE)
+    _git(company, "update-index", "--add", "--cacheinfo", f"100644,{blob},{odd}")
+    _git(company, "commit", "-q", "-m", "odd path")
+    assert g.commit_hand_edits() == [odd]  # absent from disk, so a deletion
+    assert g.blob_id(odd) is None
+    assert _git(company, "status", "--porcelain") == ""

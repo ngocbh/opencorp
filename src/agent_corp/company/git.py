@@ -45,7 +45,9 @@ class CompanyGit:
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run git in the clone; with ``check``, a non-zero exit raises ``CompanyGitError``."""
         out = subprocess.run(["git", "-C", str(self.root), *_IDENTITY, *_NO_HOOKS, *args],
-                             capture_output=True, text=True, env=_env())
+                             capture_output=True, env=_env(),
+                             # surrogateescape round-trips non-UTF-8 paths back into git args.
+                             encoding="utf-8", errors="surrogateescape")
         if check and out.returncode != 0:
             raise CompanyGitError(f"git {' '.join(args)} exited {out.returncode}: {out.stderr.strip()}")
         return out
