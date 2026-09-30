@@ -146,11 +146,30 @@ async def test_end_is_ending_at_once_and_a_second_end_is_a_no_op(chat, client, f
         assert (r.status_code, r.json()["error"]) == (409, "not_live")
 
 
+async def test_a_steer_reaches_a_running_reply_and_a_prompt_check_can_refuse(chat, client, fake_llm, tmp_path):
+    chat.extras["harness"].hooks.prompt_check.append(lambda s, text: "not that" if text == "nope" else None)
+    fake_llm.script({"content": "Working", "hold": 30}, {"content": "Done."})
+    (tmp_path / "ws").mkdir()
+    sid = (await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws")})).json()["id"]
+    await until(lambda: chat.store.get_session(sid).status == "idle")
+    assert (await client.post(f"/sessions/{sid}/prompt", json={"text": "hi"})).json() == {"ok": True}
+    await until(lambda: fake_llm.requests())
+
+    for path in ("prompt", "steer"):
+        r = await client.post(f"/sessions/{sid}/{path}", json={"text": "nope"})
+        assert (r.status_code, r.json()) == (422, {"error": "refused", "message": "not that"})
+    assert (await client.post(f"/sessions/{sid}/steer", json={"text": "Also Rome."})).json() == {"ok": True}
+    fake_llm.release()
+    await until(lambda: len(fake_llm.requests()) >= 2)
+    assert "Also Rome." in str(fake_llm.requests()[1]["messages"]) and "nope" not in str(fake_llm.requests())
+
+
 @pytest.mark.parametrize(("path", "body", "status", "code"), [
     ("/sessions", {"person": "nobody", "cwd": "/tmp"}, 404, "not_found"),
     ("/sessions", {"person": "ngocbh", "cwd": "/tmp"}, 422, "not_an_agent"),
     ("/sessions", {"person": "minh", "cwd": "relative"}, 422, "invalid_body"),
     ("/sessions", {"person": "minh", "cwd": "/tmp", "harness": "codex"}, 422, "unsupported_harness"),
+    ("/sessions", {"person": "minh", "cwd": "/"}, 422, "unsafe_workspace"),
     (f"/sessions/{ULID}/prompt", {"text": "hi"}, 404, "not_found"),
     (f"/sessions/{ULID}/prompt", {"text": ""}, 422, "invalid_body"),
     (f"/sessions/{ULID}/interrupt", None, 404, "not_found"),
