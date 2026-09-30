@@ -182,7 +182,11 @@
       }
     },
     "Part": {
-      "oneOf": [{ "$ref": "#/$defs/TextPart" }, { "$ref": "#/$defs/FilePart" }, { "$ref": "#/$defs/ToolPart" }]
+      "oneOf": [{ "$ref": "#/$defs/TextPart" }, { "$ref": "#/$defs/FilePart" }, { "$ref": "#/$defs/ToolPart" }],
+      "discriminator": {
+        "propertyName": "type",
+        "mapping": { "text": "#/$defs/TextPart", "file": "#/$defs/FilePart", "tool": "#/$defs/ToolPart" }
+      }
     },
     "TextPart": {
       "type": "object", "additionalProperties": false, "required": ["id", "type", "text"],

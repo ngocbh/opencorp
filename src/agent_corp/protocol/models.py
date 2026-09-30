@@ -745,7 +745,7 @@ class Message(BaseModel):
     id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     session_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     role: Literal['user', 'assistant']
-    parts: list[TextPart | FilePart | ToolPart]
+    parts: list[Annotated[TextPart | FilePart | ToolPart, Field(discriminator='type')]]
     created_at: Annotated[
         str,
         Field(

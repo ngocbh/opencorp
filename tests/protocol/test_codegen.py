@@ -53,3 +53,11 @@ def test_generated_models_keep_constraints(change):
     data = json.loads((FIXTURES / "Person.json").read_text())
     with pytest.raises(pydantic.ValidationError):
         models.Person.model_validate({**data, **change})
+
+
+def test_parts_are_a_discriminated_union():
+    data = json.loads((FIXTURES / "Message.json").read_text())
+    data["parts"][0]["type"] = "image"
+    with pytest.raises(pydantic.ValidationError) as caught:
+        models.Message.model_validate(data)
+    assert [e["type"] for e in caught.value.errors()] == ["union_tag_invalid"]
