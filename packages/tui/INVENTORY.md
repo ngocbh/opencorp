@@ -78,7 +78,7 @@ change that rewires a kept file.
 | Home | `routes/home.tsx`, `component/logo.tsx`, `logo.ts` | keep | The employee picker goes on the home screen. |
 | Session view | `routes/session/{index,footer,sidebar,dialog-message,dialog-timeline,subagent-footer}.tsx` | keep | Becomes the chat screen. |
 | Permission and question views | `routes/session/{permission,question}.tsx`, `context/permission.tsx` | keep | The chat screen builds its question cards on these. |
-| Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment,cwd}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
+| Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
 | Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-session-rename,dialog-stash,dialog-theme-list,dialog-debug,dialog-retry-action,error-component,spinner,register-spinner,todo-item,bg-pulse,bg-pulse-render}.ts(x)` | keep | Used by every later screen. |
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
@@ -96,7 +96,7 @@ change that rewires a kept file.
 | Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | The employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
 | Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking for now; `dialog-subagent` is unused upstream. The message dialog's Fork action and `--fork` handling in `app.tsx` stay until the office protocol client decides what the office supports. |
 | Tests | `test/**` | keep, except the tests of dropped features | `test/fixture/tui-sdk.ts` stays until a fake office replaces it. |
-| Unused leftovers | `routes/home/session-destination.tsx` | drop | Nothing reads its context once workspaces are gone. |
+| Unused leftovers | `routes/home/session-destination.tsx`, `component/prompt/cwd.ts` | drop | Nothing reads the destination context once workspaces are gone; `cwd.ts` is empty upstream. |
 | SST glue | `sst-env.d.ts` | drop | Not copied. |
 
 ## Left for the protocol client
