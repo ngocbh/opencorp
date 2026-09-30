@@ -83,7 +83,7 @@ task that rewires a kept file.
 | Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` keeps agent and model selection state until T4 replaces it with employees. |
 | Data layer | `context/{sdk,sync,data,location,project,event,directory}.ts(x)` | replace | T4 protocol client and store. Sync still fetches LSP, MCP and formatter status until then. |
 | Editor | `editor.ts`, `editor-zed.ts`, `context/editor.ts` | keep | External `$EDITOR` for the prompt and editor selection context. |
-| Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts`, `parsers-config.ts` | keep | |
+| Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts` | keep | |
 | Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, `component/startup-loading.tsx`, the `plugin` route | drop | No TUI plugins. The startup screen only covered plugin loading. |
 | Built-in plugins | `feature-plugins/**` (home footer and tips, sidebar context/files/LSP/MCP/todo/footer, diff viewer, which-key, notifications, plugin manager) | drop | Plugin-based and OpenCode-specific. The chat and profile screens bring their own panels. |
 | Attention sounds | `attention.ts`, `audio.ts`, `audio.d.ts` | drop | Plugin feature with OpenCode sound packs. |
