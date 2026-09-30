@@ -1,6 +1,7 @@
 """Side chats: the person who asked a question, in a session of its own, talking it through with the human."""
 
 import json
+import os
 from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
@@ -22,6 +23,8 @@ SIDE_CHAT = MAIN_CHAT
 READ_TOOLS = ("read_file", "list", "search")
 EXIT_WORDS = frozenset({"/exit", "/quit", "/end"})
 BACK_HINT = "use /back to return to the question"
+SEED_FILE = "seed.md"
+"""The side session's seed, in its run dir: kept off ``Session`` so session events stay small."""
 
 
 def side_spec(harness: Harness, session: Session) -> RunSpec:
@@ -57,6 +60,23 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
                 "session": SessionMemorySpec(storage=str(run_dir / "memory.sqlite"), history_budget_chars=budget)},
         stores={"profile": GitProfileStore(harness.git, person.id)},
         names=(person.id, person.handle, person.name), workspace=workspace)
+
+
+def write_seed(run_dir: Path, seed: str) -> None:
+    """Keep a side session's seed in its run dir, readable only by the office's user."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    path = run_dir / SEED_FILE
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(seed)
+
+
+def read_seed(run_dir: Path) -> str | None:
+    """A side session's seed, or ``None`` if it has none."""
+    try:
+        return (run_dir / SEED_FILE).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
 
 
 def _ensure_flow(harness: Harness, pin: Path) -> None:

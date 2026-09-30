@@ -3,6 +3,7 @@
 import json
 import os
 import signal
+import stat
 from importlib.resources import files
 
 import pytest
@@ -11,7 +12,7 @@ from agent_corp.chat.harness import HarnessError
 from agent_corp.extensions.questions import register
 from agent_corp.questions.format import CARRIED_NOTE, INTERRUPTED, SENT_BACK
 from agent_corp.questions.seed import FRAMING
-from agent_corp.questions.side import BACK_HINT, SIDE_CHAT_FLOW
+from agent_corp.questions.side import BACK_HINT, SEED_FILE, SIDE_CHAT_FLOW
 from tests.chat.conftest import fake_llm, make_harness, status, texts, wait_for, workspace  # noqa: F401
 from tests.company.conftest import _isolate_git, person  # noqa: F401
 
@@ -89,9 +90,12 @@ def test_chat_about_this_opens_a_seeded_side_session_and_the_answer_carries_it(o
     sid, q = ask(office, fake_llm, workspace)
 
     side = chat(office, q, "why not fail fast?", 1)
-    assert (side.kind, side.question_id, side.person, side.cwd, side.cost_cap_usd) == (
-        "side", q.id, "minh", os.path.realpath(workspace), 1)
-    assert side.seed.startswith(FRAMING) and "Retry or back off?" in side.seed
+    assert (side.kind, side.question_id, side.person, side.cwd, side.cost_cap_usd, side.seed) == (
+        "side", q.id, "minh", os.path.realpath(workspace), 1, None)
+    seed_file = h.office.paths.run_dir(side.id) / SEED_FILE
+    seed = seed_file.read_text()
+    assert seed.startswith(FRAMING) and "Retry or back off?" in seed
+    assert stat.S_IMODE(seed_file.stat().st_mode) == 0o600
     assert h.store.get_question(q.id).side_session_id == side.id
     first = last_user(fake_llm, 2)
     assert first.startswith(FRAMING) and first.endswith("why not fail fast?")
@@ -109,6 +113,10 @@ def test_chat_about_this_opens_a_seeded_side_session_and_the_answer_carries_it(o
         with pytest.raises(HarnessError) as err:
             say()
         assert (err.value.status, err.value.code, err.value.message) == (422, "refused", BACK_HINT)
+
+    # The seed stays out of the session, so its updates (one per model call) don't carry it to every client.
+    updates = [e.data for e in h.store.events_after() if e.type == "session.updated" and e.subject_id == side.id]
+    assert len(updates) > 2 and not any(FRAMING in json.dumps(d) for d in updates)
 
     cards.answer(q.id, "Back off", "option")
     result = asked(fake_llm, 4)

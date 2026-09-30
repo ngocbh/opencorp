@@ -14,7 +14,8 @@ from agent_corp.protocol.models import CompanyDefaults, DiscussionEntry, Event, 
 from agent_corp.questions.checker import InvalidAnswer, check_answer
 from agent_corp.questions.format import INTERRUPTED
 from agent_corp.questions.seed import build_seed, first_message
-from agent_corp.questions.side import BACK_HINT, EXIT_WORDS, SIDE_CHAT, discussion, is_live, side_spec
+from agent_corp.questions.side import (BACK_HINT, EXIT_WORDS, SIDE_CHAT, discussion, is_live, read_seed, side_spec,
+                                      write_seed)
 from agent_corp.store import InvalidTransition, new_id
 
 log = logging.getLogger(__name__)
@@ -24,10 +25,10 @@ class Cards:
     """What a question card can do, and the side sessions behind "Chat about this".
 
     A side session is a ``kind: side`` session of the person who asked, in the asker's
-    folder at the asker's pinned commit. Its first turn gets the seed before the human's
-    message. It ends when its question leaves ``open``; its discussion is copied onto the
-    question at each side turn and before each answer. ``register`` wires these methods
-    into the harness hooks.
+    folder at the asker's pinned commit. Its first turn gets the seed (kept in its run
+    dir, not on the session) before the human's message. It ends when its question
+    leaves ``open``; its discussion is copied onto the question at each side turn and
+    before each answer. ``register`` wires these methods into the harness hooks.
     """
 
     def __init__(self, office: Any, harness: Harness) -> None:
@@ -142,7 +143,10 @@ class Cards:
 
     def first_turn(self, session: Session, question: Question, text: str) -> str | None:
         """``turn_text``: a side session's first human turn gets the seed before the message."""
-        if session.kind != "side" or not session.seed:
+        if session.kind != "side":
+            return None
+        seed = read_seed(self.office.paths.run_dir(session.id))
+        if not seed:
             return None
         # Only the office answers a side turn with the exit command (the human's is refused), so
         # any other answered turn was the human's, and the seed is already in the session's memory.
@@ -150,7 +154,7 @@ class Cards:
                                              status=("answered", "consumed"))
         if any(SIDE_CHAT.is_turn(q.node_id) and q.answer != SIDE_CHAT.exit for q in answered):
             return None
-        return first_message(session.seed, text)
+        return first_message(seed, text)
 
     def stored(self, question: Question) -> None:
         """``question_stored``: a side turn copies the discussion; a new card may carry an expired one's."""
@@ -226,9 +230,10 @@ class Cards:
         t = now()
         side = Session(id=new_id(), person=question.asker, harness="composer", office=socket.gethostname(),
                        cwd=asker.cwd, repo_commit=asker.repo_commit, status="starting", kind="side",
-                       question_id=question.id, seed=seed, cost_cap_usd=defaults.side_chat_cost_cap_usd,
+                       question_id=question.id, cost_cap_usd=defaults.side_chat_cost_cap_usd,
                        created_at=t, updated_at=t)
         spec = side_spec(self.harness, side)  # refuse a missing flow or folder before anything is stored
+        write_seed(self.office.paths.run_dir(side.id), seed)
         side = self.store.create_session(side)
         self.store.update_question(question.id, side_session_id=side.id)
         return side, spec
