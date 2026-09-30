@@ -138,7 +138,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
           office.putQuestion(q)
         })
         .catch((error) => {
-          // Until WP10 adds carried/dismiss, the office answers it 404 no_route rather than 501.
+          // An office without the carried/dismiss route answers 404 no_route rather than 501.
           if (isNotImplemented(error) || isMissingRoute(error))
             return toast.show({ message: "Dismissing a discussion is not available yet", variant: "warning" })
           toast.show({ title: "Dismissing failed", message: errorMessage(error), variant: "error" })
