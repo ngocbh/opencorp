@@ -77,21 +77,21 @@ task that rewires a kept file.
 | Session view | `routes/session/{index,footer,sidebar,dialog-message,dialog-timeline,subagent-footer}.tsx` | keep | T6 chat screen. |
 | Permission and question views | `routes/session/{permission,question}.tsx`, `context/permission.tsx` | keep | T6 question cards. |
 | Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment,cwd}.ts(x)`, `prompt/**` | keep | T6 (Enter/steer, Esc/interrupt). |
-| Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-session-rename,dialog-session-delete-failed,dialog-stash,dialog-theme-list,dialog-debug,dialog-retry-action,error-component,startup-loading,spinner,register-spinner,todo-item,bg-pulse,bg-pulse-render}.ts(x)` | keep | Used by every later screen. |
+| Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-session-rename,dialog-stash,dialog-theme-list,dialog-debug,dialog-retry-action,error-component,spinner,register-spinner,todo-item,bg-pulse,bg-pulse-render}.ts(x)` | keep | Used by every later screen. |
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
 | Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` keeps agent and model selection state until T4 replaces it with employees. |
 | Data layer | `context/{sdk,sync,data,location,project,event,directory}.ts(x)` | replace | T4 protocol client and store. Sync still fetches LSP, MCP and formatter status until then. |
 | Editor | `editor.ts`, `editor-zed.ts`, `context/editor.ts` | keep | External `$EDITOR` for the prompt and editor selection context. |
 | Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts`, `parsers-config.ts` | keep | |
-| Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, the `plugin` route | drop | No TUI plugins. |
+| Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, `component/startup-loading.tsx`, the `plugin` route | drop | No TUI plugins. The startup screen only covered plugin loading. |
 | Built-in plugins | `feature-plugins/**` (home footer and tips, sidebar context/files/LSP/MCP/todo/footer, diff viewer, which-key, notifications, plugin manager) | drop | Plugin-based and OpenCode-specific. The chat and profile screens bring their own panels. |
 | Attention sounds | `attention.ts`, `audio.ts`, `audio.d.ts` | drop | Plugin feature with OpenCode sound packs. |
-| Provider and model pickers, auth | `component/dialog-{model,provider,variant,console-org}.tsx`, `component/use-connected.tsx`, `util/{model,provider-origin}.ts`, the empty-provider dialog in `app.tsx` | drop | The office owns models and credentials. |
-| MCP, LSP, formatter status | `component/dialog-{mcp,status}.tsx` | drop | Not in agent-corp. |
+| Provider and model pickers, auth | `component/dialog-{model,provider,variant,console-org}.tsx`, `component/use-connected.tsx`, `util/provider-origin.ts`, the empty-provider dialog in `app.tsx` | drop | The office owns models and credentials. `util/model.ts` stays: the session view names message models with it and `--model` parsing uses it. |
+| MCP, LSP, formatter status | `component/dialog-{mcp,status}.tsx`, the MCP toggle in `context/local.tsx`, the LSP/MCP counts in the session footer | drop | Not in agent-corp. |
 | Share | session share and unshare commands | drop | Sessions are not shared through OpenCode. |
-| Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. |
+| Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, `component/dialog-session-delete-failed.tsx` (workspace recovery), flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. `context/project.tsx` keeps its workspace state until T4. |
 | Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | T5's employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
-| Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking in M1; `dialog-subagent` is unused upstream. |
+| Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking in M1; `dialog-subagent` is unused upstream. The message dialog's Fork action and `--fork` handling in `app.tsx` stay until T4 decides what the office supports. |
 | Tests | `test/**` | keep, except the tests of dropped features | `test/fixture/tui-sdk.ts` stays until T4's fake office replaces it. |
 | SST glue | `sst-env.d.ts` | drop | Not copied. |
