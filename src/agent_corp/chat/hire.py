@@ -33,13 +33,14 @@ class Hiring:
     """``POST /people``: a preview writes nothing; a confirm of an unchanged, clean preview commits.
 
     Previews are kept in memory by person id, so a confirm after an office restart must
-    preview again.
+    preview again. Only the latest ``max_previews`` are kept; an older one must preview again too.
     """
 
-    def __init__(self, git: CompanyGit) -> None:
+    def __init__(self, git: CompanyGit, max_previews: int = 100) -> None:
         self.git = git
+        self.max_previews = max_previews
         self._lock = threading.Lock()
-        self._previews: dict[str, tuple[str, ...]] = {}
+        self._previews: dict[str, tuple[str, ...]] = {}  # oldest first
 
     def hire(self, request: HireRequest) -> HireResponse:
         """Preview ``request``, or with ``confirm`` commit its preview; raise ``HireRefused`` if a confirm can't."""
@@ -55,7 +56,10 @@ class Hiring:
             self.git.commit_hand_edits()
             person, files, issues = self._draft(request, pid)
         with self._lock:
+            self._previews.pop(pid, None)
             self._previews[pid] = _form(request)
+            while len(self._previews) > self.max_previews:
+                del self._previews[next(iter(self._previews))]
         return HireResponse(person=person, diff=_diff(files), issues=issues, commit=None)
 
     def confirm(self, request: HireRequest) -> HireResponse:

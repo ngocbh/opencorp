@@ -125,3 +125,12 @@ def test_an_existing_lint_error_is_a_warning_and_doesnt_block_a_hire(tmp_path):
     assert any(i.severity == "error" and i.path.startswith(f"people/{bad.person.id}/") for i in bad.issues)
     with pytest.raises(HireRefused):
         hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}, id=bad.person.id, confirm=True))
+
+
+def test_old_previews_are_dropped_past_the_cap(git):
+    hiring = Hiring(git, max_previews=2)
+    pids = [hiring.hire(HireRequest(**FORM)).person.id for _ in range(3)]
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM, id=pids[0], confirm=True))
+    assert err.value.code == "lint_failed"
+    assert hiring.hire(HireRequest(**FORM, id=pids[2], confirm=True)).commit == git.head()
