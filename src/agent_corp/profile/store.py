@@ -101,8 +101,17 @@ class GitProfileStore:
                 current = self._current()
                 if current != base_version:
                     raise MarkdownVersionMismatch(base_version, current)
-                self._replace(data)
-                self.git.commit([self.path], commit_message(self.git.handle(self.path), provenance))
+                message = commit_message(self.git.handle(self.path), provenance)
+                target = self._target()
+                previous = target.read_bytes() if target.exists() else None
+                self._put(target, data)
+                try:
+                    self.git.commit([self.path], message)
+                except BaseException:
+                    # Left on disk, the text would be committed later as a hand edit without
+                    # its Commit-Id, and a retry of this write would get a mismatch.
+                    self._restore(target, previous, current)
+                    raise
                 return self._current()
         except CompanyGitError as exc:
             raise OSError(str(exc)) from exc
@@ -126,11 +135,15 @@ class GitProfileStore:
         # The empty blob is only in the object store once some empty file was committed.
         return b"" if version == EMPTY_BLOB else self.git.read_blob(version)
 
-    def _replace(self, data: bytes) -> None:
-        """Write the profile through a temporary file; refuse a path that leaves the person's directory."""
+    def _target(self) -> Path:
+        """The profile's path in the clone; ValueError if it leaves the person's directory."""
         target = self.git.root / self.path
         if target.is_symlink() or target.parent.resolve() != self.git.root.resolve() / "people" / self.person_id:
             raise ValueError(f"{self.path} goes through a symlink; not writing it")
+        return target
+
+    def _put(self, target: Path, data: bytes) -> None:
+        """Replace ``target`` with ``data`` through a temporary file in the same directory."""
         # mkstemp makes the file 0600; keep the profile's mode, or git's default for a new file.
         mode = target.stat().st_mode & 0o777 if target.exists() else 0o644
         fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=".profile.md.")
@@ -142,3 +155,16 @@ class GitProfileStore:
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise
+
+    def _restore(self, target: Path, previous: bytes | None, current: str) -> None:
+        """Put back the profile a failed commit left on disk, and unstage it; best effort."""
+        try:
+            if self._current() != current:  # the commit landed before the failure; keep it
+                return
+            if previous is None:
+                target.unlink(missing_ok=True)
+            else:
+                self._put(target, previous)
+            self.git.unstage([self.path])
+        except (OSError, CompanyGitError):
+            pass  # the caller needs the commit's error, not this one

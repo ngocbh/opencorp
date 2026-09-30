@@ -10,7 +10,7 @@ from agent_composer.memory.profile import ProfileMemory
 from agent_composer.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
 from langchain_core.messages import AIMessage
 
-from agent_corp.company.git import CompanyGit
+from agent_corp.company.git import CompanyGit, CompanyGitError
 from agent_corp.profile import EMPTY_BLOB, GitProfileStore, blob_id, commit_message
 from tests.company.conftest import _git, _isolate_git, company  # noqa: F401
 
@@ -268,3 +268,38 @@ def test_profile_memory_commit_is_a_git_commit_with_run_and_commit_id(store, com
     assert _git(company, "log", "-1", "--format=%B") == (
         "profile(@minh): from feedback on run run-1\n\nCommit-Id: ac-memory-v1:abc")
     assert store.committed("ac-memory-v1:abc") == store.read()[1]
+
+
+# Failed commits
+
+
+def _failing_commit(company):
+    """A ``CompanyGit.commit`` that stages the path, then fails as a stale index.lock would."""
+    def commit(paths, message):
+        _git(company, "add", "--", *paths)
+        raise CompanyGitError("git commit exited 128: fatal: Unable to create '.git/index.lock'")
+    return commit
+
+
+def test_a_failed_commit_restores_the_profile(store, git, company, monkeypatch):
+    base = store.read()[1]
+    monkeypatch.setattr(git, "commit", _failing_commit(company))
+    with pytest.raises(OSError, match="index.lock"):
+        store.write("# Minh\nv1\n", base_version=base, provenance={"commit_id": "c-1"})
+    monkeypatch.undo()
+    assert (company / PROFILE).read_text() == MINH
+    assert _git(company, "status", "--porcelain") == ""
+    assert store.committed("c-1") is None
+    assert store.write("# Minh\nv1\n", base_version=base, provenance={"commit_id": "c-1"}) == (
+        blob_id(b"# Minh\nv1\n"))
+    assert store.committed("c-1") == blob_id(b"# Minh\nv1\n")
+
+
+def test_a_failed_commit_removes_a_new_profile(store, git, company, monkeypatch):
+    _git(company, "rm", "-q", PROFILE)
+    _git(company, "commit", "-q", "-m", "drop")
+    monkeypatch.setattr(git, "commit", _failing_commit(company))
+    with pytest.raises(OSError):
+        store.write("# Minh\n", base_version=EMPTY_BLOB)
+    assert not (company / PROFILE).exists()
+    assert _git(company, "status", "--porcelain") == ""
