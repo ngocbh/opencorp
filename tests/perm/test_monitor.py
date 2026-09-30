@@ -83,6 +83,19 @@ def test_where_limits_admin_grants_too(make_monitor):
         'permission denied: cluster_a__read_logs: partition must be one of ["gpu-small"]')
 
 
+def test_where_matches_type_as_well_as_value(make_monitor):
+    grant = {"who": "minh", "can": ["submit_job"], "where": {"nodes": [1], "debug": [False]}}
+    m = make_monitor(**{"assets/cluster-a.yaml": cluster([grant])})
+
+    def call(nodes, debug=False):
+        return m.call("minh", "r1", "cluster_a__submit_job", {"job": "a", "nodes": nodes, "debug": debug})
+
+    assert call(1).startswith("ran a")
+    for nodes in [True, 1.0, "1", [1]]:
+        assert call(nodes) == 'permission denied: cluster_a__submit_job: nodes must be one of [1]'
+    assert call(1, debug=0) == 'permission denied: cluster_a__submit_job: debug must be one of [false]'
+
+
 def test_any_matching_grant_allows_the_call(make_monitor):
     grants = [{"who": "minh", "can": ["submit_job"], "where": {"partition": ["gpu-small"]}},
               {"who": "group:eng", "can": ["submit_job"]}]

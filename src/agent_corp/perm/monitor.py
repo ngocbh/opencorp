@@ -210,6 +210,17 @@ def _find(repo: CompanyRepo, name: str) -> tuple[Asset | None, str | None]:
     return None, None
 
 
+def _same(value: Any, allowed: Any) -> bool:
+    """Equal in value and type, all the way down, so ``True`` and ``1.0`` are not ``1``."""
+    if type(value) is not type(allowed):
+        return False
+    if isinstance(value, Mapping):
+        return value.keys() == allowed.keys() and all(_same(value[k], allowed[k]) for k in value)
+    if isinstance(value, list):
+        return len(value) == len(allowed) and all(map(_same, value, allowed))
+    return value == allowed
+
+
 def _denial(repo: CompanyRepo, person_id: str, asset: Asset | None, tool: str | None, name: str,
             args: Mapping[str, Any]) -> str | None:
     """Why ``person_id`` may not make this call, or None if a grant allows it."""
@@ -220,7 +231,8 @@ def _denial(repo: CompanyRepo, person_id: str, asset: Asset | None, tool: str | 
         return f"{name} is gated"
     reasons = []
     for grant in grants:
-        failed = [key for key, allowed in (grant.where or {}).items() if key not in args or args[key] not in allowed]
+        failed = [key for key, allowed in (grant.where or {}).items()
+                  if key not in args or not any(_same(args[key], a) for a in allowed)]
         if not failed:
             return None
         reasons.append(f"{failed[0]} must be one of {json.dumps(grant.where[failed[0]], ensure_ascii=False)}")
