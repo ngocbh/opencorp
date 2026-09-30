@@ -1,7 +1,11 @@
 import os
 import stat
+import subprocess
+from pathlib import Path
 
 import pytest
+
+from agent_corp.install.launch import Host, Launch, launch
 
 SERVICE_TOOLS = ("launchctl", "systemctl", "loginctl", "tmux")
 
@@ -26,3 +30,35 @@ def no_real_services(tmp_path_factory, monkeypatch):
     (root / "user").mkdir()
     yield
     assert not calls.exists(), f"a test ran a real service tool:\n{calls.read_text()}"
+
+
+GOLDEN = Path(__file__).parent / "golden"
+
+
+class Runner:
+    """Records commands and answers each from a table of ``(argv prefix, returncode, stderr)``."""
+
+    def __init__(self, answers=()):
+        self.calls: list[list[str]] = []
+        self.answers = list(answers)
+
+    def __call__(self, argv):
+        self.calls.append(list(argv))
+        for prefix, code, err in self.answers:
+            if list(argv[: len(prefix)]) == list(prefix):
+                return subprocess.CompletedProcess(argv, code, "", err)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+
+@pytest.fixture
+def owner_launch() -> Launch:
+    """The owner's default office, with fixed paths so service files can be compared to goldens."""
+    return launch(Path("/Users/owner/.agent-corp"), repo=Path("/opt/agent-corp"),
+                  environ={"PATH": "/usr/bin:/bin", "HOME": "/Users/owner"}, user_home=Path("/Users/owner"))
+
+
+def make_host(tmp_path: Path, runner: Runner, platform: str = "darwin", which=lambda name: None,
+              popen=None, answers=lambda socket: False) -> Host:
+    """A host whose home is ``tmp_path`` and whose commands go to ``runner``; nothing real runs."""
+    return Host(platform=platform, user_home=tmp_path, uid=501, run=runner,
+                popen=popen, which=which, sleep=lambda s: None, answers=answers)
