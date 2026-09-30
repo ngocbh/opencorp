@@ -142,9 +142,12 @@ async def test_every_table_route_is_served(client, method, path, body):
         assert r.json().get("error") not in {"no_route", "method_not_allowed"}, r.json()
 
 
-async def test_wrong_method_is_405(client):
+async def test_wrong_method_is_405_with_every_allowed_method(client):
     r = await client.delete("/people")
     assert r.status_code == 405 and r.json()["error"] == "method_not_allowed"
+    assert r.headers["allow"] == "GET, HEAD, POST"  # from both /people routes
+    r = await client.post(f"/sessions/{ULID}/messages")
+    assert r.status_code == 405 and r.headers["allow"] == "GET, HEAD"
 
 
 async def test_unexpected_error_is_a_500_api_error(office, monkeypatch):

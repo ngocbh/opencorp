@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.routing import Match
 
 from agent_corp.protocol.models import ApiError
 from agent_corp.store import NotFound
@@ -27,9 +28,10 @@ class HTTPError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def error(status: int, code: str, message: str) -> JSONResponse:
+def error(status: int, code: str, message: str, headers: dict[str, str] | None = None) -> JSONResponse:
     """An ``ApiError`` response."""
-    return JSONResponse(ApiError(error=code, message=message).model_dump(mode="json"), status_code=status)
+    return JSONResponse(ApiError(error=code, message=message).model_dump(mode="json"), status_code=status,
+                        headers=headers)
 
 
 def ok(body: BaseModel | list[BaseModel], status: int = 200) -> JSONResponse:
@@ -94,8 +96,20 @@ async def _starlette_error(request: Request, exc: Exception) -> JSONResponse:
     if exc.status_code == 404:
         return error(404, "no_route", f"no route {request.method} {request.url.path}")
     if exc.status_code == 405:
-        return error(405, "method_not_allowed", f"{request.method} is not allowed on {request.url.path}")
-    return error(exc.status_code, "http_error", str(exc.detail))
+        return error(405, "method_not_allowed", f"{request.method} is not allowed on {request.url.path}",
+                     {"allow": _allowed_methods(request)})
+    return error(exc.status_code, "http_error", str(exc.detail), exc.headers)
+
+
+def _allowed_methods(request: Request) -> str:
+    # Starlette's Allow names only the first route that matched the path; a path can have
+    # one route per method.
+    methods: set[str] = set()
+    for route in request.app.router.routes:
+        match, _ = route.matches(request.scope)
+        if match is not Match.NONE:
+            methods |= getattr(route, "methods", None) or set()
+    return ", ".join(sorted(methods))
 
 
 async def _not_found(request: Request, exc: Exception) -> JSONResponse:
