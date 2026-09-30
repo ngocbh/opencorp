@@ -1,6 +1,7 @@
 """Hiring: preview a new agent's files and lint them in a scratch copy, then commit them on confirm."""
 
 import difflib
+import os
 import shutil
 import tempfile
 import threading
@@ -111,12 +112,17 @@ class Hiring:
             scratch = Path(tmp) / "company"
             shutil.copytree(self.git.root, scratch, ignore=shutil.ignore_patterns(".git"), symlinks=True)
             before = load_repo(scratch)
-            if (scratch / base).exists():
+            if os.path.lexists(scratch / base):
                 return person, files, [RepoIssue(path=f"{base}/person.yaml", code="person.exists",
                                                  message=f"{pid} already exists")]
             for rel, text in files.items():
-                (scratch / rel).parent.mkdir(parents=True, exist_ok=True)
-                (scratch / rel).write_text(text)
+                # A symlink in the repo (people/ itself, say) could point the write elsewhere.
+                target = Path(os.path.realpath(scratch / rel))
+                if not target.is_relative_to(os.path.realpath(scratch)):
+                    return person, files, [RepoIssue(path=rel, code="person.outside_repo",
+                                                     message=f"{rel} would be written outside the company repo")]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text)
             # An error the repo already had isn't this hire's to fix; it shows as a warning.
             known = {(i.path, i.code, i.message) for i in lint(before)}
             issues = [RepoIssue(**asdict(i) | ({"severity": "warning"} if (i.path, i.code, i.message) in known

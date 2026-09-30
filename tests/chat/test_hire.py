@@ -8,7 +8,7 @@ from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import HireRequest
 from tests.chat.conftest import CHAT_FLOW
-from tests.company.conftest import base_files, person, write_repo
+from tests.company.conftest import _git, base_files, person, write_repo
 
 
 @pytest.fixture
@@ -142,3 +142,22 @@ def test_a_preview_leaves_hand_edits_alone(git):
     Hiring(git).hire(HireRequest(**FORM))
     status = subprocess.run(["git", "-C", str(git.root), "status", "--porcelain"], capture_output=True, text=True)
     assert (git.head(), status.stdout) == (head, " M people/minh/profile.md\n")
+
+
+def test_a_hire_is_never_written_outside_the_repo(tmp_path):
+    root = tmp_path / "company"
+    write_repo(root, base_files() | {"shared/flows/chat.yaml": CHAT_FLOW})
+    outside = tmp_path / "outside"
+    (root / "people").rename(outside)
+    (root / "people").symlink_to(outside)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "people elsewhere")
+    git = CompanyGit(root, tmp_path / "worktrees")
+    hiring = Hiring(git)
+    preview = hiring.hire(HireRequest(**FORM))
+    pid = preview.person.id
+    assert [(i.code, i.severity) for i in preview.issues] == [("person.outside_repo", "error")]
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert err.value.code == "lint_failed"
+    assert not (outside / pid).exists()
