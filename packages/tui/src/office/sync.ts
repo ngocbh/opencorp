@@ -6,7 +6,7 @@ import type { Event, LiveEvent, Question } from "@agent-corp/protocol"
 import type { OfficeClient } from "./client"
 import { OfficeError, OfficeUnavailable } from "./errors"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
-import { applyLive, applyMeta, replay, upsertSession, type OfficeState } from "./store"
+import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
 
 /** `error`: the office is reachable but its state couldn't be read (see `error()`); retrying. */
 export type OfficeStatus = "connecting" | "online" | "offline" | "error"
@@ -268,6 +268,10 @@ export function createOfficeSync(opts: {
         if (q) s.questions[id] = q
         else delete s.questions[id]
       })
+    },
+    /** Stores a question a call returned (e.g. an answer), unless a newer copy is already in. */
+    putQuestion(q: Question) {
+      mutate((s) => upsertQuestion(s, q))
     },
     /** Re-reads both people lists (there are no person events, e.g. after a hire). */
     async refreshPeople() {

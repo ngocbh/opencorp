@@ -1,5 +1,6 @@
 import { batch, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
+import type { Question } from "@agent-corp/protocol"
 import { createOfficeClient } from "../office/client"
 import { runEach } from "../office/queue"
 import { emptyState, type OfficeState } from "../office/store"
@@ -73,6 +74,11 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       /** Re-reads a question into `state`, e.g. after an answer finds it already closed. */
       async refreshQuestion(id: string) {
         await sync.refreshQuestion(id)
+        await settled()
+      },
+      /** Stores a question a call returned, e.g. the answered question from an answer. */
+      async putQuestion(q: Question) {
+        sync.putQuestion(q)
         await settled()
       },
       /** Re-reads both people lists, e.g. after a hire (there are no person events). */

@@ -63,6 +63,11 @@ function upsert<T extends { updated_at?: string }>(map: Record<string, T>, key: 
   if (!newer(map[key], value)) map[key] = value
 }
 
+/** Replaces or inserts a question by id unless the local copy is newer. */
+export function upsertQuestion(s: OfficeState, q: Question) {
+  upsert(s.questions, q.id, q)
+}
+
 /** Replaces or inserts a session by id unless the local copy is newer; keeps newest updated first. */
 export function upsertSession(s: OfficeState, session: Session) {
   const i = s.sessions.findIndex((x) => x.id === session.id)

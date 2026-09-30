@@ -47,15 +47,24 @@ export function QuestionPrompt(props: { question: Question }) {
   // Every question takes a typed answer after its options.
   const other = createMemo(() => store.selected === options().length)
 
+  // One answer at a time: a second pick while the first is in flight would race it.
+  let sending = false
+
   function send(req: AnswerRequest) {
+    if (sending) return
+    sending = true
     const id = props.question.id
-    office.client.questions.answer(id, req).catch((error) => {
-      if (error instanceof OfficeError && error.status === 409) {
-        toast.show({ message: "This question was already answered", variant: "warning" })
-        return office.refreshQuestion(id).catch(() => {})
-      }
-      toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
-    })
+    office.client.questions
+      .answer(id, req)
+      .then((q) => office.putQuestion(q))
+      .catch((error) => {
+        if (error instanceof OfficeError && error.status === 409) {
+          toast.show({ message: "This question was already answered", variant: "warning" })
+          return office.refreshQuestion(id).catch(() => {})
+        }
+        toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
+      })
+      .finally(() => (sending = false))
   }
 
   function reject() {

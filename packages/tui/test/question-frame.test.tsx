@@ -50,6 +50,57 @@ test("a question open before the session loads shows, and a typed answer is sent
   }
 })
 
+test("the question the answer call returns closes the card without waiting for its event", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Retry the flaky test?",
+    options: ["Back off", "Fail fast"],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Retry the flaky test?") && f.includes("Fail fast"))
+    // No stream, so no question.updated event, until the answer is in.
+    office.hold("GET /events")
+    office.dropStreams()
+    app.input.pressKey("2")
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    await app.until((f) => !f.includes("Retry the flaky test?"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a second pick while the answer is in flight sends nothing", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Retry the flaky test?",
+    options: ["Back off", "Fail fast"],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Retry the flaky test?") && f.includes("Fail fast"))
+    const release = office.hold("POST /questions/:id/answer")
+    const answers = () => office.requests.filter((r) => r.path === `/questions/${q.id}/answer`)
+    app.input.pressKey("2")
+    await app.until(() => answers().length === 1)
+    app.input.pressKey("1")
+    app.input.pressKey("2")
+    await Bun.sleep(100)
+    release()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    await app.until((f) => !f.includes("Retry the flaky test?"))
+    expect(answers().map((r) => r.body)).toEqual([{ answer: "Fail fast", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a 409 says someone else answered and re-reads the question", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
