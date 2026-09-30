@@ -384,3 +384,22 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
     assert SENTINEL not in json.dumps(fake_llm.requests())
     assert leaks == []
     assert texts(harness, sid) == ["ok"]
+
+
+def test_a_held_session_with_a_queued_message_does_not_idle_end(make_harness, fake_llm, workspace):
+    import time
+
+    from agent_corp.chat.provider import Price
+
+    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)}, defaults={"idle_end": "1s"})
+    fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}},
+                    {"content": "after the raise"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: status(harness, sid) == "idle" and harness.store.get_session(sid).cost == 6, what="the charge")
+    assert harness.prompt(sid, "please continue") == "queued"
+    time.sleep(2.5)
+    settle(harness)
+    assert status(harness, sid) == "idle"
+    harness.set_cost_cap(sid, 20)
+    wait_for(lambda: texts(harness, sid)[-1:] == ["after the raise"], what="the held turn")

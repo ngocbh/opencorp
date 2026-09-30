@@ -345,8 +345,7 @@ class Harness:
             live.transcript.user(text)
             if live.reply_node is not None and live.worker is not None and live.worker.steer(live.reply_node, text):
                 return "steer"
-            live.pending.append(text)
-            self._deliver(live)
+            self._queue(live, [text])
             return "queued"
 
     def steer(self, session_id: str, text: str) -> str:
@@ -516,11 +515,19 @@ class Harness:
                 live.ending = True
                 self._answer_turn(live, question_id, chat.exit, by=None)
                 return
-            if not self._deliver(live):
+            if not self._deliver(live) and not live.pending:  # a held message isn't idleness
                 live.timer = threading.Timer(seconds(live.defaults.idle_end), self._post,
                                              (self._idle, live, question_id))
                 live.timer.daemon = True
                 live.timer.start()
+
+    def _queue(self, live: _Live, texts: list[str]) -> None:
+        """Queue messages for the next turn; a queued message stops the idle timer."""
+        live.pending.extend(texts)
+        if live.timer is not None:
+            live.timer.cancel()
+            live.timer = None
+        self._deliver(live)
 
     def _deliver(self, live: _Live) -> bool:
         """Answer the open turn with the queued messages, unless held; True if it did."""
@@ -555,8 +562,7 @@ class Harness:
     def _steer_left(self, live: _Live, texts: list[str]) -> None:
         with self._lock:
             if self._current(live) and not live.ending:
-                live.pending.extend(texts)  # already in the transcript
-                self._deliver(live)
+                self._queue(live, texts)  # already in the transcript
 
     # --- worker frames ---------------------------------------------------------------
 
