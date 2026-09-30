@@ -282,7 +282,8 @@ def settle(harness):
 
 
 def cap_items(harness):
-    return [w for w in harness.store.list_work_items() if w.title.startswith("Raise the cost cap")]
+    return sorted((w for w in harness.store.list_work_items() if w.title.startswith("Raise the cost cap")),
+                  key=lambda w: (w.created_at, w.id))
 
 
 def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace):
@@ -305,7 +306,7 @@ def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace
     wait_for(lambda: texts(harness, sid)[-1:] == ["after the raise"], what="the held turn")
 
 
-def test_a_session_over_its_cap_again_keeps_one_open_cap_item(make_harness, fake_llm, workspace):
+def test_raising_the_cap_closes_its_work_item_and_going_over_again_opens_one(make_harness, fake_llm, workspace):
     from agent_corp.chat.provider import Price
 
     harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})  # $1 per input token
@@ -319,15 +320,32 @@ def test_a_session_over_its_cap_again_keeps_one_open_cap_item(make_harness, fake
         else:
             assert harness.prompt(sid, f"more {n}") == "queued"  # held at the cap
             harness.set_cost_cap(sid, cap)
+            assert [w.status for w in cap_items(harness)] == ["done"] * n  # raising it closes the item
         wait_for(lambda: harness.store.get_session(sid).cost == 6 * (n + 1) and status(harness, sid) == "idle",
                  what=f"charge {n}")
         settle(harness)
-        if n == 1:  # the first item is still open: no second one
-            assert len(cap_items(harness)) == 1
-            harness.store.update_work_item(cap_items(harness)[0].id, status="done")
+        if n < 2:  # over again: one open item, however often the cap check runs
+            harness._post(harness._over_cap, harness._live[sid])
+            settle(harness)
+            assert [w.status for w in cap_items(harness)] == ["done"] * n + ["open"]
     items = cap_items(harness)
-    assert [w.status for w in items] == ["open", "done"]  # a new one once the first was closed
+    assert [w.status for w in items] == ["done", "done", "open"]
     assert {w.parent_id for w in items} == {parent}
+
+
+def test_a_cap_item_belongs_to_one_session_even_without_a_work_item(make_harness, workspace):
+    from agent_corp.protocol import now
+    from agent_corp.protocol.models import WorkItem
+    from agent_corp.store import new_id
+
+    harness = make_harness()
+    sid = start(harness, workspace)
+    t = now()
+    harness.store.create_work_item(WorkItem(
+        id=new_id(), title="Raise the cost cap of @someone's session", kind="task", status="open",
+        requester="p-x", parent_id=None, summary="Session s-other reached its cap.", created_at=t, updated_at=t))
+    session = harness.store.get_session(sid).model_copy(update={"work_item_id": None})
+    assert harness._cap_item(session) is None
 
 
 SENTINEL = "sk-sentinel-7c2a51"

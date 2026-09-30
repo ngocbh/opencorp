@@ -425,7 +425,10 @@ class Harness:
             raise HarnessError(404, "not_found", f"no session {session_id}")
         if usd <= session.cost:
             raise HarnessError(422, "cap_too_low", f"the cap must be above the cost so far (${session.cost:.4f})")
+        item = self._cap_item(session)
         session = self.store.update_session(session_id, cost_cap_usd=usd)
+        if item is not None:
+            self.store.update_work_item(item.id, status="done")
         with self._lock:
             live = self._live.get(session_id)
             if live is not None:
@@ -611,8 +614,11 @@ class Harness:
 
     def _cap_item(self, session: Session) -> WorkItem | None:
         """The session's open "raise the cost cap" work item, if any."""
+        # The summary names the session, so sessions with no work item don't share one.
+        mine = f"Session {session.id} "
         return next((w for w in self.store.list_work_items(status=("open", "in_progress"))
-                     if w.parent_id == session.work_item_id and w.title.startswith(_CAP_TITLE)), None)
+                     if w.parent_id == session.work_item_id and w.title.startswith(_CAP_TITLE)
+                     and (w.summary or "").startswith(mine)), None)
 
     def _exited(self, live: _Live, worker: Worker, returncode: int) -> None:
         session = self.store.get_session(live.session_id)
