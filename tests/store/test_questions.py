@@ -138,3 +138,17 @@ def test_answer_is_stored_as_its_json_dump(store, sid):
     q = store.add_question(make_question(sid))
     got = store.answer_question(q.id, {"when": datetime.date(2026, 9, 30), "picks": ("a", "b")}, "text")
     assert got.answer == {"when": "2026-09-30", "picks": ["a", "b"]} == store.get_question(q.id).answer
+
+
+@pytest.mark.parametrize("status", ["open", "stale"])
+def test_unanswered_question_keeps_no_answer_fields(store, sid, status):
+    q = make_question(sid, status=status, answer={"x": 1}, answer_kind="text", answered_by="minh")
+    got = store.add_question(q)
+    assert (got.answer, got.answer_kind, got.answered_by) == (None, None, None)
+    assert got == store.get_question(q.id)
+
+
+def test_answered_question_keeps_its_answer_fields(store, sid):
+    q = make_question(sid, status="consumed", answer="x", answer_kind="text", answered_by="minh")
+    got = store.add_question(q)
+    assert (got.answer, got.answer_kind, got.answered_by) == ("x", "text", "minh")

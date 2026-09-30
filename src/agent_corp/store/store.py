@@ -723,9 +723,11 @@ class Store:
     def _question_columns(self, question: Question) -> dict[str, Any]:
         cols = self._columns(QUESTIONS, question)
         # SQL NULL means "not answered"; an answered question stores its answer as JSON,
-        # which may be the text 'null'.
-        answered = question.status in _ANSWERED
-        cols["answer"] = json.dumps(question.model_dump(mode="json", include={"answer"})["answer"]) if answered else None
+        # which may be the text 'null'. An open or stale question keeps no answer fields.
+        if question.status in _ANSWERED:
+            cols["answer"] = json.dumps(question.model_dump(mode="json", include={"answer"})["answer"])
+        else:
+            cols.update(answer=None, answer_kind=None, answered_by=None)
         return cols
 
     def add_question(self, question: Question) -> Question:
