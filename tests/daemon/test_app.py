@@ -63,6 +63,22 @@ async def test_start_and_stop_run_callbacks_and_close_workers(office):
     assert office.workers.closed == 1
 
 
+async def test_failed_start_stops_the_office(office):
+    calls = []
+
+    def fail():
+        raise RuntimeError("no model key")
+
+    office.workers = FakePool()
+    office.on_start += [lambda: calls.append("s1"), fail]
+    office.on_stop += [lambda: calls.append("t1")]
+    with pytest.raises(RuntimeError, match="no model key"):
+        await office.start()
+    assert calls == ["s1", "t1"]
+    assert office.workers.closed == 1
+    assert await office.bus.subscribe().next(timeout=1) is None  # the bus is closed
+
+
 async def test_lifespan_starts_and_stops_the_office(office):
     office.workers = FakePool()
     app = create_app(office)

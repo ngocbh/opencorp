@@ -68,11 +68,19 @@ class Office:
     _unlisten: Callable[[], None] | None = field(default=None, init=False, repr=False)
 
     async def start(self) -> None:
-        """Attach the bus to the running loop, feed it store events, and run ``on_start``."""
-        self.bus.attach(asyncio.get_running_loop())
-        self._unlisten = self.store.add_listener(self.bus.publish_meta)
-        for callback in self.on_start:
-            await _maybe_await(callback())
+        """Attach the bus to the running loop, feed it store events, and run ``on_start``.
+
+        If anything fails, ``stop`` runs before the error propagates, so what earlier
+        callbacks started (threads, workers) is shut down.
+        """
+        try:
+            self.bus.attach(asyncio.get_running_loop())
+            self._unlisten = self.store.add_listener(self.bus.publish_meta)
+            for callback in self.on_start:
+                await _maybe_await(callback())
+        except BaseException:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         """End SSE streams, stop the workers, and run ``on_stop`` in reverse order."""
