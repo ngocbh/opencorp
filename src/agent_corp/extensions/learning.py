@@ -6,6 +6,7 @@ import os
 import queue
 import socket
 import threading
+import traceback
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,9 @@ from typing import Any
 from pydantic import ValidationError
 
 from agent_corp.chat.harness import LIVE, Harness, HarnessError
+from agent_corp.chat.provider import Provider
 from agent_corp.company.loader import load_repo
+from agent_corp.perm.monitor import redact
 from agent_corp.profile import GitProfileStore
 from agent_corp.profile.debrief import DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief, transcript_text
 from agent_corp.profile.feedback import FeedbackHandlers, next_status
@@ -31,6 +34,7 @@ TICK_SECONDS = 60.0
 MAX_DEBRIEFS = 3
 """Debrief runs that may fail before the tick stops retrying; ``GET /debriefs/{session}`` always retries."""
 _BUSY = (*LIVE, "debriefing")
+_LOGGED_CHARS = 300  # of a failure message
 
 
 class Learning:
@@ -49,6 +53,7 @@ class Learning:
         self._confirming = threading.Lock()
         self._active: dict[str, Worker | None] = {}  # session id -> its debrief or backward worker
         self._waiting: set[str] = set()  # feedback that failed and waits for the next tick
+        self._keys: set[str] = set()  # model keys our jobs were given, scrubbed from what we log
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="learning", daemon=True)
         self._timer: threading.Timer | None = None
@@ -233,8 +238,8 @@ class Learning:
             handlers = FeedbackHandlers(stores=stores,
                                         exited=lambda outcome: self._post(self._debriefed, session.id, run_id, outcome))
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
-        except Exception:
-            log.exception("can't start the debrief of session %s", session.id)
+        except Exception as exc:
+            self._log_exception(exc, "can't start the debrief of session %s", session.id)
             self._debriefed(session.id, run_id, None)
 
     def _debriefed(self, session_id: str, run_id: str, outcome: dict[str, Any] | None) -> None:
@@ -245,10 +250,10 @@ class Learning:
         if outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
             try:
                 debrief = ready_debrief(session, outcome["output"])
-            except (KeyError, TypeError, ValidationError):
-                log.exception("the debrief of session %s returned a bad output", session_id)
+            except (KeyError, TypeError, ValidationError) as exc:
+                self._log_exception(exc, "the debrief of session %s returned a bad output", session_id)
         else:
-            log.warning("the debrief of session %s failed: %s", session_id, outcome)
+            log.warning("the debrief of session %s failed: %s", session_id, self._failure(outcome))
         if debrief is not None:
             self._mark_finished(session_id, run_id)
             self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
@@ -280,8 +285,8 @@ class Learning:
             job, handlers = self._backward_job(session, feedback)
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
         except Exception as exc:
-            log.exception("can't start learning from feedback %s", feedback.id)
-            self._learned(feedback.id, handlers, {"type": "error", "message": str(exc)})
+            self._log_exception(exc, "can't start learning from feedback %s", feedback.id)
+            self._learned(feedback.id, handlers, {"type": "error", "message": self._redact(str(exc))})
 
     def _learned(self, feedback_id: str, handlers: FeedbackHandlers | None, outcome: dict[str, Any] | None) -> None:
         feedback = self.store.get_feedback(feedback_id)
@@ -292,7 +297,7 @@ class Learning:
             # Feedback the learner already reflected commits nothing; it stands at the current commit.
             self.store.set_feedback_status(feedback_id, "applied", commit=commit or self.git.head())
         elif status == "learning_failed":
-            log.warning("learning from feedback %s failed: %s", feedback_id, outcome)
+            log.warning("learning from feedback %s failed: %s", feedback_id, self._failure(outcome))
             self.store.set_feedback_status(feedback_id, "learning_failed")
         else:
             self.store.set_feedback_status(feedback_id, "queued")
@@ -306,7 +311,7 @@ class Learning:
                      feedback: str | None = None) -> tuple[Job, dict[str, Any]]:
         pin = self.git.pin(session.repo_commit)
         defaults = self._defaults(load_repo(pin))
-        provider = self.harness.provider()
+        provider = self._provider()
         memory = {"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars,
                                                llm_config=provider.llm_config)}
         transcript = transcript_text(self.store.list_messages(session.id)) if kind == "chat" else ""
@@ -326,7 +331,7 @@ class Learning:
             handlers = FeedbackHandlers(stores=stores, source=source, exited=exited)
             return job, handlers
         spec = self.harness.restorers[session.kind](session)
-        provider = self.harness.provider()
+        provider = self._provider()
         tools = spec.groups(session, feedback.run_id, _no_questions)
         memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
                   if m.kind == "profile" and m.llm_config is None else m for name, m in spec.memory.items()}
@@ -348,8 +353,40 @@ class Learning:
             fn, args = job
             try:
                 fn(*args)
-            except Exception:
-                log.exception("learning: %s failed", getattr(fn, "__name__", fn))
+            except Exception as exc:
+                self._log_exception(exc, "learning: %s failed", getattr(fn, "__name__", fn))
+
+    def _provider(self) -> Provider:
+        """The provider for a new job; its model key is remembered, so logs never show it."""
+        provider = self.harness.provider()
+        key = (provider.llm_config or {}).get("api_key")
+        if isinstance(key, str) and key:
+            with self._lock:
+                self._keys.add(key)
+        return provider
+
+    def _redact(self, text: str) -> str:
+        with self._lock:
+            keys = list(self._keys)
+        return redact(text, (), keys)
+
+    def _failure(self, outcome: dict[str, Any] | None) -> str:
+        """A failed worker outcome for the log: its failure's code and the start of its redacted message.
+
+        The message is cut because a provider error echoes the whole request, profile included.
+        """
+        if outcome is None:
+            return "the worker exited without a result"
+        failure = (outcome.get("backward") or {}).get("failure") or outcome.get("failure") or outcome
+        message = self._redact(str(failure.get("message")))
+        if len(message) > _LOGGED_CHARS:
+            message = message[:_LOGGED_CHARS] + "…"
+        return f"{failure.get('code') or outcome.get('type')}: {message}"
+
+    def _log_exception(self, exc: BaseException, message: str, *args: Any) -> None:
+        """Log ``message`` with ``exc``'s traceback, redacted: an error message may echo the model key."""
+        text = f"{message % args}\n{''.join(traceback.format_exception(exc))}"
+        log.error("%s", self._redact(text).rstrip())
 
     def _schedule(self) -> None:
         if self.tick_seconds is None:
