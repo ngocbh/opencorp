@@ -9,7 +9,7 @@ resolution-markers = [
 [[package]]
 name = "agent-composer"
 version = "0.0.1"
-source = { editable = "agent-composer" }
+source = { editable = "packages/agent-composer" }
 dependencies = [
     { name = "langchain-core" },
     { name = "lark" },
@@ -81,7 +81,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-composer", extras = ["all"], editable = "agent-composer" },
+    { name = "agent-composer", extras = ["all"], editable = "packages/agent-composer" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "psutil", specifier = ">=7" },

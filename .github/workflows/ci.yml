@@ -24,7 +24,7 @@ jobs:
       # setup-uv publishes no floating major tags, so pin the release.
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync
-      - run: uv run pytest -q tests
+      - run: uv run pytest -q packages/corp_office/tests
   sandbox-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -44,7 +44,7 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
       - run: uv sync
-      - run: uv run pytest -q tests/sandbox
+      - run: uv run pytest -q packages/corp_office/tests/sandbox
   ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10

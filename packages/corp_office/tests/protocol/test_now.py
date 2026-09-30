@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator
 
 from agent_corp.protocol import now
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
 
 
