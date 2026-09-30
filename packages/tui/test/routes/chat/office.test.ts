@@ -28,7 +28,10 @@ test("the seeded idle session has an open turn; a prompt answers it; while busy 
   expect(await status(id)).toBe("busy")
   await client().sessions.prompt(id, { text: "use a fake clock" })
   expect(turns).toEqual(["fix it"])
-  expect(office.state.messages[id].map((m) => m.parts[0])).toMatchObject([{ text: "fix it" }, { text: "use a fake clock" }])
+  expect(office.state.messages[id].map((m) => m.parts[0])).toMatchObject([
+    { text: "fix it" },
+    { text: "use a fake clock" },
+  ])
   expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).status).toBe("idle")
 })
 
@@ -59,7 +62,8 @@ test("a prompt with no open turn and no reply running is queued; the next turn t
   await client().sessions.prompt(id, { text: "two" })
   expect(await status(id)).toBe("idle")
   expect(turns).toEqual(["go"])
-  expect(office.state.messages[id].map((m) => m.parts[0])).toMatchObject([{ text: "go" }, { text: "one" }, { text: "two" }])
+  const texts = office.state.messages[id].map((m) => m.parts[0])
+  expect(texts).toMatchObject([{ text: "go" }, { text: "one" }, { text: "two" }])
   const next = office.openTurn(id)
   expect(office.state.questions[next.id]).toMatchObject({ status: "answered", answer: "one\n\ntwo" })
   expect(await status(id)).toBe("busy")
@@ -93,8 +97,8 @@ test("an answer the question doesn't take is 422 invalid_answer", async () => {
   ])
     expect(await invalid(pages.id, { answer, answer_kind: "option" })).toEqual([422, "invalid_answer"])
   expect(office.state.questions[pages.id].status).toBe("open")
-  const ok = await client().questions.answer(pages.id, { answer: { Channel: "beta", Targets: [] }, answer_kind: "option" })
-  expect(ok.status).toBe("answered")
+  const record = { Channel: "beta", Targets: [] }
+  expect((await client().questions.answer(pages.id, { answer: record, answer_kind: "option" })).status).toBe("answered")
   expect((await client().questions.answer(asked.id, { answer: "yes", answer_kind: "option" })).status).toBe("answered")
 })
 
@@ -113,7 +117,7 @@ test("end goes ending, then debriefing; prompts are refused from the start", asy
   expect([again.status, again.code]).toEqual([409, "not_live"])
 })
 
-test("a side chat: one session per question, its messages are the discussion, it refuses exit words, and it ends with the question", async () => {
+test("one side session per question: it records the discussion, refuses exit words, and ends with it", async () => {
   office = createFakeOffice()
   const q = office.addQuestion({ question: "Retry?", options: ["yes", "no"] })
   const side = await client().questions.side(q.id, { text: "why retry?" })
@@ -157,7 +161,11 @@ test("send back needs a discussion; neither send back nor stop is offered on hum
   })
   const carried = office.addQuestion({ carried_from: plain.id })
   expect((await client().questions.sendBack(carried.id, { note: "" })).answer_kind).toBe("sent_back")
-  const gate = office.addQuestion({ source: "human_input", node_id: "review", discussion: [{ role: "user", text: "?" }] })
+  const gate = office.addQuestion({
+    source: "human_input",
+    node_id: "review",
+    discussion: [{ role: "user", text: "?" }],
+  })
   const noSendBack = await failure(client().questions.sendBack(gate.id, { note: "" }))
   expect([noSendBack.status, noSendBack.code]).toEqual([422, "cannot_send_back"])
   const noStop = await failure(client().questions.stop(gate.id))

@@ -53,7 +53,13 @@ test("ac end finds the folder's live session behind more than a page of newer se
     const [live] = office.state.sessions
     const later = new Date(Date.parse(live.updated_at) + 60_000).toISOString()
     for (let i = 0; i < 60; i++)
-      office.state.sessions.push({ ...live, id: office.nextId(), cwd: "/elsewhere", status: "ended", updated_at: later })
+      office.state.sessions.push({
+        ...live,
+        id: office.nextId(),
+        cwd: "/elsewhere",
+        status: "ended",
+        updated_at: later,
+      })
     const client = createOfficeClient({ socket: office.socket })
     expect((await endSession({ client, cwd: live.cwd })).id).toBe(live.id)
   } finally {

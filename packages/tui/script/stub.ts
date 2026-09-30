@@ -324,7 +324,8 @@ export function createFakeOffice(
   }
   /** Answers a turn with `text` and starts its reply. */
   function takeTurn(q: Question, text: string) {
-    updateQuestion({ ...q, status: "answered", answer: text, answer_kind: "text", answered_by: human(), updated_at: now() })
+    const answered = { status: "answered", answer: text, answer_kind: "text", answered_by: human() } as const
+    updateQuestion({ ...q, ...answered, updated_at: now() })
     setStatus(q.session_id, "busy")
     for (const fn of prompts) fn(q.session_id, { text })
   }
@@ -383,7 +384,8 @@ export function createFakeOffice(
       if (!(page.header in record)) throw invalid(`${JSON.stringify(page.header)} has no answer`)
       const value = record[page.header]
       const ok = page.multi_select ? Array.isArray(value) && value.every(label) : label(value)
-      if (!ok) throw invalid(`${JSON.stringify(page.header)} takes ${page.multi_select ? "a list of labels" : "one label"}`)
+      const shape = page.multi_select ? "a list of labels" : "one label"
+      if (!ok) throw invalid(`${JSON.stringify(page.header)} takes ${shape}`)
     }
   }
   /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
