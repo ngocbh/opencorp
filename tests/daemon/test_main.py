@@ -82,16 +82,40 @@ async def test_served_over_a_real_socket(office, short_dir):
 
 
 def _daemon(home):
-    return subprocess.Popen([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    # The log goes to a file: an unread pipe fills up and blocks the daemon's writes.
+    with open(home / "daemon.log", "w") as log:
+        return subprocess.Popen([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
+                                stdout=log, stderr=subprocess.STDOUT)
 
 
-def _wait_for(path, proc, timeout=20.0):
+def _log(home):
+    return (home / "daemon.log").read_text()
+
+
+def _is_socket(path):
+    try:
+        return stat.S_ISSOCK(os.lstat(path).st_mode)
+    except FileNotFoundError:
+        return False
+
+
+def _wait_for_socket(home, proc, timeout=20.0):
+    path = OfficePaths(home).socket
     deadline = time.monotonic() + timeout
-    while not path.exists():
-        assert proc.poll() is None, proc.communicate()
-        assert time.monotonic() < deadline, "daemon did not create its socket"
+    while not _is_socket(path):
+        assert proc.poll() is None, f"daemon exited {proc.returncode}:\n{_log(home)}"
+        assert time.monotonic() < deadline, f"daemon did not create its socket:\n{_log(home)}"
         time.sleep(0.05)
+
+
+def _stop(home, proc, sig=signal.SIGTERM):
+    proc.send_signal(sig)
+    try:
+        assert proc.wait(timeout=15) == 0, _log(home)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
 
 
 @pytest.fixture
@@ -104,20 +128,16 @@ def test_daemon_serves_refuses_a_second_and_stops_cleanly(home):
     paths = OfficePaths(home)
     proc = _daemon(home)
     try:
-        _wait_for(paths.socket, proc)
+        _wait_for_socket(home, proc)
         assert stat.S_IMODE(os.stat(paths.socket).st_mode) == 0o600
         with httpx.Client(transport=httpx.HTTPTransport(uds=str(paths.socket)), base_url="http://localhost") as c:
             assert c.get("/people").status_code == 200
         second = subprocess.run([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
                                 capture_output=True, text=True, timeout=30)
         assert second.returncode == 1 and f"office already running (pid {proc.pid})" in second.stderr
-        proc.send_signal(signal.SIGTERM)
-        assert proc.wait(timeout=15) == 0
-        assert not paths.socket.exists()
     finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+        _stop(home, proc)
+    assert not paths.socket.exists()
 
 
 def test_stale_socket_file_is_replaced(home):
@@ -126,16 +146,9 @@ def test_stale_socket_file_is_replaced(home):
     paths.socket.write_text("left by a crash")
     proc = _daemon(home)
     try:
-        deadline = time.monotonic() + 20
-        while True:
-            assert proc.poll() is None, proc.communicate()
-            if stat.S_ISSOCK(os.stat(paths.socket).st_mode):
-                break
-            assert time.monotonic() < deadline
-            time.sleep(0.05)
+        _wait_for_socket(home, proc)
     finally:
-        proc.send_signal(signal.SIGTERM)
-        assert proc.wait(timeout=15) == 0
+        _stop(home, proc)
 
 
 def test_missing_company_repo_exits_1(short_dir, capsys):

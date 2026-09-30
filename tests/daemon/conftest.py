@@ -104,8 +104,13 @@ async def served(office, socket_path: Path):
     server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="warning",
                                          timeout_graceful_shutdown=2), office)
     task = asyncio.create_task(server.serve(sockets=[sock]))
-    while not server.started:
-        await asyncio.sleep(0.01)
+    async with asyncio.timeout(10):
+        while not server.started:
+            if task.done():
+                sock.close()
+                await task  # re-raises what stopped it
+                raise RuntimeError("uvicorn stopped before it started")
+            await asyncio.sleep(0.01)
     transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
     async with httpx.AsyncClient(transport=transport, base_url="http://localhost", timeout=10) as c:
         try:
