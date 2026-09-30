@@ -32,3 +32,9 @@ def test_seconds(text, value):
 def test_seconds_refuses_other_text(text):
     with pytest.raises(ValueError, match="not a duration"):
         seconds(text)
+
+
+def test_the_reply_after_a_turn_is_in_the_same_occurrence():
+    assert MAIN_CHAT.reply_after("chat#3/ask") == "chat#3/reply"
+    assert MAIN_CHAT.reply_after("chat#0/ask") == "chat#0/reply"
+    assert ChatFlow(turn="talk/ask", reply="work/reply").reply_after("talk#1/ask") is None

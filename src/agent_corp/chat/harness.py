@@ -101,6 +101,8 @@ class _Live:
     worker: Worker | None = None
     provider: Provider = field(default_factory=Provider)
     reply_node: str | None = None
+    turn_node: str | None = None  # the open turn question's node id
+    next_reply: str | None = None  # the reply the answered turn starts, until its NodeStarted arrives
     turn_q: str | None = None
     pending: list[str] = field(default_factory=list)
     ending: bool = False
@@ -373,7 +375,7 @@ class Harness:
                 live.spec.workspace.interrupt()
             for call in list(live.calls):
                 call.cancel()
-            node, worker = live.reply_node, live.worker
+            node, worker = live.reply_node or live.next_reply, live.worker
         if node is not None and worker is not None:
             worker.interrupt(node)
 
@@ -507,9 +509,10 @@ class Harness:
         with self._lock:
             if not self._current(live) or live.turn_q == question_id:
                 return
-            if self.store.get_question(question_id).status != "open":
+            question = self.store.get_question(question_id)
+            if question.status != "open":
                 return
-            live.turn_q = question_id
+            live.turn_q, live.turn_node, live.next_reply = question_id, question.node_id, None
             if question_id != live.died_at:
                 live.exits = 0  # a new turn: the resumed worker got somewhere
             chat = live.spec.chat
@@ -549,6 +552,8 @@ class Harness:
         answered_by = self._owner() if by is True else by
         try:
             self.store.answer_question(question_id, text, "text", answered_by=answered_by)
+            if live.turn_node is not None and text != live.spec.chat.exit:
+                live.next_reply = live.spec.chat.reply_after(live.turn_node)
         except InvalidTransition:
             log.warning("turn question %s was answered elsewhere", question_id)
 
@@ -574,9 +579,9 @@ class Harness:
             return
         chat = live.spec.chat
         if chat is not None:
-            node_id = data.get("node_id")
+            node_id = data.get("node_id") or (data.get("failure") or {}).get("node_id")
             if name == "NodeStarted" and chat.is_reply(node_id):
-                live.reply_node = node_id
+                live.reply_node, live.next_reply = node_id, None
             elif name in _ENDED and node_id is not None and node_id == live.reply_node:
                 live.reply_node = None
         live.transcript.event(name, data)
@@ -627,7 +632,7 @@ class Harness:
             if live.worker is not worker or self._stopping:
                 return
             live.died_at = live.turn_q
-            live.worker, live.reply_node, live.turn_q = None, None, None
+            live.worker, live.reply_node, live.next_reply, live.turn_q = None, None, None, None
             if live.timer is not None:
                 live.timer.cancel()
             outcome, live.outcome = live.outcome, None

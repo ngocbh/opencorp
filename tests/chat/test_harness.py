@@ -3,6 +3,7 @@ import json
 import pytest
 
 from agent_corp.chat.harness import HarnessError
+from agent_corp.chat.turns import MAIN_CHAT
 from tests.chat.conftest import status, texts, wait_for
 
 
@@ -134,6 +135,46 @@ def test_end_while_busy_interrupts_then_exits(harness, fake_llm, workspace):
     fake_llm.release()
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
     assert len(fake_llm.requests()) == 1
+
+
+def test_esc_before_the_reply_starts_still_stops_it(harness, fake_llm, workspace, monkeypatch):
+    import threading
+
+    from agent_corp.chat import harness as harness_module
+
+    fake_llm.script({"content": "Working", "tool_calls": [echo_call()], "hold": 30}, {"content": "never"})
+    seen, release = threading.Event(), threading.Event()
+    event = harness_module._Handlers.event
+
+    def slow_start(self, worker, frame):
+        if frame["name"] == "NodeStarted" and MAIN_CHAT.is_reply(frame["data"].get("node_id")):
+            seen.set()
+            release.wait(30)  # the harness hasn't seen the reply start when Esc comes
+        return event(self, worker, frame)
+
+    monkeypatch.setattr(harness_module._Handlers, "event", slow_start)
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    assert seen.wait(15)
+    assert harness._live[sid].reply_node is None
+    harness.interrupt(sid)
+    release.set()
+
+    def stopped():
+        fake_llm.release()  # the reply may or may not have made its first call when Esc reached it
+        return status(harness, sid) == "idle"
+
+    wait_for(stopped, what="the stopped reply")
+    assert len(fake_llm.requests()) <= 1
+
+
+def test_a_failed_reply_is_no_longer_the_running_reply(harness, workspace):
+    sid = start(harness, workspace)
+    live = harness._live[sid]
+    harness._event(live, live.worker, "NodeStarted", {"node_id": "chat#0/reply"})
+    assert live.reply_node == "chat#0/reply"
+    harness._event(live, live.worker, "NodeFailed", {"failure": {"node_id": "chat#0/reply", "message": "boom"}})
+    assert live.reply_node is None
 
 
 def test_hooks_see_the_session(harness, fake_llm, workspace):
