@@ -17,7 +17,7 @@ from string import Template
 import yaml
 from pydantic import ValidationError
 
-from agent_corp.company.git import CompanyGit
+from agent_corp.company.git import CompanyGit, CompanyGitError
 from agent_corp.protocol.models import Company, Person
 
 _OWNER_DIR = "people/{owner}"
@@ -78,7 +78,13 @@ def missing_files(root: Path) -> list[str]:
 def _git_init(root: Path) -> None:
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env |= {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
-    subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, capture_output=True, env=env)
+    try:
+        subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, capture_output=True, text=True,
+                       env=env)
+    except OSError as exc:
+        raise CompanyGitError(f"can't run git: {exc.strerror or exc}") from None
+    except subprocess.CalledProcessError as exc:
+        raise CompanyGitError(f"git init {root} exited {exc.returncode}: {exc.stderr.strip()}") from None
 
 
 def is_new(root: Path) -> bool:
@@ -105,6 +111,7 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     Raises:
         ValueError: the repo is new and ``company`` or ``owner`` is not given or not
             valid. Nothing is written.
+        CompanyGitError: git is missing or failed.
     """
     new = is_new(root)
     if not new:

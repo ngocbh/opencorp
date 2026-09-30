@@ -53,6 +53,14 @@ def test_linux_without_a_user_bus_or_tmux_runs_it_in_the_background(tmp_path, on
     assert started == [list(one.argv)]
 
 
+def test_a_newline_in_the_home_falls_back_from_systemd_to_tmux(tmp_path):
+    odd = launch(tmp_path / "a\nb", repo=tmp_path / "repo", environ={"PATH": "/usr/bin"}, user_home=tmp_path)
+    run = Runner([(["tmux", "has-session"], 1, "")])
+    got = service.install(odd, make_host(tmp_path, run, platform="linux", which=lambda name: f"/usr/bin/{name}"))
+    assert got.mode == "tmux" and "newline" in got.notes[0]
+    assert [c[:2] for c in run.calls] == [["tmux", "has-session"], ["tmux", "new-session"]]
+
+
 def test_a_chosen_mode_that_fails_is_an_error_not_a_fallback(tmp_path, one):
     run = Runner([(["systemctl"], 1, "Failed to connect to bus")])
     with pytest.raises(ServiceError, match="Failed to connect to bus"):

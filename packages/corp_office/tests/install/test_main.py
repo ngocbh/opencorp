@@ -43,6 +43,17 @@ def test_an_onboarding_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, ca
     assert "ac onboard: the provider on stdin is not valid JSON" in capsys.readouterr().err
 
 
+def test_onboard_without_git_says_so_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
+    (tmp_path / "empty").mkdir()
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))
+    args = ["onboard", "--home", str(tmp_path / "home"), "--provider-stdin", "--company", "Acme",
+            "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
+    assert main(args) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("ac onboard: ") and "git" in err and "Traceback" not in err
+
+
 def test_scripted_onboard_then_start_brings_a_stopped_office_back(short_dir, monkeypatch, capsys):
     paths = OfficePaths(short_dir)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))

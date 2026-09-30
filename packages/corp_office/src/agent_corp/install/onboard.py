@@ -15,6 +15,7 @@ from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
 
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
+from agent_corp.company.git import CompanyGitError
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, is_new, template_files, write_company
@@ -197,22 +198,28 @@ def _ask_company(prompter: Prompter) -> tuple[str, Owner]:
             prompter.say(f"That doesn't work: {exc}")
 
 
-def _hire_first(socket: Path, ceo: str, prompter: Prompter) -> str:
+def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.BaseTransport | None = None) -> str:
     """Hire the first agent through the office (preview, then confirm), reporting to the CEO."""
     name = prompter.ask("Name your first agent", FIRST_AGENT[0])
     handle = prompter.ask("Their handle", _slug(name) or "agent")
     body = {"name": name, "handle": handle, "title": FIRST_AGENT[1], "manager": ceo}
-    with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office",
-                      timeout=30) as client:
-        preview = client.post("/people", json=body)
-        if preview.status_code != 200:
-            raise OnboardError(f"the office refused the hire: {preview.status_code} {preview.text}")
-        errors = [i["message"] for i in preview.json()["issues"] if i["severity"] == "error"]
-        if errors:
-            raise OnboardError("the hire doesn't lint: " + "; ".join(errors))
-        done = client.post("/people", json=body | {"id": preview.json()["person"]["id"], "confirm": True})
-        if done.status_code != 200:
-            raise OnboardError(f"the office refused the hire: {done.status_code} {done.text}")
+    again = "run `ac onboard` again to retry"
+    try:
+        with httpx.Client(transport=transport or httpx.HTTPTransport(uds=str(socket)), base_url="http://office",
+                          timeout=30) as client:
+            preview = client.post("/people", json=body)
+            if preview.status_code != 200:
+                raise OnboardError(f"the office refused the hire: {preview.status_code} {preview.text}")
+            errors = [i["message"] for i in preview.json()["issues"] if i["severity"] == "error"]
+            if errors:
+                raise OnboardError("the hire doesn't lint: " + "; ".join(errors))
+            done = client.post("/people", json=body | {"id": preview.json()["person"]["id"], "confirm": True})
+            if done.status_code != 200:
+                raise OnboardError(f"the office refused the hire: {done.status_code} {done.text}")
+    except httpx.HTTPError as exc:
+        raise OnboardError(f"couldn't hire the first agent: the office didn't answer ({exc}); {again}") from None
+    except (KeyError, TypeError, ValueError):
+        raise OnboardError(f"couldn't hire the first agent: the office's answer isn't a hire preview; {again}") from None
     return f"{name} (@{handle})"
 
 
@@ -242,9 +249,12 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
         raise OnboardError(str(exc)) from None
     prompter.say(f"Office home: {paths.home}")
 
-    new = is_new(paths.company)
-    company, owner = _ask_company(prompter) if new else (None, None)
-    written = write_company(paths.company, paths.worktrees, company=company, owner=owner)
+    try:
+        new = is_new(paths.company)
+        company, owner = _ask_company(prompter) if new else (None, None)
+        written = write_company(paths.company, paths.worktrees, company=company, owner=owner)
+    except (CompanyGitError, OSError, ValueError) as exc:
+        raise OnboardError(f"can't write the company repo at {paths.company}: {exc}") from None
     done = "created at" if new else f"added {len(written)} template files to" if written else "up to date at"
     prompter.say(f"Company repo: {done} {paths.company}")
     repo_now = load_repo(paths.company)

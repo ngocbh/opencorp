@@ -5,6 +5,7 @@ import signal
 import stat
 import subprocess
 
+import httpx
 import psutil
 import pytest
 
@@ -78,6 +79,14 @@ def test_no_hire_leaves_the_company_without_an_agent(tmp_path):
             host=make_host(tmp_path, Runner(), answers=lambda s: True), hire=False)
     assert [p.kind for p in load_repo(home / "company").people.values()] == ["human"]
     assert any("not started by a service" in line for line in ask.seen)
+
+
+def test_a_hire_the_office_cant_take_is_an_onboard_error(tmp_path):
+    with pytest.raises(OnboardError, match="first agent"):
+        onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""))
+    odd = httpx.MockTransport(lambda request: httpx.Response(200, json={"issues": [], "person": {}}))
+    with pytest.raises(OnboardError, match="first agent"):
+        onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""), transport=odd)
 
 
 def _git(root, *args):

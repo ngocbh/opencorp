@@ -30,6 +30,14 @@ def test_a_newline_in_a_value_is_refused():
         systemd.unit(launch(Path("/tmp/a\nb"), repo=Path("/opt/a"), environ={}, user_home=Path("/home/o")))
 
 
+def test_installing_a_path_with_a_newline_is_a_service_error_and_writes_nothing(tmp_path):
+    odd = launch(Path("/tmp/a\nb"), repo=Path("/opt/a"), environ={}, user_home=Path("/home/o"))
+    run = Runner()
+    with pytest.raises(ServiceError, match="newline"):
+        systemd.install(odd, make_host(tmp_path, run, platform="linux"))
+    assert run.calls == [] and not (tmp_path / ".config").exists()
+
+
 def test_a_first_install_writes_enables_and_starts_the_unit(tmp_path, owner_launch):
     run = Runner()
     systemd.install(owner_launch, make_host(tmp_path, run, platform="linux"))
