@@ -3,6 +3,24 @@
   "private": true,
   "packageManager": "bun@1.4.2",
   "workspaces": ["packages/*"],
+  "catalog": {
+    "@opencode-ai/sdk": "1.18.33",
+    "@opentui/core": "0.4.5",
+    "@opentui/keymap": "0.4.5",
+    "@opentui/solid": "0.4.5",
+    "clipboardy": "4.0.0",
+    "diff": "8.0.2",
+    "effect": "4.0.0-beta.83",
+    "fuzzysort": "3.1.0",
+    "open": "11.0.4",
+    "opentui-spinner": "0.0.7",
+    "remeda": "2.26.0",
+    "solid-js": "1.9.10",
+    "strip-ansi": "7.1.2"
+  },
+  "patchedDependencies": {
+    "solid-js@1.9.10": "packages/tui/patches/solid-js@1.9.10.patch"
+  },
   "scripts": {
     "test": "bun run --filter '*' test",
     "typecheck": "bun run --filter '*' typecheck"
