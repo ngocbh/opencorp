@@ -292,3 +292,30 @@ test("a re-read that answers after newer events doesn't undo them", async () => 
     expect(f).not.toContain("Writes small, tested changes.")
   })
 })
+
+test("an office without the proposals route yet shows the profile without an error", async () => {
+  const office = createFakeOffice({ notImplemented: ["GET /profiles/:person/proposals"] })
+  await run(office, async (app) => {
+    await Bun.sleep(200)
+    expect(await app.until(() => true)).not.toContain("not implemented")
+  })
+})
+
+test("a profile read that succeeds doesn't hide a failed proposals read", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    const releaseProfile = office.hold("GET /profiles/:person", "reply")
+    const releaseProposals = office.hold("GET /profiles/:person/proposals")
+    const reads = office.requests.length
+    office.reset()
+    await until(() => office.requests.slice(reads).filter((r) => r.path.startsWith("/profiles/minh")).length === 2)
+    // The profile read is answered already; the proposals read now finds no such person.
+    const minh = office.state.people.findIndex((p) => p.id === "minh")
+    office.state.people.splice(minh, 1)
+    releaseProposals()
+    await app.until((f) => f.includes("no person minh"))
+    releaseProfile()
+    await Bun.sleep(200)
+    expect(await app.until(() => true)).toContain("no person minh")
+  })
+})

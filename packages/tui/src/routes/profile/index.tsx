@@ -8,7 +8,7 @@ import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
 import { openEditor } from "../../editor"
 import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
-import { VersionConflictError } from "../../office/errors"
+import { OfficeError, OfficeUnavailable, VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
 import {
@@ -63,7 +63,10 @@ export function Profile() {
   const person = data.person
   const [profile, setProfile] = createSignal<ProfileData>()
   const [proposals, setProposals] = createSignal<ProfileProposal[]>([])
-  const [error, setError] = createSignal<string>()
+  // Each read clears only its own error, so one succeeding doesn't hide another failing.
+  const [profileError, setProfileError] = createSignal<string>()
+  const [proposalsError, setProposalsError] = createSignal<string>()
+  const [chatError, setChatError] = createSignal<string>()
   const proposal = createMemo(() => openProposal(proposals(), person))
   const handle = () => office.state.people.find((p) => p.id === person)?.handle ?? person
 
@@ -79,8 +82,13 @@ export function Profile() {
       const merged = new Map(list.map((p) => [p.id, p]))
       for (const p of seen.values()) merged.set(p.id, p)
       setProposals([...merged.values()])
+      setProposalsError(undefined)
     } catch (e) {
-      setError(errorMessage(e))
+      // An office without the proposals route yet has none (a missing person is a real error).
+      if (e instanceof OfficeError && [404, 405, 501].includes(e.status) && e.code !== "not_found") {
+        setProposals([])
+        setProposalsError(undefined)
+      } else setProposalsError(errorMessage(e))
     } finally {
       if (--reading === 0) seen.clear()
     }
@@ -93,9 +101,9 @@ export function Profile() {
       office.client.profiles.get(person).then(
         (p) => {
           if (profileEvents === at) setProfile(p)
-          setError(undefined)
+          setProfileError(undefined)
         },
-        (e) => setError(errorMessage(e)),
+        (e) => setProfileError(errorMessage(e)),
       )
       void loadProposals()
     }),
@@ -149,7 +157,14 @@ export function Profile() {
   const lines = createMemo(() => transcript(office.state.messages[chat() ?? ""] ?? []))
   createEffect(
     on([chat, office.status], ([id, status]) => {
-      if (id && status === "online") office.syncSession(id).catch((e) => setError(errorMessage(e)))
+      if (!id || status !== "online") return
+      office.syncSession(id).then(
+        () => setChatError(undefined),
+        (e) => {
+          // An office that is down loads the chat when it comes back.
+          if (!(e instanceof OfficeUnavailable)) setChatError(errorMessage(e))
+        },
+      )
     }),
   )
   let input: InputRenderable | undefined
@@ -244,7 +259,7 @@ export function Profile() {
           Over budget: feedback can't be learned into this profile until it is shorter.
         </text>
       </Show>
-      <Show when={error()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
+      <Show when={profileError() ?? proposalsError() ?? chatError()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
       <scrollbox flexGrow={1} minHeight={0}>
         <Show when={profile()}>
           {(p) => (
