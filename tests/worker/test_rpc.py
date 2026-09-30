@@ -1,5 +1,6 @@
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
@@ -129,6 +130,27 @@ def test_store_value_and_os_errors_keep_their_codes():
     tool = answer_request({"type": "tool_call", "id": 3, "group": "g", "name": "parse", "args": {"text": "x"}},
                           BaseHandlers(tools={"g": {"parse": parse}}), None)
     assert (tool["error"], tool["message"]) == ("failed", "bad text")
+
+
+def test_a_malformed_request_is_failed_not_a_store_error():
+    handlers = BaseHandlers(stores={"profile": object()})
+    read = answer_request({"type": "store_read", "id": 1}, handlers, None)  # no "store"
+    assert (read["type"], read["id"], read["error"]) == ("store_reply", 1, "failed")
+
+
+def test_store_replies_are_plain_json():
+    class Store:
+        def read(self, version=None):
+            return "text", Path("v1")
+
+        def write(self, text, *, base_version, provenance=None):
+            return Path("v2")
+
+    handlers = BaseHandlers(stores={"profile": Store()})
+    read = answer_request({"type": "store_read", "id": 1, "store": "profile"}, handlers, None)
+    write = answer_request({"type": "store_write", "id": 2, "store": "profile", "text": "t", "base_version": "v1"},
+                           handlers, None)
+    assert (read["text"], read["version"], write["version"]) == ("text", "v1", "v2")
 
 
 def test_concurrent_requests_get_their_own_replies():

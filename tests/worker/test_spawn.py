@@ -1,5 +1,6 @@
 import os
 import signal
+import socket
 import sqlite3
 import threading
 import time
@@ -11,9 +12,9 @@ import pytest
 
 from agent_corp.worker import channel as channel_module
 from agent_corp.worker import spawn as spawn_module
-from agent_corp.worker.channel import FrameTooLarge
+from agent_corp.worker.channel import Channel, FrameTooLarge
 from agent_corp.worker.main import EXIT_ORPHANED, job_tools
-from agent_corp.worker.spawn import WorkerExists, WorkerRegistry
+from agent_corp.worker.spawn import Worker, WorkerExists, WorkerRegistry
 
 from tests.worker.conftest import Recorder, office_end, run
 
@@ -202,3 +203,28 @@ def test_a_start_frame_that_cannot_be_sent_leaves_nothing_behind(fake_llm, regis
     monkeypatch.setattr(channel_module, "MAX_FRAME", 64 << 20)
     fake_llm.script({"content": "second try"})
     assert run(registry, make_job(), Recorder(), session_dir).outcome["output"] == "second try"
+
+
+def unstarted_worker(job, handlers):
+    """A ``Worker`` over an in-process socket pair, with no process; returns it and the worker's end."""
+    office_sock, worker_sock = socket.socketpair()
+    return Worker(job, SimpleNamespace(pid=0), Channel(office_sock), handlers, lambda w: None), Channel(worker_sock)
+
+
+def test_a_reply_that_cannot_be_sent_becomes_a_failed_reply(make_job, monkeypatch):
+    def big() -> str:
+        """Big."""
+        return "x" * 5000
+
+    worker, far = unstarted_worker(make_job(), Recorder(tools={"g": {"big": big}}))
+    monkeypatch.setattr(channel_module, "MAX_FRAME", 2000)
+    worker._answer({"type": "tool_call", "id": 7, "group": "g", "name": "big"})
+    reply = far.recv()
+    assert (reply["type"], reply["id"], reply["error"]) == ("tool_result", 7, "failed")
+
+
+def test_a_request_without_an_id_is_answered_without_raising(make_job):
+    worker, far = unstarted_worker(make_job(), Recorder())
+    worker._answer({"type": "tool_call", "group": "g", "name": "missing"})
+    reply = far.recv()
+    assert (reply["type"], reply["id"], reply["error"]) == ("tool_result", None, "failed")

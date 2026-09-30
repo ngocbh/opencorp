@@ -235,19 +235,21 @@ def answer_request(frame: dict[str, Any], handlers: WorkerHandlers, worker: Any)
     ``unavailable`` for an ``OSError``; and ``failed`` for anything else.
     """
     kind = frame["type"]
-    head = {"type": REQUEST_REPLIES[kind], "id": frame["id"]}
+    head = {"type": REQUEST_REPLIES[kind], "id": frame.get("id")}
+    try:
+        args = _request_args(kind, frame)
+    except KeyError as exc:
+        # Checked apart from the handler call, so a missing field isn't taken for a store's LookupError.
+        return head | _failed(kind, ValueError(f"{kind} request is missing {exc}"))
     try:
         if kind == "ask_user":
-            return head | {"answer": jsonable(handlers.ask_user(worker, frame["request"]))}
+            return head | {"answer": jsonable(handlers.ask_user(worker, *args))}
         if kind == "tool_call":
-            result = handlers.tool_call(worker, frame["group"], frame["name"], frame.get("args") or {})
-            return head | {"result": jsonable(result)}
+            return head | {"result": jsonable(handlers.tool_call(worker, *args))}
         if kind == "store_read":
-            text, version = handlers.store_read(worker, frame["store"], frame.get("version"))
-            return head | {"text": text, "version": version}
-        version = handlers.store_write(worker, frame["store"], frame["text"], frame["base_version"],
-                                       frame.get("provenance"))
-        return head | {"version": version}
+            text, version = handlers.store_read(worker, *args)
+            return head | {"text": jsonable(text), "version": jsonable(version)}
+        return head | {"version": jsonable(handlers.store_write(worker, *args))}
     except MarkdownVersionMismatch as exc:
         return head | {"error": "mismatch", "message": str(exc), "expected": exc.expected, "current": exc.current}
     except (LookupError, ValueError, OSError) as exc:
@@ -259,6 +261,17 @@ def answer_request(frame: dict[str, Any], handlers: WorkerHandlers, worker: Any)
         return head | _failed(kind, exc)
     except Exception as exc:
         return head | _failed(kind, exc)
+
+
+def _request_args(kind: str, frame: dict[str, Any]) -> tuple[Any, ...]:
+    """The handler arguments (after ``worker``) carried by a request frame."""
+    if kind == "ask_user":
+        return (frame["request"],)
+    if kind == "tool_call":
+        return frame["group"], frame["name"], frame.get("args") or {}
+    if kind == "store_read":
+        return frame["store"], frame.get("version")
+    return frame["store"], frame["text"], frame["base_version"], frame.get("provenance")
 
 
 def _failed(kind: str, exc: Exception) -> dict[str, Any]:

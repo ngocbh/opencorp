@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_corp.store import Store
-from agent_corp.worker.channel import Channel, ChannelClosed, FrameTooLarge
+from agent_corp.worker.channel import Channel, ChannelClosed
 from agent_corp.worker.job import Job
 from agent_corp.worker.reaper import kill_group, reap, start_time
 from agent_corp.worker.rpc import REQUEST_REPLIES, WorkerHandlers, answer_request
@@ -177,13 +177,16 @@ class Worker:
             log.exception("worker %s handler %s failed", self.session_id, handler.__name__)
 
     def _answer(self, frame: dict[str, Any]) -> None:
-        reply = answer_request(frame, self.handlers, self)
+        # Always reply, or the worker's request waits forever.
         try:
-            self.channel.send(reply)
-        except FrameTooLarge as exc:
-            self._send({"type": reply["type"], "id": reply["id"], "error": "failed", "message": str(exc)})
+            self.channel.send(answer_request(frame, self.handlers, self))
         except ChannelClosed:
             pass
+        except Exception as exc:  # e.g. FrameTooLarge
+            log.warning("worker %s: could not answer a %s request", self.session_id, frame.get("type"),
+                        exc_info=True)
+            self._send({"type": REQUEST_REPLIES[frame["type"]], "id": frame.get("id"), "error": "failed",
+                        "message": f"{type(exc).__name__}: {exc}"})
 
 
 class WorkerRegistry:
