@@ -1,6 +1,5 @@
 """Learning routes: profile manager, profile proposals, feedback, and debriefs."""
 
-from collections.abc import Callable
 from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
@@ -8,8 +7,8 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
+from agent_corp.daemon.http import HTTPError, get_office, ok, parse
+from agent_corp.daemon.routes.sessions import harness_call
 from agent_corp.protocol.models import (ConfirmFollowUpsRequest, FeedbackRequest, ProfileManagerRequest,
                                         VersionConflict)
 
@@ -22,30 +21,22 @@ def _learning(request: Request) -> Any:
     return found
 
 
-async def _call(fn: Callable[..., Any], *args: Any) -> Any:
-    """Run a blocking Learning call in a thread; a ``HarnessError`` becomes its ``ApiError``."""
-    try:
-        return await call(fn, *args)
-    except HarnessError as exc:
-        raise HTTPError(exc.status, exc.code, exc.message) from exc
-
-
 async def open_manager(request: Request) -> JSONResponse:
     """Open a profile-manager session over a person's profile, with the body's text as its first message."""
     learning = _learning(request)
     body = await parse(request, ProfileManagerRequest)
-    return ok(await _call(learning.start_manager, request.path_params["person"], body.text))
+    return ok(await harness_call(learning.start_manager, request.path_params["person"], body.text))
 
 
 async def list_proposals(request: Request) -> JSONResponse:
     """A person's profile proposals, oldest first."""
-    return ok(await _call(_learning(request).proposals, request.path_params["person"]))
+    return ok(await harness_call(_learning(request).proposals, request.path_params["person"]))
 
 
 async def apply_proposal(request: Request) -> JSONResponse:
     """Apply an open proposal; ``409`` with both versions if the profile changed since it was made."""
     try:
-        return ok(await _call(_learning(request).apply, request.path_params["id"]))
+        return ok(await harness_call(_learning(request).apply, request.path_params["id"]))
     except MarkdownVersionMismatch as exc:
         conflict = VersionConflict(expected=exc.expected, current=exc.current)
         return JSONResponse(conflict.model_dump(mode="json"), status_code=409)
@@ -55,19 +46,19 @@ async def add_feedback(request: Request) -> JSONResponse:
     """Queue feedback on a finished run of a session."""
     learning = _learning(request)
     body = await parse(request, FeedbackRequest)
-    return ok(await _call(learning.add_feedback, body))
+    return ok(await harness_call(learning.add_feedback, body))
 
 
 async def get_debrief(request: Request) -> JSONResponse:
     """A session's debrief; a pending one is retried."""
-    return ok(await _call(_learning(request).debrief, request.path_params["session"]))
+    return ok(await harness_call(_learning(request).debrief, request.path_params["session"]))
 
 
 async def confirm_follow_ups(request: Request) -> JSONResponse:
     """Confirm follow-ups of a ready debrief by index: one work item each."""
     learning = _learning(request)
     body = await parse(request, ConfirmFollowUpsRequest)
-    return ok(await _call(learning.confirm, request.path_params["session"], body.indices))
+    return ok(await harness_call(learning.confirm, request.path_params["session"], body.indices))
 
 
 ROUTES = [
