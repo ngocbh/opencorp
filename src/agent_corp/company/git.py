@@ -35,7 +35,11 @@ def _literal(paths: list[str]) -> list[str]:
 
 
 class CompanyGit:
-    """Git operations on one company clone. Hold ``lock`` around any write sequence."""
+    """Git operations on one company clone. Hold ``lock`` around any write sequence.
+
+    ``lock`` covers threads sharing this instance only, not other instances or
+    processes, so the daemon must be the only opener of the clone.
+    """
 
     def __init__(self, root: Path, worktrees: Path) -> None:
         self.root = root
