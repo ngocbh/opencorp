@@ -32,7 +32,10 @@ log = logging.getLogger(__name__)
 TICK_SECONDS = 60.0
 """How often pending debriefs and feedback waiting to retry are tried again."""
 MAX_DEBRIEFS = 3
-"""Debrief runs that may fail before the tick stops retrying; ``GET /debriefs/{session}`` always retries."""
+"""Debrief runs that may fail before the tick stops retrying.
+
+``GET /debriefs/{session}`` retries after that too, but only when no attempt is running.
+"""
 DEBRIEFS_PER_TICK = 2
 """Debriefs a tick starts at most, so a backlog (after a restart, say) doesn't start them all at once."""
 _BUSY = (*LIVE, "debriefing")

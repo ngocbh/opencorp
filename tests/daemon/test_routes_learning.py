@@ -64,6 +64,12 @@ async def test_learning_routes_need_learning(client, method, path, body):
     assert r.status_code == 501 and r.json()["error"] == "not_implemented"
 
 
+@pytest.mark.parametrize("path", ["/profiles/minh/manager", "/feedback", f"/debriefs/{ULID}/confirm"])
+async def test_learning_routes_need_learning_before_a_body(client, path):
+    r = await client.post(path, json={"bad": True})
+    assert r.status_code == 501 and r.json()["error"] == "not_implemented"
+
+
 async def test_debrief_follow_ups_and_feedback_over_the_routes(learns, client, fake_llm, tmp_path):
     store, harness = learns.store, learns.extras["harness"]
     fake_llm.script({"content": "Done."}, debrief_reply())

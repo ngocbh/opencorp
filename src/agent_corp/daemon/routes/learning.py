@@ -32,8 +32,9 @@ async def _call(fn: Callable[..., Any], *args: Any) -> Any:
 
 async def open_manager(request: Request) -> JSONResponse:
     """Open a profile-manager session over a person's profile, with the body's text as its first message."""
+    learning = _learning(request)
     body = await parse(request, ProfileManagerRequest)
-    return ok(await _call(_learning(request).start_manager, request.path_params["person"], body.text))
+    return ok(await _call(learning.start_manager, request.path_params["person"], body.text))
 
 
 async def list_proposals(request: Request) -> JSONResponse:
@@ -52,8 +53,9 @@ async def apply_proposal(request: Request) -> JSONResponse:
 
 async def add_feedback(request: Request) -> JSONResponse:
     """Queue feedback on a finished run of a session."""
+    learning = _learning(request)
     body = await parse(request, FeedbackRequest)
-    return ok(await _call(_learning(request).add_feedback, body))
+    return ok(await _call(learning.add_feedback, body))
 
 
 async def get_debrief(request: Request) -> JSONResponse:
@@ -63,8 +65,9 @@ async def get_debrief(request: Request) -> JSONResponse:
 
 async def confirm_follow_ups(request: Request) -> JSONResponse:
     """Confirm follow-ups of a ready debrief by index: one work item each."""
+    learning = _learning(request)
     body = await parse(request, ConfirmFollowUpsRequest)
-    return ok(await _call(_learning(request).confirm, request.path_params["session"], body.indices))
+    return ok(await _call(learning.confirm, request.path_params["session"], body.indices))
 
 
 ROUTES = [
