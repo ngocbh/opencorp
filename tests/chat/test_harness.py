@@ -177,6 +177,45 @@ def test_a_failed_reply_is_no_longer_the_running_reply(harness, workspace):
     assert live.reply_node is None
 
 
+def test_a_turn_answer_that_fails_leaves_the_turn_open(harness, fake_llm, workspace, monkeypatch):
+    fake_llm.script({"content": "Hello."})
+    sid = start(harness, workspace)
+    answer_question, failed = harness.store.answer_question, []
+
+    def flaky(*args, **kwargs):
+        if not failed:
+            failed.append(True)
+            raise RuntimeError("disk full")
+        return answer_question(*args, **kwargs)
+
+    monkeypatch.setattr(harness.store, "answer_question", flaky)
+    with pytest.raises(RuntimeError):
+        harness.prompt(sid, "hi")
+    live = harness._live[sid]
+    assert live.turn_q is not None  # the next message still takes the turn
+    assert harness.prompt(sid, "are you there") == "turn"
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Hello."], what="the reply")
+    assert "are you there" in asked(fake_llm, 1)
+
+
+def test_turns_are_answered_for_the_ceo_of_the_pinned_company(harness, fake_llm, workspace, monkeypatch):
+    from agent_corp.chat import harness as harness_module
+
+    fake_llm.script({"content": "Hello."})
+    sid = start(harness, workspace)
+    ceo = harness._live[sid].owner
+    assert ceo
+
+    def no_repo(*args, **kwargs):
+        raise AssertionError("the company repo was re-read")
+
+    monkeypatch.setattr(harness_module, "load_repo", no_repo)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Hello."], what="the reply")
+    (turn,) = [q for q in harness.store.list_questions(session_id=sid) if q.answer == "hi"]
+    assert turn.answered_by == ceo
+
+
 def test_hooks_see_the_session(harness, fake_llm, workspace):
     seen = []
     harness.hooks.run_started.append(lambda s, run_id: seen.append(("run_started", run_id)))

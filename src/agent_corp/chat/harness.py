@@ -100,6 +100,7 @@ class _Live:
     transcript: Transcript
     worker: Worker | None = None
     provider: Provider = field(default_factory=Provider)
+    owner: str | None = None  # the pinned company's CEO, who answers for the person
     reply_node: str | None = None
     turn_node: str | None = None  # the open turn question's node id
     next_reply: str | None = None  # the reply the answered turn starts, until its NodeStarted arrives
@@ -265,7 +266,7 @@ class Harness:
     def _new_live(self, session: Session, run_id: str, spec: RunSpec) -> _Live:
         repo = load_repo(self.git.pin(session.repo_commit))
         return _Live(session.id, session.person, run_id, spec, _defaults(repo),
-                     Transcript(self.store, session.id, self.office.bus.publish_live))
+                     Transcript(self.store, session.id, self.office.bus.publish_live), owner=_ceo(repo))
 
     def restore(self) -> None:
         """Resume every session that was live when the office stopped, under the same run id."""
@@ -342,7 +343,7 @@ class Harness:
                     return "turn"
                 asked = self.store.list_questions(run_id=live.run_id, status="open", source="ask_user")
                 if asked:
-                    self.store.answer_question(asked[0].id, text, "text", answered_by=self._owner())
+                    self.store.answer_question(asked[0].id, text, "text", answered_by=live.owner)
                     return "answer"
             live.transcript.user(text)
             if live.reply_node is not None and live.worker is not None and live.worker.steer(live.reply_node, text):
@@ -416,7 +417,7 @@ class Harness:
                 self._answer_turn(live, question_id, answer)
             return self.store.get_question(question_id)
         try:
-            return self.store.answer_question(question_id, answer, kind, answered_by=self._owner())
+            return self.store.answer_question(question_id, answer, kind, answered_by=self._owner(question, live))
         except InvalidTransition as exc:
             raise HarnessError(409, "not_open", str(exc)) from exc
 
@@ -539,23 +540,22 @@ class Harness:
         """Answer the open turn with the queued messages, unless held; True if it did."""
         if live.turn_q is None or not live.pending or live.ending or self._held(live):
             return False
-        text = "\n\n".join(live.pending)
+        self._answer_turn(live, live.turn_q, "\n\n".join(live.pending))
         live.pending.clear()
-        self._answer_turn(live, live.turn_q, text)
         return True
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None | bool = True) -> None:
-        live.turn_q = None
-        if live.timer is not None:
-            live.timer.cancel()
-            live.timer = None
-        answered_by = self._owner() if by is True else by
+        """Answer the turn; if the store refuses, the turn stays open for the next try."""
         try:
-            self.store.answer_question(question_id, text, "text", answered_by=answered_by)
+            self.store.answer_question(question_id, text, "text", answered_by=live.owner if by is True else by)
             if live.turn_node is not None and text != live.spec.chat.exit:
                 live.next_reply = live.spec.chat.reply_after(live.turn_node)
         except InvalidTransition:
             log.warning("turn question %s was answered elsewhere", question_id)
+        live.turn_q = None
+        if live.timer is not None:
+            live.timer.cancel()
+            live.timer = None
 
     def _turns(self, live: _Live) -> int:
         chat = live.spec.chat
@@ -742,9 +742,11 @@ class Harness:
         session = self.store.get_session(live.session_id)
         return session.cost >= cost_cap(session, live.defaults)
 
-    def _owner(self) -> str | None:
-        repo = load_repo(self.git.root)
-        return repo.company.ceo if repo.company else None
+    def _owner(self, question: Question, live: _Live | None) -> str | None:
+        if live is not None and live.session_id == question.session_id:
+            return live.owner
+        session = self.store.get_session(question.session_id) if question.session_id else None
+        return _ceo(load_repo(self.git.pin(session.repo_commit))) if session is not None else None
 
     def _run_dir(self, session_id: str) -> Path:
         return self.office.paths.run_dir(session_id)
@@ -763,3 +765,7 @@ class Harness:
 
 def _defaults(repo: Any) -> CompanyDefaults:
     return (repo.company.defaults if repo.company else None) or CompanyDefaults()
+
+
+def _ceo(repo: Any) -> str | None:
+    return repo.company.ceo if repo.company else None
