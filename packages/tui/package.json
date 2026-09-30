@@ -13,6 +13,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@agent-corp/protocol": "workspace:*",
     "@opencode-ai/sdk": "catalog:",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
