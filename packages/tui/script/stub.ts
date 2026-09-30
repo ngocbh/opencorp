@@ -18,6 +18,7 @@ import type {
   Session,
   WorkItem,
 } from "@agent-corp/protocol"
+import { createTwoFilesPatch } from "diff"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
@@ -150,8 +151,17 @@ class Fail {
 export type FakeOffice = ReturnType<typeof createFakeOffice>
 
 /** An in-memory office on a unix socket, speaking the office's HTTP routes and SSE framing. */
-export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notImplemented?: Iterable<string> } = {}) {
+export function createFakeOffice(
+  opts: {
+    seed?: FakeState
+    socket?: string
+    notImplemented?: Iterable<string>
+    /** The company's `profile_max_chars`; a longer profile is `over_budget`. */
+    profileMaxChars?: number
+  } = {},
+) {
   const nextId = counter()
+  const profileMaxChars = opts.profileMaxChars ?? 32000
   const state = opts.seed ?? seed(nextId)
   const notImplemented = new Set(opts.notImplemented ?? [])
   const requests: { method: string; path: string; raw: string; body: unknown }[] = []
@@ -295,13 +305,46 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
       state.people.find((p) => p.id === person),
       `person ${person}`,
     )
-    return need(state.profiles[person], `profile for ${person}`)
+    const p = need(state.profiles[person], `profile for ${person}`)
+    return { ...p, over_budget: p.text.length > profileMaxChars }
   }
   function writeProfile(person: string, text: string) {
-    const p: Profile = { ...profile(person), text, version: blobId(text) }
-    state.profiles[person] = p
+    state.profiles[person] = { ...profile(person), text, version: blobId(text) }
+    const p = profile(person)
     publish("profile.updated", person, p)
     return p
+  }
+  function updateProposal(p: ProfileProposal, type: "profile_proposal.created" | "profile_proposal.updated") {
+    state.proposals[p.id] = p
+    publish(type, p.id, p)
+    return p
+  }
+  /**
+   * Records the profile manager's proposal for a `profile_manager` session, as its propose tool
+   * would: the diff is against the current profile, and the session's older open proposals are
+   * discarded.
+   */
+  function propose(sessionId: string, text: string) {
+    const s = session(sessionId)
+    const current = profile(s.person)
+    for (const old of Object.values(state.proposals))
+      if (old.session_id === s.id && old.status === "open")
+        updateProposal({ ...old, status: "discarded" }, "profile_proposal.updated")
+    const diff = createTwoFilesPatch("profile.md", "profile.md", current.text, text, "", "", { context: 3 })
+    return updateProposal(
+      {
+        id: nextId(),
+        session_id: s.id,
+        person: s.person,
+        base_version: current.version,
+        text,
+        diff,
+        status: "open",
+        commit: null,
+        created_at: now(),
+      },
+      "profile_proposal.created",
+    )
   }
 
   /**
@@ -512,12 +555,16 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
       "/profile-proposals/:id/apply",
       ({ params }) => {
         const proposal = need(state.proposals[params.id], `proposal ${params.id}`)
+        if (proposal.status !== "open")
+          throw fail(409, "not_open", `proposal ${proposal.id} is ${proposal.status}, not open`)
         const current = profile(proposal.person)
-        if (current.version !== proposal.base_version)
+        if (current.version !== proposal.base_version) {
+          updateProposal({ ...proposal, status: "stale" }, "profile_proposal.updated")
           return Response.json({ expected: proposal.base_version, current: current.version }, { status: 409 })
+        }
         const p = writeProfile(proposal.person, proposal.text)
-        state.proposals[proposal.id] = { ...proposal, status: "applied", commit: p.version }
-        publish("profile_proposal.updated", proposal.id, state.proposals[proposal.id])
+        const commit = blobId(`commit ${p.version}`)
+        updateProposal({ ...proposal, status: "applied", commit }, "profile_proposal.updated")
         return Response.json(p)
       },
     ],
@@ -657,6 +704,7 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
     live,
     addQuestion,
     setStatus,
+    propose,
     /** Writes an SSE comment line (`: text`) to every stream. */
     comment: (text: string) => write(`: ${text}\n\n`),
     ping: () => write(": ping\n\n"),
