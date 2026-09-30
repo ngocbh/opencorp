@@ -84,7 +84,7 @@ export const Definitions = {
   session_quick_switch_9: keybind("<leader>9", "Switch to session in quick slot 9"),
 
   stash_delete: keybind("ctrl+d", "Delete stash entry"),
-  person_list: keybind("<leader>p", "List people"),
+  person_list: keybind("<leader>p", "Switch person"),
   agent_cycle: keybind("tab", "Next person"),
   agent_cycle_reverse: keybind("shift+tab", "Previous person"),
 
