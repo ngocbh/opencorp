@@ -90,6 +90,8 @@ def test_a_second_onboard_after_a_stopped_first_write_uses_the_new_answers(tmp_p
     committed = _git(company, "show", "HEAD:company.yaml")
     assert 'name: "Beta"' in committed and 'ceo: "bo"' in committed
     assert "people/bo/person.yaml" in _git(company, "ls-files").splitlines()
+    # A truncated company.yaml doesn't say who run 1's owner was, so their file is left.
+    assert (company / "people" / "an").exists() == truncate
     assert lint(load_repo(company)) == []
 
 

@@ -181,7 +181,50 @@ def test_a_first_write_that_stopped_is_finished_with_the_new_answers(tmp_path):
     assert (committed["name"], committed["ceo"]) == ("Beta", "bo")
     assert "people/bo/person.yaml" in git(root, "ls-files").splitlines()
     assert "people/an/person.yaml" not in git(root, "ls-files").splitlines()
+    assert not (root / "people" / "an").exists()  # the stopped run's owner, which it wrote
     assert lint(load_repo(root)) == []
+
+
+def test_finishing_a_first_write_leaves_other_people_and_files_alone(tmp_path):
+    root = tmp_path / "company"
+    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    (root / "people" / "an" / "notes.md").write_text("mine\n")
+    (root / "people" / "cy").mkdir()
+    (root / "people" / "cy" / "person.yaml").write_bytes(
+        template_files("Acme", Owner(id="cy", handle="cy", name="Cy"))["people/cy/person.yaml"])
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    assert not (root / "people" / "an" / "person.yaml").exists()
+    assert (root / "people" / "an" / "notes.md").read_text() == "mine\n"
+    assert (root / "people" / "cy" / "person.yaml").exists()
+
+
+@pytest.mark.parametrize("ceo", ["../../outside", "people/an", ".", "An", ""])
+def test_an_old_ceo_that_isnt_an_id_removes_nothing(tmp_path, ceo):
+    root = tmp_path / "company"
+    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    (tmp_path / "outside").mkdir()
+    (tmp_path / "outside" / "person.yaml").write_text("keep\n")
+    (root / "company.yaml").write_text(yaml.safe_dump({"name": "Acme", "ceo": ceo}))
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    assert (root / "people" / "an" / "person.yaml").exists()
+    assert (tmp_path / "outside" / "person.yaml").read_text() == "keep\n"
+
+
+def test_an_old_ceos_directory_that_is_a_symlink_is_left_alone(tmp_path):
+    root = tmp_path / "company"
+    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    elsewhere = tmp_path / "elsewhere"
+    (root / "people" / "an").rename(elsewhere)
+    (root / "people" / "an").symlink_to(elsewhere)
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    assert (elsewhere / "person.yaml").exists()
+
+
+def test_a_committed_company_keeps_its_old_ceos_directory(tmp_path):
+    root = tmp_path / "company"
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=Owner(id="an", handle="an", name="An"))
+    write_company(root, tmp_path / "worktrees")
+    assert (root / "people" / "an" / "person.yaml").exists()
 
 
 def test_a_truncated_company_yaml_from_a_stopped_first_write_is_rewritten(tmp_path):

@@ -98,13 +98,25 @@ def is_new(root: Path) -> bool:
     return False
 
 
+def _stopped_owner(root: Path) -> str | None:
+    """The CEO in a new repo's ``company.yaml`` (an earlier, interrupted write's owner), or None if it doesn't say."""
+    try:
+        ceo = yaml.safe_load((root / "company.yaml").read_text()).get("ceo")
+        # The id pattern allows no '/' or '.', so the id names a directory directly under people/.
+        Company.model_validate({"name": "-", "ceo": ceo})
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, AttributeError, ValidationError):
+        return None
+    return ceo
+
+
 def write_company(root: Path, worktrees: Path, *, company: str | None = None,
                   owner: Owner | None = None) -> list[str]:
     """Create or top up the company repo at ``root``; return the repo paths written, sorted.
 
     A new repo (see ``is_new``) is created (``git init``) from the template, and every
     template path in it is committed, so a first write that stopped part way is finished;
-    ``company.yaml`` and the owner's file are always rewritten from the answers given.
+    ``company.yaml`` and the owner's file are always rewritten from the answers given, and
+    the owner file of the CEO the old ``company.yaml`` names, if it is someone else, is removed.
     An existing one gets only the template files it lacks, such as flows added to the
     template after it was made: nothing is overwritten, so the owner's edits stay. Only
     what was written is committed. ``company`` and ``owner`` are needed only for a new repo.
@@ -118,12 +130,15 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     if not new:
         wanted = {rel: data for rel, data in _walk(files(__name__)).items() if rel not in _FILLED}
         filled: set[str] = set()
+        stale = None
     elif company is None or owner is None:
         raise ValueError(f"{root} has no company yet; a new company needs a name and an owner")
     else:
         wanted = template_files(company, owner)
         # Nothing is committed yet, so an earlier, interrupted write's filled files are stale or partial.
         filled = {rel.replace(_OWNER_DIR, f"people/{owner.id}", 1) for rel in _FILLED}
+        stale = _stopped_owner(root)
+        stale = None if stale == owner.id else stale
     missing = sorted(rel for rel in wanted if rel in filled or not os.path.lexists(root / rel))
     if not (root / ".git").exists():
         root.mkdir(parents=True, exist_ok=True)
@@ -132,6 +147,14 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(wanted[rel])
+    # The interrupted write's owner file, under a handle since changed; nothing else there is
+    # ours, and a symlinked directory isn't one onboard made.
+    if stale is not None and not any(p.is_symlink() for p in (root / "people", root / "people" / stale)):
+        (root / "people" / stale / "person.yaml").unlink(missing_ok=True)
+        try:
+            (root / "people" / stale).rmdir()
+        except OSError:  # gone, or holds something onboard didn't write
+            pass
     # A new repo commits everything present: files an earlier, interrupted write left uncommitted too.
     commit = sorted(rel for rel in wanted if os.path.lexists(root / rel)) if new else missing
     CompanyGit(root, worktrees).commit(commit, "onboard: create the company" if new else "onboard: add template files")
