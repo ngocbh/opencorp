@@ -1,7 +1,7 @@
 // Generated from schema/protocol.schema.json. Do not edit.
 
 /**
- * A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.
+ * A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "Id".

@@ -13,9 +13,9 @@ type AgentCorpProtocol = Annotated[Any, Field(title='AgentCorpProtocol')]
 type Id = Annotated[
     str,
     Field(
-        description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+        description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
         max_length=64,
-        pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+        pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
     ),
 ]
 
@@ -49,9 +49,9 @@ class Company(BaseModel):
     ceo: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     hq: str | None = None
@@ -90,9 +90,9 @@ class Person(BaseModel):
     id: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     handle: Annotated[str, Field(pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$')]
@@ -118,9 +118,9 @@ class Group(BaseModel):
     id: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     name: Annotated[str, Field(min_length=1)]
@@ -139,7 +139,10 @@ class Grant(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    who: Annotated[str, Field(pattern='^(group:)?[A-Za-z0-9](?:-?[A-Za-z0-9])*$')]
+    who: Annotated[
+        str,
+        Field(pattern='^(group:)?(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$'),
+    ]
     can: Annotated[list[str], Field(min_length=1)]
     where: dict[str, list[Any]] | None = None
 
@@ -151,9 +154,9 @@ class Asset(BaseModel):
     id: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     kind: str
@@ -173,9 +176,9 @@ class WorkItem(BaseModel):
     requester: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     assignee: Id | None = None
@@ -212,9 +215,9 @@ class Comment(BaseModel):
     author: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     body: str
@@ -241,9 +244,9 @@ class Session(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     harness: Literal['composer', 'codex', 'claude']
@@ -384,9 +387,9 @@ class Question(BaseModel):
     asker: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     work_item_id: Ulid | None = None
@@ -431,9 +434,9 @@ class Profile(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     text: str
@@ -452,9 +455,9 @@ class ProfileProposal(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     base_version: Annotated[
@@ -516,9 +519,9 @@ class Feedback(BaseModel):
     author: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     text: str
@@ -577,9 +580,9 @@ class CreateSessionRequest(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     cwd: str
@@ -627,9 +630,9 @@ class HireRequest(BaseModel):
     manager: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     id: Annotated[

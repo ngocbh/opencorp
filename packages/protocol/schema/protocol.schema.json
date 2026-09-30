@@ -3,8 +3,8 @@
   "title": "AgentCorpProtocol",
   "$defs": {
     "Id": {
-      "type": "string", "pattern": "^[A-Za-z0-9](?:-?[A-Za-z0-9])*$", "maxLength": 64,
-      "description": "A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'."
+      "type": "string", "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$", "maxLength": 64,
+      "description": "A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'."
     },
     "Handle": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$" },
     "Ulid": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
@@ -93,7 +93,7 @@
     "Grant": {
       "type": "object", "additionalProperties": false, "required": ["who", "can"],
       "properties": {
-        "who": { "type": "string", "pattern": "^(group:)?[A-Za-z0-9](?:-?[A-Za-z0-9])*$" },
+        "who": { "type": "string", "pattern": "^(group:)?(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$" },
         "can": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
         "where": {
           "anyOf": [{ "type": "object", "additionalProperties": { "type": "array" } }, { "type": "null" }], "default": null
