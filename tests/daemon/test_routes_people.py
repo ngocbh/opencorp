@@ -52,6 +52,18 @@ async def test_a_hire_with_lint_errors_previews_but_does_not_confirm(client, off
     assert office.git.head() == head
 
 
+async def test_a_preview_with_a_taken_id_is_a_lint_error(client, office, hiring):
+    pid = (await client.post("/people", json=HIRE)).json()["person"]["id"]
+    await client.post("/people", json=HIRE | {"id": pid, "confirm": True})
+    head = office.git.head()
+    r = await client.post("/people", json=HIRE | {"handle": "ava-2", "id": pid})
+    assert r.status_code == 200 and r.json()["issues"] == [
+        {"path": f"people/{pid}/person.yaml", "code": "person.exists", "message": f"{pid} already exists",
+         "severity": "error"}]
+    r = await client.post("/people", json=HIRE | {"handle": "ava-2", "id": pid, "confirm": True})
+    assert (r.status_code, r.json()["error"], office.git.head()) == (422, "lint_failed", head)
+
+
 @pytest.mark.parametrize("body", [{k: v for k, v in HIRE.items() if k != "title"}, HIRE | {"handle": "Ava"},
                                   HIRE | {"kind": "human"}, HIRE | {"confirm": True}])
 async def test_a_malformed_hire_is_invalid_body(client, office, hiring, body):

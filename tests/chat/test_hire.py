@@ -1,4 +1,6 @@
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -161,3 +163,26 @@ def test_a_hire_is_never_written_outside_the_repo(tmp_path):
         hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
     assert err.value.code == "lint_failed"
     assert not (outside / pid).exists()
+
+
+def test_concurrent_confirms_commit_a_hire_once(git):
+    hiring = Hiring(git)
+    head = git.head()
+    pid = hiring.hire(HireRequest(**FORM)).person.id
+    other = hiring.hire(HireRequest(**FORM | {"handle": "kai-fan"})).person.id
+    start = threading.Barrier(3)
+
+    def confirm(form, id):
+        start.wait()
+        try:
+            return hiring.hire(HireRequest(**form, id=id, confirm=True)).commit
+        except HireRefused as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(3) as pool:
+        results = list(pool.map(confirm, [FORM, FORM, FORM | {"handle": "kai-fan"}], [pid, pid, other]))
+    assert results[:2].count("lint_failed") == 1 and results[2] != "lint_failed"  # one of the same two lost
+    commits = subprocess.run(["git", "-C", str(git.root), "log", "--format=%s", f"{head}..HEAD"],
+                             capture_output=True, text=True).stdout.split("\n")[:-1]
+    assert sorted(commits) == ["hire(@kai-fan): Lan, QA", "hire(@lan): Lan, QA"]
+    assert set(load_repo(git.root).people) >= {pid, other}
