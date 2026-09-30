@@ -330,7 +330,9 @@ export function createFakeOffice(
     for (const old of Object.values(state.proposals))
       if (old.session_id === s.id && old.status === "open")
         updateProposal({ ...old, status: "discarded" }, "profile_proposal.updated")
-    const diff = createTwoFilesPatch("profile.md", "profile.md", current.text, text, "", "", { context: 3 })
+    const file = `people/${s.person}/profile.md`
+    // Without the `===` line, like the office's difflib diff.
+    const diff = createTwoFilesPatch(`a/${file}`, `b/${file}`, current.text, text).replace(/^=+\n/, "")
     return updateProposal(
       {
         id: nextId(),
@@ -540,16 +542,23 @@ export function createFakeOffice(
           state.people.find((p) => p.id === params.person),
           `person ${params.person}`,
         )
-        const s = newSession({ person: params.person, cwd: "/", kind: "profile_manager" })
-        // The first message is the chat's first turn, as a prompt would be.
-        turn(s.id, body)
+        const s = newSession({ person: params.person, cwd: "/", kind: "profile_manager", status: "starting" })
+        // The first message is the chat's first turn; the session answers while still starting.
+        userMessage(s.id, body.text)
+        for (const fn of prompts) fn(s.id, { text: body.text })
         return Response.json(session(s.id))
       },
     ],
     [
       "GET",
       "/profiles/:person/proposals",
-      ({ params }) => Response.json(Object.values(state.proposals).filter((p) => p.person === params.person)),
+      ({ params }) => {
+        need(
+          state.people.find((p) => p.id === params.person),
+          `person ${params.person}`,
+        )
+        return Response.json(Object.values(state.proposals).filter((p) => p.person === params.person))
+      },
     ],
     [
       "POST",
@@ -563,10 +572,10 @@ export function createFakeOffice(
           updateProposal({ ...proposal, status: "stale" }, "profile_proposal.updated")
           return Response.json({ expected: proposal.base_version, current: current.version }, { status: 409 })
         }
-        const p = writeProfile(proposal.person, proposal.text)
-        const commit = blobId(`commit ${p.version}`)
+        // The proposal is marked applied before the profile's event, as the office does.
+        const commit = blobId(`commit ${blobId(proposal.text)}`)
         updateProposal({ ...proposal, status: "applied", commit }, "profile_proposal.updated")
-        return Response.json(p)
+        return Response.json(writeProfile(proposal.person, proposal.text))
       },
     ],
     [
@@ -732,7 +741,10 @@ export function createFakeOffice(
         release()
       }
     },
-    /** Calls `fn` after each prompt or steer is recorded and the session is set busy. */
+    /**
+     * Calls `fn` after each prompt or steer is recorded and the session is set busy, and after a
+     * new profile manager session's first message (that session stays `starting`).
+     */
     onPrompt(fn: (sessionId: string, req: PromptRequest) => void) {
       prompts.push(fn)
     },
