@@ -5,6 +5,8 @@ from urllib.parse import quote
 import pytest
 import yaml
 
+from agent_corp.chat.hire import Hiring
+
 
 def _folder(cwd: str) -> str:
     return f"/folders/{quote(cwd, safe='')}/people"
@@ -13,7 +15,18 @@ def _folder(cwd: str) -> str:
 HIRE = {"name": "Ava", "handle": "ava", "title": "R", "manager": "ngocbh"}
 
 
-async def test_hire_previews_then_commits(client, office):
+@pytest.fixture
+def hiring(office):
+    office.extras["hiring"] = Hiring(office.git)
+    return office.extras["hiring"]
+
+
+async def test_hiring_needs_a_hiring_desk(client):
+    r = await client.post("/people", json=HIRE)
+    assert (r.status_code, r.json()["error"]) == (501, "not_implemented")
+
+
+async def test_hire_previews_then_commits(client, office, hiring):
     head = office.git.head()
     r = await client.post("/people", json=HIRE)
     assert r.status_code == 200 and r.json()["commit"] is None and r.json()["issues"] == []
@@ -24,7 +37,7 @@ async def test_hire_previews_then_commits(client, office):
     assert pid in [p["id"] for p in (await client.get("/people")).json()]
 
 
-async def test_a_hire_with_lint_errors_previews_but_does_not_confirm(client, office):
+async def test_a_hire_with_lint_errors_previews_but_does_not_confirm(client, office, hiring):
     head = office.git.head()
     r = await client.post("/people", json=HIRE | {"handle": "minh"})
     assert r.status_code == 200
@@ -41,7 +54,7 @@ async def test_a_hire_with_lint_errors_previews_but_does_not_confirm(client, off
 
 @pytest.mark.parametrize("body", [{k: v for k, v in HIRE.items() if k != "title"}, HIRE | {"handle": "Ava"},
                                   HIRE | {"kind": "human"}, HIRE | {"confirm": True}])
-async def test_a_malformed_hire_is_invalid_body(client, office, body):
+async def test_a_malformed_hire_is_invalid_body(client, office, hiring, body):
     head = office.git.head()
     r = await client.post("/people", json=body)
     assert (r.status_code, r.json()["error"]) == (422, "invalid_body")

@@ -39,9 +39,10 @@ async def folder_people(request: Request) -> JSONResponse:
 
 async def hire(request: Request) -> JSONResponse:
     """Preview a hire (writes nothing, lint issues included), or confirm the preview and commit it."""
+    hiring: Hiring | None = get_office(request).extras.get("hiring")
+    if hiring is None:
+        raise HTTPError(501, "not_implemented", f"{request.method} {request.url.path} is not implemented yet")
     body = await parse(request, HireRequest)
-    office = get_office(request)
-    hiring = office.extras.setdefault("hiring", Hiring(office.git))
     try:
         return ok(await call(hiring.hire, body))
     except HireRefused as exc:
