@@ -500,7 +500,7 @@ export function Session() {
         if (!selectedModel) {
           toast.show({
             variant: "warning",
-            message: "Connect a provider to summarize this session",
+            message: "No model is configured, so this session cannot be summarized.",
             duration: 3000,
           })
           return

@@ -159,7 +159,8 @@ test("fatal startup errors set a nonzero exit after scoped cleanup", async () =>
     )
 
     await task
-    expect(stderr).toContain("Run `opencode auth login https://example.com` to re-authenticate.")
+    expect(stderr).toContain("Sign in to https://example.com again, then restart.")
+    expect(stderr).not.toContain("opencode auth login")
     expect(stderr).not.toContain("Unexpected server error")
     expect(process.exitCode).toBe(1)
     expect(setup.renderer.isDestroyed).toBe(true)
