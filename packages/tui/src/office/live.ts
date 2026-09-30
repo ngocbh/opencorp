@@ -45,6 +45,7 @@ const META_FIELDS: Record<string, string[]> = {
 
 /** Whether a metadata event's `data` has what its reducer needs; unknown types pass. */
 export function isMetaData(e: Event) {
+  if (!isString(e.type)) return false
   const fields = META_FIELDS[e.type.slice(0, e.type.lastIndexOf("."))]
   return fields === undefined || hasStrings(e.data, fields)
 }

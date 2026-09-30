@@ -144,6 +144,8 @@ test("malformed meta data is skipped", () => {
   applyMeta(s, meta("debrief.created", { id: "D" }))
   applyMeta(s, meta("comment.created", { id: "C" }))
   applyMeta(s, { ...meta("profile_proposal.created", {}, "P"), data: "nope" as never })
+  applyMeta(s, { ...meta("profile.updated", {}), subject_id: undefined as never })
+  applyMeta(s, { ...meta("session.updated", session()), type: undefined as never })
   expect(s).toEqual(emptyState())
 })
 

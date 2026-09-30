@@ -116,7 +116,8 @@ export function subscribe(
         } catch {
           return
         }
-        if (!data || typeof data !== "object") return
+        // Everything downstream dispatches on `type`.
+        if (!data || typeof data !== "object" || typeof (data as { type?: unknown }).type !== "string") return
         if (m.event === "meta") handler({ type: "meta", id: m.id ?? (data as Event).id, event: data as Event })
         else handler({ type: "live", event: data as LiveEvent })
       },

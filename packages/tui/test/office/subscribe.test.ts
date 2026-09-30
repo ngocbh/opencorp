@@ -45,6 +45,19 @@ test("a malformed frame and an unknown event name are skipped", async () => {
   expect(w.types().slice(0, 2)).toEqual(["connected", "live"])
 })
 
+test("events without a string type are skipped", async () => {
+  const body =
+    ': connected\n\nevent: meta\ndata: {"id":"E1","data":{}}\n\n' +
+    'event: meta\ndata: {"id":"E2","type":7,"data":{}}\n\n' +
+    'event: live\ndata: {"session_id":"s","data":{}}\n\n' +
+    'event: live\ndata: {"type":"part.delta","session_id":"s","data":{}}\n\n'
+  const srv = serveUnix(() => new Response(body))
+  cleanup.push(srv.stop)
+  const w = watch(srv.socket)
+  await until(() => w.types().includes("live"))
+  expect(w.types().slice(0, 2)).toEqual(["connected", "live"])
+})
+
 test("reset: disconnected, then reconnected at once", async () => {
   const office = fake()
   const w = watch(office.socket, { minDelayMs: 1000 }) // a normal disconnect would wait 1 s

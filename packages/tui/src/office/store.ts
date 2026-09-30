@@ -107,7 +107,7 @@ export function applyMeta(s: OfficeState, e: Event) {
     case "debrief.updated":
       return upsert(s.debriefs, data.session_id, data as Debrief)
     case "profile.updated":
-      s.profiles[e.subject_id] = data as Profile
+      if (typeof e.subject_id === "string") s.profiles[e.subject_id] = data as Profile
       return
     case "comment.created": {
       const list = (s.comments[data.work_item_id] ??= [])
