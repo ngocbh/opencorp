@@ -38,6 +38,7 @@ export function hireRequest(form: HireForm, people: readonly Person[]): { reques
   if (!name) return { error: "Name is required" }
   if (!HANDLE.test(handle)) return { error: "Handle: lowercase letters, digits and dashes, up to 32" }
   if (!title) return { error: "Title is required" }
+  if (!who) return { error: "Manager is required" }
   const manager = people.find((p) => p.id === who || p.handle === who)
   if (!manager) return { error: `No such person: @${who}` }
   return { request: { name, handle, title, manager: manager.id, confirm: false } }

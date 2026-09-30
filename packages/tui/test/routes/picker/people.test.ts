@@ -40,6 +40,7 @@ test("the form says what to fix", () => {
   expect(hireRequest({ ...form, handle: "Lan" }, people)).toMatchObject({ error: expect.stringContaining("Handle") })
   expect(hireRequest({ ...form, title: "" }, people)).toEqual({ error: "Title is required" })
   expect(hireRequest({ ...form, manager: "kai" }, people)).toEqual({ error: "No such person: @kai" })
+  expect(hireRequest({ ...form, manager: " @ " }, people)).toEqual({ error: "Manager is required" })
 })
 
 test("errors block a hire, warnings don't; severity defaults to error", () => {
