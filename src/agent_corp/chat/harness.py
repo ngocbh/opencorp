@@ -5,7 +5,8 @@ import os
 import queue
 import socket
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,8 @@ from agent_corp.worker.job import MemorySpec
 
 log = logging.getLogger(__name__)
 
+INTERRUPTED_CALL = "interrupted; outcome unknown"
+"""What an office tool call in flight returns on Esc: it runs on, so its side effect may still happen."""
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
@@ -68,6 +71,20 @@ class RunSpec:
 
 
 @dataclass(eq=False)
+class _Call:
+    """An office tool call in flight; ``cancel`` answers it at once."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+    result: Any = None
+    error: BaseException | None = None
+    cancelled: bool = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+        self.done.set()
+
+
+@dataclass(eq=False)
 class _Live:
     """A session with a live run, as the harness tracks it."""
 
@@ -84,6 +101,7 @@ class _Live:
     ending: bool = False
     outcome: dict[str, Any] | None = None
     timer: threading.Timer | None = None
+    calls: set[_Call] = field(default_factory=set)
 
 
 class _Handlers(BaseHandlers):
@@ -114,7 +132,15 @@ class _Handlers(BaseHandlers):
         self.harness._post(self.harness._exited, self.live, worker, returncode)
 
     def ask_user(self, worker: Worker, request: dict[str, Any]) -> Any:
-        return self.ask(**request)
+        with self.harness._in_call():
+            return self.ask(**request)
+
+    def tool_call(self, worker: Worker, group: str, name: str, args: dict[str, Any]) -> Any:
+        with self.harness._in_call():
+            if group == "workspace":  # Esc kills a workspace call itself
+                return BaseHandlers.tool_call(self, worker, group, name, args)
+            return self.harness._cancellable(self.live,
+                                             lambda: BaseHandlers.tool_call(self, worker, group, name, args))
 
 
 class Harness:
@@ -137,6 +163,8 @@ class Harness:
         self._lock = threading.RLock()
         self._live: dict[str, _Live] = {}
         self._stopping = False
+        self._calls = 0
+        self._calls_idle = threading.Condition()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
         self._thread = threading.Thread(target=self._dispatch, name="harness", daemon=True)
         self._thread.start()
@@ -279,7 +307,7 @@ class Harness:
         return self.prompt(session_id, text)
 
     def interrupt(self, session_id: str) -> None:
-        """Esc: answer the model's open questions, kill workspace calls, stop the reply."""
+        """Esc: answer the model's open questions, kill workspace calls, answer office calls, stop the reply."""
         with self._lock:
             live = self._must(session_id)
             for q in self.store.list_questions(run_id=live.run_id, status="open", source="ask_user"):
@@ -289,6 +317,8 @@ class Harness:
                     pass  # answered meanwhile
             if live.spec.workspace is not None:
                 live.spec.workspace.interrupt()
+            for call in list(live.calls):
+                call.cancel()
             node, worker = live.reply_node, live.worker
         if node is not None and worker is not None:
             worker.interrupt(node)
@@ -335,7 +365,11 @@ class Harness:
             raise HarnessError(409, "not_open", str(exc)) from exc
 
     def close_all(self) -> None:
-        """Stop every worker, leaving their sessions' status as it is, and stop the dispatcher."""
+        """Stop every worker, leaving their sessions' status as it is, and stop the dispatcher.
+
+        Returns once no worker request is still running (or after 10 seconds), so the
+        caller can close the store.
+        """
         with self._lock:
             if self._stopping:
                 return
@@ -348,6 +382,10 @@ class Harness:
         self._thread.join(10)
         self._unlisten()
         self.answers.close()
+        # Request threads outlive their workers; let them leave the store before the office closes it.
+        with self._calls_idle:
+            if not self._calls_idle.wait_for(lambda: self._calls == 0, timeout=10):
+                log.warning("harness: %d tool or ask_user calls still running at close", self._calls)
 
     # --- turns ---------------------------------------------------------------------
 
@@ -453,6 +491,8 @@ class Harness:
             if live.timer is not None:
                 live.timer.cancel()
             outcome, live.outcome = live.outcome, None
+            for call in list(live.calls):
+                call.cancel()
         if outcome is None:  # the worker died
             self._finish(live, "failed", None)
             return
@@ -496,6 +536,44 @@ class Harness:
                 fn(*args)
             except Exception:
                 log.exception("harness: %s failed", getattr(fn, "__name__", fn))
+
+    def _cancellable(self, live: _Live, fn: Callable[[], Any]) -> Any:
+        call = _Call()
+
+        def run() -> None:
+            try:
+                with self._in_call():
+                    call.result = fn()
+            except BaseException as exc:
+                call.error = exc
+            finally:
+                call.done.set()
+
+        with self._lock:
+            live.calls.add(call)
+        threading.Thread(target=run, name=f"tool-{live.session_id}", daemon=True).start()
+        try:
+            call.done.wait()
+        finally:
+            with self._lock:
+                live.calls.discard(call)
+        if call.cancelled:
+            return INTERRUPTED_CALL
+        if call.error is not None:
+            raise call.error
+        return call.result
+
+    @contextmanager
+    def _in_call(self) -> Iterator[None]:
+        """Count a worker request running in the office, for ``close_all`` to wait on."""
+        with self._calls_idle:
+            self._calls += 1
+        try:
+            yield
+        finally:
+            with self._calls_idle:
+                self._calls -= 1
+                self._calls_idle.notify_all()
 
     def _current(self, live: _Live) -> bool:
         return self._live.get(live.session_id) is live

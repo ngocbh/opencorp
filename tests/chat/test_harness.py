@@ -209,6 +209,33 @@ def test_a_failing_hook_does_not_stop_the_session(harness, fake_llm, workspace):
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
 
 
+def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace):
+    import threading
+
+    from agent_corp.assets import fake
+    from agent_corp.assets.registry import KindTool
+    from agent_corp.chat.harness import INTERRUPTED_CALL
+
+    entered, leave = threading.Event(), threading.Event()
+
+    def slow(asset, args, secrets):
+        entered.set()
+        leave.wait(30)
+        return "late"
+
+    harness = make_harness(kinds={"fake": {"echo": KindTool(slow, parameters=fake.TOOLS["echo"].parameters)}})
+    fake_llm.script({"tool_calls": [echo_call()]}, {"content": "Next."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    assert entered.wait(30)
+    harness.interrupt(sid)
+    wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
+    tools = [p for m in harness.store.list_messages(sid) for p in m.parts if p.type == "tool"]
+    assert [(t.tool, t.state, t.output) for t in tools] == [("fake__echo", "completed", INTERRUPTED_CALL)]
+    assert len(fake_llm.requests()) == 1  # the reply stopped after the call
+    leave.set()
+
+
 SENTINEL = "sk-sentinel-7c2a51"
 
 
