@@ -35,6 +35,46 @@ test("Tab cycles to the next person; --person picks one at start", async () => {
   }
 })
 
+test("the person stays put when a newer session in the folder belongs to someone else", async () => {
+  const office = createFakeOffice()
+  const app = await bootFrame(createStub(office))
+  try {
+    await app.until((f) => f.includes("@minh") && f.includes("Software engineer"))
+    const s = office.state.sessions[0]
+    const later = {
+      ...s,
+      id: office.nextId(),
+      person: "ngocbh",
+      updated_at: new Date(Date.now() + 60_000).toISOString(),
+    }
+    office.emit({
+      id: office.nextId(),
+      type: "session.created",
+      at: later.updated_at,
+      subject_id: later.id,
+      data: later,
+    })
+    await Bun.sleep(300)
+    const f = await app.until((f) => f.includes("Ask anything"))
+    expect(f).toContain("@minh")
+    expect(f).not.toContain("@ngocbh")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a --person that matches nobody says so", async () => {
+  const office = createFakeOffice()
+  const app = await bootFrame(createStub(office), { person: "nobody" })
+  try {
+    await app.until((f) => f.includes("No one here matches --person nobody") && f.includes("@minh"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("without an office the home screen says so, then recovers when it starts", async () => {
   const socket = `/tmp/act-home-${process.pid}.sock`
   const app = await bootFrame({ ...createStub(), socket })

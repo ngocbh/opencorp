@@ -1,7 +1,7 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import type { Person, Session } from "@agent-corp/protocol"
-import { batch, createMemo, createSignal } from "solid-js"
+import { batch, createEffect, createMemo, createSignal } from "solid-js"
 import { useOffice } from "./office"
 import path from "path"
 import { useTuiPaths } from "./runtime"
@@ -63,17 +63,26 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         theme.info,
       ])
       const list = () => office.state.people
+      const picked = () =>
+        pickPerson({
+          arg: args.person,
+          people: list(),
+          folderPeople: office.state.folderPeople,
+          sessions: office.state.sessions,
+          cwd: office.cwd,
+        })
       const current = createMemo(() => {
-        const id =
-          selected() ??
-          pickPerson({
-            arg: args.person,
-            people: list(),
-            folderPeople: office.state.folderPeople,
-            sessions: office.state.sessions,
-            cwd: office.cwd,
-          })
-        return list().find((p) => p.id === id)
+        const id = selected()
+        return list().find((p) => p.id === id) ?? list().find((p) => p.id === picked())
+      })
+      // Hold the first pick once the office's state is in, so later sessions don't swap the person.
+      createEffect(() => {
+        if (selected() || office.status() !== "online") return
+        const id = picked()
+        if (!id) return
+        setSelected(id)
+        if (args.person && !list().some((p) => p.id === args.person || p.handle === args.person))
+          toast.show({ variant: "warning", message: `No one here matches --person ${args.person}`, duration: 10000 })
       })
       return {
         list,
