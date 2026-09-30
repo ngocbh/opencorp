@@ -1,5 +1,6 @@
 """The office side of a run's ``ask_user``, and storing questions until they are answered."""
 
+import logging
 import threading
 from collections.abc import Callable, Iterable
 from typing import Any, Protocol
@@ -9,6 +10,8 @@ from agent_corp.protocol.models import DiscussionEntry, Event, Question, Session
 from agent_corp.questions.format import format_answer
 from agent_corp.questions.normalize import normalize_options
 from agent_corp.store import DuplicateKey, InvalidTransition, Store, new_id
+
+log = logging.getLogger(__name__)
 
 POLL_SECONDS = 30
 """How often a waiting ask re-reads its question, to see answers written by another process."""
@@ -76,7 +79,11 @@ class Answers:
         self._remove = store.add_listener(self._changed)
 
     def close(self) -> None:
-        """Stop listening to the store; every waiting ``ask`` raises ``AnswersClosed``, as does any later one."""
+        """Stop listening to the store and wake every waiting ``ask``.
+
+        A waiter whose question is still open marks it stale and raises ``AnswersClosed``;
+        one whose answer already landed returns it. Any later ``ask`` raises ``AnswersClosed``.
+        """
         self._remove()
         with self._lock:
             self._closed = True
@@ -88,7 +95,8 @@ class Answers:
         """Store ``question`` and return it once answered, marked ``consumed``.
 
         ``work_item``, if given, is stored in the same transaction as the question, and
-        set to ``cancelled`` if the wait for the answer fails. A ``human_input`` asked
+        set to ``cancelled`` if the question goes stale or this ``Answers`` is closed while
+        the question is still open (the question is then marked stale). A ``human_input`` asked
         again for the same run and node (after a restart) reuses the question already
         stored, and its answer if it has one.
 
@@ -110,12 +118,7 @@ class Answers:
                 self._unwatch(qid, ready)
                 qid = self.store.get_question_by_node(question.run_id, question.node_id).id
                 self._watch(qid, ready)
-            try:
-                return self._answered(qid, ready)
-            except Exception:
-                if work_item is not None:
-                    self.store.update_work_item(work_item.id, status="cancelled")
-                raise
+            return self._answered(qid, ready, work_item)
         finally:
             self._unwatch(qid, ready)
 
@@ -124,13 +127,15 @@ class Answers:
         earlier = self.store.get_question(question.carried_from) if question.carried_from else None
         return list(earlier.discussion) if earlier else []
 
-    def _answered(self, qid: str, ready: threading.Event) -> Question:
+    def _answered(self, qid: str, ready: threading.Event, work_item: WorkItem | None) -> Question:
         while (current := self.store.get_question(qid)).status == "open":
+            if self._closed and self._abandon(qid, work_item):
+                raise AnswersClosed(f"stopped waiting for question {qid}")
             ready.wait(POLL_SECONDS)
             ready.clear()
-            if self._closed:
-                raise AnswersClosed(f"stopped waiting for question {qid}")
         if current.status == "stale":
+            if work_item is not None:
+                self._cleanup(qid, lambda: self.store.update_work_item(work_item.id, status="cancelled"))
             raise QuestionExpired(f"question {qid} expired before it was answered")
         if current.status == "answered":
             try:
@@ -138,6 +143,33 @@ class Answers:
             except InvalidTransition:  # consumed by another call meanwhile
                 current = self.store.get_question(qid)
         return current
+
+    def _abandon(self, qid: str, work_item: WorkItem | None) -> bool:
+        """Mark the question stale and its work item cancelled if the question is still open.
+
+        Returns False if an answer landed first, so the caller takes it instead.
+        """
+        still_open = True
+
+        def abandon() -> None:
+            nonlocal still_open
+            with self.store.transaction():
+                still_open = self.store.get_question(qid).status == "open"
+                if still_open:
+                    self.store.set_question_status(qid, "stale")
+                    if work_item is not None:
+                        self.store.update_work_item(work_item.id, status="cancelled")
+
+        self._cleanup(qid, abandon)
+        return still_open
+
+    @staticmethod
+    def _cleanup(qid: str, step: Callable[[], Any]) -> None:
+        # Logged, not raised: the caller is already raising why it gave up on the question.
+        try:
+            step()
+        except Exception:
+            log.exception("could not clean up after question %s", qid)
 
     def _watch(self, qid: str, ready: threading.Event) -> None:
         with self._lock:

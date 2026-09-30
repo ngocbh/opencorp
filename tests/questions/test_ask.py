@@ -8,7 +8,7 @@ from agent_composer.tools import ToolSet
 from agent_corp.protocol.models import DiscussionEntry, Question
 from agent_corp.questions import ask as ask_module
 from agent_corp.questions.ask import Answers, AnswersClosed, QuestionExpired, make_ask_user
-from agent_corp.store import NotFound, Store
+from agent_corp.store import NotFound, Store, StoreError
 from agent_corp.worker.rpc import ASK_KEYS, BaseHandlers, ask_user_stub
 from tests.store.conftest import question as make_question
 from tests.store.conftest import session, work_item
@@ -201,13 +201,13 @@ def test_a_question_that_goes_stale_cancels_its_work_item(store, answers, sid):
     assert store.get_work_item(item.id).status == "cancelled"
 
 
-def asking(answers, q):
-    """Run ``answers.ask(q)`` on a thread; ``out`` gets its result or its error."""
+def asking(answers, q, item=None):
+    """Run ``answers.ask(q, work_item=item)`` on a thread; ``out`` gets its result or its error."""
     out = {}
 
     def ask():
         try:
-            out["result"] = answers.ask(q)
+            out["result"] = answers.ask(q, work_item=item)
         except Exception as exc:
             out["error"] = exc
 
@@ -260,3 +260,46 @@ def test_an_answer_from_another_process_is_found_by_polling(store, answers, sid,
         other.answer_question(q.id, "pg", "text")
     t.join(5)
     assert not t.is_alive() and out["result"].answer == "pg"
+
+
+def test_close_marks_the_open_question_stale_and_cancels_its_work_item(store, answers, sid):
+    item = work_item(kind="question")
+    q = make_question(sid, work_item_id=item.id)
+    t, out = asking(answers, q, item)
+    wait_open(store, sid)
+    answers.close()
+    t.join(5)
+    assert isinstance(out.get("error"), AnswersClosed)
+    assert store.get_question(q.id).status == "stale"
+    assert store.get_work_item(item.id).status == "cancelled"
+
+
+def test_an_answer_committed_just_before_close_is_returned(store, answers, sid, monkeypatch, tmp_path):
+    monkeypatch.setattr(ask_module, "POLL_SECONDS", 60)
+    item = work_item(kind="question")
+    q = make_question(sid, work_item_id=item.id)
+    t, out = asking(answers, q, item)
+    wait_open(store, sid)
+    # Answered through another connection, so no event wakes the waiter before close does.
+    with Store(tmp_path / "office" / "store.sqlite") as other:
+        other.answer_question(q.id, "pg", "text")
+    answers.close()
+    t.join(5)
+    assert out["result"].answer == "pg" and out["result"].status == "consumed"
+    assert store.get_work_item(item.id).status == "open"
+
+
+def test_a_store_error_after_the_answer_does_not_cancel_the_work_item(store, answers, sid, monkeypatch):
+    item = work_item(kind="question")
+    q = make_question(sid, work_item_id=item.id)
+
+    def broken(qid, status):
+        raise StoreError("disk full")
+
+    monkeypatch.setattr(store, "set_question_status", broken)
+    t, out = asking(answers, q, item)
+    wait_open(store, sid)
+    store.answer_question(q.id, "pg", "text")
+    t.join(5)
+    assert isinstance(out.get("error"), StoreError)
+    assert store.get_work_item(item.id).status == "open"
