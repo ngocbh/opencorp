@@ -139,14 +139,21 @@ def write_private(path: Path, data: bytes) -> None:
 def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None) -> bool:
     """Make sure ``path`` holds a usable provider; return whether it was written.
 
-    An existing file is checked and kept. Otherwise the provider comes from ``stdin`` (JSON)
-    when given, else from the owner, the key read without echo. It never goes through argv
-    or the environment.
+    A provider on ``stdin`` (JSON) is checked and replaces the file, so a key can be
+    rotated. Without one, an existing file is checked and kept, and a missing one is asked
+    of the owner, the key read without echo. The key never goes through argv or the
+    environment.
 
     Raises:
-        OnboardError: the provider isn't usable; the message never contains the key.
+        OnboardError: the provider isn't usable; the message never contains the key. An
+            existing file is left as it was.
     """
-    if os.path.lexists(path):
+    if stdin is not None:
+        try:
+            data = json.loads(stdin.read())
+        except ValueError:
+            raise OnboardError("the provider on stdin is not valid JSON") from None
+    elif os.path.lexists(path):
         again = "fix it or remove it and run `ac onboard` again"
         try:
             check_provider(load_provider(path).model_dump(exclude_defaults=True))
@@ -155,11 +162,6 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None)
         except OnboardError as exc:
             raise OnboardError(f"{path}: {exc}; {again}") from None
         return False
-    if stdin is not None:
-        try:
-            data = json.loads(stdin.read())
-        except ValueError:
-            raise OnboardError("the provider on stdin is not valid JSON") from None
     else:
         data = _ask_provider(prompter)
     provider = check_provider(data)

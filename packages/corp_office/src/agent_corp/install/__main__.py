@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     onboard_args.add_argument("--service", choices=("auto", *service.MODES), default="auto",
                               help="how to run the office (default: the first that works)")
     onboard_args.add_argument("--provider-stdin", action="store_true",
-                              help="read office/provider.json's content from stdin and ask nothing")
+                              help="read office/provider.json's content from stdin (replacing the file) and ask nothing")
     for flag in ("company", "name", "handle", "agent"):
         onboard_args.add_argument(f"--{flag}", help=f"answer the {flag} question")
     onboard_args.add_argument("--no-hire", action="store_true", help="don't hire a first agent")

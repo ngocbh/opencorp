@@ -113,6 +113,26 @@ def test_an_existing_provider_is_kept_and_nothing_is_asked(tmp_path):
     assert path.stat().st_mtime_ns == before.st_mtime_ns and ask.seen == []
 
 
+def test_a_provider_on_stdin_replaces_an_existing_one(tmp_path):
+    path = tmp_path / "provider.json"
+    old = "sk-ant-old-key-9f8e7d6c5b4a"
+    ensure_provider(path, Script(), stdin=io.StringIO(json.dumps({"llm_config": {"provider": "anthropic", "api_key": old}})))
+    ask = Script()
+    assert ensure_provider(path, ask, stdin=io.StringIO(json.dumps(
+        {"llm_config": {"provider": "anthropic", "api_key": KEY}}))) is True
+    assert load_provider(path).llm_config["api_key"] == KEY and old not in path.read_text()
+    assert mode(path) == 0o600 and os.listdir(tmp_path) == ["provider.json"] and ask.seen == []
+
+
+def test_a_bad_provider_on_stdin_leaves_the_existing_one(tmp_path):
+    path = tmp_path / "provider.json"
+    path.write_text('{"llm_config": {"provider": "openai"}}\n')
+    path.chmod(0o600)
+    with pytest.raises(OnboardError, match="not valid JSON"):
+        ensure_provider(path, Script(), stdin=io.StringIO("{"))
+    assert path.read_text() == '{"llm_config": {"provider": "openai"}}\n'
+
+
 def test_an_existing_provider_others_can_read_is_an_error_and_left_alone(tmp_path):
     path = tmp_path / "provider.json"
     path.write_text("{}\n")
