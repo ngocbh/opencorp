@@ -1,9 +1,9 @@
 import type { Session } from "@agent-corp/protocol"
 import { aboutTurn, turns, written } from "@agent-corp/tui/debrief"
+import { launchEditor } from "@agent-corp/tui/editor-launch"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
 import { OfficeError } from "@agent-corp/tui/office/errors"
 import { defaultSocket } from "@agent-corp/tui/office/paths"
-import { spawnSync } from "node:child_process"
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -50,18 +50,15 @@ async function target(
 }
 
 /** Opens $VISUAL or $EDITOR on `template`; returns what was saved, minus `#` lines, trimmed. */
-function edit(template: string) {
+async function edit(template: string) {
   const editor = process.env.VISUAL || process.env.EDITOR
   if (!editor) throw new Usage("set $EDITOR (or $VISUAL), or pass -m TEXT")
   const dir = mkdtempSync(path.join(os.tmpdir(), "ac-feedback-"))
   const file = path.join(dir, "FEEDBACK.md")
   try {
     writeFileSync(file, template)
-    // As git does: the shell parses $EDITOR (it may hold flags or a quoted path), and the file
-    // path goes in as an argument, so the feedback itself never passes through argv or env.
-    const r = spawnSync("sh", ["-c", `${editor} "$@"`, editor, file], { stdio: "inherit" })
-    if (r.error) throw r.error
-    if (r.status !== 0) throw new Error(`the editor exited with ${r.signal ?? `code ${r.status}`}`)
+    // The feedback goes in a file, so it never passes through argv or env.
+    await launchEditor(editor, file)
     return readFileSync(file, "utf8")
       .split("\n")
       .filter((l) => !l.startsWith("#"))
@@ -95,7 +92,7 @@ export const run: CommandRun = async (argv) => {
     const prefix = n === undefined ? "" : aboutTurn(list[n - 1])
     const draft =
       values.message === undefined
-        ? edit(
+        ? await edit(
             [
               prefix,
               "",

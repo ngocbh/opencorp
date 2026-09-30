@@ -7,7 +7,8 @@
   "exports": {
     ".": "./src/index.tsx",
     "./office/*": "./src/office/*.ts",
-    "./debrief": "./src/routes/debrief/debrief.ts"
+    "./debrief": "./src/routes/debrief/debrief.ts",
+    "./editor-launch": "./src/editor-launch.ts"
   },
   "scripts": {
     "dev": "bun run script/dev.ts",

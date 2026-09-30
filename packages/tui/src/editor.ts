@@ -1,13 +1,10 @@
 import type { CliRenderer } from "@opentui/core"
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
+import { readdirSync, readFileSync, statSync } from "node:fs"
 import { readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { spawn } from "node:child_process"
-import type { Stream } from "node:stream"
+import { launchEditor, type EditorStdio } from "./editor-launch"
 import { resolveZedDbPath, resolveZedSelection } from "./editor-zed"
-
-type EditorStdio = "inherit" | "pipe" | "ignore" | number | Stream
 
 export function normalizePromptContent(content: string) {
   if (content.endsWith("\r\n")) {
@@ -31,23 +28,7 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
   input.renderer.suspend()
   input.renderer.currentRenderBuffer.clear()
   try {
-    await new Promise<void>((resolve, reject) => {
-      const options = {
-        cwd: input.cwd && existsSync(input.cwd) ? input.cwd : process.cwd(),
-        stdio: [input.stdin ?? "inherit", "inherit", "inherit"] as [EditorStdio, "inherit", "inherit"],
-      }
-      // As git does: the shell parses the editor setting (it may hold flags or a quoted path),
-      // and the file goes in as an argument.
-      const child =
-        process.platform === "win32"
-          ? spawn(editor, [file], { ...options, shell: true })
-          : spawn("sh", ["-c", `${editor} "$@"`, editor, file], options)
-      child.on("error", reject)
-      child.on("exit", (code, signal) => {
-        if (code === 0) return resolve()
-        reject(new Error(`Editor exited with ${signal ? `signal ${signal}` : `code ${code}`}`))
-      })
-    })
+    await launchEditor(editor, file, input)
     return (await readFile(file, "utf8")) || undefined
   } finally {
     await rm(file, { force: true }).catch(() => {})
