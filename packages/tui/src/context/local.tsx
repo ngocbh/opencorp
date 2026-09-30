@@ -2,9 +2,7 @@ import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import type { Person, Session } from "@agent-corp/protocol"
 import { batch, createMemo, createSignal } from "solid-js"
-import { useSync } from "./sync"
 import { useOffice } from "./office"
-import { useEvent } from "./event"
 import path from "path"
 import { useTuiPaths } from "./runtime"
 import { useArgs } from "./args"
@@ -47,14 +45,12 @@ export function pickPerson(input: {
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
   init: () => {
-    const sync = useSync()
     const office = useOffice()
     const toast = useToast()
     const theme = useTheme().theme
     const route = useRoute()
     const paths = useTuiPaths()
     const args = useArgs()
-    const event = useEvent()
     const permission = usePermission()
 
     function createPerson() {
@@ -146,24 +142,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
 
       const slots = createMemo(() => {
-        const existing = new Set(sync.data.session.filter((x) => x.parentID === undefined).map((x) => x.id))
+        const existing = new Set(office.state.sessions.filter((x) => x.kind === "main").map((x) => x.id))
         return sessionStore.pinned.filter((id) => existing.has(id)).slice(0, 9)
-      })
-
-      function prune(sessionID: string) {
-        batch(() => {
-          if (sessionStore.pinned.includes(sessionID)) {
-            setSessionStore(
-              "pinned",
-              sessionStore.pinned.filter((x) => x !== sessionID),
-            )
-          }
-          save()
-        })
-      }
-
-      event.on("session.deleted", (evt) => {
-        prune(evt.properties.info.id)
       })
 
       return {

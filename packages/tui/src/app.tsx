@@ -25,11 +25,11 @@ import {
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { ErrorComponent } from "./component/error-component"
-import { ProjectProvider, useProject } from "./context/project"
+import { ProjectProvider } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
-import { useEvent } from "./context/event"
-import { SDKProvider, useSDK } from "./context/sdk"
+import { SDKProvider } from "./context/sdk"
 import { OfficeProvider, useOffice } from "./context/office"
+import { sessionsIn } from "./office/store"
 import { personLabel } from "./util/transcript"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
@@ -123,21 +123,6 @@ export type TuiInput = {
   events?: EventSource
 }
 
-function errorMessage(error: unknown) {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "data" in error &&
-    typeof error.data === "object" &&
-    error.data !== null &&
-    "message" in error.data &&
-    typeof error.data.message === "string"
-  ) {
-    return error.data.message
-  }
-  return error instanceof Error ? error.message : String(error)
-}
-
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const global = yield* Global.Service
   const exit = { epilogue: undefined as string | undefined, reason: undefined as unknown }
@@ -227,16 +212,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                             <ArgsProvider {...input.args}>
                               <KVProvider>
                                 <ToastProvider>
-                                  <RouteProvider
-                                    initialRoute={
-                                      input.args.continue
-                                        ? {
-                                            type: "session",
-                                            sessionID: "dummy",
-                                          }
-                                        : undefined
-                                    }
-                                  >
+                                  <RouteProvider>
                                     <TuiConfigProvider config={input.config}>
                                       <OfficeProvider socket={input.socket} cwd={input.cwd}>
                                         <SDKProvider
@@ -314,14 +290,11 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const local = useLocal()
   const kv = useKV()
   const keymap = useOpencodeKeymap()
-  const event = useEvent()
-  const sdk = useSDK()
   const toast = useToast()
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const sync = useSync()
   const office = useOffice()
-  const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
   const clipboard = useClipboard()
@@ -370,7 +343,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const args = useArgs()
   onMount(() => {
     batch(() => {
-      if (args.sessionID && !args.fork) {
+      if (args.sessionID) {
         route.navigate({
           type: "session",
           sessionID: args.sessionID,
@@ -379,43 +352,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  // `--continue` opens the newest main session in cwd once the office has listed its sessions.
   let continued = false
   createEffect(() => {
-    // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"
-    if (continued || sync.status === "loading" || !args.continue) return
-    const match = sync.data.session
-      .toSorted((a, b) => b.time.updated - a.time.updated)
-      .find((x) => x.parentID === undefined)?.id
-    if (match) {
-      continued = true
-      if (args.fork) {
-        void sdk.client.session.fork({ sessionID: match }).then((result) => {
-          if (result.data?.id) {
-            route.navigate({ type: "session", sessionID: result.data.id })
-          } else {
-            toast.show({ message: "Failed to fork session", variant: "error" })
-          }
-        })
-      } else {
-        route.navigate({ type: "session", sessionID: match })
-      }
-    }
-  })
-
-  // Handle --session with --fork: wait for sync to be fully complete before forking
-  // (session list loads in non-blocking phase for --session, so we must wait for "complete"
-  // to avoid a race where reconcile overwrites the newly forked session)
-  let forked = false
-  createEffect(() => {
-    if (forked || sync.status !== "complete" || !args.sessionID || !args.fork) return
-    forked = true
-    void sdk.client.session.fork({ sessionID: args.sessionID }).then((result) => {
-      if (result.data?.id) {
-        route.navigate({ type: "session", sessionID: result.data.id })
-      } else {
-        toast.show({ message: "Failed to fork session", variant: "error" })
-      }
-    })
+    if (continued || !args.continue || office.status() !== "online") return
+    continued = true
+    const match = sessionsIn(office.state, office.cwd)[0]
+    if (match) route.navigate({ type: "session", sessionID: match.id })
   })
 
   const appCommands = createMemo(() =>
@@ -433,7 +376,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "session.list",
         title: "Switch session",
         category: "Session",
-        suggested: sync.data.session.length > 0,
+        suggested: sessionsIn(office.state, office.cwd).length > 0,
         slashName: "sessions",
         slashAliases: ["resume", "continue"],
         run: () => {
@@ -640,9 +583,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           ? "Disable session directory filtering"
           : "Enable session directory filtering",
         category: "System",
-        run: async () => {
+        run: () => {
           kv.set("session_directory_filter_enabled", !kv.get("session_directory_filter_enabled", true))
-          await sync.session.refresh()
           dialog.clear()
         },
       },
@@ -684,52 +626,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     },
     bindings: tuiConfig.keybinds.gather("app_exit", ["app.exit"]),
   }))
-
-  event.on("tui.command.execute", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    keymap.dispatchCommand(evt.properties.command)
-  })
-
-  event.on("tui.toast.show", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    toast.show({
-      title: evt.properties.title,
-      message: evt.properties.message,
-      variant: evt.properties.variant,
-      duration: evt.properties.duration,
-    })
-  })
-
-  event.on("tui.session.select", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    route.navigate({
-      type: "session",
-      sessionID: evt.properties.sessionID,
-    })
-  })
-
-  event.on("session.deleted", (evt) => {
-    if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
-      route.navigate({ type: "home" })
-      toast.show({
-        variant: "info",
-        message: "The current session was deleted",
-      })
-    }
-  })
-
-  event.on("session.error", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    const error = evt.properties.error
-    if (error && typeof error === "object" && error.name === "MessageAbortedError") return
-    const message = errorMessage(error)
-
-    toast.show({
-      variant: "error",
-      message,
-      duration: 5000,
-    })
-  })
 
   return (
     <box

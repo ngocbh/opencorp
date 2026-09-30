@@ -6,7 +6,6 @@ export interface Args {
   prompt?: string
   continue?: boolean
   sessionID?: string
-  fork?: boolean
   auto?: boolean
   /** The person to talk to, by id or handle. */
   person?: string

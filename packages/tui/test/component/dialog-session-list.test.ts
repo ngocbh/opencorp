@@ -1,46 +1,61 @@
+import type { Person, Session } from "@agent-corp/protocol"
 import { describe, expect, test } from "bun:test"
-import { createDialogSessionListQuery, loadDialogSessionList } from "../../src/component/dialog-session-list"
+import { listedSessions, sessionCategory, sessionRow } from "../../src/component/dialog-session-list"
+import { Locale } from "../../src/util/locale"
+
+const now = Date.parse("2026-09-30T12:00:00Z")
+const ago = (ms: number) => new Date(now - ms).toISOString()
+const people: Person[] = [
+  { id: "p1", handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: null },
+]
+
+function session(id: string, fields: Partial<Session> = {}): Session {
+  return {
+    id,
+    person: "p1",
+    harness: "composer",
+    office: "laptop",
+    cwd: "/tmp/proj",
+    repo_commit: "c",
+    status: "idle",
+    kind: "main",
+    cost: 0,
+    cost_cap_usd: null,
+    created_at: ago(0),
+    updated_at: ago(0),
+    ...fields,
+  }
+}
 
 describe("dialog session list", () => {
-  test("requests root sessions for the default browse list", () => {
-    expect(createDialogSessionListQuery({ filter: { path: "packages/tui" } })).toEqual({
-      roots: true,
-      limit: 100,
-      path: "packages/tui",
-    })
+  test("lists main sessions newest first, in cwd when given", () => {
+    const sessions = [
+      session("a", { updated_at: ago(60_000) }),
+      session("b", { updated_at: ago(1_000), cwd: "/tmp/other" }),
+      session("c", { updated_at: ago(0), kind: "side" }),
+      session("d", { updated_at: ago(5_000) }),
+    ]
+    expect(listedSessions(sessions).map((s) => s.id)).toEqual(["b", "d", "a"])
+    expect(listedSessions(sessions, "/tmp/proj").map((s) => s.id)).toEqual(["d", "a"])
   })
 
-  test("requests root sessions for search results", () => {
-    expect(createDialogSessionListQuery({ search: " deploy ", filter: { scope: "project" } })).toEqual({
-      roots: true,
-      limit: 30,
-      search: "deploy",
-      scope: "project",
-    })
+  test("a row shows the person, the folder with home abbreviated, and the age", () => {
+    const s = session("a", { updated_at: ago(5 * 60_000) })
+    expect(sessionRow(s, people, { now, home: "/home/me" })).toBe("@minh · /tmp/proj · 5m ago")
+    const mine = session("b", { cwd: "/home/me/code/app", person: "gone", updated_at: ago(3 * 3600_000) })
+    expect(sessionRow(mine, people, { now, home: "/home/me" })).toBe("gone · ~/code/app · 3h ago")
   })
 
-  test("keeps the cache usable while the root request is pending", async () => {
-    let resolve!: (result: { data: string[] }) => void
-    const pending = loadDialogSessionList<string>({
-      filter: {},
-      list: () => new Promise((done) => (resolve = done)),
-    })
-
-    expect(await Promise.race([pending, Promise.resolve("pending")])).toBe("pending")
-    resolve({ data: ["root"] })
-    expect(await pending).toEqual(["root"])
+  test("sessions group under Today or their date", () => {
+    expect(sessionCategory(session("a", { updated_at: ago(60_000) }), now)).toBe("Today")
+    const old = ago(3 * 86400_000)
+    expect(sessionCategory(session("a", { updated_at: old }), now)).toBe(new Date(old).toDateString())
   })
 
-  test("falls back when the root request returns an error response", async () => {
-    expect(await loadDialogSessionList({ filter: {}, list: async () => ({}) })).toBeUndefined()
-  })
-
-  test("falls back when the root request rejects", async () => {
-    expect(
-      await loadDialogSessionList({
-        filter: {},
-        list: () => Promise.reject(new Error("offline")),
-      }),
-    ).toBeUndefined()
+  test("relative times", () => {
+    expect(Locale.relative(now - 10_000, now)).toBe("just now")
+    expect(Locale.relative(now - 5 * 60_000, now)).toBe("5m ago")
+    expect(Locale.relative(now - 2 * 86400_000, now)).toBe("2d ago")
+    expect(Locale.relative(now - 30 * 86400_000, now)).toBe(Locale.datetime(now - 30 * 86400_000))
   })
 })

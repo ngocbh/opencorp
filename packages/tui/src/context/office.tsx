@@ -37,7 +37,11 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
         queue.push(fn)
         timer ??= setTimeout(flush, FLUSH_MS)
       },
-      onStatus: setStatus,
+      // "online" follows the snapshot it was set after, so readers never see it with stale state.
+      onStatus(next) {
+        if (!timer) return setStatus(next)
+        after.push(() => setStatus(next))
+      },
     })
 
     onMount(sync.start)
