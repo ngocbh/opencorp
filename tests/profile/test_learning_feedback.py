@@ -6,8 +6,8 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.profile.feedback import FeedbackHandlers
 from agent_corp.protocol.models import FeedbackRequest
-from tests.profile.conftest import (LEARNER_ASK, asked, chat, debrief_reply, learner_reply, review_reply, settled,
-                                    status, wait_for)
+from tests.profile.conftest import (LEARNER_ASK, asked, chat, debrief_reply, fails_once, learner_reply, review_reply,
+                                    settled, status, wait_for)
 from tests.store.conftest import session
 
 PROFILE = "# Minh, Engineer\n"
@@ -151,3 +151,15 @@ def test_feedback_whose_attempt_committed_and_then_failed_is_not_retried(harness
     failed = harness.store.get_feedback(fb.id)
     assert (failed.status, failed.attempts) == ("learning_failed", 1)
     assert sum(LEARNER_ASK in asked(r) for r in fake_llm.requests()) == 1
+
+
+def test_feedback_whose_move_into_learning_fails_stays_queued_and_learns_later(harness, fake_llm, workspace, learning,
+                                                                               monkeypatch):
+    sid = ended(harness, fake_llm, workspace)
+    fails_once(monkeypatch, harness.store, "set_feedback_status")
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    settled(learning)
+    assert sid not in learning._active and feedback_status(harness, fb.id) == "queued"
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    learning.tick()
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")

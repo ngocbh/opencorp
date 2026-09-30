@@ -7,7 +7,8 @@ from agent_corp.chat.harness import HarnessError
 from agent_corp.extensions.learning import MAX_DEBRIEFS, Learning, register
 from agent_corp.profile.debrief import pending_debrief
 from agent_corp.store import new_id
-from tests.profile.conftest import DEBRIEF_ASK, OUTPUT, asked, chat, debrief_reply, settled, status, wait_for
+from tests.profile.conftest import (DEBRIEF_ASK, OUTPUT, asked, chat, debrief_reply, fails_once, settled, status,
+                                    wait_for)
 from tests.store.conftest import message, session
 
 
@@ -138,3 +139,17 @@ def test_reading_a_debrief_while_its_retry_runs_starts_no_second_one(harness, fa
     settled(learning)
     assert attempts(harness, s.id) == MAX_DEBRIEFS + 1
     assert sum(DEBRIEF_ASK in asked(r) for r in fake_llm.requests()) == 1
+
+
+def test_a_debrief_whose_first_write_fails_releases_the_session_and_ends_it(harness, fake_llm, learning, monkeypatch):
+    s = harness.store.create_session(session(repo_commit=harness.git.head(), status="debriefing", run_ids=["r1"]))
+    harness.store.add_message(message(s.id, parts=[{"id": new_id(), "type": "text", "text": "fix it"}]))
+    fails_once(monkeypatch, harness.store, "save_debrief")
+    learning._post(learning._ended, s.id)
+    wait_for(lambda: status(harness, s.id) == "ended", what="ended")
+    settled(learning)
+    assert s.id not in learning._active
+    assert (debrief_state(harness, s.id), attempts(harness, s.id)) == ("pending", 1)
+    fake_llm.script(debrief_reply())
+    learning.tick()
+    wait_for(lambda: debrief_state(harness, s.id) == "ready", what="the retried debrief")

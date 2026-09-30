@@ -38,6 +38,19 @@ def settled(learning):
     assert done.wait(10)
 
 
+def fails_once(monkeypatch, obj, name):
+    """Make ``obj.name`` raise on its first call only."""
+    original, calls = getattr(obj, name), []
+
+    def flaky(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == 1:
+            raise RuntimeError(f"{name} failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(obj, name, flaky)
+
+
 def debrief_reply(output=OUTPUT, **extra):
     """A scripted debrief: the flow's structured output is a forced ``Record`` call."""
     return {"match": DEBRIEF_ASK, "tool_calls": [{"name": "Record", "arguments": output}], **extra}

@@ -230,29 +230,36 @@ class Learning:
         """Start a debrief run on the session's transcript; the Debrief is pending until it succeeds."""
         if not self._reserve(session.id):
             return
-        record = self.store.get_debrief_record(session.id)
-        if record is not None and record.debrief.state == "ready":
-            # An office stopped between storing the debrief and ending the session.
-            self._release(session.id)
-            if session.status == "debriefing":
-                self.store.update_session(session.id, status="ended")
-            return
-        if record is None:
-            self.store.save_debrief(pending_debrief(session))  # the session shows "debrief pending" meanwhile
         run_id = new_id()
+        spawned = failed = False
         try:
+            record = self.store.get_debrief_record(session.id)
+            if record is not None and record.debrief.state == "ready":
+                # An office stopped between storing the debrief and ending the session.
+                if session.status == "debriefing":
+                    self.store.update_session(session.id, status="ended")
+                return
+            if record is None:
+                self.store.save_debrief(pending_debrief(session))  # the session shows "debrief pending" meanwhile
             job, stores = self._debrief_job(session, run_id, kind="chat")
             handlers = FeedbackHandlers(stores=stores,
                                         exited=lambda outcome: self._post(self._debriefed, session.id, run_id, outcome))
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
+            spawned = True
         except Exception as exc:
+            failed = True
             self._log_exception(exc, "can't start the debrief of session %s", session.id)
+        finally:
+            if not spawned:
+                self._release(session.id)
+        if failed:  # released first: what it drains next may reserve the session again
             self._debriefed(session.id, run_id, None)
 
     def _debriefed(self, session_id: str, run_id: str, outcome: dict[str, Any] | None) -> None:
         self._release(session_id)
         session = self.store.get_session(session_id)
-        attempts = self.store.get_debrief_record(session_id).attempts + 1
+        record = self.store.get_debrief_record(session_id)
+        attempts = (record.attempts if record else 0) + 1
         debrief = None
         if outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
             try:
@@ -286,14 +293,24 @@ class Learning:
     def _learn(self, session: Session, feedback: Feedback) -> None:
         if not self._reserve(session.id):
             return
-        feedback = self.store.set_feedback_status(feedback.id, "learning")
         handlers: FeedbackHandlers | None = None
+        spawned = False
+        error: str | None = None
         try:
+            feedback = self.store.set_feedback_status(feedback.id, "learning")
             job, handlers = self._backward_job(session, feedback)
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
+            spawned = True
         except Exception as exc:
+            error = self._redact(str(exc))
             self._log_exception(exc, "can't start learning from feedback %s", feedback.id)
-            self._learned(feedback.id, handlers, {"type": "error", "message": self._redact(str(exc))})
+        finally:
+            if not spawned:
+                self._release(session.id)
+        # Released first: what it drains next may reserve the session again. Feedback that never
+        # left the queue waits for the next drain.
+        if error is not None and self.store.get_feedback(feedback.id).status == "learning":
+            self._learned(feedback.id, handlers, {"type": "error", "message": error})
 
     def _learned(self, feedback_id: str, handlers: FeedbackHandlers | None, outcome: dict[str, Any] | None) -> None:
         feedback = self.store.get_feedback(feedback_id)
