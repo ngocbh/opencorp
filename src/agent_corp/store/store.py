@@ -24,6 +24,7 @@ from agent_corp.protocol import now
 from agent_corp.protocol.models import (
     Comment,
     Event,
+    Feedback,
     Question,
     Session,
     WorkItem,
@@ -91,9 +92,14 @@ SESSIONS = _Table("sessions", Session, derived=frozenset({"run_ids"}))
 QUESTIONS = _Table(
     "questions", Question, json=frozenset({"options", "questions", "answer_schema", "discussion", "answer"})
 )
+FEEDBACK = _Table("feedback", Feedback)
 
 _ANSWERED = frozenset({"answered", "consumed"})
 _QUESTION_MOVES = {"open": {"answered", "stale"}, "answered": {"consumed"}}
+_FEEDBACK_MOVES = {
+    "queued": {"learning", "learning_failed"},
+    "learning": {"learning", "queued", "applied", "learning_failed"},
+}
 
 
 def _columns(table: _Table, model: BaseModel) -> dict[str, Any]:
@@ -641,3 +647,45 @@ class Store:
             current = self._must(QUESTIONS, Question, question_id)
             question = self._changed(current, {"updated_at": now(), **changes}, frozen)
             return self._write_question(tx, question)
+
+    # --- feedback -----------------------------------------------------------------------
+
+    def add_feedback(self, feedback: Feedback) -> Feedback:
+        """Insert feedback and emit ``feedback.created``."""
+        with self.transaction() as tx:
+            tx.insert(FEEDBACK, _columns(FEEDBACK, feedback))
+            stored = self._must(FEEDBACK, Feedback, feedback.id)
+            tx.emit("feedback.created", feedback.id, stored)
+        return stored
+
+    def get_feedback(self, feedback_id: str) -> Feedback | None:
+        """The feedback, or ``None``."""
+        return self._get(FEEDBACK, Feedback, feedback_id)
+
+    def list_feedback(
+        self, *, session_id: str | None = None, run_id: str | None = None, status: str | Iterable[str] | None = None
+    ) -> list[Feedback]:
+        """Feedback, oldest first, optionally filtered."""
+        status = status if status is None or isinstance(status, str) else tuple(status)
+        where = {"session_id": session_id, "run_id": run_id, "status": status}
+        return self._list(FEEDBACK, Feedback, where, "created_at, rowid")
+
+    def set_feedback_status(self, feedback_id: str, status: str, *, commit: str | None = None) -> Feedback:
+        """Move feedback along ``queued → learning → applied | learning_failed``.
+
+        ``learning`` may go back to ``queued`` or start again; each move into ``learning``
+        counts one attempt. ``queued`` may fail directly. Emits ``feedback.updated``.
+        """
+        with self.transaction() as tx:
+            current = self._must(FEEDBACK, Feedback, feedback_id)
+            _check_move("feedback", _FEEDBACK_MOVES, current.status, status)
+            update: dict[str, Any] = {"status": status}
+            if status == "learning":
+                update["attempts"] = current.attempts + 1
+            if commit is not None:
+                update["commit"] = commit
+            feedback = self._changed(current, update, set())
+            tx.update(FEEDBACK, _columns(FEEDBACK, feedback))
+            stored = self._must(FEEDBACK, Feedback, feedback_id)
+            tx.emit("feedback.updated", feedback_id, stored)
+        return stored
