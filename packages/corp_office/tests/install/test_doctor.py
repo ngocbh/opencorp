@@ -69,6 +69,14 @@ def test_a_company_missing_template_files_is_told_to_onboard_again(tmp_path):
     assert DEBRIEF_FLOW in got["company"].detail and "`ac onboard` adds" in got["company"].detail
 
 
+def test_a_running_office_missing_template_files_is_told_to_stop_first(tmp_path):
+    paths = onboarded(tmp_path)
+    (paths.company / DEBRIEF_FLOW).unlink()
+    got = by_name(run_checks(tmp_path, paths, answers=True))
+    assert got["company"].status == "warn" and DEBRIEF_FLOW in got["company"].detail
+    assert "The office is running; stop it and run `ac onboard` again to add 1 template file." in got["company"].detail
+
+
 def test_a_provider_others_can_read_fails_without_showing_it(tmp_path):
     paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
     (paths.office / "provider.json").chmod(0o644)

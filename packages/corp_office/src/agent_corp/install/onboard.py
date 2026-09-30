@@ -18,7 +18,7 @@ from agent_corp.chat.provider import Provider, ProviderError, load_provider, val
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, is_new, template_files, write_company
+from agent_corp.company_template import Owner, is_new, missing_files, template_files, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError, make_office_dir
 from agent_corp.install import service
@@ -26,6 +26,12 @@ from agent_corp.install.launch import REPO, Host, ServiceError, launch
 
 FIRST_AGENT = ("Minh", "Engineer")
 """The first agent's default name, and its title."""
+
+
+def stop_to_top_up(count: int) -> str:
+    """What to do about ``count`` missing template files while the office runs."""
+    files = "template file" if count == 1 else "template files"
+    return f"The office is running; stop it and run `ac onboard` again to add {count} {files}."
 
 
 class OnboardError(Exception):
@@ -249,14 +255,26 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
         raise OnboardError(str(exc)) from None
     prompter.say(f"Office home: {paths.home}")
 
+    # A running office is the only writer of its company clone (CompanyGit's lock is
+    # in-process), so the template top-up waits until it is stopped.
+    running = host.answers(run.socket)
     try:
         new = is_new(paths.company)
-        company, owner = _ask_company(prompter) if new else (None, None)
-        written = write_company(paths.company, paths.worktrees, company=company, owner=owner)
+        if running and new:
+            raise OnboardError(f"the office is running, but {paths.company} has no company yet;"
+                               " stop it and run `ac onboard` again")
+        if running:
+            written, missing = [], missing_files(paths.company)
+        else:
+            company, owner = _ask_company(prompter) if new else (None, None)
+            written, missing = write_company(paths.company, paths.worktrees, company=company, owner=owner), []
     except (CompanyGitError, OSError, ValueError) as exc:
         raise OnboardError(f"can't write the company repo at {paths.company}: {exc}") from None
-    done = "created at" if new else f"added {len(written)} template files to" if written else "up to date at"
-    prompter.say(f"Company repo: {done} {paths.company}")
+    if missing:
+        prompter.say(f"Company repo: {paths.company}. {stop_to_top_up(len(missing))}")
+    else:
+        done = "created at" if new else f"added {len(written)} template files to" if written else "up to date at"
+        prompter.say(f"Company repo: {done} {paths.company}")
     repo_now = load_repo(paths.company)
     errors = [i for i in lint(repo_now) if i.severity == "error"]
     if errors:

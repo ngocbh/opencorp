@@ -16,7 +16,7 @@ from agent_corp.company_template import missing_files
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
-from agent_corp.install.onboard import OnboardError, check_provider
+from agent_corp.install.onboard import OnboardError, check_provider, stop_to_top_up
 
 _START_ERROR = "agent-corp office: "
 """How the daemon prefixes the one line it prints when it can't start."""
@@ -47,7 +47,7 @@ def sandbox_problem() -> str | None:
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
 
 
-def _company(paths: OfficePaths) -> Check:
+def _company(paths: OfficePaths, running: bool) -> Check:
     if not (paths.company / ".git").exists():
         return Check("company", "fail", f"no company repo at {paths.company}; run `ac onboard`")
     try:
@@ -59,7 +59,8 @@ def _company(paths: OfficePaths) -> Check:
         return Check("company", "fail", "; ".join(f"{i.path}: {i.code}: {i.message}" for i in errors))
     notes = [f"{len(issues)} lint warnings"] if issues else []
     if missing := missing_files(paths.company):
-        notes.append(f"missing {', '.join(missing)} from the template; `ac onboard` adds them")
+        todo = stop_to_top_up(len(missing)) if running else "`ac onboard` adds them"
+        notes.append(f"missing {', '.join(missing)} from the template; {todo}")
     return Check("company", "warn" if notes else "ok", f"{paths.company}" + (f" ({'; '.join(notes)})" if notes else ""))
 
 
@@ -150,8 +151,9 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
     paths = OfficePaths(run.home)
-    found = [_company(paths), _provider(paths), _service(run, host)]
-    if host.answers(run.socket):
+    running = host.answers(run.socket)
+    found = [_company(paths, running), _provider(paths), _service(run, host)]
+    if running:
         pid = (paths.pidfile.read_text().strip() if paths.pidfile.exists() else "")
         found.append(Check("office", "ok", f"answering on {run.socket} (pid {pid or '?'})"))
         if pid.isdecimal():

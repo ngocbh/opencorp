@@ -14,6 +14,8 @@ from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import onboard as onboard_module
+from agent_corp.profile.debrief import DEBRIEF_FLOW
+from agent_corp.profile.manager import MANAGER_FLOW
 from agent_corp.install.launch import office_answers
 from agent_corp.install.onboard import OnboardError, onboard, owner_defaults
 from tests.company.conftest import _isolate_git  # noqa: F401
@@ -73,7 +75,8 @@ def test_an_existing_home_others_can_read_is_made_private(tmp_path, monkeypatch)
 
 def test_no_hire_leaves_the_company_without_an_agent(tmp_path):
     home = tmp_path / "home"
-    ask = Script("Acme", "Me", "me")
+    write_company(home / "company", home / "worktrees", company="Acme", owner=Owner("me", "me", "Me"))
+    ask = Script()
     # An office that already answers (started by hand): nothing is installed, and no hire is posted.
     onboard(home, ask, stdin=io.StringIO('{"llm_config": {"provider": "openai"}}'),
             host=make_host(tmp_path, Runner(), answers=lambda s: True), hire=False)
@@ -91,6 +94,26 @@ def test_a_hire_the_office_cant_take_is_an_onboard_error(tmp_path):
 
 def _git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout
+
+
+def test_a_running_office_is_not_topped_up_behind_its_back(tmp_path):
+    paths = OfficePaths(tmp_path / "home")
+    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("me", "me", "Me"))
+    (paths.company / DEBRIEF_FLOW).unlink()
+    (paths.company / MANAGER_FLOW).unlink()
+    _git(paths.company, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "drop two flows")
+    head = _git(paths.company, "rev-parse", "HEAD")
+    ask = Script()
+    onboard(paths.home, ask, stdin=io.StringIO('{"llm_config": {"provider": "openai"}}'),
+            host=make_host(tmp_path, Runner(), answers=lambda s: True), hire=False)
+    assert "The office is running; stop it and run `ac onboard` again to add 2 template files." in "\n".join(ask.seen)
+    assert not (paths.company / DEBRIEF_FLOW).exists() and _git(paths.company, "rev-parse", "HEAD") == head
+
+
+def test_a_running_office_without_a_company_is_not_written_to(tmp_path):
+    with pytest.raises(OnboardError, match="running, but .* has no company yet"):
+        onboard(tmp_path / "home", Script(), host=make_host(tmp_path, Runner(), answers=lambda s: True))
+    assert not (tmp_path / "home" / "company").exists()
 
 
 def _onboard_twice(tmp_path, platform, started):
