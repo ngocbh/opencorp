@@ -9,29 +9,40 @@ pyproject.toml         # Python project "agent-corp" (import agent_corp)
 src/agent_corp/        # office daemon, run worker, sandbox launcher, permission layer, harness adapters
 tests/                 # Python tests, mirroring src/agent_corp/
 agent-composer/        # submodule; uv path dependency
-packages/protocol/     # JSON Schema → TS types + pydantic
-packages/tui/          # forked OpenCode TUI
-packages/ac/           # `ac` CLI entry
-docs/plans/            # design docs and plans (gitignored)
+packages/protocol/     # JSON Schema → TS types + pydantic (schema planned)
+packages/tui/          # forked OpenCode TUI (planned)
+packages/ac/           # `ac` CLI entry (planned)
+docs/plans/            # design docs and plans (local only, gitignored)
 ```
 
-The design docs live in `docs/plans/` and are gitignored; issue #1 records the design decisions.
+The design docs in `docs/plans/` are gitignored, so a fresh clone does not have them; issue #1 is
+the shared record of the design decisions.
+
+## Setup
+
+```
+git clone --recurse-submodules https://github.com/ngocbh/agent-corp.git && cd agent-corp
+uv sync        # uses a uv-managed Python 3.12
+bun install
+```
 
 ## Tests
 
 - Python: `uv run pytest -q tests/<path>` (all: `uv run pytest -q tests`).
-- TS: `(cd packages/<pkg> && bun test)` and `bun run typecheck` from the root.
+- TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
+  run each package's own `test` and `typecheck` scripts.
+- CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
 - `tests/<pkg>/` mirrors `src/agent_corp/<pkg>/`. Every test directory has an empty
   `__init__.py` so same-named test modules in different directories don't collide.
 
 ## Protocol schema
 
-After WP1, `packages/protocol/schema/protocol.schema.json` changes only in a schema-only PR that:
+Once `packages/protocol/schema/protocol.schema.json` exists, it changes only in a schema-only PR that:
 
 - edits the schema and its fixtures, and regenerates `src/agent_corp/protocol/models.py`
   and `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
 - only adds fields and `$defs`; never renames or removes one that merged code uses;
-- merges before the WPs that need it continue.
+- merges before dependent work continues.
 
 ## GitHub workflow
 
