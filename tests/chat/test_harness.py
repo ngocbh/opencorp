@@ -337,8 +337,9 @@ def test_a_run_that_cant_be_set_up_fails_the_session_and_says_so(harness, worksp
     ended = []
     harness.hooks.session_ended.append(lambda session: ended.append(session.status))
     monkeypatch.setattr(harness.store, "add_session_run", no_run)
-    with pytest.raises(OSError):
+    with pytest.raises(HarnessError) as err:
         harness.start_session("minh", str(workspace))
+    assert err.value.code == "start_failed" and isinstance(err.value.__cause__, OSError)
     assert [s.status for s in harness.store.list_sessions()] == ended == ["failed"]
 
 
