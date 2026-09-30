@@ -201,16 +201,7 @@ export function Prompt(props: PromptProps) {
   const editorContextLabelState = createMemo(() => editor.labelState())
   const [auto, setAuto] = createSignal<AutocompleteRef>()
   const [cursorVersion, setCursorVersion] = createSignal(0)
-  const currentProviderLabel = createMemo(() => local.model.parsed().provider)
   const hasRightContent = createMemo(() => Boolean(props.right))
-
-  function promptModelWarning() {
-    toast.show({
-      variant: "warning",
-      message: "No model is available to send prompts",
-      duration: 3000,
-    })
-  }
 
   function dismissEditorContext() {
     setDismissedEditorSelectionKey(editorSelectionKey(editorContext()))
@@ -295,30 +286,6 @@ export function Prompt(props: PromptProps) {
       { defer: true },
     ),
   )
-
-  // Initialize agent/model/variant from last user message when session changes
-  let syncedSessionID: string | undefined
-  createEffect(() => {
-    const sessionID = props.sessionID
-    const msg = lastUserMessage()
-
-    if (sessionID !== syncedSessionID) {
-      if (!sessionID || !msg) return
-
-      syncedSessionID = sessionID
-
-      // Only set agent if it's a primary agent (not a subagent)
-      const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
-      if (msg.agent && isPrimaryAgent) {
-        // Keep command line --agent if specified.
-        if (!args.agent) local.agent.set(msg.agent)
-        if (msg.model) {
-          local.model.set(msg.model)
-          local.model.variant.set(msg.model.variant)
-        }
-      }
-    }
-  })
 
   const promptCommands = createMemo(() =>
     [
@@ -899,30 +866,16 @@ export function Prompt(props: PromptProps) {
     if (props.disabled) return false
     if (auto()?.visible) return false
     if (!store.prompt.input) return false
-    const agent = local.agent.current()
-    if (!agent) return false
+    const person = local.person.current()
+    if (!person) return false
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
       return true
     }
-    const selectedModel = local.model.current()
-    if (!selectedModel) {
-      void promptModelWarning()
-      return false
-    }
-
-    const variant = local.model.variant.current()
     let sessionID = props.sessionID
     if (sessionID == null) {
-      const res = await sdk.client.session.create({
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          id: selectedModel.modelID,
-          variant,
-        },
-      })
+      const res = await sdk.client.session.create({})
 
       if (res.error) {
         console.log("Creating a session failed:", res.error)
@@ -974,11 +927,7 @@ export function Prompt(props: PromptProps) {
     if (store.mode === "shell") {
       void sdk.client.session.shell({
         sessionID,
-        agent: agent.name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
+        agent: person.handle,
         command: inputText,
       })
       setStore("mode", "normal")
@@ -997,9 +946,6 @@ export function Prompt(props: PromptProps) {
         sessionID,
         command: command.slice(1),
         arguments: args,
-        agent: agent.name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        variant,
         parts: nonTextParts.filter((x) => x.type === "file"),
       })
     } else {
@@ -1007,10 +953,6 @@ export function Prompt(props: PromptProps) {
         .prompt(
           {
             sessionID,
-            ...selectedModel,
-            agent: agent.name,
-            model: selectedModel,
-            variant,
             parts: [
               ...editorParts,
               {
@@ -1199,24 +1141,13 @@ export function Prompt(props: PromptProps) {
   const highlight = createMemo(() => {
     if (leader()) return theme.border
     if (store.mode === "shell") return theme.primary
-    const agent = local.agent.current()
-    if (!agent) return theme.border
-    return local.agent.color(agent.name)
+    const person = local.person.current()
+    if (!person) return theme.border
+    return local.person.color(person.id)
   })
 
-  const showVariant = createMemo(() => {
-    const variants = local.model.variant.list()
-    if (variants.length === 0) return false
-    const current = local.model.variant.current()
-    return !!current
-  })
-
-  const agentMetaAlpha = createFadeIn(() => !!local.agent.current(), animationsEnabled)
-  const modelMetaAlpha = createFadeIn(() => !!local.agent.current() && store.mode === "normal", animationsEnabled)
-  const variantMetaAlpha = createFadeIn(
-    () => !!local.agent.current() && store.mode === "normal" && showVariant(),
-    animationsEnabled,
-  )
+  const agentMetaAlpha = createFadeIn(() => !!local.person.current(), animationsEnabled)
+  const titleMetaAlpha = createFadeIn(() => !!local.person.current() && store.mode === "normal", animationsEnabled)
   const borderHighlight = createMemo(() => tint(theme.border, highlight(), agentMetaAlpha()))
 
   const placeholderText = createMemo(() => {
@@ -1231,11 +1162,8 @@ export function Prompt(props: PromptProps) {
   })
 
   const spinnerDef = createMemo(() => {
-    const agent =
-      status().type !== "idle"
-        ? (local.agent.list().find((a) => a.name === lastUserMessage()?.agent) ?? local.agent.current())
-        : local.agent.current()
-    const color = agent ? local.agent.color(agent.name) : theme.border
+    const person = local.person.current()
+    const color = person ? local.person.color(person.id) : theme.border
     return {
       frames: createFrames({
         color,
@@ -1353,34 +1281,17 @@ export function Prompt(props: PromptProps) {
             />
             <box flexDirection="row" flexShrink={0} paddingTop={1} gap={1} justifyContent="space-between">
               <box flexDirection="row" gap={1}>
-                <Show when={local.agent.current()} fallback={<box height={1} />}>
-                  {(agent) => (
+                <Show when={local.person.current()} fallback={<box height={1} />}>
+                  {(person) => (
                     <>
                       <text fg={fadeColor(highlight(), agentMetaAlpha())}>
-                        {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
+                        {store.mode === "shell" ? "Shell" : `@${person().handle}`}
                       </text>
-                      <Show when={store.mode === "normal" && local.permission.mode === "auto"}>
-                        <text fg={fadeColor(theme.textMuted, agentMetaAlpha())}>auto</text>
-                      </Show>
-                      <Show when={store.mode === "normal"}>
-                        <box flexDirection="row" gap={1}>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
-                          <text
-                            flexShrink={0}
-                            fg={fadeColor(leader() ? theme.textMuted : theme.text, modelMetaAlpha())}
-                          >
-                            {local.model.parsed().model}
-                          </text>
-                          <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>{currentProviderLabel()}</text>
-                          <Show when={showVariant()}>
-                            <text fg={fadeColor(theme.textMuted, variantMetaAlpha())}>·</text>
-                            <text>
-                              <span style={{ fg: fadeColor(theme.warning, variantMetaAlpha()), bold: true }}>
-                                {local.model.variant.current()}
-                              </span>
-                            </text>
-                          </Show>
-                        </box>
+                      <Show when={store.mode === "normal" && person().title}>
+                        <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>
+                        <text fg={fadeColor(leader() ? theme.textMuted : theme.text, titleMetaAlpha())}>
+                          {person().title}
+                        </text>
                       </Show>
                     </>
                   )}
@@ -1531,7 +1442,7 @@ export function Prompt(props: PromptProps) {
                     </Match>
                     <Match when={true}>
                       <text fg={theme.text}>
-                        {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
+                        {agentShortcut()} <span style={{ fg: theme.textMuted }}>people</span>
                       </text>
                     </Match>
                   </Switch>

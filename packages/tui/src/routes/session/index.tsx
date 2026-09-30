@@ -314,23 +314,6 @@ export function Session() {
     })
   })
 
-  let lastSwitch: string | undefined = undefined
-  event.on("message.part.updated", (evt) => {
-    const part = evt.properties.part
-    if (part.type !== "tool") return
-    if (part.sessionID !== route.sessionID) return
-    if (part.state.status !== "completed") return
-    if (part.id === lastSwitch) return
-
-    if (part.tool === "plan_exit") {
-      local.agent.set("build")
-      lastSwitch = part.id
-    } else if (part.tool === "plan_enter") {
-      local.agent.set("plan")
-      lastSwitch = part.id
-    }
-  })
-
   let seeded = false
   let scroll: ScrollBoxRenderable
   let prompt: PromptRef | undefined
@@ -485,32 +468,6 @@ export function Session() {
             setPrompt={(promptInfo) => prompt?.set(promptInfo)}
           />
         ))
-      },
-    },
-    {
-      title: "Compact session",
-      value: "session.compact",
-      category: "Session",
-      slash: {
-        name: "compact",
-        aliases: ["summarize"],
-      },
-      run: () => {
-        const selectedModel = local.model.current()
-        if (!selectedModel) {
-          toast.show({
-            variant: "warning",
-            message: "No model is configured, so this session cannot be summarized.",
-            duration: 3000,
-          })
-          return
-        }
-        void sdk.client.session.summarize({
-          sessionID: route.sessionID,
-          modelID: selectedModel.modelID,
-          providerID: selectedModel.providerID,
-        })
-        dialog.clear()
       },
     },
     {
@@ -1280,7 +1237,7 @@ function UserMessage(props: {
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => props.pending !== undefined && props.index > props.pending)
-  const color = createMemo(() => local.agent.color(props.message.agent))
+  const color = createMemo(() => theme.secondary)
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 
@@ -1446,10 +1403,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
             <text marginTop={1}>
               <span
                 style={{
-                  fg:
-                    props.message.error?.name === "MessageAbortedError"
-                      ? theme.textMuted
-                      : local.agent.color(props.message.agent),
+                  fg: props.message.error?.name === "MessageAbortedError" ? theme.textMuted : theme.secondary,
                 }}
               >
                 ▣{" "}

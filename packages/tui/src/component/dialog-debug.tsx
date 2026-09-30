@@ -22,14 +22,14 @@ export function DialogDebug() {
   dialog.setSize("large")
 
   const entries = createMemo(() => {
-    const model = local.model.current()
+    const person = local.person.current()
     return [
       { label: "Version", value: `${InstallationVersion} (${InstallationChannel})` },
       { label: "Date", value: new Date().toISOString() },
       { label: "OS", value: describeOS() },
       { label: "Terminal", value: describeTerminal() },
       { label: "Session ID", value: route.data.type === "session" ? route.data.sessionID : "n/a" },
-      { label: "Model", value: model ? `${model.providerID}/${model.modelID}` : "n/a" },
+      { label: "Person", value: person ? `@${person.handle}` : "n/a" },
     ]
   })
 

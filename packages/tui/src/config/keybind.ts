@@ -94,8 +94,8 @@ export const Definitions = {
   session_quick_switch_9: keybind("<leader>9", "Switch to session in quick slot 9"),
 
   stash_delete: keybind("ctrl+d", "Delete stash entry"),
-  agent_cycle: keybind("tab", "Next agent"),
-  agent_cycle_reverse: keybind("shift+tab", "Previous agent"),
+  agent_cycle: keybind("tab", "Next person"),
+  agent_cycle_reverse: keybind("shift+tab", "Previous person"),
 
   messages_page_up: keybind("pageup,ctrl+alt+b", "Scroll messages up by one page"),
   messages_page_down: keybind("pagedown,ctrl+alt+f", "Scroll messages down by one page"),

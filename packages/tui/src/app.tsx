@@ -48,7 +48,6 @@ import { PromptStashProvider } from "./component/prompt/stash"
 import { ToastProvider, useToast } from "./ui/toast"
 import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
-import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
@@ -380,17 +379,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const args = useArgs()
   onMount(() => {
     batch(() => {
-      if (args.agent) local.agent.set(args.agent)
-      if (args.model) {
-        const { providerID, modelID } = Model.parse(args.model)
-        if (!providerID || !modelID)
-          return toast.show({
-            variant: "warning",
-            message: `Invalid model format: ${args.model}`,
-            duration: 3000,
-          })
-        local.model.set({ providerID, modelID }, { recent: true })
-      }
       if (args.sessionID && !args.fork) {
         route.navigate({
           type: "session",
@@ -486,20 +474,20 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       })),
       {
         name: "agent.cycle",
-        title: "Agent cycle",
-        category: "Agent",
+        title: "Next person",
+        category: "Person",
         hidden: true,
         run: () => {
-          local.agent.move(1)
+          local.person.cycle(1)
         },
       },
       {
         name: "agent.cycle.reverse",
-        title: "Agent cycle reverse",
-        category: "Agent",
+        title: "Previous person",
+        category: "Person",
         hidden: true,
         run: () => {
-          local.agent.move(-1)
+          local.person.cycle(-1)
         },
       },
       {
