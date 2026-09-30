@@ -1,8 +1,10 @@
 """How the office daemon is started: its command, environment, and log, and the host it runs on."""
 
+import contextlib
 import hashlib
 import os
 import shutil
+import socket as sock
 import subprocess
 import sys
 import time
@@ -80,6 +82,13 @@ def run_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
 
 def office_answers(socket: Path) -> bool:
     """Whether an office is serving on ``socket`` (``GET /people`` answers 200)."""
+    # httpx leaks the socket when a unix-socket connect fails, so probe with one we close.
+    with contextlib.closing(sock.socket(sock.AF_UNIX, sock.SOCK_STREAM)) as probe:
+        probe.settimeout(2)
+        try:
+            probe.connect(str(socket))
+        except OSError:
+            return False
     try:
         with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office",
                           timeout=2) as client:

@@ -3,6 +3,7 @@
 import os
 import shlex
 import subprocess
+import warnings
 
 from agent_corp.daemon.main import make_office_dir
 from agent_corp.install.launch import Host, Launch, ServiceError
@@ -44,7 +45,10 @@ def start_background(launch: Launch, host: Host) -> None:
         fd = os.open(launch.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     except OSError as exc:
         raise ServiceError(f"can't open the office log {launch.log}: {exc}") from exc
-    with os.fdopen(fd, "ab") as log:
+    # The daemon outlives this process by design, so Popen's "still running" warning when the
+    # handle is dropped is noise.
+    with os.fdopen(fd, "ab") as log, warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
         try:
             host.popen(list(launch.argv), cwd=launch.cwd, env=launch.env, stdin=subprocess.DEVNULL,
                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
