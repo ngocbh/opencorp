@@ -324,6 +324,50 @@
         "commit": { "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }], "default": null },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       }
+    },
+    "FollowUp": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "confirmed": { "type": "boolean", "default": false },
+        "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null }
+      }
+    },
+    "Debrief": {
+      "type": "object", "additionalProperties": false, "required": ["session_id", "state", "updated_at"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "state": { "enum": ["pending", "ready"] },
+        "summary": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "status": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "The debrief flow's own status."
+        },
+        "artifacts": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "decisions": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "follow_ups": { "type": "array", "items": { "$ref": "#/$defs/FollowUp" }, "default": [] },
+        "open_questions": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "cost": { "type": "number", "minimum": 0, "default": 0 },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Feedback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "run_id", "author", "text", "status", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "run_id": { "type": "string" },
+        "author": { "$ref": "#/$defs/Id" },
+        "text": { "type": "string" },
+        "status": { "enum": ["queued", "learning", "applied", "learning_failed"] },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "commit": {
+          "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }], "default": null,
+          "description": "The profile commit once applied."
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
     }
   }
 }

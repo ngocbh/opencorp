@@ -1,0 +1,15 @@
+{
+  "session_id": "01JA1S0000000000000000000A",
+  "state": "ready",
+  "summary": "Fixed the flaky login test by faking the clock.",
+  "status": "done",
+  "artifacts": ["tests/test_login.py"],
+  "decisions": ["Fake the clock rather than sleep."],
+  "follow_ups": [
+    { "text": "Audit other tests for real sleeps.", "confirmed": true, "work_item_id": "01JA1W0000000000000000000B" },
+    { "text": "Add a CI timeout." }
+  ],
+  "open_questions": [],
+  "cost": 0.03,
+  "updated_at": "2026-09-29T10:31:00Z"
+}
