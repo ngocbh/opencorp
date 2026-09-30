@@ -163,16 +163,14 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   carbonfox,
 }
 
-const pluginThemes: Record<string, ThemeJson> = {}
 let customThemes: Record<string, ThemeJson> = {}
 let systemTheme: ThemeJson | undefined
 const listeners = new Set<(themes: Record<string, ThemeJson>) => void>()
 
 function listThemes() {
-  // Priority: defaults < plugin installs < custom files < generated system.
+  // Priority: defaults < custom files < generated system.
   const themes = {
     ...DEFAULT_THEMES,
-    ...pluginThemes,
     ...customThemes,
   }
   if (!systemTheme) return themes
@@ -215,27 +213,6 @@ export function setSystemTheme(theme: ThemeJson | undefined) {
 export function hasTheme(name: string) {
   if (!name) return false
   return allThemes()[name] !== undefined
-}
-
-export function addTheme(name: string, theme: unknown) {
-  if (!name) return false
-  if (!isTheme(theme)) return false
-  if (hasTheme(name)) return false
-  pluginThemes[name] = theme
-  syncThemes()
-  return true
-}
-
-export function upsertTheme(name: string, theme: unknown) {
-  if (!name) return false
-  if (!isTheme(theme)) return false
-  if (customThemes[name] !== undefined) {
-    customThemes[name] = theme
-  } else {
-    pluginThemes[name] = theme
-  }
-  syncThemes()
-  return true
 }
 
 export function resolveTheme(theme: ThemeJson, mode: "dark" | "light") {

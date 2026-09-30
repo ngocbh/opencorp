@@ -1,8 +1,6 @@
 import { CliRenderEvents, SyntaxStyle, type TerminalColors } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import {
-  DEFAULT_THEMES,
-  addTheme,
   allThemes,
   generateSubtleSyntax,
   generateSyntax,
@@ -10,13 +8,10 @@ import {
   hasTheme,
   isTheme,
   resolveTheme,
-  selectedForeground,
   setCustomThemes,
   setSystemTheme,
   subscribeThemes,
   terminalMode,
-  tint,
-  upsertTheme,
   type ThemeJson,
 } from "../theme"
 import { createEffect, createMemo, onCleanup, onMount } from "solid-js"
@@ -69,7 +64,6 @@ export async function discoverThemes(directories: string[]) {
 
 export {
   DEFAULT_THEMES,
-  addTheme,
   allThemes,
   generateSubtleSyntax,
   generateSyntax,
@@ -80,7 +74,6 @@ export {
   selectedForeground,
   terminalMode,
   tint,
-  upsertTheme,
   type Theme,
   type ThemeJson,
   type SyntaxStyleOverrides,
