@@ -45,7 +45,10 @@ test("interrupt, end, and the cost cap", async () => {
   // The session stays busy until the stopped reply's next turn opens.
   expect((await client().sessions.get(id)).status).toBe("busy")
   expect((await client().sessions.costCap(id, { cost_cap_usd: 5 })).cost_cap_usd).toBe(5)
-  expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("invalid_body")
+  // A cap at or below the cost so far is the office's cap_too_low; a cap that isn't a number is invalid_body.
+  expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("cap_too_low")
+  const notNumber = request(office.socket, "POST", `/sessions/${id}/cost-cap`, { cost_cap_usd: "5" })
+  expect((await failure(notNumber)).code).toBe("invalid_body")
   await client().sessions.end(id)
   // A main session is debriefed before it ends.
   expect((await client().sessions.get(id)).status).toBe("ending")
