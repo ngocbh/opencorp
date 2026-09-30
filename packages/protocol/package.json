@@ -3,5 +3,9 @@
   "version": "0.0.1",
   "type": "module",
   "main": "src/index.ts",
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
   "devDependencies": { "json-schema-to-typescript": "^15.0.0" }
 }
