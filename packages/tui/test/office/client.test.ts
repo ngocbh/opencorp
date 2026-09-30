@@ -29,8 +29,10 @@ test("create a session, prompt it, list it by person", async () => {
   const prompts: string[] = []
   office.onPrompt((_, req) => prompts.push(req.text))
   const s = await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })
-  expect([s.person, s.kind, s.status]).toEqual(["minh", "main", "idle"])
+  expect([s.person, s.kind, s.status]).toEqual(["minh", "main", "starting"])
+  // A prompt sent before the first turn opens waits for it.
   expect(await client().sessions.prompt(s.id, { text: "hi" })).toEqual({ ok: true })
+  await until(() => prompts.length > 0)
   expect(prompts).toEqual(["hi"])
   expect((await client().sessions.messages(s.id)).map((m) => m.role)).toEqual(["user"])
   expect((await client().sessions.get(s.id)).status).toBe("busy")
@@ -40,10 +42,15 @@ test("create a session, prompt it, list it by person", async () => {
 test("interrupt, end, and the cost cap", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
+  await client().sessions.prompt(id, { text: "go" })
   await client().sessions.interrupt(id)
-  expect((await client().sessions.get(id)).status).toBe("interrupted")
+  // The session stays busy until the stopped reply's next turn opens.
+  expect((await client().sessions.get(id)).status).toBe("busy")
   expect((await client().sessions.costCap(id, { cost_cap_usd: 5 })).cost_cap_usd).toBe(5)
-  expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("invalid_body")
+  // A cap at or below the cost so far is the office's cap_too_low; a cap that isn't a number is invalid_body.
+  expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("cap_too_low")
+  const notNumber = request(office.socket, "POST", `/sessions/${id}/cost-cap`, { cost_cap_usd: "5" })
+  expect((await failure(notNumber)).code).toBe("invalid_body")
   await client().sessions.end(id)
   // A main session is debriefed before it ends.
   expect((await client().sessions.get(id)).status).toBe("ending")
@@ -62,12 +69,15 @@ test("the first answer wins; the second gets 409 not_open", async () => {
 test("open questions are listed by session and status", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
+  // The seeded session's open turn is listed first.
+  const [turn] = Object.keys(office.state.questions)
   const a = office.addQuestion({})
   const b = office.addQuestion({})
   office.addQuestion({ session_id: "OTHER" })
   await client().questions.answer(b.id, { answer: "x", answer_kind: "text" })
-  expect((await client().questions.list({ session: id, status: "open" })).map((q) => q.id)).toEqual([a.id])
+  expect((await client().questions.list({ session: id, status: "open" })).map((q) => q.id)).toEqual([turn, a.id])
   expect((await client().questions.list({ session: id, status: ["open", "answered"] })).map((q) => q.id)).toEqual([
+    turn,
     a.id,
     b.id,
   ])
@@ -111,6 +121,15 @@ test("a hire confirm repeats the preview; a taken handle is a lint issue on prev
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "@minh is already used by minh"])
 })
 
+test("a hire confirm with no id is invalid_body; with an id never previewed it is lint_failed", async () => {
+  office = createFakeOffice()
+  const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
+  expect((await failure(client().people.hire({ ...req, confirm: true }))).code).toBe("invalid_body")
+  const unseen = await failure(client().people.hire({ ...req, id: "01JA1H0000000000000000NEW0", confirm: true }))
+  expect([unseen.status, unseen.code]).toEqual([422, "lint_failed"])
+  expect(unseen.message).toContain("preview it again")
+})
+
 test("a hire checks the body like the office; an unknown manager is a lint issue", async () => {
   office = createFakeOffice()
   const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
@@ -130,11 +149,20 @@ test("a hire checks the body like the office; an unknown manager is a lint issue
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
 })
 
-test("routes switched off answer 501 like today's office", async () => {
+test("today's office serves hires and the session routes, and answers 501 on the question side routes", async () => {
   office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
-  const err = await failure(client().sessions.create({ person: "minh", cwd: "/tmp/proj" }))
+  const id = office.state.sessions[0].id
+  await client().people.hire({ name: "Lan", handle: "lan", title: "QA", manager: "ngocbh", confirm: false })
+  expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).status).toBe("starting")
+  await client().sessions.prompt(id, { text: "go" })
+  await client().sessions.steer(id, { text: "faster" })
+  await client().sessions.interrupt(id)
+  await client().sessions.costCap(id, { cost_cap_usd: 5 })
+  await client().sessions.end(id)
+  const q = office.addQuestion({ session_id: id, source: "ask_user" })
+  const err = await failure(client().questions.stop(q.id))
   expect(isNotImplemented(err)).toBe(true)
-  expect(err.message).toBe("POST /sessions is not implemented yet")
+  expect(err.message).toBe(`POST /questions/${q.id}/stop is not implemented yet`)
 })
 
 test("unknown paths and wrong methods", async () => {

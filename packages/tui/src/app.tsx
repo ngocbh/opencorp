@@ -10,6 +10,7 @@ import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
 import { createCliRenderer, MouseButton } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
+import { leaveBindings, pressTwice } from "./routes/chat/leave"
 import {
   Switch,
   Match,
@@ -268,6 +269,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const office = useOffice()
+  const leave = pressTwice(5000)
   const exit = useExit()
   const promptRef = usePromptRef()
   const clipboard = useClipboard()
@@ -462,6 +464,24 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         category: "System",
       },
       {
+        name: "app.leave",
+        title: "Leave the app",
+        hidden: true,
+        run: () => {
+          // A chat keeps running after the view closes, so leaving it takes a second press.
+          if (route.data.type !== "session" || leave()) return exit()
+          const sessionID = route.data.sessionID
+          const status = office.state.sessions.find((s) => s.id === sessionID)?.status
+          // An interrupted session has no live run either, until something resumes it.
+          const over = status === "ended" || status === "failed" || status === "interrupted"
+          toast.show({
+            message: over ? "Press again to leave." : "Press again to leave; the session keeps running.",
+            variant: "info",
+          })
+        },
+        category: "System",
+      },
+      {
         name: "app.debug",
         title: "Toggle debug panel",
         category: "System",
@@ -597,7 +617,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       if (!current?.focused) return true
       return current.current.input === ""
     },
-    bindings: tuiConfig.keybinds.gather("app_exit", ["app.exit"]),
+    bindings: leaveBindings(tuiConfig.keybinds.gather("app_exit", ["app.exit"])),
   }))
 
   return (

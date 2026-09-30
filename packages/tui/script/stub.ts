@@ -22,6 +22,7 @@ import { createTwoFilesPatch } from "diff"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
+import { isTurn } from "../src/office/turn"
 import { HANDLE } from "../src/routes/picker/people"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 
@@ -65,13 +66,6 @@ export type FakeState = {
 
 /** The routes the office answers with 501 today; pass as `notImplemented` to match it. */
 export const OFFICE_501_ROUTES = [
-  "POST /people",
-  "POST /sessions",
-  "POST /sessions/:id/prompt",
-  "POST /sessions/:id/steer",
-  "POST /sessions/:id/interrupt",
-  "POST /sessions/:id/end",
-  "POST /sessions/:id/cost-cap",
   "POST /questions/:id/side",
   "POST /questions/:id/send-back",
   "POST /questions/:id/stop",
@@ -85,6 +79,11 @@ export const OFFICE_501_ROUTES = [
 
 const now = () => new Date().toISOString()
 
+/** Words a side chat refuses, in any case: only the office ends a side run. */
+const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
+/** Statuses with a live run, which take interrupt and end. */
+const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
+
 /** A git blob id for `text`, so fake profile versions look like the office's. */
 export function blobId(text: string) {
   const body = Buffer.from(text)
@@ -97,7 +96,10 @@ function counter() {
   return () => String(++n).padStart(26, "0")
 }
 
-/** A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human), one idle main session. */
+/**
+ * A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human), one idle main session
+ * waiting on its first turn.
+ */
 export function seed(nextId = counter()): FakeState {
   const at = now()
   const people: Person[] = [
@@ -118,13 +120,26 @@ export function seed(nextId = counter()): FakeState {
     created_at: at,
     updated_at: at,
   }
+  // An idle chat waits on its open turn, the chat flow's `chat#1/ask` human_input.
+  const turn: Question = {
+    id: nextId(),
+    session_id: session.id,
+    run_id: "run-1",
+    node_id: "chat#1/ask",
+    source: "human_input",
+    asker: "minh",
+    question: "You:",
+    status: "open",
+    created_at: at,
+    updated_at: at,
+  }
   const profile = "# Minh\n\nWrites small, tested changes.\n"
   return {
     people,
     folders: { "/tmp/proj": ["minh"] },
     sessions: [session],
     messages: { [session.id]: [] },
-    questions: {},
+    questions: { [turn.id]: turn },
     profiles: { minh: { person: "minh", text: profile, version: blobId(profile), over_budget: false } },
     proposals: {},
     workItems: {},
@@ -156,6 +171,8 @@ export function createFakeOffice(
     seed?: FakeState
     socket?: string
     notImplemented?: Iterable<string>
+    /** Route keys an older office doesn't have: it answers them `404 no_route`. */
+    missing?: Iterable<string>
     /** The company's `profile_max_chars`; a longer profile is `over_budget`. */
     profileMaxChars?: number
   } = {},
@@ -164,16 +181,21 @@ export function createFakeOffice(
   const profileMaxChars = opts.profileMaxChars ?? 32000
   const state = opts.seed ?? seed(nextId)
   const notImplemented = new Set(opts.notImplemented ?? [])
+  const missing = new Set(opts.missing ?? [])
   const requests: { method: string; path: string; raw: string; body: unknown }[] = []
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
+  const interrupts: ((sessionId: string) => void)[] = []
+  // Messages sent with no open turn and no reply running, by session; the next turn takes them.
+  const queued = new Map<string, string[]>()
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
   // The run each debrief was written in; the protocol's Debrief doesn't carry it.
   const debriefRuns = new Map<string, string>()
 
   const fail = (status: number, error: string, message: string) => new Fail(status, error, message)
+  const refused = () => fail(422, "refused", "use /back to return to the question")
   const need = <T>(value: T | undefined, what: string): T => {
     if (value === undefined) throw fail(404, "not_found", `no ${what}`)
     return value
@@ -231,9 +253,10 @@ export function createFakeOffice(
   function setStatus(id: string, status: Session["status"]) {
     return upsertSession({ ...session(id), status, updated_at: now() })
   }
+  /** Creates a session; an idle one waits on its first turn. */
   function newSession(fields: Partial<Session> & Pick<Session, "person" | "cwd">): Session {
     const at = now()
-    return upsertSession(
+    const s = upsertSession(
       {
         id: nextId(),
         harness: "composer",
@@ -249,6 +272,8 @@ export function createFakeOffice(
       },
       "session.created",
     )
+    if (s.status === "idle") openTurn(s.id)
+    return s
   }
   function userMessage(sessionId: string, text: string) {
     const msg: Message = {
@@ -262,14 +287,50 @@ export function createFakeOffice(
     live({ type: "message.updated", session_id: sessionId, data: structuredClone(msg) as unknown as LiveEvent["data"] })
     return msg
   }
+  /** A session with a live run, else the office's `409 not_live`. */
+  function liveSession(id: string) {
+    const s = session(id)
+    if (!LIVE.includes(s.status)) throw fail(409, "not_live", `session ${id} has no live run`)
+    return s
+  }
+  /** Adds a side chat's user message to its question's discussion. */
+  function discuss(side: Session, text: string) {
+    const q = side.question_id ? state.questions[side.question_id] : undefined
+    if (!q) return
+    updateQuestion({ ...q, discussion: [...(q.discussion ?? []), { role: "user", text }], updated_at: now() })
+  }
+  /**
+   * The office's prompt: answers the open turn and starts a reply; while a reply runs it is a
+   * steer (written to the transcript, no new reply); otherwise it is queued for the next turn.
+   */
   function turn(id: string, body: any) {
     check(str(body?.text), "text must be a non-empty string")
-    const s = session(id)
-    if (s.status === "ended" || s.status === "failed") throw fail(409, "session_ended", `session ${id} has ended`)
+    const s = liveSession(id)
+    if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
+    if (s.kind === "side" && SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
     userMessage(id, body.text)
-    setStatus(id, "busy")
-    for (const fn of prompts) fn(id, { text: body.text })
+    if (s.kind === "side") discuss(s, body.text)
+    const open = Object.values(state.questions).find((q) => q.session_id === id && q.status === "open" && isTurn(q))
+    if (open) takeTurn(open, body.text)
+    else if (s.status !== "busy") queued.set(id, [...(queued.get(id) ?? []), body.text])
     return Response.json({ ok: true })
+  }
+  /** Answers a turn with `text` and starts its reply. */
+  function takeTurn(q: Question, text: string) {
+    const answered = { status: "answered", answer: text, answer_kind: "text", answered_by: human() } as const
+    updateQuestion({ ...q, ...answered, updated_at: now() })
+    setStatus(q.session_id, "busy")
+    for (const fn of prompts) fn(q.session_id, { text })
+  }
+  /**
+   * Esc: answers the open `ask_user` questions (of one run, when given) and stops the reply. The
+   * session stays busy until the stopped reply's next turn opens; `onInterrupt` drivers open it.
+   */
+  function interrupt(s: Session, runId?: string) {
+    for (const q of Object.values(state.questions))
+      if (q.session_id === s.id && q.status === "open" && q.source === "ask_user" && (!runId || q.run_id === runId))
+        close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
+    for (const fn of interrupts) fn(s.id)
   }
 
   const question = (id: string) => need(state.questions[id], `question ${id}`)
@@ -281,7 +342,51 @@ export function createFakeOffice(
   function close(id: string, fields: Partial<Question>) {
     const q = question(id)
     if (q.status !== "open") throw fail(409, "not_open", `question ${id} is ${q.status}, not open`)
+    // The office ends a question's side chat when the question closes.
+    const side = state.sessions.find((s) => s.id === q.side_session_id)
+    if (side && side.status !== "ended") setStatus(side.id, "ended")
     return updateQuestion({ ...q, status: "answered", answered_by: human(), updated_at: now(), ...fields })
+  }
+  /** Marks an open question stale, as the office does when its run restarts, and ends its side chat. */
+  function expire(id: string) {
+    const q = question(id)
+    const side = state.sessions.find((s) => s.id === q.side_session_id)
+    if (side && side.status !== "ended") setStatus(side.id, "ended")
+    return updateQuestion({ ...q, status: "stale", updated_at: now() })
+  }
+  /**
+   * The office's answer check, loosely: a model question takes text (an option one of its
+   * options), a question with pages a record with a label (a list for multi-select) per header.
+   */
+  function checkAnswer(q: Question, answer: unknown, kind: string) {
+    const invalid = (message: string) => fail(422, "invalid_answer", message)
+    const label = (v: unknown) => typeof v === "string" && v.trim().length > 0
+    if (q.source !== "human_input") {
+      if (!label(answer)) throw invalid("the answer must be text")
+      if (kind === "option" && !q.options?.includes(answer as string))
+        throw invalid(`${JSON.stringify(answer)} is not one of the options`)
+      return
+    }
+    if (!q.questions?.length) return
+    if (!answer || typeof answer !== "object" || Array.isArray(answer))
+      throw invalid("the answer must be a record with one entry per question header")
+    const record = answer as Record<string, unknown>
+    const extra = Object.keys(record).find((h) => !q.questions!.some((p) => p.header === h))
+    if (extra) throw invalid(`no question has the header ${JSON.stringify(extra)}`)
+    for (const page of q.questions) {
+      if (!(page.header in record)) throw invalid(`${JSON.stringify(page.header)} has no answer`)
+      const value = record[page.header]
+      const ok = page.multi_select ? Array.isArray(value) && value.every(label) : label(value)
+      const shape = page.multi_select ? "a list of labels" : "one label"
+      if (!ok) throw invalid(`${JSON.stringify(page.header)} takes ${shape}`)
+    }
+  }
+  /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
+  function openModelQuestion(id: string, code: string) {
+    const q = question(id)
+    if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+    if (q.source === "human_input") throw fail(422, code, `question ${q.id} is a human_input`)
+    return q
   }
   /** Opens a question in a session (the seeded one by default), as a harness `ask_user` would. */
   function addQuestion(fields: Partial<Question>) {
@@ -300,6 +405,19 @@ export function createFakeOffice(
       ...fields,
     }
     return updateQuestion(q, "question.created")
+  }
+  /**
+   * Opens a session's next turn, as the chat flow's `chat#N/ask` human_input does when a reply ends:
+   * the session goes idle, or the queued messages take the turn at once.
+   */
+  function openTurn(sessionId: string) {
+    const n = Object.values(state.questions).filter((q) => q.session_id === sessionId && isTurn(q)).length + 1
+    const q = addQuestion({ session_id: sessionId, source: "human_input", node_id: `chat#${n}/ask`, question: "You:" })
+    const pending = queued.get(sessionId)
+    queued.delete(sessionId)
+    if (pending) takeTurn(q, pending.join("\n\n"))
+    else if (["busy", "starting"].includes(session(sessionId).status)) setStatus(sessionId, "idle")
+    return question(q.id)
   }
 
   /**
@@ -377,7 +495,7 @@ export function createFakeOffice(
 
   /**
    * The office's hire: a preview writes nothing and returns lint issues; a confirm must repeat the
-   * preview's fields and id, and is refused while lint has an error.
+   * preview's fields and id, and is refused while lint has an error or when the id was never previewed.
    */
   function hire(body: any) {
     const fields = ["name", "handle", "title", "manager"] as const
@@ -410,8 +528,10 @@ export function createFakeOffice(
       state.hires[id] = body
       return Response.json({ person, diff, issues, commit: null } satisfies HireResponse)
     }
+    check(str(body.id), "confirm needs the id of a preview")
     const previewed = state.hires[body.id]
-    check(body.id && previewed, "confirm needs the id of a preview")
+    // The office keeps previews in memory, so an id it never previewed (or lost on restart) is a lint failure.
+    if (!previewed) throw fail(422, "lint_failed", `no preview of ${body.id}; preview it again`)
     if (fields.some((f) => previewed[f] !== body[f])) {
       throw fail(422, "lint_failed", "confirm must repeat the previewed fields")
     }
@@ -453,7 +573,11 @@ export function createFakeOffice(
           `person ${body.person}`,
         )
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
-        return Response.json(newSession({ person: body.person, cwd: body.cwd, harness: body.harness ?? "composer" }))
+        const harness = body.harness ?? "composer"
+        const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting" })
+        // Like the office, the session starts its run first and goes idle when that run opens its first turn.
+        setTimeout(() => session(s.id).status === "starting" && openTurn(s.id), 10)
+        return Response.json(s)
       },
     ],
     ["GET", "/sessions/:id", ({ params }) => Response.json(session(params.id))],
@@ -467,13 +591,16 @@ export function createFakeOffice(
     [
       "POST",
       "/sessions/:id/interrupt",
-      ({ params }) => (setStatus(params.id, "interrupted"), Response.json({ ok: true })),
+      ({ params }) => {
+        interrupt(liveSession(params.id))
+        return Response.json({ ok: true })
+      },
     ],
     [
       "POST",
       "/sessions/:id/end",
       ({ params }) => {
-        const s = session(params.id)
+        const s = liveSession(params.id)
         if (s.status === "ending") return Response.json({ ok: true })
         setStatus(s.id, "ending")
         // A main session is debriefed before it ends, and ends once its debrief is written.
@@ -488,7 +615,9 @@ export function createFakeOffice(
       ({ params, body }) => {
         const s = session(params.id)
         check(typeof body?.cost_cap_usd === "number", "cost_cap_usd must be a number")
-        check(body.cost_cap_usd > (s.cost ?? 0), "the cap must be above the session's cost")
+        if (body.cost_cap_usd <= (s.cost ?? 0)) {
+          throw fail(422, "cap_too_low", `the cap must be above the session's cost of $${s.cost ?? 0}`)
+        }
         return Response.json(upsertSession({ ...s, cost_cap_usd: body.cost_cap_usd, updated_at: now() }))
       },
     ],
@@ -529,6 +658,7 @@ export function createFakeOffice(
           body && "answer" in body && ["option", "text"].includes(body.answer_kind),
           "answer_kind must be option or text",
         )
+        checkAnswer(question(params.id), body.answer, body.answer_kind)
         return Response.json(close(params.id, { answer: body.answer, answer_kind: body.answer_kind }))
       },
     ],
@@ -539,25 +669,60 @@ export function createFakeOffice(
         check(str(body?.text), "text must be a non-empty string")
         const q = question(params.id)
         if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
-        const parent = session(q.session_id)
-        const side = newSession({ person: q.asker, cwd: parent.cwd, kind: "side", question_id: q.id, seed: q.question })
-        userMessage(side.id, body.text)
-        updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
-        return Response.json(side)
+        if (SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
+        // One side session per question: later messages reach it too, and an ended one restarts.
+        let side = state.sessions.find((x) => x.id === q.side_session_id)
+        if (!side) {
+          const cwd = session(q.session_id).cwd
+          side = newSession({ person: q.asker, cwd, kind: "side", question_id: q.id, seed: q.question })
+          updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
+        } else if (!LIVE.includes(side.status)) {
+          setStatus(side.id, "idle")
+          const waiting = Object.values(state.questions).some(
+            (x) => x.session_id === side!.id && x.status === "open" && isTurn(x),
+          )
+          if (!waiting) openTurn(side.id)
+        }
+        turn(side.id, body)
+        return Response.json(session(side.id))
       },
     ],
     [
       "POST",
       "/questions/:id/send-back",
       ({ params, body }) => {
-        check(str(body?.note), "note must be a non-empty string")
-        return Response.json(close(params.id, { answer: body.note, answer_kind: "sent_back" }))
+        check(typeof body?.note === "string", "note must be a string")
+        const q = openModelQuestion(params.id, "cannot_send_back")
+        if (!q.discussion?.length && !q.carried_from)
+          throw fail(422, "no_discussion", `question ${q.id} has no discussion to send back`)
+        // A non-blank note becomes the discussion's last entry.
+        const note = body.note.trim() ? [{ role: "user" as const, text: body.note }] : []
+        const discussion = [...(q.discussion ?? []), ...note]
+        return Response.json(close(q.id, { answer: null, answer_kind: "sent_back", discussion }))
       },
     ],
     [
       "POST",
       "/questions/:id/stop",
-      ({ params }) => Response.json(close(params.id, { answer: null, answer_kind: "interrupted" })),
+      ({ params }) => {
+        const q = openModelQuestion(params.id, "cannot_stop")
+        // Stopping a live main chat's ask_user is Esc on that chat, for every open ask_user of its run.
+        const asker = session(q.session_id)
+        if (q.source === "ask_user" && asker.kind === "main" && LIVE.includes(asker.status)) {
+          interrupt(asker, q.run_id)
+          return Response.json(question(q.id))
+        }
+        return Response.json(close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" }))
+      },
+    ],
+    [
+      "POST",
+      "/questions/:id/carried/dismiss",
+      ({ params }) => {
+        const q = question(params.id)
+        if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+        return Response.json(updateQuestion({ ...q, carried_from: null, updated_at: now() }))
+      },
     ],
     ["GET", "/profiles/:person", ({ params }) => Response.json(profile(params.person))],
     [
@@ -747,10 +912,10 @@ export function createFakeOffice(
     const segs = url.pathname.split("/")
     const found = routes.flatMap(([method, pattern, h]) => {
       const params = match(pattern, segs)
-      return params ? [{ method, pattern, h, params }] : []
+      return params && !missing.has(`${method} ${pattern}`) ? [{ method, pattern, h, params }] : []
     })
     if (!found.length)
-      return Response.json({ error: "no_route", message: `no route for ${url.pathname}` }, { status: 404 })
+      return Response.json({ error: "no_route", message: `no route ${req.method} ${url.pathname}` }, { status: 404 })
     const route = found.find((r) => r.method === req.method)
     if (!route)
       return Response.json(
@@ -789,6 +954,8 @@ export function createFakeOffice(
     emit,
     live,
     addQuestion,
+    openTurn,
+    expire,
     setStatus,
     propose,
     addDebrief,
@@ -819,9 +986,13 @@ export function createFakeOffice(
         release()
       }
     },
+    /** Calls `fn` after an interrupt, as the reply's driver: it stops the reply and opens the next turn. */
+    onInterrupt(fn: (sessionId: string) => void) {
+      interrupts.push(fn)
+    },
     /**
-     * Calls `fn` after each prompt or steer is recorded and the session is set busy, and after a
-     * new profile manager session's first message (that session stays `starting`).
+     * Calls `fn` after a prompt that starts a reply is recorded and the session is set busy (not for
+     * a steer), and after a new profile manager session's first message (that session stays `starting`).
      */
     onPrompt(fn: (sessionId: string, req: PromptRequest) => void) {
       prompts.push(fn)

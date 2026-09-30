@@ -74,6 +74,7 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number })
       side: (id: string, req: SideChatRequest) => post<Session>(`${q(id)}/side`, req),
       sendBack: (id: string, req: SendBackRequest) => post<Question>(`${q(id)}/send-back`, req),
       stop: (id: string) => post<Question>(`${q(id)}/stop`),
+      dismissCarried: (id: string) => post<Question>(`${q(id)}/carried/dismiss`),
     },
     profiles: {
       get: (person: string) => get<Profile>(`/profiles/${seg(person)}`),

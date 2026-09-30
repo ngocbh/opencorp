@@ -44,12 +44,14 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
+import { OPENCODE_BASE_MODE, useBindings, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
-import { OfficeError, OfficeUnavailable } from "../../office/errors"
-import { openQuestions } from "../../office/store"
-import { QuestionPrompt } from "./question"
+import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
+import { QuestionCard } from "../chat/card"
+import { SideChat, SideHeader } from "../chat/side"
+import { cardQuestions } from "../chat/turn"
+import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -122,8 +124,43 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
-  const messages = createMemo(() => office.state.messages[route.sessionID] ?? [])
-  const question = createMemo(() => openQuestions(office.state, route.sessionID)[0])
+  const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
+  // The card whose side chat is showing; the view shows the side session in place of the chat.
+  const [sideOf, setSideOf] = createSignal<string>()
+  const sideQuestion = createMemo(() => {
+    const q = question()
+    return q && q.id === sideOf() ? q : undefined
+  })
+  const sideSession = createMemo(() => office.state.sessions.find((s) => s.id === sideQuestion()?.side_session_id))
+  // Until its first message the side session doesn't exist, so the side view starts empty.
+  const viewID = createMemo(() => (sideOf() ? sideQuestion()?.side_session_id : route.sessionID))
+  const messages = createMemo(() => {
+    const id = viewID()
+    return id ? (office.state.messages[id] ?? []) : []
+  })
+  // Esc freezes what the transcript shows until the next message is sent.
+  const [frozen, setFrozen] = createSignal<Freeze>()
+  const shown = createMemo(() => messages().flatMap((m) => frozenView(frozen(), m) ?? []))
+  createEffect(on(viewID, () => setFrozen(undefined), { defer: true }))
+  /**
+   * Ends the freeze as the user sends, before the office answers, so the new reply's first
+   * message shows even if it streams in first; returns an undo for a send that fails.
+   */
+  function lift() {
+    const f = frozen()
+    if (!f?.active) return
+    const lifted = unfreeze(f, messages())
+    const view = viewID()
+    setFrozen(lifted)
+    // A newer Esc, or a switch to or from the side view, has since replaced the lifted freeze.
+    return () => {
+      if (frozen() === lifted && viewID() === view) setFrozen(f)
+    }
+  }
+  // The side chat closes with its question.
+  createEffect(() => {
+    if (sideOf() && !sideQuestion()) setSideOf(undefined)
+  })
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
 
   createEffect(() => {
@@ -153,6 +190,7 @@ export function Session() {
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
+  const keymap = useOpencodeKeymap()
 
   createEffect(
     on(
@@ -226,6 +264,28 @@ export function Session() {
   }
 
   const sessionCommandList = createMemo(() => [
+    {
+      title: "End the session",
+      value: "session.end",
+      category: "Session",
+      slash: { name: "end" },
+      run: () => {
+        dialog.clear()
+        // The office interrupts a busy session before it ends it, then runs the debrief.
+        office.client.sessions
+          .end(route.sessionID)
+          .then(() => {
+            // The debrief screen shows the debrief once it is written; without it, say so here.
+            if (keymap.dispatchCommand("debrief.show").ok) return
+            toast.show({ message: "Ending the session", variant: "info" })
+          })
+          .catch((error) =>
+            isNotImplemented(error)
+              ? toast.show({ message: "Ending a session is not available yet", variant: "warning" })
+              : toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }),
+          )
+      },
+    },
     {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
       value: "session.sidebar.toggle",
@@ -426,7 +486,7 @@ export function Session() {
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 
-  const lastAssistant = createMemo(() => messages().findLast((x) => x.role === "assistant"))
+  const lastAssistant = createMemo(() => shown().findLast((x) => x.role === "assistant"))
 
   return (
     <context.Provider
@@ -448,7 +508,8 @@ export function Session() {
           <Show when={session()}>
             {(current) => (
               <>
-                <box flexShrink={0} paddingTop={1}>
+                <Show when={sideQuestion()}>{(q) => <SideHeader question={q()} session={sideSession()} />}</Show>
+                <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
                   <text fg={theme.text} wrapMode="none">
                     <b>{person()}</b>
                     <span style={{ fg: current().status === "busy" ? theme.warning : theme.textMuted }}>
@@ -478,7 +539,7 @@ export function Session() {
                   flexGrow={1}
                   scrollAcceleration={scrollAcceleration()}
                 >
-                  <For each={messages()}>
+                  <For each={shown()}>
                     {(message, index) => (
                       <Switch>
                         <Match when={message.role === "user"}>
@@ -506,14 +567,37 @@ export function Session() {
                       <Prompt
                         visible={true}
                         ref={bind}
-                        onSubmit={() => {
-                          toBottom()
-                        }}
+                        onSend={lift}
+                        onSubmit={() => toBottom()}
+                        onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                         sessionID={route.sessionID}
                       />
                     }
                   >
-                    {(_id) => <QuestionPrompt question={question()} />}
+                    {(_id) => (
+                      <>
+                        <QuestionCard
+                          question={question()}
+                          hidden={!!sideOf()}
+                          onChat={() => setSideOf(question()?.id)}
+                        />
+                        <Show when={sideQuestion()}>
+                          {(q) => (
+                            <SideChat
+                              question={q()}
+                              session={sideSession()}
+                              onBack={() => setSideOf(undefined)}
+                              onSend={() => {
+                                const undo = lift()
+                                toBottom()
+                                return undo
+                              }}
+                              onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                            />
+                          )}
+                        </Show>
+                      </>
+                    )}
                   </Show>
                 </box>
               </>

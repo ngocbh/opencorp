@@ -68,6 +68,9 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     )
 
     await renderUntil(setup, "@minh · idle")
+    // Leaving a chat takes a second press.
+    setup.mockInput.pressKey("d", { ctrl: true })
+    await renderUntil(setup, "again to leave")
     setup.mockInput.pressKey("d", { ctrl: true })
     await task
 

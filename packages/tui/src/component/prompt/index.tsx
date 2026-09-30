@@ -49,6 +49,10 @@ export type PromptProps = {
   visible?: boolean
   disabled?: boolean
   onSubmit?: () => void
+  /** Called just before the text goes to the office; returns an undo for a send that fails. */
+  onSend?: () => (() => void) | void
+  /** Called when Esc interrupts the session, before the office is asked to. */
+  onInterrupt?: () => void
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
   right?: JSX.Element
@@ -135,7 +139,6 @@ export function Prompt(props: PromptProps) {
   const [store, setStore] = createStore<{
     prompt: PromptInfo
     extmarkToPartIndex: Map<number, number>
-    interrupt: number
     placeholder: number
   }>({
     placeholder: randomIndex(list().length),
@@ -144,7 +147,6 @@ export function Prompt(props: PromptProps) {
       parts: [],
     },
     extmarkToPartIndex: new Map(),
-    interrupt: 0,
   })
 
   createEffect(
@@ -208,17 +210,8 @@ export function Prompt(props: PromptProps) {
           if (!input.focused) return
           const sessionID = props.sessionID
           if (!sessionID) return
-
-          setStore("interrupt", store.interrupt + 1)
-
-          setTimeout(() => {
-            setStore("interrupt", 0)
-          }, 5000)
-
-          if (store.interrupt >= 2) {
-            office.client.sessions.interrupt(sessionID).catch(showError("Interrupting failed"))
-            setStore("interrupt", 0)
-          }
+          props.onInterrupt?.()
+          office.client.sessions.interrupt(sessionID).catch(showError("Interrupting failed"))
           dialog.clear()
         },
       },
@@ -670,14 +663,17 @@ export function Prompt(props: PromptProps) {
     const text = promptText()
 
     let sessionID = props.sessionID
+    let undo: (() => void) | void = undefined
     try {
       if (!sessionID) {
         const created = await office.client.sessions.create({ person: person!.id, cwd: office.cwd })
         sessionID = created.id
         await office.syncSession(sessionID)
       }
+      undo = props.onSend?.()
       await office.client.sessions.prompt(sessionID, { text })
     } catch (error) {
+      undo?.()
       showError(sessionID ? "Failed to send prompt" : "Creating a session failed")(error)
       // A new session opens even if its prompt failed; the unsent text follows it there.
       if (sessionID && !props.sessionID) route.navigate({ type: "session", sessionID })
@@ -976,11 +972,8 @@ export function Prompt(props: PromptProps) {
                   <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
                 </Show>
               </box>
-              <text fg={store.interrupt > 0 ? theme.primary : theme.text}>
-                esc{" "}
-                <span style={{ fg: store.interrupt > 0 ? theme.primary : theme.textMuted }}>
-                  {store.interrupt > 0 ? "again to interrupt" : "interrupt"}
-                </span>
+              <text fg={theme.text}>
+                esc <span style={{ fg: theme.textMuted }}>interrupt</span>
               </text>
             </box>
           </Show>
