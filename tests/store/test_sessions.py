@@ -3,7 +3,9 @@
 import pytest
 
 from agent_corp.store import DuplicateKey, NotFound, StoreError
-from tests.store.conftest import session
+from tests.store.conftest import debrief, feedback, message, proposal, question, session
+
+NO_SESSION = "01K6A0000000000000000000ZZ"
 
 
 def test_session_round_trips_with_runs(store):
@@ -60,4 +62,22 @@ def test_worked_folders_order_for_the_picker(store):
     assert [f.cwd for f in store.worked_folders("minh")] == ["/b", "/a", "/c"]
     store.touch_worked_folder("minh", "/c", at="2026-09-29T12:00:00.000Z")
     assert [f.cwd for f in store.worked_folders("minh", limit=2)] == ["/c", "/b"]
+    assert store.events_after() == []
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        lambda s: s.add_question(question(NO_SESSION)),
+        lambda s: s.add_feedback(feedback(NO_SESSION)),
+        lambda s: s.add_message(message(NO_SESSION)),
+        lambda s: s.save_debrief(debrief(NO_SESSION)),
+        lambda s: s.add_profile_proposal(proposal(NO_SESSION)),
+        lambda s: s.add_session_run(NO_SESSION, "run-9"),
+    ],
+    ids=["question", "feedback", "message", "debrief", "proposal", "run"],
+)
+def test_session_owned_rows_need_their_session(store, write):
+    with pytest.raises(NotFound):
+        write(store)
     assert store.events_after() == []

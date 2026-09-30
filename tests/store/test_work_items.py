@@ -72,7 +72,7 @@ def test_comments(store):
 
 
 def test_comment_needs_its_work_item(store):
-    with pytest.raises(StoreError):
+    with pytest.raises(NotFound):
         store.add_comment(comment("01K6A0000000000000000000ZZ"))
 
 

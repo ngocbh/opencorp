@@ -277,6 +277,8 @@ class Tx:
         except sqlite3.IntegrityError as exc:
             if "UNIQUE" in str(exc):
                 raise DuplicateKey(f"{table.name}: {exc}") from exc
+            if "FOREIGN KEY" in str(exc):
+                raise NotFound(f"{table.name}: the row it belongs to does not exist") from exc
             raise StoreError(f"{table.name}: {exc}") from exc
 
     def update(self, table: _Table, cols: dict[str, Any]) -> None:
