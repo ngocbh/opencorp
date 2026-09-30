@@ -1,7 +1,6 @@
 import { Prompt, type PromptRef } from "../component/prompt"
 import { createEffect, createMemo, createSignal, onMount, Show } from "solid-js"
 import { Logo } from "../component/logo"
-import { useSync } from "../context/sync"
 import { Toast } from "../ui/toast"
 import { useArgs } from "../context/args"
 import { useRouteData } from "../context/route"
@@ -16,13 +15,9 @@ import { useTuiPaths } from "../context/runtime"
 import { abbreviateHome } from "../runtime"
 
 let once = false
-const placeholder = {
-  normal: ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"],
-  shell: ["ls -la", "git status", "pwd"],
-}
+const placeholder = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
 
 export function Home() {
-  const sync = useSync()
   const route = useRouteData("home")
   const promptRef = usePromptRef()
   const [ref, setRef] = createSignal<PromptRef | undefined>()
@@ -59,12 +54,12 @@ export function Home() {
     once = true
   }
 
-  // Wait for sync and model store to be ready before auto-submitting --prompt
+  // Wait for the office and a person before auto-submitting --prompt
   createEffect(() => {
     const r = ref()
     if (sent) return
     if (!r) return
-    if (!sync.ready || !local.person.current()) return
+    if (office.status() !== "online" || !local.person.current()) return
     if (!args.prompt) return
     if (r.current.input !== args.prompt) return
     sent = true

@@ -6,23 +6,18 @@ import { firstBy } from "remeda"
 import { createMemo, createResource, createEffect, onMount, onCleanup, Index, Show, createSignal } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useEditorContext } from "../../context/editor"
-import { useProject } from "../../context/project"
-import { useSDK } from "../../context/sdk"
-import { useSync } from "../../context/sync"
-import { useData } from "../../context/data"
+import { useOffice } from "../../context/office"
 import { getScrollAcceleration } from "../../util/scroll"
-import { useTuiPaths } from "../../context/runtime"
 import { useTuiConfig } from "../../config"
-import { useLocation } from "../../context/location"
 import { useTheme, selectedForeground } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTerminalDimensions } from "@opentui/solid"
 import { Locale } from "../../util/locale"
-import type { PromptInfo } from "../../prompt/history"
+import type { PromptFilePart, PromptInfo } from "../../prompt/history"
+import { findFiles } from "../../prompt/files"
 import { useFrecency } from "../../prompt/frecency"
 import { useBindings, useCommandSlashes, useOpencodeModeStack } from "../../keymap"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
-import type { FileSystemEntry } from "@opencode-ai/sdk/v2"
 
 function removeLineRange(input: string) {
   const hashIndex = input.lastIndexOf("#")
@@ -67,7 +62,6 @@ export type AutocompleteOption = {
   aliases?: string[]
   disabled?: boolean
   description?: string
-  isDirectory?: boolean
   onSelect?: () => void
   path?: string
 }
@@ -81,22 +75,16 @@ export function Autocomplete(props: {
   input: () => TextareaRenderable
   ref: (ref: AutocompleteRef) => void
   fileStyleId: number
-  agentStyleId: number
   promptPartTypeId: () => number
 }) {
   const editor = useEditorContext()
-  const sdk = useSDK()
-  const sync = useSync()
-  const data = useData()
-  const project = useProject()
+  const office = useOffice()
   const slashes = useCommandSlashes()
   const modeStack = useOpencodeModeStack()
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   const frecency = useFrecency()
   const tuiConfig = useTuiConfig()
-  const paths = useTuiPaths()
-  const location = useLocation()
   const [store, setStore] = createStore({
     index: 0,
     selected: 0,
@@ -169,7 +157,7 @@ export function Autocomplete(props: {
     setStore("input", "keyboard")
   })
 
-  function insertPart(text: string, part: PromptInfo["parts"][number]) {
+  function insertPart(text: string, part: PromptFilePart) {
     const input = props.input()
     const currentCursorOffset = input.cursorOffset
 
@@ -189,68 +177,45 @@ export function Autocomplete(props: {
     const extmarkStart = store.index
     const extmarkEnd = extmarkStart + Bun.stringWidth(virtualText)
 
-    const styleId = part.type === "file" ? props.fileStyleId : part.type === "agent" ? props.agentStyleId : undefined
-
     const extmarkId = input.extmarks.create({
       start: extmarkStart,
       end: extmarkEnd,
       virtual: true,
-      styleId,
+      styleId: props.fileStyleId,
       typeId: props.promptPartTypeId(),
     })
 
     props.setPrompt((draft) => {
-      if (part.type === "file") {
-        const existingIndex = draft.parts.findIndex((p) => p.type === "file" && "url" in p && p.url === part.url)
-        if (existingIndex !== -1) {
-          const existing = draft.parts[existingIndex]
-          if (
-            part.source?.text &&
-            existing &&
-            "source" in existing &&
-            existing.source &&
-            "text" in existing.source &&
-            existing.source.text
-          ) {
-            existing.source.text.start = extmarkStart
-            existing.source.text.end = extmarkEnd
-            existing.source.text.value = virtualText
-          }
-          return
+      const existing = draft.parts.find((p) => p.type === "file" && p.url === part.url)
+      if (existing) {
+        if (part.source?.text && existing.source?.text) {
+          existing.source.text.start = extmarkStart
+          existing.source.text.end = extmarkEnd
+          existing.source.text.value = virtualText
         }
+        return
       }
 
-      if (part.type === "file" && part.source?.text) {
+      if (part.source?.text) {
         part.source.text.start = extmarkStart
         part.source.text.end = extmarkEnd
         part.source.text.value = virtualText
-      } else if (part.type === "agent" && part.source) {
-        part.source.start = extmarkStart
-        part.source.end = extmarkEnd
-        part.source.value = virtualText
       }
       const partIndex = draft.parts.length
       draft.parts.push(part)
       props.setExtmark(partIndex, extmarkId)
     })
 
-    if (part.type === "file" && part.source && part.source.type === "file") {
-      frecency.updateFrecency(part.source.path)
-    }
+    if (part.source) frecency.updateFrecency(part.source.path)
   }
 
-  function createFilePart(
-    item: FileSystemEntry,
-    filePath: string,
-    lineRange?: { startLine: number; endLine?: number },
-  ) {
+  function createFilePart(item: string, filePath: string, lineRange?: { startLine: number; endLine?: number }) {
     const urlObj = pathToFileURL(filePath)
-    const filename =
-      lineRange && item.type !== "directory"
-        ? `${item.path}#${lineRange.startLine}${lineRange.endLine ? `-${lineRange.endLine}` : ""}`
-        : item.path
+    const filename = lineRange
+      ? `${item}#${lineRange.startLine}${lineRange.endLine ? `-${lineRange.endLine}` : ""}`
+      : item
 
-    if (lineRange && item.type !== "directory") {
+    if (lineRange) {
       urlObj.searchParams.set("start", String(lineRange.startLine))
       if (lineRange.endLine !== undefined) {
         urlObj.searchParams.set("end", String(lineRange.endLine))
@@ -261,7 +226,7 @@ export function Autocomplete(props: {
       filename,
       part: {
         type: "file" as const,
-        mime: item.type === "directory" ? "application/x-directory" : "text/plain",
+        mime: "text/plain",
         filename,
         url: urlObj.href,
         source: {
@@ -271,24 +236,14 @@ export function Autocomplete(props: {
             end: 0,
             value: "",
           },
-          path: item.path,
+          path: item,
         },
-      },
+      } satisfies PromptFilePart,
     }
   }
 
-  const references = createMemo(() => data.location.reference.list() ?? [])
-
-  const referenceMatch = createMemo(() => {
-    if (!store.visible || store.visible === "/") return
-    const { baseQuery } = extractLineRange(search())
-    const slash = baseQuery.indexOf("/")
-    const alias = slash === -1 ? baseQuery : baseQuery.slice(0, slash)
-    return references().find((item) => !item.hidden && item.name === alias)
-  })
-
   function normalizeMentionPath(filePath: string) {
-    const baseDir = location()?.directory || sync.path.directory || paths.cwd
+    const baseDir = office.cwd
     const absolute = path.resolve(filePath)
     const relative = path.relative(baseDir, absolute)
 
@@ -305,7 +260,7 @@ export function Autocomplete(props: {
       startLine: input.lineStart,
       endLine: input.lineEnd > input.lineStart ? input.lineEnd : undefined,
     }
-    const { filename, part } = createFilePart({ path: item, type: "file" }, input.filePath, lineRange)
+    const { filename, part } = createFilePart(item, input.filePath, lineRange)
     const index = store.visible === "@" ? store.index : props.input().cursorOffset
 
     setStore("visible", false)
@@ -314,155 +269,28 @@ export function Autocomplete(props: {
   }
 
   const [files] = createResource(
-    () => ({ query: search(), location: location() }),
-    async (input) => {
+    () => search(),
+    async (query) => {
       if (!store.visible || store.visible === "/") return []
-      if (referenceMatch()) return []
-      const { lineRange, baseQuery } = extractLineRange(input.query ?? "")
-
-      // Get files from SDK
-      const result = await sdk.client.v2.fs.find({
-        query: baseQuery,
-        limit: "20",
-        location: {
-          directory: input.location?.directory,
-          workspace: input.location?.workspaceID ?? project.workspace.current(),
-        },
+      const { lineRange, baseQuery } = extractLineRange(query ?? "")
+      const width = props.anchor().width - 4
+      return (await findFiles(office.cwd, baseQuery)).map((item): AutocompleteOption => {
+        const { filename, part } = createFilePart(item, path.join(office.cwd, item), lineRange)
+        return {
+          display: Locale.truncateMiddle(filename, width),
+          value: filename,
+          path: item,
+          onSelect: () => insertPart(filename, part),
+        }
       })
-
-      const options: AutocompleteOption[] = []
-
-      // Add file options. Trust the order returned by fff (frecency, fuzzy
-      // score, filename bonus, etc. are already factored in).
-      if (!result.error && result.data) {
-        const width = props.anchor().width - 4
-        options.push(
-          ...result.data.data.map((item): AutocompleteOption => {
-            const { filename, part } = createFilePart(
-              item,
-              path.join(result.data.location.directory, item.path),
-              lineRange,
-            )
-            return {
-              display: Locale.truncateMiddle(filename, width),
-              value: filename,
-              isDirectory: item.type === "directory",
-              path: item.path,
-              onSelect: () => {
-                insertPart(filename, part)
-              },
-            }
-          }),
-        )
-      }
-
-      return options
     },
     {
       initialValue: [],
     },
   )
 
-  const mcpResources = createMemo(() => {
-    if (!store.visible || store.visible === "/") return []
-
-    const options: AutocompleteOption[] = []
-    const width = props.anchor().width - 4
-
-    for (const res of Object.values(sync.data.mcp_resource)) {
-      options.push({
-        display: Locale.truncateMiddle(res.name, width),
-        // Match the name only; matching the URI caused unrelated fuzzy hits.
-        value: res.name,
-        description: res.description,
-        onSelect: () => {
-          insertPart(res.name, {
-            type: "file",
-            mime: res.mimeType ?? "text/plain",
-            filename: res.name,
-            url: res.uri,
-            source: {
-              type: "resource",
-              text: {
-                start: 0,
-                end: 0,
-                value: "",
-              },
-              clientName: res.client,
-              uri: res.uri,
-            },
-          })
-        },
-      })
-    }
-
-    return options
-  })
-
-  const agents = createMemo(() => {
-    return sync.data.agent
-      .filter((agent) => !agent.hidden && agent.mode !== "primary")
-      .map(
-        (agent): AutocompleteOption => ({
-          display: "@" + agent.name,
-          onSelect: () => {
-            insertPart(agent.name, {
-              type: "agent",
-              name: agent.name,
-              source: {
-                start: 0,
-                end: 0,
-                value: "",
-              },
-            })
-          },
-        }),
-      )
-  })
-
-  const referenceAliases = createMemo(() =>
-    references()
-      .filter((reference) => !reference.hidden)
-      .map(
-        (reference): AutocompleteOption => ({
-          display: "@" + reference.name,
-          description: ` ${reference.source.type === "git" ? reference.source.repository : reference.source.path}`,
-          onSelect: () => {
-            insertPart(reference.name, {
-              type: "file",
-              mime: "application/x-directory",
-              filename: reference.name,
-              url: pathToFileURL(reference.path).href,
-              source: {
-                type: "file",
-                text: { start: 0, end: 0, value: "" },
-                path: reference.name,
-              },
-            })
-          },
-        }),
-      ),
-  )
-
   const commands = createMemo((): AutocompleteOption[] => {
     const results: AutocompleteOption[] = [...slashes()]
-
-    for (const serverCommand of sync.data.command) {
-      if (serverCommand.source === "skill") continue
-      const label = serverCommand.source === "mcp" ? ":mcp" : ""
-      results.push({
-        display: "/" + serverCommand.name + label,
-        description: serverCommand.description,
-        onSelect: () => {
-          const newText = "/" + serverCommand.name + " "
-          const cursor = props.input().logicalCursor
-          props.input().deleteRange(0, 0, cursor.row, cursor.col)
-          props.input().insertText(newText)
-          props.input().cursorOffset = Bun.stringWidth(newText)
-        },
-      })
-    }
-
     results.sort((a, b) => a.display.localeCompare(b.display))
 
     const max = firstBy(results, [(x) => x.display.length, "desc"])?.display.length
@@ -475,24 +303,15 @@ export function Autocomplete(props: {
 
   const options = createMemo((prev: AutocompleteOption[] | undefined) => {
     const filesValue = files()
-    const referenceMatchValue = referenceMatch()
-    const agentsValue = agents()
-    const referenceAliasesValue = referenceAliases()
     const commandsValue = commands()
     const searchValue = search()
 
-    if (store.visible === "@" && referenceMatchValue) {
-      return referenceAliasesValue.filter((item) => item.display === `@${referenceMatchValue.name}`)
-    }
-
-    // Files come from fff already fuzzy ranked and filtered
-    // it shouldn't be additionally sorted by fuzzysort as it will loose the results
+    // Files come back fuzzy ranked already; sorting them again would lose that order.
     const fileOptions: AutocompleteOption[] = store.visible === "@" ? filesValue || [] : []
-    const nonFileOptions: AutocompleteOption[] =
-      store.visible === "@" ? [...referenceAliasesValue, ...agentsValue, ...mcpResources()] : [...commandsValue]
+    const nonFileOptions: AutocompleteOption[] = store.visible === "@" ? [] : [...commandsValue]
 
     if (!searchValue) {
-      return [...nonFileOptions, ...fileOptions]
+      return [...nonFileOptions, ...fileOptions.slice(0, 10)]
     }
 
     if (files.loading && prev && prev.length > 0) {
@@ -557,27 +376,6 @@ export function Autocomplete(props: {
     selected.onSelect?.()
   }
 
-  function expandDirectory() {
-    const selected = options()[store.selected]
-    if (!selected) return
-
-    const input = props.input()
-    const currentCursorOffset = input.cursorOffset
-
-    const displayText = (selected.value ?? selected.display).trimEnd()
-    const path = displayText.startsWith("@") ? displayText.slice(1) : displayText
-
-    input.cursorOffset = store.index
-    const startCursor = input.logicalCursor
-    input.cursorOffset = currentCursorOffset
-    const endCursor = input.logicalCursor
-
-    input.deleteRange(startCursor.row, startCursor.col, endCursor.row, endCursor.col)
-    input.insertText("@" + path + "/")
-
-    setStore("selected", 0)
-  }
-
   useBindings(() => ({
     target: props.input,
     enabled: () => Boolean(store.visible),
@@ -621,12 +419,6 @@ export function Autocomplete(props: {
         title: "Complete autocomplete item",
         category: "Autocomplete",
         run() {
-          const selected = options()[store.selected]
-          if (selected?.isDirectory) {
-            expandDirectory()
-            return
-          }
-
           select()
         },
       },
