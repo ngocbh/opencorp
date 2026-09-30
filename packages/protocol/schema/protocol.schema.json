@@ -454,6 +454,59 @@
         "error": { "type": "string", "description": "A short code, such as not_implemented or not_found." },
         "message": { "type": "string" }
       }
+    },
+    "AnswerRequest": {
+      "type": "object", "additionalProperties": false, "required": ["answer", "answer_kind"],
+      "properties": {
+        "answer": { "description": "Any JSON value, including null." },
+        "answer_kind": {
+          "enum": ["option", "text"],
+          "description": "sent_back and interrupted are set only by the office."
+        }
+      }
+    },
+    "SideChatRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": { "text": { "type": "string", "minLength": 1 } }
+    },
+    "SendBackRequest": {
+      "type": "object", "additionalProperties": false, "required": ["note"],
+      "properties": { "note": { "type": "string" } }
+    },
+    "ProfileWriteRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text", "base_version"],
+      "properties": {
+        "text": { "type": "string" },
+        "base_version": { "$ref": "#/$defs/GitId" }
+      }
+    },
+    "VersionConflict": {
+      "type": "object", "additionalProperties": false, "required": ["expected", "current"],
+      "properties": {
+        "expected": { "$ref": "#/$defs/GitId" },
+        "current": { "$ref": "#/$defs/GitId" }
+      }
+    },
+    "ProfileManagerRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": { "text": { "type": "string", "minLength": 1, "description": "The first message." } }
+    },
+    "FeedbackRequest": {
+      "type": "object", "additionalProperties": false, "required": ["session_id", "text"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "run_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "null means the session's latest run."
+        },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ConfirmFollowUpsRequest": {
+      "type": "object", "additionalProperties": false, "required": ["indices"],
+      "properties": {
+        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "uniqueItems": true }
+      }
     }
   }
 }
