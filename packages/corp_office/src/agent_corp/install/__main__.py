@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+from agent_corp.company_template import is_new
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, service
@@ -47,7 +48,7 @@ def _start(args: argparse.Namespace) -> int:
     run = launch(_home(args.home), user_home=host.user_home)
     if host.answers(run.socket):
         return 0
-    if not (OfficePaths(run.home).company / ".git").exists():
+    if is_new(OfficePaths(run.home).company):
         print(f"ac: no office at {run.home} yet; run `ac onboard` to set one up", file=sys.stderr)
         return NOT_ONBOARDED
     try:

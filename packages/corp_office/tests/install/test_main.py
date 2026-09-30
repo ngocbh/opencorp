@@ -35,6 +35,15 @@ def test_start_before_onboarding_is_exit_3_with_a_hint(tmp_path, capsys):
     assert "run `ac onboard`" in capsys.readouterr().err
 
 
+def test_start_with_a_company_that_has_no_first_commit_is_exit_3_with_a_hint(tmp_path, capsys):
+    company = tmp_path / "home" / "company"
+    company.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(company)], check=True)
+    (company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
+    assert main(["start", "--home", str(tmp_path / "home")]) == 3
+    assert "run `ac onboard`" in capsys.readouterr().err
+
+
 def test_an_onboarding_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
     args = ["onboard", "--home", str(tmp_path / "home"), "--provider-stdin", "--company", "Acme",

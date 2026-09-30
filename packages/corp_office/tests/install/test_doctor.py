@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 import time
 
 import psutil
@@ -36,6 +37,16 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe)
+
+
+def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
+    paths = OfficePaths(tmp_path / "home")
+    paths.company.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(paths.company)], check=True)
+    (paths.company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
+    got = by_name(run_checks(tmp_path, paths))
+    assert got["company"] == Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no"
+                                   " first commit); run `ac onboard` to finish it")
 
 
 def test_a_fresh_machine_is_told_to_onboard(tmp_path):

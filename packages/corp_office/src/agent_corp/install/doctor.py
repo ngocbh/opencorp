@@ -13,7 +13,7 @@ import psutil
 from agent_corp.chat.provider import ProviderError, load_provider
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
-from agent_corp.company_template import missing_files
+from agent_corp.company_template import is_new, missing_files
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
@@ -65,6 +65,9 @@ def _home(paths: OfficePaths) -> Check:
 def _company(paths: OfficePaths, running: bool) -> Check:
     if not (paths.company / ".git").exists():
         return Check("company", "fail", f"no company repo at {paths.company}; run `ac onboard`")
+    if is_new(paths.company):
+        return Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no first commit);"
+                     " run `ac onboard` to finish it")
     try:
         issues = lint(load_repo(paths.company))
     except Exception as exc:  # a repo that won't even load is the finding
