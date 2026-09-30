@@ -1,6 +1,6 @@
 import { InputRenderable, TextAttributes } from "@opentui/core"
 import type { HireRequest, HireResponse, Person } from "@agent-corp/protocol"
-import { For, Show, createSignal, onMount } from "solid-js"
+import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useOffice } from "../../context/office"
 import { useLocal } from "../../context/local"
@@ -36,6 +36,9 @@ export function DialogHire() {
   const inputs: InputRenderable[] = []
   // Counts edits, so a preview answered after an edit is dropped instead of shown for the old fields.
   let edits = 0
+  // Esc can close the form while a request is out; its answer must not touch whatever is open now.
+  let closed = false
+  onCleanup(() => (closed = true))
 
   const focus = (i: number) => {
     const n = (i + FIELDS.length) % FIELDS.length
@@ -57,6 +60,7 @@ export function DialogHire() {
     try {
       response = await office.client.people.hire(built.request)
     } catch (e) {
+      if (closed) return
       setBusy(false)
       if (!shown && edits !== at) return
       // A refused confirm means the office's view changed since the preview; preview again.
@@ -64,6 +68,7 @@ export function DialogHire() {
       return setError(e instanceof Error ? e.message : String(e))
     }
     if (!shown) {
+      if (closed) return
       setBusy(false)
       if (edits === at) setPreview({ request: built.request, response })
       return
@@ -71,12 +76,16 @@ export function DialogHire() {
     await hired(response.person)
   }
 
-  /** The office has hired `person`; nothing after this can undo it, so it only updates the view. */
+  /**
+   * The office has hired `person`, so nothing here can fail the hire. Re-reads people and says so;
+   * if the form is still open, also selects the person and closes it.
+   */
   async function hired(person: Person) {
     // There are no person events, so re-read the lists; if that fails the hire still stands.
     await office.refreshPeople().catch(() => {})
-    if (office.state.people.some((p) => p.id === person.id)) local.person.set(person.id)
     toast.show({ variant: "success", message: `Hired @${person.handle}` })
+    if (closed) return
+    if (office.state.people.some((p) => p.id === person.id)) local.person.set(person.id)
     dialog.clear()
   }
 

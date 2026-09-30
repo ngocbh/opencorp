@@ -163,3 +163,31 @@ test("once the office hires, the form closes even if re-reading people fails", a
     office.stop()
   }
 })
+
+test("Esc during a confirm leaves whatever opened next alone; the hire still lands", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Lan", "lan", "QA")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("enter hire"))
+    const release = office.hold("POST /people")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Asking the office"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Hire a new person"))
+    app.input.pressKey("x", { ctrl: true })
+    await app.setup.renderOnce()
+    app.input.pressKey("p")
+    await app.until((f) => f.includes("Who do you want to talk to?"))
+    release()
+    // The picker stays open and lists the hire once people are re-read.
+    const f = await app.until((f) => f.includes("Hired @lan") && f.includes("@lan"))
+    expect(f).toContain("Who do you want to talk to?")
+    for (let i = 0; i < 5; i++) await app.setup.renderOnce()
+    expect(await app.until(() => true)).toContain("Who do you want to talk to?")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
