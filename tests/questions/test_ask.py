@@ -7,9 +7,10 @@ from agent_composer.tools import ToolSet
 
 from agent_corp.protocol.models import DiscussionEntry, Question
 from agent_corp.questions.ask import Answers, QuestionExpired, make_ask_user
+from agent_corp.store import NotFound
 from agent_corp.worker.rpc import ASK_KEYS, BaseHandlers, ask_user_stub
 from tests.store.conftest import question as make_question
-from tests.store.conftest import session
+from tests.store.conftest import session, work_item
 from tests.store.conftest import store  # noqa: F401
 from tests.worker.conftest import office_end
 
@@ -35,7 +36,7 @@ class Desk:
         self.asked: list[Question] = []
         self.answer, self.kind = answer, kind
 
-    def __call__(self, q: Question) -> Question:
+    def __call__(self, q: Question, *, work_item=None) -> Question:
         self.asked.append(q)
         return q.model_copy(update={"status": "answered", "answer": self.answer, "answer_kind": self.kind})
 
@@ -158,3 +159,42 @@ def test_a_re_asked_human_input_finds_its_stored_question(store, answers, sid):
     got = answers.ask(again)
     assert got.id == first.id and got.answer == "kept"
     assert len(store.list_questions(session_id=sid)) == 1
+
+
+def test_a_work_item_is_stored_with_its_question(store, answers, sid):
+    item = work_item(kind="question")
+    q = make_question(sid, work_item_id=item.id)
+    t = threading.Thread(target=answers.ask, args=(q,), kwargs={"work_item": item}, daemon=True)
+    t.start()
+    [stored] = wait_open(store, sid)
+    assert stored.work_item_id == item.id and store.get_work_item(item.id).status == "open"
+    store.answer_question(q.id, "pg", "text")
+    t.join(5)
+    assert not t.is_alive()
+
+
+def test_a_question_that_cannot_be_stored_leaves_no_work_item(store, answers):
+    item = work_item(kind="question")
+    with pytest.raises(NotFound):
+        answers.ask(make_question("01J9ZZZZZZZZZZZZZZZZZZZZZZ", work_item_id=item.id), work_item=item)
+    assert store.get_work_item(item.id) is None
+
+
+def test_a_question_that_goes_stale_cancels_its_work_item(store, answers, sid):
+    item = work_item(kind="question")
+    q = make_question(sid, work_item_id=item.id)
+    out = {}
+
+    def ask():
+        try:
+            answers.ask(q, work_item=item)
+        except QuestionExpired as exc:
+            out["error"] = exc
+
+    t = threading.Thread(target=ask, daemon=True)
+    t.start()
+    wait_open(store, sid)
+    store.set_question_status(q.id, "stale")
+    t.join(5)
+    assert isinstance(out["error"], QuestionExpired)
+    assert store.get_work_item(item.id).status == "cancelled"

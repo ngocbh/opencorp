@@ -2,16 +2,21 @@
 
 import threading
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, Protocol
 
 from agent_corp.protocol import now
-from agent_corp.protocol.models import DiscussionEntry, Event, Question, Session
+from agent_corp.protocol.models import DiscussionEntry, Event, Question, Session, WorkItem
 from agent_corp.questions.format import format_answer
 from agent_corp.questions.normalize import normalize_options
 from agent_corp.store import DuplicateKey, InvalidTransition, Store, new_id
 
-OnQuestion = Callable[[Question], Question]
-"""Store an open question, block until it is answered, and return it answered."""
+
+class OnQuestion(Protocol):
+    """Store an open question (with ``work_item``, if given), block until it is answered, and return it answered."""
+
+    def __call__(self, question: Question, *, work_item: WorkItem | None = None) -> Question: ...
+
+
 Carried = Callable[[Question], Iterable[DiscussionEntry]]
 """The discussion an answered question carries over from an earlier, expired one."""
 
@@ -66,11 +71,13 @@ class Answers:
         """Stop listening to the store."""
         self._remove()
 
-    def ask(self, question: Question) -> Question:
+    def ask(self, question: Question, *, work_item: WorkItem | None = None) -> Question:
         """Store ``question`` and return it once answered, marked ``consumed``.
 
-        A ``human_input`` asked again for the same run and node (after a restart) reuses
-        the question already stored, and its answer if it has one.
+        ``work_item``, if given, is stored in the same transaction as the question, and
+        set to ``cancelled`` if the wait for the answer fails. A ``human_input`` asked
+        again for the same run and node (after a restart) reuses the question already
+        stored, and its answer if it has one.
 
         Raises:
             QuestionExpired: the question went stale first.
@@ -80,16 +87,33 @@ class Answers:
         self._watch(qid, ready)
         try:
             try:
-                self.store.add_question(question)
+                with self.store.transaction():
+                    if work_item is not None:
+                        self.store.create_work_item(work_item)
+                    self.store.add_question(question)
             except DuplicateKey:
+                work_item = None  # rolled back with the question
                 self._unwatch(qid, ready)
                 qid = self.store.get_question_by_node(question.run_id, question.node_id).id
                 self._watch(qid, ready)
-            while (current := self.store.get_question(qid)).status == "open":
-                ready.wait()
-                ready.clear()
+            try:
+                return self._answered(qid, ready)
+            except Exception:
+                if work_item is not None:
+                    self.store.update_work_item(work_item.id, status="cancelled")
+                raise
         finally:
             self._unwatch(qid, ready)
+
+    def carried(self, question: Question) -> list[DiscussionEntry]:
+        """The discussion of the expired question ``question`` carries over, if any."""
+        earlier = self.store.get_question(question.carried_from) if question.carried_from else None
+        return list(earlier.discussion) if earlier else []
+
+    def _answered(self, qid: str, ready: threading.Event) -> Question:
+        while (current := self.store.get_question(qid)).status == "open":
+            ready.wait()
+            ready.clear()
         if current.status == "stale":
             raise QuestionExpired(f"question {qid} expired before it was answered")
         if current.status == "answered":
@@ -98,11 +122,6 @@ class Answers:
             except InvalidTransition:  # consumed by another call meanwhile
                 current = self.store.get_question(qid)
         return current
-
-    def carried(self, question: Question) -> list[DiscussionEntry]:
-        """The discussion of the expired question ``question`` carries over, if any."""
-        earlier = self.store.get_question(question.carried_from) if question.carried_from else None
-        return list(earlier.discussion) if earlier else []
 
     def _watch(self, qid: str, ready: threading.Event) -> None:
         with self._lock:
