@@ -1,31 +1,47 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   office:
     runs-on: macos-latest
     timeout-minutes: 20
+    env:
+      UV_LOCKED: 1   # fail if uv.lock is stale, for both `uv sync` and `uv run`
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
           token: ${{ secrets.COMPOSER_READ_TOKEN }}   # agent-composer is private
           persist-credentials: false
-      - uses: astral-sh/setup-uv@v5
+      # setup-uv publishes no floating major tags, so pin the release.
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync
       - run: uv run pytest -q tests
   ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test
         working-directory: packages/protocol
-      - if: ${{ hashFiles('packages/tui/package.json') != '' }}
+      # `bun test` exits 1 when a package has no test files yet.
+      - if: ${{ hashFiles('packages/tui/**/*.test.ts', 'packages/tui/**/*.test.tsx', '!packages/tui/node_modules/**') != '' }}
         run: bun test
         working-directory: packages/tui
-      - if: ${{ hashFiles('packages/ac/package.json') != '' }}
+      - if: ${{ hashFiles('packages/ac/**/*.test.ts', 'packages/ac/**/*.test.tsx', '!packages/ac/node_modules/**') != '' }}
         run: bun test
         working-directory: packages/ac

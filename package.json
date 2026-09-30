@@ -1,6 +1,7 @@
 {
   "name": "agent-corp",
   "private": true,
+  "packageManager": "bun@1.4.2",
   "workspaces": ["packages/*"],
   "scripts": {
     "test": "bun run --filter '*' test",
