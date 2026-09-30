@@ -106,6 +106,7 @@ class _Live:
     ending: bool = False
     capped: bool = False
     exits: int = 0
+    died_at: str | None = None
     outcome: dict[str, Any] | None = None
     timer: threading.Timer | None = None
     calls: set[_Call] = field(default_factory=set)
@@ -279,6 +280,7 @@ class Harness:
                 log.exception("can't resume session %s", session.id)
                 self.store.update_session(session.id, status="failed")
                 continue
+            live.ending = session.status == "ending"
             with self._lock:
                 self._live[session.id] = live
             try:
@@ -506,6 +508,8 @@ class Harness:
             if self.store.get_question(question_id).status != "open":
                 return
             live.turn_q = question_id
+            if question_id != live.died_at:
+                live.exits = 0  # a new turn: the resumed worker got somewhere
             chat = live.spec.chat
             self.store.update_session(live.session_id, status="ending" if live.ending else "idle")
             if live.ending or self._turns(live) >= live.defaults.max_turns:
@@ -610,6 +614,7 @@ class Harness:
         with self._lock:
             if live.worker is not worker or self._stopping:
                 return
+            live.died_at = live.turn_q
             live.worker, live.reply_node, live.turn_q = None, None, None
             if live.timer is not None:
                 live.timer.cancel()
@@ -617,7 +622,7 @@ class Harness:
             for call in list(live.calls):
                 call.cancel()
         if outcome is None:
-            if live.exits >= 1:  # a worker that died twice in a row won't do better a third time
+            if live.exits >= 1:  # died again before a new turn: a third try won't do better
                 self._finish(live, "failed", None)
             else:
                 live.exits += 1

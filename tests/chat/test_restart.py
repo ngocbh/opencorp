@@ -124,3 +124,37 @@ def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_ll
     second.restore()
     assert status(second, orphan.id) == "failed" and orphan.id not in second._live
     wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the restored turn")
+
+
+def test_a_worker_that_dies_again_after_good_turns_resumes_again(harness, fake_llm, workspace):
+    fake_llm.script(*({"content": f"r{n}"} for n in range(5)))
+    sid = start(harness, workspace)
+    first = harness._live[sid].worker
+    os.killpg(first.pgid, signal.SIGKILL)
+    second = wait_for(lambda: (w := harness._live[sid].worker) not in (None, first) and harness._live[sid].turn_q
+                      and w, what="the resume")
+    for n in range(3):
+        harness.prompt(sid, f"t{n}")
+        wait_for(lambda: len(texts(harness, sid)) == n + 1 and status(harness, sid) == "idle", what=f"turn {n}")
+    os.killpg(second.pgid, signal.SIGKILL)
+    wait_for(lambda: (w := harness._live[sid].worker) not in (None, second) and harness._live[sid].turn_q,
+             what="the second resume")
+    harness.prompt(sid, "t3")
+    wait_for(lambda: texts(harness, sid)[-1:] == ["r3"], what="the turn after it")
+
+
+def test_a_session_ending_when_the_office_stops_ends_after_restore(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "slow", "hold": True}, {"content": "done"})
+    first = make_harness()
+    sid = start(first, workspace)
+    first.prompt(sid, "a")
+    fake_llm.wait_for_requests(1)
+    first._live[sid].worker.interrupt = lambda node: True  # the office stops before the worker sees the end
+    first.end(sid)
+    assert status(first, sid) == "ending"
+    first.close_all()
+    fake_llm.release()
+
+    second = make_harness()
+    second.restore()
+    wait_for(lambda: status(second, sid) == "ended", what="the end")
