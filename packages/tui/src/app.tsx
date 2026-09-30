@@ -75,8 +75,6 @@ import {
 
 import type { EventSource } from "./context/sdk"
 import { DialogVariant } from "./component/dialog-variant"
-import { createTuiAttention } from "./attention"
-import * as TuiAudio from "./audio"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
@@ -209,7 +207,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         Effect.sync(() => registerOpencodeKeymap(keymap, renderer, input.config)),
         (unregister) => Effect.sync(unregister),
       )
-      yield* Effect.addFinalizer(() => Effect.sync(TuiAudio.dispose))
       const shutdown = yield* Deferred.make<unknown>()
       const onSighup = () => destroyRenderer(renderer)
       yield* Effect.acquireRelease(
@@ -359,7 +356,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
-  const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
 
   // Let selection copy/dismiss win ahead of normal bindings when explicit copy is required.
@@ -373,7 +369,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   )
   onCleanup(() => {
     offSelectionKeys()
-    attention.dispose()
   })
 
   // Wire up console copy-to-clipboard via opentui's onCopySelection callback

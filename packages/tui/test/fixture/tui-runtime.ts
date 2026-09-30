@@ -1,8 +1,7 @@
-import { resolve, type Info, type Resolved } from "../../src/config"
+import { resolve, type Info } from "../../src/config"
 import { TuiKeybind } from "../../src/config/keybind"
 
-type ResolvedInput = Omit<Info, "attention" | "keybinds" | "leader_timeout"> & {
-  attention?: Partial<Resolved["attention"]>
+type ResolvedInput = Omit<Info, "keybinds" | "leader_timeout"> & {
   keybinds?: Partial<TuiKeybind.Keybinds>
   leader_timeout?: number
 }
