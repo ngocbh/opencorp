@@ -18,6 +18,7 @@ from agent_composer.skills.catalog import Skill
 
 from agent_corp.company.flows import load_confined
 from agent_corp.worker.channel import Channel, ChannelClosed, FrameTooLarge, jsonable
+from agent_corp.worker.inbox import Inbox
 from agent_corp.worker.job import Job
 from agent_corp.worker.remote_store import RemoteMarkdownStore
 from agent_corp.worker.rpc import REPLY_TYPES, Rpc, ask_user_stub, remote_tool
@@ -25,6 +26,7 @@ from agent_corp.worker.rpc import REPLY_TYPES, Rpc, ask_user_stub, remote_tool
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_ORPHANED = 3
+_FINISHED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
 
 def pick_skills(pin: Path, person_id: str, names: list[str]) -> dict[str, Skill]:
@@ -55,14 +57,22 @@ def job_memory(job: Job, rpc: Rpc, stack: ExitStack) -> dict[str, Any] | None:
     return memory or None
 
 
-def run_job(job: Job, channel: Channel, rpc: Rpc) -> dict[str, Any]:
-    """Run ``job``, sending ``event`` and ``stream`` frames; return the result frame's fields."""
+def run_job(job: Job, channel: Channel, rpc: Rpc, inbox: Inbox) -> dict[str, Any]:
+    """Run ``job``, sending ``event``, ``stream``, and ``steer_left`` frames; return the result frame's fields."""
     os.environ.update(job.env)
     pin = Path(job.pin)
     flow = load_confined(pin, pin / job.flow)
 
     def on_event(event: Any) -> None:
-        channel.send({"type": "event", "name": type(event).__name__, "data": jsonable(event)})
+        name = type(event).__name__
+        texts: list[str] = []
+        if name in _FINISHED:
+            # Finish before the office sees the event, so a steer it sends afterwards is refused.
+            node_id = event.failure.node_id if name == "NodeFailed" else event.node_id
+            texts = inbox.finish(node_id) if node_id else []
+        channel.send({"type": "event", "name": name, "data": jsonable(event)})
+        if texts:
+            channel.send({"type": "steer_left", "node_id": node_id, "texts": texts})
 
     def on_stream(chunk: Any) -> None:
         channel.send({"type": "stream", **jsonable(chunk)})
@@ -71,7 +81,7 @@ def run_job(job: Job, channel: Channel, rpc: Rpc) -> dict[str, Any]:
         common: dict[str, Any] = {
             "log": job.log, "num_workers": job.num_workers, "on_event": on_event, "on_stream": on_stream,
             "memory": job_memory(job, rpc, stack), "tools": job_tools(job, rpc),
-            "skills": pick_skills(pin, job.person_id, job.skills),
+            "skills": pick_skills(pin, job.person_id, job.skills), "steering": inbox,
         }
         if job.kind == "chat":
             Path(job.log).parent.mkdir(parents=True, exist_ok=True)
@@ -87,12 +97,18 @@ def run_job(job: Job, channel: Channel, rpc: Rpc) -> dict[str, Any]:
             "failure": jsonable(result.failure), "backward": backward}
 
 
-def read_frames(channel: Channel, rpc: Rpc, finished: threading.Event) -> None:
+def read_frames(channel: Channel, rpc: Rpc, inbox: Inbox, finished: threading.Event) -> None:
     """Route office frames until the channel closes; then exit (code 3) unless the job has finished."""
     try:
         while True:
             frame = channel.recv()
-            if frame.get("type") in REPLY_TYPES:
+            kind = frame.get("type")
+            if kind == "steer":
+                if not inbox.steer(frame["node_id"], frame["text"]):
+                    channel.send({"type": "steer_left", "node_id": frame["node_id"], "texts": [frame["text"]]})
+            elif kind == "interrupt":
+                inbox.interrupt(frame["node_id"])
+            elif kind in REPLY_TYPES:
                 rpc.deliver(frame)
     except ChannelClosed:
         pass
@@ -113,18 +129,20 @@ def main(argv: list[str] | None = None) -> int:
         start = channel.recv()
     except ChannelClosed:
         return EXIT_ORPHANED
-    rpc, finished = Rpc(channel), threading.Event()
-    threading.Thread(target=read_frames, args=(channel, rpc, finished), name="office-reader", daemon=True).start()
+    rpc, inbox, finished = Rpc(channel), Inbox(), threading.Event()
+    threading.Thread(target=read_frames, args=(channel, rpc, inbox, finished), name="office-reader",
+                     daemon=True).start()
     try:
         if start.get("type") != "start":
             raise ValueError(f"expected a start frame, got {start.get('type')!r}")
-        outcome = run_job(Job.model_validate(start["job"]), channel, rpc)
+        outcome = run_job(Job.model_validate(start["job"]), channel, rpc, inbox)
     except BaseException as exc:
         finished.set()
         return _report(channel, [{"type": "error", "message": f"{type(exc).__name__}: {exc}",
                                   "traceback": traceback.format_exc()}], EXIT_FAILED)
     finished.set()
-    return _report(channel, [{"type": "result", **outcome}], EXIT_OK)
+    left = [{"type": "steer_left", "node_id": n, "texts": t} for n, t in inbox.leftovers().items()]
+    return _report(channel, [*left, {"type": "result", **outcome}], EXIT_OK)
 
 
 def _report(channel: Channel, frames: list[dict[str, Any]], code: int) -> int:
