@@ -6,7 +6,6 @@ import { useEvent } from "./event"
 import path from "path"
 import { useTuiPaths } from "./runtime"
 import { useArgs } from "./args"
-import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
 import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
@@ -52,7 +51,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
   init: () => {
     const sync = useSync()
-    const sdk = useSDK()
     const toast = useToast()
     const theme = useTheme().theme
     const route = useRoute()
@@ -502,23 +500,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const session = createSession()
 
-    const mcp = {
-      isEnabled(name: string) {
-        const status = sync.data.mcp[name]
-        return status?.status === "connected"
-      },
-      async toggle(name: string) {
-        const status = sync.data.mcp[name]
-        if (status?.status === "connected") {
-          // Disable: disconnect the MCP
-          await sdk.client.mcp.disconnect({ name })
-        } else {
-          // Enable/Retry: connect the MCP (handles disabled, failed, and other states)
-          await sdk.client.mcp.connect({ name })
-        }
-      },
-    }
-
     createEffect(() => {
       const value = agent.current()
       if (!value?.model) return
@@ -533,7 +514,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const result = {
       model,
       agent,
-      mcp,
       session,
       permission,
     }

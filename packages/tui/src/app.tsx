@@ -34,8 +34,6 @@ import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
 import { PermissionProvider } from "./context/permission"
-import { DialogMcp } from "./component/dialog-mcp"
-import { DialogStatus } from "./component/dialog-status"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
@@ -92,10 +90,8 @@ const appGlobalBindingCommands = [
 const appBindingCommands = [
   "command.palette.show",
   "agent.list",
-  "mcp.list",
   "agent.cycle",
   "agent.cycle.reverse",
-  "opencode.status",
   "opencode.debug",
   "theme.switch",
   "theme.switch_mode",
@@ -543,15 +539,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         },
       },
       {
-        name: "mcp.list",
-        title: "Toggle MCPs",
-        category: "Agent",
-        slashName: "mcps",
-        run: () => {
-          dialog.replace(() => <DialogMcp />)
-        },
-      },
-      {
         name: "agent.cycle",
         title: "Agent cycle",
         category: "Agent",
@@ -568,15 +555,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         run: () => {
           local.agent.move(-1)
         },
-      },
-      {
-        name: "opencode.status",
-        title: "View status",
-        slashName: "status",
-        run: () => {
-          dialog.replace(() => <DialogStatus />)
-        },
-        category: "System",
       },
       {
         name: "opencode.debug",
