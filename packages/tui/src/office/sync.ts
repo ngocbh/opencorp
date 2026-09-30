@@ -17,6 +17,8 @@ export type OfficeEvents = { [K in Event["type"]]: Event } & { [K in LiveEvent["
 export type OfficeSync = ReturnType<typeof createOfficeSync>
 
 const SESSION_LIMIT = 50
+/** The events held back while a snapshot loads, per bootstrap and per session load. */
+const MAX_BUFFERED = 10_000
 
 export function createOfficeSync(opts: {
   client: OfficeClient
@@ -28,8 +30,10 @@ export function createOfficeSync(opts: {
   /** Called on each status change, with the failure's message when the status is `error`. */
   onStatus?: (s: OfficeStatus, error?: string) => void
   stream?: SubscribeOptions
+  /** Past this many held-back events a load is abandoned and the stream reconnected. */
+  maxBuffered?: number
 }) {
-  const { client, cwd, mutate } = opts
+  const { client, cwd, mutate, maxBuffered = MAX_BUFFERED } = opts
   let status: OfficeStatus = "connecting"
   let error: string | undefined
   let sub: Subscription | undefined
@@ -58,9 +62,25 @@ export function createOfficeSync(opts: {
     }
   }
 
+  /**
+   * Gives up on the loads in flight when the office sends more than they can hold back
+   * (a snapshot that never comes, or a firehose): they start over on a new stream.
+   */
+  function overflow() {
+    generation++
+    buffer = undefined
+    for (const window of pending.values()) window.length = 0
+    sub?.reconnect()
+  }
+
   /** Applies a stream event now, or parks a live one in its session's loading window. */
   function deliver(e: StreamEvent) {
-    if (e.type === "live" && pending.has(e.event.session_id)) return void pending.get(e.event.session_id)!.push(e)
+    const window = e.type === "live" ? pending.get(e.event.session_id) : undefined
+    if (window) {
+      window.push(e)
+      if (window.length > maxBuffered) overflow()
+      return
+    }
     if (e.type === "meta") mutate((s) => applyMeta(s, e.event))
     else if (e.type === "live") mutate((s) => applyLive(s, e.event))
     fire([e])
@@ -82,8 +102,9 @@ export function createOfficeSync(opts: {
         else if (status !== "error") setStatus("connecting")
         return
     }
-    if (buffer) buffer.push(e)
-    else deliver(e)
+    if (!buffer) return deliver(e)
+    buffer.push(e)
+    if (buffer.length > maxBuffered) overflow()
   }
 
   /** A session's open questions; an office without the list route yet has none to report. */

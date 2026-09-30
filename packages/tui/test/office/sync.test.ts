@@ -14,7 +14,7 @@ afterEach(() => {
   office?.stop()
   office = undefined
 })
-function start(socket: string, stream = fast) {
+function start(socket: string, stream = fast, maxBuffered?: number) {
   const state = emptyState()
   const sync = createOfficeSync({
     client: createOfficeClient({ socket }),
@@ -22,6 +22,7 @@ function start(socket: string, stream = fast) {
     state: () => state,
     mutate: (f) => f(state),
     stream,
+    maxBuffered,
   })
   sync.start()
   stop = sync.stop
@@ -276,4 +277,35 @@ test("loading a session twice at once sends one request", async () => {
   const id = office.state.sessions[0].id
   await Promise.all([sync.syncSession(id), sync.syncSession(id)])
   expect(count(office, `GET /sessions/${id}/messages`)).toBe(1)
+})
+
+test("too many events during a bootstrap abandon it and reconnect", async () => {
+  office = createFakeOffice()
+  const release = office.hold("GET /sessions")
+  const { sync } = start(office.socket, fast, 5)
+  await until(() => count(office!, "GET /sessions?limit=50") === 1)
+  const s = office.state.sessions[0]
+  for (let i = 0; i < 10; i++)
+    office.emit({ id: `E${i}`, type: "session.updated", at: "t", subject_id: s.id, data: { ...s } })
+  await until(() => count(office!, "GET /events") === 2)
+  release()
+  await until(() => sync.status() === "online")
+})
+
+test("too many events while a session loads abandon the load's window and reconnect", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket, fast, 5)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = [textMessage(id, "M1")]
+  const release = office.hold("GET /sessions/:id/messages")
+  const done = sync.syncSession(id)
+  await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+  for (let i = 0; i < 10; i++)
+    office.live({ type: "part.delta", session_id: id, data: { message_id: "M1", part_id: "M1-p", text: "!" } })
+  await until(() => count(office!, "GET /events") === 2)
+  release()
+  await done
+  await until(() => sync.status() === "online")
+  expect(state.messages[id].map((m) => m.id)).toEqual(["M1"])
 })
