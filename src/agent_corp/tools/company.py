@@ -21,8 +21,9 @@ def company_tools(store: Store, repo: CompanyRepo, session: Session, run_id: str
     """The ``company`` tool group for ``session.person``'s run ``run_id``.
 
     ``repo`` is the run's pinned company repo (for the caller's manager and valid
-    assignees). ``ask_manager`` blocks in ``on_question`` until the manager answers. A
-    tool's exception reaches the model as ``error: <message>``.
+    assignees). ``ask_manager`` hands ``on_question`` its question and a work item for the
+    manager, blocks until the manager answers, then closes the item. A tool's exception
+    reaches the model as ``error: <message>``.
     """
     caller = repo.people.get(session.person)
     names = (caller.id, caller.handle, caller.name) if caller else (session.person,)
@@ -41,13 +42,14 @@ def company_tools(store: Store, repo: CompanyRepo, session: Session, run_id: str
         if manager is None:
             raise ValueError("you have no manager to ask")
         title = " ".join(question.split())[:TITLE_CHARS] or "Question"
-        item = store.create_work_item(_work_item(title=title, kind="question", requester=session.person,
-                                                 assignee=manager, parent_id=session.work_item_id))
+        item = _work_item(title=title, kind="question", requester=session.person, assignee=manager,
+                          parent_id=session.work_item_id)
         t = now()
         answered = on_question(Question(
             id=new_id(), session_id=session.id, run_id=run_id, node_id=None, source="ask_manager",
             asker=session.person, work_item_id=item.id, question=question,
-            options=normalize_options(options, names=names), status="open", created_at=t, updated_at=t))
+            options=normalize_options(options, names=names), status="open", created_at=t, updated_at=t),
+            work_item=item)
         store.update_work_item(item.id, status="done", resolved_by=answered.answered_by)
         return format_answer(answered, carried(answered) if carried else ())
 
