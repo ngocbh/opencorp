@@ -44,10 +44,10 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
+import { OPENCODE_BASE_MODE, useBindings, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
-import { OfficeError, OfficeUnavailable } from "../../office/errors"
+import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
 import { QuestionPrompt } from "./question"
 import { cardQuestions } from "../chat/turn"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
@@ -157,6 +157,7 @@ export function Session() {
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
+  const keymap = useOpencodeKeymap()
 
   createEffect(
     on(
@@ -230,6 +231,28 @@ export function Session() {
   }
 
   const sessionCommandList = createMemo(() => [
+    {
+      title: "End the session",
+      value: "session.end",
+      category: "Session",
+      slash: { name: "end" },
+      run: () => {
+        dialog.clear()
+        // The office interrupts a busy session before it ends it, then runs the debrief.
+        office.client.sessions
+          .end(route.sessionID)
+          .then(() => {
+            // The debrief screen shows the debrief once it is written; without it, say so here.
+            if (keymap.dispatchCommand("debrief.show").ok) return
+            toast.show({ message: "Ending the session", variant: "info" })
+          })
+          .catch((error) =>
+            isNotImplemented(error)
+              ? toast.show({ message: "Ending a session is not available yet", variant: "warning" })
+              : toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }),
+          )
+      },
+    },
     {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
       value: "session.sidebar.toggle",
