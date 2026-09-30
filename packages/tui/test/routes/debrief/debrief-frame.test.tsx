@@ -158,3 +158,15 @@ test("f writes feedback on the whole run; Esc leaves the input, and empty feedba
     })
   })
 })
+
+test("a reconnect re-reads the debrief, since events missed while offline are not replayed", async () => {
+  const office = createFakeOffice()
+  office.addDebrief(office.state.sessions[0].id, { state: "pending" })
+  await run(office, async (app, id) => {
+    await app.until((f) => f.includes("Debrief pending"))
+    // Changed without an event, as if it happened while the stream was down.
+    office.state.debriefs[id] = { ...office.state.debriefs[id], ...READY } as Debrief
+    office.reset()
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+  })
+})
