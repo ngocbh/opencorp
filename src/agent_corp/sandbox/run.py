@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -100,13 +101,9 @@ def run(
         assert proc.stdin is not None
         threading.Thread(target=_feed, args=(proc.stdin, stdin), daemon=True).start()
     timed_out = interrupted = False
+    watch = _ExitWatch(proc.pid)
     try:
-        while True:
-            try:
-                proc.wait(timeout=_POLL)
-                break
-            except subprocess.TimeoutExpired:
-                pass
+        while not watch.wait(_POLL):
             if cancel is not None and cancel.is_set():
                 interrupted = True
                 break
@@ -114,7 +111,9 @@ def run(
                 timed_out = True
                 break
     finally:
+        # The leader is not reaped yet, so its pid (the group id) can't have been reused.
         _kill_group(proc.pid)
+        watch.close()
         proc.wait()
     # A process that left the group could still hold the pipes; don't wait on it forever.
     out.join(_READER_GRACE)
@@ -128,6 +127,46 @@ def run(
         truncated=out.truncated or err.truncated,
         duration=time.monotonic() - start,
     )
+
+
+class _ExitWatch:
+    """Wait for a child to exit without reaping it."""
+
+    def __init__(self, pid: int) -> None:
+        self._pid = pid
+        self._exited = False
+        self._kq: select.kqueue | None = None
+        if not hasattr(os, "waitid"):
+            # macOS before Python 3.13 has no waitid; a kqueue exit event doesn't reap.
+            self._kq = select.kqueue()
+            event = select.kevent(
+                pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT, select.KQ_NOTE_EXIT
+            )
+            try:
+                self._kq.control([event], 0, 0)
+            except ProcessLookupError:
+                # Registering fails once the child is a zombie.
+                self._exited = True
+
+    def wait(self, timeout: float) -> bool:
+        """Return whether the child has exited, waiting up to `timeout` seconds."""
+        if self._exited:
+            return True
+        if self._kq is not None:
+            self._exited = bool(self._kq.control(None, 1, timeout))
+        elif not self._check():
+            time.sleep(timeout)
+            self._exited = self._check()
+        else:
+            self._exited = True
+        return self._exited
+
+    def _check(self) -> bool:
+        return os.waitid(os.P_PID, self._pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+    def close(self) -> None:
+        if self._kq is not None:
+            self._kq.close()
 
 
 def _kill_group(pgid: int) -> None:

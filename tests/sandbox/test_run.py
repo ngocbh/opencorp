@@ -80,6 +80,24 @@ def test_std_streams_by_path(make_policy):
     assert result.stdout == b"out\nfd\nin" and result.stderr == b"err\n"
 
 
+def test_group_is_killed_before_the_leader_is_reaped(make_policy, monkeypatch):
+    # Until the leader is reaped its pid, and so the group id, can't be reused, so the
+    # kill can't reach an unrelated process group.
+    run_module = sys.modules["agent_corp.sandbox.run"]
+    seen = []
+    real = run_module._kill_group
+
+    def kill_group(pgid):
+        seen.append(psutil.Process(pgid).status())
+        real(pgid)
+
+    monkeypatch.setattr(run_module, "_kill_group", kill_group)
+    assert sh(make_policy(), "exit 0").exit == 0
+    assert sh(make_policy(), "sleep 30", timeout=0.5).timed_out
+    # psutil.Process raises if the pid is gone; after a timeout the leader is still alive.
+    assert seen[0] == psutil.STATUS_ZOMBIE and len(seen) == 2
+
+
 def test_output_is_capped(make_policy):
     result = sh(make_policy(), "head -c 100000 /dev/zero", max_output=1000)
     assert len(result.stdout) == 1000 and result.truncated
