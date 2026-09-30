@@ -1,0 +1,17 @@
+{
+  "id": "01JA1S0000000000000000000A",
+  "person": "minh",
+  "harness": "composer",
+  "office": "laptop",
+  "cwd": "/Users/ngocbh/workspace/agent-corp",
+  "repo_commit": "3f1c0e0f5b4a8d2e9c7b6a5f4e3d2c1b0a998877",
+  "status": "idle",
+  "kind": "main",
+  "work_item_id": "01JA1W0000000000000000000A",
+  "run_ids": ["run-01JA1R0000000000000000000A", "run-01JA1R0000000000000000000B"],
+  "seed": null,
+  "cost": 0.12,
+  "cost_cap_usd": 8,
+  "created_at": "2026-09-29T10:00:00.000Z",
+  "updated_at": "2026-09-29T10:30:00.000Z"
+}

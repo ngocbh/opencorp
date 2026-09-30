@@ -5,7 +5,7 @@ description = "agent-corp office: daemon, run workers, sandbox, permissions."
 requires-python = ">=3.12"
 dependencies = [
     "agent-composer[all]",
-    "pydantic>=2.7",
+    "pydantic>=2.13",
     "pyyaml>=6",
     "python-ulid>=4",
     "jsonschema>=4.23",

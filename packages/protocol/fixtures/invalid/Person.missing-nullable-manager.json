@@ -1,0 +1,39 @@
+{
+  "id": "01J9Z3K7QX8R2M4T6V0W1Y3A5C",
+  "handle": "minh",
+  "name": "Minh",
+  "kind": "agent",
+  "title": "Engineer",
+  "groups": [
+    "infra"
+  ],
+  "home_office": "laptop",
+  "main": "../../shared/flows/chat.yaml",
+  "sops": [
+    {
+      "flow": "sops/release.yaml",
+      "gate": false
+    }
+  ],
+  "skills": [
+    "code-review"
+  ],
+  "harnesses": [
+    "composer"
+  ],
+  "harness_policy": {
+    "sandbox": "workspace-write",
+    "network": false
+  },
+  "routines": [
+    {
+      "name": "triage_ceo_queue",
+      "trigger": {
+        "event": "work_item.created",
+        "assignee": "ngocbh"
+      },
+      "flow": "../../shared/flows/triage.yaml"
+    }
+  ],
+  "provider_policy": "default"
+}

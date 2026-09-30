@@ -41,8 +41,12 @@ Once `packages/protocol/schema/protocol.schema.json` exists, it changes only in 
 
 - edits the schema and its fixtures, and regenerates `src/agent_corp/protocol/models.py`
   and `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
-- only adds fields and `$defs`; never renames or removes one that merged code uses;
+- only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
+  type of anything merged code uses;
 - merges before dependent work continues.
+
+Clients ignore enum values and event types they don't know. Make timestamps with
+`agent_corp.protocol.now()`.
 
 ## GitHub workflow
 

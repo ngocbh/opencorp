@@ -1,0 +1,522 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentCorpProtocol",
+  "$defs": {
+    "Id": {
+      "type": "string", "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$", "maxLength": 64,
+      "description": "A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'."
+    },
+    "Handle": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$" },
+    "Ulid": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "GitId": { "type": "string", "pattern": "^[0-9a-f]{40,64}$", "description": "A git commit or blob id." },
+    "Timestamp": {
+      "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+      "description": "UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged."
+    },
+    "CompanyDefaults": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "provider_policy": { "type": "string", "default": "default" },
+        "cost_cap_usd": { "type": "number", "minimum": 0, "default": 5 },
+        "idle_end": { "type": "string", "pattern": "^[0-9]+[smhd]$", "default": "2h" },
+        "max_turns": { "type": "integer", "minimum": 1, "default": 500 },
+        "profile_max_chars": { "type": "integer", "minimum": 1, "default": 32000 },
+        "side_chat_cost_cap_usd": { "type": "number", "minimum": 0, "default": 1 },
+        "side_seed_max_chars": { "type": "integer", "minimum": 1, "default": 200000 }
+      }
+    },
+    "Company": {
+      "type": "object", "additionalProperties": false, "required": ["name", "ceo"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "ceo": { "$ref": "#/$defs/Id" },
+        "hq": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "defaults": { "anyOf": [{ "$ref": "#/$defs/CompanyDefaults" }, { "type": "null" }], "default": null }
+      }
+    },
+    "HarnessPolicy": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "sandbox": { "enum": ["read-only", "workspace-write"], "default": "read-only" },
+        "network": { "type": "boolean", "default": false }
+      }
+    },
+    "Sop": {
+      "type": "object", "additionalProperties": false, "required": ["flow"],
+      "properties": {
+        "flow": { "type": "string" },
+        "gate": { "type": "boolean", "default": false }
+      }
+    },
+    "Routine": {
+      "type": "object", "additionalProperties": false, "required": ["name", "flow"],
+      "properties": {
+        "name": { "type": "string" },
+        "flow": { "type": "string" },
+        "trigger": { "anyOf": [{ "type": "object" }, { "type": "null" }], "default": null }
+      }
+    },
+    "Person": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "handle", "name", "kind", "title", "manager"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "handle": { "$ref": "#/$defs/Handle" },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["human", "agent"] },
+        "title": { "type": "string" },
+        "manager": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }] },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/Id" }, "default": [] },
+        "home_office": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "main": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "sops": { "type": "array", "items": { "$ref": "#/$defs/Sop" }, "default": [] },
+        "skills": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "harnesses": { "type": "array", "items": { "enum": ["composer", "codex", "claude"] }, "default": [] },
+        "harness_policy": { "anyOf": [{ "$ref": "#/$defs/HarnessPolicy" }, { "type": "null" }], "default": null },
+        "routines": { "type": "array", "items": { "$ref": "#/$defs/Routine" }, "default": [] },
+        "provider_policy": { "type": "string", "default": "default" }
+      }
+    },
+    "Group": {
+      "type": "object", "additionalProperties": false, "required": ["id", "name"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "name": { "type": "string", "minLength": 1 },
+        "parent": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "head": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null }
+      }
+    },
+    "AssetTool": {
+      "type": "object", "additionalProperties": false,
+      "properties": { "risk": { "enum": ["normal", "gated"], "default": "normal" } }
+    },
+    "Grant": {
+      "type": "object", "additionalProperties": false, "required": ["who", "can"],
+      "properties": {
+        "who": { "type": "string", "pattern": "^(group:)?(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$" },
+        "can": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "where": {
+          "anyOf": [{ "type": "object", "additionalProperties": { "type": "array" } }, { "type": "null" }], "default": null
+        }
+      }
+    },
+    "Asset": {
+      "type": "object", "additionalProperties": false, "required": ["id", "kind"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Id" },
+        "kind": { "type": "string" },
+        "tools": { "type": "object", "additionalProperties": { "$ref": "#/$defs/AssetTool" }, "default": {} },
+        "grants": { "type": "array", "items": { "$ref": "#/$defs/Grant" }, "default": [] },
+        "secrets": { "type": "array", "items": { "type": "string" }, "default": [] }
+      }
+    },
+    "WorkItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "kind", "status", "requester", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "title": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["task", "question"] },
+        "status": { "enum": ["open", "in_progress", "done", "cancelled"] },
+        "requester": { "$ref": "#/$defs/Id" },
+        "assignee": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "parent_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/Id" }, "default": [] },
+        "gate": { "type": "boolean", "default": false },
+        "resolved_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "on_behalf_of": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "summary": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "cost": { "type": "number", "minimum": 0, "default": 0 },
+        "version": { "type": "integer", "minimum": 1, "default": 1 },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Comment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "work_item_id", "author", "body", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "work_item_id": { "$ref": "#/$defs/Ulid" },
+        "author": { "$ref": "#/$defs/Id" },
+        "body": { "type": "string" },
+        "on_behalf_of": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "person", "harness", "office", "cwd", "repo_commit", "status", "kind", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "person": { "$ref": "#/$defs/Id" },
+        "harness": { "enum": ["composer", "codex", "claude"] },
+        "office": { "type": "string" },
+        "cwd": { "type": "string" },
+        "repo_commit": { "$ref": "#/$defs/GitId" },
+        "status": { "enum": ["starting", "idle", "busy", "ending", "debriefing", "ended", "failed", "interrupted"] },
+        "kind": { "enum": ["main", "side", "profile_manager"] },
+        "harness_session_id": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "run_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "question_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "seed": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "cost": { "type": "number", "minimum": 0, "default": 0 },
+        "cost_cap_usd": {
+          "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }], "default": null,
+          "description": "null means company.defaults.cost_cap_usd."
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Message": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "role", "parts", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "role": { "enum": ["user", "assistant"] },
+        "parts": { "type": "array", "items": { "$ref": "#/$defs/Part" } },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Part": {
+      "oneOf": [{ "$ref": "#/$defs/TextPart" }, { "$ref": "#/$defs/FilePart" }, { "$ref": "#/$defs/ToolPart" }],
+      "discriminator": {
+        "propertyName": "type",
+        "mapping": { "text": "#/$defs/TextPart", "file": "#/$defs/FilePart", "tool": "#/$defs/ToolPart" }
+      }
+    },
+    "TextPart": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "text"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "text" },
+        "text": { "type": "string" }
+      }
+    },
+    "FilePart": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "path", "mime"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "file" },
+        "path": { "type": "string" },
+        "mime": { "type": "string" }
+      }
+    },
+    "ToolPart": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "call_id", "tool", "state", "input"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "tool" },
+        "call_id": { "type": "string" },
+        "tool": { "type": "string" },
+        "state": { "enum": ["pending", "running", "completed", "error", "interrupted"] },
+        "input": { "type": "object" },
+        "output": { "default": {} },
+        "error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "Permission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "tool", "input", "status", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "tool": { "type": "string" },
+        "input": { "type": "object" },
+        "status": { "enum": ["pending", "allowed", "denied"] },
+        "answered_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "QuestionOption": {
+      "type": "object", "additionalProperties": false, "required": ["label"],
+      "properties": {
+        "label": { "type": "string" },
+        "description": { "type": "string", "default": "" }
+      }
+    },
+    "QuestionPage": {
+      "type": "object", "additionalProperties": false, "required": ["question", "header", "options"],
+      "properties": {
+        "question": { "type": "string" },
+        "header": { "type": "string" },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/QuestionOption" } },
+        "multi_select": { "type": "boolean", "default": false }
+      }
+    },
+    "AnswerField": {
+      "type": "object", "additionalProperties": false, "required": ["name", "type", "required"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": {
+          "enum": ["None", "str", "int", "float", "date", "datetime", "bool", "object", "file",
+                   "list[Any]", "list[str]", "list[int]", "list[float]", "list[bool]", "list[object]"]
+        },
+        "required": { "type": "boolean" },
+        "enum": { "anyOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }], "default": null },
+        "fields": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/AnswerField" } }, { "type": "null" }], "default": null }
+      }
+    },
+    "DiscussionEntry": {
+      "type": "object", "additionalProperties": false, "required": ["role", "text"],
+      "properties": {
+        "role": { "enum": ["user", "assistant"] },
+        "text": { "type": "string" }
+      }
+    },
+    "Question": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "run_id", "node_id", "source", "asker", "question", "status", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "run_id": { "type": "string" },
+        "node_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }],
+          "description": "null for a model ask_user call."
+        },
+        "source": { "enum": ["ask_user", "human_input", "ask_manager"] },
+        "asker": { "$ref": "#/$defs/Id" },
+        "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "title": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "question": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "questions": {
+          "anyOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/QuestionPage" }, "minItems": 1, "maxItems": 4 },
+            { "type": "null" }
+          ],
+          "default": null
+        },
+        "answer_schema": { "type": "array", "items": { "$ref": "#/$defs/AnswerField" }, "default": [] },
+        "discussion": { "type": "array", "items": { "$ref": "#/$defs/DiscussionEntry" }, "default": [] },
+        "gate": { "type": "boolean", "default": false },
+        "status": { "enum": ["open", "answered", "consumed", "stale"] },
+        "answer": {
+          "default": null,
+          "description": "null until answered, and may be null once answered too. Read status to tell whether it is answered."
+        },
+        "answer_kind": {
+          "anyOf": [{ "enum": ["option", "text", "sent_back", "interrupted"] }, { "type": "null" }], "default": null
+        },
+        "answered_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "side_session_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "carried_from": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Profile": {
+      "type": "object", "additionalProperties": false, "required": ["person", "text", "version"],
+      "properties": {
+        "person": { "$ref": "#/$defs/Id" },
+        "text": { "type": "string" },
+        "version": { "$ref": "#/$defs/GitId" },
+        "over_budget": { "type": "boolean", "default": false }
+      }
+    },
+    "ProfileProposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "person", "base_version", "text", "diff", "status", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "person": { "$ref": "#/$defs/Id" },
+        "base_version": { "$ref": "#/$defs/GitId" },
+        "text": { "type": "string" },
+        "diff": { "type": "string" },
+        "status": { "enum": ["open", "applied", "discarded", "stale"] },
+        "commit": { "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "FollowUp": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "confirmed": { "type": "boolean", "default": false },
+        "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null }
+      }
+    },
+    "Debrief": {
+      "type": "object", "additionalProperties": false, "required": ["session_id", "state", "updated_at"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "state": { "enum": ["pending", "ready"] },
+        "summary": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "status": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "The debrief flow's own status."
+        },
+        "artifacts": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "decisions": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "follow_ups": { "type": "array", "items": { "$ref": "#/$defs/FollowUp" }, "default": [] },
+        "open_questions": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "cost": { "type": "number", "minimum": 0, "default": 0 },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Feedback": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "run_id", "author", "text", "status", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "run_id": { "type": "string" },
+        "author": { "$ref": "#/$defs/Id" },
+        "text": { "type": "string" },
+        "status": { "enum": ["queued", "learning", "applied", "learning_failed"] },
+        "attempts": { "type": "integer", "minimum": 0, "default": 0 },
+        "commit": {
+          "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }], "default": null,
+          "description": "The profile commit once applied."
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Event": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "at", "subject_id", "data"],
+      "description": "A metadata change, written to the outbox.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": {
+          "enum": [
+            "work_item.created", "work_item.updated", "comment.created",
+            "session.created", "session.updated",
+            "question.created", "question.updated",
+            "feedback.created", "feedback.updated",
+            "debrief.created", "debrief.updated",
+            "profile.updated",
+            "profile_proposal.created", "profile_proposal.updated"
+          ]
+        },
+        "at": { "$ref": "#/$defs/Timestamp" },
+        "subject_id": { "type": "string" },
+        "data": { "type": "object", "description": "The entity after the change." }
+      }
+    },
+    "LiveEvent": {
+      "type": "object", "additionalProperties": false, "required": ["type", "session_id", "data"],
+      "description": "Streamed content that is never stored as metadata. For part.delta, data is {message_id, part_id, text} and the text is appended.",
+      "properties": {
+        "type": { "enum": ["message.updated", "part.updated", "part.delta"] },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "data": { "type": "object" }
+      }
+    },
+    "CreateSessionRequest": {
+      "type": "object", "additionalProperties": false, "required": ["person", "cwd"],
+      "properties": {
+        "person": { "$ref": "#/$defs/Id" },
+        "cwd": { "type": "string" },
+        "harness": { "enum": ["composer", "codex", "claude"], "default": "composer" }
+      }
+    },
+    "PromptRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": { "text": { "type": "string", "minLength": 1 } }
+    },
+    "Ack": {
+      "type": "object", "additionalProperties": false, "required": ["ok"],
+      "properties": { "ok": { "const": true } }
+    },
+    "CostCapRequest": {
+      "type": "object", "additionalProperties": false, "required": ["cost_cap_usd"],
+      "properties": { "cost_cap_usd": { "type": "number", "minimum": 0 } }
+    },
+    "RepoIssue": {
+      "type": "object", "additionalProperties": false, "required": ["path", "code", "message"],
+      "properties": {
+        "path": { "type": "string" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "severity": { "enum": ["error", "warning"], "default": "error" }
+      }
+    },
+    "HireRequest": {
+      "type": "object", "additionalProperties": false, "required": ["name", "handle", "title", "manager"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "handle": { "$ref": "#/$defs/Handle" },
+        "title": { "type": "string" },
+        "manager": { "$ref": "#/$defs/Id" },
+        "id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "confirm": { "type": "boolean", "default": false }
+      }
+    },
+    "HireResponse": {
+      "type": "object", "additionalProperties": false, "required": ["person", "diff", "issues", "commit"],
+      "properties": {
+        "person": { "$ref": "#/$defs/Person" },
+        "diff": { "type": "string" },
+        "issues": { "type": "array", "items": { "$ref": "#/$defs/RepoIssue" } },
+        "commit": { "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }] }
+      }
+    },
+    "ApiError": {
+      "type": "object", "additionalProperties": false, "required": ["error", "message"],
+      "description": "The body of every error response, sent with its HTTP status.",
+      "properties": {
+        "error": { "type": "string", "description": "A short code, such as not_implemented or not_found." },
+        "message": { "type": "string" }
+      }
+    },
+    "AnswerRequest": {
+      "type": "object", "additionalProperties": false, "required": ["answer", "answer_kind"],
+      "properties": {
+        "answer": { "description": "Any JSON value, including null." },
+        "answer_kind": {
+          "enum": ["option", "text"],
+          "description": "sent_back and interrupted are set only by the office."
+        }
+      }
+    },
+    "SideChatRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": { "text": { "type": "string", "minLength": 1 } }
+    },
+    "SendBackRequest": {
+      "type": "object", "additionalProperties": false, "required": ["note"],
+      "properties": { "note": { "type": "string" } }
+    },
+    "ProfileWriteRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text", "base_version"],
+      "properties": {
+        "text": { "type": "string" },
+        "base_version": { "$ref": "#/$defs/GitId" }
+      }
+    },
+    "VersionConflict": {
+      "type": "object", "additionalProperties": false, "required": ["expected", "current"],
+      "properties": {
+        "expected": { "$ref": "#/$defs/GitId" },
+        "current": { "$ref": "#/$defs/GitId" }
+      }
+    },
+    "ProfileManagerRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": { "text": { "type": "string", "minLength": 1, "description": "The first message." } }
+    },
+    "FeedbackRequest": {
+      "type": "object", "additionalProperties": false, "required": ["session_id", "text"],
+      "properties": {
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "run_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "null means the session's latest run."
+        },
+        "text": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ConfirmFollowUpsRequest": {
+      "type": "object", "additionalProperties": false, "required": ["indices"],
+      "properties": {
+        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+      }
+    }
+  }
+}
