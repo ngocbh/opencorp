@@ -94,7 +94,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   let sending = false
 
   function call(run: () => Promise<unknown>) {
-    if (sending) return
+    if (sending) return toast.show({ message: "Busy: the last action is still sending", variant: "info" })
     sending = true
     run().finally(() => (sending = false))
   }

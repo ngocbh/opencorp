@@ -232,7 +232,7 @@ test("the question stop returns closes the card without waiting for its event", 
   }
 })
 
-test("a second stop while the first is in flight sends nothing", async () => {
+test("a second stop while the first is in flight sends nothing and says the card is busy", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
@@ -247,7 +247,7 @@ test("a second stop while the first is in flight sends nothing", async () => {
     app.input.pressEscape()
     await app.until((f) => f.includes("Stop @minh? y/N"))
     app.input.pressKey("y")
-    await Bun.sleep(100)
+    await app.until((f) => f.includes("Busy: the last action is still sending"))
     release()
     await app.until((f) => !f.includes("Deploy now?"))
     expect(stops(office, q.id)).toHaveLength(1)
@@ -257,7 +257,7 @@ test("a second stop while the first is in flight sends nothing", async () => {
   }
 })
 
-test("a second dismiss or send back while the first is in flight sends nothing", async () => {
+test("a second dismiss or send back while the first is in flight sends nothing and says the card is busy", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const earlier = office.addQuestion({
@@ -282,7 +282,7 @@ test("a second dismiss or send back while the first is in flight sends nothing",
     app.input.pressEnter()
     await app.until(() => posts().length === 1)
     app.input.pressEnter()
-    await Bun.sleep(100)
+    await app.until((f) => f.includes("Busy: the last action is still sending"))
     release()
     await app.until((f) => !f.includes("Dismiss earlier discussion") && f.includes("[Send discussion back]"))
     release = office.hold("POST /questions/:id/send-back")
@@ -290,6 +290,7 @@ test("a second dismiss or send back while the first is in flight sends nothing",
     app.input.pressEnter()
     await app.until(() => posts().length === 2)
     app.input.pressEnter()
+    // The first busy toast may still show, so it can't tell that this press was handled.
     await Bun.sleep(100)
     release()
     await app.until(() => office.state.questions[q.id].status === "answered")
