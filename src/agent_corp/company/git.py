@@ -18,6 +18,10 @@ _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 _PROFILES = ":(glob)people/*/profile.md"
 
 
+class CompanyGitError(Exception):
+    """A git command on the company clone failed; the message includes git's stderr."""
+
+
 def _env() -> dict[str, str]:
     """os.environ without GIT_* variables, the system or user git config, or prompts."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -34,8 +38,12 @@ class CompanyGit:
         self.lock = threading.RLock()
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", "-C", str(self.root), *_IDENTITY, *_NO_HOOKS, *args],
-                              check=check, capture_output=True, text=True, env=_env())
+        """Run git in the clone; with ``check``, a non-zero exit raises ``CompanyGitError``."""
+        out = subprocess.run(["git", "-C", str(self.root), *_IDENTITY, *_NO_HOOKS, *args],
+                             capture_output=True, text=True, env=_env())
+        if check and out.returncode != 0:
+            raise CompanyGitError(f"git {' '.join(args)} exited {out.returncode}: {out.stderr.strip()}")
+        return out
 
     def head(self) -> str:
         """Return the commit id at HEAD."""

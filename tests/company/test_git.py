@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from agent_corp.company.git import CompanyGit
+from agent_corp.company.git import CompanyGit, CompanyGitError
 from tests.company.conftest import _git, write_repo
 
 PROFILE = "people/minh/profile.md"
@@ -184,3 +184,8 @@ def test_repo_hooks_do_not_run(g, company):
     assert _git(company, "log", "-1", "--format=%s") == "edit"
     assert (g.pin("HEAD") / PROFILE).read_text() == "# edited\n"
 
+
+def test_git_failure_carries_stderr(g, tmp_path):
+    (tmp_path / "outside.txt").write_text("x\n")
+    with pytest.raises(CompanyGitError, match="outside repository"):
+        g.commit(["../outside.txt"], "edit")
