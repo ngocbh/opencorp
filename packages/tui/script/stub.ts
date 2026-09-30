@@ -190,6 +190,8 @@ export function createFakeOffice(
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
+  // Messages sent with no open turn and no reply running, by session; the next turn takes them.
+  const queued = new Map<string, string[]>()
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
   // The run each debrief was written in; the protocol's Debrief doesn't carry it.
@@ -302,7 +304,7 @@ export function createFakeOffice(
   }
   /**
    * The office's prompt: answers the open turn and starts a reply; while a reply runs it is a
-   * steer (written to the transcript, no new reply).
+   * steer (written to the transcript, no new reply); otherwise it is queued for the next turn.
    */
   function turn(id: string, body: any) {
     check(str(body?.text), "text must be a non-empty string")
@@ -312,19 +314,15 @@ export function createFakeOffice(
     userMessage(id, body.text)
     if (s.kind === "side") discuss(s, body.text)
     const open = Object.values(state.questions).find((q) => q.session_id === id && q.status === "open" && isTurn(q))
-    if (open)
-      updateQuestion({
-        ...open,
-        status: "answered",
-        answer: body.text,
-        answer_kind: "text",
-        answered_by: human(),
-        updated_at: now(),
-      })
-    if (s.status === "busy") return Response.json({ ok: true })
-    setStatus(id, "busy")
-    for (const fn of prompts) fn(id, { text: body.text })
+    if (open) takeTurn(open, body.text)
+    else if (s.status !== "busy") queued.set(id, [...(queued.get(id) ?? []), body.text])
     return Response.json({ ok: true })
+  }
+  /** Answers a turn with `text` and starts its reply. */
+  function takeTurn(q: Question, text: string) {
+    updateQuestion({ ...q, status: "answered", answer: text, answer_kind: "text", answered_by: human(), updated_at: now() })
+    setStatus(q.session_id, "busy")
+    for (const fn of prompts) fn(q.session_id, { text })
   }
 
   const question = (id: string) => need(state.questions[id], `question ${id}`)
@@ -399,10 +397,18 @@ export function createFakeOffice(
     }
     return updateQuestion(q, "question.created")
   }
-  /** Opens a session's next turn, as the chat flow's `chat#N/ask` human_input does when a reply ends. */
+  /**
+   * Opens a session's next turn, as the chat flow's `chat#N/ask` human_input does when a reply ends:
+   * the session goes idle, or the queued messages take the turn at once.
+   */
   function openTurn(sessionId: string) {
     const n = Object.values(state.questions).filter((q) => q.session_id === sessionId && isTurn(q)).length + 1
-    return addQuestion({ session_id: sessionId, source: "human_input", node_id: `chat#${n}/ask`, question: "You:" })
+    const q = addQuestion({ session_id: sessionId, source: "human_input", node_id: `chat#${n}/ask`, question: "You:" })
+    const pending = queued.get(sessionId)
+    queued.delete(sessionId)
+    if (pending) takeTurn(q, pending.join("\n\n"))
+    else if (["busy", "starting"].includes(session(sessionId).status)) setStatus(sessionId, "idle")
+    return question(q.id)
   }
 
   /**
@@ -658,7 +664,13 @@ export function createFakeOffice(
           const cwd = session(q.session_id).cwd
           side = newSession({ person: q.asker, cwd, kind: "side", question_id: q.id, seed: q.question })
           updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
-        } else if (!LIVE.includes(side.status)) setStatus(side.id, "idle")
+        } else if (!LIVE.includes(side.status)) {
+          setStatus(side.id, "idle")
+          const waiting = Object.values(state.questions).some(
+            (x) => x.session_id === side!.id && x.status === "open" && isTurn(x),
+          )
+          if (!waiting) openTurn(side.id)
+        }
         turn(side.id, body)
         return Response.json(session(side.id))
       },

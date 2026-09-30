@@ -43,6 +43,25 @@ test("interrupt answers the open ask_user questions; the session goes back to id
   expect(office.openTurn(id).node_id).toBe("chat#2/ask")
 })
 
+test("a prompt with no open turn and no reply running is queued; the next turn takes the queue", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const turns: string[] = []
+  office.onPrompt((_, req) => turns.push(req.text))
+  await client().sessions.prompt(id, { text: "go" })
+  // The reply ended; the next turn has not opened yet.
+  office.setStatus(id, "idle")
+  await client().sessions.prompt(id, { text: "one" })
+  await client().sessions.prompt(id, { text: "two" })
+  expect(await status(id)).toBe("idle")
+  expect(turns).toEqual(["go"])
+  expect(office.state.messages[id].map((m) => m.parts[0])).toMatchObject([{ text: "go" }, { text: "one" }, { text: "two" }])
+  const next = office.openTurn(id)
+  expect(office.state.questions[next.id]).toMatchObject({ status: "answered", answer: "one\n\ntwo" })
+  expect(await status(id)).toBe("busy")
+  expect(turns).toEqual(["go", "one\n\ntwo"])
+})
+
 test("an answer the question doesn't take is 422 invalid_answer", async () => {
   office = createFakeOffice()
   const invalid = async (id: string, req: any) => {

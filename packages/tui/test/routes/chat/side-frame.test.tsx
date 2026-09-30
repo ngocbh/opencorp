@@ -221,6 +221,7 @@ test("a side session another client started loads when the side chat opens, and 
   // Written straight into the office's state: as if made before this TUI connected.
   office.state.sessions.push(side)
   office.state.messages[side.id] = []
+  office.openTurn(side.id)
   say(office, side.id, "Staging went green an hour ago")
   const q = office.addQuestion({
     session_id: s.id,

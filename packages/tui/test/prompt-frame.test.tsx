@@ -56,6 +56,8 @@ test("one Esc while busy interrupts, and the reply stops showing at once", async
     // A session event after the late words: once the header shows it, they have arrived too.
     office.state.sessions[0] = { ...office.state.sessions[0], cost: 0.5 }
     office.setStatus(id, "idle")
+    // The next prompt takes the next turn.
+    office.openTurn(id)
     await app.until((f) => f.includes("@minh · idle · $0.50"))
     for (let i = 0; i < 10; i++) await app.setup.renderOnce()
     expect(app.frame()).toContain("Looking")
@@ -139,6 +141,8 @@ test("after Esc, a new reply that streams in before the prompt call returns show
     await app.until((f) => f.includes("Looking") && f.includes("@minh · busy · $0.50"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
+    office.openTurn(id)
+    await app.until((f) => f.includes("@minh · idle · $0.50"))
     // The office answers the next prompt only after its reply has streamed.
     const release = office.hold("POST /sessions/:id/prompt", "reply")
     app.input.typeText("again")
