@@ -179,3 +179,18 @@ test("on() sees applied events", async () => {
   await Bun.sleep(30)
   expect(seen).toEqual([q.id])
 })
+
+test("refreshQuestion re-reads a question the stream never updated", async () => {
+  office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const q = office.addQuestion({ session_id: s.id })
+  await until(() => openQuestions(state, s.id).length === 1)
+  office.state.questions[q.id] = { ...q, status: "answered" }
+  await sync.refreshQuestion(q.id)
+  expect(openQuestions(state, s.id)).toEqual([])
+  delete office.state.questions[q.id]
+  await sync.refreshQuestion(q.id)
+  expect(state.questions[q.id]).toBeUndefined()
+})

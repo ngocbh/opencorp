@@ -56,6 +56,11 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
         await sync.syncSession(id)
         await settled()
       },
+      /** Re-reads a question into `state`, e.g. after an answer finds it already closed. */
+      async refreshQuestion(id: string) {
+        await sync.refreshQuestion(id)
+        await settled()
+      },
       /** Re-reads both people lists, e.g. after a hire (there are no person events). */
       async refreshPeople() {
         await sync.refreshPeople()

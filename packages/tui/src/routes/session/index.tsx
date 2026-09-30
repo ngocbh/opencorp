@@ -49,6 +49,8 @@ import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable } from "../../office/errors"
+import { openQuestions } from "../../office/store"
+import { QuestionPrompt } from "./question"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -122,6 +124,7 @@ export function Session() {
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
   const messages = createMemo(() => office.state.messages[route.sessionID] ?? [])
+  const question = createMemo(() => openQuestions(office.state, route.sessionID)[0])
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
   const location = createMemo(() => {
     const current = session()
@@ -504,14 +507,22 @@ export function Session() {
                     </For>
                   </scrollbox>
                   <box flexShrink={0}>
-                    <Prompt
-                      visible={true}
-                      ref={bind}
-                      onSubmit={() => {
-                        toBottom()
-                      }}
-                      sessionID={route.sessionID}
-                    />
+                    <Show
+                      when={question()}
+                      keyed
+                      fallback={
+                        <Prompt
+                          visible={true}
+                          ref={bind}
+                          onSubmit={() => {
+                            toBottom()
+                          }}
+                          sessionID={route.sessionID}
+                        />
+                      }
+                    >
+                      {(q) => <QuestionPrompt question={q} />}
+                    </Show>
                   </box>
                 </>
               )}

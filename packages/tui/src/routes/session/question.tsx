@@ -3,28 +3,49 @@ import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-j
 import { useRenderer } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { selectedForeground, tint, useTheme } from "../../context/theme"
-import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
-import { useSDK } from "../../context/sdk"
+import type { AnswerRequest, Question, QuestionPage } from "@agent-corp/protocol"
+import { useOffice } from "../../context/office"
+import { OfficeError, isNotImplemented } from "../../office/errors"
+import { errorMessage } from "../../util/error"
+import { useToast } from "../../ui/toast"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { useBindings, useOpencodeModeStack } from "../../keymap"
 
 const QUESTION_MODE = "question"
 
-export function QuestionPrompt(props: { request: QuestionRequest; directory?: string }) {
-  const sdk = useSDK()
+/** A question's pages: its `questions`, else one page made from `question`, `title`, and `options`. */
+export function questionPages(q: Question): QuestionPage[] {
+  if (q.questions?.length) return q.questions
+  return [
+    { question: q.question, header: q.title ?? "Question", options: (q.options ?? []).map((label) => ({ label })) },
+  ]
+}
+
+/** The answer to send for the labels picked on each page. The office takes one answer, so several pages (or several labels) go as `header: labels` lines of text. */
+export function answerFor(pages: QuestionPage[], picked: string[][]): AnswerRequest {
+  return {
+    answer: pages.map((page, i) => `${page.header}: ${(picked[i] ?? []).join(", ")}`).join("\n"),
+    answer_kind: "text",
+  }
+}
+
+/** The open question card: pick an option or type an answer; Esc stops the question. */
+export function QuestionPrompt(props: { question: Question }) {
+  const office = useOffice()
+  const toast = useToast()
   const { theme } = useTheme()
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
 
-  const questions = createMemo(() => props.request.questions)
-  const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
+  const questions = createMemo(() => questionPages(props.question))
+  const single = createMemo(() => questions().length === 1 && questions()[0]?.multi_select !== true)
   const tabs = createMemo(() => (single() ? 1 : questions().length + 1)) // questions + confirm tab (no confirm for single select)
   const [tabHover, setTabHover] = createSignal<number | "confirm" | null>(null)
   const [store, setStore] = createStore({
     tab: 0,
-    answers: [] as QuestionAnswer[],
+    answers: [] as string[][],
     custom: [] as string[],
     selected: 0,
     editing: false,
@@ -35,29 +56,36 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const question = createMemo(() => questions()[store.tab])
   const confirm = createMemo(() => !single() && store.tab === questions().length)
   const options = createMemo(() => question()?.options ?? [])
-  const custom = createMemo(() => question()?.custom !== false)
-  const other = createMemo(() => custom() && store.selected === options().length)
+  // Every question takes a typed answer after its options.
+  const other = createMemo(() => store.selected === options().length)
   const input = createMemo(() => store.custom[store.tab] ?? "")
-  const multi = createMemo(() => question()?.multiple === true)
+  const multi = createMemo(() => question()?.multi_select === true)
   const customPicked = createMemo(() => {
     const value = input()
     if (!value) return false
     return store.answers[store.tab]?.includes(value) ?? false
   })
 
-  function submit() {
-    const answers = questions().map((_, i) => store.answers[i] ?? [])
-    void sdk.client.question.reply({
-      requestID: props.request.id,
-      directory: props.directory,
-      answers,
+  function send(req: AnswerRequest) {
+    const id = props.question.id
+    office.client.questions.answer(id, req).catch((error) => {
+      if (error instanceof OfficeError && error.status === 409) {
+        toast.show({ message: "This question was already answered", variant: "warning" })
+        return office.refreshQuestion(id).catch(() => {})
+      }
+      toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
     })
   }
 
+  function submit() {
+    send(answerFor(questions(), store.answers))
+  }
+
   function reject() {
-    void sdk.client.question.reject({
-      requestID: props.request.id,
-      directory: props.directory,
+    office.client.questions.stop(props.question.id).catch((error) => {
+      if (isNotImplemented(error))
+        return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
+      toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
     })
   }
 
@@ -70,14 +98,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
       inputs[store.tab] = answer
       setStore("custom", inputs)
     }
-    if (single()) {
-      void sdk.client.question.reply({
-        requestID: props.request.id,
-        directory: props.directory,
-        answers: [[answer]],
-      })
-      return
-    }
+    if (single()) return send({ answer, answer_kind: custom ? "text" : "option" })
     setStore("tab", store.tab + 1)
     setStore("selected", 0)
   }
@@ -208,7 +229,7 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
 
   useBindings(() => {
     const opts = options()
-    const total = opts.length + (custom() ? 1 : 0)
+    const total = opts.length + 1
     const max = Math.min(total, 9)
 
     return {
@@ -397,61 +418,59 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                   )
                 }}
               </For>
-              <Show when={custom()}>
-                <box
-                  onMouseOver={() => moveTo(options().length)}
-                  onMouseDown={() => moveTo(options().length)}
-                  onMouseUp={() => {
-                    if (renderer.getSelection()?.getSelectedText()) return
-                    selectOption()
-                  }}
-                >
-                  <box flexDirection="row">
-                    <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
-                      <text fg={other() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
-                        {`${options().length + 1}.`}
-                      </text>
-                    </box>
-                    <box backgroundColor={other() ? theme.backgroundElement : undefined}>
-                      <text fg={other() ? theme.secondary : customPicked() ? theme.success : theme.text}>
-                        {multi() ? `[${customPicked() ? "✓" : " "}] Type your own answer` : "Type your own answer"}
-                      </text>
-                    </box>
-
-                    <Show when={!multi()}>
-                      <text fg={theme.success}>{customPicked() ? " ✓" : ""}</text>
-                    </Show>
+              <box
+                onMouseOver={() => moveTo(options().length)}
+                onMouseDown={() => moveTo(options().length)}
+                onMouseUp={() => {
+                  if (renderer.getSelection()?.getSelectedText()) return
+                  selectOption()
+                }}
+              >
+                <box flexDirection="row">
+                  <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
+                    <text fg={other() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
+                      {`${options().length + 1}.`}
+                    </text>
                   </box>
-                  <Show when={store.editing}>
-                    <box paddingLeft={3}>
-                      <textarea
-                        ref={(val: TextareaRenderable) => {
-                          textarea = val
-                          val.traits = { status: "ANSWER" }
-                          queueMicrotask(() => {
-                            val.focus()
-                            val.gotoLineEnd()
-                          })
-                        }}
-                        initialValue={input()}
-                        placeholder="Type your own answer"
-                        placeholderColor={theme.textMuted}
-                        minHeight={1}
-                        maxHeight={6}
-                        textColor={theme.text}
-                        focusedTextColor={theme.text}
-                        cursorColor={theme.primary}
-                        cursorStyle={tuiConfig.cursor}
-                      />
-                    </box>
-                  </Show>
-                  <Show when={!store.editing && input()}>
-                    <box paddingLeft={3}>
-                      <text fg={theme.textMuted}>{input()}</text>
-                    </box>
+                  <box backgroundColor={other() ? theme.backgroundElement : undefined}>
+                    <text fg={other() ? theme.secondary : customPicked() ? theme.success : theme.text}>
+                      {multi() ? `[${customPicked() ? "✓" : " "}] Type your own answer` : "Type your own answer"}
+                    </text>
+                  </box>
+
+                  <Show when={!multi()}>
+                    <text fg={theme.success}>{customPicked() ? " ✓" : ""}</text>
                   </Show>
                 </box>
-              </Show>
+                <Show when={store.editing}>
+                  <box paddingLeft={3}>
+                    <textarea
+                      ref={(val: TextareaRenderable) => {
+                        textarea = val
+                        val.traits = { status: "ANSWER" }
+                        queueMicrotask(() => {
+                          val.focus()
+                          val.gotoLineEnd()
+                        })
+                      }}
+                      initialValue={input()}
+                      placeholder="Type your own answer"
+                      placeholderColor={theme.textMuted}
+                      minHeight={1}
+                      maxHeight={6}
+                      textColor={theme.text}
+                      focusedTextColor={theme.text}
+                      cursorColor={theme.primary}
+                      cursorStyle={tuiConfig.cursor}
+                    />
+                  </box>
+                </Show>
+                <Show when={!store.editing && input()}>
+                  <box paddingLeft={3}>
+                    <text fg={theme.textMuted}>{input()}</text>
+                  </box>
+                </Show>
+              </box>
             </box>
           </box>
         </Show>

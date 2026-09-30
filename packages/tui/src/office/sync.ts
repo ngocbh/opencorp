@@ -201,6 +201,14 @@ export function createOfficeSync(opts: {
         throw e
       }
     },
+    /** Re-reads a question, e.g. after the office says it is no longer open; drops it if the office has none. */
+    async refreshQuestion(id: string) {
+      const q = await recheck(id)
+      mutate((s) => {
+        if (q) s.questions[id] = q
+        else delete s.questions[id]
+      })
+    },
     /** Re-reads both people lists (there are no person events, e.g. after a hire). */
     async refreshPeople() {
       const [people, folderPeople] = await Promise.all([client.people.list(), client.people.inFolder(cwd)])
