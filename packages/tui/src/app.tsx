@@ -57,7 +57,7 @@ import {
 
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
-import { cliErrorMessage, errorFormat } from "./util/error"
+import { errorFormat } from "./util/error"
 
 registerOpencodeSpinner()
 
@@ -244,7 +244,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
   yield* Effect.sync(() => {
     win32FlushInputBuffer()
     if (result.reason !== undefined) {
-      process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
+      process.stderr.write(errorFormat(result.reason) + "\n")
       process.exitCode = 1
     }
     if (result.epilogue) process.stdout.write(result.epilogue + "\n")
