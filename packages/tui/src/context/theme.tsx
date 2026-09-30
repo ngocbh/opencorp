@@ -24,8 +24,8 @@ import { createStore, produce } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import { useKV } from "./kv"
 import { useTuiConfig } from "../config"
-import { Global } from "@opencode-ai/core/global"
-import { Glob } from "@opencode-ai/core/util/glob"
+import { Global } from "../core/global"
+import { existsSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import path from "node:path"
 
@@ -52,8 +52,15 @@ const themeSource: ThemeSource = {
 export async function discoverThemes(directories: string[]) {
   const result: Record<string, unknown> = {}
   for (const directory of directories) {
-    const files = await Glob.scan("themes/*.json", { cwd: directory, absolute: true, dot: true, symlink: true })
-    for (const file of files) {
+    // Bun.Glob throws when cwd does not exist; config directories are often absent.
+    if (!existsSync(directory)) continue
+    const files = new Bun.Glob("themes/*.json").scan({
+      cwd: directory,
+      absolute: true,
+      dot: true,
+      followSymlinks: true,
+    })
+    for await (const file of files) {
       result[path.basename(file, ".json")] = JSON.parse(await readFile(file, "utf8")) as unknown
     }
   }
