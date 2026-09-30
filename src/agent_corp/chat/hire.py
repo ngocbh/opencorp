@@ -52,8 +52,7 @@ class Hiring:
         Only issues the hire brings are errors; ones the repo already had are warnings.
         """
         pid = request.id or new_id()
-        with self.git.lock:
-            self.git.commit_hand_edits()
+        with self.git.lock:  # the scratch copy shouldn't catch a commit half done
             person, files, issues = self._draft(request, pid)
         with self._lock:
             self._previews.pop(pid, None)

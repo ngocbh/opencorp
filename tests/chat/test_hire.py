@@ -134,3 +134,11 @@ def test_old_previews_are_dropped_past_the_cap(git):
         hiring.hire(HireRequest(**FORM, id=pids[0], confirm=True))
     assert err.value.code == "lint_failed"
     assert hiring.hire(HireRequest(**FORM, id=pids[2], confirm=True)).commit == git.head()
+
+
+def test_a_preview_leaves_hand_edits_alone(git):
+    (git.root / "people/minh/profile.md").write_text("# Minh, Engineer\n\nLikes tests.\n")
+    head = git.head()
+    Hiring(git).hire(HireRequest(**FORM))
+    status = subprocess.run(["git", "-C", str(git.root), "status", "--porcelain"], capture_output=True, text=True)
+    assert (git.head(), status.stdout) == (head, " M people/minh/profile.md\n")
