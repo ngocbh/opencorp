@@ -500,7 +500,7 @@ export function Session() {
                 </scrollbox>
                 <box flexShrink={0}>
                   <Show
-                    when={question()}
+                    when={question()?.id}
                     keyed
                     fallback={
                       <Prompt
@@ -513,7 +513,7 @@ export function Session() {
                       />
                     }
                   >
-                    {(q) => <QuestionPrompt question={q} />}
+                    {(_id) => <QuestionPrompt question={question()} />}
                   </Show>
                 </box>
               </>

@@ -101,6 +101,43 @@ test("a second pick while the answer is in flight sends nothing", async () => {
   }
 })
 
+test("a reconnect that re-reads the question keeps the typed draft and the answer in flight", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  const rereads = () => office.requests.filter((r) => r.path === `/questions/${q.id}`).length
+  const reconnect = async () => {
+    const before = rereads()
+    office.reset()
+    await app.until(() => rereads() > before)
+    await app.until((f) => f.includes("@minh · idle") && f.includes("Which branch?"))
+  }
+  try {
+    await app.until((f) => f.includes("Which branch?") && f.includes("Type your own answer"))
+    app.input.pressKey("3")
+    await app.until((f) => f.split("Type your own answer").length > 2)
+    app.input.typeText("rel")
+    await app.until((f) => f.includes("rel"))
+    await reconnect()
+    app.input.typeText("ease")
+    await app.until((f) => f.includes("release"))
+    const release = office.hold("POST /questions/:id/answer")
+    const answers = () => office.requests.filter((r) => r.path === `/questions/${q.id}/answer`)
+    app.input.pressEnter()
+    await app.until(() => answers().length === 1)
+    await reconnect()
+    app.input.pressKey("1")
+    await Bun.sleep(100)
+    release()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(answers().map((r) => r.body)).toEqual([{ answer: "release", answer_kind: "text" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a 409 says someone else answered and re-reads the question", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

@@ -29,7 +29,7 @@ export function answerable(q: Question) {
 }
 
 /** The open question card: pick an option or type an answer; Esc stops the question. */
-export function QuestionPrompt(props: { question: Question }) {
+export function QuestionPrompt(props: { question: Question | undefined }) {
   const office = useOffice()
   const toast = useToast()
   const { theme } = useTheme()
@@ -37,8 +37,11 @@ export function QuestionPrompt(props: { question: Question }) {
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
 
-  const page = createMemo(() => questionPages(props.question)[0])
-  const canAnswer = createMemo(() => answerable(props.question))
+  // The card stays mounted while its question is replaced by a newer copy (a reconnect re-reads
+  // it); keep the last copy for the moment the question goes before the card does.
+  const question = createMemo<Question>((prev) => props.question ?? prev, props.question!)
+  const page = createMemo(() => questionPages(question())[0])
+  const canAnswer = createMemo(() => answerable(question()))
   const [store, setStore] = createStore({ selected: 0, editing: false, custom: "" })
 
   let textarea: TextareaRenderable | undefined
@@ -53,7 +56,7 @@ export function QuestionPrompt(props: { question: Question }) {
   function send(req: AnswerRequest) {
     if (sending) return
     sending = true
-    const id = props.question.id
+    const id = question().id
     office.client.questions
       .answer(id, req)
       .then((q) => office.putQuestion(q))
@@ -68,7 +71,7 @@ export function QuestionPrompt(props: { question: Question }) {
   }
 
   function reject() {
-    office.client.questions.stop(props.question.id).catch((error) => {
+    office.client.questions.stop(question().id).catch((error) => {
       if (isNotImplemented(error))
         return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
       toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
@@ -194,8 +197,8 @@ export function QuestionPrompt(props: { question: Question }) {
           when={canAnswer()}
           fallback={
             <box paddingLeft={1} gap={1}>
-              <text fg={theme.text}>{props.question.title ?? props.question.question}</text>
-              <For each={questionPages(props.question)}>
+              <text fg={theme.text}>{question().title ?? question().question}</text>
+              <For each={questionPages(question())}>
                 {(q) => (
                   <text>
                     <span style={{ fg: theme.textMuted }}>{q.header}:</span>{" "}
