@@ -43,6 +43,8 @@ Once `packages/protocol/schema/protocol.schema.json` exists, it changes only in 
   and `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
 - only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
   type of anything merged code uses;
+- adds the matching store migration (`src/agent_corp/store/migrations/`) when a new field
+  lands on a `$def` the store persists, since inserts fail until the column exists;
 - merges before dependent work continues.
 
 Clients ignore enum values and event types they don't know. Make timestamps with
