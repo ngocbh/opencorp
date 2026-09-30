@@ -21,7 +21,9 @@ function serve(fetch: (req: Request) => Response | Promise<Response>) {
 
 test("GET returns the parsed body", async () => {
   const seen: string[] = []
-  const socket = serve((req) => (seen.push(`${req.method} ${new URL(req.url).pathname}`), Response.json([{ id: "p1" }])))
+  const socket = serve(
+    (req) => (seen.push(`${req.method} ${new URL(req.url).pathname}`), Response.json([{ id: "p1" }])),
+  )
   expect(await request<unknown[]>(socket, "GET", "/people")).toEqual([{ id: "p1" }])
   expect(seen).toEqual(["GET /people"])
 })
