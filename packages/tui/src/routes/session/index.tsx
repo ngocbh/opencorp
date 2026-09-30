@@ -50,6 +50,7 @@ import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable } from "../../office/errors"
 import { QuestionPrompt } from "./question"
 import { cardQuestions } from "../chat/turn"
+import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -123,6 +124,9 @@ export function Session() {
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
   const messages = createMemo(() => office.state.messages[route.sessionID] ?? [])
+  // Esc freezes what the transcript shows until the next message is sent.
+  const [frozen, setFrozen] = createSignal<Freeze>()
+  const shown = createMemo(() => messages().flatMap((m) => frozenView(frozen(), m) ?? []))
   const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
 
@@ -426,7 +430,7 @@ export function Session() {
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 
-  const lastAssistant = createMemo(() => messages().findLast((x) => x.role === "assistant"))
+  const lastAssistant = createMemo(() => shown().findLast((x) => x.role === "assistant"))
 
   return (
     <context.Provider
@@ -478,7 +482,7 @@ export function Session() {
                   flexGrow={1}
                   scrollAcceleration={scrollAcceleration()}
                 >
-                  <For each={messages()}>
+                  <For each={shown()}>
                     {(message, index) => (
                       <Switch>
                         <Match when={message.role === "user"}>
@@ -507,8 +511,11 @@ export function Session() {
                         visible={true}
                         ref={bind}
                         onSubmit={() => {
+                          const f = frozen()
+                          if (f?.active) setFrozen(unfreeze(f, messages()))
                           toBottom()
                         }}
+                        onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                         sessionID={route.sessionID}
                       />
                     }

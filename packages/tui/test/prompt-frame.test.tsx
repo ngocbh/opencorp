@@ -1,3 +1,4 @@
+import type { Message } from "@agent-corp/protocol"
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub, OFFICE_501_ROUTES } from "../script/stub"
 import { bootFrame } from "./fixture/frame"
@@ -21,21 +22,49 @@ test("Enter on home creates a session for the person in the cwd, prompts it, and
   }
 })
 
-test("Esc while busy interrupts the session", async () => {
+test("one Esc while busy interrupts, and the reply stops showing at once", async () => {
   const office = createFakeOffice()
   const id = office.state.sessions[0].id
-  office.onPrompt(() => {})
+  const reply = (text: string) => {
+    const message: Message = {
+      id: office.nextId(),
+      session_id: id,
+      role: "assistant",
+      created_at: new Date().toISOString(),
+      parts: [{ id: office.nextId(), type: "text", text }],
+    }
+    office.live({ type: "message.updated", session_id: id, data: message as never })
+    return message
+  }
+  let first: Message | undefined
+  office.onPrompt((_, req) => {
+    if (req.text === "go") first = reply("Looking")
+    else reply("Fresh start")
+  })
   const app = await bootFrame(createStub(office), { sessionID: id })
   try {
     await app.until((f) => f.includes("@minh · idle"))
     app.input.typeText("go")
     app.input.pressEnter()
-    await app.until((f) => office.state.sessions[0].status === "busy" && f.includes("@minh · busy"))
-    // Two Escs in one write would parse as alt+escape, so wait for the first to land.
-    app.input.pressEscape()
-    await app.until((f) => f.includes("again to interrupt"))
+    await app.until((f) => f.includes("@minh · busy") && f.includes("Looking") && f.includes("esc interrupt"))
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
+    // The office's reply only stops at its next safe point; what it streams meanwhile stays hidden.
+    const part = first!.parts[0].id
+    office.live({ type: "part.delta", session_id: id, data: { message_id: first!.id, part_id: part, text: " at it" } })
+    reply("late words")
+    // A session event after the late words: once the header shows it, they have arrived too.
+    office.state.sessions[0] = { ...office.state.sessions[0], cost: 0.5 }
+    office.setStatus(id, "idle")
+    await app.until((f) => f.includes("@minh · idle · $0.50"))
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(app.frame()).toContain("Looking")
+    expect(app.frame()).not.toContain("Looking at it")
+    expect(app.frame()).not.toContain("late words")
+    app.input.typeText("again")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Fresh start"))
+    expect(app.frame()).not.toContain("late words")
   } finally {
     await app.stop()
     office.stop()
