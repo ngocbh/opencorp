@@ -80,8 +80,11 @@ async def _not_found(request: Request, exc: Exception) -> JSONResponse:
 
 
 async def _internal_error(request: Request, exc: Exception) -> JSONResponse:
-    # Starlette still re-raises the exception after this response, so uvicorn logs it.
-    return error(500, "internal_error", "internal error")
+    # Starlette still re-raises the exception after this response, so uvicorn logs it and
+    # closes the connection; "connection: close" tells the client not to reuse it.
+    response = error(500, "internal_error", "internal error")
+    response.headers["connection"] = "close"
+    return response
 
 
 EXCEPTION_HANDLERS = {HTTPError: _http_error, HTTPException: _starlette_error, NotFound: _not_found,

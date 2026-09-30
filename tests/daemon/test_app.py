@@ -1,9 +1,16 @@
 """The office app: error bodies, absolute-form targets, and start/stop."""
 
+import asyncio
+import logging
+import threading
+import time
+
 import httpx
 import pytest
+import uvicorn
 
 from agent_corp.daemon.app import AbsoluteFormPaths, OfficePaths, create_app
+from agent_corp.daemon.main import OfficeServer, bind_socket
 from tests.daemon.conftest import FakePool
 
 
@@ -150,3 +157,37 @@ async def test_unexpected_error_is_a_500_api_error(office, monkeypatch):
         r = await c.get(f"/sessions/{ULID}")
     assert r.status_code == 500
     assert r.json() == {"error": "internal_error", "message": "internal error"}
+
+
+class _SlowHandler(logging.Handler):
+    def emit(self, record):
+        time.sleep(0.2)
+
+
+def test_a_500_closes_its_connection_so_the_next_request_works(office, short_dir, monkeypatch):
+    def boom(session_id):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(office.store, "get_session", boom)
+    # The server runs in its own thread and logs slowly, as a real daemon logging a long
+    # traceback does: uvicorn closes the connection only after logging, so without
+    # "connection: close" the client reuses it in the meantime.
+    handler = _SlowHandler()
+    logging.getLogger("uvicorn.error").addHandler(handler)
+    sock = bind_socket(short_dir / "o.sock")
+    server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="warning"), office)
+    thread = threading.Thread(target=lambda: asyncio.run(server.serve(sockets=[sock])))
+    thread.start()
+    try:
+        while not server.started:
+            assert thread.is_alive()
+            time.sleep(0.01)
+        transport = httpx.HTTPTransport(uds=str(short_dir / "o.sock"))
+        with httpx.Client(transport=transport, base_url="http://localhost", timeout=10) as c:
+            r = c.get(f"/sessions/{ULID}")
+            assert r.status_code == 500 and r.headers["connection"] == "close"
+            assert c.get("/people").status_code == 200
+    finally:
+        logging.getLogger("uvicorn.error").removeHandler(handler)
+        server.should_exit = True
+        thread.join(10)
