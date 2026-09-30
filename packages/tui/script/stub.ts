@@ -502,7 +502,7 @@ export function createFakeOffice(
 
   /**
    * The office's hire: a preview writes nothing and returns lint issues; a confirm must repeat the
-   * preview's fields and id, and is refused while lint has an error.
+   * preview's fields and id, and is refused while lint has an error or when the id was never previewed.
    */
   function hire(body: any) {
     const fields = ["name", "handle", "title", "manager"] as const
@@ -535,8 +535,10 @@ export function createFakeOffice(
       state.hires[id] = body
       return Response.json({ person, diff, issues, commit: null } satisfies HireResponse)
     }
+    check(str(body.id), "confirm needs the id of a preview")
     const previewed = state.hires[body.id]
-    check(body.id && previewed, "confirm needs the id of a preview")
+    // The office keeps previews in memory, so an id it never previewed (or lost on restart) is a lint failure.
+    if (!previewed) throw fail(422, "lint_failed", `no preview of ${body.id}; preview it again`)
     if (fields.some((f) => previewed[f] !== body[f])) {
       throw fail(422, "lint_failed", "confirm must repeat the previewed fields")
     }

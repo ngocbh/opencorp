@@ -119,6 +119,15 @@ test("a hire confirm repeats the preview; a taken handle is a lint issue on prev
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "@minh is already used by minh"])
 })
 
+test("a hire confirm with no id is invalid_body; with an id never previewed it is lint_failed", async () => {
+  office = createFakeOffice()
+  const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
+  expect((await failure(client().people.hire({ ...req, confirm: true }))).code).toBe("invalid_body")
+  const unseen = await failure(client().people.hire({ ...req, id: "01JA1H0000000000000000NEW0", confirm: true }))
+  expect([unseen.status, unseen.code]).toEqual([422, "lint_failed"])
+  expect(unseen.message).toContain("preview it again")
+})
+
 test("a hire checks the body like the office; an unknown manager is a lint issue", async () => {
   office = createFakeOffice()
   const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
