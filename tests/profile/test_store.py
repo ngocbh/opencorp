@@ -3,10 +3,12 @@
 import os
 import threading
 
+import agent_composer.memory.profile as composer_profile
 import pytest
-from agent_composer.memory import MemoryFrameRef, MemoryFrameSpec, MemoryOwner
+from agent_composer.memory import LearnContext, MemoryFrameRef, MemoryFrameSpec, MemoryOwner
 from agent_composer.memory.profile import ProfileMemory
 from agent_composer.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
+from langchain_core.messages import AIMessage
 
 from agent_corp.company.git import CompanyGit
 from agent_corp.profile import EMPTY_BLOB, GitProfileStore, blob_id, commit_message
@@ -220,3 +222,49 @@ def test_write_keeps_the_file_mode(store, company):
     (company / PROFILE).chmod(0o644)
     store.write("# Minh\nnew\n", base_version=store.read()[1])
     assert (company / PROFILE).stat().st_mode & 0o777 == 0o644
+
+
+# Retried writes
+
+
+def test_same_commit_id_twice_makes_one_commit(store, company):
+    base = store.read()[1]
+    first = store.write("# Minh\nv1\n", base_version=base, provenance={"commit_id": "c-1"})
+    count = _count(company)
+    assert store.write("# Minh\nv1\n", base_version=base, provenance={"commit_id": "c-1"}) == first
+    assert _count(company) == count
+    assert store.committed("c-1") == first and store.committed("c-2") is None
+
+
+def test_retry_after_a_later_write_returns_its_own_version(store, company):
+    base = store.read()[1]
+    first = store.write("# Minh\nv1\n", base_version=base, provenance={"commit_id": "c-1"})
+    store.write("# Minh\nv2\n", base_version=first)
+    assert store.write("# Minh\nv1\n", base_version=base, provenance={"commit_id": "c-1"}) == first
+    assert (company / PROFILE).read_text() == "# Minh\nv2\n"
+
+
+def test_commit_ids_are_per_profile(git, company):
+    minh, boss = GitProfileStore(git, "minh"), GitProfileStore(git, "ngocbh")
+    minh.write("# Minh\nv1\n", base_version=minh.read()[1], provenance={"commit_id": "c-1"})
+    assert boss.committed("c-1") is None
+
+
+FEEDBACK = ({"channel": "output", "target_name": None, "value": "Be terse.",
+             "owner_static_path": None, "execution_seq": None},)
+
+
+def test_profile_memory_commit_is_a_git_commit_with_run_and_commit_id(store, company, monkeypatch):
+    class Learner:
+        def invoke(self, messages):
+            return AIMessage(content="<profile># Minh\nTerse.</profile>")
+
+    monkeypatch.setattr(composer_profile, "model_from_config", lambda config: Learner())
+    memory = ProfileMemory(store, llm_config={"provider": "ollama", "model": "stub"})
+    with memory.open_run() as session:
+        root = session.open_frame(MemoryFrameSpec(ROOT, "profile", {}))
+        session.commit("ac-memory-v1:abc", tuple(root.learn(LearnContext("run-1", ROOT, (), FEEDBACK))))
+    assert store.read()[0] == "# Minh\nTerse.\n"
+    assert _git(company, "log", "-1", "--format=%B") == (
+        "profile(@minh): from feedback on run run-1\n\nCommit-Id: ac-memory-v1:abc")
+    assert store.committed("ac-memory-v1:abc") == store.read()[1]

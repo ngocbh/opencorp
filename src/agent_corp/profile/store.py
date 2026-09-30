@@ -84,15 +84,19 @@ class GitProfileStore:
     def write(self, text: str, *, base_version: str, provenance: JsonObject | None = None) -> str:
         """Replace the profile and commit it if ``base_version`` is current; return the new version.
 
-        Raises ``MarkdownVersionMismatch`` for a stale base, ``ValueError`` for a bad commit id
-        or a profile path through a symlink, and ``OSError`` when git fails.
+        If a write with the same ``provenance["commit_id"]`` was already committed for this
+        profile, return its version and write nothing (a retried write). Raises
+        ``MarkdownVersionMismatch`` for a stale base, ``ValueError`` for a bad commit id or a
+        profile path through a symlink, and ``OSError`` when git fails.
         """
         if type(text) is not str or type(base_version) is not str:
             raise TypeError("text and base_version must be strings")
-        _commit_id(provenance)  # refuse a bad commit id before writing anything
+        commit_id = _commit_id(provenance)
         data = text.encode("utf-8")
         try:
             with self.git.lock:
+                if commit_id is not None and (done := self._committed(commit_id)) is not None:
+                    return done
                 self.git.commit_hand_edits()  # a pending hand edit is the current version
                 current = self._current()
                 if current != base_version:
@@ -102,6 +106,17 @@ class GitProfileStore:
                 return self._current()
         except CompanyGitError as exc:
             raise OSError(str(exc)) from exc
+
+    def committed(self, commit_id: str) -> str | None:
+        """The version a write with ``commit_id`` committed for this profile, or None if none did."""
+        try:
+            return self._committed(commit_id)
+        except CompanyGitError as exc:
+            raise OSError(str(exc)) from exc
+
+    def _committed(self, commit_id: str) -> str | None:
+        sha = self.git.find_commit(self.path, f"Commit-Id: {commit_id}")
+        return None if sha is None else self.git.blob_id(self.path, sha) or EMPTY_BLOB
 
     def _current(self) -> str:
         """The blob id of the profile at HEAD; a missing profile is the empty blob."""
