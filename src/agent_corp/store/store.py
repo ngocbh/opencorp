@@ -25,14 +25,19 @@ from agent_corp.protocol.models import (
     Comment,
     Event,
     Feedback,
+    FilePart,
+    Message,
     Question,
     Session,
+    TextPart,
+    ToolPart,
     WorkItem,
 )
 from agent_corp.store.migrate import migrate
 
 log = logging.getLogger(__name__)
 
+type Part = TextPart | FilePart | ToolPart
 type Listener = Callable[[Event], None]
 
 BUSY_TIMEOUT_S = 10.0
@@ -93,6 +98,7 @@ QUESTIONS = _Table(
     "questions", Question, json=frozenset({"options", "questions", "answer_schema", "discussion", "answer"})
 )
 FEEDBACK = _Table("feedback", Feedback)
+MESSAGES = _Table("messages", Message, derived=frozenset({"parts"}))
 
 _ANSWERED = frozenset({"answered", "consumed"})
 _QUESTION_MOVES = {"open": {"answered", "stale"}, "answered": {"consumed"}}
@@ -689,3 +695,59 @@ class Store:
             stored = self._must(FEEDBACK, Feedback, feedback_id)
             tx.emit("feedback.updated", feedback_id, stored)
         return stored
+
+    # --- messages and parts (live content: no events) -----------------------------------
+
+    def _put_part(self, tx: Tx, message_id: str, part: Part) -> None:
+        if not isinstance(part, (TextPart, FilePart, ToolPart)):
+            raise TypeError(f"not a part: {type(part).__name__}")
+        cur = tx.execute(
+            "INSERT INTO parts (id, message_id, seq, type, data) "
+            "VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM parts WHERE message_id = ?), ?, ?) "
+            "ON CONFLICT (id) DO UPDATE SET type = excluded.type, data = excluded.data "
+            "WHERE parts.message_id = excluded.message_id",
+            (part.id, message_id, message_id, part.type, part.model_dump_json()),
+        )
+        if cur.rowcount == 0:
+            raise DuplicateKey(f"part {part.id} belongs to another message")
+
+    def _message(self, row: sqlite3.Row) -> Message:
+        parts = self._conn().execute(
+            "SELECT data FROM parts WHERE message_id = ? ORDER BY seq", (row["id"],)
+        ).fetchall()
+        return _model(MESSAGES, row, Message, parts=[json.loads(p[0]) for p in parts])
+
+    def add_message(self, message: Message) -> Message:
+        """Insert a message and its parts."""
+        with self.transaction() as tx:
+            tx.insert(MESSAGES, _columns(MESSAGES, message))
+            for part in message.parts:
+                self._put_part(tx, message.id, part)
+            return self._must_message(message.id)
+
+    def put_part(self, message_id: str, part: Part) -> Message:
+        """Add a part to the end of a message, or replace the part with the same id in place."""
+        with self.transaction() as tx:
+            self._must_message(message_id)
+            self._put_part(tx, message_id, part)
+            return self._must_message(message_id)
+
+    def get_message(self, message_id: str) -> Message | None:
+        """The message with its parts, or ``None``."""
+        with self._read():
+            row = self._row(MESSAGES, message_id)
+            return None if row is None else self._message(row)
+
+    def _must_message(self, message_id: str) -> Message:
+        found = self.get_message(message_id)
+        if found is None:
+            raise NotFound(f"no message {message_id}")
+        return found
+
+    def list_messages(self, session_id: str) -> list[Message]:
+        """A session's transcript, oldest first."""
+        with self._read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
+            ).fetchall()
+            return [self._message(r) for r in rows]
