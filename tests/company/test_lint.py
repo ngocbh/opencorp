@@ -1,0 +1,61 @@
+import dataclasses
+
+from agent_corp.company.lint import lint
+from agent_corp.company.loader import load_repo
+from tests.company.conftest import base_files, person
+
+
+def issues(root, severity="error"):
+    return {(i.code, i.path) for i in lint(load_repo(root)) if i.severity == severity}
+
+
+def codes(root, severity="error"):
+    return {code for code, _ in issues(root, severity)}
+
+
+def test_clean_repo_has_no_issues(company):
+    assert lint(load_repo(company)) == []
+
+
+def test_duplicate_handle_names_the_second_person(make_company):
+    root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", handle="minh")})
+    assert ("person.duplicate_handle", "people/ngocbh/person.yaml") in issues(root)
+
+
+def test_unknown_manager(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", manager="ghost")})
+    assert ("person.unknown_manager", "people/minh/person.yaml") in issues(root)
+
+
+def test_manager_cycle_is_reported_once(make_company):
+    root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", manager="minh")})
+    found = [i for i in lint(load_repo(root)) if i.code == "person.manager_cycle"]
+    assert len(found) == 1 and found[0].message == "minh -> ngocbh"
+
+
+def test_ceo_has_manager(make_company):
+    company = dict(base_files()["company.yaml"], ceo="minh")
+    assert "company.ceo_has_manager" in codes(make_company(**{"company.yaml": company}))
+
+
+def test_unknown_ceo(make_company):
+    company = dict(base_files()["company.yaml"], ceo="ghost")
+    assert "company.unknown_ceo" in codes(make_company(**{"company.yaml": company}))
+
+
+def test_missing_company_yaml_does_not_crash_lint(make_company):
+    assert "repo.unreadable" in codes(make_company(**{"company.yaml": None}))
+
+
+def test_ids_that_differ_only_by_case(company):
+    # A ULID and its lowercase spelling are both valid ids. Built in memory: their
+    # directories can't both exist on a case-insensitive disk.
+    upper = "01J8Z3NDEKTSV4RRFFQ69G5FAV"
+    lower = upper.lower()
+    repo = load_repo(company)
+    twins = {pid: repo.people["minh"].model_copy(update={"id": pid, "handle": f"minh-{n}"})
+             for n, pid in enumerate((upper, lower))}
+    repo = dataclasses.replace(repo, people={**repo.people, **twins})
+    found = [i for i in lint(repo) if i.code == "repo.id_case_clash"]
+    assert [(i.path, i.message) for i in found] == [(f"people/{lower}/person.yaml",
+                                                     f"{upper} and {lower} differ only by case")]
