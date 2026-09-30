@@ -23,10 +23,12 @@ from ulid import ULID
 from agent_corp.protocol import now
 from agent_corp.protocol.models import (
     Comment,
+    Debrief,
     Event,
     Feedback,
     FilePart,
     Message,
+    ProfileProposal,
     Question,
     Session,
     TextPart,
@@ -74,6 +76,15 @@ class StaleVersion(StoreError):
 
 
 @dataclass(frozen=True)
+class DebriefRecord:
+    """A stored debrief with the bookkeeping columns the protocol model doesn't carry."""
+
+    debrief: Debrief
+    run_id: str | None
+    attempts: int
+
+
+@dataclass(frozen=True)
 class WorkedFolder:
     """A folder a person has had a session in, for the picker."""
 
@@ -99,6 +110,10 @@ QUESTIONS = _Table(
 )
 FEEDBACK = _Table("feedback", Feedback)
 MESSAGES = _Table("messages", Message, derived=frozenset({"parts"}))
+DEBRIEFS = _Table(
+    "debriefs", Debrief, key="session_id", json=frozenset({"artifacts", "decisions", "follow_ups", "open_questions"})
+)
+PROPOSALS = _Table("profile_proposals", ProfileProposal)
 
 _ANSWERED = frozenset({"answered", "consumed"})
 _QUESTION_MOVES = {"open": {"answered", "stale"}, "answered": {"consumed"}}
@@ -106,6 +121,7 @@ _FEEDBACK_MOVES = {
     "queued": {"learning", "learning_failed"},
     "learning": {"learning", "queued", "applied", "learning_failed"},
 }
+_PROPOSAL_MOVES = {"open": {"applied", "discarded", "stale"}}
 
 
 def _columns(table: _Table, model: BaseModel) -> dict[str, Any]:
@@ -751,3 +767,80 @@ class Store:
                 "SELECT * FROM messages WHERE session_id = ? ORDER BY created_at, rowid", (session_id,)
             ).fetchall()
             return [self._message(r) for r in rows]
+
+    # --- debriefs -----------------------------------------------------------------------
+
+    def _debrief_record(self, row: sqlite3.Row) -> DebriefRecord:
+        return DebriefRecord(_model(DEBRIEFS, row, Debrief), row["run_id"], row["attempts"])
+
+    def save_debrief(self, debrief: Debrief, *, run_id: str | None = None, attempts: int | None = None) -> Debrief:
+        """Insert or replace a session's debrief; emits ``debrief.created`` or ``debrief.updated``.
+
+        ``run_id`` and ``attempts`` keep their stored values when not given.
+        """
+        with self.transaction() as tx:
+            row = self._row(DEBRIEFS, debrief.session_id)
+            cols = _columns(DEBRIEFS, debrief)
+            cols["run_id"] = run_id if run_id is not None or row is None else row["run_id"]
+            cols["attempts"] = attempts if attempts is not None else (0 if row is None else row["attempts"])
+            if row is None:
+                tx.insert(DEBRIEFS, cols)
+            else:
+                tx.update(DEBRIEFS, cols)
+            stored = self._must(DEBRIEFS, Debrief, debrief.session_id)
+            tx.emit("debrief.created" if row is None else "debrief.updated", debrief.session_id, stored)
+        return stored
+
+    def get_debrief(self, session_id: str) -> Debrief | None:
+        """The session's debrief, or ``None``."""
+        return self._get(DEBRIEFS, Debrief, session_id)
+
+    def get_debrief_record(self, session_id: str) -> DebriefRecord | None:
+        """The session's debrief with its run id and attempt count, or ``None``."""
+        row = self._row(DEBRIEFS, session_id)
+        return None if row is None else self._debrief_record(row)
+
+    def list_debrief_records(self, *, state: str | None = None) -> list[DebriefRecord]:
+        """Debriefs (for example every ``pending`` one), oldest update first."""
+        sql, params = "SELECT * FROM debriefs", ()
+        if state is not None:
+            sql, params = sql + " WHERE state = ?", (state,)
+        rows = self._conn().execute(sql + " ORDER BY updated_at, rowid", params).fetchall()
+        return [self._debrief_record(r) for r in rows]
+
+    # --- profile proposals --------------------------------------------------------------
+
+    def add_profile_proposal(self, proposal: ProfileProposal) -> ProfileProposal:
+        """Insert a proposal and emit ``profile_proposal.created``."""
+        with self.transaction() as tx:
+            tx.insert(PROPOSALS, _columns(PROPOSALS, proposal))
+            stored = self._must(PROPOSALS, ProfileProposal, proposal.id)
+            tx.emit("profile_proposal.created", proposal.id, stored)
+        return stored
+
+    def get_profile_proposal(self, proposal_id: str) -> ProfileProposal | None:
+        """The proposal, or ``None``."""
+        return self._get(PROPOSALS, ProfileProposal, proposal_id)
+
+    def list_profile_proposals(
+        self, person: str, *, status: str | Iterable[str] | None = None
+    ) -> list[ProfileProposal]:
+        """A person's proposals, oldest first."""
+        status = status if status is None or isinstance(status, str) else tuple(status)
+        return self._list(PROPOSALS, ProfileProposal, {"person": person, "status": status}, "created_at, rowid")
+
+    def set_profile_proposal_status(
+        self, proposal_id: str, status: str, *, commit: str | None = None
+    ) -> ProfileProposal:
+        """Move an open proposal to ``applied``, ``discarded``, or ``stale``; emits ``profile_proposal.updated``."""
+        with self.transaction() as tx:
+            current = self._must(PROPOSALS, ProfileProposal, proposal_id)
+            _check_move("profile proposal", _PROPOSAL_MOVES, current.status, status)
+            update: dict[str, Any] = {"status": status}
+            if commit is not None:
+                update["commit"] = commit
+            proposal = self._changed(current, update, set())
+            tx.update(PROPOSALS, _columns(PROPOSALS, proposal))
+            stored = self._must(PROPOSALS, ProfileProposal, proposal_id)
+            tx.emit("profile_proposal.updated", proposal_id, stored)
+        return stored
