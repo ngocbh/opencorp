@@ -244,3 +244,19 @@ def test_a_request_without_an_id_is_answered_without_raising(make_job):
     worker._answer({"type": "tool_call", "group": "g", "name": "missing"})
     reply = far.recv()
     assert (reply["type"], reply["id"], reply["error"]) == ("tool_result", None, "failed")
+
+
+def test_the_office_closes_the_channel_of_a_worker_that_sends_a_bad_frame(make_job):
+    office_sock, worker_sock = socket.socketpair()
+    # Sends a frame that isn't a JSON object, then exits once the office closes the channel.
+    code = ("import socket, struct, sys\n"
+            "s = socket.socket(fileno=int(sys.argv[1]))\n"
+            "s.sendall(struct.pack('>I', 2) + b'[]')\n"
+            "while s.recv(65536):\n    pass\n")
+    proc = subprocess.Popen([sys.executable, "-c", code, str(worker_sock.fileno())],
+                            pass_fds=[worker_sock.fileno()], start_new_session=True)
+    worker_sock.close()
+    rec = Recorder()
+    worker = Worker(make_job(), proc, Channel(office_sock), rec, lambda w: None)
+    worker.start()
+    assert worker.wait(10) == 0 and rec.returncode == 0 and rec.outcome is None

@@ -1,6 +1,9 @@
 import os
+import socket
 
+from agent_corp.worker import channel as channel_module
 from agent_corp.worker import main as main_module
+from agent_corp.worker.channel import Channel
 
 
 def bad_start(make_job) -> dict:
@@ -40,3 +43,17 @@ def test_a_worker_stops_waiting_for_the_office_after_a_while(worker_main, make_j
     assert office.recv()["type"] == "error"
     thread.join(5)
     assert out.get("code") == main_module.EXIT_FAILED
+
+
+def test_a_result_too_large_to_send_becomes_an_error(monkeypatch):
+    a, b = socket.socketpair()
+    worker, office = Channel(a), Channel(b)
+    monkeypatch.setattr(channel_module, "MAX_FRAME", 2000)
+    left = {"type": "steer_left", "node_id": "reply", "texts": ["x"]}
+    code = main_module._report(worker, [left, {"type": "result", "output": "x" * 5000}], main_module.EXIT_OK)
+    assert code == main_module.EXIT_FAILED
+    assert office.recv() == left
+    error = office.recv()
+    assert error["type"] == "error" and error["message"].startswith("FrameTooLarge")
+    worker.close()
+    office.close()
