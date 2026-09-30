@@ -191,3 +191,54 @@ test("Esc during a confirm leaves whatever opened next alone; the hire still lan
     office.stop()
   }
 })
+
+/** Opens the hire form with `<leader>p` while the office's people list is still loading. */
+async function openHireEarly(office: ReturnType<typeof createFakeOffice>) {
+  const release = office.hold("GET /people")
+  const app = await bootFrame(createStub(office))
+  await app.until((f) => f.includes("Ask anything"))
+  app.input.pressKey("x", { ctrl: true })
+  await app.setup.renderOnce()
+  app.input.pressKey("p")
+  await app.until((f) => f.includes("Hire new…"))
+  await typeInto(app, "hire")
+  const filter = app.setup.renderer.currentFocusedRenderable
+  app.input.pressEnter()
+  await app.until((f) => f.includes("Hire a new person") && app.setup.renderer.currentFocusedRenderable !== filter)
+  return { app, release }
+}
+
+test("the manager defaults to the first human once people load", async () => {
+  const office = createFakeOffice()
+  const { app, release } = await openHireEarly(office)
+  try {
+    expect(await app.until(() => true)).not.toContain("@ngocbh")
+    release()
+    await app.until((f) => f.includes("@ngocbh"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a manager field the user edited before people load is left alone, even if emptied", async () => {
+  const office = createFakeOffice()
+  const { app, release } = await openHireEarly(office)
+  try {
+    app.input.pressTab({ shift: true })
+    await typeInto(app, "k")
+    await app.until((f) => f.includes("Manager  k"))
+    app.input.pressBackspace()
+    await app.until((f) => f.includes("@handle of their manager"))
+    release()
+    await app.until((f) => f.includes("Software engineer"))
+    for (let i = 0; i < 10; i++) {
+      await app.setup.renderOnce()
+      await Bun.sleep(20)
+    }
+    expect(await app.until(() => true)).not.toContain("@ngocbh")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

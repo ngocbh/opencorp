@@ -1,6 +1,6 @@
 import { InputRenderable, TextAttributes } from "@opentui/core"
 import type { HireRequest, HireResponse, Person } from "@agent-corp/protocol"
-import { For, Show, createSignal, onCleanup, onMount } from "solid-js"
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useOffice } from "../../context/office"
 import { useLocal } from "../../context/local"
@@ -27,8 +27,13 @@ export function DialogHire() {
   const dialog = useDialog()
   const toast = useToast()
   const { theme } = useTheme()
-  const human = office.state.people.find((p) => p.kind === "human")
-  const [form, setForm] = createStore<HireForm>({ name: "", handle: "", title: "", manager: human ? `@${human.handle}` : "" })
+  const [form, setForm] = createStore<HireForm>({ name: "", handle: "", title: "", manager: "" })
+  let managerTyped = false
+  // The manager defaults to the first human (the CEO), as soon as people are loaded.
+  createEffect(() => {
+    const human = office.state.people.find((p) => p.kind === "human")
+    if (human && !managerTyped && !form.manager) setForm("manager", `@${human.handle}`)
+  })
   const [focused, setFocused] = createSignal(0)
   const [preview, setPreview] = createSignal<{ request: HireRequest; response: HireResponse }>()
   const [error, setError] = createSignal<string>()
@@ -129,6 +134,7 @@ export function DialogHire() {
                 cursorColor={theme.primary}
                 onInput={(value) => {
                   setForm(field.key, value)
+                  if (field.key === "manager") managerTyped = true
                   edits++
                   // An edit makes the preview stale; the next Enter previews again.
                   setPreview(undefined)
