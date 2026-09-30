@@ -1,6 +1,6 @@
 import type { CliRenderer } from "@opentui/core"
 import { readdirSync, readFileSync, statSync } from "node:fs"
-import { readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { launchEditor, type EditorStdio } from "./editor-launch"
@@ -23,7 +23,9 @@ export function normalizePromptContent(content: string) {
 export async function openEditor(input: { value: string; renderer: CliRenderer; cwd?: string; stdin?: EditorStdio }) {
   const editor = process.env.VISUAL || process.env.EDITOR
   if (!editor) return
-  const file = path.join(os.tmpdir(), `${Date.now()}.md`)
+  // A private dir (mkdtemp makes it 0700), not a guessable name in a shared, world-readable /tmp.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "ac-prompt-"))
+  const file = path.join(dir, "prompt.md")
   await writeFile(file, input.value)
   input.renderer.suspend()
   input.renderer.currentRenderBuffer.clear()
@@ -31,7 +33,7 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
     await launchEditor(editor, file, input)
     return (await readFile(file, "utf8")) || undefined
   } finally {
-    await rm(file, { force: true }).catch(() => {})
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
     input.renderer.currentRenderBuffer.clear()
     input.renderer.resume()
     input.renderer.requestRender()
