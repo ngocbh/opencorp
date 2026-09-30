@@ -140,3 +140,17 @@ def test_concurrent_writers_serialize(store):
     for t in threads:
         t.join()
     assert len(store.list_work_items()) == 20 and len(store.events_after()) == 20
+
+
+def test_listener_writes_are_delivered_in_commit_order(store):
+    seen_by_b = []
+
+    def a(event):
+        if event.type == "work_item.created":
+            store.update_work_item(event.subject_id, status="in_progress")
+
+    store.add_listener(a)
+    store.add_listener(lambda event: seen_by_b.append(event.id))
+    store.create_work_item(work_item())
+    assert seen_by_b == [e.id for e in store.events_after()]
+    assert [e.type for e in store.events_after()] == ["work_item.created", "work_item.updated"]

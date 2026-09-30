@@ -11,6 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
+from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -314,8 +315,7 @@ class Store:
                 raise
             finally:
                 self._local.tx = None
-            for event in tx.events:
-                self._deliver(event)
+            self._deliver(tx.events)
 
     def _savepoint(self, tx: Tx) -> Iterator[Tx]:
         tx.depth += 1
@@ -353,18 +353,31 @@ class Store:
         """Call ``listener(event)`` for each event after its transaction commits.
 
         Listeners run on the committing thread while in-process writes are held, so they
-        see commit order; they must not block. A listener that raises is logged. Returns a
-        function that removes the listener.
+        see commit order; they must not block. A listener may write to the store on its own
+        thread: those events are delivered, in order, once the current ones are done. A
+        listener that raises is logged. Returns a function that removes the listener.
         """
         self._listeners.append(listener)
         return lambda: self._listeners.remove(listener)
 
-    def _deliver(self, event: Event) -> None:
-        for listener in list(self._listeners):
-            try:
-                listener(event)
-            except Exception:
-                log.exception("store listener failed on %s %s", event.type, event.id)
+    def _deliver(self, events: list[Event]) -> None:
+        pending: deque[Event] | None = getattr(self._local, "pending", None)
+        if pending is not None:
+            # A listener wrote to the store: its events go after the ones still being
+            # delivered, so every listener sees commit order.
+            pending.extend(events)
+            return
+        pending = self._local.pending = deque(events)
+        try:
+            while pending:
+                event = pending.popleft()
+                for listener in list(self._listeners):
+                    try:
+                        listener(event)
+                    except Exception:
+                        log.exception("store listener failed on %s %s", event.type, event.id)
+        finally:
+            self._local.pending = None
 
     def emit(self, type: str, subject_id: str, data: BaseModel | dict[str, Any]) -> Event:
         """Write an event with no other change (for metadata kept outside the store)."""
