@@ -61,6 +61,25 @@ test("a pending debrief says the office retries it; r asks again; the ready debr
   })
 })
 
+test("a read that was in flight when a newer debrief arrived by event is dropped", async () => {
+  const office = createFakeOffice()
+  office.addDebrief(office.state.sessions[0].id, { state: "pending" })
+  await run(office, async (app, id) => {
+    await app.until((f) => f.includes("Debrief pending"))
+    const gets = () => office.requests.filter((r) => r.path === `/debriefs/${id}`).length
+    const before = gets()
+    // The reply is what the debrief was when the read came in: still pending.
+    const release = office.hold("GET /debriefs/:session", "reply")
+    app.input.pressKey("r")
+    await app.until(() => gets() > before)
+    office.addDebrief(id, READY)
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    release()
+    await Bun.sleep(100)
+    expect(await app.until((f) => f.includes("Debrief ·"))).toContain("Fixed the flaky clock test")
+  })
+})
+
 test("no debrief yet says so; while debriefing it says it is being written; then it fills in", async () => {
   const office = createFakeOffice()
   await run(office, async (app, id) => {

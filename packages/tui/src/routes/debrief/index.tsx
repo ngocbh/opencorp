@@ -58,11 +58,15 @@ export function Debrief() {
   const [cursor, setCursor] = createSignal(0)
   const [marked, setMarked] = createSignal<number[]>([])
 
+  // Debrief events seen; a read that was in flight when one arrived may be older than it.
+  let events = 0
   /** Reads the debrief; for a pending one, the read also makes the office retry it. */
   function load() {
+    const at = events
     office.client.debriefs.get(id).then(
-      (d) => (setDebrief(d), setMissing(false), setError(undefined)),
+      (d) => at === events && (setDebrief(d), setMissing(false), setError(undefined)),
       (e) => {
+        if (at !== events) return
         if (e instanceof OfficeError && e.status === 404) return setMissing(true)
         setError(errorMessage(e))
       },
@@ -78,7 +82,9 @@ export function Debrief() {
     }),
   )
   const put = (e: { subject_id?: string; data: unknown }) => {
-    if (e.subject_id === id) setDebrief(e.data as DebriefData)
+    if (e.subject_id !== id) return
+    events++
+    setDebrief(e.data as DebriefData)
   }
   onCleanup(office.on("debrief.created", put))
   onCleanup(office.on("debrief.updated", put))
