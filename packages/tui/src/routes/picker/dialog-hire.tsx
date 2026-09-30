@@ -1,5 +1,5 @@
 import { InputRenderable, TextAttributes } from "@opentui/core"
-import type { HireRequest, HireResponse } from "@agent-corp/protocol"
+import type { HireRequest, HireResponse, Person } from "@agent-corp/protocol"
 import { For, Show, createSignal, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useOffice } from "../../context/office"
@@ -53,25 +53,31 @@ export function DialogHire() {
     setBusy(true)
     setError(undefined)
     const at = edits
+    let response: HireResponse
     try {
-      const response = await office.client.people.hire(built.request)
-      if (!shown) {
-        if (edits === at) setPreview({ request: built.request, response })
-        return
-      }
-      // There are no person events, so re-read the lists before selecting the new person.
-      await office.refreshPeople()
-      local.person.set(response.person.id)
-      toast.show({ variant: "success", message: `Hired @${response.person.handle}` })
-      dialog.clear()
+      response = await office.client.people.hire(built.request)
     } catch (e) {
+      setBusy(false)
       if (!shown && edits !== at) return
       // A refused confirm means the office's view changed since the preview; preview again.
       if (shown) setPreview(undefined)
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
+      return setError(e instanceof Error ? e.message : String(e))
     }
+    if (!shown) {
+      setBusy(false)
+      if (edits === at) setPreview({ request: built.request, response })
+      return
+    }
+    await hired(response.person)
+  }
+
+  /** The office has hired `person`; nothing after this can undo it, so it only updates the view. */
+  async function hired(person: Person) {
+    // There are no person events, so re-read the lists; if that fails the hire still stands.
+    await office.refreshPeople().catch(() => {})
+    if (office.state.people.some((p) => p.id === person.id)) local.person.set(person.id)
+    toast.show({ variant: "success", message: `Hired @${person.handle}` })
+    dialog.clear()
   }
 
   useBindings(() => ({

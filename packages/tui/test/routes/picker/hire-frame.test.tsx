@@ -139,3 +139,27 @@ test("a failed confirm drops the preview, so the next Enter previews again", asy
     office.stop()
   }
 })
+
+test("once the office hires, the form closes even if re-reading people fails", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Lan", "lan", "QA")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("enter hire"))
+    const release = office.hold("POST /people")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Asking the office"))
+    office.notImplemented.add("GET /people")
+    release()
+    const f = await app.until((f) => !f.includes("Hire a new person") && f.includes("Hired @lan"))
+    // @lan isn't loaded, so the person stays as it was rather than warning "No such person".
+    expect(f).toContain("@minh · Software engineer")
+    expect(f).not.toContain("No such person")
+    expect(office.state.people.some((p) => p.handle === "lan")).toBe(true)
+    expect(office.requests.filter((r) => r.method === "POST")).toHaveLength(2)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
