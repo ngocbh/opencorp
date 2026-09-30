@@ -290,3 +290,10 @@ def test_close_during_a_failing_start_returns_promptly(registry, store, make_job
     thread.join(5)
     assert failed and registry.get("s1") is None and store.list_workers() == []
 
+
+def test_waiting_for_an_exit_gives_up_on_a_process_it_cannot_read(monkeypatch):
+    def denied(pid):
+        raise psutil.AccessDenied(pid)
+
+    monkeypatch.setattr(spawn_module.psutil, "Process", denied)
+    assert spawn_module._wait_exited(os.getpid(), 5)

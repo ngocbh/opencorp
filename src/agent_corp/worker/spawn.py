@@ -70,13 +70,16 @@ EXIT_GRACE = 5.0  # seconds a worker has to exit after its channel closes, befor
 
 
 def _wait_exited(pid: int, timeout: float) -> bool:
-    """Wait until ``pid`` has exited, without reaping it; False on timeout."""
+    """Wait until ``pid`` has exited, without reaping it; False on timeout.
+
+    Also True at once if psutil can't read the process, so the caller goes on to kill and reap.
+    """
     deadline, pause = time.monotonic() + timeout, 0.001
     while True:
         try:
             if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
                 return True
-        except psutil.NoSuchProcess:
+        except psutil.Error:
             return True
         if time.monotonic() >= deadline:
             return False
