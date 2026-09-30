@@ -236,7 +236,7 @@ test("a prompt gate with a record output can't be answered here", async () => {
   }
 })
 
-test("dismissing calls stop; a 501 toasts 'not available yet' and the question stays", async () => {
+test("stopping calls stop; a 501 toasts 'not available yet' and the question stays", async () => {
   const office = createFakeOffice({ notImplemented: ["POST /questions/:id/stop"] })
   const s = office.state.sessions[0]
   const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
@@ -244,6 +244,8 @@ test("dismissing calls stop; a 501 toasts 'not available yet' and the question s
   try {
     await app.until((f) => f.includes("Deploy now?"))
     app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("y")
     await app.until((f) => f.includes("not available yet"))
     expect(office.requests.some((r) => r.method === "POST" && r.path === `/questions/${q.id}/stop`)).toBe(true)
     expect(app.frame()).toContain("Deploy now?")

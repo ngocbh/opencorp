@@ -322,6 +322,13 @@ export function createFakeOffice(
     if (side && side.status !== "ended") setStatus(side.id, "ended")
     return updateQuestion({ ...q, status: "answered", answered_by: human(), updated_at: now(), ...fields })
   }
+  /** Marks an open question stale, as the office does when its run restarts, and ends its side chat. */
+  function expire(id: string) {
+    const q = question(id)
+    const side = state.sessions.find((s) => s.id === q.side_session_id)
+    if (side && side.status !== "ended") setStatus(side.id, "ended")
+    return updateQuestion({ ...q, status: "stale", updated_at: now() })
+  }
   /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
   function openModelQuestion(id: string, code: string) {
     const q = question(id)
@@ -866,6 +873,7 @@ export function createFakeOffice(
     live,
     addQuestion,
     openTurn,
+    expire,
     setStatus,
     propose,
     addDebrief,

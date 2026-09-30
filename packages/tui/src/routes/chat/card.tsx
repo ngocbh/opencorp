@@ -13,10 +13,11 @@ import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { useBindings, useOpencodeModeStack } from "../../keymap"
 import { buildAnswer, cardModel, type PageAnswer } from "./answer"
+import { leaveBindings } from "./leave"
 
 const QUESTION_MODE = "question"
 
-/** The open question card: a page per question to pick or type on; Esc stops the question. */
+/** The open question card: a page per question to pick or type on; Esc then `y` stops the asker. */
 export function QuestionCard(props: { question: Question | undefined }) {
   const office = useOffice()
   const toast = useToast()
@@ -33,6 +34,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
     page: 0,
     selected: 0,
     editing: false,
+    confirming: false,
     answers: [] as PageAnswer[],
   })
 
@@ -46,10 +48,12 @@ export function QuestionCard(props: { question: Question | undefined }) {
     const id = question().work_item_id
     return id ? (office.state.workItems[id] ?? fetched()) : undefined
   })
+  const asker = createMemo(() => personLabel(office.state.people, question().asker))
+  // A human_input is never interrupted, so its card has no stop.
+  const stoppable = createMemo(() => question().source !== "human_input")
   const context = createMemo(() => {
-    const asker = `${personLabel(office.state.people, question().asker)} asks`
     const item = workItem()
-    return item ? `${asker} · work item "${item.title}"` : asker
+    return item ? `${asker()} asks · work item "${item.title}"` : `${asker()} asks`
   })
 
   const pages = createMemo(() => model()?.pages ?? [])
@@ -81,7 +85,8 @@ export function QuestionCard(props: { question: Question | undefined }) {
       .finally(() => (sending = false))
   }
 
-  function reject() {
+  function stop() {
+    setStore("confirming", false)
     office.client.questions.stop(question().id).catch((error) => {
       if (isNotImplemented(error))
         return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
@@ -133,6 +138,27 @@ export function QuestionCard(props: { question: Question | undefined }) {
     onCleanup(popMode)
   })
 
+  onCleanup(() => {
+    // The card closes when its question does; say so when that was the run restarting.
+    const q = office.state.questions[question().id]
+    if (q?.status === "stale")
+      toast.show({ message: `${asker()}'s question expired: the run restarted`, variant: "warning", duration: 5000 })
+  })
+
+  useBindings(() => ({
+    mode: QUESTION_MODE,
+    enabled: store.confirming,
+    bindings: [
+      { key: "y", desc: "Stop the asker", group: "Question", cmd: () => stop() },
+      ...["n", "escape", "return"].map((key) => ({
+        key,
+        desc: "Keep the question",
+        group: "Question",
+        cmd: () => setStore("confirming", false),
+      })),
+    ],
+  }))
+
   useBindings(() => ({
     mode: QUESTION_MODE,
     enabled: store.editing,
@@ -179,9 +205,12 @@ export function QuestionCard(props: { question: Question | undefined }) {
   useBindings(() => {
     const total = rows()
     const move = (by: number) => total && setStore("selected", (store.selected + by + total) % total)
-    const stop = [
-      { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
-      ...tuiConfig.keybinds.get("app.exit"),
+    const keys = [
+      ...(stoppable()
+        ? [{ key: "escape", desc: "Stop the asker", group: "Question", cmd: () => setStore("confirming", true) }]
+        : []),
+      // Ctrl+C leaves the view as it does in the chat; it never stops the question.
+      ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
     ]
     const paging =
       pages().length > 1
@@ -197,19 +226,9 @@ export function QuestionCard(props: { question: Question | undefined }) {
         : []
     return {
       mode: QUESTION_MODE,
-      enabled: !store.editing,
-      commands: [
-        {
-          name: "app.exit",
-          title: "Reject question",
-          category: "Question",
-          run() {
-            reject()
-          },
-        },
-      ],
+      enabled: !store.editing && !store.confirming,
       bindings: !model()
-        ? stop
+        ? keys
         : [
             ...Array.from({ length: Math.min(total, 9) }, (_, index) => ({
               key: String(index + 1),
@@ -235,7 +254,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
             },
             { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
             ...paging,
-            ...stop,
+            ...keys,
           ],
     }
   })
@@ -371,7 +390,10 @@ export function QuestionCard(props: { question: Question | undefined }) {
         paddingBottom={1}
         justifyContent="space-between"
       >
-        <box flexDirection="row" gap={2}>
+        <Show when={store.confirming}>
+          <text fg={theme.warning}>{`Stop ${asker()}? y/N`}</text>
+        </Show>
+        <box flexDirection="row" gap={2} visible={!store.confirming}>
           <Show when={model()}>
             <text fg={theme.text}>
               {"↑↓"} <span style={{ fg: theme.textMuted }}>select</span>
@@ -390,9 +412,11 @@ export function QuestionCard(props: { question: Question | undefined }) {
               enter <span style={{ fg: theme.textMuted }}>{store.page < pages().length - 1 ? "next" : "submit"}</span>
             </text>
           </Show>
-          <text fg={theme.text}>
-            esc <span style={{ fg: theme.textMuted }}>dismiss</span>
-          </text>
+          <Show when={stoppable()}>
+            <text fg={theme.text}>
+              esc <span style={{ fg: theme.textMuted }}>stop {asker()}</span>
+            </text>
+          </Show>
         </box>
       </box>
     </box>
