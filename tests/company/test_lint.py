@@ -2,6 +2,7 @@ import dataclasses
 
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
+from agent_corp.company.naming import asset_tool_name
 from tests.company.conftest import base_files, person
 
 
@@ -78,3 +79,41 @@ def test_group_parent_cycle(make_company):
 def test_person_in_unknown_group(make_company):
     root = make_company(**{"people/minh/person.yaml": person("minh", groups=["eng", "nope"])})
     assert ("person.unknown_group", "people/minh/person.yaml") in issues(root)
+
+
+def asset(**changes):
+    return dict(base_files()["assets/fake.yaml"], **changes)
+
+
+def test_asset_tool_name_matches_design():
+    assert asset_tool_name("cluster-a", "submit_job") == "cluster_a__submit_job"
+
+
+def test_unknown_grantees(make_company):
+    grants = [{"who": "group:nope", "can": ["echo"]}, {"who": "ghost", "can": ["echo"]}]
+    found = [i for i in lint(load_repo(make_company(**{"assets/fake.yaml": asset(grants=grants)})))
+             if i.code == "asset.unknown_grantee"]
+    assert sorted(i.message for i in found) == ["ghost", "group:nope"]
+
+
+def test_person_grantee_is_known(make_company):
+    grants = [{"who": "minh", "can": ["admin"]}]
+    assert codes(make_company(**{"assets/fake.yaml": asset(grants=grants)})) == set()
+
+
+def test_unknown_tool_in_grant(make_company):
+    grants = [{"who": "group:eng", "can": ["echo", "nope"]}]
+    assert "asset.unknown_tool" in codes(make_company(**{"assets/fake.yaml": asset(grants=grants)}))
+
+
+def test_tool_name_too_long(make_company):
+    long = "t" * 70
+    files = {"assets/fake.yaml": asset(tools={long: {}}, grants=[{"who": "group:eng", "can": [long]}])}
+    assert "asset.tool_name_invalid" in codes(make_company(**files))
+
+
+def test_gated_tool_granted_directly_is_a_warning(make_company):
+    files = {"assets/fake.yaml": asset(tools={"echo": {"risk": "gated"}})}
+    root = make_company(**files)
+    assert codes(root) == set()
+    assert "asset.gated_tool_granted" in codes(root, "warning")

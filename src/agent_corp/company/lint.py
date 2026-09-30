@@ -4,6 +4,7 @@ from collections.abc import Iterator
 
 from agent_corp.company.issues import RepoIssue
 from agent_corp.company.loader import CompanyRepo
+from agent_corp.company.naming import TOOL_NAME, asset_tool_name
 
 
 def lint(repo: CompanyRepo) -> list[RepoIssue]:
@@ -106,5 +107,28 @@ def _check_person_groups(repo: CompanyRepo) -> Iterator[RepoIssue]:
                 yield RepoIssue(_person_path(pid), "person.unknown_group", gid)
 
 
+def _check_assets(repo: CompanyRepo) -> Iterator[RepoIssue]:
+    """Tool names fit the model's limits; grants name real subjects and tools."""
+    for aid, asset in sorted(repo.assets.items()):
+        path = f"assets/{aid}.yaml"
+        for tool in asset.tools:
+            if not TOOL_NAME.fullmatch(asset_tool_name(aid, tool)):
+                yield RepoIssue(path, "asset.tool_name_invalid",
+                                f"{asset_tool_name(aid, tool)!r} must match {TOOL_NAME.pattern}")
+        gated = {t for t, spec in asset.tools.items() if spec.risk == "gated"}
+        for grant in asset.grants:
+            kind, _, name = grant.who.rpartition(":")
+            known = repo.groups if kind == "group" else repo.people
+            if name not in known:
+                yield RepoIssue(path, "asset.unknown_grantee", grant.who)
+            for tool in grant.can:
+                if tool != "admin" and tool not in asset.tools:
+                    yield RepoIssue(path, "asset.unknown_tool", tool)
+                elif tool in gated:
+                    yield RepoIssue(path, "asset.gated_tool_granted",
+                                    f"{tool} is gated; gated tools are not exposed to agents yet",
+                                    "warning")
+
+
 CHECKS = [_check_id_case, _check_handles, _check_managers, _check_ceo, _check_groups,
-          _check_person_groups]
+          _check_person_groups, _check_assets]
