@@ -89,13 +89,25 @@ def install(launch: Launch, host: Host) -> None:
         argv = ["systemctl", "--user", verb] + ([] if verb == "daemon-reload" else [name])
         done = host.run(argv)
         if done.returncode != 0:
-            path.unlink(missing_ok=True)
-            (path.parent / "default.target.wants" / name).unlink(missing_ok=True)
+            _remove(launch, host)
             raise ServiceError(f"systemctl --user {verb} failed: {done.stderr.strip()}")
 
 
+def _remove(launch: Launch, host: Host) -> None:
+    """Remove the unit and its ``default.target.wants`` link, which disables it without systemctl."""
+    path = unit_path(launch, host)
+    path.unlink(missing_ok=True)
+    (path.parent / "default.target.wants" / unit_name(launch)).unlink(missing_ok=True)
+
+
 def start(launch: Launch, host: Host) -> None:
-    """Start the installed unit if it isn't running."""
+    """Start the installed unit if it isn't running.
+
+    Raises ``ServiceError`` if ``systemctl --user start`` refuses; the unit and its
+    ``default.target.wants`` link are then removed, so the next login doesn't start a
+    service the caller moved off.
+    """
     done = host.run(["systemctl", "--user", "start", unit_name(launch)])
     if done.returncode != 0:
+        _remove(launch, host)
         raise ServiceError(f"systemctl --user start failed: {done.stderr.strip()}")

@@ -1,4 +1,5 @@
 import json
+import os
 import socket
 import time
 
@@ -156,6 +157,20 @@ def test_start_removes_a_launch_agent_that_wont_kickstart_before_falling_back(tm
     # Left loaded, RunAtLoad would start it under launchd at the next login while the record says background.
     assert ["launchctl", "bootout", f"gui/501/com.agent-corp.{one.name}"] in run.calls
     assert not list((tmp_path / "Library" / "LaunchAgents").iterdir())
+    assert recorded(one)["mode"] == "background"
+
+
+def test_start_removes_a_systemd_unit_that_wont_start_before_falling_back(tmp_path, one):
+    service.install(one, make_host(tmp_path, Runner(), platform="linux"))
+    units = tmp_path / ".config" / "systemd" / "user"
+    name = f"agent-corp-{one.name}.service"
+    (units / "default.target.wants").mkdir()
+    (units / "default.target.wants" / name).symlink_to(units / name)  # what `systemctl enable` makes
+    run = Runner([(["systemctl", "--user", "start"], 1, "Unit is masked")])
+    got = service.start(one, make_host(tmp_path, run, platform="linux", popen=lambda argv, **kw: None))
+    assert got.mode == "background" and "Unit is masked" in got.notes[0]
+    # Left enabled, it would start under systemd at the next login while the record says background.
+    assert not (units / name).exists() and not os.path.lexists(units / "default.target.wants" / name)
     assert recorded(one)["mode"] == "background"
 
 
