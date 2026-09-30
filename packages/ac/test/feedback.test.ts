@@ -134,6 +134,17 @@ test("with no ID, a live session in this folder is skipped for the newest finish
   expect(r.err).toContain("run-c")
 })
 
+test("a run ID no session lists, like the debrief's own run, goes to this folder's session", async () => {
+  const s = sessionInProj()
+  office.addDebrief(s.id, { state: "ready" }, { run: "run-debrief" })
+  process.chdir(path.join(home, "proj"))
+  expect((await feedback("run-debrief", "-m", "Shorter summary")).code).toBe(0)
+  expect(posts()).toEqual([{ session_id: s.id, run_id: "run-debrief", text: "Shorter summary" }])
+  // The office refuses a run that isn't the session's; that reads as an unknown ID.
+  const r = await feedback("run-x", "-m", "x")
+  expect(r).toMatchObject({ code: 1, err: "ac feedback: no session or run run-x" })
+})
+
 test("office errors exit 1: an unknown ID, and no session in this folder", async () => {
   const unknown = await feedback("nope", "-m", "x")
   expect(unknown.code).toBe(1)
