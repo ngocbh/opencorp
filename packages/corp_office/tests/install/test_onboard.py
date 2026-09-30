@@ -85,8 +85,11 @@ def test_no_hire_leaves_the_company_without_an_agent(tmp_path):
 
 
 def test_a_hire_the_office_cant_take_is_an_onboard_error(tmp_path):
-    with pytest.raises(OnboardError, match="first agent"):
-        onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""))
+    def gone(request):
+        raise httpx.ConnectError("[Errno 2] No such file or directory", request=request)
+
+    with pytest.raises(OnboardError, match="first agent: the office didn't answer"):
+        onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""), transport=httpx.MockTransport(gone))
     odd = httpx.MockTransport(lambda request: httpx.Response(200, json={"issues": [], "person": {}}))
     with pytest.raises(OnboardError, match="first agent"):
         onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""), transport=odd)
