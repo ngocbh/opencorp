@@ -123,3 +123,58 @@ test("the client exposes the subscription", async () => {
   cleanup.push(sub.close)
   await until(() => seen.includes("connected"))
 })
+
+test("resets in a row: the first reconnects at once, later ones back off", async () => {
+  let connections = 0
+  const srv = serveUnix(() => {
+    connections++
+    return new Response(": connected\n\nevent: reset\ndata:\n\n")
+  })
+  cleanup.push(srv.stop)
+  watch(srv.socket, { minDelayMs: 20, maxDelayMs: 80 })
+  await Bun.sleep(300)
+  // Back to back this would be hundreds; with the backoff it is a few pairs.
+  expect(connections).toBeGreaterThanOrEqual(2)
+  expect(connections).toBeLessThan(20)
+})
+
+test("reconnect() backs off while it repeats", async () => {
+  const office = fake()
+  let sub: ReturnType<typeof subscribe>
+  let connections = 0
+  // Every stream is thrown away as soon as it opens, as a failing bootstrap would.
+  sub = subscribe(
+    office.socket,
+    (e) => e.type === "connected" && (connections++, queueMicrotask(() => sub.reconnect())),
+    {
+      minDelayMs: 20,
+      maxDelayMs: 80,
+    },
+  )
+  cleanup.push(() => sub.close())
+  await Bun.sleep(400)
+  expect(connections).toBeGreaterThanOrEqual(3)
+  expect(connections).toBeLessThan(12) // 20 + 40 + 80 + 80 + ... ms apart
+})
+
+test("close() clears the pending backoff timer", async () => {
+  const real = { set: globalThis.setTimeout, clear: globalThis.clearTimeout }
+  const long = new Set<unknown>()
+  const cleared = new Set<unknown>()
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    const id = real.set(fn, ms)
+    if (ms === 5000) long.add(id)
+    return id
+  }) as typeof setTimeout
+  globalThis.clearTimeout = ((id: any) => (cleared.add(id), real.clear(id))) as typeof clearTimeout
+  try {
+    const w = watch("/tmp/act-missing/o.sock", { minDelayMs: 5000 })
+    await until(() => w.types().includes("unreachable"))
+    await until(() => long.size === 1)
+    w.sub.close()
+    expect([...long].every((id) => cleared.has(id))).toBe(true)
+  } finally {
+    globalThis.setTimeout = real.set
+    globalThis.clearTimeout = real.clear
+  }
+})

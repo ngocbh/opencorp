@@ -63,7 +63,10 @@ export type SubscribeOptions = {
 export type Subscription = {
   /** Stops following the stream. */
   close(): void
-  /** Drops the current stream and reconnects now (used when a bootstrap fails). */
+  /**
+   * Drops the current stream because it couldn't be used (its bootstrap failed) and
+   * reconnects after the backoff delay, which keeps doubling while this repeats.
+   */
   reconnect(): void
 }
 
@@ -78,6 +81,16 @@ export function subscribe(
   let closed = false
   let ctl: AbortController | undefined
   let wake: (() => void) | undefined
+  let backoff: ReturnType<typeof setTimeout> | undefined
+  // Set by reconnect(): the stream ended because the caller couldn't use it.
+  let unusable = false
+
+  function sleep(ms: number) {
+    return new Promise<void>((r) => {
+      wake = r
+      backoff = setTimeout(r, ms)
+    })
+  }
 
   async function once(): Promise<{ error?: unknown; reset: boolean; connected: boolean }> {
     const abort = (ctl = new AbortController())
@@ -141,22 +154,36 @@ export function subscribe(
   void (async () => {
     let delay = minDelayMs
     let reachable = true // so the first failed attempt reports `unreachable`
+    let resets = 0 // streams in a row that ended in a reset
     while (!closed) {
+      unusable = false
+      const opened = Date.now()
       const { error, reset, connected } = await once()
       if (closed) break
       if (connected) {
-        delay = minDelayMs
         reachable = true
         handler({ type: "disconnected", error })
-        if (reset) continue // the office is up; it only dropped this subscriber
+        if (unusable) resets = 0
+        else {
+          // A stream that stayed up a while starts a fresh run of retries.
+          if (Date.now() - opened >= maxDelayMs) {
+            delay = minDelayMs
+            resets = 0
+          }
+          if (!reset) {
+            delay = minDelayMs
+            resets = 0
+          } else if (++resets < 2) {
+            // The office is up and only dropped this subscriber: reconnect at once. An
+            // office that keeps dropping us gets the backoff.
+            continue
+          }
+        }
       } else if (reachable) {
         reachable = false
         handler({ type: "unreachable", error })
       }
-      await new Promise<void>((r) => {
-        wake = r
-        setTimeout(r, delay)
-      })
+      await sleep(delay)
       delay = Math.min(delay * 2, maxDelayMs)
     }
   })()
@@ -165,11 +192,12 @@ export function subscribe(
     close() {
       closed = true
       ctl?.abort()
+      clearTimeout(backoff)
       wake?.()
     },
     reconnect() {
+      unusable = true
       ctl?.abort()
-      wake?.()
     },
   }
 }
