@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
 import { createOfficeClient } from "@agent-corp/tui/office/client"
 import { conflictText } from "@agent-corp/tui/profile"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { createFakeOffice, type FakeOffice } from "../../tui/script/stub"
@@ -51,6 +51,14 @@ function editor(body: string) {
 }
 
 const puts = () => office.requests.filter((r) => r.method === "PUT").map((r) => r.body)
+
+/** The file `err` says the unsaved edit is kept in; checks it is private to the user. */
+function kept(err: string) {
+  const file = /^ac profile: your edit is kept in (.+)$/m.exec(err)?.[1]
+  if (!file) throw new Error(`no kept file in: ${err}`)
+  expect(statSync(file).mode & 0o777).toBe(0o600)
+  return readFileSync(file, "utf8")
+}
 
 test("edit opens the profile in $EDITOR and saves it over the version it read", async () => {
   const before = office.state.profiles.minh!
@@ -110,15 +118,64 @@ test("a conflict re-opens the editor on the new text with the rejected edit unde
   expect(office.state.profiles.minh!.text).toBe(merged)
 })
 
-test("after a conflict, saving without merging drops the rejected edit and says so", async () => {
-  const theirs = office.state.profiles.minh!.text + "Their line.\n"
+test("after a conflict, saving without merging keeps the rejected edit in a file and says so", async () => {
+  const before = office.state.profiles.minh!
+  const theirs = before.text + "Their line.\n"
   // Leaves the file as given: the new text, the marker, and the rejected edit below it.
   racingEditor(":")
   const { r } = await editDuringHandEdit(theirs)
   expect(r).toMatchObject({ code: 1 })
   expect(r.err).toContain("ac profile: your edit was not saved")
+  expect(kept(r.err)).toBe(before.text + "My line.\n")
   expect(puts()).toHaveLength(2)
   expect(office.state.profiles.minh!.text).toBe(theirs)
+})
+
+test("after a conflict, emptying the file or a failing editor keeps the rejected edit", async () => {
+  const before = office.state.profiles.minh!
+  racingEditor(`: > "$1"`)
+  const emptied = (await editDuringHandEdit(before.text + "Their line.\n")).r
+  expect(emptied.code).toBe(1)
+  expect(kept(emptied.err)).toBe(before.text + "My line.\n")
+  rmSync(path.join(home, "first"))
+  rmSync(path.join(home, "opened"))
+  rmSync(path.join(home, "go"))
+  const now = office.state.profiles.minh!
+  racingEditor("exit 3")
+  const failed = (await editDuringHandEdit(now.text + "Another line.\n")).r
+  expect(failed.code).toBe(1)
+  expect(failed.err).toContain("ac profile: the editor exited with code 3")
+  expect(kept(failed.err)).toBe(now.text + "My line.\n")
+})
+
+test("a save the office fails for another reason keeps the edit in a file", async () => {
+  const before = office.state.profiles.minh!
+  office.notImplemented.add("PUT /profiles/:person")
+  editor(`printf 'My line.\\n' >> "$1"\n`)
+  const r = await profile("edit", "minh")
+  expect(r.code).toBe(1)
+  expect(kept(r.err)).toBe(before.text + "My line.\n")
+  expect(office.state.profiles.minh!.text).toBe(before.text)
+})
+
+test("a failed re-read after a conflict keeps the edit in a file", async () => {
+  const before = office.state.profiles.minh!
+  racingEditor(":")
+  const pending = profile("edit", "minh")
+  while (!existsSync(path.join(home, "opened"))) await Bun.sleep(10)
+  const other = createOfficeClient({ socket })
+  await other.profiles.put("minh", { text: before.text + "Their line.\n", base_version: before.version })
+  office.notImplemented.add("GET /profiles/:person")
+  writeFileSync(path.join(home, "go"), "")
+  const r = await pending
+  expect(r.code).toBe(1)
+  expect(kept(r.err)).toBe(before.text + "My line.\n")
+})
+
+test("a finished edit leaves no temp file behind", async () => {
+  editor(`printf '%s' "$1" > ${home}/path; printf 'More.\\n' >> "$1"\n`)
+  expect((await profile("edit", "minh")).code).toBe(0)
+  expect(existsSync(path.dirname(readFileSync(path.join(home, "path"), "utf8")))).toBe(false)
 })
 
 test("saving the text unchanged writes nothing", async () => {
