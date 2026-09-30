@@ -2,9 +2,12 @@
 
 import os
 import stat
+import threading
+from types import SimpleNamespace
 
 import pytest
 
+from agent_corp import secrets as secrets_module
 from agent_corp.secrets import SecretStore
 
 KEY = "-----BEGIN KEY-----\nabc\n"
@@ -90,11 +93,95 @@ def test_get_refuses_a_symlinked_secret_file(tmp_path, stored):
         stored.get("link")
 
 
-@pytest.mark.parametrize("loose", [0o644, 0o640, 0o400, 0o000], ids=oct)
+@pytest.mark.parametrize("loose", [0o644, 0o640, 0o400, 0o700], ids=oct)
 def test_get_refuses_a_secret_file_without_mode_0600(tmp_path, stored, loose):
     os.chmod(tmp_path / "s" / "token", loose)
-    with pytest.raises(PermissionError, match="'token'"):
+    with pytest.raises(PermissionError, match="'token' must be mode 0600"):
         stored.get("token")
+
+
+def test_an_unreadable_secret_file_says_so(tmp_path, stored):
+    os.chmod(tmp_path / "s" / "token", 0)
+    with pytest.raises(PermissionError, match="'token' is not readable"):
+        stored.get("token")
+
+
+def test_get_refuses_a_secret_file_of_another_user(stored, monkeypatch):
+    fstat = os.fstat
+
+    def foreign_files(fd):
+        st = fstat(fd)
+        return SimpleNamespace(st_mode=st.st_mode, st_uid=st.st_uid + 1) if stat.S_ISREG(st.st_mode) else st
+
+    monkeypatch.setattr(secrets_module.os, "fstat", foreign_files)
+    with pytest.raises(PermissionError, match="'token' belongs to another user"):
+        stored.get("token")
+
+
+def test_get_refuses_a_value_too_short_to_scrub(tmp_path, stored):
+    fd = os.open(tmp_path / "s" / "short", os.O_WRONLY | os.O_CREAT, 0o600)
+    os.write(fd, b"abc\n")
+    os.close(fd)
+    with pytest.raises(PermissionError, match="'short' is shorter than 8 characters") as err:
+        stored.get("short")
+    assert "abc" not in str(err.value)
+
+
+def swap_root_after_check(monkeypatch, secrets, tmp_path):
+    """Once the root is opened and checked, move it aside and put a symlink to ``elsewhere`` in its place."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (elsewhere / "token").write_text("planted-value")
+    opened = secrets._open_root
+
+    def then_swap(**kw):
+        fd = opened(**kw)
+        if fd is not None:
+            os.rename(secrets.root, tmp_path / "moved")
+            os.symlink(elsewhere, secrets.root)
+        return fd
+
+    monkeypatch.setattr(secrets, "_open_root", then_swap)
+    return elsewhere
+
+
+def test_set_writes_into_the_root_it_checked(tmp_path, stored, monkeypatch):
+    elsewhere = swap_root_after_check(monkeypatch, stored, tmp_path)
+    stored.set("token", "second-value")
+    assert (tmp_path / "moved" / "token").read_text() == "second-value"
+    assert (elsewhere / "token").read_text() == "planted-value" and sorted(os.listdir(elsewhere)) == ["token"]
+
+
+def test_get_reads_from_the_root_it_checked(tmp_path, stored, monkeypatch):
+    swap_root_after_check(monkeypatch, stored, tmp_path)
+    assert stored.get("token") == "first-value"
+
+
+def test_delete_removes_from_the_root_it_checked(tmp_path, stored, monkeypatch):
+    elsewhere = swap_root_after_check(monkeypatch, stored, tmp_path)
+    stored.delete("token")
+    assert not (tmp_path / "moved" / "token").exists() and (elsewhere / "token").exists()
+
+
+def test_concurrent_sets_on_a_fresh_store_all_succeed(tmp_path):
+    for attempt in range(20):
+        secrets = SecretStore(tmp_path / f"s{attempt}")
+        start, errors = threading.Barrier(8), []
+
+        def put(i):
+            start.wait()
+            try:
+                secrets.set(f"token{i}", f"value-number-{i}")
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=put, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert errors == []
+        assert sorted(os.listdir(secrets.root)) == sorted(f"token{i}" for i in range(8))
 
 
 @pytest.mark.parametrize("make", [os.mkdir, os.mkfifo])
