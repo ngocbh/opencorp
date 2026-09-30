@@ -6,8 +6,12 @@ import threading
 class Inbox:
     """composer's ``Steering`` inbox, fed by the office's ``steer`` and ``interrupt`` frames.
 
-    Once a node is finished, new steers and interrupts for it are refused, so the
-    office can hand the text back to the person.
+    A steer for a node that hasn't started waits until the node drains it; so does an
+    interrupt, which stops the node once it starts. Once a node is finished, new steers and
+    interrupts for it are refused (a refused interrupt is dropped; a refused steer goes back
+    to the office). ``close`` at the end of the run refuses everything and returns every
+    steer never read, including those for nodes that never ran. A resumed run's inbox
+    doesn't know the nodes finished before the resume, so their steers wait until ``close``.
     """
 
     def __init__(self) -> None:
@@ -15,19 +19,20 @@ class Inbox:
         self._queued: dict[str, list[str]] = {}
         self._stops: set[str] = set()
         self._finished: set[str] = set()
+        self._closed = False
 
     def steer(self, node_id: str, text: str) -> bool:
-        """Queue ``text`` for ``node_id``; False if the node already finished."""
+        """Queue ``text`` for ``node_id``; False if the node finished or the inbox is closed."""
         with self._lock:
-            if node_id in self._finished:
+            if self._closed or node_id in self._finished:
                 return False
             self._queued.setdefault(node_id, []).append(text)
             return True
 
     def interrupt(self, node_id: str) -> bool:
-        """Ask ``node_id`` to stop; False if it already finished."""
+        """Ask ``node_id`` to stop; False if it finished or the inbox is closed."""
         with self._lock:
-            if node_id in self._finished:
+            if self._closed or node_id in self._finished:
                 return False
             self._stops.add(node_id)
             return True
@@ -49,8 +54,10 @@ class Inbox:
             self._stops.discard(node_id)
             return self._queued.pop(node_id, [])
 
-    def leftovers(self) -> dict[str, list[str]]:
-        """Remove and return every queued steer, by node id."""
+    def close(self) -> dict[str, list[str]]:
+        """Refuse every later steer and interrupt; remove and return every queued steer, by node id."""
         with self._lock:
+            self._closed = True
+            self._stops.clear()
             queued, self._queued = self._queued, {}
             return queued

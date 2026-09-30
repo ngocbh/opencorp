@@ -46,6 +46,19 @@ def test_a_frame_must_be_an_object(pair):
         right.recv()
 
 
+def test_close_send_ends_one_direction_only(pair):
+    left, right = pair
+    left.send({"n": 1})
+    left.close_send()
+    with pytest.raises(ChannelClosed):
+        left.send({"n": 2})
+    assert right.recv() == {"n": 1}
+    with pytest.raises(ChannelClosed):
+        right.recv()
+    right.send({"n": 3})
+    assert left.recv() == {"n": 3}
+
+
 def test_peer_close_and_a_cut_frame_raise_channel_closed(pair):
     left, right = pair
     left.sock.sendall(struct.pack(">I", 10) + b'{"a"')

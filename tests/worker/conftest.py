@@ -105,8 +105,9 @@ def office_end(handlers: BaseHandlers, *, threaded: bool = False):
 def worker_main(monkeypatch):
     """Run the worker's ``main`` on a thread over a socket pair.
 
-    Calling the fixture starts it and returns the office's ``Channel`` and a dict that gets
-    ``code`` when ``main`` returns (or ``exit`` if the worker would have called ``os._exit``).
+    Calling the fixture starts it and returns the office's ``Channel``, the thread, and a dict
+    that gets ``code`` when ``main`` returns (or ``exit`` if the worker would have called
+    ``os._exit``).
     """
     runs: list[tuple[Channel, threading.Thread]] = []
 
@@ -115,7 +116,7 @@ def worker_main(monkeypatch):
 
     monkeypatch.setattr(os, "_exit", fake_exit)
 
-    def start() -> tuple[Channel, dict[str, Any]]:
+    def start() -> tuple[Channel, threading.Thread, dict[str, Any]]:
         office_sock, worker_sock = socket.socketpair()
         out: dict[str, Any] = {}
 
@@ -129,7 +130,7 @@ def worker_main(monkeypatch):
         thread.start()
         office = Channel(office_sock)
         runs.append((office, thread))
-        return office, out
+        return office, thread, out
 
     yield start
     for office, thread in runs:
@@ -175,6 +176,8 @@ class Recorder(BaseHandlers):
         self.asked: list[dict[str, Any]] = []
         self.answers = list(answers or [])
         self.left: list[tuple[str, list[str]]] = []
+        self.left_event = threading.Event()
+        self.order: list[str] = []  # the types of steer_left, result, and error frames, in order
         self.outcome: dict[str, Any] | None = None
         self.returncode: int | None = None
 
@@ -186,12 +189,16 @@ class Recorder(BaseHandlers):
 
     def steer_left(self, worker, node_id, texts):
         self.left.append((node_id, texts))
+        self.order.append("steer_left")
+        self.left_event.set()
 
     def result(self, worker, frame):
         self.outcome = frame
+        self.order.append("result")
 
     def error(self, worker, frame):
         self.outcome = frame
+        self.order.append("error")
 
     def exited(self, worker, returncode):
         self.returncode = returncode

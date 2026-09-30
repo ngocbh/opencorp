@@ -132,7 +132,10 @@ class WorkerHandlers(Protocol):
     """What the office does with a worker's frames. ``worker`` is the ``spawn.Worker``.
 
     Notifications (``event`` through ``exited``) run on the worker's reader thread, in
-    frame order, and must not block. Requests (``ask_user`` through ``store_write``) run
+    frame order, and must not block; nor may they call ``worker.steer`` or
+    ``worker.interrupt``, since the worker may be blocked sending to that reader
+    thread. After ``result`` or ``error`` the reader keeps going, delivering any late
+    ``steer_left``, until the worker exits. Requests (``ask_user`` through ``store_write``) run
     on their own threads and may block; what they return is the reply, and what they
     raise becomes an error reply.
     """

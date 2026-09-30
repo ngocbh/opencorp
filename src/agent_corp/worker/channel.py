@@ -34,6 +34,7 @@ class Channel:
         self.sock = sock
         self._reader = sock.makefile("rb")
         self._send_lock = threading.Lock()
+        self._send_closed = False
 
     def send(self, frame: Mapping[str, Any]) -> None:
         """Send one frame; raise ``FrameTooLarge``, or ``ChannelClosed`` if the socket is gone."""
@@ -41,6 +42,8 @@ class Channel:
         if len(data) > MAX_FRAME:
             raise FrameTooLarge(f"a {len(data)}-byte frame is over the {MAX_FRAME}-byte limit")
         with self._send_lock:
+            if self._send_closed:
+                raise ChannelClosed("this end stopped sending")
             try:
                 self.sock.sendall(_HEADER.pack(len(data)) + data)
             except OSError as exc:
@@ -63,6 +66,18 @@ class Channel:
         except OSError:
             pass
         self.sock.close()
+
+    def close_send(self) -> None:
+        """Stop sending, so the peer's ``recv`` sees end of stream; ``recv`` here keeps working.
+
+        It doesn't wait for the send lock, so a reader thread can call it while another
+        thread is blocked sending; that send fails, and the peer sees a cut frame as the end.
+        """
+        self._send_closed = True
+        try:
+            self.sock.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
 
     def discard(self) -> None:
         """Close a channel that no thread reads from, releasing its file descriptor at once."""

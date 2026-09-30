@@ -26,6 +26,7 @@ from agent_corp.worker.rpc import REPLY_TYPES, Rpc, ask_user_stub, remote_tool
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_ORPHANED = 3
+LINGER = 5.0  # seconds to keep answering steers after the last frame, waiting for the office to close
 _FINISHED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
 
@@ -97,8 +98,13 @@ def run_job(job: Job, channel: Channel, rpc: Rpc, inbox: Inbox) -> dict[str, Any
             "failure": jsonable(result.failure), "backward": backward}
 
 
-def read_frames(channel: Channel, rpc: Rpc, inbox: Inbox, finished: threading.Event) -> None:
-    """Route office frames until the channel closes; then exit (code 3) unless the job has finished."""
+def read_frames(channel: Channel, rpc: Rpc, inbox: Inbox, finished: threading.Event,
+                office_closed: threading.Event) -> None:
+    """Route office frames until the channel closes; then exit (code 3) unless the job has finished.
+
+    A refused steer is answered with ``steer_left`` on this thread. That send can only block
+    if the office stops reading, and the office's reader never waits on sending to us.
+    """
     try:
         while True:
             frame = channel.recv()
@@ -114,13 +120,20 @@ def read_frames(channel: Channel, rpc: Rpc, inbox: Inbox, finished: threading.Ev
         pass
     except BaseException:
         traceback.print_exc()
+    office_closed.set()
     if not finished.is_set():
         # The office is gone: nobody can answer a question or read the result.
         os._exit(EXIT_ORPHANED)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the job the office sends on the inherited socket ``--fd``; return the exit code."""
+    """Run the job the office sends on the inherited socket ``--fd``; return the exit code.
+
+    The last frames are a ``steer_left`` for every steer the run never read, then
+    ``result`` (or ``error``). After them the worker keeps answering steers with
+    ``steer_left`` until the office closes its side (or ``LINGER`` passes), so a steer
+    the office sent as the run ended is never lost.
+    """
     parser = argparse.ArgumentParser(prog="agent_corp.worker.main")
     parser.add_argument("--fd", type=int, required=True)
     args = parser.parse_args(argv)
@@ -128,21 +141,25 @@ def main(argv: list[str] | None = None) -> int:
     try:
         start = channel.recv()
     except ChannelClosed:
+        channel.close()
         return EXIT_ORPHANED
-    rpc, inbox, finished = Rpc(channel), Inbox(), threading.Event()
-    threading.Thread(target=read_frames, args=(channel, rpc, inbox, finished), name="office-reader",
-                     daemon=True).start()
+    rpc, inbox = Rpc(channel), Inbox()
+    finished, office_closed = threading.Event(), threading.Event()
+    threading.Thread(target=read_frames, args=(channel, rpc, inbox, finished, office_closed),
+                     name="office-reader", daemon=True).start()
     try:
         if start.get("type") != "start":
             raise ValueError(f"expected a start frame, got {start.get('type')!r}")
-        outcome = run_job(Job.model_validate(start["job"]), channel, rpc, inbox)
+        last, code = {"type": "result", **run_job(Job.model_validate(start["job"]), channel, rpc, inbox)}, EXIT_OK
     except BaseException as exc:
-        finished.set()
-        return _report(channel, [{"type": "error", "message": f"{type(exc).__name__}: {exc}",
-                                  "traceback": traceback.format_exc()}], EXIT_FAILED)
+        last = {"type": "error", "message": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
+        code = EXIT_FAILED
+    left = [{"type": "steer_left", "node_id": n, "texts": t} for n, t in inbox.close().items()]
     finished.set()
-    left = [{"type": "steer_left", "node_id": n, "texts": t} for n, t in inbox.leftovers().items()]
-    return _report(channel, [*left, {"type": "result", **outcome}], EXIT_OK)
+    code = _report(channel, [*left, last], code)
+    office_closed.wait(LINGER)
+    channel.close()
+    return code
 
 
 def _report(channel: Channel, frames: list[dict[str, Any]], code: int) -> int:

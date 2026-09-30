@@ -96,14 +96,20 @@ class Worker:
         self.returncode = self.proc.wait()
 
     def steer(self, node_id: str, text: str) -> bool:
-        """Queue ``text`` for the running node ``node_id``; False if the worker is gone.
+        """Queue ``text`` for the node ``node_id``; False if the worker is gone or its run is over.
 
-        A steer the run never reads comes back through ``handlers.steer_left``.
+        Once this returns True, the run either reads the steer or hands it back through
+        ``handlers.steer_left`` (before or after ``result``). Call it off the reader thread:
+        a notification handler must not call ``steer`` or ``interrupt``.
         """
         return self._send({"type": "steer", "node_id": node_id, "text": text})
 
     def interrupt(self, node_id: str) -> bool:
-        """Ask the steerable node ``node_id`` to stop and return its text so far; False if the worker is gone."""
+        """Ask the steerable node ``node_id`` to stop and return its text so far; False if the worker is gone.
+
+        An interrupt for a node that hasn't started stops it when it starts; one for a
+        finished node is dropped.
+        """
         return self._send({"type": "interrupt", "node_id": node_id})
 
     def close_channel(self) -> None:
@@ -157,6 +163,10 @@ class Worker:
             self._notify(self.handlers.steer_left, frame["node_id"], frame["texts"])
         elif kind in _NOTIFICATIONS:
             self._notify(getattr(self.handlers, kind), frame)
+            if kind in ("result", "error"):
+                # The run is over: later steers fail here, and the worker, having answered
+                # the ones already sent, sees the end of stream and exits.
+                self.channel.close_send()
         else:
             log.warning("worker %s sent an unknown frame type %r", self.session_id, kind)
 

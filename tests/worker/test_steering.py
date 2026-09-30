@@ -25,11 +25,20 @@ def test_a_finished_node_refuses_steers_and_interrupts():
     assert inbox.drain("reply") == []
 
 
-def test_leftovers_empties_every_queue():
+def test_close_refuses_new_steers_and_returns_every_queued_one():
     inbox = Inbox()
     inbox.steer("a", "1")
     inbox.steer("loop#1/b", "2")
-    assert inbox.leftovers() == {"a": ["1"], "loop#1/b": ["2"]} and inbox.leftovers() == {}
+    inbox.finish("a")
+    inbox.steer("never-ran", "3")
+    assert inbox.close() == {"loop#1/b": ["2"], "never-ran": ["3"]}
+    assert not inbox.steer("c", "late") and not inbox.interrupt("c")
+    assert inbox.close() == {}
+
+
+def test_an_interrupt_waits_for_its_node_to_start():
+    inbox = Inbox()
+    assert inbox.interrupt("later") and inbox.interrupted("later")
 
 
 class Steering(Recorder):
@@ -40,8 +49,8 @@ class Steering(Recorder):
         self.action = action
 
     def tool_call(self, worker, group, name, args):
+        # The worker reads this frame before the reply, so the node sees it before the tool returns.
         self.action(worker)
-        time.sleep(0.2)  # let the frame reach the worker before the tool returns
         return args["text"].upper()
 
 
@@ -79,10 +88,32 @@ def test_a_steer_for_a_finished_node_comes_back_at_once(fake_llm, registry, make
     rec = Recorder(answers=["hi"])
     worker = registry.spawn(make_job("flows/chat.yaml", inputs={}), session_dir, rec)
     fake_llm.wait_for_requests(1, timeout=30)
+    assert worker.interrupt("ask")  # dropped: the node is done
     assert worker.steer("ask", "late")
-    deadline = time.monotonic() + 10
-    while not rec.left and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert rec.left == [("ask", ["late"])]
+    assert rec.left_event.wait(10) and rec.left == [("ask", ["late"])]
     fake_llm.release()
-    assert worker.wait(30) == 0
+    assert worker.wait(30) == 0 and rec.outcome["output"] == "hello"
+
+
+def test_a_steer_for_a_node_that_never_ran_comes_back_before_the_result(fake_llm, registry, make_job,
+                                                                       session_dir):
+    fake_llm.script(*TOOL_THEN_DONE)
+    handlers = Steering(lambda w: w.steer("nowhere", "Hello?"))
+    rec = run(registry, make_job("flows/steerable.yaml", groups=spec_groups()), handlers, session_dir)
+    assert rec.left == [("nowhere", ["Hello?"])] and rec.order == ["steer_left", "result"]
+
+
+def test_a_steer_sent_as_the_run_ends_is_applied_or_returned(fake_llm, registry, make_job, session_dir):
+    fake_llm.script(*TOOL_THEN_DONE)
+    handlers = Steering(lambda w: None)
+    worker = registry.spawn(make_job("flows/steerable.yaml", groups=spec_groups()), session_dir, handlers)
+    sent = []
+    # steer() turns False once the office has handled the result and closed its side.
+    while worker.steer("reply", f"<s{len(sent)}>"):
+        sent.append(f"<s{len(sent)}>")
+        time.sleep(0.001)
+    assert worker.wait(30) == 0 and handlers.outcome["type"] == "result"
+    applied = json.dumps([r["messages"] for r in fake_llm.requests()])
+    returned = [text for _, texts in handlers.left for text in texts]
+    assert sent and len(returned) == len(set(returned))
+    assert [text for text in sent if text not in applied and text not in returned] == []
