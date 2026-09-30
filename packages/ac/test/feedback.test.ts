@@ -46,10 +46,10 @@ async function feedback(...argv: string[]) {
 
 const posts = () => office.requests.filter((r) => r.method === "POST" && r.path === "/feedback").map((r) => r.body)
 
-/** A main session in `<home>/proj` (by its real path) with two turns and two runs. */
+/** An ended main session in `<home>/proj` (by its real path) with two turns and two runs. */
 function sessionInProj() {
   const s = office.state.sessions[0]
-  Object.assign(s, { cwd: realpathSync(path.join(home, "proj")), run_ids: ["run-a", "run-b"] })
+  Object.assign(s, { status: "ended", cwd: realpathSync(path.join(home, "proj")), run_ids: ["run-a", "run-b"] })
   const at = new Date().toISOString()
   const msg = (id: string, role: Message["role"], text: string): Message => ({
     id,
@@ -119,6 +119,19 @@ test("empty feedback isn't sent; no editor and no -m is a usage error; so is a t
   expect(flag.code).toBe(2)
   expect(flag.err).toContain("Usage: ac feedback")
   expect(posts()).toEqual([])
+})
+
+test("with no ID, a live session in this folder is skipped for the newest finished one", async () => {
+  const s = sessionInProj()
+  const live = { ...s, id: office.nextId(), status: "busy" as const, run_ids: ["run-c"], updated_at: "9999" }
+  office.state.sessions.push(live)
+  process.chdir(path.join(home, "proj"))
+  expect((await feedback("-m", "x")).code).toBe(0)
+  expect(posts()).toEqual([{ session_id: s.id, text: "x" }])
+  // Named, the live session's run is refused by the office: it may still change.
+  const r = await feedback(live.id, "-m", "y")
+  expect(r.code).toBe(1)
+  expect(r.err).toContain("run-c")
 })
 
 test("office errors exit 1: an unknown ID, and no session in this folder", async () => {

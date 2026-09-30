@@ -15,15 +15,20 @@ const USAGE = "Usage: ac feedback [SESSION|RUN] [-m TEXT] [--turn N]"
 /** A usage error: printed with the usage line, exit 2. */
 class Usage extends Error {}
 
+/** Statuses of a session whose latest run has finished, so feedback on it can be learned. */
+const STOPPED: readonly string[] = ["ended", "failed", "debriefing"]
+
 /**
  * The session and run feedback goes to: the session `id` names, or the session with a run `id`
- * names (that run); with no `id`, the newest main session in this folder (its latest run).
+ * names (that run); with no `id`, the newest stopped main session in this folder (its latest run).
  */
 async function target(client: OfficeClient, id: string | undefined): Promise<{ session: Session; run?: string }> {
   if (id === undefined) {
     const cwd = realpathSync(process.cwd())
-    const session = (await client.sessions.list({ limit: 500 })).find((s) => s.kind === "main" && s.cwd === cwd)
-    if (!session) throw new Error(`no session in ${cwd}; pass a session or run ID`)
+    const session = (await client.sessions.list({ limit: 500 })).find(
+      (s) => s.kind === "main" && s.cwd === cwd && STOPPED.includes(s.status),
+    )
+    if (!session) throw new Error(`no finished session in ${cwd}; pass a session or run ID`)
     return { session }
   }
   try {

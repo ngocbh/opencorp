@@ -630,6 +630,9 @@ export function createFakeOffice(
         check(runId, `${s.id} has no runs`)
         // A run of another session would be learned into the wrong person's profile.
         check(runs.has(runId!), `run ${runId} is not in ${s.id}`)
+        // A session's latest run is still going (or may be killed) until the session has stopped.
+        const stopped = ["ended", "failed", "debriefing"].includes(s.status)
+        if (runId === s.run_ids?.at(-1) && !stopped) throw fail(409, "run_unfinished", `run ${runId} has not finished`)
         const f: Feedback = {
           id: nextId(),
           session_id: s.id,

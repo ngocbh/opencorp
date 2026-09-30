@@ -98,10 +98,10 @@ test("space marks follow-ups and c confirms them; each confirmed one shows its w
   })
 })
 
-/** Gives the seeded session two runs and a transcript with two turns. */
+/** Ends the seeded session with two runs and a transcript with two turns. */
 function withTurns(office: Office) {
   const s = office.state.sessions[0]
-  s.run_ids = ["run-a", "run-b"]
+  Object.assign(s, { status: "ended", run_ids: ["run-a", "run-b"] })
   const msg = (role: Message["role"], text: string): Message => {
     const id = office.nextId()
     return { id, session_id: s.id, role, parts: [{ id: id + "P", type: "text", text }], created_at: "t" }

@@ -78,7 +78,7 @@ test("confirm makes a work item per newly confirmed follow-up; indices are dedup
 test("feedback names a run of its session, the latest by default; feedbackStatus moves it along", async () => {
   office = createFakeOffice()
   const s = office.state.sessions[0]
-  s.run_ids = ["run-a", "run-b"]
+  Object.assign(s, { status: "ended", run_ids: ["run-a", "run-b"] })
   expect((await client().feedback.create({ session_id: s.id, text: "About turn 1: x" })).run_id).toBe("run-b")
   expect((await client().feedback.create({ session_id: s.id, text: "y", run_id: "run-a" })).run_id).toBe("run-a")
   expect((await failure(client().feedback.create({ session_id: s.id, text: "z", run_id: "run-x" }))).code).toBe(
@@ -122,4 +122,17 @@ test("feedback: only main sessions learn; a session needs a run; the ready debri
     status: 422,
     code: "not_learnable",
   })
+})
+
+test("a live session's latest run is unfinished (409 run_unfinished); earlier runs are done", async () => {
+  office = createFakeOffice()
+  const s = office.state.sessions[0]
+  s.run_ids = ["run-a", "run-b"]
+  expect(await failure(client().feedback.create({ session_id: s.id, text: "x" }))).toMatchObject({
+    status: 409,
+    code: "run_unfinished",
+  })
+  expect((await client().feedback.create({ session_id: s.id, text: "x", run_id: "run-a" })).run_id).toBe("run-a")
+  office.setStatus(s.id, "debriefing")
+  expect((await client().feedback.create({ session_id: s.id, text: "x" })).run_id).toBe("run-b")
 })
