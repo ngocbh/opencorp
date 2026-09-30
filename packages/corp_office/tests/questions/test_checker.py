@@ -170,3 +170,11 @@ def test_a_record_gate_converts_each_field_and_omits_blank_optional_ones():
                             ({"days": 1, "who": {"name": "  "}}, r"answer.who.name is required")]:
         with pytest.raises(InvalidAnswer, match=message):
             check_answer(gate, answer, "text")
+
+
+def test_a_required_none_field_in_a_record_takes_blank():
+    gate = q(answer_schema=fields(("done", "None", True), ("note", "str", False)))
+    assert check_answer(gate, {"done": None}, "text") == {"done": None}
+    assert check_answer(gate, {"done": ""}, "text") == {"done": None}
+    with pytest.raises(InvalidAnswer, match=r"answer.done must be empty"):
+        check_answer(gate, {"done": "x"}, "text")

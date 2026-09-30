@@ -88,8 +88,10 @@ def _record(fields: list[AnswerField], value: Any, where: str) -> dict[str, Any]
     for f in fields:
         item = value.get(f.name)
         if _blank(item):
-            if f.required:
+            if f.required and f.type != "None":
                 raise InvalidAnswer(f"{where}.{f.name} is required")
+            if f.required:
+                record[f.name] = None  # the one answer a required None field has
             continue  # an optional field left blank is omitted
         record[f.name] = _field(f, item, f"{where}.{f.name}")
     return record
