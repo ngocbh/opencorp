@@ -210,3 +210,24 @@ test("a 501 from carried/dismiss warns 'not available yet' and keeps the earlier
     office.stop()
   }
 })
+
+test("the question stop returns closes the card without waiting for its event", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?") && f.includes("esc stop @minh"))
+    // No stream, so no question.updated event, until the stop is in.
+    office.hold("GET /events")
+    office.dropStreams()
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("y")
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    await app.until((f) => !f.includes("Deploy now?"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

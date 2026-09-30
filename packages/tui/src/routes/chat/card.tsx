@@ -137,11 +137,14 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
 
   function stop() {
     setStore("confirming", false)
-    office.client.questions.stop(question().id).catch((error) => {
-      if (isNotImplemented(error))
-        return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
-      toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
-    })
+    office.client.questions
+      .stop(question().id)
+      .then((q) => office.putQuestion(q))
+      .catch((error) => {
+        if (isNotImplemented(error))
+          return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
+        toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
+      })
   }
 
   function setAnswer(change: (a: PageAnswer) => PageAnswer) {
