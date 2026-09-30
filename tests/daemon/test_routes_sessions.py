@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from agent_corp.chat.harness import Harness
+from agent_corp.chat.harness import Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.perm.monitor import Monitor
 from agent_corp.secrets import SecretStore
@@ -162,6 +162,28 @@ async def test_a_steer_reaches_a_running_reply_and_a_prompt_check_can_refuse(cha
     fake_llm.release()
     await until(lambda: len(fake_llm.requests()) >= 2)
     assert "Also Rome." in str(fake_llm.requests()[1]["messages"]) and "nope" not in str(fake_llm.requests())
+
+
+@pytest.mark.parametrize(("error", "status", "code"), [
+    (RuntimeError("sentinel"), 500, "start_failed"),
+    (HarnessError(422, "invalid_body", "the folder is gone"), 422, "invalid_body"),  # it vanished after the check
+])
+async def test_a_spec_that_cant_be_built_fails_the_session(chat, client, tmp_path, monkeypatch, caplog, error,
+                                                            status, code):
+    harness = chat.extras["harness"]
+    ended = []
+    harness.hooks.session_ended.append(lambda s: ended.append(s.status))
+
+    def broken(session):
+        raise error
+    monkeypatch.setattr(harness, "main_spec", broken)
+    (tmp_path / "ws").mkdir()
+    r = await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws")})
+    assert (r.status_code, r.json()["error"]) == (status, code)
+    (session,) = chat.store.list_sessions()
+    assert (session.status, ended) == ("failed", ["failed"]) and session.id not in harness._live
+    # Only the office log holds an unexpected error's text.
+    assert "sentinel" not in r.text and ("sentinel" in caplog.text) == isinstance(error, RuntimeError)
 
 
 @pytest.mark.parametrize(("path", "body", "status", "code"), [

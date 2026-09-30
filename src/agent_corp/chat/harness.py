@@ -219,11 +219,18 @@ class Harness:
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, created_at=t, updated_at=t))
         self.store.touch_worked_folder(person_id, cwd)
         try:
-            self.start_run(session, self.main_spec(session))
-        except HarnessError:
-            raise
-        except Exception as exc:  # the session is failed; the client needs its id
-            # A provider error never echoes the file; anything else may hold anything, so it stays in the log.
+            spec = self.main_spec(session)
+            self.start_run(session, spec)
+        except Exception as exc:
+            # start_run fails the session itself; a spec that couldn't be built leaves it starting.
+            if session_id not in self._live and self.store.get_session(session_id).status == "starting":
+                if not isinstance(exc, HarnessError):
+                    log.exception("can't build the run spec for session %s", session_id)
+                self._fail(session_id)
+            if isinstance(exc, HarnessError):
+                raise
+            # The client needs the failed session's id. A provider error never echoes the file;
+            # anything else may hold anything, so it stays in the log.
             why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
             raise HarnessError(500, "start_failed", f"session {session_id} failed to start{why}") from exc
         return self.store.get_session(session_id)
