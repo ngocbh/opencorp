@@ -49,6 +49,7 @@ import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
 import { QuestionCard } from "../chat/card"
+import { SideChat, SideHeader } from "../chat/side"
 import { cardQuestions } from "../chat/turn"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
 
@@ -123,11 +124,28 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
-  const messages = createMemo(() => office.state.messages[route.sessionID] ?? [])
+  const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
+  // The card whose side chat is showing; the view shows the side session in place of the chat.
+  const [sideOf, setSideOf] = createSignal<string>()
+  const sideQuestion = createMemo(() => {
+    const q = question()
+    return q && q.id === sideOf() ? q : undefined
+  })
+  const sideSession = createMemo(() => office.state.sessions.find((s) => s.id === sideQuestion()?.side_session_id))
+  // Until its first message the side session doesn't exist, so the side view starts empty.
+  const viewID = createMemo(() => (sideOf() ? sideQuestion()?.side_session_id : route.sessionID))
+  const messages = createMemo(() => {
+    const id = viewID()
+    return id ? (office.state.messages[id] ?? []) : []
+  })
   // Esc freezes what the transcript shows until the next message is sent.
   const [frozen, setFrozen] = createSignal<Freeze>()
   const shown = createMemo(() => messages().flatMap((m) => frozenView(frozen(), m) ?? []))
-  const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
+  createEffect(on(viewID, () => setFrozen(undefined), { defer: true }))
+  // The side chat closes with its question.
+  createEffect(() => {
+    if (sideOf() && !sideQuestion()) setSideOf(undefined)
+  })
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
 
   createEffect(() => {
@@ -475,7 +493,8 @@ export function Session() {
           <Show when={session()}>
             {(current) => (
               <>
-                <box flexShrink={0} paddingTop={1}>
+                <Show when={sideQuestion()}>{(q) => <SideHeader question={q()} session={sideSession()} />}</Show>
+                <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
                   <text fg={theme.text} wrapMode="none">
                     <b>{person()}</b>
                     <span style={{ fg: current().status === "busy" ? theme.warning : theme.textMuted }}>
@@ -543,7 +562,30 @@ export function Session() {
                       />
                     }
                   >
-                    {(_id) => <QuestionCard question={question()} />}
+                    {(_id) => (
+                      <>
+                        <QuestionCard
+                          question={question()}
+                          hidden={!!sideOf()}
+                          onChat={() => setSideOf(question()?.id)}
+                        />
+                        <Show when={sideQuestion()}>
+                          {(q) => (
+                            <SideChat
+                              question={q()}
+                              session={sideSession()}
+                              onBack={() => setSideOf(undefined)}
+                              onSent={() => {
+                                const f = frozen()
+                                if (f?.active) setFrozen(unfreeze(f, messages()))
+                                toBottom()
+                              }}
+                              onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                            />
+                          )}
+                        </Show>
+                      </>
+                    )}
                   </Show>
                 </box>
               </>

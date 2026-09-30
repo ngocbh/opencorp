@@ -17,8 +17,12 @@ import { leaveBindings } from "./leave"
 
 const QUESTION_MODE = "question"
 
-/** The open question card: a page per question to pick or type on; Esc then `y` stops the asker. */
-export function QuestionCard(props: { question: Question | undefined }) {
+/**
+ * The open question card: a page per question to pick or type on, "Chat about this", and "Send
+ * discussion back"; Esc then `y` stops the asker. It stays mounted, `hidden`, while its side chat
+ * shows, so page answers survive the chat.
+ */
+export function QuestionCard(props: { question: Question | undefined; hidden?: boolean; onChat: () => void }) {
   const office = useOffice()
   const toast = useToast()
   const { theme } = useTheme()
@@ -60,7 +64,15 @@ export function QuestionCard(props: { question: Question | undefined }) {
   const page = createMemo(() => pages()[store.page])
   const answer = createMemo<PageAnswer>(() => store.answers[store.page] ?? { picked: [], text: "" })
   const options = createMemo(() => page()?.options ?? [])
-  const rows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
+  // The office's own actions come after the answer rows and never count as options.
+  const actions = createMemo(() => [
+    { label: "Chat about this", key: "ctrl+o", run: () => props.onChat() },
+    ...(stoppable() && question().discussion?.length
+      ? [{ label: "Send discussion back", key: "", run: () => sendBack() }]
+      : []),
+  ])
+  const answerRows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
+  const rows = createMemo(() => answerRows() + actions().length)
   const other = createMemo(() => page()?.typed === true && store.selected === options().length)
 
   let textarea: TextareaRenderable | undefined
@@ -83,6 +95,18 @@ export function QuestionCard(props: { question: Question | undefined }) {
         toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
       })
       .finally(() => (sending = false))
+  }
+
+  function sendBack() {
+    const id = question().id
+    office.client.questions
+      .sendBack(id, { note: "" })
+      .then((q) => office.putQuestion(q))
+      .catch((error) => {
+        if (isNotImplemented(error))
+          return toast.show({ message: "Sending a discussion back is not available yet", variant: "warning" })
+        toast.show({ title: "Sending back failed", message: errorMessage(error), variant: "error" })
+      })
   }
 
   function stop() {
@@ -124,8 +148,10 @@ export function QuestionCard(props: { question: Question | undefined }) {
     })
   }
 
-  /** Enter on the selected row: open the typed answer, confirm a multi-select page, or pick. */
+  /** Enter on the selected row: run an action, open the typed answer, confirm a multi-select page, or pick. */
   function selectRow() {
+    const action = actions()[store.selected - answerRows()]
+    if (action) return action.run()
     if (other()) return setStore("editing", true)
     if (page()?.multi) return next()
     if (!options()[store.selected]) return
@@ -147,7 +173,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
 
   useBindings(() => ({
     mode: QUESTION_MODE,
-    enabled: store.confirming,
+    enabled: store.confirming && !props.hidden,
     bindings: [
       { key: "y", desc: "Stop the asker", group: "Question", cmd: () => stop() },
       ...["n", "escape", "return"].map((key) => ({
@@ -161,7 +187,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
 
   useBindings(() => ({
     mode: QUESTION_MODE,
-    enabled: store.editing,
+    enabled: store.editing && !props.hidden,
     commands: [
       {
         name: "prompt.clear",
@@ -209,6 +235,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
       ...(stoppable()
         ? [{ key: "escape", desc: "Stop the asker", group: "Question", cmd: () => setStore("confirming", true) }]
         : []),
+      { key: "ctrl+o", desc: "Chat about this", group: "Question", cmd: () => props.onChat() },
       // Ctrl+C leaves the view as it does in the chat; it never stops the question.
       ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
     ]
@@ -226,11 +253,11 @@ export function QuestionCard(props: { question: Question | undefined }) {
         : []
     return {
       mode: QUESTION_MODE,
-      enabled: !store.editing && !store.confirming,
+      enabled: !store.editing && !store.confirming && !props.hidden,
       bindings: !model()
         ? keys
         : [
-            ...Array.from({ length: Math.min(total, 9) }, (_, index) => ({
+            ...Array.from({ length: Math.min(answerRows(), 9) }, (_, index) => ({
               key: String(index + 1),
               desc: `Select answer ${index + 1}`,
               group: "Question",
@@ -249,7 +276,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
               desc: "Toggle answer",
               group: "Question",
               cmd: () => {
-                if (page()?.multi && !other()) toggle(store.selected)
+                if (page()?.multi && store.selected < options().length) toggle(store.selected)
               },
             },
             { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
@@ -266,6 +293,7 @@ export function QuestionCard(props: { question: Question | undefined }) {
 
   return (
     <box
+      visible={!props.hidden}
       backgroundColor={theme.backgroundPanel}
       border={["left"]}
       borderColor={theme.accent}
@@ -377,6 +405,26 @@ export function QuestionCard(props: { question: Question | undefined }) {
                   </Show>
                 </box>
               </Show>
+              <box paddingTop={1}>
+                <For each={actions()}>
+                  {(action, i) => {
+                    const active = () => store.selected === answerRows() + i()
+                    return (
+                      <box
+                        flexDirection="row"
+                        gap={1}
+                        onMouseOver={() => setStore("selected", answerRows() + i())}
+                        onMouseUp={() => action.run()}
+                      >
+                        <box backgroundColor={active() ? theme.backgroundElement : undefined}>
+                          <text fg={active() ? theme.secondary : theme.text}>{`[${action.label}]`}</text>
+                        </box>
+                        <text fg={theme.textMuted}>{action.key}</text>
+                      </box>
+                    )
+                  }}
+                </For>
+              </box>
             </box>
           </box>
         </Show>
