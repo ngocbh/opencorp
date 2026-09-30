@@ -14,10 +14,11 @@ from agent_corp.chat.harness import LIVE, Harness, HarnessError
 from agent_corp.company.loader import load_repo
 from agent_corp.profile import GitProfileStore
 from agent_corp.profile.debrief import DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief, transcript_text
-from agent_corp.profile.feedback import FeedbackHandlers
-from agent_corp.protocol.models import CompanyDefaults, Debrief, Session
+from agent_corp.profile.feedback import FeedbackHandlers, next_status
+from agent_corp.protocol import now
+from agent_corp.protocol.models import CompanyDefaults, Debrief, Feedback, FeedbackRequest, Session
 from agent_corp.store import new_id
-from agent_corp.worker import Job, ProfileMemorySpec, Worker
+from agent_corp.worker import Job, ProfileMemorySpec, Worker, group_specs
 
 log = logging.getLogger(__name__)
 
@@ -43,17 +44,21 @@ class Learning:
         self._lock = threading.Lock()
         self._confirming = threading.Lock()
         self._active: dict[str, Worker | None] = {}  # session id -> its debrief or backward worker
+        self._waiting: set[str] = set()  # feedback that failed and waits for the next tick
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="learning", daemon=True)
         self._timer: threading.Timer | None = None
         self._stopping = False
         harness.hooks.end_status.append(self._end_status)
+        harness.hooks.run_finished.append(self._run_finished)
         harness.hooks.session_ended.append(self._session_ended)
 
     # --- life cycle ------------------------------------------------------------------
 
     def start(self) -> None:
-        """Start the thread; pick up debriefs an earlier office left unfinished."""
+        """Start the thread; pick up debriefs and feedback an earlier office left unfinished."""
+        for feedback in self.store.list_feedback(status="learning"):
+            self.store.set_feedback_status(feedback.id, "queued")  # its worker was killed with the office
         self._thread.start()
         self._post(self._recover)
         self._schedule()
@@ -86,6 +91,24 @@ class Learning:
 
     # --- routes ----------------------------------------------------------------------
 
+    def add_feedback(self, request: FeedbackRequest) -> Feedback:
+        """Queue feedback on a finished run of a session (its latest run by default)."""
+        session = self._session(request.session_id)
+        if session.kind != "main":
+            raise HarnessError(422, "not_learnable", f"session {session.id} is a {session.kind} session")
+        run_id = request.run_id or (session.run_ids[-1] if session.run_ids else None)
+        record = self.store.get_debrief_record(session.id)
+        runs = set(session.run_ids) | ({record.run_id} if record and record.debrief.state == "ready" else set())
+        if run_id is None or run_id not in runs:
+            raise HarnessError(422, "invalid_body", f"session {session.id} has no run {run_id}")
+        if not self._finished(session.id, run_id):
+            raise HarnessError(409, "run_unfinished", f"run {run_id} didn't finish, so it can't take feedback")
+        feedback = self.store.add_feedback(Feedback(
+            id=new_id(), session_id=session.id, run_id=run_id, author=self._owner(), text=request.text,
+            status="queued", created_at=now()))
+        self._post(self._drain, session.id)
+        return feedback
+
     def debrief(self, session_id: str) -> Debrief:
         """The session's debrief, pending from ``debriefing`` on; a pending one is retried if none runs."""
         session = self._session(session_id)
@@ -114,6 +137,10 @@ class Learning:
     def _end_status(self, session: Session) -> str | None:
         return "debriefing" if session.kind == "main" else None
 
+    def _run_finished(self, session: Session, run_id: str, outcome: dict[str, Any] | None) -> None:
+        if outcome is not None and outcome.get("type") == "result":
+            self._mark_finished(session.id, run_id)  # before session_ended, so feedback on it is taken
+
     def _session_ended(self, session: Session) -> None:
         self._post(self._ended, session.id)
 
@@ -128,6 +155,8 @@ class Learning:
         session = self.store.get_session(session_id)
         if session.status == "debriefing" or self._undebriefed(session):
             self._debrief(session)
+        else:
+            self._drain(session_id)
 
     def _recover(self) -> None:
         for session in self.store.list_sessions(status="debriefing", kind="main", limit=None):
@@ -135,6 +164,7 @@ class Learning:
         self._tick()
 
     def _tick(self) -> None:
+        self._waiting.clear()
         for record in self.store.list_debrief_records(state="pending"):
             session = self.store.get_session(record.debrief.session_id)
             if record.attempts < MAX_DEBRIEFS and session.status not in _BUSY:
@@ -142,6 +172,8 @@ class Learning:
         for session in self.store.list_sessions(status="failed", kind="main", limit=None):
             if self._undebriefed(session):  # also one whose failure fired no hook, such as a failed restore
                 self._debrief(session)
+        for session_id in dict.fromkeys(f.session_id for f in self.store.list_feedback(status="queued")):
+            self._drain(session_id)
 
     def _retry_debrief(self, session_id: str) -> None:
         record = self.store.get_debrief_record(session_id)
@@ -178,11 +210,55 @@ class Learning:
         else:
             log.warning("the debrief of session %s failed: %s", session_id, outcome)
         if debrief is not None:
+            self._mark_finished(session_id, run_id)
             self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
         else:
             self.store.save_debrief(pending_debrief(session), attempts=attempts)
         if session.status == "debriefing":
             self.store.update_session(session_id, status="ended")
+        self._drain(session_id)
+
+    def _drain(self, session_id: str) -> None:
+        """Start a backward job for the session's oldest queued feedback once nothing else of it runs."""
+        with self._lock:
+            if self._stopping or session_id in self._active:
+                return
+        session = self.store.get_session(session_id)
+        if session is None or session.status in _BUSY or self.registry.get(session_id) is not None:
+            return  # the harness's session_ended, or our worker's exit, drains it later
+        for feedback in self.store.list_feedback(session_id=session_id, status="queued"):
+            if feedback.id not in self._waiting:
+                self._learn(session, feedback)
+                return
+
+    def _learn(self, session: Session, feedback: Feedback) -> None:
+        if not self._reserve(session.id):
+            return
+        feedback = self.store.set_feedback_status(feedback.id, "learning")
+        handlers: FeedbackHandlers | None = None
+        try:
+            job, handlers = self._backward_job(session, feedback)
+            self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
+        except Exception as exc:
+            log.exception("can't start learning from feedback %s", feedback.id)
+            self._learned(feedback.id, handlers, {"type": "error", "message": str(exc)})
+
+    def _learned(self, feedback_id: str, handlers: FeedbackHandlers | None, outcome: dict[str, Any] | None) -> None:
+        feedback = self.store.get_feedback(feedback_id)
+        self._release(feedback.session_id)
+        commit = handlers.committed() if handlers is not None else None
+        status = next_status(outcome, committed=commit is not None, attempts=feedback.attempts)
+        if status == "applied":
+            # Feedback the learner already reflected commits nothing; it stands at the current commit.
+            self.store.set_feedback_status(feedback_id, "applied", commit=commit or self.git.head())
+        elif status == "learning_failed":
+            log.warning("learning from feedback %s failed: %s", feedback_id, outcome)
+            self.store.set_feedback_status(feedback_id, "learning_failed")
+        else:
+            self.store.set_feedback_status(feedback_id, "queued")
+            if status == "retry_later":
+                self._waiting.add(feedback_id)
+        self._drain(feedback.session_id)
 
     # --- jobs ------------------------------------------------------------------------
 
@@ -198,6 +274,29 @@ class Learning:
                   flow=DEBRIEF_FLOW, log=self._log(session.id, run_id), inputs={"transcript": transcript},
                   llm_config=provider.llm_config, learnable=True, memory=memory, env=provider.env, feedback=feedback)
         return job, {"profile": GitProfileStore(self.git, session.person)}
+
+    def _backward_job(self, session: Session, feedback: Feedback) -> tuple[Job, FeedbackHandlers]:
+        """The backward job for ``feedback``: the run's own flow, tools, and memory, from its pinned commit."""
+        record = self.store.get_debrief_record(session.id)
+        exited: Callable[[dict[str, Any] | None], None] = lambda outcome: self._post(  # noqa: E731
+            self._learned, feedback.id, handlers, outcome)
+        source = f"from feedback on run {feedback.run_id} ({self.git.handle(f'people/{feedback.author}/profile.md')})"
+        if record is not None and record.run_id == feedback.run_id:
+            job, stores = self._debrief_job(session, feedback.run_id, kind="backward", feedback=feedback.text)
+            handlers = FeedbackHandlers(stores=stores, source=source, exited=exited)
+            return job, handlers
+        spec = self.harness.restorers[session.kind](session)
+        provider = self.harness.provider()
+        tools = spec.groups(session, feedback.run_id, _no_questions)
+        memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
+                  if m.kind == "profile" and m.llm_config is None else m for name, m in spec.memory.items()}
+        job = Job(kind="backward", session_id=session.id, run_id=feedback.run_id, person_id=session.person,
+                  pin=str(self.git.pin(session.repo_commit)), flow=spec.flow,
+                  log=self._log(session.id, feedback.run_id), inputs=spec.inputs, llm_config=provider.llm_config,
+                  learnable=spec.learnable, skills=spec.skills, groups=group_specs(tools), memory=memory,
+                  env=provider.env, feedback=feedback.text)
+        handlers = FeedbackHandlers(tools=tools, stores=spec.stores, source=source, exited=exited)
+        return job, handlers
 
     # --- helpers ---------------------------------------------------------------------
 
@@ -262,6 +361,19 @@ class Learning:
 
     def _log(self, session_id: str, run_id: str) -> str:
         return str(self._run_dir(session_id) / "runs" / f"{run_id}.jsonl")
+
+    def _mark_finished(self, session_id: str, run_id: str) -> None:
+        """Record that a run finished: only a finished run can take feedback (a killed one would re-run)."""
+        marker = self._run_dir(session_id) / "runs" / f"{run_id}.finished"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+
+    def _finished(self, session_id: str, run_id: str) -> bool:
+        return (self._run_dir(session_id) / "runs" / f"{run_id}.finished").exists()
+
+
+def _no_questions(question: Any, **_: Any) -> Any:
+    raise RuntimeError("a backward run asks no questions")
 
 
 class _StopLearningFirst:
