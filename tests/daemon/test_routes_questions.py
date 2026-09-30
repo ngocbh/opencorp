@@ -42,6 +42,14 @@ async def test_list_questions_by_session_and_status(client, office):
     assert _ids(await client.get("/questions", params=[("status", "open"), ("status", "answered")])) == both
 
 
+async def test_list_questions_strips_statuses_and_ignores_an_empty_session(client, office):
+    a = await _open_question(office)
+    b = await _open_question(office)
+    office.store.answer_question(b.id, "yes", "text")
+    assert _ids(await client.get("/questions", params={"status": " open , answered "})) == [a.id, b.id]
+    assert _ids(await client.get("/questions", params={"session": "", "status": "open"})) == [a.id]
+
+
 async def test_list_questions_with_an_unknown_status_or_session_is_empty(client, office):
     await _open_question(office)
     assert _ids(await client.get("/questions", params={"status": "pondering"})) == []

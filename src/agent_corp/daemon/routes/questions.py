@@ -12,13 +12,14 @@ from agent_corp.store import InvalidTransition
 async def list_questions(request: Request) -> JSONResponse:
     """Questions, oldest first, optionally for one session and in the given statuses.
 
-    ``status`` may repeat or be comma-separated (``?status=open,answered``); SSE has no
-    replay, so a client that (re)connects finds open questions here.
+    ``status`` may repeat or be comma-separated (``?status=open, answered``); an empty
+    ``session`` counts as absent. SSE has no replay, so a client that (re)connects finds
+    open questions here.
     """
     q = request.query_params
-    statuses = [s for raw in q.getlist("status") for s in raw.split(",") if s]
+    statuses = [s.strip() for raw in q.getlist("status") for s in raw.split(",") if s.strip()]
     store = get_office(request).store
-    return ok(await call(store.list_questions, session_id=q.get("session"), status=statuses or None))
+    return ok(await call(store.list_questions, session_id=q.get("session") or None, status=statuses or None))
 
 
 async def get_question(request: Request) -> JSONResponse:
