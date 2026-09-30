@@ -21,6 +21,33 @@ async def _open_question(office):
     return office.store.add_question(question(s.id))
 
 
+def _ids(r):
+    assert r.status_code == 200, r.json()
+    return [q["id"] for q in r.json()]
+
+
+async def test_list_questions_by_session_and_status(client, office):
+    s1 = office.store.create_session(session())
+    s2 = office.store.create_session(session())
+    a = office.store.add_question(question(s1.id))
+    b = office.store.add_question(question(s1.id))
+    c = office.store.add_question(question(s2.id))
+    office.store.answer_question(b.id, "yes", "text")
+    assert _ids(await client.get("/questions")) == [a.id, b.id, c.id]
+    assert _ids(await client.get("/questions", params={"session": s1.id})) == [a.id, b.id]
+    assert _ids(await client.get("/questions", params={"session": s1.id, "status": "open"})) == [a.id]
+    assert _ids(await client.get("/questions", params={"status": "open"})) == [a.id, c.id]
+    both = [a.id, b.id, c.id]
+    assert _ids(await client.get("/questions", params={"status": "open,answered"})) == both
+    assert _ids(await client.get("/questions", params=[("status", "open"), ("status", "answered")])) == both
+
+
+async def test_list_questions_with_an_unknown_status_or_session_is_empty(client, office):
+    await _open_question(office)
+    assert _ids(await client.get("/questions", params={"status": "pondering"})) == []
+    assert _ids(await client.get("/questions", params={"session": ULID})) == []
+
+
 async def test_get_question(client, office):
     q = await _open_question(office)
     r = await client.get(f"/questions/{q.id}")

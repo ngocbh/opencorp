@@ -118,6 +118,7 @@ TABLE = [
     ("POST", f"/sessions/{ULID}/cost-cap", {"cost_cap_usd": 10}),
     ("GET", f"/work-items/{ULID}", None),
     ("GET", f"/work-items/{ULID}/comments", None),
+    ("GET", "/questions", None),
     ("GET", f"/questions/{ULID}", None),
     ("POST", f"/questions/{ULID}/answer", {"answer": "a", "answer_kind": "text"}),
     ("POST", f"/questions/{ULID}/side", {"text": "why?"}),
