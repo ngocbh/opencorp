@@ -319,3 +319,18 @@ test("a profile read that succeeds doesn't hide a failed proposals read", async 
     expect(await app.until(() => true)).toContain("no person minh")
   })
 })
+
+test("the chat's history is loaded once; the office's own re-read keeps it on reconnect", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Earlier ask" })
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("you: Earlier ask"))
+    const loads = () => office.requests.filter((r) => r.path === `/sessions/${manager.id}/messages`).length
+    const before = loads()
+    office.reset()
+    await until(() => loads() > before)
+    await Bun.sleep(200)
+    expect(loads()).toBe(before + 1)
+  })
+})

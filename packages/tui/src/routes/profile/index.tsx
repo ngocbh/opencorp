@@ -155,9 +155,10 @@ export function Profile() {
   })
   const chatSession = () => office.state.sessions.find((s) => s.id === chat())
   const lines = createMemo(() => transcript(office.state.messages[chat() ?? ""] ?? []))
+  // Once per chat: the office keeps a synced session live and re-reads it on reconnect.
   createEffect(
-    on([chat, office.status], ([id, status]) => {
-      if (!id || status !== "online") return
+    on(chat, (id) => {
+      if (!id) return
       office.syncSession(id).then(
         () => setChatError(undefined),
         (e) => {
