@@ -1,5 +1,7 @@
 # OpenCode TUI inventory
 
+This file describes the fork as of upstream `b471c2b`.
+
 What the agent-corp TUI takes from OpenCode's `packages/tui`, and what happens to each
 dependency on the rest of the OpenCode monorepo.
 
@@ -68,20 +70,20 @@ Classification:
 ## Features and files
 
 Paths are relative to `src/` unless they start with `test/`. "Adapted by" names the later
-task that rewires a kept file.
+change that rewires a kept file.
 
 | Area | Files | Class | Adapted by / reason |
 | --- | --- | --- | --- |
-| App shell | `app.tsx`, `index.tsx`, `runtime.tsx`, `context/{args,exit,epilogue,helper,route,runtime,prompt,clipboard,path-format,thinking}.ts(x)`, `util/**` except below | keep | T4 swaps the SDK provider for the protocol client. |
-| Home | `routes/home.tsx`, `routes/home/session-destination.tsx`, `component/logo.tsx`, `logo.ts` | keep | T5 puts the employee picker on the home screen. |
-| Session view | `routes/session/{index,footer,sidebar,dialog-message,dialog-timeline,subagent-footer}.tsx` | keep | T6 chat screen. |
-| Permission and question views | `routes/session/{permission,question}.tsx`, `context/permission.tsx` | keep | T6 question cards. |
-| Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment,cwd}.ts(x)`, `prompt/**` | keep | T6 (Enter/steer, Esc/interrupt). |
+| App shell | `app.tsx`, `index.tsx`, `runtime.tsx`, `context/{args,exit,epilogue,helper,route,runtime,prompt,clipboard,path-format,thinking}.ts(x)`, `util/**` except below | keep | The office protocol client replaces the SDK provider. |
+| Home | `routes/home.tsx`, `routes/home/session-destination.tsx`, `component/logo.tsx`, `logo.ts` | keep | The employee picker goes on the home screen. |
+| Session view | `routes/session/{index,footer,sidebar,dialog-message,dialog-timeline,subagent-footer}.tsx` | keep | Becomes the chat screen. |
+| Permission and question views | `routes/session/{permission,question}.tsx`, `context/permission.tsx` | keep | The chat screen builds its question cards on these. |
+| Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment,cwd}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
 | Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-session-rename,dialog-stash,dialog-theme-list,dialog-debug,dialog-retry-action,error-component,spinner,register-spinner,todo-item,bg-pulse,bg-pulse-render}.ts(x)` | keep | Used by every later screen. |
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
-| Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` keeps agent and model selection state until T4 replaces it with employees. |
-| Data layer | `context/{sdk,sync,data,location,project,event,directory}.ts(x)` | replace | T4 protocol client and store. Sync still fetches LSP, MCP and formatter status until then. |
+| Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` keeps agent and model selection state until the office protocol client replaces it with employees. |
+| Data layer | `context/{sdk,sync,data,location,project,event,directory}.ts(x)` | replace | The office protocol client and its store. See "Left for the protocol client" below. |
 | Editor | `editor.ts`, `editor-zed.ts`, `context/editor.ts` | keep | External `$EDITOR` for the prompt and editor selection context. |
 | Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts` | keep | |
 | Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, `component/startup-loading.tsx`, the `plugin` route | drop | No TUI plugins. The startup screen only covered plugin loading. |
@@ -90,8 +92,30 @@ task that rewires a kept file.
 | Provider and model pickers, auth | `component/dialog-{model,provider,variant,console-org}.tsx`, `component/use-connected.tsx`, `util/provider-origin.ts`, the empty-provider dialog in `app.tsx` | drop | The office owns models and credentials. `util/model.ts` stays: the session view names message models with it and `--model` parsing uses it. |
 | MCP, LSP, formatter status | `component/dialog-{mcp,status}.tsx`, the MCP toggle in `context/local.tsx`, the LSP/MCP counts in the session footer | drop | Not in agent-corp. |
 | Share | session share and unshare commands | drop | Sessions are not shared through OpenCode. |
-| Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, `component/dialog-session-delete-failed.tsx` (workspace recovery), flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. `context/project.tsx` keeps its workspace state until T4. |
-| Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | T5's employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
-| Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking in M1; `dialog-subagent` is unused upstream. The message dialog's Fork action and `--fork` handling in `app.tsx` stay until T4 decides what the office supports. |
-| Tests | `test/**` | keep, except the tests of dropped features | `test/fixture/tui-sdk.ts` stays until T4's fake office replaces it. |
+| Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, `component/dialog-session-delete-failed.tsx` (workspace recovery), flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. `context/project.tsx` keeps its workspace state for now. |
+| Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | The employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
+| Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking for now; `dialog-subagent` is unused upstream. The message dialog's Fork action and `--fork` handling in `app.tsx` stay until the office protocol client decides what the office supports. |
+| Tests | `test/**` | keep, except the tests of dropped features | `test/fixture/tui-sdk.ts` stays until a fake office replaces it. |
 | SST glue | `sst-env.d.ts` | drop | Not copied. |
+
+## Left for the protocol client
+
+These kept files still talk to the OpenCode SDK in ways the office protocol client removes:
+
+- `context/sync.tsx` still fetches LSP, MCP, formatter, provider and VCS state on bootstrap.
+- `component/prompt/autocomplete.tsx` offers MCP resources in the `@` menu (`sync.data.mcp_resource`).
+- `context/project.tsx` keeps OpenCode workspace state.
+- The message dialog's Fork action and `--fork` handling in `app.tsx`.
+- `directory` is optional in `TuiInput` (`app.tsx`) and the SDK provider (`context/sdk.tsx`);
+  it should become required once `ac` always passes the working directory.
+
+## Still to rebrand
+
+OpenCode branding kept for now:
+
+- The terminal title prefix `OC |` (`app.tsx`).
+- The logo (`component/logo.tsx`, `logo.ts`).
+- The session sidebar footer "Open Code" (`routes/session/sidebar.tsx`).
+- The exit message: the wordmark and `opencode -s <id>` (`sessionEpilogue` in `util/presentation.ts`).
+- Custom themes are looked up in `.opencode/themes` (`context/theme.tsx`).
+- The OpenCode Go upsell in `component/dialog-retry-action.tsx` and `component/bg-pulse*.tsx`.
