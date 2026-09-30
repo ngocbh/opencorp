@@ -58,6 +58,16 @@ def test_a_bootstrap_that_keeps_failing_removes_the_plist_and_says_why(tmp_path,
     assert [c[1] for c in run.calls].count("bootstrap") == 3
 
 
+def test_a_kickstart_that_fails_boots_out_and_removes_the_plist(tmp_path, owner_launch):
+    host = make_host(tmp_path, Runner())
+    launchd.install(owner_launch, host)
+    run = Runner([(["launchctl", "kickstart"], 1, "Operation not permitted")])
+    with pytest.raises(ServiceError, match="Operation not permitted"):
+        launchd.install(owner_launch, make_host(tmp_path, run))
+    assert run.calls[-1] == ["launchctl", "bootout", SERVICE]
+    assert not (tmp_path / "Library" / "LaunchAgents" / "com.agent-corp.office.plist").exists()
+
+
 def test_no_launchctl_is_a_service_error(tmp_path, owner_launch):
     run = Runner([(["launchctl"], 127, "No such file or directory: 'launchctl'")])
     with pytest.raises(ServiceError, match="launchctl"):

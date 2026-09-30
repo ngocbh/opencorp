@@ -36,6 +36,15 @@ def test_a_failing_launchctl_falls_back_to_tmux(tmp_path, one):
     assert recorded(one)["mode"] == "tmux"
 
 
+def test_a_loaded_agent_that_wont_kickstart_is_removed_before_falling_back(tmp_path, one):
+    service.install(one, make_host(tmp_path, Runner()))
+    run = Runner([(["launchctl", "kickstart"], 1, "Operation not permitted"), (["tmux", "has-session"], 1, "")])
+    got = service.install(one, make_host(tmp_path, run, which=lambda name: f"/usr/bin/{name}"))
+    assert got.mode == "tmux" and "Operation not permitted" in got.notes[0]
+    assert ["launchctl", "bootout", f"gui/501/com.agent-corp.{one.name}"] in run.calls
+    assert not list((tmp_path / "Library" / "LaunchAgents").iterdir())
+
+
 def test_linux_without_a_user_bus_or_tmux_runs_it_in_the_background(tmp_path, one):
     started = []
     run = Runner([(["systemctl"], 1, "Failed to connect to bus")])

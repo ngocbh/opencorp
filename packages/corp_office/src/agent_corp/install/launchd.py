@@ -38,8 +38,8 @@ def plist(launch: Launch) -> bytes:
 def install(launch: Launch, host: Host) -> None:
     """Write the plist and load it, or kickstart it if it is already loaded and unchanged.
 
-    Raises ``ServiceError`` if ``launchctl`` is missing or refuses; the plist is then removed
-    so the next login doesn't start a service onboarding gave up on.
+    Raises ``ServiceError`` if ``launchctl`` is missing or refuses; the agent is then booted
+    out and its plist removed, so the next login doesn't start a service onboarding gave up on.
     """
     path = plist_path(launch, host)
     domain = f"gui/{host.uid}"
@@ -50,7 +50,11 @@ def install(launch: Launch, host: Host) -> None:
     loaded = probe.returncode == 0
     changed = write_if_changed(path, plist(launch))
     if loaded and not changed:
-        _check(host.run(["launchctl", "kickstart", service]), "kickstart")
+        done = host.run(["launchctl", "kickstart", service])
+        if done.returncode != 0:
+            host.run(["launchctl", "bootout", service])
+            path.unlink(missing_ok=True)
+            raise ServiceError(f"launchctl kickstart failed: {done.stderr.strip()}")
         return
     if loaded:
         host.run(["launchctl", "bootout", service])
