@@ -115,9 +115,16 @@ test("a failed transcript load stays shown after the debrief reads fine, until r
 test("no debrief yet says so; while debriefing it says it is being written; then it fills in", async () => {
   const office = createFakeOffice()
   await run(office, async (app, id) => {
-    await app.until((f) => f.includes("No debrief yet"))
+    // A live session's run isn't finished, so there is no feedback to give yet.
+    let f = await app.until((f) => f.includes("No debrief yet"))
+    expect(f).not.toContain("Feedback for the profile")
+    app.input.pressKey("f")
+    app.input.pressKey("t")
     office.setStatus(id, "debriefing")
-    await app.until((f) => f.includes("Writing the debrief") && !f.includes("No debrief yet"))
+    f = await app.until((f) => f.includes("Writing the debrief") && !f.includes("No debrief yet"))
+    expect(f).toContain("Feedback for the profile")
+    expect(f).not.toContain("No turns to pick from")
+    expect(app.setup.renderer.currentFocusedEditor).toBeNull()
     office.addDebrief(id, { state: "pending" })
     await app.until((f) => f.includes("Writing the debrief") && !f.includes("Debrief pending"))
     office.addDebrief(id, READY)

@@ -38,8 +38,8 @@ export function useDebriefCommands() {
 
 /**
  * A session's debrief: summary, status, artifacts, decisions, follow-ups, open questions and
- * cost. Space marks follow-ups and `c` confirms them, which makes a work item for each; `t`
- * starts feedback about one turn and `f` feedback on the whole run.
+ * cost. Space marks follow-ups and `c` confirms them, which makes a work item for each. Once
+ * the session has stopped, `t` starts feedback about one turn and `f` feedback on the whole run.
  */
 export function Debrief() {
   const data = useRouteData("debrief")
@@ -56,6 +56,8 @@ export function Debrief() {
   const [loadError, setLoadError] = createSignal<string>()
   const [syncError, setSyncError] = createSignal<string>()
   const session = () => office.state.sessions.find((s) => s.id === id)
+  // Feedback is learned from a finished run, and a session's last run finishes when it stops.
+  const learnable = () => ["ended", "failed", "debriefing"].includes(session()?.status ?? "")
   const followUps = () => (debrief()?.state === "ready" ? (debrief()!.follow_ups ?? []) : [])
   const [cursor, setCursor] = createSignal(0)
   const [marked, setMarked] = createSignal<number[]>([])
@@ -206,8 +208,8 @@ export function Debrief() {
       { key: "down", group: "Debrief", cmd: () => move(1) },
       { key: "space", group: "Debrief", cmd: mark },
       { key: "c", group: "Debrief", cmd: () => void confirm() },
-      { key: "t", group: "Debrief", cmd: pickTurn },
-      { key: "f", group: "Debrief", cmd: () => write("") },
+      { key: "t", group: "Debrief", cmd: () => learnable() && pickTurn() },
+      { key: "f", group: "Debrief", cmd: () => learnable() && write("") },
       { key: "escape", group: "Debrief", cmd: () => route.navigate({ type: "session", sessionID: id }) },
     ],
   }))
@@ -283,18 +285,20 @@ export function Debrief() {
           </For>
         </box>
       </Show>
-      <box flexDirection="row" flexShrink={0}>
-        <text fg={theme.textMuted}>{"> "}</text>
-        <input
-          flexGrow={1}
-          ref={(r) => (input = r)}
-          placeholder="Feedback for the profile: t about a turn, f on the whole run"
-          placeholderColor={theme.textMuted}
-          focusedBackgroundColor={theme.backgroundPanel}
-          cursorColor={theme.primary}
-          onSubmit={() => void send(input?.value ?? "")}
-        />
-      </box>
+      <Show when={learnable()}>
+        <box flexDirection="row" flexShrink={0}>
+          <text fg={theme.textMuted}>{"> "}</text>
+          <input
+            flexGrow={1}
+            ref={(r) => (input = r)}
+            placeholder="Feedback for the profile: t about a turn, f on the whole run"
+            placeholderColor={theme.textMuted}
+            focusedBackgroundColor={theme.backgroundPanel}
+            cursorColor={theme.primary}
+            onSubmit={() => void send(input?.value ?? "")}
+          />
+        </box>
+      </Show>
       <Toast />
     </box>
   )
