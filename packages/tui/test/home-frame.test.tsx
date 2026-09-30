@@ -22,6 +22,7 @@ test("the home screen shows the logo and the prompt against the stub server", as
     }
     expect(frame).toContain("█▀▀█ █▀▀█ █▀▀█ █▀▀▄")
     expect(frame).toContain("Ask anything")
+    expect(frame).not.toContain("Connect a provider")
 
     setup.renderer.destroy()
     await task

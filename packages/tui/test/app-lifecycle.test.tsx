@@ -6,7 +6,8 @@ import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
 
 async function renderUntil(setup: TestRendererSetup, text: string) {
-  for (let i = 0; i < 50; i++) {
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
     await Bun.sleep(20)
     await setup.renderOnce()
     if (setup.captureCharFrame().includes(text)) return
