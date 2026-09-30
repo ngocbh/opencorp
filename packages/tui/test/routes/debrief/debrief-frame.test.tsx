@@ -234,6 +234,41 @@ test("f writes feedback on the whole run; Esc leaves the input; pre-fill-only fe
   })
 })
 
+test("t and f keep a draft, swapping only the About turn pre-fill; text typed while sending stays", async () => {
+  const office = createFakeOffice()
+  withTurns(office)
+  await run(office, async (app) => {
+    const unfocused = () => app.setup.renderer.currentFocusedEditor === null
+    const pick = async (app: App, turn: string) => {
+      app.input.pressEscape()
+      await app.until(unfocused)
+      app.input.pressKey("t")
+      await app.until((f) => f.includes("Turn 1: Fix the flaky test"))
+      await typeInto(app, turn)
+      app.input.pressEnter()
+      await app.until((f) => !f.includes("Turn 1:") && !unfocused())
+    }
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    app.input.pressKey("f")
+    await typeInto(app, "Too slow")
+    await pick(app, "fake clock")
+    await app.until((f) => f.includes('> About turn 2 ("Use a fake clock"): Too slow'))
+    await pick(app, "flaky")
+    await app.until((f) => f.includes('> About turn 1 ("Fix the flaky test"): Too slow'))
+    app.input.pressEscape()
+    await app.until(unfocused)
+    app.input.pressKey("f")
+    await app.until((f) => f.includes("> Too slow") && !unfocused())
+    const release = office.hold("POST /feedback")
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === "/feedback"))
+    await typeInto(app, " and too long")
+    release()
+    await app.until((f) => f.includes("queued · Too slow") && f.includes("> and too long"))
+    expect(office.requests.find((r) => r.path === "/feedback")?.body).toMatchObject({ text: "Too slow" })
+  })
+})
+
 test("feedback items keep their place as they move along, and a late update never moves one back", async () => {
   const office = createFakeOffice()
   withTurns(office)

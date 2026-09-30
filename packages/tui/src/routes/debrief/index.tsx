@@ -123,12 +123,17 @@ export function Debrief() {
   let input: InputRenderable | undefined
   // The turn pre-fill the input starts with; sent alone, it says nothing.
   let prefix = ""
-  /** Focuses the feedback input with `text`; a tick later, so a closing dialog's refocus doesn't undo it. */
-  function write(text: string) {
+  /**
+   * Focuses the feedback input, starting it with `next` in place of the draft's pre-fill and
+   * keeping the rest of the draft; a tick later, so a closing dialog's refocus doesn't undo it.
+   */
+  function write(next: string) {
     setTimeout(() => {
       if (!input || input.isDestroyed) return
-      prefix = text
-      input.value = text
+      const draft = input.value
+      const rest = prefix && draft.startsWith(prefix) ? draft.slice(prefix.length) : draft
+      prefix = next
+      input.value = next + rest
       input.focus()
     }, 0)
   }
@@ -154,8 +159,12 @@ export function Debrief() {
     sending = true
     try {
       putFeedback(await office.client.feedback.create({ session_id: id, text }))
-      if (input) input.value = ""
-      input?.blur()
+      // Keep whatever was typed after the sent text while it was on its way.
+      if (input && !input.isDestroyed) {
+        prefix = ""
+        input.value = input.value.startsWith(draft) ? input.value.slice(draft.length).trimStart() : input.value
+        if (!input.value) input.blur()
+      }
       toast.show({ variant: "success", message: "Feedback queued" })
     } catch (e) {
       toast.show({ variant: "error", message: errorMessage(e) })
