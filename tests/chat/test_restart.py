@@ -111,6 +111,25 @@ def test_a_worker_that_cant_start_at_restore_fails_only_its_session(make_harness
     assert status(second, failed) == "failed" and status(second, restored) == "idle"
 
 
+def test_a_session_whose_tool_parts_cant_be_swept_at_restore_fails_alone(make_harness, fake_llm, workspace):
+    first = make_harness()
+    sids = [start(first, workspace), start(first, workspace)]
+    first.close_all()
+
+    second = make_harness()
+    sweep = second._interrupt_running_tools
+
+    def once_broken(session_id):
+        if session_id == sids[0]:
+            raise RuntimeError("the store can't read this session's messages")
+        sweep(session_id)
+
+    second._interrupt_running_tools = once_broken
+    second.restore()  # doesn't raise
+    assert status(second, sids[0]) == "failed" and sids[0] not in second._live
+    wait_for(lambda: sids[1] in second._live and second._live[sids[1]].turn_q, what="the other session's turn")
+
+
 def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_llm, workspace):
     from agent_corp.store import new_id
 

@@ -274,15 +274,15 @@ class Harness:
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
-            self._interrupt_running_tools(session.id)
-            if not session.run_ids:  # the office stopped before its first run was recorded
-                self._fail(session.id)
-                continue
             # One session that can't resume must not stop the others, or the office's start.
+            live = None
             try:
-                live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
+                self._interrupt_running_tools(session.id)
+                if session.run_ids:  # else the office stopped before its first run was recorded
+                    live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
             except Exception:
                 log.exception("can't resume session %s", session.id)
+            if live is None:
                 self._fail(session.id)
                 continue
             live.ending = session.status == "ending"
