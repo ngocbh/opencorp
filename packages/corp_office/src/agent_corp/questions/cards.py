@@ -220,7 +220,7 @@ class Cards:
                 self.harness.end(side_id)
             except HarnessError:
                 log.warning("side session %s has no live run to end", side_id)
-                self.store.update_session(side_id, status="ended")
+                self.ended(self.store.update_session(side_id, status="ended"))
 
     # --- helpers -------------------------------------------------------------------------
 

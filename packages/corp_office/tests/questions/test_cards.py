@@ -274,9 +274,11 @@ def test_the_start_sweep_expires_cards_of_dead_sessions_and_ends_their_side_chat
     q = h.store.add_question(question(dead.id))
     orphan = h.store.create_session(session(kind="side", status="idle", question_id=q.id, cwd=str(workspace)))
     h.store.update_question(q.id, side_session_id=orphan.id)
+    turn = h.store.add_question(question(orphan.id, source="human_input", node_id="chat#1/ask", question="You:"))
     cards.sweep()
     assert h.store.get_question(q.id).status == "stale"
     wait_for(lambda: status(h, orphan.id) == "ended", what="the orphaned side session to end")
+    wait_for(lambda: h.store.get_question(turn.id).status == "stale", what="its open turn to expire")
 
 
 def test_the_seed_goes_once_when_no_ceo_answers_for_the_human(make_harness, fake_llm, workspace):  # noqa: F811
