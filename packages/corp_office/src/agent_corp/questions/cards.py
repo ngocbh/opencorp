@@ -152,12 +152,16 @@ class Cards:
         seed = read_seed(self.office.paths.run_dir(session.id))
         if not seed:
             return None
-        # Only the office answers a side turn with the exit command (the human's is refused), so
-        # any other answered turn was the human's, and the seed is already in the session's memory.
-        answered = self.store.list_questions(session_id=session.id, source="human_input",
-                                             status=("answered", "consumed"))
-        if any(SIDE_CHAT.is_turn(q.node_id) and q.answer != SIDE_CHAT.exit for q in answered):
-            return None
+        # The seed is in the session's memory once a turn the human answered (only the office
+        # answers with the exit command) has a later turn in its run: the loop asks again only
+        # after the reply finished and its memory was written. A reply that died before then
+        # sends the seed again, so the worst case is the seed twice in the history.
+        turns = [q for q in self.store.list_questions(session_id=session.id, source="human_input")
+                 if SIDE_CHAT.is_turn(q.node_id)]
+        for n, done in enumerate(turns):
+            if done.status in ("answered", "consumed") and done.answer != SIDE_CHAT.exit \
+                    and any(later.run_id == done.run_id for later in turns[n + 1:]):
+                return None
         return first_message(seed, text)
 
     def stored(self, question: Question) -> None:

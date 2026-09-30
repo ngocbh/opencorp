@@ -293,3 +293,18 @@ def test_the_seed_goes_once_when_no_ceo_answers_for_the_human(make_harness, fake
         assert last_user(fake_llm, 3) == "how often?"
     finally:
         stop(office)
+
+
+def test_a_first_reply_that_dies_leaves_the_seed_for_the_next_turn(office, fake_llm, workspace):  # noqa: F811
+    fake_llm.script(ASK, {"error": 500}, {"content": "Quota."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = cards.open_side(q.id, "why?")
+    assert last_user(fake_llm, 2).startswith(FRAMING)
+    # The failed reply never reached the next ask, so its memory may not hold the seed. The
+    # harness starts a new run, which waits on its first turn.
+    wait_for(lambda: len(h.store.get_session(side.id).run_ids) == 2 and status(h, side.id) == "idle",
+             what="the side session's next run")
+    chat(office, q, "why, again?", 1)
+    first = last_user(fake_llm, 3)
+    assert first.startswith(FRAMING) and first.endswith("why, again?")
