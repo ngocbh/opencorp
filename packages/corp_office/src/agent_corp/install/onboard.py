@@ -3,15 +3,28 @@
 import getpass
 import json
 import os
+import pwd
+import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol, TextIO
 
+import httpx
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
 
 from agent_corp.chat.provider import Provider, ProviderError, _errors, load_provider
+from agent_corp.company.lint import lint
+from agent_corp.company.loader import load_repo
+from agent_corp.company_template import Owner, template_files, write_company
+from agent_corp.daemon.app import OfficePaths
+from agent_corp.daemon.main import OfficeStartError, make_office_dir
+from agent_corp.install import service
+from agent_corp.install.launch import REPO, Host, ServiceError, launch
+
+FIRST_AGENT = ("Minh", "Engineer")
+"""The first agent's default name, and its title."""
 
 
 class OnboardError(Exception):
@@ -156,3 +169,96 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None)
     except ProviderError as exc:
         raise OnboardError(str(exc)) from None
     return True
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]", "-", text.lower())).strip("-")[:32].strip("-")
+
+
+def owner_defaults(login: str, gecos: str) -> tuple[str, str]:
+    """The owner's default name and handle: the account's full name and a slug of the login."""
+    return gecos.split(",")[0].strip() or login, _slug(login) or "owner"
+
+
+def _ask_company(prompter: Prompter) -> tuple[str, Owner]:
+    login = pwd.getpwuid(os.getuid())
+    name, handle = owner_defaults(login.pw_name, login.pw_gecos)
+    while True:
+        company = prompter.ask("Company name", "My company")
+        who = prompter.ask("Your name", name)
+        slug = prompter.ask("Your handle", handle)
+        owner = Owner(id=slug, handle=slug, name=who)
+        try:
+            template_files(company, owner)  # validates without writing
+            return company, owner
+        except ValueError as exc:
+            prompter.say(f"That doesn't work: {exc}")
+
+
+def _hire_first(socket: Path, ceo: str, prompter: Prompter) -> str:
+    """Hire the first agent through the office (preview, then confirm), reporting to the CEO."""
+    name = prompter.ask("Name your first agent", FIRST_AGENT[0])
+    handle = prompter.ask("Their handle", _slug(name) or "agent")
+    body = {"name": name, "handle": handle, "title": FIRST_AGENT[1], "manager": ceo}
+    with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office",
+                      timeout=30) as client:
+        preview = client.post("/people", json=body)
+        if preview.status_code != 200:
+            raise OnboardError(f"the office refused the hire: {preview.status_code} {preview.text}")
+        errors = [i["message"] for i in preview.json()["issues"] if i["severity"] == "error"]
+        if errors:
+            raise OnboardError("the hire doesn't lint: " + "; ".join(errors))
+        done = client.post("/people", json=body | {"id": preview.json()["person"]["id"], "confirm": True})
+        if done.status_code != 200:
+            raise OnboardError(f"the office refused the hire: {done.status_code} {done.text}")
+    return f"{name} (@{handle})"
+
+
+def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO | None = None,
+            host: Host | None = None, repo: Path = REPO, environ: Mapping[str, str] = os.environ,
+            hire: bool = True) -> None:
+    """Set up the office at ``home``; running it again only fills in what is missing.
+
+    In order: the home and office dirs (0700), the company repo from the template (lint
+    errors stop here), ``office/provider.json``, the daemon under ``mode``, and, once the
+    office answers, a first agent if ``hire`` and the company has none.
+
+    Raises:
+        OnboardError: a step failed; earlier steps stay done.
+    """
+    host = host or Host()
+    run = launch(home, repo=repo, environ=environ, user_home=host.user_home)
+    paths = OfficePaths(run.home)
+    try:
+        paths.home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        make_office_dir(paths.office)
+    except OfficeStartError as exc:
+        raise OnboardError(str(exc)) from None
+    prompter.say(f"Office home: {paths.home}")
+
+    new = not (paths.company / "company.yaml").exists()
+    company, owner = _ask_company(prompter) if new else (None, None)
+    written = write_company(paths.company, paths.worktrees, company=company, owner=owner)
+    done = "created at" if new else f"added {len(written)} template files to" if written else "up to date at"
+    prompter.say(f"Company repo: {done} {paths.company}")
+    repo_now = load_repo(paths.company)
+    errors = [i for i in lint(repo_now) if i.severity == "error"]
+    if errors:
+        raise OnboardError("the company repo has errors; fix them and run `ac onboard` again:\n"
+                           + "\n".join(f"  {i.path}: {i.code}: {i.message}" for i in errors))
+
+    wrote = ensure_provider(paths.office / "provider.json", prompter, stdin)
+    prompter.say(f"Model provider: {'saved to' if wrote else 'up to date at'} {paths.office / 'provider.json'}")
+
+    try:
+        installed = service.install(run, host, mode)
+        for note in installed.notes:
+            prompter.say(f"  skipped {note}")
+        service.wait(run, host)
+    except (ServiceError, OfficeStartError) as exc:
+        raise OnboardError(str(exc)) from None
+    prompter.say(f"Office: running under {installed.mode or 'a process started by hand'}; log at {run.log}")
+
+    if hire and not any(p.kind == "agent" for p in repo_now.people.values()):
+        prompter.say(f"First agent: hired {_hire_first(run.socket, repo_now.company.ceo, prompter)}")
+    prompter.say("Done. Run `ac` in a project folder to talk to your team.")
