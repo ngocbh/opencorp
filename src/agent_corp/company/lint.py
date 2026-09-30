@@ -144,7 +144,11 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
         refs = (([person.main] if person.main else []) + [sop.flow for sop in person.sops]
                 + [routine.flow for routine in person.routines])
         for ref in refs:
-            path = (base / ref).resolve()
+            try:
+                path = (base / ref).resolve()
+            except (OSError, ValueError) as exc:  # e.g. a NUL byte in the path
+                yield RepoIssue(_person_path(pid), "person.flow_invalid", f"{ref!r}: {exc}")
+                continue
             if path.is_relative_to(repo.root) and not path.is_file():
                 yield RepoIssue(_person_path(pid), "person.flow_missing", f"{ref} does not exist")
                 continue

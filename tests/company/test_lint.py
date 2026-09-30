@@ -1,5 +1,7 @@
 import dataclasses
 
+import pytest
+
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company.naming import asset_tool_name
@@ -169,6 +171,15 @@ def test_routine_flows_are_checked(make_company):
     routines = [{"name": "daily", "flow": "../../shared/flows/nope.yaml"}]
     root = make_company(**{"people/minh/person.yaml": person("minh", routines=routines)})
     assert "person.flow_missing" in codes(root)
+
+
+@pytest.mark.parametrize("field", ["main", "sops", "routines"])
+def test_nul_byte_in_a_flow_ref_is_invalid(make_company, field):
+    ref = "../../shared/flows/chat\0.yaml"
+    value = {"main": ref, "sops": [{"flow": ref}], "routines": [{"name": "daily", "flow": ref}]}[field]
+    root = make_company(**{"people/minh/person.yaml": person("minh", **{field: value})})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert issue.path == "people/minh/person.yaml" and "\0" not in issue.message
 
 
 def test_agent_needs_a_main_flow(make_company):
