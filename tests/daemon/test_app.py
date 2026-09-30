@@ -1,5 +1,7 @@
 """The office app: error bodies, absolute-form targets, and start/stop."""
 
+import pytest
+
 from agent_corp.daemon.app import AbsoluteFormPaths, OfficePaths, create_app
 from tests.daemon.conftest import FakePool
 
@@ -72,3 +74,50 @@ def _async(calls, name):
     async def cb():
         calls.append(name)
     return cb
+
+
+# (method, path, body) for every non-SSE route in the WP1 route table. GET /events is
+# covered over a real socket in test_routes_events.py.
+ULID = "01JA1H0000000000000000000A"
+TABLE = [
+    ("GET", "/people", None),
+    ("GET", "/folders/%2Fw%2Fapp/people", None),
+    ("POST", "/people", {"name": "Ava", "handle": "ava", "title": "R", "manager": "ngocbh"}),
+    ("GET", "/sessions", None),
+    ("POST", "/sessions", {"person": "minh", "cwd": "/w/app"}),
+    ("GET", f"/sessions/{ULID}", None),
+    ("GET", f"/sessions/{ULID}/messages", None),
+    ("POST", f"/sessions/{ULID}/prompt", {"text": "hi"}),
+    ("POST", f"/sessions/{ULID}/steer", {"text": "hi"}),
+    ("POST", f"/sessions/{ULID}/interrupt", None),
+    ("POST", f"/sessions/{ULID}/end", None),
+    ("POST", f"/sessions/{ULID}/cost-cap", {"cost_cap_usd": 10}),
+    ("GET", f"/work-items/{ULID}", None),
+    ("GET", f"/work-items/{ULID}/comments", None),
+    ("GET", f"/questions/{ULID}", None),
+    ("POST", f"/questions/{ULID}/answer", {"answer": "a", "answer_kind": "text"}),
+    ("POST", f"/questions/{ULID}/side", {"text": "why?"}),
+    ("POST", f"/questions/{ULID}/send-back", {"note": "more"}),
+    ("POST", f"/questions/{ULID}/stop", None),
+    ("GET", "/profiles/minh", None),
+    ("PUT", "/profiles/minh", {"text": "x", "base_version": "a" * 40}),
+    ("POST", "/profiles/minh/manager", {"text": "tidy"}),
+    ("GET", "/profiles/minh/proposals", None),
+    ("POST", f"/profile-proposals/{ULID}/apply", None),
+    ("POST", "/feedback", {"session_id": ULID, "text": "be brief"}),
+    ("GET", f"/debriefs/{ULID}", None),
+    ("POST", f"/debriefs/{ULID}/confirm", {"follow_ups": []}),
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), TABLE)
+async def test_every_table_route_is_served(client, method, path, body):
+    r = await client.request(method, path, json=body)
+    assert r.headers["content-type"].startswith("application/json")
+    if r.status_code >= 400:
+        assert r.json().get("error") not in {"no_route", "method_not_allowed"}, r.json()
+
+
+async def test_wrong_method_is_405(client):
+    r = await client.delete("/people")
+    assert r.status_code == 405 and r.json()["error"] == "method_not_allowed"
