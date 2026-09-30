@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from agent_corp.company.git import CompanyGit
+from agent_corp.company.git import CompanyGit, CompanyGitError
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import HireRequest, HireResponse, Person, RepoIssue
@@ -70,14 +70,30 @@ class Hiring:
             errors = [i for i in issues if i.severity == "error"]
             if errors:
                 raise HireRefused("lint_failed", errors[0].message)
-            for rel, text in files.items():
-                path = self.git.root / rel
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text)
-            commit = self.git.commit(list(files), f"hire(@{person.handle}): {person.name}, {person.title}")
+            head = self.git.head()
+            try:
+                for rel, text in files.items():
+                    path = self.git.root / rel
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text)
+                commit = self.git.commit(list(files), f"hire(@{person.handle}): {person.name}, {person.title}")
+            except BaseException:
+                # Left on disk, the profile would be committed later as a hand edit.
+                self._undo(request.id, list(files), head)
+                raise
         with self._lock:
             self._previews.pop(request.id, None)
         return HireResponse(person=person, diff=_diff(files), issues=issues, commit=commit)
+
+    def _undo(self, pid: str, paths: list[str], head: str) -> None:
+        """Remove the files a failed hire commit left, and unstage them; best effort."""
+        try:
+            if self.git.head() != head:  # the commit landed before the failure; keep it
+                return
+            shutil.rmtree(self.git.root / "people" / pid, ignore_errors=True)
+            self.git.unstage(paths)
+        except (OSError, CompanyGitError):
+            pass  # the caller needs the commit's error, not this one
 
     def _draft(self, request: HireRequest, pid: str) -> tuple[Person, dict[str, str], list[RepoIssue]]:
         person = Person.model_validate({"id": pid, **request.model_dump(include=set(_FORM)), **NEW_AGENT})

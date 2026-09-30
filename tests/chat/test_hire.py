@@ -78,3 +78,23 @@ def test_a_confirm_must_repeat_the_preview(git):
 def test_an_unknown_manager_is_a_lint_error(git):
     preview = Hiring(git).hire(HireRequest(**FORM | {"manager": "kai"}))
     assert any(i.severity == "error" and "kai" in i.message for i in preview.issues)
+
+
+def test_a_failed_commit_leaves_nothing_behind_and_a_retry_succeeds(git, monkeypatch):
+    hiring = Hiring(git)
+    head = git.head()
+    pid = hiring.hire(HireRequest(**FORM)).person.id
+
+    def broken(paths, message):
+        raise OSError("disk full")
+    monkeypatch.setattr(git, "commit", broken)
+    with pytest.raises(OSError):
+        hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert not (git.root / "people" / pid).exists()
+    status = subprocess.run(["git", "-C", str(git.root), "status", "--porcelain"], capture_output=True, text=True)
+    assert (status.stdout, git.head()) == ("", head)
+
+    monkeypatch.undo()
+    assert git.commit_hand_edits() == []  # nothing left over to sweep up as a hand edit
+    done = hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert done.commit == git.head() != head
