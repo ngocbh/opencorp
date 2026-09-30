@@ -21,6 +21,7 @@ KEY = "sk-ant-test-0123456789"
 def onboarded(tmp_path, provider=None, mode="launchd"):
     paths = OfficePaths(tmp_path / "home")
     paths.office.mkdir(parents=True, mode=0o700)
+    paths.home.chmod(0o700)
     write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("ngocbh", "ngocbh", "Ngoc"))
     if provider is not None:
         write_private(paths.office / "provider.json", json.dumps(provider).encode())
@@ -39,6 +40,7 @@ def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, 
 
 def test_a_fresh_machine_is_told_to_onboard(tmp_path):
     got = by_name(run_checks(tmp_path, OfficePaths(tmp_path / "home")))
+    assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / 'home'}; run `ac onboard`")
     assert got["company"] == Check("company", "fail", f"no company repo at {tmp_path / 'home' / 'company'}; run `ac onboard`")
     assert doctor.exit_code(got.values()) == 1
 
@@ -49,9 +51,34 @@ def test_an_onboarded_office_that_isnt_running_is_only_a_warning(tmp_path):
     assert got["company"].status == "ok" and got["provider"] == Check("provider", "ok", "openai, composer's own login")
     label = launchd.label(launch(paths.home, user_home=tmp_path))
     assert got["service"] == Check("service", "ok", f"launchd: {label} is loaded")
+    assert got["home"] == Check("home", "ok", str(paths.home))
     assert got["office"].status == "warn" and "not answering" in got["office"].detail
+    assert "Run `ac start`." in got["office"].detail
+    assert f"`launchctl print gui/501/{label}` shows its status" in got["office"].detail
     assert got["sandbox"] == Check("sandbox", "ok", "sandboxed commands run")
     assert doctor.exit_code(got.values()) == 0
+
+
+def test_a_home_others_can_read_warns(tmp_path):
+    paths = onboarded(tmp_path)
+    paths.home.chmod(0o755)
+    got = by_name(run_checks(tmp_path, paths))
+    assert got["home"].status == "warn" and "0755, not 0700" in got["home"].detail
+
+
+def test_a_stopped_systemd_office_names_the_next_step_and_the_unit(tmp_path):
+    paths = onboarded(tmp_path, mode="systemd")
+    unit = systemd.unit_name(launch(paths.home, user_home=tmp_path))
+    got = by_name(run_checks(tmp_path, paths, Runner([(["loginctl"], 0, "", "Linger=yes\n")]), platform="linux"))
+    assert "Run `ac start`." in got["office"].detail
+    assert f"`systemctl --user status {unit}` shows its status" in got["office"].detail
+
+
+def test_a_disabled_systemd_unit_shows_what_systemctl_said(tmp_path):
+    paths = onboarded(tmp_path, mode="systemd")
+    run = Runner([(["systemctl", "--user", "is-enabled"], 1, "Failed to connect to bus: No medium found")])
+    got = by_name(run_checks(tmp_path, paths, run, platform="linux"))
+    assert got["service"].status == "fail" and "Failed to connect to bus: No medium found" in got["service"].detail
 
 
 def test_lint_errors_fail(tmp_path):
@@ -127,6 +154,7 @@ def test_an_office_that_keeps_failing_to_start_is_a_crash_loop(tmp_path):
     got = by_name(run_checks(tmp_path, paths))
     assert got["office"].status == "fail"
     assert "agent-corp office: the company repo has no .git" in got["office"].detail
+    assert "Run `ac start`." in got["office"].detail
 
 
 def test_an_office_that_crashed_with_a_traceback_fails(tmp_path):

@@ -1,6 +1,7 @@
-"""``ac doctor``: check the office home, company repo, provider, service, running daemon, and sandbox."""
+"""``ac doctor``: check the office home (there and private), company repo, provider, service, daemon, and sandbox."""
 
 import os
+import stat
 import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -47,6 +48,20 @@ def sandbox_problem() -> str | None:
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
 
 
+def _home(paths: OfficePaths) -> Check:
+    try:
+        st = os.stat(paths.home)
+    except FileNotFoundError:
+        return Check("home", "fail", f"no office home at {paths.home}; run `ac onboard`")
+    except OSError as exc:
+        return Check("home", "fail", f"can't read {paths.home}: {exc.strerror}")
+    if not stat.S_ISDIR(st.st_mode):
+        return Check("home", "fail", f"{paths.home} is not a directory")
+    if (mode := stat.S_IMODE(st.st_mode)) != 0o700:
+        return Check("home", "warn", f"{paths.home} is mode {mode:04o}, not 0700; `ac onboard` makes it private")
+    return Check("home", "ok", str(paths.home))
+
+
 def _company(paths: OfficePaths, running: bool) -> Check:
     if not (paths.company / ".git").exists():
         return Check("company", "fail", f"no company repo at {paths.company}; run `ac onboard`")
@@ -91,13 +106,13 @@ def _service(run: Launch, host: Host) -> Check:
     mode = service.recorded_mode(run)
     if mode == "launchd":
         name = launchd.label(run)
-        if host.run(["launchctl", "print", f"gui/{host.uid}/{name}"]).returncode == 0:
+        if (problem := launchd.not_loaded(run, host)) is None:
             return Check("service", "ok", f"launchd: {name} is loaded")
-        return Check("service", "fail", f"launchd: {name} is not loaded; run `ac onboard`")
+        return Check("service", "fail", f"launchd: {name} is not loaded ({problem}); run `ac onboard`")
     if mode == "systemd":
         name = systemd.unit_name(run)
-        if host.run(["systemctl", "--user", "is-enabled", name]).returncode != 0:
-            return Check("service", "fail", f"systemd: {name} is not enabled; run `ac onboard`")
+        if (problem := systemd.not_enabled(run, host)) is not None:
+            return Check("service", "fail", f"systemd: {name} is not enabled ({problem}); run `ac onboard`")
         if _linger(host) is False:
             return Check("service", "warn", f"systemd: {name} is enabled, but stops when you log out;"
                                             " `loginctl enable-linger` keeps it running")
@@ -105,6 +120,18 @@ def _service(run: Launch, host: Host) -> Check:
     if mode is None:
         return Check("service", "warn", "not installed; run `ac onboard`")
     return Check("service", "warn", f"{mode}: no service manager, so the office won't start again after a reboot")
+
+
+def _next_step(run: Launch, host: Host) -> str:
+    """What to do about an office that isn't answering: ``ac start``, and where its service's status is."""
+    mode = service.recorded_mode(run)
+    if mode == "launchd":
+        name = launchd.label(run)
+        return f"Run `ac start`. launchd runs it as {name}: `launchctl print gui/{host.uid}/{name}` shows its status."
+    if mode == "systemd":
+        name = systemd.unit_name(run)
+        return f"Run `ac start`. systemd runs it as {name}: `systemctl --user status {name}` shows its status."
+    return "Run `ac start`."
 
 
 def _crash(log: Path) -> str | None:
@@ -152,7 +179,7 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
     run = launch(home, repo=repo, user_home=host.user_home)
     paths = OfficePaths(run.home)
     running = host.answers(run.socket)
-    found = [_company(paths, running), _provider(paths), _service(run, host)]
+    found = [_home(paths), _company(paths, running), _provider(paths), _service(run, host)]
     if running:
         pid = (paths.pidfile.read_text().strip() if paths.pidfile.exists() else "")
         found.append(Check("office", "ok", f"answering on {run.socket} (pid {pid or '?'})"))
@@ -160,9 +187,10 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
             found.append(version_check(run, int(pid), newest_source(repo)))
     elif error := _crash(run.log):
         found.append(Check("office", "fail", f"not answering on {run.socket}; its last start failed: {error}"
-                                             f" (log: {run.log})"))
+                                             f" (log: {run.log}). {_next_step(run, host)}"))
     else:
-        found.append(Check("office", "warn", f"not answering on {run.socket} (log: {run.log})"))
+        found.append(Check("office", "warn",
+                           f"not answering on {run.socket} (log: {run.log}). {_next_step(run, host)}"))
     problem = probe()
     found.append(Check("sandbox", "fail", problem) if problem else Check("sandbox", "ok", "sandboxed commands run"))
     return found
