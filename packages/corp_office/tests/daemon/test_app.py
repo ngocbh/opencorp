@@ -142,6 +142,7 @@ TABLE = [
     ("POST", f"/questions/{ULID}/side", {"text": "why?"}),
     ("POST", f"/questions/{ULID}/send-back", {"note": "more"}),
     ("POST", f"/questions/{ULID}/stop", None),
+    ("POST", f"/questions/{ULID}/carried/dismiss", None),
     ("GET", "/profiles/minh", None),
     ("PUT", "/profiles/minh", {"text": "x", "base_version": "a" * 40}),
     ("POST", "/profiles/minh/manager", {"text": "tidy"}),

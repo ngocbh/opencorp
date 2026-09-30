@@ -1,19 +1,137 @@
 """Question routes."""
 
+from importlib.resources import files
+
 import pytest
 
+from agent_corp.extensions.questions import register
+from agent_corp.questions.side import SIDE_CHAT_FLOW
+from tests.chat.conftest import CHAT_FLOW
+from tests.company.conftest import base_files, write_repo
 from tests.daemon.test_app import ULID
+from tests.daemon.test_routes_sessions import chat, fake_llm, until  # noqa: F401
 from tests.store.conftest import question, session
 
-
-@pytest.mark.parametrize(("path", "body"), [
+SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
+ASK = {"tool_calls": [{"name": "ask_user", "arguments": {"question": "Retry or back off?",
+                                                         "options": ["Retry", "Back off"]}}]}
+CARD_ACTIONS = [
     (f"/questions/{ULID}/side", {"text": "why?"}),
     (f"/questions/{ULID}/send-back", {"note": "more"}),
     (f"/questions/{ULID}/stop", None),
-])
-async def test_card_actions_are_not_implemented_yet(client, path, body):
+    (f"/questions/{ULID}/carried/dismiss", None),
+]
+
+
+@pytest.fixture
+def company(tmp_path):
+    return write_repo(tmp_path / "company", base_files() | {"shared/flows/chat.yaml": CHAT_FLOW,
+                                                            SIDE_CHAT_FLOW: SIDE_FLOW})
+
+
+@pytest.fixture
+def cards(chat):  # noqa: F811
+    """The chat office with the question-cards extension loaded."""
+    register(chat)
+    return chat
+
+
+async def asked(office, client, tmp_path):
+    """Start minh's chat and have it ask the scripted question; return (session id, question id)."""
+    (tmp_path / "ws").mkdir()
+    sid = (await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws")})).json()["id"]
+    await until(lambda: office.store.get_session(sid).status == "idle")
+    assert (await client.post(f"/sessions/{sid}/prompt", json={"text": "fix the build"})).status_code == 200
+    q = await until(lambda: office.store.list_questions(session_id=sid, status="open", source="ask_user"))
+    return sid, q[0].id
+
+
+def replies(store, sid):
+    return [p.text for m in store.list_messages(sid) if m.role == "assistant" for p in m.parts if p.type == "text"]
+
+
+@pytest.mark.parametrize(("path", "body"), CARD_ACTIONS)
+async def test_card_actions_need_the_cards_extension(client, path, body):
     r = await client.post(path, json=body)
     assert r.status_code == 501 and r.json()["error"] == "not_implemented"
+
+
+@pytest.mark.parametrize(("path", "body"), CARD_ACTIONS)
+async def test_card_actions_on_a_missing_question_are_404(cards, client, path, body):
+    r = await client.post(path, json=body)
+    assert (r.status_code, r.json()["error"]) == (404, "not_found")
+
+
+@pytest.mark.parametrize(("path", "body"), [
+    (f"/questions/{ULID}/side", {"text": ""}),
+    (f"/questions/{ULID}/side", {}),
+    (f"/questions/{ULID}/send-back", {}),
+    (f"/questions/{ULID}/send-back", {"note": "x", "extra": 1}),
+])
+async def test_bad_card_action_bodies_are_422(cards, client, path, body):
+    r = await client.post(path, json=body)
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+
+
+async def test_chat_about_a_question_then_answer_it(cards, client, fake_llm, tmp_path):
+    fake_llm.script(ASK, {"content": "Retries hide flakes."}, {"content": "And cost calls."}, {"content": "OK."})
+    store = cards.store
+    sid, qid = await asked(cards, client, tmp_path)
+
+    r = await client.post(f"/questions/{qid}/side", json={"text": "why ask?"})
+    assert r.status_code == 200, r.json()
+    side = r.json()
+    assert (side["kind"], side["question_id"], side["person"]) == ("side", qid, "minh")
+    assert store.get_question(qid).side_session_id == side["id"]
+    await until(lambda: replies(store, side["id"]) == ["Retries hide flakes."]
+                and store.get_session(side["id"]).status == "idle")
+    # Later messages go to the side session itself; a second /side goes to the same session.
+    assert (await client.post(f"/sessions/{side['id']}/prompt", json={"text": "and?"})).status_code == 200
+    await until(lambda: len(store.get_question(qid).discussion) == 4)
+    r = await client.post(f"/sessions/{side['id']}/prompt", json={"text": "/exit"})
+    assert (r.status_code, r.json()["error"]) == (422, "refused")
+    r = await client.post(f"/questions/{qid}/side", json={"text": "/exit"})
+    assert (r.status_code, r.json()["error"]) == (422, "refused")
+
+    r = await client.post(f"/questions/{qid}/answer", json={"answer": "Maybe", "answer_kind": "option"})
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_answer")
+    r = await client.post(f"/questions/{qid}/answer", json={"answer": "Back off", "answer_kind": "option"})
+    assert r.status_code == 200 and [e["text"] for e in r.json()["discussion"]] == [
+        "why ask?", "Retries hide flakes.", "and?", "And cost calls."]
+    await until(lambda: store.get_session(side["id"]).status == "ended")
+    await until(lambda: replies(store, sid)[-1:] == ["OK."])
+    r = await client.post(f"/questions/{qid}/side", json={"text": "late"})
+    assert (r.status_code, r.json()["error"]) == (409, "not_open")
+    turn = await until(lambda: store.list_questions(session_id=sid, status="open", source="human_input"))
+    r = await client.post(f"/questions/{turn[0].id}/side", json={"text": "why?"})  # a chat turn is no card
+    assert (r.status_code, r.json()["error"]) == (422, "refused")
+
+
+async def test_send_back_and_stop(cards, client, fake_llm, tmp_path):
+    fake_llm.script(ASK, {"content": "Retries hide flakes."}, ASK)  # the sent-back reply asks again
+    store = cards.store
+    sid, qid = await asked(cards, client, tmp_path)
+    r = await client.post(f"/questions/{qid}/send-back", json={"note": ""})
+    assert (r.status_code, r.json()["error"]) == (422, "no_discussion")
+    side = (await client.post(f"/questions/{qid}/side", json={"text": "why ask?"})).json()
+    await until(lambda: store.get_session(side["id"]).status == "idle" and replies(store, side["id"]))
+    r = await client.post(f"/questions/{qid}/send-back", json={"note": "give me numbers"})
+    assert r.status_code == 200 and (r.json()["answer_kind"], r.json()["discussion"][-1]["text"]) == (
+        "sent_back", "give me numbers")
+
+    again = await until(lambda: [q for q in store.list_questions(session_id=sid, status="open", source="ask_user")])
+    r = await client.post(f"/questions/{again[0].id}/stop")
+    assert r.status_code == 200 and r.json()["answer_kind"] == "interrupted"
+    await until(lambda: store.get_session(sid).status == "idle")
+
+
+async def test_dismiss_a_carried_discussion(cards, client):
+    s = cards.store.create_session(session())
+    old = cards.store.add_question(question(s.id))
+    q = cards.store.add_question(question(s.id))
+    cards.store.update_question(q.id, carried_from=old.id)
+    r = await client.post(f"/questions/{q.id}/carried/dismiss")
+    assert r.status_code == 200 and r.json()["carried_from"] is None
 
 
 async def _open_question(office):
