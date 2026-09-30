@@ -316,12 +316,14 @@ def test_a_failing_stop_hook_does_not_stop_the_others(home, tmp_path, monkeypatc
 
 async def test_build_office_runs_the_chat_harness(home):
     from agent_corp.chat.harness import Harness
+    from agent_corp.chat.hire import Hiring
     from agent_corp.daemon.main import build_office
     from agent_corp.profile import GitProfileStore
 
     office = build_office(OfficePaths(home))
     try:
         assert isinstance(office.workers, Harness) and office.extras["harness"] is office.workers
+        assert isinstance(office.extras["hiring"], Hiring) and office.extras["hiring"].git is office.git
         assert isinstance(office.profile_store("minh"), GitProfileStore)
         await office.start()  # restores live sessions (none here)
         await office.stop()

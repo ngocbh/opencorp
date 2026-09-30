@@ -1,0 +1,188 @@
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import pytest
+
+from agent_corp.chat.hire import HireRefused, Hiring
+from agent_corp.company.git import CompanyGit
+from agent_corp.company.lint import lint
+from agent_corp.company.loader import load_repo
+from agent_corp.protocol.models import HireRequest
+from tests.chat.conftest import CHAT_FLOW
+from tests.company.conftest import _git, base_files, person, write_repo
+
+
+@pytest.fixture
+def git(tmp_path):
+    root = write_repo(tmp_path / "company", base_files() | {"shared/flows/chat.yaml": CHAT_FLOW})
+    return CompanyGit(root, tmp_path / "worktrees")
+
+
+FORM = {"name": "Lan", "handle": "lan", "title": "QA", "manager": "ngocbh"}
+
+
+def test_a_preview_writes_nothing_and_a_confirm_commits(git):
+    hiring = Hiring(git)
+    head = git.head()
+    preview = hiring.hire(HireRequest(**FORM))
+    pid = preview.person.id
+    assert (preview.commit, preview.issues, git.head()) == (None, [], head)
+    assert not (git.root / "people" / pid).exists()
+    assert f"+++ b/people/{pid}/person.yaml" in preview.diff and "+handle: lan" in preview.diff
+
+    done = hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert done.commit == git.head() != head and done.person == preview.person
+    repo = load_repo(git.root)
+    assert repo.people[pid].handle == "lan" and repo.people[pid].main == "../../shared/flows/chat.yaml"
+    assert [i for i in lint(repo) if i.severity == "error"] == []
+
+
+def test_a_new_hire_gets_the_m1_defaults(git):
+    hiring = Hiring(git)
+    pid = hiring.hire(HireRequest(**FORM)).person.id
+    hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    person = load_repo(git.root).people[pid]
+    assert (person.kind, person.harnesses, person.groups, person.skills) == ("agent", ["composer"], [], [])
+    assert person.harness_policy.model_dump(exclude_none=True) == {"sandbox": "workspace-write", "network": False}
+    assert (git.root / "people" / pid / "profile.md").read_text() == "# Lan, QA\n"
+    log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%s"], capture_output=True, text=True)
+    assert log.stdout.strip() == "hire(@lan): Lan, QA"
+
+
+def test_a_taken_handle_is_the_new_persons_error(git):
+    hiring = Hiring(git)
+    preview = hiring.hire(HireRequest(**FORM | {"handle": "minh"}))
+    pid = preview.person.id
+    assert preview.commit is None
+    assert (preview.issues[0].path, preview.issues[0].code, preview.issues[0].message) == (
+        f"people/{pid}/person.yaml", "person.duplicate_handle", "@minh is already used by minh")
+    assert all(i.path != "people/minh/person.yaml" for i in preview.issues)
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM | {"handle": "minh"}, id=pid, confirm=True))
+    assert (err.value.code, err.value.message) == ("lint_failed", "@minh is already used by minh")
+    assert not (git.root / "people" / pid).exists()
+
+
+def test_a_confirm_must_repeat_the_preview(git):
+    hiring = Hiring(git)
+    head = git.head()
+    pid = hiring.hire(HireRequest(**FORM)).person.id
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM | {"title": "Lead QA"}, id=pid, confirm=True))
+    assert err.value.code == "lint_failed"
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM, confirm=True))
+    assert err.value.code == "invalid_body"
+    assert git.head() == head
+
+
+def test_an_unknown_manager_is_a_lint_error(git):
+    preview = Hiring(git).hire(HireRequest(**FORM | {"manager": "kai"}))
+    assert any(i.severity == "error" and "kai" in i.message for i in preview.issues)
+
+
+def test_a_failed_commit_leaves_nothing_behind_and_a_retry_succeeds(git, monkeypatch):
+    hiring = Hiring(git)
+    head = git.head()
+    pid = hiring.hire(HireRequest(**FORM)).person.id
+
+    def broken(paths, message):
+        raise OSError("disk full")
+    monkeypatch.setattr(git, "commit", broken)
+    with pytest.raises(OSError):
+        hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert not (git.root / "people" / pid).exists()
+    status = subprocess.run(["git", "-C", str(git.root), "status", "--porcelain"], capture_output=True, text=True)
+    assert (status.stdout, git.head()) == ("", head)
+
+    monkeypatch.undo()
+    assert git.commit_hand_edits() == []  # nothing left over to sweep up as a hand edit
+    done = hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert done.commit == git.head() != head
+
+
+def test_a_newline_in_the_title_cant_forge_a_commit_trailer(git):
+    hiring = Hiring(git)
+    form = FORM | {"title": "QA\n\nCommit-Id: forged"}
+    pid = hiring.hire(HireRequest(**form)).person.id
+    hiring.hire(HireRequest(**form, id=pid, confirm=True))
+    log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%B"], capture_output=True, text=True)
+    assert log.stdout.strip() == "hire(@lan): Lan, QA Commit-Id: forged"
+
+
+def test_an_existing_lint_error_is_a_warning_and_doesnt_block_a_hire(tmp_path):
+    files = base_files() | {"shared/flows/chat.yaml": CHAT_FLOW,
+                            "people/minh/person.yaml": person("minh", manager="kai")}
+    git = CompanyGit(write_repo(tmp_path / "company", files), tmp_path / "worktrees")
+    hiring = Hiring(git)
+    preview = hiring.hire(HireRequest(**FORM))
+    old = [i for i in preview.issues if i.path == "people/minh/person.yaml"]
+    assert old and {i.severity for i in old} == {"warning"}
+    assert all(i.severity == "warning" for i in preview.issues)
+    done = hiring.hire(HireRequest(**FORM, id=preview.person.id, confirm=True))
+    assert done.commit == git.head()
+
+    bad = hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}))  # the same error, new
+    assert any(i.severity == "error" and i.path.startswith(f"people/{bad.person.id}/") for i in bad.issues)
+    with pytest.raises(HireRefused):
+        hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}, id=bad.person.id, confirm=True))
+
+
+def test_old_previews_are_dropped_past_the_cap(git):
+    hiring = Hiring(git, max_previews=2)
+    pids = [hiring.hire(HireRequest(**FORM)).person.id for _ in range(3)]
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM, id=pids[0], confirm=True))
+    assert err.value.code == "lint_failed"
+    assert hiring.hire(HireRequest(**FORM, id=pids[2], confirm=True)).commit == git.head()
+
+
+def test_a_preview_leaves_hand_edits_alone(git):
+    (git.root / "people/minh/profile.md").write_text("# Minh, Engineer\n\nLikes tests.\n")
+    head = git.head()
+    Hiring(git).hire(HireRequest(**FORM))
+    status = subprocess.run(["git", "-C", str(git.root), "status", "--porcelain"], capture_output=True, text=True)
+    assert (git.head(), status.stdout) == (head, " M people/minh/profile.md\n")
+
+
+def test_a_hire_is_never_written_outside_the_repo(tmp_path):
+    root = tmp_path / "company"
+    write_repo(root, base_files() | {"shared/flows/chat.yaml": CHAT_FLOW})
+    outside = tmp_path / "outside"
+    (root / "people").rename(outside)
+    (root / "people").symlink_to(outside)
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "people elsewhere")
+    git = CompanyGit(root, tmp_path / "worktrees")
+    hiring = Hiring(git)
+    preview = hiring.hire(HireRequest(**FORM))
+    pid = preview.person.id
+    assert [(i.code, i.severity) for i in preview.issues] == [("person.outside_repo", "error")]
+    with pytest.raises(HireRefused) as err:
+        hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    assert err.value.code == "lint_failed"
+    assert not (outside / pid).exists()
+
+
+def test_concurrent_confirms_commit_a_hire_once(git):
+    hiring = Hiring(git)
+    head = git.head()
+    pid = hiring.hire(HireRequest(**FORM)).person.id
+    other = hiring.hire(HireRequest(**FORM | {"handle": "kai-fan"})).person.id
+    start = threading.Barrier(3)
+
+    def confirm(form, id):
+        start.wait()
+        try:
+            return hiring.hire(HireRequest(**form, id=id, confirm=True)).commit
+        except HireRefused as exc:
+            return exc.code
+
+    with ThreadPoolExecutor(3) as pool:
+        results = list(pool.map(confirm, [FORM, FORM, FORM | {"handle": "kai-fan"}], [pid, pid, other]))
+    assert results[:2].count("lint_failed") == 1 and results[2] != "lint_failed"  # one of the same two lost
+    commits = subprocess.run(["git", "-C", str(git.root), "log", "--format=%s", f"{head}..HEAD"],
+                             capture_output=True, text=True).stdout.split("\n")[:-1]
+    assert sorted(commits) == ["hire(@kai-fan): Lan, QA", "hire(@lan): Lan, QA"]
+    assert set(load_repo(git.root).people) >= {pid, other}

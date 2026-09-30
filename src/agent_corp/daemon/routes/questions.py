@@ -5,6 +5,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_corp.daemon.http import HTTPError, call, get_office, not_implemented, ok, parse
+from agent_corp.daemon.routes.sessions import harness_call
 from agent_corp.protocol.models import AnswerRequest
 from agent_corp.store import InvalidTransition
 
@@ -34,9 +35,12 @@ async def get_question(request: Request) -> JSONResponse:
 async def answer_question(request: Request) -> JSONResponse:
     """Answer an open question; the first answer wins."""
     body = await parse(request, AnswerRequest)
-    store = get_office(request).store
+    office = get_office(request)
+    if "harness" in office.extras:  # a chat turn, answer checks, and who answered
+        return ok(await harness_call(office.extras["harness"].answer, request.path_params["id"], body.answer,
+                                     body.answer_kind))
     try:
-        question = await call(store.answer_question, request.path_params["id"], body.answer, body.answer_kind)
+        question = await call(office.store.answer_question, request.path_params["id"], body.answer, body.answer_kind)
     except InvalidTransition as exc:
         raise HTTPError(409, "not_open", str(exc)) from exc
     return ok(question)

@@ -15,7 +15,7 @@ from agent_composer.memory.storage.markdown import MarkdownStore
 
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
-from agent_corp.chat.provider import Provider
+from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds
 from agent_corp.company.loader import load_repo
@@ -25,7 +25,7 @@ from agent_corp.protocol import now
 from agent_corp.protocol.models import CompanyDefaults, Event, Question, Session, WorkItem
 from agent_corp.questions.ask import Answers, OnQuestion, make_ask_user
 from agent_corp.questions.format import INTERRUPTED
-from agent_corp.sandbox.policy import SandboxPolicy
+from agent_corp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from agent_corp.store import InvalidTransition, new_id
 from agent_corp.tools.company import company_tools
 from agent_corp.tools.workspace import WorkspaceTools, workspace_tool_functions
@@ -188,7 +188,10 @@ class Harness:
     # --- starting ---------------------------------------------------------------------
 
     def start_session(self, person_id: str, cwd: str, harness: str = "composer") -> Session:
-        """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run."""
+        """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
+
+        A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
+        """
         if harness != "composer":
             raise HarnessError(422, "unsupported_harness", f"the {harness} harness is not supported yet")
         self.git.commit_hand_edits()
@@ -215,7 +218,21 @@ class Harness:
             id=session_id, person=person_id, harness="composer", office=socket.gethostname(), cwd=cwd,
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, created_at=t, updated_at=t))
         self.store.touch_worked_folder(person_id, cwd)
-        self.start_run(session, self.main_spec(session))
+        try:
+            spec = self.main_spec(session)
+            self.start_run(session, spec)
+        except Exception as exc:
+            # start_run fails the session itself; a spec that couldn't be built leaves it starting.
+            if session_id not in self._live and self.store.get_session(session_id).status == "starting":
+                if not isinstance(exc, HarnessError):
+                    log.exception("can't build the run spec for session %s", session_id)
+                self._fail(session_id)
+            if isinstance(exc, HarnessError):
+                raise
+            # The client needs the failed session's id. A provider error never echoes the file;
+            # anything else may hold anything, so it stays in the log.
+            why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
+            raise HarnessError(500, "start_failed", f"session {session_id} failed to start{why}") from exc
         return self.store.get_session(session_id)
 
     def main_spec(self, session: Session) -> RunSpec:
@@ -345,6 +362,7 @@ class Harness:
             live = self._must(session_id)
             if live.ending:
                 raise HarnessError(409, "ending", f"session {session_id} is ending")
+            self._check_prompt(live, text)
             if live.spec.chat is not None and not self._held(live):
                 if live.turn_q is not None:
                     live.transcript.user(text)
@@ -365,6 +383,7 @@ class Harness:
         with self._lock:
             live = self._must(session_id)
             if live.reply_node is not None and live.worker is not None and not live.ending:
+                self._check_prompt(live, text)
                 live.transcript.user(text)
                 if live.worker.steer(live.reply_node, text):
                     return "steer"
@@ -422,6 +441,7 @@ class Harness:
             with self._lock:
                 if live.turn_q != question_id or self._held(live):
                     raise HarnessError(409, "not_open", f"question {question_id} can't take a turn now")
+                self._check_prompt(live, answer)
                 live.transcript.user(answer)
                 self._answer_turn(live, question_id, answer)
             return self.store.get_question(question_id)
@@ -562,8 +582,10 @@ class Harness:
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None | bool = True) -> None:
         """Answer the turn; if the store refuses, the turn stays open for the next try."""
+        # The person's message goes through turn_text; the exit command, typed or the office's, doesn't.
+        answer = self._turn_text(live, question_id, text) if by is True and text != live.spec.chat.exit else text
         try:
-            self.store.answer_question(question_id, text, "text", answered_by=live.owner if by is True else by)
+            self.store.answer_question(question_id, answer, "text", answered_by=live.owner if by is True else by)
             if live.turn_node is not None and text != live.spec.chat.exit:
                 live.next_reply = live.spec.chat.reply_after(live.turn_node)
         except InvalidTransition:
@@ -572,6 +594,18 @@ class Harness:
         if live.timer is not None:
             live.timer.cancel()
             live.timer = None
+
+    def _check_prompt(self, live: _Live, text: str) -> None:
+        """Raise ``422 refused`` if a ``prompt_check`` hook refuses the person's ``text``."""
+        session = self.store.get_session(live.session_id)
+        for refusal in self.hooks.fire("prompt_check", session, text):
+            if refusal:
+                raise HarnessError(422, "refused", str(refusal))
+
+    def _turn_text(self, live: _Live, question_id: str, text: str) -> str:
+        """What the turn question gets for the person's ``text``: the first ``str`` from ``turn_text``, else ``text``."""
+        session, question = self.store.get_session(live.session_id), self.store.get_question(question_id)
+        return next((t for t in self.hooks.fire("turn_text", session, question, text) if isinstance(t, str)), text)
 
     def _turns(self, live: _Live) -> int:
         chat = live.spec.chat
@@ -689,13 +723,13 @@ class Harness:
         with self._lock:
             if self._live.get(live.session_id) is live:
                 del self._live[live.session_id]
-        ended = status == "ended"
-        if ended:
+        if status == "ended":
             session = self.store.get_session(live.session_id)
             status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
+            # Close the item first, so no client sees an ended session with its work still open.
+            if session.work_item_id:
+                self.store.update_work_item(session.work_item_id, status="done")
         session = self.store.update_session(live.session_id, status=status)
-        if ended and session.work_item_id:
-            self.store.update_work_item(session.work_item_id, status="done")
         self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
         self.hooks.fire("session_ended", session)
 
@@ -783,8 +817,20 @@ class Harness:
         return self.office.paths.run_dir(session_id)
 
     def _policy(self, person_id: str, policy: Any, cwd: str, session_id: str) -> SandboxPolicy:
+        """The sandbox for ``cwd``; a missing or unsafe folder is refused before the run's tmp is made."""
         if not Path(cwd).is_dir():
             raise HarnessError(422, "invalid_body", f"cwd {cwd!r} is not a folder")
+        real = Path(os.path.realpath(cwd))
+        try:
+            check_workspace(real)
+        except UnsafeWorkspace as exc:
+            raise HarnessError(422, "unsafe_workspace", str(exc)) from exc
+        # The sandbox guards ~/.agent-corp; this office's home may be elsewhere.
+        for kept in (self.office.paths.company, self.office.paths.office):
+            kept = Path(os.path.realpath(kept))
+            if real.is_relative_to(kept) or kept.is_relative_to(real):
+                raise HarnessError(422, "unsafe_workspace",
+                                   f"workspace {real} overlaps the office's files at {kept}; use a project folder")
         tmp = self._run_dir(session_id) / "tmp"
         tmp.mkdir(parents=True, exist_ok=True)
         try:

@@ -24,9 +24,14 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
     wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
     assert texts(harness, sid, "user") == ["hi"]
 
+    seen = []  # the work item's status when each session status is stored
+    update = harness.store.update_session
+    harness.store.update_session = lambda sid_, **kw: (
+        seen.append((kw.get("status"), harness.store.get_work_item(session.work_item_id).status)),
+        update(sid_, **kw))[1]
     harness.end(sid)
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
-    assert harness.store.get_work_item(session.work_item_id).status == "done"
+    assert ("ended", "done") in seen and ("ended", "in_progress") not in seen
     with pytest.raises(HarnessError) as err:
         harness.prompt(sid, "late")
     assert err.value.code == "not_live"
@@ -257,6 +262,19 @@ def test_start_refuses_bad_requests(harness, workspace, person, cwd, code):
         harness.start_session(person, cwd or str(workspace))
     assert err.value.code == code
     assert harness.store.list_sessions() == []
+    assert not harness.office.paths.runs.exists()  # refused before the run's tmp is made
+
+
+@pytest.mark.parametrize("where", ["", "company", "office", "office/runs"])  # "" is the home
+def test_start_refuses_the_offices_own_folders(harness, where):
+    paths = harness.office.paths
+    cwd = paths.home / where
+    cwd.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(HarnessError) as err:
+        harness.start_session("minh", str(cwd))
+    assert (err.value.status, err.value.code) == (422, "unsafe_workspace")
+    assert harness.store.list_sessions() == []
+    assert not paths.runs.exists() or not any(paths.runs.iterdir())
 
 
 def test_esc_racing_the_end_of_a_reply_leaves_the_next_turn_open(harness, fake_llm, workspace):
@@ -298,9 +316,13 @@ def test_a_provider_error_at_start_fails_the_session(harness, workspace):
     harness.provider = bad
     ended = []
     harness.hooks.session_ended.append(lambda session: ended.append(session.status))
-    with pytest.raises(ProviderError):
+    with pytest.raises(HarnessError) as err:
         harness.start_session("minh", str(workspace))
     (session,) = harness.store.list_sessions()
+    assert (err.value.status, err.value.code) == (500, "start_failed")
+    assert err.value.message == (f"session {session.id} failed to start: provider.json must be a regular file "
+                                 "private to its owner (mode 0600)")
+    assert isinstance(err.value.__cause__, ProviderError)
     assert session.status == "failed" and session.id not in harness._live
     assert ended == ["failed"]
     with pytest.raises(HarnessError) as err:
@@ -315,8 +337,9 @@ def test_a_run_that_cant_be_set_up_fails_the_session_and_says_so(harness, worksp
     ended = []
     harness.hooks.session_ended.append(lambda session: ended.append(session.status))
     monkeypatch.setattr(harness.store, "add_session_run", no_run)
-    with pytest.raises(OSError):
+    with pytest.raises(HarnessError) as err:
         harness.start_session("minh", str(workspace))
+    assert err.value.code == "start_failed" and isinstance(err.value.__cause__, OSError)
     assert [s.status for s in harness.store.list_sessions()] == ended == ["failed"]
 
 
@@ -614,3 +637,65 @@ def test_an_end_status_hook_picks_the_status_of_a_normal_end(harness, fake_llm, 
     session = harness.store.get_session(sid)
     assert ended == ["debriefing"] and session.status == "debriefing"
     assert harness.store.get_work_item(session.work_item_id).status == "done"
+
+
+def test_a_prompt_check_refuses_a_message_before_it_reaches_the_session(harness, fake_llm, workspace):
+    harness.hooks.prompt_check.append(lambda s, text: "use /back" if text == "/exit" else None)
+    fake_llm.script({"content": "ok"})
+    sid = start(harness, workspace)
+    turn = harness.store.list_questions(session_id=sid, status="open")[0]
+    for call in (lambda: harness.prompt(sid, "/exit"), lambda: harness.steer(sid, "/exit"),
+                 lambda: harness.answer(turn.id, "/exit", "text")):
+        with pytest.raises(HarnessError) as err:
+            call()
+        assert (err.value.status, err.value.code, err.value.message) == (422, "refused", "use /back")
+    assert harness.store.get_question(turn.id).status == "open" and texts(harness, sid, "user") == []
+    assert harness.prompt(sid, "hi") == "turn"
+    wait_for(lambda: texts(harness, sid) == ["ok"], what="the reply")
+
+
+def test_turn_text_changes_what_the_turn_gets_but_not_the_transcript(harness, fake_llm, workspace):
+    seen = []
+
+    def turn_text(session, question, text):
+        seen.append((session.id, question.node_id, text))
+        return f"[context]\n\n{text}" if len(seen) == 1 else None
+
+    harness.hooks.turn_text.append(turn_text)
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="the first reply")
+    harness.prompt(sid, "again")
+    wait_for(lambda: texts(harness, sid) == ["one", "two"], what="the second reply")
+    assert "[context]\\n\\nhi" in asked(fake_llm, 1) and "[context]" not in json.dumps(
+        fake_llm.wait_for_requests(2)[1]["messages"][-1])
+    assert texts(harness, sid, "user") == ["hi", "again"]
+    assert [(s, text) for s, _, text in seen] == [(sid, "hi"), (sid, "again")]
+    harness.end(sid)  # the exit command is the office's, not the person's: no turn_text
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert len(seen) == 2
+
+
+def test_turn_text_takes_only_a_str_and_skips_the_exit_command(harness, fake_llm, workspace):
+    seen = []
+    harness.hooks.turn_text += [lambda s, q, text: seen.append(text) or 42, lambda s, q, text: f"<{text}>"]
+    fake_llm.script({"content": "one"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="the reply")
+    assert "<hi>" in asked(fake_llm, 1)  # 42 isn't text, so the next result wins
+    assert harness.prompt(sid, MAIN_CHAT.exit) == "turn"  # the person typed the exit command
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert seen == ["hi"]
+
+
+def test_a_start_that_fails_otherwise_names_the_session_but_not_the_error(harness, workspace, monkeypatch):
+    def broken(*args):
+        raise RuntimeError("sentinel detail")
+    monkeypatch.setattr(harness.registry, "spawn", broken)
+    with pytest.raises(HarnessError) as err:
+        harness.start_session("minh", str(workspace))
+    (session,) = harness.store.list_sessions()
+    assert (err.value.status, err.value.code, session.status) == (500, "start_failed", "failed")
+    assert session.id in err.value.message and "sentinel" not in err.value.message

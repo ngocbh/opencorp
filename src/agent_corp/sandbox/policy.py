@@ -35,6 +35,25 @@ def _real(path: str | os.PathLike[str]) -> Path:
     return Path(os.path.realpath(path))
 
 
+def check_workspace(workspace: str | os.PathLike[str]) -> None:
+    """Raise `UnsafeWorkspace` if `workspace` is `/`, contains the home directory, or is or
+    lies inside a sensitive home path (`SENSITIVE_HOME_PATHS`)."""
+    workspace = _real(workspace)
+    home = _real(Path.home())
+    if workspace == Path("/") or home.is_relative_to(workspace):
+        raise UnsafeWorkspace(
+            f"workspace {workspace} contains the home directory {home}; "
+            "use a project folder"
+        )
+    for rel in SENSITIVE_HOME_PATHS:
+        sensitive = _real(home / rel)
+        if workspace.is_relative_to(sensitive):
+            raise UnsafeWorkspace(
+                f"workspace {workspace} is inside the sensitive path {sensitive}; "
+                "use a project folder"
+            )
+
+
 @dataclass(frozen=True)
 class SandboxPolicy:
     """The access one sandboxed call gets.
@@ -67,19 +86,7 @@ class SandboxPolicy:
             object.__setattr__(self, name, path)
         read_only: Iterable[str | os.PathLike[str]] = self.read_only
         object.__setattr__(self, "read_only", tuple(_real(p) for p in read_only))
-        home = _real(Path.home())
-        if self.workspace == Path("/") or home.is_relative_to(self.workspace):
-            raise UnsafeWorkspace(
-                f"workspace {self.workspace} contains the home directory {home}; "
-                "use a project folder"
-            )
-        for rel in SENSITIVE_HOME_PATHS:
-            sensitive = _real(home / rel)
-            if self.workspace.is_relative_to(sensitive):
-                raise UnsafeWorkspace(
-                    f"workspace {self.workspace} is inside the sensitive path {sensitive}; "
-                    "use a project folder"
-                )
+        check_workspace(self.workspace)
 
     @property
     def protected(self) -> tuple[Path, ...]:
