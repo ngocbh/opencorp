@@ -13,14 +13,14 @@ afterEach(() => {
   office?.stop()
   office = undefined
 })
-function start(socket: string) {
+function start(socket: string, stream = fast) {
   const state = emptyState()
   const sync = createOfficeSync({
     client: createOfficeClient({ socket }),
     cwd: "/tmp/proj",
     state: () => state,
     mutate: (f) => f(state),
-    stream: fast,
+    stream,
   })
   sync.start()
   stop = sync.stop
@@ -191,4 +191,34 @@ test("refreshQuestion re-reads a question the stream never updated", async () =>
   delete office.state.questions[q.id]
   await sync.refreshQuestion(q.id)
   expect(state.questions[q.id]).toBeUndefined()
+})
+
+test("a bootstrap that keeps failing retries at a bounded rate and shows the error", async () => {
+  office = createFakeOffice({ notImplemented: ["GET /people"] })
+  const { sync } = start(office.socket, { minDelayMs: 20, maxDelayMs: 80 })
+  await until(() => sync.status() === "error")
+  expect(sync.error()).toContain("not implemented")
+  await Bun.sleep(600)
+  // Retrying every 20 ms would be about 30; backing off to 80 ms keeps it near 9.
+  expect(count(office, "GET /people")).toBeLessThan(15)
+  expect(sync.status()).toBe("error") // reconnecting doesn't hide it
+  office.notImplemented.clear()
+  await until(() => sync.status() === "online", 3000)
+  expect(sync.error()).toBeUndefined()
+})
+
+test("folder people failing leaves the list empty and still comes online", async () => {
+  office = createFakeOffice({ notImplemented: ["GET /folders/:cwd/people"] })
+  const logged: unknown[] = []
+  const error = console.error
+  console.error = (...args: unknown[]) => void logged.push(args)
+  try {
+    const { state, sync } = start(office.socket)
+    await until(() => sync.status() === "online")
+    expect(state.people).toHaveLength(2)
+    expect(state.folderPeople).toEqual([])
+    expect(logged).toHaveLength(1)
+  } finally {
+    console.error = error
+  }
 })

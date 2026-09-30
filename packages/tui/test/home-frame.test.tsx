@@ -49,3 +49,17 @@ test("without an office the home screen says so, then recovers when it starts", 
     office?.stop()
   }
 })
+
+test("an office whose state can't be read shows why, then recovers", async () => {
+  const office = createFakeOffice({ notImplemented: ["GET /people"] })
+  const app = await bootFrame(createStub(office))
+  try {
+    const f = await app.until((f) => f.includes("can't be read"))
+    expect(f).toContain("not implemented")
+    office.notImplemented.clear()
+    await app.until((f) => !f.includes("can't be read") && f.includes("@minh"), 8000)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

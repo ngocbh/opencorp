@@ -81,6 +81,11 @@ export function Home() {
             Office is not running. Waiting for {abbreviateHome(office.client.socket, paths.home)}
           </text>
         </Show>
+        <Show when={office.status() === "error"}>
+          <text fg={theme.error} paddingTop={1}>
+            The office's state can't be read: {office.error()}. Retrying…
+          </text>
+        </Show>
       </box>
       <box flexGrow={1} minHeight={0} />
       <Toast />

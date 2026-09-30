@@ -15,6 +15,7 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
     const client = createOfficeClient({ socket: props.socket })
     const [state, setState] = createStore<OfficeState>(emptyState())
     const [status, setStatus] = createSignal<OfficeStatus>("connecting")
+    const [error, setError] = createSignal<string>()
     let queue: ((s: OfficeState) => void)[] = []
     let after: (() => void)[] = []
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -38,9 +39,14 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
         timer ??= setTimeout(flush, FLUSH_MS)
       },
       // "online" follows the snapshot it was set after, so readers never see it with stale state.
-      onStatus(next) {
-        if (!timer) return setStatus(next)
-        after.push(() => setStatus(next))
+      onStatus(next, message) {
+        const apply = () =>
+          batch(() => {
+            setStatus(next)
+            setError(message)
+          })
+        if (!timer) return apply()
+        after.push(apply)
       },
     })
 
@@ -55,6 +61,8 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       cwd: props.cwd,
       state: state as Readonly<OfficeState>,
       status,
+      /** Why the office's state couldn't be read, while `status()` is `"error"`. */
+      error,
       /** Loads a session's messages and open questions and keeps them live; resolves once they are in `state`. */
       async syncSession(id: string) {
         await sync.syncSession(id)

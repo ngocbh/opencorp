@@ -8,7 +8,8 @@ import { OfficeError, OfficeUnavailable } from "./errors"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertSession, type OfficeState } from "./store"
 
-export type OfficeStatus = "connecting" | "online" | "offline"
+/** `error`: the office is reachable but its state couldn't be read (see `error()`); retrying. */
+export type OfficeStatus = "connecting" | "online" | "offline" | "error"
 
 /** The payload each `on()` event type delivers. */
 export type OfficeEvents = { [K in Event["type"]]: Event } & { [K in LiveEvent["type"]]: LiveEvent }
@@ -24,11 +25,13 @@ export function createOfficeSync(opts: {
   state: () => OfficeState
   /** Applies a change to the state; may run it later, but in call order. */
   mutate: (fn: (s: OfficeState) => void) => void
-  onStatus?: (s: OfficeStatus) => void
+  /** Called on each status change, with the failure's message when the status is `error`. */
+  onStatus?: (s: OfficeStatus, error?: string) => void
   stream?: SubscribeOptions
 }) {
   const { client, cwd, mutate } = opts
   let status: OfficeStatus = "connecting"
+  let error: string | undefined
   let sub: Subscription | undefined
   // Bumped when a stream ends, so a bootstrap still in flight for it is dropped.
   let generation = 0
@@ -39,10 +42,11 @@ export function createOfficeSync(opts: {
   const pending = new Map<string, StreamEvent[]>()
   const listeners = new Map<string, Set<(e: any) => void>>()
 
-  function setStatus(next: OfficeStatus) {
-    if (next === status) return
+  function setStatus(next: OfficeStatus, message?: string) {
+    if (next === status && message === error) return
     status = next
-    opts.onStatus?.(next)
+    error = message
+    opts.onStatus?.(next, message)
   }
 
   function fire(events: StreamEvent[]) {
@@ -63,7 +67,8 @@ export function createOfficeSync(opts: {
   function onStream(e: StreamEvent) {
     switch (e.type) {
       case "connected":
-        setStatus("connecting")
+        // A failed bootstrap stays visible while it retries.
+        if (status !== "error") setStatus("connecting")
         void bootstrap()
         return
       case "disconnected":
@@ -71,7 +76,8 @@ export function createOfficeSync(opts: {
         generation++
         buffer = undefined
         // A reset or dropped stream reconnects at once, so it shouldn't flash "offline".
-        setStatus(e.type === "unreachable" ? "offline" : "connecting")
+        if (e.type === "unreachable") setStatus("offline")
+        else if (status !== "error") setStatus("connecting")
         return
     }
     if (buffer) buffer.push(e)
@@ -85,6 +91,16 @@ export function createOfficeSync(opts: {
     } catch (e) {
       if (e instanceof OfficeError && [404, 405, 501].includes(e.status) && e.code !== "not_found") return []
       throw e
+    }
+  }
+
+  /** Who worked in `cwd`; a failure only costs the list, not the bootstrap. */
+  async function readFolderPeople() {
+    try {
+      return await client.people.inFolder(cwd)
+    } catch (e) {
+      console.error("Failed to read the folder's people", { error: e })
+      return []
     }
   }
 
@@ -127,7 +143,7 @@ export function createOfficeSync(opts: {
         .map((q) => q.id)
       const [people, folderPeople, sessions, loaded, rechecked] = await Promise.all([
         client.people.list(),
-        client.people.inFolder(cwd),
+        readFolderPeople(),
         client.sessions.list({ limit: SESSION_LIMIT }),
         Promise.all([...synced].filter((id) => !pending.has(id)).map(reload)),
         Promise.all(held.map(async (id) => [id, await recheck(id)] as const)),
@@ -159,9 +175,10 @@ export function createOfficeSync(opts: {
       })
       setStatus("online")
       fire(now)
-    } catch {
+    } catch (e) {
       if (mine !== generation) return
       buffer = undefined
+      setStatus("error", e instanceof Error ? e.message : String(e))
       // The stream's backoff paces the retries.
       sub?.reconnect()
     }
@@ -178,6 +195,8 @@ export function createOfficeSync(opts: {
       sub = undefined
     },
     status: () => status,
+    /** Why the last bootstrap failed, while the status is `error`. */
+    error: () => error,
     /** Loads a session's messages and open questions, and keeps them live from then on. */
     async syncSession(id: string) {
       synced.add(id)
@@ -211,7 +230,7 @@ export function createOfficeSync(opts: {
     },
     /** Re-reads both people lists (there are no person events, e.g. after a hire). */
     async refreshPeople() {
-      const [people, folderPeople] = await Promise.all([client.people.list(), client.people.inFolder(cwd)])
+      const [people, folderPeople] = await Promise.all([client.people.list(), readFolderPeople()])
       mutate((s) => {
         s.people = people
         s.folderPeople = folderPeople
