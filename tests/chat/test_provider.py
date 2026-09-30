@@ -63,6 +63,14 @@ def test_settings_that_arent_credentials_are_kept(tmp_path, value):
     assert load_provider(path).env == {"HTTPS_PROXY": value}
 
 
+@pytest.mark.parametrize("env", [{f"{SENTINEL}_KEY": "v"}, {SENTINEL: 5}, {SENTINEL: "https://u:p@h"}])
+def test_an_env_name_that_isnt_a_variable_name_is_never_echoed(tmp_path, env):
+    path = write(tmp_path / "provider.json", {"env": env})
+    with pytest.raises(ProviderError) as info:
+        load_provider(path)
+    assert SENTINEL not in str(info.value)
+
+
 def test_a_file_others_can_read_is_refused(tmp_path):
     path = write(tmp_path / "provider.json", {}, mode=0o644)
     with pytest.raises(ProviderError, match="mode 0600"):

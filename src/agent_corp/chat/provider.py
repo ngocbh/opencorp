@@ -11,6 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 _CREDENTIAL_NAMES = ("*_KEY", "*_APIKEY", "*_TOKEN", "*_SECRET", "*PASSWORD*", "*_PASS", "*_CREDENTIALS")
+_VARIABLE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
 _USERINFO = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/?#@]*@")  # scheme://user[:pass]@host
 
 
@@ -49,10 +50,10 @@ class Provider(BaseModel):
     def _no_credentials(cls, env: dict[str, str]) -> dict[str, str]:
         for name in env:
             if any(fnmatch.fnmatchcase(name.upper(), pattern) for pattern in _CREDENTIAL_NAMES):
-                raise ValueError(f"{name} looks like a credential; put the model key in llm_config.api_key")
+                raise ValueError(f"{_shown(name)} looks like a credential; put the model key in llm_config.api_key")
         for name, value in env.items():
             if _USERINFO.match(value):
-                raise ValueError(f"{name} is a URL with credentials in it; keep credentials out of env "
+                raise ValueError(f"{_shown(name)} is a URL with credentials in it; keep credentials out of env "
                                  f"(the model key goes in llm_config.api_key)")
         return env
 
@@ -78,6 +79,22 @@ def load_provider(path: Path) -> Provider:
         try:
             return Provider.model_validate(json.loads(f.read()))
         except (ValueError, ValidationError) as exc:
-            # Never echo the file: it holds keys. ValidationError hides input values.
-            detail = str(exc) if isinstance(exc, ValidationError) else "not valid JSON"
+            # Never echo the file: it holds keys. Errors leave out input values, and env names
+            # that aren't variable names, since a key pasted there would be one.
+            detail = _errors(exc) if isinstance(exc, ValidationError) else "not valid JSON"
             raise ProviderError(f"{path}: {detail}") from None
+
+
+def _shown(name: str) -> str:
+    """An env name as errors show it: an upper-case variable name, or a placeholder."""
+    return name if _VARIABLE.match(name) else "an env name"
+
+
+def _errors(exc: ValidationError) -> str:
+    lines = []
+    for error in exc.errors(include_url=False, include_input=False, include_context=False):
+        loc = [str(p) for p in error["loc"]]
+        if len(loc) > 1 and loc[0] == "env":
+            loc[1] = _shown(loc[1])
+        lines.append(f"{'.'.join(loc) or 'provider'}: {error['msg']}")
+    return "; ".join(lines)
