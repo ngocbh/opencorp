@@ -447,12 +447,35 @@ class Store:
             while pending:
                 event = pending.popleft()
                 for listener in list(self._listeners):
-                    try:
-                        listener(event)
-                    except Exception:
-                        log.exception("store listener failed on %s %s", event.type, event.id)
+                    self._call(listener, event)
         finally:
             self._local.pending = None
+
+    @staticmethod
+    def _call(listener: Listener, event: Event) -> None:
+        try:
+            listener(event)
+        except Exception:
+            log.exception("store listener failed on %s %s", event.type, event.id)
+
+    def subscribe(self, after_event_id: str | None, listener: Listener) -> Callable[[], None]:
+        """Replay the events after ``after_event_id`` (all when ``None``) to ``listener``, then add it.
+
+        Replay and registration happen while holding the in-process write lock, so the
+        listener gets each event committed so far, and each one this process commits
+        later, exactly once and in commit order. Resume from an event id, not by comparing
+        ids: an id is a ULID made when the event is emitted, and two writers can commit in
+        the other order, so ULID order is not commit order. Events other processes commit
+        show up in a replay but are never delivered live. Raises ``NotFound`` for an
+        unknown id. Returns a function that removes the listener.
+        """
+        if getattr(self._local, "tx", None) is not None or getattr(self._local, "pending", None) is not None:
+            # Replay would include events that are then delivered again once committed.
+            raise StoreError("subscribe outside a transaction and outside a listener")
+        with self._write_lock:
+            for event in self.events_after(after_event_id):
+                self._call(listener, event)
+            return self.add_listener(listener)
 
     def emit(self, type: str, subject_id: str, data: BaseModel | dict[str, Any]) -> Event:
         """Write an event with no other change (for metadata kept outside the store)."""
@@ -466,7 +489,11 @@ class Store:
         )
 
     def events_after(self, event_id: str | None = None, *, limit: int | None = None) -> list[Event]:
-        """Events in commit order, after ``event_id`` (all of them when ``None``)."""
+        """Events in commit order, after ``event_id`` (all of them when ``None``).
+
+        Event ids are ULIDs made at emit time, so their order is not commit order: resume
+        from the last id seen rather than comparing ids.
+        """
         with self._read() as conn:
             after = 0
             if event_id is not None:

@@ -237,3 +237,44 @@ def test_remover_can_be_called_twice(store):
     remove()
     store.create_work_item(work_item())
     assert len(got) == 1
+
+
+def test_subscribe_replays_then_follows_without_gaps_or_repeats(store):
+    first = store.create_work_item(work_item())
+    got = []
+    ready = threading.Event()
+
+    def writer():
+        for n in range(100):
+            store.create_work_item(work_item())
+            if n == 20:
+                ready.set()
+
+    t = threading.Thread(target=writer)
+    t.start()
+    ready.wait(10)
+    [after] = [e.id for e in store.events_after() if e.subject_id == first.id]
+    remove = store.subscribe(after, lambda event: got.append(event.id))
+    t.join()
+    remove()
+    store.create_work_item(work_item())
+    assert got == [e.id for e in store.events_after(after)][:-1]
+    assert len(got) == 100
+
+
+def test_subscribe_from_the_start(store):
+    item = store.create_work_item(work_item())
+    got = []
+    store.subscribe(None, got.append)
+    store.update_work_item(item.id, status="done")
+    assert [e.type for e in got] == ["work_item.created", "work_item.updated"]
+
+
+def test_subscribe_refusals(store):
+    got = []
+    with pytest.raises(NotFound):
+        store.subscribe("01K6A0000000000000000000ZZ", got.append)
+    with pytest.raises(StoreError), store.transaction():
+        store.subscribe(None, got.append)
+    store.create_work_item(work_item())
+    assert got == []
