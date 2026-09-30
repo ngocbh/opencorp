@@ -236,8 +236,9 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     """Set up the office at ``home``; running it again only fills in what is missing.
 
     In order: the home and office dirs (0700), the company repo from the template (lint
-    errors stop here), ``office/provider.json``, the daemon under ``mode``, and, once the
-    office answers, a first agent if ``hire`` and the company has none.
+    errors stop here; left alone while the office runs), ``office/provider.json``, the
+    daemon under ``mode``, and, once the office answers, a first agent if ``hire`` and the
+    company has none.
 
     Raises:
         OnboardError: a step failed; earlier steps stay done.
