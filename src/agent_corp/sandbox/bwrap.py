@@ -7,7 +7,7 @@ import os
 from agent_corp.sandbox.policy import SandboxPolicy
 
 # Top-level system directories; on merged-/usr systems some are links into /usr.
-SYSTEM_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/opt/homebrew")
+SYSTEM_DIRS = ("/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32")
 SYSTEM_FILES = (
     "/etc/alternatives",
     "/etc/ssl",
