@@ -64,8 +64,8 @@ export function SideChat(props: {
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
   let textarea: TextareaRenderable | undefined
-  // The side route opens or restarts the side session; a second Enter meanwhile waits for it.
-  let opening = false
+  // A second Enter while a message is out sends nothing; the text stays until the office takes it.
+  let sending = false
 
   onMount(() => {
     const popMode = modeStack.push(SIDE_MODE)
@@ -93,27 +93,32 @@ export function SideChat(props: {
   function submit() {
     const text = textarea?.plainText.trim() ?? ""
     if (!text) return
-    if (text === "/back") return props.onBack()
+    if (text.toLowerCase() === "/back") return props.onBack()
     if (SIDE_EXIT.has(text.toLowerCase())) {
       textarea?.setText("")
       return toast.show({ message: "use /back to return to the question", variant: "warning" })
     }
-    const live = !!props.session && LIVE.includes(props.session.status)
-    if (!live && opening) return
-    textarea?.setText("")
+    if (sending) return
+    sending = true
+    const s = props.session
     props.onSent()
-    if (live) return void office.client.sessions.prompt(props.session!.id, { text }).catch(fail)
-    opening = true
-    office.client.questions
-      .side(props.question.id, { text })
-      .then((s) => office.syncSession(s.id))
+    // The side route opens or restarts a side session that isn't live.
+    const sent =
+      s && LIVE.includes(s.status)
+        ? office.client.sessions.prompt(s.id, { text })
+        : office.client.questions.side(props.question.id, { text }).then((s) => office.syncSession(s.id))
+    sent
+      .then(() => {
+        // The view may have closed meanwhile; an edit made since stays.
+        if (textarea && !textarea.isDestroyed && textarea.plainText.trim() === text) textarea.setText("")
+      })
       .catch(fail)
-      .finally(() => (opening = false))
+      .finally(() => (sending = false))
   }
 
   function interrupt() {
     const s = props.session
-    if (s?.status !== "busy") return
+    if (s?.status !== "busy" && s?.status !== "starting") return
     props.onInterrupt()
     office.client.sessions.interrupt(s.id).catch(fail)
   }

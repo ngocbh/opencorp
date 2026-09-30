@@ -246,3 +246,43 @@ test("a side session another client started loads when the side chat opens, and 
     office.stop()
   }
 })
+
+test("a side message the office refuses stays in the input", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /questions/:id/side"] })
+  const s = office.state.sessions[0]
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh"))
+    app.input.typeText("is staging green?")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Side chats are not available yet") && f.includes("is staging green?"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Esc interrupts a starting side session; /Back returns in any case", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "starting" as const }
+  office.state.sessions.push(side)
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · starting"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/interrupt`))
+    app.input.typeText("/Back")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Deploy now?") && !f.includes("Side chat with"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
