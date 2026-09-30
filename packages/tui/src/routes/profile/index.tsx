@@ -11,6 +11,7 @@ import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
 import { OfficeError, OfficeUnavailable, VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
+import { diffColor } from "../picker/dialog-hire"
 import {
   conflictText,
   diffLines,
@@ -251,8 +252,6 @@ export function Profile() {
     const lines = diffLines(p.diff)
     return lines.length > 8 ? lines.slice(0, 7) : lines
   }
-  const diffColor = (line: string) =>
-    line.startsWith("+") ? theme.diffAdded : line.startsWith("-") ? theme.diffRemoved : theme.textMuted
 
   return (
     <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
@@ -304,7 +303,7 @@ export function Profile() {
                 <span style={{ fg: theme.textMuted }}> · a apply</span>
               </Show>
             </text>
-            <For each={shown(p())}>{(line) => <text fg={diffColor(line)}>{line}</text>}</For>
+            <For each={shown(p())}>{(line) => <text fg={diffColor(theme, line)}>{line}</text>}</For>
             <Show when={diffLines(p().diff).length - shown(p()).length}>
               {(more) => <text fg={theme.textMuted}>… {more()} more lines</text>}
             </Show>

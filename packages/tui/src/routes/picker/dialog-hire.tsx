@@ -10,6 +10,10 @@ import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { blocks, confirmRequest, hireRequest, type HireForm } from "./people"
 
+/** The color of a unified diff line: added, removed, or neither. */
+export const diffColor = (theme: ReturnType<typeof useTheme>["theme"], line: string) =>
+  line.startsWith("+") ? theme.diffAdded : line.startsWith("-") ? theme.diffRemoved : theme.textMuted
+
 const FIELDS = [
   { key: "name", label: "Name", placeholder: "Full name" },
   { key: "handle", label: "Handle", placeholder: "lowercase, e.g. lan" },
@@ -104,9 +108,6 @@ export function DialogHire() {
     ],
   }))
 
-  const color = (line: string) =>
-    line.startsWith("+") ? theme.diffAdded : line.startsWith("-") ? theme.diffRemoved : theme.textMuted
-
   return (
     <box paddingLeft={2} paddingRight={2} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
@@ -149,7 +150,7 @@ export function DialogHire() {
           <box>
             <scrollbox maxHeight={8}>
               <For each={shown().response.diff.split("\n").filter(Boolean)}>
-                {(line) => <text fg={color(line)}>{line}</text>}
+                {(line) => <text fg={diffColor(theme, line)}>{line}</text>}
               </For>
             </scrollbox>
             <For each={shown().response.issues}>
