@@ -118,3 +118,24 @@ test("an edit while the preview is in flight drops that preview; the next Enter 
     office.stop()
   }
 })
+
+test("a failed confirm drops the preview, so the next Enter previews again", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Lan", "lan", "QA")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("enter hire"))
+    // Someone else takes @lan between the preview and the confirm.
+    office.state.people.push({ id: "lan2", handle: "lan", name: "L", kind: "agent", title: "x", manager: "ngocbh" })
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("@lan is already used by lan2") && f.includes("enter preview"))
+    expect(f).not.toContain("+handle: lan")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("+handle: lan") && f.includes("edit to fix"))
+    expect(office.requests.filter((r) => r.method === "POST").map((r) => (r.body as any).confirm)).toEqual([false, true, false])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

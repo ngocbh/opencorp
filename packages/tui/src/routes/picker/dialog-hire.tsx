@@ -66,6 +66,8 @@ export function DialogHire() {
       dialog.clear()
     } catch (e) {
       if (!shown && edits !== at) return
+      // A refused confirm means the office's view changed since the preview; preview again.
+      if (shown) setPreview(undefined)
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
