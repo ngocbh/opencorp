@@ -182,3 +182,36 @@ def test_system_paths_is_refused(make_company):
     root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
     [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
     assert "system.paths" in issue.message
+
+
+def test_unknown_skill(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", skills=["nope"])})
+    assert ("person.unknown_skill", "people/minh/person.yaml") in issues(root)
+
+
+def test_personal_skill_is_found(make_company):
+    root = make_company(**{
+        "people/minh/person.yaml": person("minh", skills=["mine"]),
+        "people/minh/skills/mine/SKILL.md": "---\nname: mine\ndescription: Mine.\n---\nMine.\n",
+    })
+    assert codes(root) == set()
+
+
+def test_invalid_skill_is_reported(make_company):
+    root = make_company(**{"shared/skills/broken/SKILL.md": "no frontmatter\n"})
+    assert ("skill.invalid", "shared/skills/broken") in issues(root)
+
+
+def test_duplicate_skill_name_in_one_root(make_company):
+    root = make_company(**{"shared/skills/review2/SKILL.md": "---\nname: code-review\ndescription: Again.\n---\nx\n"})
+    assert ("skill.invalid", "shared/skills/review2") in issues(root)
+
+
+def test_agent_without_profile_is_a_warning(make_company):
+    root = make_company(**{"people/minh/profile.md": None})
+    assert codes(root) == set()
+    assert ("person.no_profile", "people/minh/profile.md") in issues(root, "warning")
+
+
+def test_human_without_profile_is_fine(company):
+    assert "person.no_profile" not in codes(company, "warning")

@@ -1,6 +1,10 @@
 """Check a loaded company repo for problems the schema can't express."""
 
 from collections.abc import Iterator
+from pathlib import Path
+
+from agent_composer.compose.skills import load_skill_dir
+from agent_composer.skills import SkillError
 
 from agent_corp.company.flows import FlowOutsideRepo, load_confined
 from agent_corp.company.issues import RepoIssue
@@ -152,5 +156,50 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
                 yield RepoIssue(_person_path(pid), "person.flow_invalid", f"{ref}: {exc}")
 
 
+def _skill_root(root: Path, rel: str, issues: list[RepoIssue]) -> set[str]:
+    """Load each skill directory under one root; each bad one becomes a ``skill.invalid`` issue.
+
+    Mirrors ``load_skills``: hidden entries and directories without ``SKILL.md`` are
+    skipped, and two skills with one name in the same root are a problem. It loads
+    each directory itself rather than catching ``load_skills`` warnings, which is
+    not thread-safe.
+    """
+    names: set[str] = set()
+    entries = sorted(root.iterdir()) if root.is_dir() else []
+    for entry in entries:
+        if entry.name.startswith(".") or not (entry / "SKILL.md").is_file():
+            continue
+        try:
+            skill = load_skill_dir(entry)
+        except (SkillError, OSError) as exc:
+            issues.append(RepoIssue(f"{rel}/{entry.name}", "skill.invalid", str(exc)))
+            continue
+        if skill.name in names:
+            issues.append(RepoIssue(f"{rel}/{entry.name}", "skill.invalid",
+                                    f"skill name {skill.name!r} is used twice in {rel}"))
+        names.add(skill.name)
+    return names
+
+
+def _check_skills(repo: CompanyRepo) -> list[RepoIssue]:
+    """Granted skills exist in the person's own skills or in shared/skills."""
+    issues: list[RepoIssue] = []
+    shared = _skill_root(repo.root / "shared/skills", "shared/skills", issues)
+    for pid, person in sorted(repo.people.items()):
+        own = _skill_root(repo.root / "people" / pid / "skills", f"people/{pid}/skills", issues)
+        for name in person.skills:
+            if name not in own | shared:
+                issues.append(RepoIssue(_person_path(pid), "person.unknown_skill", name))
+    return issues
+
+
+def _check_profiles(repo: CompanyRepo) -> Iterator[RepoIssue]:
+    """Agents should have a profile; humans may skip it."""
+    for pid, person in sorted(repo.people.items()):
+        if person.kind == "agent" and not (repo.root / "people" / pid / "profile.md").is_file():
+            yield RepoIssue(f"people/{pid}/profile.md", "person.no_profile",
+                            "agents learn into profile.md; create one", "warning")
+
+
 CHECKS = [_check_id_case, _check_handles, _check_managers, _check_ceo, _check_groups,
-          _check_person_groups, _check_assets, _check_flows]
+          _check_person_groups, _check_assets, _check_flows, _check_skills, _check_profiles]
