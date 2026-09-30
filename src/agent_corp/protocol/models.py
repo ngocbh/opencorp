@@ -5,32 +5,27 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, RootModel
+from pydantic import BaseModel, ConfigDict, Field
+
+type AgentCorpProtocol = Annotated[Any, Field(title='AgentCorpProtocol')]
 
 
-class AgentCorpProtocol(RootModel[Any]):
-    root: Annotated[Any, Field(title='AgentCorpProtocol')]
+type Id = Annotated[
+    str,
+    Field(
+        description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
+        max_length=64,
+        pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
+    ),
+]
 
 
-class Id(RootModel[str]):
-    root: Annotated[
-        str,
-        Field(
-            description="A person, group, or asset id: a ULID or a slug. No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^[A-Za-z0-9](?:-?[A-Za-z0-9])*$',
-        ),
-    ]
+type Ulid = Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
 
 
-class Ulid(RootModel[str]):
-    root: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
-
-
-class GitId(RootModel[str]):
-    root: Annotated[
-        str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
-    ]
+type GitId = Annotated[
+    str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
+]
 
 
 class CompanyDefaults(BaseModel):
@@ -105,7 +100,7 @@ class Person(BaseModel):
     kind: Literal['human', 'agent']
     title: str
     manager: Id | None
-    groups: Annotated[list[Id] | None, Field(validate_default=True)] = []
+    groups: list[Id] | None = []
     home_office: str | None = None
     main: str | None = None
     sops: Annotated[list[Sop] | None, Field(validate_default=True)] = []
@@ -185,7 +180,7 @@ class WorkItem(BaseModel):
     ]
     assignee: Id | None = None
     parent_id: Ulid | None = None
-    groups: Annotated[list[Id] | None, Field(validate_default=True)] = []
+    groups: list[Id] | None = []
     gate: bool | None = False
     resolved_by: Id | None = None
     on_behalf_of: Id | None = None
@@ -233,10 +228,9 @@ class Comment(BaseModel):
     ]
 
 
-class CostCapUsd(RootModel[float]):
-    root: Annotated[
-        float, Field(description='null means company.defaults.cost_cap_usd.', ge=0.0)
-    ] = None
+type CostCapUsd = Annotated[
+    float, Field(description='null means company.defaults.cost_cap_usd.', ge=0.0)
+]
 
 
 class Session(BaseModel):
@@ -375,8 +369,7 @@ class DiscussionEntry(BaseModel):
     text: str
 
 
-class Questions(RootModel[list[QuestionPage]]):
-    root: Annotated[list[QuestionPage], Field(max_length=4, min_length=1)] = None
+type Questions = Annotated[list[QuestionPage], Field(max_length=4, min_length=1)]
 
 
 class Question(BaseModel):
@@ -730,8 +723,7 @@ class FeedbackRequest(BaseModel):
     text: Annotated[str, Field(min_length=1)]
 
 
-class Indice(RootModel[int]):
-    root: Annotated[int, Field(ge=0)]
+type Indice = Annotated[int, Field(ge=0)]
 
 
 class ConfirmFollowUpsRequest(BaseModel):
