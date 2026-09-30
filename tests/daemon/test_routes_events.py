@@ -127,3 +127,11 @@ async def test_a_dropped_subscriber_gets_reset_then_the_stream_ends(office, shor
         assert await take(it, 1) == [("reset", None, None)]
         with pytest.raises(StopAsyncIteration):
             await anext(it)
+
+
+async def test_head_is_405_and_leaves_the_connection_usable(office, short_dir):
+    async with asyncio.timeout(5), served(office, short_dir / "o.sock") as c:
+        r = await c.head("/events")
+        assert r.status_code == 405 and r.headers["allow"] == "GET"
+        assert (await c.get("/people")).status_code == 200
+        assert office.bus.subscriber_count == 0

@@ -3,11 +3,11 @@
 from collections.abc import AsyncIterator
 
 from starlette.requests import Request
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 from starlette.routing import Route
 
 from agent_corp.daemon.bus import PING
-from agent_corp.daemon.http import get_office
+from agent_corp.daemon.http import error, get_office
 from agent_corp.protocol.models import Event, LiveEvent
 
 PING_S = 15.0
@@ -24,8 +24,12 @@ def frame(kind: str, event: Event | LiveEvent) -> bytes:
     return f"{head}data: {event.model_dump_json()}\n\n".encode()
 
 
-async def stream_events(request: Request) -> StreamingResponse:
+async def stream_events(request: Request) -> Response:
     """Stream bus events, optionally for one session. There is no replay: clients re-read state with GETs."""
+    if request.method != "GET":
+        # Starlette serves HEAD on every GET route; a HEAD response to a stream that never
+        # ends would hold the connection forever.
+        return error(405, "method_not_allowed", f"{request.method} is not allowed on /events", {"allow": "GET"})
     bus = get_office(request).bus
     session = request.query_params.get("session")
 
