@@ -34,6 +34,7 @@ import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogSessionList } from "./component/dialog-session-list"
+import { DialogPeople } from "./routes/picker/dialog-people"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { Session } from "./routes/session"
@@ -77,6 +78,7 @@ const appGlobalBindingCommands = [
 
 const appBindingCommands = [
   "command.palette.show",
+  "person.list",
   "agent.cycle",
   "agent.cycle.reverse",
   "opencode.debug",
@@ -373,6 +375,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           local.session.quickSwitch(i + 1)
         },
       })),
+      {
+        name: "person.list",
+        title: "Switch person",
+        category: "Person",
+        slashName: "people",
+        run: () => {
+          dialog.replace(() => <DialogPeople />)
+        },
+      },
       {
         name: "agent.cycle",
         title: "Next person",
