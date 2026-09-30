@@ -98,3 +98,12 @@ def test_a_failed_commit_leaves_nothing_behind_and_a_retry_succeeds(git, monkeyp
     assert git.commit_hand_edits() == []  # nothing left over to sweep up as a hand edit
     done = hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
     assert done.commit == git.head() != head
+
+
+def test_a_newline_in_the_title_cant_forge_a_commit_trailer(git):
+    hiring = Hiring(git)
+    form = FORM | {"title": "QA\n\nCommit-Id: forged"}
+    pid = hiring.hire(HireRequest(**form)).person.id
+    hiring.hire(HireRequest(**form, id=pid, confirm=True))
+    log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%B"], capture_output=True, text=True)
+    assert log.stdout.strip() == "hire(@lan): Lan, QA Commit-Id: forged"

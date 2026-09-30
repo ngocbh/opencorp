@@ -76,7 +76,7 @@ class Hiring:
                     path = self.git.root / rel
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(text)
-                commit = self.git.commit(list(files), f"hire(@{person.handle}): {person.name}, {person.title}")
+                commit = self.git.commit(list(files), _subject(person))
             except BaseException:
                 # Left on disk, the profile would be committed later as a hand edit.
                 self._undo(request.id, list(files), head)
@@ -121,6 +121,11 @@ class Hiring:
             issues.insert(0, RepoIssue(path=f"{base}/person.yaml", code="person.duplicate_handle",
                                        message=f"@{person.handle} is already used by {owner}"))
         return person, files, issues
+
+
+def _subject(person: Person) -> str:
+    # One line: a newline in the name or title could forge a Commit-Id trailer.
+    return " ".join(f"hire(@{person.handle}): {person.name}, {person.title}".split())
 
 
 def _form(request: HireRequest) -> tuple[str, ...]:
