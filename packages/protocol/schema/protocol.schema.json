@@ -30,8 +30,8 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "ceo": { "$ref": "#/$defs/Id" },
-        "hq": { "type": "string" },
-        "defaults": { "$ref": "#/$defs/CompanyDefaults" }
+        "hq": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "defaults": { "anyOf": [{ "$ref": "#/$defs/CompanyDefaults" }, { "type": "null" }], "default": null }
       }
     },
     "HarnessPolicy": {
@@ -53,7 +53,7 @@
       "properties": {
         "name": { "type": "string" },
         "flow": { "type": "string" },
-        "trigger": { "type": "object" }
+        "trigger": { "anyOf": [{ "type": "object" }, { "type": "null" }], "default": null }
       }
     },
     "Person": {
@@ -67,12 +67,12 @@
         "title": { "type": "string" },
         "manager": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }] },
         "groups": { "type": "array", "items": { "$ref": "#/$defs/Id" }, "default": [] },
-        "home_office": { "type": "string" },
-        "main": { "type": "string" },
+        "home_office": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "main": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
         "sops": { "type": "array", "items": { "$ref": "#/$defs/Sop" }, "default": [] },
         "skills": { "type": "array", "items": { "type": "string" }, "default": [] },
         "harnesses": { "type": "array", "items": { "enum": ["composer", "codex", "claude"] }, "default": [] },
-        "harness_policy": { "$ref": "#/$defs/HarnessPolicy" },
+        "harness_policy": { "anyOf": [{ "$ref": "#/$defs/HarnessPolicy" }, { "type": "null" }], "default": null },
         "routines": { "type": "array", "items": { "$ref": "#/$defs/Routine" }, "default": [] },
         "provider_policy": { "type": "string", "default": "default" }
       }
@@ -95,7 +95,9 @@
       "properties": {
         "who": { "type": "string", "pattern": "^(group:)?[A-Za-z0-9](?:-?[A-Za-z0-9])*$" },
         "can": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-        "where": { "type": "object", "additionalProperties": { "type": "array" } }
+        "where": {
+          "anyOf": [{ "type": "object", "additionalProperties": { "type": "array" } }, { "type": "null" }], "default": null
+        }
       }
     },
     "Asset": {
@@ -251,8 +253,8 @@
                    "list[Any]", "list[str]", "list[int]", "list[float]", "list[bool]", "list[object]"]
         },
         "required": { "type": "boolean" },
-        "enum": { "type": "array", "items": { "type": "string" } },
-        "fields": { "type": "array", "items": { "$ref": "#/$defs/AnswerField" } }
+        "enum": { "anyOf": [{ "type": "array", "items": { "type": "string" } }, { "type": "null" }], "default": null },
+        "fields": { "anyOf": [{ "type": "array", "items": { "$ref": "#/$defs/AnswerField" } }, { "type": "null" }], "default": null }
       }
     },
     "DiscussionEntry": {
@@ -290,7 +292,10 @@
         "discussion": { "type": "array", "items": { "$ref": "#/$defs/DiscussionEntry" }, "default": [] },
         "gate": { "type": "boolean", "default": false },
         "status": { "enum": ["open", "answered", "consumed", "stale"] },
-        "answer": { "description": "Absent until answered; may be null. Read status to tell whether it is answered." },
+        "answer": {
+          "default": null,
+          "description": "null until answered, and may be null once answered too. Read status to tell whether it is answered."
+        },
         "answer_kind": {
           "anyOf": [{ "enum": ["option", "text", "sent_back", "interrupted"] }, { "type": "null" }], "default": null
         },
@@ -435,7 +440,10 @@
         "handle": { "$ref": "#/$defs/Handle" },
         "title": { "type": "string" },
         "manager": { "$ref": "#/$defs/Id" },
-        "id": { "$ref": "#/$defs/Ulid", "description": "The preview's id; when absent the office mints one." },
+        "id": {
+          "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null,
+          "description": "The preview's id; when null the office mints one."
+        },
         "confirm": { "type": "boolean", "default": false }
       }
     },

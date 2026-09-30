@@ -111,8 +111,8 @@ export interface CompanyDefaults {
 export interface Company {
   name: string;
   ceo: Id;
-  hq?: string;
-  defaults?: CompanyDefaults;
+  hq?: string | null;
+  defaults?: CompanyDefaults | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -139,7 +139,7 @@ export interface Routine {
   flow: string;
   trigger?: {
     [k: string]: unknown;
-  };
+  } | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -153,12 +153,12 @@ export interface Person {
   title: string;
   manager: Id | null;
   groups?: Id[];
-  home_office?: string;
-  main?: string;
+  home_office?: string | null;
+  main?: string | null;
   sops?: Sop[];
   skills?: string[];
   harnesses?: ("composer" | "codex" | "claude")[];
-  harness_policy?: HarnessPolicy;
+  harness_policy?: HarnessPolicy | null;
   routines?: Routine[];
   provider_policy?: string;
 }
@@ -191,7 +191,7 @@ export interface Grant {
   can: [string, ...string[]];
   where?: {
     [k: string]: unknown[];
-  };
+  } | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -368,8 +368,8 @@ export interface AnswerField {
     | "list[bool]"
     | "list[object]";
   required: boolean;
-  enum?: string[];
-  fields?: AnswerField[];
+  enum?: string[] | null;
+  fields?: AnswerField[] | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -408,7 +408,7 @@ export interface Question {
   gate?: boolean;
   status: "open" | "answered" | "consumed" | "stale";
   /**
-   * Absent until answered; may be null. Read status to tell whether it is answered.
+   * null until answered, and may be null once answered too. Read status to tell whether it is answered.
    */
   answer?: unknown;
   answer_kind?: ("option" | "text" | "sent_back" | "interrupted") | null;
@@ -584,9 +584,9 @@ export interface HireRequest {
   title: string;
   manager: Id;
   /**
-   * The preview's id; when absent the office mints one.
+   * The preview's id; when null the office mints one.
    */
-  id?: string;
+  id?: Ulid | null;
   confirm?: boolean;
 }
 /**

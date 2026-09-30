@@ -49,3 +49,12 @@ BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "Rep
 
 def test_every_route_body_has_a_fixture():
     assert BODIES <= {p.stem for p in FIXTURES.glob("*.json")}
+
+
+def test_optional_fields_default():
+    # Every optional field has a default (null when nothing else fits), so a plain
+    # model_dump() of a generated model is always schema-valid.
+    for name, sub in _schema()["$defs"].items():
+        for field, prop in sub.get("properties", {}).items():
+            if field not in sub.get("required", []):
+                assert "default" in prop, f"{name}.{field}"

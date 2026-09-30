@@ -399,9 +399,9 @@ class Question(BaseModel):
     gate: bool = False
     status: Literal['open', 'answered', 'consumed', 'stale']
     answer: Annotated[
-        Any | None,
+        Any,
         Field(
-            description='Absent until answered; may be null. Read status to tell whether it is answered.'
+            description='null until answered, and may be null once answered too. Read status to tell whether it is answered.'
         ),
     ] = None
     answer_kind: Literal['option', 'text', 'sent_back', 'interrupted'] | None = None
@@ -633,11 +633,8 @@ class HireRequest(BaseModel):
         ),
     ]
     id: Annotated[
-        str | None,
-        Field(
-            description="The preview's id; when absent the office mints one.",
-            pattern='^[0-9A-HJKMNP-TV-Z]{26}$',
-        ),
+        Ulid | None,
+        Field(description="The preview's id; when null the office mints one."),
     ] = None
     confirm: bool = False
 
