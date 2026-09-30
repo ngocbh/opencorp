@@ -635,10 +635,7 @@ class HireRequest(BaseModel):
             pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
-    id: Annotated[
-        Ulid | None,
-        Field(description="The preview's id; when null the office mints one."),
-    ] = None
+    id: Ulid | None = None
     confirm: bool = False
 
 

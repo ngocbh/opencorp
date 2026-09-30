@@ -440,10 +440,7 @@
         "handle": { "$ref": "#/$defs/Handle" },
         "title": { "type": "string" },
         "manager": { "$ref": "#/$defs/Id" },
-        "id": {
-          "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null,
-          "description": "The preview's id; when null the office mints one."
-        },
+        "id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
         "confirm": { "type": "boolean", "default": false }
       }
     },
@@ -514,7 +511,7 @@
     "ConfirmFollowUpsRequest": {
       "type": "object", "additionalProperties": false, "required": ["indices"],
       "properties": {
-        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0 }, "uniqueItems": true }
+        "indices": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
       }
     }
   }

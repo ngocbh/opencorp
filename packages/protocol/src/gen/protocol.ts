@@ -583,9 +583,6 @@ export interface HireRequest {
   handle: Handle;
   title: string;
   manager: Id;
-  /**
-   * The preview's id; when null the office mints one.
-   */
   id?: Ulid | null;
   confirm?: boolean;
 }
