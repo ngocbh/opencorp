@@ -25,17 +25,11 @@ import {
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { ErrorComponent } from "./component/error-component"
-import { ProjectProvider } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
-import { SDKProvider } from "./context/sdk"
 import { OfficeProvider, useOffice } from "./context/office"
 import { sessionsIn } from "./office/store"
 import { personLabel } from "./util/transcript"
-import { SyncProvider, useSync } from "./context/sync"
-import { DataProvider } from "./context/data"
-import { LocationProvider } from "./context/location"
 import { LocalProvider, useLocal } from "./context/local"
-import { PermissionProvider } from "./context/permission"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
@@ -61,7 +55,6 @@ import {
   useOpencodeKeymap,
 } from "./keymap"
 
-import type { EventSource } from "./context/sdk"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { cliErrorMessage, errorFormat } from "./util/error"
@@ -111,16 +104,6 @@ export type TuiInput = {
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
-  /** @deprecated The OpenCode server URL; goes with the OpenCode data layer. */
-  url: string
-  /** @deprecated */
-  directory?: string
-  /** @deprecated */
-  fetch?: typeof fetch
-  /** @deprecated */
-  headers?: RequestInit["headers"]
-  /** @deprecated */
-  events?: EventSource
 }
 
 export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
@@ -215,41 +198,23 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                   <RouteProvider>
                                     <TuiConfigProvider config={input.config}>
                                       <OfficeProvider socket={input.socket} cwd={input.cwd}>
-                                        <SDKProvider
-                                          url={input.url}
-                                          directory={input.directory}
-                                          fetch={input.fetch}
-                                          headers={input.headers}
-                                          events={input.events}
-                                        >
-                                          <PermissionProvider>
-                                            <ProjectProvider>
-                                              <SyncProvider>
-                                                <DataProvider>
-                                                  <ThemeProvider mode={mode}>
-                                                    <LocalProvider>
-                                                      <PromptStashProvider>
-                                                        <DialogProvider>
-                                                          <FrecencyProvider>
-                                                            <PromptHistoryProvider>
-                                                              <PromptRefProvider>
-                                                                <EditorContextProvider>
-                                                                  <LocationProvider>
-                                                                    <App onSnapshot={input.onSnapshot} />
-                                                                  </LocationProvider>
-                                                                </EditorContextProvider>
-                                                              </PromptRefProvider>
-                                                            </PromptHistoryProvider>
-                                                          </FrecencyProvider>
-                                                        </DialogProvider>
-                                                      </PromptStashProvider>
-                                                    </LocalProvider>
-                                                  </ThemeProvider>
-                                                </DataProvider>
-                                              </SyncProvider>
-                                            </ProjectProvider>
-                                          </PermissionProvider>
-                                        </SDKProvider>
+                                        <ThemeProvider mode={mode}>
+                                          <LocalProvider>
+                                            <PromptStashProvider>
+                                              <DialogProvider>
+                                                <FrecencyProvider>
+                                                  <PromptHistoryProvider>
+                                                    <PromptRefProvider>
+                                                      <EditorContextProvider>
+                                                        <App onSnapshot={input.onSnapshot} />
+                                                      </EditorContextProvider>
+                                                    </PromptRefProvider>
+                                                  </PromptHistoryProvider>
+                                                </FrecencyProvider>
+                                              </DialogProvider>
+                                            </PromptStashProvider>
+                                          </LocalProvider>
+                                        </ThemeProvider>
                                       </OfficeProvider>
                                     </TuiConfigProvider>
                                   </RouteProvider>
@@ -293,7 +258,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const toast = useToast()
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
-  const sync = useSync()
   const office = useOffice()
   const exit = useExit()
   const promptRef = usePromptRef()
@@ -324,9 +288,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     renderer.clearSelection()
   }
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
-  const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(
-    kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
-  )
+  const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(kv.get("paste_summary_enabled", true))
 
   // Update terminal window title based on current route and session
   createEffect(() => {
@@ -585,16 +547,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         category: "System",
         run: () => {
           kv.set("session_directory_filter_enabled", !kv.get("session_directory_filter_enabled", true))
-          dialog.clear()
-        },
-      },
-      {
-        name: "permission.mode",
-        title:
-          local.permission.mode === "auto" ? "Disable auto-approve permissions" : "Enable auto-approve permissions",
-        category: "System",
-        run: () => {
-          local.permission.toggle()
           dialog.clear()
         },
       },

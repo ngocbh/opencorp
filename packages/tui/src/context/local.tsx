@@ -11,7 +11,6 @@ import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
-import { usePermission } from "./permission"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -51,7 +50,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const route = useRoute()
     const paths = useTuiPaths()
     const args = useArgs()
-    const permission = usePermission()
 
     function createPerson() {
       const [selected, setSelected] = createSignal<string>()
@@ -181,7 +179,6 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const result = {
       person,
       session,
-      permission,
     }
     return result
   },

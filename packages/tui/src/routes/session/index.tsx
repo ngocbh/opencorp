@@ -46,7 +46,6 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
-import { LocationProvider } from "../../context/location"
 import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable } from "../../office/errors"
 import { openQuestions } from "../../office/store"
@@ -126,10 +125,6 @@ export function Session() {
   const messages = createMemo(() => office.state.messages[route.sessionID] ?? [])
   const question = createMemo(() => openQuestions(office.state, route.sessionID)[0])
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
-  const location = createMemo(() => {
-    const current = session()
-    return current ? { directory: current.cwd } : undefined
-  })
 
   createEffect(() => {
     const current = session()
@@ -434,124 +429,120 @@ export function Session() {
   const lastAssistant = createMemo(() => messages().findLast((x) => x.role === "assistant"))
 
   return (
-    <LocationProvider location={location() as never}>
-      <context.Provider
-        value={{
-          get width() {
-            return contentWidth()
-          },
-          sessionID: route.sessionID,
-          conceal,
-          showTimestamps,
-          showDetails,
-          showGenericToolOutput,
-          diffWrapMode,
-          tui: tuiConfig,
-        }}
-      >
-        <box flexDirection="row" flexGrow={1} minHeight={0}>
-          <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
-            <Show when={session()}>
-              {(current) => (
-                <>
-                  <box flexShrink={0} paddingTop={1}>
-                    <text fg={theme.text} wrapMode="none">
-                      <b>{person()}</b>
-                      <span style={{ fg: current().status === "busy" ? theme.warning : theme.textMuted }}>
-                        {" "}
-                        · {current().status}
-                      </span>
-                      <Show when={costLabel(current())}>
-                        {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
-                      </Show>
-                    </text>
-                  </box>
-                  <scrollbox
-                    ref={(r) => (scroll = r)}
-                    viewportOptions={{
-                      paddingRight: showScrollbar() ? 1 : 0,
-                    }}
-                    verticalScrollbarOptions={{
-                      paddingLeft: 1,
-                      visible: showScrollbar(),
-                      trackOptions: {
-                        backgroundColor: theme.backgroundElement,
-                        foregroundColor: theme.border,
-                      },
-                    }}
-                    stickyScroll={true}
-                    stickyStart="bottom"
-                    flexGrow={1}
-                    scrollAcceleration={scrollAcceleration()}
-                  >
-                    <For each={messages()}>
-                      {(message, index) => (
-                        <Switch>
-                          <Match when={message.role === "user"}>
-                            <UserMessage
-                              index={index()}
-                              onMouseUp={() => {
-                                if (renderer.getSelection()?.getSelectedText()) return
-                                dialog.replace(() => (
-                                  <DialogMessage messageID={message.id} sessionID={route.sessionID} />
-                                ))
-                              }}
-                              message={message}
-                            />
-                          </Match>
-                          <Match when={message.role === "assistant"}>
-                            <AssistantMessage message={message} last={lastAssistant()?.id === message.id} />
-                          </Match>
-                        </Switch>
-                      )}
-                    </For>
-                  </scrollbox>
-                  <box flexShrink={0}>
-                    <Show
-                      when={question()}
-                      keyed
-                      fallback={
-                        <Prompt
-                          visible={true}
-                          ref={bind}
-                          onSubmit={() => {
-                            toBottom()
-                          }}
-                          sessionID={route.sessionID}
-                        />
-                      }
-                    >
-                      {(q) => <QuestionPrompt question={q} />}
+    <context.Provider
+      value={{
+        get width() {
+          return contentWidth()
+        },
+        sessionID: route.sessionID,
+        conceal,
+        showTimestamps,
+        showDetails,
+        showGenericToolOutput,
+        diffWrapMode,
+        tui: tuiConfig,
+      }}
+    >
+      <box flexDirection="row" flexGrow={1} minHeight={0}>
+        <box flexGrow={1} minHeight={0} paddingBottom={1} paddingLeft={2} paddingRight={2} gap={1}>
+          <Show when={session()}>
+            {(current) => (
+              <>
+                <box flexShrink={0} paddingTop={1}>
+                  <text fg={theme.text} wrapMode="none">
+                    <b>{person()}</b>
+                    <span style={{ fg: current().status === "busy" ? theme.warning : theme.textMuted }}>
+                      {" "}
+                      · {current().status}
+                    </span>
+                    <Show when={costLabel(current())}>
+                      {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
                     </Show>
-                  </box>
-                </>
-              )}
-            </Show>
-            <Toast />
-          </box>
-          <Show when={sidebarVisible()}>
-            <Switch>
-              <Match when={wide()}>
-                <Sidebar sessionID={route.sessionID} />
-              </Match>
-              <Match when={!wide()}>
-                <box
-                  position="absolute"
-                  top={0}
-                  left={0}
-                  right={0}
-                  bottom={0}
-                  alignItems="flex-end"
-                  backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
-                >
-                  <Sidebar sessionID={route.sessionID} />
+                  </text>
                 </box>
-              </Match>
-            </Switch>
+                <scrollbox
+                  ref={(r) => (scroll = r)}
+                  viewportOptions={{
+                    paddingRight: showScrollbar() ? 1 : 0,
+                  }}
+                  verticalScrollbarOptions={{
+                    paddingLeft: 1,
+                    visible: showScrollbar(),
+                    trackOptions: {
+                      backgroundColor: theme.backgroundElement,
+                      foregroundColor: theme.border,
+                    },
+                  }}
+                  stickyScroll={true}
+                  stickyStart="bottom"
+                  flexGrow={1}
+                  scrollAcceleration={scrollAcceleration()}
+                >
+                  <For each={messages()}>
+                    {(message, index) => (
+                      <Switch>
+                        <Match when={message.role === "user"}>
+                          <UserMessage
+                            index={index()}
+                            onMouseUp={() => {
+                              if (renderer.getSelection()?.getSelectedText()) return
+                              dialog.replace(() => <DialogMessage messageID={message.id} sessionID={route.sessionID} />)
+                            }}
+                            message={message}
+                          />
+                        </Match>
+                        <Match when={message.role === "assistant"}>
+                          <AssistantMessage message={message} last={lastAssistant()?.id === message.id} />
+                        </Match>
+                      </Switch>
+                    )}
+                  </For>
+                </scrollbox>
+                <box flexShrink={0}>
+                  <Show
+                    when={question()}
+                    keyed
+                    fallback={
+                      <Prompt
+                        visible={true}
+                        ref={bind}
+                        onSubmit={() => {
+                          toBottom()
+                        }}
+                        sessionID={route.sessionID}
+                      />
+                    }
+                  >
+                    {(q) => <QuestionPrompt question={q} />}
+                  </Show>
+                </box>
+              </>
+            )}
           </Show>
+          <Toast />
         </box>
-      </context.Provider>
-    </LocationProvider>
+        <Show when={sidebarVisible()}>
+          <Switch>
+            <Match when={wide()}>
+              <Sidebar sessionID={route.sessionID} />
+            </Match>
+            <Match when={!wide()}>
+              <box
+                position="absolute"
+                top={0}
+                left={0}
+                right={0}
+                bottom={0}
+                alignItems="flex-end"
+                backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
+              >
+                <Sidebar sessionID={route.sessionID} />
+              </box>
+            </Match>
+          </Switch>
+        </Show>
+      </box>
+    </context.Provider>
   )
 }
 

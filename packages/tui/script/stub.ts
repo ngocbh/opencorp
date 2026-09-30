@@ -20,23 +20,10 @@ import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
-import { createEventSource, createFetch, directory, json } from "../test/fixture/tui-sdk"
 
 /** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
 export function createStub(office?: FakeOffice): Omit<TuiInput, "args"> {
-  const events = createEventSource()
-  const { fetch } = createFetch((url) => {
-    if (url.pathname === "/project/proj_test/directories") return json([])
-  }, events)
-  return {
-    socket: office?.socket ?? "/tmp/act-none/o.sock",
-    cwd: "/tmp/proj",
-    url: "http://stub",
-    directory,
-    config: createTuiResolvedConfig(),
-    fetch,
-    events: events.source,
-  }
+  return { socket: office?.socket ?? "/tmp/act-none/o.sock", cwd: "/tmp/proj", config: createTuiResolvedConfig() }
 }
 
 /** Serves `fetch` on a new unix socket under /tmp (macOS caps socket paths at 104 bytes). */
