@@ -47,6 +47,20 @@ test("with no id, ac end ends the newest live main session in the folder", async
   }
 })
 
+test("ac end finds the folder's live session behind more than a page of newer sessions", async () => {
+  const office = createFakeOffice()
+  try {
+    const [live] = office.state.sessions
+    const later = new Date(Date.parse(live.updated_at) + 60_000).toISOString()
+    for (let i = 0; i < 60; i++)
+      office.state.sessions.push({ ...live, id: office.nextId(), cwd: "/elsewhere", status: "ended", updated_at: later })
+    const client = createOfficeClient({ socket: office.socket })
+    expect((await endSession({ client, cwd: live.cwd })).id).toBe(live.id)
+  } finally {
+    office.stop()
+  }
+})
+
 test("ac end ID ends that session and says the debrief follows; the office's refusal exits 1", async () => {
   rmSync(path.dirname(socket), { recursive: true, force: true })
   const down = await capture(["end", "S1"])

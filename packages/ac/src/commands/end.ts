@@ -15,11 +15,12 @@ const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy"])
  */
 export async function endSession(opts: { client: OfficeClient; cwd: string; id?: string }): Promise<Session> {
   const { client, cwd } = opts
-  const session = opts.id
-    ? await client.sessions.get(opts.id)
-    : (await client.sessions.list())
-        .filter((s) => s.kind === "main" && s.cwd === cwd && ENDABLE.has(s.status))
-        .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+  const newest = async () =>
+    // The office's largest page: newer sessions in other folders must not push this one out.
+    (await client.sessions.list({ limit: 500 }))
+      .filter((s) => s.kind === "main" && s.cwd === cwd && ENDABLE.has(s.status))
+      .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
+  const session = opts.id ? await client.sessions.get(opts.id) : await newest()
   if (!session) throw new Error("no live session in this folder")
   await client.sessions.end(session.id)
   return session
