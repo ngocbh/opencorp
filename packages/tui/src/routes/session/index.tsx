@@ -587,9 +587,10 @@ export function Session() {
                               question={q()}
                               session={sideSession()}
                               onBack={() => setSideOf(undefined)}
-                              onSent={() => {
-                                lift()
+                              onSend={() => {
+                                const undo = lift()
                                 toBottom()
+                                return undo
                               }}
                               onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                             />

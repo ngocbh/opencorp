@@ -55,7 +55,8 @@ export function SideChat(props: {
   question: Question
   session: Session | undefined
   onBack: () => void
-  onSent: () => void
+  /** Called as a message is sent, before the office answers; returns an undo for a send that fails. */
+  onSend: () => (() => void) | void
   onInterrupt: () => void
 }) {
   const office = useOffice()
@@ -101,7 +102,7 @@ export function SideChat(props: {
     if (sending) return
     sending = true
     const s = props.session
-    props.onSent()
+    const undo = props.onSend()
     // The side route opens or restarts a side session that isn't live.
     const sent =
       s && LIVE.includes(s.status)
@@ -112,7 +113,10 @@ export function SideChat(props: {
         // The view may have closed meanwhile; an edit made since stays.
         if (textarea && !textarea.isDestroyed && textarea.plainText.trim() === text) textarea.setText("")
       })
-      .catch(fail)
+      .catch((error) => {
+        undo?.()
+        fail(error)
+      })
       .finally(() => (sending = false))
   }
 

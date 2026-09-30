@@ -268,6 +268,41 @@ test("a side message the office refuses stays in the input", async () => {
   }
 })
 
+test("a side send that fails puts the freeze back", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "busy" as const }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  say(office, side.id, "Explaining")
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · busy") && f.includes("Explaining"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/interrupt`))
+    // The stopped reply's next turn opens: the side session is idle again.
+    office.openTurn(side.id)
+    await app.until((f) => f.includes("Side chat with @minh · idle"))
+    app.input.typeText("more")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Side chats are not available yet") && f.includes("more"))
+    // Words the stopped reply sends after the failed send stay hidden, then a status event: once the
+    // header shows it, they have arrived.
+    say(office, side.id, "side late")
+    office.setStatus(side.id, "busy")
+    await app.until((f) => f.includes("Side chat with @minh · busy"))
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(app.frame()).toContain("Explaining")
+    expect(app.frame()).not.toContain("side late")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("Esc interrupts a starting side session; /Back returns in any case", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
