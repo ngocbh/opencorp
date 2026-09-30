@@ -89,6 +89,16 @@ def test_unknown_tool(tools):
         tools.call("rm", {})
 
 
+@pytest.mark.parametrize("args, message", [
+    ({}, "missing a required argument: 'path'"),
+    ({"path": "f.txt", "mode": "x"}, "got an unexpected keyword argument 'mode'"),
+])
+def test_bad_arguments_come_back_as_text(tools, args, message):
+    out = tools.call("read_file", args)
+    assert out.output == f"error: read_file: {message}"
+    assert out.audit.tool == "read_file" and out.audit.exit is None and out.audit.duration == 0
+
+
 def test_composer_accepts_the_tool_functions():
     seen = []
     functions = workspace_tool_functions(lambda name, args: seen.append((name, args)) or "ok")

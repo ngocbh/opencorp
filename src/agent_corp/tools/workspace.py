@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -78,12 +79,19 @@ class WorkspaceTools:
     def call(self, name: str, args: Mapping[str, Any]) -> ToolOutcome:
         """Run the tool `name` with `args` (the office side of a `tool_call`).
 
+        Missing or unexpected arguments come back as an `error:` outcome that never ran.
+
         Raises:
             ValueError: `name` is not a workspace tool.
         """
         if name not in TOOL_NAMES:
             raise ValueError(f"unknown workspace tool {name!r}")
-        return getattr(self, "list_dir" if name == "list" else name)(**args)
+        method = getattr(self, "list_dir" if name == "list" else name)
+        try:
+            inspect.signature(method).bind(**args)
+        except TypeError as exc:
+            return ToolOutcome(f"error: {name}: {exc}", AuditRecord(name, _summarize(args), None, 0.0))
+        return method(**args)
 
     def interrupt(self) -> None:
         """Kill every call running now; they return `[interrupted]`."""
