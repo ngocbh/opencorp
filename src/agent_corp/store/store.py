@@ -166,15 +166,6 @@ _FEEDBACK_MOVES = {
 _PROPOSAL_MOVES = {"open": {"applied", "discarded", "stale"}}
 
 
-def _columns(table: _Table, model: BaseModel) -> dict[str, Any]:
-    """The row for ``model``: its full JSON dump, with list and object fields as JSON text."""
-    cols = model.model_dump(mode="json", exclude=set(table.derived))
-    for name in table.json:
-        if cols[name] is not None:
-            cols[name] = json.dumps(cols[name])
-    return cols
-
-
 def _model[M: BaseModel](table: _Table, row: sqlite3.Row, model: type[M], **extra: Any) -> M:
     """Build ``model`` from ``row``. A NULL column with a model default is left unset."""
     fields = model.model_fields
@@ -266,6 +257,7 @@ class Store:
         self._conns_lock = threading.Lock()
         self._write_lock = threading.RLock()
         self._listeners: list[Listener] = []
+        self._table_columns: dict[str, frozenset[str]] = {}
         conn = self._conn()
         conn.execute("PRAGMA journal_mode = WAL")
         migrate(conn)
@@ -439,6 +431,28 @@ class Store:
 
     # --- generic row access -------------------------------------------------------------
 
+    def _columns(self, table: _Table, model: BaseModel) -> dict[str, Any]:
+        """The row for ``model``: its full JSON dump, with list and object fields as JSON text.
+
+        A model field with no column (a protocol field added without a store migration)
+        raises ``StoreError``.
+        """
+        cols = model.model_dump(mode="json", exclude=set(table.derived))
+        known = self._table_columns.get(table.name)
+        if known is None:
+            rows = self._conn().execute(f"PRAGMA table_info({table.name})").fetchall()
+            known = self._table_columns[table.name] = frozenset(r["name"] for r in rows)
+        missing = sorted(cols.keys() - known)
+        if missing:
+            raise StoreError(
+                f"{table.name} has no column {', '.join(map(repr, missing))} for {type(model).__name__}; "
+                "the field needs a store migration"
+            )
+        for name in table.json:
+            if cols[name] is not None:
+                cols[name] = json.dumps(cols[name])
+        return cols
+
     def _row(self, table: _Table, key: str) -> sqlite3.Row | None:
         return self._conn().execute(f'SELECT * FROM {table.name} WHERE "{table.key}" = ?', (key,)).fetchone()
 
@@ -484,7 +498,7 @@ class Store:
     def create_work_item(self, item: WorkItem) -> WorkItem:
         """Insert a work item and emit ``work_item.created``."""
         with self.transaction() as tx:
-            tx.insert(WORK_ITEMS, _columns(WORK_ITEMS, item))
+            tx.insert(WORK_ITEMS, self._columns(WORK_ITEMS, item))
             stored = self._must(WORK_ITEMS, WorkItem, item.id)
             tx.emit("work_item.created", item.id, stored)
         return stored
@@ -514,7 +528,7 @@ class Store:
             changes = {"updated_at": now(), **changes}
             item = self._changed(current, changes, {"id", "version", "created_at"})
             item = item.model_copy(update={"version": current.version + 1})
-            tx.update(WORK_ITEMS, _columns(WORK_ITEMS, item))
+            tx.update(WORK_ITEMS, self._columns(WORK_ITEMS, item))
             stored = self._must(WORK_ITEMS, WorkItem, item_id)
             tx.emit("work_item.updated", item_id, stored)
         return stored
@@ -522,7 +536,7 @@ class Store:
     def add_comment(self, comment: Comment) -> Comment:
         """Insert a comment and emit ``comment.created``."""
         with self.transaction() as tx:
-            tx.insert(COMMENTS, _columns(COMMENTS, comment))
+            tx.insert(COMMENTS, self._columns(COMMENTS, comment))
             stored = self._must(COMMENTS, Comment, comment.id)
             tx.emit("comment.created", comment.id, stored)
         return stored
@@ -554,7 +568,7 @@ class Store:
     def create_session(self, session: Session) -> Session:
         """Insert a session (and its ``run_ids``) and emit ``session.created``."""
         with self.transaction() as tx:
-            tx.insert(SESSIONS, _columns(SESSIONS, session))
+            tx.insert(SESSIONS, self._columns(SESSIONS, session))
             for run_id in session.run_ids:
                 self._insert_run(tx, session.id, run_id)
             stored = self._must_session(session.id)
@@ -616,7 +630,7 @@ class Store:
             current = self._must_session(session_id)
             changes = {"updated_at": now(), **changes}
             session = self._changed(current, changes, {"id", "run_ids", "created_at"})
-            tx.update(SESSIONS, _columns(SESSIONS, session))
+            tx.update(SESSIONS, self._columns(SESSIONS, session))
             stored = self._must_session(session_id)
             tx.emit("session.updated", session_id, stored)
         return stored
@@ -650,9 +664,8 @@ class Store:
 
     # --- questions ----------------------------------------------------------------------
 
-    @staticmethod
-    def _question_columns(question: Question) -> dict[str, Any]:
-        cols = _columns(QUESTIONS, question)
+    def _question_columns(self, question: Question) -> dict[str, Any]:
+        cols = self._columns(QUESTIONS, question)
         # SQL NULL means "not answered"; an answered question stores its answer as JSON,
         # which may be the text 'null'.
         answered = question.status in _ANSWERED
@@ -748,7 +761,7 @@ class Store:
     def add_feedback(self, feedback: Feedback) -> Feedback:
         """Insert feedback and emit ``feedback.created``."""
         with self.transaction() as tx:
-            tx.insert(FEEDBACK, _columns(FEEDBACK, feedback))
+            tx.insert(FEEDBACK, self._columns(FEEDBACK, feedback))
             stored = self._must(FEEDBACK, Feedback, feedback.id)
             tx.emit("feedback.created", feedback.id, stored)
         return stored
@@ -780,7 +793,7 @@ class Store:
             if commit is not None:
                 update["commit"] = commit
             feedback = self._changed(current, update, set())
-            tx.update(FEEDBACK, _columns(FEEDBACK, feedback))
+            tx.update(FEEDBACK, self._columns(FEEDBACK, feedback))
             stored = self._must(FEEDBACK, Feedback, feedback_id)
             tx.emit("feedback.updated", feedback_id, stored)
         return stored
@@ -809,7 +822,7 @@ class Store:
     def add_message(self, message: Message) -> Message:
         """Insert a message and its parts."""
         with self.transaction() as tx:
-            tx.insert(MESSAGES, _columns(MESSAGES, message))
+            tx.insert(MESSAGES, self._columns(MESSAGES, message))
             for part in message.parts:
                 self._put_part(tx, message.id, part)
             return self._must_message(message.id)
@@ -853,7 +866,7 @@ class Store:
         """
         with self.transaction() as tx:
             row = self._row(DEBRIEFS, debrief.session_id)
-            cols = _columns(DEBRIEFS, debrief)
+            cols = self._columns(DEBRIEFS, debrief)
             cols["run_id"] = run_id if run_id is not None or row is None else row["run_id"]
             cols["attempts"] = attempts if attempts is not None else (0 if row is None else row["attempts"])
             if row is None:
@@ -886,7 +899,7 @@ class Store:
     def add_profile_proposal(self, proposal: ProfileProposal) -> ProfileProposal:
         """Insert a proposal and emit ``profile_proposal.created``."""
         with self.transaction() as tx:
-            tx.insert(PROPOSALS, _columns(PROPOSALS, proposal))
+            tx.insert(PROPOSALS, self._columns(PROPOSALS, proposal))
             stored = self._must(PROPOSALS, ProfileProposal, proposal.id)
             tx.emit("profile_proposal.created", proposal.id, stored)
         return stored
@@ -913,7 +926,7 @@ class Store:
             if commit is not None:
                 update["commit"] = commit
             proposal = self._changed(current, update, set())
-            tx.update(PROPOSALS, _columns(PROPOSALS, proposal))
+            tx.update(PROPOSALS, self._columns(PROPOSALS, proposal))
             stored = self._must(PROPOSALS, ProfileProposal, proposal_id)
             tx.emit("profile_proposal.updated", proposal_id, stored)
         return stored

@@ -2,6 +2,9 @@
 
 import pytest
 
+import agent_corp.store.store as store_module
+from agent_corp.protocol.models import WorkItem
+
 from agent_corp.store import DuplicateKey, NotFound, StaleVersion, StoreError
 from tests.store.conftest import comment, work_item
 
@@ -71,3 +74,14 @@ def test_comments(store):
 def test_comment_needs_its_work_item(store):
     with pytest.raises(StoreError):
         store.add_comment(comment("01K6A0000000000000000000ZZ"))
+
+
+def test_model_field_without_a_column_needs_a_migration(store, monkeypatch):
+    class Grown(WorkItem):
+        new_field: str | None = None
+
+    monkeypatch.setattr(store_module, "WORK_ITEMS", store_module._Table("work_items", Grown, json=frozenset({"groups"})))
+    item = Grown.model_validate(work_item().model_dump())
+    with pytest.raises(StoreError, match=r"work_items has no column 'new_field'.*migration"):
+        store.create_work_item(item)
+    assert store.list_work_items() == [] and store.events_after() == []
