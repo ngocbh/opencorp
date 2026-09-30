@@ -32,13 +32,13 @@ class CompanyDefaults(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    provider_policy: str | None = 'default'
-    cost_cap_usd: Annotated[float | None, Field(ge=0.0)] = 5
-    idle_end: Annotated[str | None, Field(pattern='^[0-9]+[smhd]$')] = '2h'
-    max_turns: Annotated[int | None, Field(ge=1)] = 500
-    profile_max_chars: Annotated[int | None, Field(ge=1)] = 32000
-    side_chat_cost_cap_usd: Annotated[float | None, Field(ge=0.0)] = 1
-    side_seed_max_chars: Annotated[int | None, Field(ge=1)] = 200000
+    provider_policy: str = 'default'
+    cost_cap_usd: Annotated[float, Field(ge=0.0)] = 5
+    idle_end: Annotated[str, Field(pattern='^[0-9]+[smhd]$')] = '2h'
+    max_turns: Annotated[int, Field(ge=1)] = 500
+    profile_max_chars: Annotated[int, Field(ge=1)] = 32000
+    side_chat_cost_cap_usd: Annotated[float, Field(ge=0.0)] = 1
+    side_seed_max_chars: Annotated[int, Field(ge=1)] = 200000
 
 
 class Company(BaseModel):
@@ -62,8 +62,8 @@ class HarnessPolicy(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    sandbox: Literal['read-only', 'workspace-write'] | None = 'read-only'
-    network: bool | None = False
+    sandbox: Literal['read-only', 'workspace-write'] = 'read-only'
+    network: bool = False
 
 
 class Sop(BaseModel):
@@ -71,7 +71,7 @@ class Sop(BaseModel):
         extra='forbid',
     )
     flow: str
-    gate: bool | None = False
+    gate: bool = False
 
 
 class Routine(BaseModel):
@@ -100,15 +100,15 @@ class Person(BaseModel):
     kind: Literal['human', 'agent']
     title: str
     manager: Id | None
-    groups: list[Id] | None = []
+    groups: list[Id] = []
     home_office: str | None = None
     main: str | None = None
-    sops: Annotated[list[Sop] | None, Field(validate_default=True)] = []
-    skills: list[str] | None = []
-    harnesses: list[Literal['composer', 'codex', 'claude']] | None = []
+    sops: Annotated[list[Sop], Field(validate_default=True)] = []
+    skills: list[str] = []
+    harnesses: list[Literal['composer', 'codex', 'claude']] = []
     harness_policy: HarnessPolicy | None = None
-    routines: Annotated[list[Routine] | None, Field(validate_default=True)] = []
-    provider_policy: str | None = 'default'
+    routines: Annotated[list[Routine], Field(validate_default=True)] = []
+    provider_policy: str = 'default'
 
 
 class Group(BaseModel):
@@ -132,7 +132,7 @@ class AssetTool(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    risk: Literal['normal', 'gated'] | None = 'normal'
+    risk: Literal['normal', 'gated'] = 'normal'
 
 
 class Grant(BaseModel):
@@ -157,9 +157,9 @@ class Asset(BaseModel):
         ),
     ]
     kind: str
-    tools: Annotated[dict[str, AssetTool] | None, Field(validate_default=True)] = {}
-    grants: Annotated[list[Grant] | None, Field(validate_default=True)] = []
-    secrets: list[str] | None = []
+    tools: Annotated[dict[str, AssetTool], Field(validate_default=True)] = {}
+    grants: Annotated[list[Grant], Field(validate_default=True)] = []
+    secrets: list[str] = []
 
 
 class WorkItem(BaseModel):
@@ -180,13 +180,13 @@ class WorkItem(BaseModel):
     ]
     assignee: Id | None = None
     parent_id: Ulid | None = None
-    groups: list[Id] | None = []
-    gate: bool | None = False
+    groups: list[Id] = []
+    gate: bool = False
     resolved_by: Id | None = None
     on_behalf_of: Id | None = None
     summary: str | None = None
-    cost: Annotated[float | None, Field(ge=0.0)] = 0
-    version: Annotated[int | None, Field(ge=1)] = 1
+    cost: Annotated[float, Field(ge=0.0)] = 0
+    version: Annotated[int, Field(ge=1)] = 1
     created_at: Annotated[
         str,
         Field(
@@ -256,10 +256,10 @@ class Session(BaseModel):
     kind: Literal['main', 'side', 'profile_manager']
     harness_session_id: str | None = None
     work_item_id: Ulid | None = None
-    run_ids: list[str] | None = []
+    run_ids: list[str] = []
     question_id: Ulid | None = None
     seed: str | None = None
-    cost: Annotated[float | None, Field(ge=0.0)] = 0
+    cost: Annotated[float, Field(ge=0.0)] = 0
     cost_cap_usd: Annotated[
         CostCapUsd | None,
         Field(description='null means company.defaults.cost_cap_usd.'),
@@ -309,7 +309,7 @@ class ToolPart(BaseModel):
     tool: str
     state: Literal['pending', 'running', 'completed', 'error', 'interrupted']
     input: dict[str, Any]
-    output: Any | None = {}
+    output: Any = {}
     error: str | None = None
 
 
@@ -337,7 +337,7 @@ class QuestionOption(BaseModel):
         extra='forbid',
     )
     label: str
-    description: str | None = ''
+    description: str = ''
 
 
 class QuestionPage(BaseModel):
@@ -347,7 +347,7 @@ class QuestionPage(BaseModel):
     question: str
     header: str
     options: list[QuestionOption]
-    multi_select: bool | None = False
+    multi_select: bool = False
 
 
 class AnswerField(BaseModel):
@@ -392,15 +392,11 @@ class Question(BaseModel):
     work_item_id: Ulid | None = None
     title: str | None = None
     question: str
-    options: list[str] | None = []
+    options: list[str] = []
     questions: Questions | None = None
-    answer_schema: Annotated[
-        list[AnswerField] | None, Field(validate_default=True)
-    ] = []
-    discussion: Annotated[
-        list[DiscussionEntry] | None, Field(validate_default=True)
-    ] = []
-    gate: bool | None = False
+    answer_schema: Annotated[list[AnswerField], Field(validate_default=True)] = []
+    discussion: Annotated[list[DiscussionEntry], Field(validate_default=True)] = []
+    gate: bool = False
     status: Literal['open', 'answered', 'consumed', 'stale']
     answer: Annotated[
         Any | None,
@@ -444,7 +440,7 @@ class Profile(BaseModel):
     version: Annotated[
         str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
     ]
-    over_budget: bool | None = False
+    over_budget: bool = False
 
 
 class ProfileProposal(BaseModel):
@@ -482,7 +478,7 @@ class FollowUp(BaseModel):
         extra='forbid',
     )
     text: str
-    confirmed: bool | None = False
+    confirmed: bool = False
     work_item_id: Ulid | None = None
 
 
@@ -496,11 +492,11 @@ class Debrief(BaseModel):
     status: Annotated[str | None, Field(description="The debrief flow's own status.")] = (
         None
     )
-    artifacts: list[str] | None = []
-    decisions: list[str] | None = []
-    follow_ups: Annotated[list[FollowUp] | None, Field(validate_default=True)] = []
-    open_questions: list[str] | None = []
-    cost: Annotated[float | None, Field(ge=0.0)] = 0
+    artifacts: list[str] = []
+    decisions: list[str] = []
+    follow_ups: Annotated[list[FollowUp], Field(validate_default=True)] = []
+    open_questions: list[str] = []
+    cost: Annotated[float, Field(ge=0.0)] = 0
     updated_at: Annotated[
         str,
         Field(
@@ -527,7 +523,7 @@ class Feedback(BaseModel):
     ]
     text: str
     status: Literal['queued', 'learning', 'applied', 'learning_failed']
-    attempts: Annotated[int | None, Field(ge=0)] = 0
+    attempts: Annotated[int, Field(ge=0)] = 0
     commit: Annotated[
         GitId | None, Field(description='The profile commit once applied.')
     ] = None
@@ -541,6 +537,10 @@ class Feedback(BaseModel):
 
 
 class Event(BaseModel):
+    """
+    A metadata change, written to the outbox.
+    """
+
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -558,6 +558,10 @@ class Event(BaseModel):
 
 
 class LiveEvent(BaseModel):
+    """
+    Streamed content that is never stored as metadata. For part.delta, data is {message_id, part_id, text} and the text is appended.
+    """
+
     model_config = ConfigDict(
         extra='forbid',
     )
@@ -579,7 +583,7 @@ class CreateSessionRequest(BaseModel):
         ),
     ]
     cwd: str
-    harness: Literal['composer', 'codex', 'claude'] | None = 'composer'
+    harness: Literal['composer', 'codex', 'claude'] = 'composer'
 
 
 class PromptRequest(BaseModel):
@@ -610,7 +614,7 @@ class RepoIssue(BaseModel):
     path: str
     code: str
     message: str
-    severity: Literal['error', 'warning'] | None = 'error'
+    severity: Literal['error', 'warning'] = 'error'
 
 
 class HireRequest(BaseModel):
@@ -635,7 +639,7 @@ class HireRequest(BaseModel):
             pattern='^[0-9A-HJKMNP-TV-Z]{26}$',
         ),
     ] = None
-    confirm: bool | None = False
+    confirm: bool = False
 
 
 class HireResponse(BaseModel):
