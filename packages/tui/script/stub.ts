@@ -300,12 +300,17 @@ export function createFakeOffice(
     return updateQuestion(q, "question.created")
   }
 
-  /** Stores a session's debrief, as the office's debrief flow would, and publishes it. */
+  /**
+   * Stores a session's debrief, as the office's debrief flow would, and publishes it. A ready
+   * debrief ends a debriefing session; a pending one leaves it debriefing (the flow may still run).
+   */
   function addDebrief(sessionId: string, fields: Partial<Debrief> = {}) {
     const type = state.debriefs[sessionId] ? "debrief.updated" : "debrief.created"
-    const d: Debrief = { session_id: session(sessionId).id, state: "ready", updated_at: now(), ...fields }
+    const s = session(sessionId)
+    const d: Debrief = { session_id: s.id, state: "ready", updated_at: now(), ...fields }
     state.debriefs[sessionId] = d
     publish(type, sessionId, d)
+    if (d.state === "ready" && s.status === "debriefing") setStatus(s.id, "ended")
     return d
   }
   /** Moves a feedback item along the learning queue, as the office's backward job would. */
@@ -460,7 +465,19 @@ export function createFakeOffice(
       "/sessions/:id/interrupt",
       ({ params }) => (setStatus(params.id, "interrupted"), Response.json({ ok: true })),
     ],
-    ["POST", "/sessions/:id/end", ({ params }) => (setStatus(params.id, "ended"), Response.json({ ok: true }))],
+    [
+      "POST",
+      "/sessions/:id/end",
+      ({ params }) => {
+        // A main session is debriefed before it ends; addDebrief ends it. Other kinds end at once.
+        if (session(params.id).kind !== "main") setStatus(params.id, "ended")
+        else {
+          setStatus(params.id, "ending")
+          setStatus(params.id, "debriefing")
+        }
+        return Response.json({ ok: true })
+      },
+    ],
     [
       "POST",
       "/sessions/:id/cost-cap",
@@ -625,8 +642,8 @@ export function createFakeOffice(
         const s = session(params.session)
         const d = state.debriefs[s.id]
         if (d) return Response.json(d)
-        // Once a session reaches debriefing it has a debrief, pending until the flow writes it.
-        if (s.status === "debriefing" || s.status === "ended")
+        // A debriefing session has a debrief, pending until the flow stores it.
+        if (s.status === "debriefing")
           return Response.json({ session_id: s.id, state: "pending", updated_at: s.updated_at } satisfies Debrief)
         throw fail(404, "not_found", `no debrief for ${s.id}`)
       },

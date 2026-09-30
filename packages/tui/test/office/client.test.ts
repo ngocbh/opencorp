@@ -44,7 +44,8 @@ test("interrupt, end, and the cost cap", async () => {
   expect((await client().sessions.costCap(id, { cost_cap_usd: 5 })).cost_cap_usd).toBe(5)
   expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("invalid_body")
   await client().sessions.end(id)
-  expect((await client().sessions.get(id)).status).toBe("ended")
+  // A main session is debriefed before it ends.
+  expect((await client().sessions.get(id)).status).toBe("debriefing")
 })
 
 test("the first answer wins; the second gets 409 not_open", async () => {

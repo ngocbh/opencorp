@@ -15,11 +15,43 @@ test("GET is a 404 until the session is debriefing, then pending until addDebrie
   expect((await failure(client().debriefs.get(id))).code).toBe("not_found")
   office.setStatus(id, "debriefing")
   expect(await client().debriefs.get(id)).toMatchObject({ session_id: id, state: "pending" })
-  office.setStatus(id, "ended")
-  expect((await client().debriefs.get(id)).state).toBe("pending")
   office.addDebrief(id, { state: "ready", summary: "Fixed the flaky test", follow_ups: [{ text: "Add a CI job" }] })
   const d = await client().debriefs.get(id)
   expect([d.state, d.summary, d.follow_ups]).toEqual(["ready", "Fixed the flaky test", [{ text: "Add a CI job" }]])
+})
+
+test("an ended session with no debrief is a 404: only debriefing implies one", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  office.setStatus(id, "ended")
+  expect((await failure(client().debriefs.get(id))).code).toBe("not_found")
+})
+
+test("ending a main session goes ending, then debriefing; a ready debrief ends it", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const seen: string[] = []
+  let connected!: () => void
+  const open = new Promise<void>((r) => (connected = r))
+  const events = client().events.subscribe((e) => {
+    if (e.type === "connected") connected()
+    if (e.type === "meta" && e.event.type === "session.updated") seen.push((e.event.data as { status: string }).status)
+  })
+  await open
+  await client().sessions.end(id)
+  expect((await client().sessions.get(id)).status).toBe("debriefing")
+  office.addDebrief(id, { state: "pending" })
+  expect((await client().sessions.get(id)).status).toBe("debriefing")
+  office.addDebrief(id, { state: "ready" })
+  expect((await client().sessions.get(id)).status).toBe("ended")
+  await Bun.sleep(50)
+  events.close()
+  expect(seen).toEqual(["ending", "debriefing", "ended"])
+  // Other kinds aren't debriefed: they end at once.
+  const side = office.state.sessions[0]
+  Object.assign(side, { kind: "side", status: "idle" })
+  await client().sessions.end(side.id)
+  expect((await client().sessions.get(side.id)).status).toBe("ended")
 })
 
 test("confirm makes a work item per newly confirmed follow-up; indices are deduped, repeats are no-ops", async () => {
