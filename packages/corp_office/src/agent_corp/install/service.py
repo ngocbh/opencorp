@@ -91,7 +91,10 @@ def install(launch: Launch, host: Host, mode: str = "auto") -> Installed:
 
 
 def start(launch: Launch, host: Host) -> Installed:
-    """Start the installed office the way it was installed, falling back to a background process."""
+    """Start the installed office the way it was installed, falling back to a background process.
+
+    A fallback is recorded, so the record always names what runs the office.
+    """
     recorded = recorded_mode(launch)
     notes: list[str] = []
     if recorded is not None and recorded != "background":
@@ -101,6 +104,7 @@ def start(launch: Launch, host: Host) -> Installed:
         except ServiceError as exc:
             notes.append(f"{recorded}: {exc}")
     fallback.start_background(launch, host)
+    _record(launch, "background")
     return Installed("background", notes)
 
 

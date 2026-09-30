@@ -104,12 +104,14 @@ def test_start_falls_back_to_the_background_when_the_service_wont_start(tmp_path
     run = Runner([(["systemctl"], 1, "Unit is masked")])
     got = service.start(one, make_host(tmp_path, run, platform="linux", popen=lambda argv, **kw: started.append(argv)))
     assert got.mode == "background" and "Unit is masked" in got.notes[0] and started == [list(one.argv)]
+    assert recorded(one)["mode"] == "background"  # so the doctor doesn't call it a managed service
 
 
 def test_start_without_an_install_runs_it_in_the_background(tmp_path, one):
     started = []
     got = service.start(one, make_host(tmp_path, Runner(), popen=lambda argv, **kw: started.append(argv)))
     assert got.mode == "background" and started == [list(one.argv)]
+    assert recorded(one)["mode"] == "background"
 
 
 def test_waiting_for_an_office_that_never_answers_shows_the_log(tmp_path, one):
