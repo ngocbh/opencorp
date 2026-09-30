@@ -368,6 +368,36 @@
         },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       }
+    },
+    "Event": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "at", "subject_id", "data"],
+      "description": "A metadata change, written to the outbox.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": {
+          "enum": [
+            "work_item.created", "work_item.updated", "comment.created",
+            "session.created", "session.updated",
+            "question.created", "question.updated",
+            "feedback.created", "feedback.updated",
+            "debrief.created", "debrief.updated",
+            "profile.updated",
+            "profile_proposal.created", "profile_proposal.updated"
+          ]
+        },
+        "at": { "$ref": "#/$defs/Timestamp" },
+        "subject_id": { "type": "string" },
+        "data": { "type": "object", "description": "The entity after the change." }
+      }
+    },
+    "LiveEvent": {
+      "type": "object", "additionalProperties": false, "required": ["type", "session_id", "data"],
+      "description": "Streamed content that is never stored as metadata. For part.delta, data is {message_id, part_id, text} and the text is appended.",
+      "properties": {
+        "type": { "enum": ["message.updated", "part.updated", "part.delta"] },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "data": { "type": "object" }
+      }
     }
   }
 }
