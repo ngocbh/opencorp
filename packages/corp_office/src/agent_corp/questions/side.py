@@ -32,8 +32,8 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
 
     A pinned commit without the side chat flow (a company made before side chats) gets
     the packaged one. Raises ``HarnessError`` (``422``) when that path is taken by
-    something other than a file, or leads out of the commit's checkout, the asker isn't in the commit, or the folder is gone or
-    unsafe.
+    something other than a file, or leads out of the commit's checkout, the asker isn't
+    in the commit, or the folder is gone or unsafe.
     """
     pin = harness.git.pin(session.repo_commit)
     _ensure_flow(harness, pin)
