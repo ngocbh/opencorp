@@ -320,6 +320,23 @@ def test_a_run_that_cant_be_set_up_fails_the_session_and_says_so(harness, worksp
     assert [s.status for s in harness.store.list_sessions()] == ended == ["failed"]
 
 
+def test_nothing_the_harness_does_touches_the_store_after_close_all(harness, workspace):
+    sid = start(harness, workspace)
+    live = harness._live[sid]
+    exited = []
+    harness.hooks.worker_exited.append(lambda session, code: exited.append(code))
+    worker = live.worker
+    harness.close_all()
+    assert harness._closed  # the caller may close the store now
+    exited.clear()
+    ran = []
+    harness._jobs.put((ran.append, ("late job",)))
+    harness._jobs.put(None)
+    harness._dispatch()  # a dispatcher that outlived close_all
+    harness._exited(live, worker, 0)
+    assert ran == [] and exited == []
+
+
 def test_a_stopping_harness_refuses_new_worker_requests(harness):
     harness.close_all()
     with pytest.raises(RuntimeError, match="stopping"):

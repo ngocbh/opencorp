@@ -176,7 +176,7 @@ class Harness:
         self._lock = threading.RLock()
         self._live: dict[str, _Live] = {}
         self._stopping = False
-        self._closed = False  # set if close_all gave up waiting: the caller may close the store
+        self._closed = False  # set when close_all returns: the caller may close the store
         self._calls = 0
         self._calls_idle = threading.Condition()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -451,9 +451,9 @@ class Harness:
         """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
 
         Workspace calls are killed and office calls answered first, and no new worker
-        request is admitted. Returns once no worker request is still running, so the caller
-        can close the store; after 10 seconds it gives up, and worker frames that arrive
-        later no longer touch the store.
+        request is admitted. Waits up to 10 seconds for worker requests still running to
+        finish. Once it returns, the caller may close the store: worker frames, dispatcher
+        jobs, and worker exits that come later no longer touch it.
         """
         with self._lock:
             if self._stopping:
@@ -479,8 +479,8 @@ class Harness:
         # Request threads outlive their workers; let them leave the store before the office closes it.
         with self._calls_idle:
             if not self._calls_idle.wait_for(lambda: self._calls == 0, timeout=10):
-                self._closed = True
                 log.warning("harness: %d tool or ask_user calls still running at close", self._calls)
+            self._closed = True
 
     # --- turns ---------------------------------------------------------------------
 
@@ -636,6 +636,8 @@ class Harness:
                      and (w.summary or "").startswith(mine)), None)
 
     def _exited(self, live: _Live, worker: Worker, returncode: int) -> None:
+        if self._closed:
+            return
         session = self.store.get_session(live.session_id)
         self.hooks.fire("worker_exited", session, returncode)
         with self._lock:
@@ -698,6 +700,8 @@ class Harness:
 
     def _dispatch(self) -> None:
         while (job := self._jobs.get()) is not None:
+            if self._closed:
+                continue  # the store may be closed: drain without running
             fn, args = job
             try:
                 fn(*args)
