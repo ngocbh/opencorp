@@ -29,7 +29,10 @@ test("SIGHUP destroys the renderer, clears the title and removes its listener", 
 
   try {
     const { run } = await import("../src/app")
-    const task = Effect.runPromise(run({ ...createStub(office), args: {} }).pipe(Effect.provide(Global.layer)))
+    // The shape `ac` calls it with: no config, so the defaults apply.
+    const task = Effect.runPromise(
+      run({ socket: office.socket, cwd: "/tmp/proj", args: {} }).pipe(Effect.provide(Global.layer)),
+    )
     await renderUntil(setup, "Ask anything")
     process.emit("SIGHUP")
     await task

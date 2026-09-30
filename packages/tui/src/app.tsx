@@ -44,7 +44,7 @@ import { ToastProvider, useToast } from "./ui/toast"
 import { KVProvider, useKV } from "./context/kv"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
-import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
+import { TuiConfigProvider, useTuiConfig, resolve as resolveConfig, type TuiConfig } from "./config"
 import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
@@ -102,11 +102,16 @@ export type TuiInput = {
   /** The folder the TUI works in. */
   cwd: string
   args: Args
-  config: TuiConfig.Resolved
+  /** Keybinds and display settings; the defaults when omitted. */
+  config?: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
 }
 
-export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
+export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
+  const input = {
+    ...opts,
+    config: opts.config ?? resolveConfig({}, { terminalSuspend: process.platform !== "win32" }),
+  }
   const global = yield* Global.Service
   const exit = { epilogue: undefined as string | undefined, reason: undefined as unknown }
   const result = yield* Effect.scoped(
