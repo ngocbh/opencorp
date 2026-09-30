@@ -76,22 +76,27 @@ test("start runs the Python start with its flags", async () => {
   expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "start", "--home", "/h"], cwd: undefined }])
 })
 
-test("`ac start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python", async () => {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ac-home-")))
-  try {
-    const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "ac", "src", "main.ts"), "start"], {
-      env: { ...process.env, AGENT_CORP_HOME: home },
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "pipe",
-    })
-    const stderr = await new Response(proc.stderr).text()
-    expect(await proc.exited).toBe(3)
-    expect(stderr).toContain(`no office at ${home} yet; run \`ac onboard\``)
-  } finally {
-    fs.rmSync(home, { recursive: true, force: true })
-  }
-}, 30_000)
+// CI's ts job has no venv; the office job tests `start` itself.
+test.skipIf(!fs.existsSync(venvPython()))(
+  "`ac start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python",
+  async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ac-home-")))
+    try {
+      const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "ac", "src", "main.ts"), "start"], {
+        env: { ...process.env, AGENT_CORP_HOME: home },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "pipe",
+      })
+      const stderr = await new Response(proc.stderr).text()
+      expect(await proc.exited).toBe(3)
+      expect(stderr).toContain(`no office at ${home} yet; run \`ac onboard\``)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  },
+  30_000,
+)
 
 test("a running office answers the probe with one request; no socket is no office", async () => {
   // A short path: unix socket paths are limited to about 100 bytes.
