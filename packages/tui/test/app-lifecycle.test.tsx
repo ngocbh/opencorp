@@ -69,14 +69,11 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     version: "0.0.0-test",
     time: { created: 0, updated: 0 },
   }
-  // One configured provider keeps the connect-a-provider dialog from taking the keyboard.
-  const provider = { id: "stub", name: "Stub", source: "custom", env: [], options: {}, models: {} }
   let opened!: () => void
   const sessionOpened = new Promise<void>((resolve) => {
     opened = resolve
   })
   const calls = createFetch((url) => {
-    if (url.pathname === "/config/providers") return json({ providers: [provider], default: {} })
     if (url.pathname === "/session") return json([session])
     if (url.pathname === "/session/dummy") return json(session)
     if (["/session/dummy/message", "/session/dummy/todo", "/session/dummy/diff"].includes(url.pathname)) {

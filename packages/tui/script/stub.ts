@@ -4,14 +4,10 @@ import type { TuiInput } from "../src/app"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../test/fixture/tui-sdk"
 
-// One configured provider keeps the connect-a-provider dialog closed.
-const provider = { id: "stub", name: "Stub", source: "custom", env: [], options: {}, models: {} }
-
 /** Returns `run()` input (minus `args`) wired to the stub server. */
 export function createStub(): Omit<TuiInput, "args"> {
   const events = createEventSource()
   const { fetch } = createFetch((url) => {
-    if (url.pathname === "/config/providers") return json({ providers: [provider], default: {} })
     if (url.pathname === "/project/proj_test/directories") return json([])
   }, events)
   return {

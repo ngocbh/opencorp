@@ -87,15 +87,15 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
     })
     const offBase = keymap.registerLayer({
       mode: OPENCODE_BASE_MODE,
-      commands: [{ name: "model.list", run() {} }],
-      bindings: config.keybinds.gather("test.base", ["model.list"]),
+      commands: [{ name: "agent.cycle", run() {} }],
+      bindings: config.keybinds.gather("test.base", ["agent.cycle"]),
     })
     const activeCounts = () =>
       Object.fromEntries(
         Array.from(
           keymap.getCommandBindings({
             visibility: "active",
-            commands: ["session.list", "session.new", "session.page.up", "session.first", "model.list"],
+            commands: ["session.list", "session.new", "session.page.up", "session.first", "agent.cycle"],
           }),
           ([command, bindings]) => [command, bindings.length],
         ),
@@ -125,14 +125,14 @@ test("mode-less bindings stay active when opencode mode changes", async () => {
   const app = await testRender(() => <Harness />)
   try {
     expect(counts).toEqual({
-      base: { "session.list": 1, "session.new": 1, "session.page.up": 2, "session.first": 2, "model.list": 1 },
-      question: { "session.list": 1, "session.new": 1, "session.page.up": 2, "session.first": 2, "model.list": 0 },
+      base: { "session.list": 1, "session.new": 1, "session.page.up": 2, "session.first": 2, "agent.cycle": 1 },
+      question: { "session.list": 1, "session.new": 1, "session.page.up": 2, "session.first": 2, "agent.cycle": 0 },
       autocomplete: {
         "session.list": 1,
         "session.new": 1,
         "session.page.up": 2,
         "session.first": 2,
-        "model.list": 0,
+        "agent.cycle": 0,
       },
     })
   } finally {
