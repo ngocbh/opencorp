@@ -8,6 +8,7 @@ from agent_corp.store.store import (
     Store,
     StoreError,
     Tx,
+    WorkedFolder,
     new_id,
 )
 
@@ -19,6 +20,7 @@ __all__ = [
     "Store",
     "StoreError",
     "Tx",
+    "WorkedFolder",
     "migrate",
     "new_id",
 ]

@@ -24,6 +24,7 @@ from agent_corp.protocol import now
 from agent_corp.protocol.models import (
     Comment,
     Event,
+    Session,
     WorkItem,
 )
 from agent_corp.store.migrate import migrate
@@ -62,6 +63,14 @@ class StaleVersion(StoreError):
 
 
 @dataclass(frozen=True)
+class WorkedFolder:
+    """A folder a person has had a session in, for the picker."""
+
+    cwd: str
+    last_at: str
+
+
+@dataclass(frozen=True)
 class _Table:
     name: str
     model: type[BaseModel]
@@ -73,6 +82,7 @@ class _Table:
 
 WORK_ITEMS = _Table("work_items", WorkItem, json=frozenset({"groups"}))
 COMMENTS = _Table("comments", Comment)
+SESSIONS = _Table("sessions", Session, derived=frozenset({"run_ids"}))
 
 
 def _columns(table: _Table, model: BaseModel) -> dict[str, Any]:
@@ -404,3 +414,120 @@ class Store:
     def list_comments(self, work_item_id: str) -> list[Comment]:
         """A work item's comments, oldest first."""
         return self._list(COMMENTS, Comment, {"work_item_id": work_item_id}, "created_at, rowid")
+
+    # --- sessions, runs, worked folders -------------------------------------------------
+
+    def _session(self, row: sqlite3.Row) -> Session:
+        runs = self._conn().execute(
+            "SELECT run_id FROM session_runs WHERE session_id = ? ORDER BY seq", (row["id"],)
+        ).fetchall()
+        return _model(SESSIONS, row, Session, run_ids=[r[0] for r in runs])
+
+    def _insert_run(self, tx: Tx, session_id: str, run_id: str) -> None:
+        try:
+            tx.execute(
+                "INSERT INTO session_runs (session_id, run_id, seq) "
+                "VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM session_runs WHERE session_id = ?))",
+                (session_id, run_id, session_id),
+            )
+        except sqlite3.IntegrityError as exc:
+            if "UNIQUE" in str(exc):
+                raise DuplicateKey(f"run {run_id} already belongs to a session") from exc
+            raise NotFound(f"no session {session_id}") from exc
+
+    def create_session(self, session: Session) -> Session:
+        """Insert a session (and its ``run_ids``) and emit ``session.created``."""
+        with self.transaction() as tx:
+            tx.insert(SESSIONS, _columns(SESSIONS, session))
+            for run_id in session.run_ids:
+                self._insert_run(tx, session.id, run_id)
+            stored = self._must_session(session.id)
+            tx.emit("session.created", session.id, stored)
+        return stored
+
+    def get_session(self, session_id: str) -> Session | None:
+        """The session with its runs, or ``None``."""
+        with self._read():
+            row = self._row(SESSIONS, session_id)
+            return None if row is None else self._session(row)
+
+    def _must_session(self, session_id: str) -> Session:
+        found = self.get_session(session_id)
+        if found is None:
+            raise NotFound(f"no session {session_id}")
+        return found
+
+    def list_sessions(
+        self,
+        *,
+        person: str | None = None,
+        status: str | Iterable[str] | None = None,
+        kind: str | None = None,
+        limit: int | None = None,
+    ) -> list[Session]:
+        """Sessions, most recently updated first, optionally filtered."""
+        status = status if status is None or isinstance(status, str) else tuple(status)
+        with self._read() as conn:
+            clauses, params = [], []
+            for name, value in {"person": person, "status": status, "kind": kind}.items():
+                if value is None:
+                    continue
+                if isinstance(value, tuple):
+                    clauses.append(f"{name} IN ({', '.join('?' * len(value))})")
+                    params.extend(value)
+                else:
+                    clauses.append(f"{name} = ?")
+                    params.append(value)
+            where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM sessions{where} ORDER BY updated_at DESC, rowid DESC LIMIT ?",
+                (*params, -1 if limit is None else limit),
+            ).fetchall()
+            return [self._session(r) for r in rows]
+
+    def recent_sessions(self, person: str, *, limit: int = 20) -> list[Session]:
+        """A person's sessions, most recently updated first."""
+        return self.list_sessions(person=person, limit=limit)
+
+    def session_for_run(self, run_id: str) -> Session | None:
+        """The session a run belongs to, or ``None``."""
+        row = self._conn().execute("SELECT session_id FROM session_runs WHERE run_id = ?", (run_id,)).fetchone()
+        return None if row is None else self.get_session(row[0])
+
+    def update_session(self, session_id: str, **changes: Any) -> Session:
+        """Change fields of a session and emit ``session.updated`` (``updated_at`` defaults to now)."""
+        with self.transaction() as tx:
+            current = self._must_session(session_id)
+            changes = {"updated_at": now(), **changes}
+            session = self._changed(current, changes, {"id", "run_ids", "created_at"})
+            tx.update(SESSIONS, _columns(SESSIONS, session))
+            stored = self._must_session(session_id)
+            tx.emit("session.updated", session_id, stored)
+        return stored
+
+    def add_session_run(self, session_id: str, run_id: str) -> Session:
+        """Append a run to a session and emit ``session.updated``."""
+        with self.transaction() as tx:
+            self._must_session(session_id)
+            self._insert_run(tx, session_id, run_id)
+            tx.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now(), session_id))
+            stored = self._must_session(session_id)
+            tx.emit("session.updated", session_id, stored)
+        return stored
+
+    def touch_worked_folder(self, person: str, cwd: str, *, at: str | None = None) -> None:
+        """Record that ``person`` worked in ``cwd`` at ``at`` (default now)."""
+        with self.transaction() as tx:
+            tx.execute(
+                "INSERT INTO worked_folders (person, cwd, last_at) VALUES (?, ?, ?) "
+                "ON CONFLICT (person, cwd) DO UPDATE SET last_at = excluded.last_at",
+                (person, cwd, at or now()),
+            )
+
+    def worked_folders(self, person: str, *, limit: int = 20) -> list[WorkedFolder]:
+        """A person's folders, most recent first."""
+        rows = self._conn().execute(
+            "SELECT cwd, last_at FROM worked_folders WHERE person = ? ORDER BY last_at DESC, cwd LIMIT ?",
+            (person, limit),
+        ).fetchall()
+        return [WorkedFolder(r["cwd"], r["last_at"]) for r in rows]
