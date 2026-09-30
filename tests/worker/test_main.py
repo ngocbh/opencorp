@@ -1,3 +1,5 @@
+import os
+
 from agent_corp.worker import main as main_module
 
 
@@ -25,9 +27,10 @@ def test_after_its_last_frame_a_worker_answers_steers_until_the_office_closes(wo
     office.send({"type": "steer", "node_id": "reply", "text": "too late"})
     assert office.recv() == {"type": "steer_left", "node_id": "reply", "texts": ["too late"]}
     assert thread.is_alive()
+    assert not os.get_inheritable(out["fd"])  # so no process the run starts holds the channel open
     office.close_send()
     thread.join(5)
-    assert out == {"code": main_module.EXIT_FAILED}
+    assert out.get("code") == main_module.EXIT_FAILED
 
 
 def test_a_worker_stops_waiting_for_the_office_after_a_while(worker_main, make_job, monkeypatch):
@@ -36,4 +39,4 @@ def test_a_worker_stops_waiting_for_the_office_after_a_while(worker_main, make_j
     office.send(bad_start(make_job))
     assert office.recv()["type"] == "error"
     thread.join(5)
-    assert out == {"code": main_module.EXIT_FAILED}
+    assert out.get("code") == main_module.EXIT_FAILED

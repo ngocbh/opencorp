@@ -137,6 +137,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="agent_corp.worker.main")
     parser.add_argument("--fd", type=int, required=True)
     args = parser.parse_args(argv)
+    # pass_fds made it inheritable; a tool's subprocess holding it would keep the channel open.
+    os.set_inheritable(args.fd, False)
     channel = Channel(socket.socket(fileno=args.fd))
     try:
         start = channel.recv()

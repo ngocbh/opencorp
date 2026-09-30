@@ -106,8 +106,8 @@ def worker_main(monkeypatch):
     """Run the worker's ``main`` on a thread over a socket pair.
 
     Calling the fixture starts it and returns the office's ``Channel``, the thread, and a dict
-    that gets ``code`` when ``main`` returns (or ``exit`` if the worker would have called
-    ``os._exit``).
+    holding the worker's ``fd`` that gets ``code`` when ``main`` returns (or ``exit`` if the
+    worker would have called ``os._exit``).
     """
     runs: list[tuple[Channel, threading.Thread]] = []
 
@@ -118,11 +118,13 @@ def worker_main(monkeypatch):
 
     def start() -> tuple[Channel, threading.Thread, dict[str, Any]]:
         office_sock, worker_sock = socket.socketpair()
-        out: dict[str, Any] = {}
+        fd = worker_sock.detach()
+        os.set_inheritable(fd, True)  # as pass_fds leaves it in a real worker
+        out: dict[str, Any] = {"fd": fd}
 
         def target() -> None:
             try:
-                out["code"] = main(["--fd", str(worker_sock.detach())])
+                out["code"] = main(["--fd", str(fd)])
             except SystemExit as exc:
                 out["exit"] = exc.code
 
