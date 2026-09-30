@@ -71,7 +71,8 @@ class CompanyGit:
         if not paths:  # `git commit --` with no paths would commit the whole index
             return self.head()
         with self.lock:
-            present = [p for p in paths if (self.root / p).exists()]
+            # lexists: a tracked symlink whose target is gone is still present.
+            present = [p for p in paths if os.path.lexists(self.root / p)]
             if present:
                 self._git("add", "--", *_literal(present))
             if gone := [p for p in paths if p not in present]:  # a deletion, maybe already staged

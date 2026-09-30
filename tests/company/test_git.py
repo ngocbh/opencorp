@@ -218,3 +218,13 @@ def test_commit_of_no_paths_is_a_no_op(g, company):
     head = g.head()
     assert g.commit([], "nothing") == head
     assert _git(company, "status", "--porcelain") == "M  groups/eng.yaml"
+
+
+def test_broken_symlink_is_committed_not_deleted(g, company):
+    (company / "link").symlink_to("nowhere")
+    g.commit(["link"], "add link")
+    assert g.blob_id("link") is not None
+    (company / "link").unlink()
+    (company / "link").symlink_to("elsewhere")
+    g.commit(["link"], "move link")
+    assert _git(company, "cat-file", "-p", "HEAD:link") == "elsewhere"
