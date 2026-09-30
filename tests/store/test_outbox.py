@@ -1,6 +1,7 @@
 """Transactions, the outbox, and listeners."""
 
 import asyncio
+import sqlite3
 import threading
 
 import pytest
@@ -192,3 +193,37 @@ def test_one_task_nests_transactions(store):
 
     asyncio.run(main())
     assert store.get_work_item(item.id) is not None
+
+
+def _fail_whole_transaction_on(store, cwd):
+    # RAISE(ROLLBACK) makes SQLite end the whole transaction, as SQLITE_FULL or an I/O error can.
+    store._conn().execute(
+        "CREATE TEMP TRIGGER boom BEFORE INSERT ON worked_folders "
+        f"WHEN NEW.cwd = '{cwd}' BEGIN SELECT RAISE(ROLLBACK, 'disk full'); END"
+    )
+
+
+def test_savepoint_keeps_the_error_when_sqlite_ended_the_transaction(store):
+    _fail_whole_transaction_on(store, "/boom")
+    item = work_item()
+    with pytest.raises(sqlite3.IntegrityError, match="disk full"), store.transaction():
+        store.create_work_item(item)
+        with store.transaction():
+            store.touch_worked_folder("minh", "/boom")
+    assert store.get_work_item(item.id) is None and store.events_after() == []
+    store.touch_worked_folder("minh", "/ok")
+    assert [f.cwd for f in store.worked_folders("minh")] == ["/ok"]
+
+
+def test_no_writes_after_sqlite_ended_the_transaction(store):
+    _fail_whole_transaction_on(store, "/boom")
+    later = work_item()
+    with pytest.raises(StoreError, match="rolled back"), store.transaction() as tx:
+        with pytest.raises(sqlite3.IntegrityError):
+            store.touch_worked_folder("minh", "/boom")
+        try:
+            store.create_work_item(later)
+        finally:
+            with pytest.raises(StoreError, match="rolled back"):
+                tx.execute("UPDATE work_items SET summary = 'x'")
+    assert store.get_work_item(later.id) is None and store.events_after() == []

@@ -237,15 +237,25 @@ class Tx:
         self.events: list[Event] = []
         self.depth = 0
 
+    def check_open(self) -> None:
+        """Raise ``StoreError`` if SQLite has already rolled this transaction back.
+
+        Some errors (a full disk, an I/O error) end the whole transaction. Without this
+        check, later statements would run and commit one by one in autocommit mode.
+        """
+        if not self.conn.in_transaction:
+            raise StoreError("SQLite rolled back this transaction after an error; start a new one")
+
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         """Run one statement in this transaction."""
+        self.check_open()
         return self.conn.execute(sql, tuple(params))
 
     def emit(self, type: str, subject_id: str, data: BaseModel | dict[str, Any]) -> Event:
         """Insert an ``Event`` into the outbox; listeners get it once the transaction commits."""
         payload = data.model_dump(mode="json") if isinstance(data, BaseModel) else data
         event = Event(id=new_id(), type=type, at=now(), subject_id=subject_id, data=payload)
-        self.conn.execute(
+        self.execute(
             "INSERT INTO outbox (id, type, subject_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
             (event.id, event.type, event.subject_id, json.dumps(event.data), event.at),
         )
@@ -256,7 +266,7 @@ class Tx:
         names = list(cols)
         sql = f"INSERT INTO {table.name} ({', '.join(_quote(names))}) VALUES ({', '.join('?' * len(names))})"
         try:
-            self.conn.execute(sql, tuple(cols.values()))
+            self.execute(sql, cols.values())
         except sqlite3.IntegrityError as exc:
             if "UNIQUE" in str(exc):
                 raise DuplicateKey(f"{table.name}: {exc}") from exc
@@ -265,7 +275,7 @@ class Tx:
     def update(self, table: _Table, cols: dict[str, Any]) -> None:
         names = [n for n in cols if n != table.key]
         sets = ", ".join(f"{q} = ?" for q in _quote(names))
-        self.conn.execute(
+        self.execute(
             f'UPDATE {table.name} SET {sets} WHERE "{table.key}" = ?',
             (*(cols[n] for n in names), cols[table.key]),
         )
@@ -353,6 +363,7 @@ class Store:
             tx = self._local.tx = Tx(conn, _current_task())
             try:
                 yield tx
+                tx.check_open()
                 conn.execute("COMMIT")
             except BaseException:
                 if conn.in_transaction:
@@ -363,6 +374,7 @@ class Store:
             self._deliver(tx.events)
 
     def _savepoint(self, tx: Tx) -> Iterator[Tx]:
+        tx.check_open()
         tx.depth += 1
         name = f"sp{tx.depth}"
         mark = len(tx.events)
@@ -370,8 +382,11 @@ class Store:
         try:
             yield tx
         except BaseException:
-            tx.conn.execute(f"ROLLBACK TO {name}")
-            tx.conn.execute(f"RELEASE {name}")
+            # If the error made SQLite end the whole transaction, the savepoint is gone:
+            # keep the original error rather than raising "no such savepoint".
+            if tx.conn.in_transaction:
+                tx.conn.execute(f"ROLLBACK TO {name}")
+                tx.conn.execute(f"RELEASE {name}")
             del tx.events[mark:]
             raise
         else:
