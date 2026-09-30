@@ -40,8 +40,9 @@ test("create a session, prompt it, list it by person", async () => {
 test("interrupt, end, and the cost cap", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
+  await client().sessions.prompt(id, { text: "go" })
   await client().sessions.interrupt(id)
-  expect((await client().sessions.get(id)).status).toBe("interrupted")
+  expect((await client().sessions.get(id)).status).toBe("idle")
   expect((await client().sessions.costCap(id, { cost_cap_usd: 5 })).cost_cap_usd).toBe(5)
   expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("invalid_body")
   await client().sessions.end(id)

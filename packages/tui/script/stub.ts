@@ -22,6 +22,7 @@ import { createTwoFilesPatch } from "diff"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
+import { isTurn } from "../src/office/turn"
 import { HANDLE } from "../src/routes/picker/people"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 
@@ -84,6 +85,11 @@ export const OFFICE_501_ROUTES = [
 ]
 
 const now = () => new Date().toISOString()
+
+/** Words a side chat refuses, in any case: only the office ends a side run. */
+const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
+/** Statuses with a live run, which take interrupt and end. */
+const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
 
 /** A git blob id for `text`, so fake profile versions look like the office's. */
 export function blobId(text: string) {
@@ -174,6 +180,7 @@ export function createFakeOffice(
   const debriefRuns = new Map<string, string>()
 
   const fail = (status: number, error: string, message: string) => new Fail(status, error, message)
+  const refused = () => fail(422, "refused", "use /back to return to the question")
   const need = <T>(value: T | undefined, what: string): T => {
     if (value === undefined) throw fail(404, "not_found", `no ${what}`)
     return value
@@ -262,11 +269,40 @@ export function createFakeOffice(
     live({ type: "message.updated", session_id: sessionId, data: structuredClone(msg) as unknown as LiveEvent["data"] })
     return msg
   }
+  /** A session with a live run, else the office's `409 not_live`. */
+  function liveSession(id: string) {
+    const s = session(id)
+    if (!LIVE.includes(s.status)) throw fail(409, "not_live", `session ${id} has no live run`)
+    return s
+  }
+  /** Adds a side chat's user message to its question's discussion. */
+  function discuss(side: Session, text: string) {
+    const q = side.question_id ? state.questions[side.question_id] : undefined
+    if (!q) return
+    updateQuestion({ ...q, discussion: [...(q.discussion ?? []), { role: "user", text }], updated_at: now() })
+  }
+  /**
+   * The office's prompt: answers the open turn and starts a reply; while a reply runs it is a
+   * steer (written to the transcript, no new reply).
+   */
   function turn(id: string, body: any) {
     check(str(body?.text), "text must be a non-empty string")
-    const s = session(id)
-    if (s.status === "ended" || s.status === "failed") throw fail(409, "session_ended", `session ${id} has ended`)
+    const s = liveSession(id)
+    if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
+    if (s.kind === "side" && SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
     userMessage(id, body.text)
+    if (s.kind === "side") discuss(s, body.text)
+    const open = Object.values(state.questions).find((q) => q.session_id === id && q.status === "open" && isTurn(q))
+    if (open)
+      updateQuestion({
+        ...open,
+        status: "answered",
+        answer: body.text,
+        answer_kind: "text",
+        answered_by: human(),
+        updated_at: now(),
+      })
+    if (s.status === "busy") return Response.json({ ok: true })
     setStatus(id, "busy")
     for (const fn of prompts) fn(id, { text: body.text })
     return Response.json({ ok: true })
@@ -281,7 +317,17 @@ export function createFakeOffice(
   function close(id: string, fields: Partial<Question>) {
     const q = question(id)
     if (q.status !== "open") throw fail(409, "not_open", `question ${id} is ${q.status}, not open`)
+    // The office ends a question's side chat when the question closes.
+    const side = state.sessions.find((s) => s.id === q.side_session_id)
+    if (side && side.status !== "ended") setStatus(side.id, "ended")
     return updateQuestion({ ...q, status: "answered", answered_by: human(), updated_at: now(), ...fields })
+  }
+  /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
+  function openModelQuestion(id: string, code: string) {
+    const q = question(id)
+    if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+    if (q.source === "human_input") throw fail(422, code, `question ${q.id} is a human_input`)
+    return q
   }
   /** Opens a question in a session (the seeded one by default), as a harness `ask_user` would. */
   function addQuestion(fields: Partial<Question>) {
@@ -300,6 +346,11 @@ export function createFakeOffice(
       ...fields,
     }
     return updateQuestion(q, "question.created")
+  }
+  /** Opens a session's next turn, as the chat flow's `chat#N/ask` human_input does when a reply ends. */
+  function openTurn(sessionId: string) {
+    const n = Object.values(state.questions).filter((q) => q.session_id === sessionId && isTurn(q)).length + 1
+    return addQuestion({ session_id: sessionId, source: "human_input", node_id: `chat#${n}/ask`, question: "You:" })
   }
 
   /**
@@ -467,13 +518,21 @@ export function createFakeOffice(
     [
       "POST",
       "/sessions/:id/interrupt",
-      ({ params }) => (setStatus(params.id, "interrupted"), Response.json({ ok: true })),
+      ({ params }) => {
+        const s = liveSession(params.id)
+        // Esc answers the model's open questions, and the chat waits for the next message.
+        for (const q of Object.values(state.questions))
+          if (q.session_id === s.id && q.status === "open" && q.source === "ask_user")
+            close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
+        if (s.status === "busy" || s.status === "starting") setStatus(s.id, "idle")
+        return Response.json({ ok: true })
+      },
     ],
     [
       "POST",
       "/sessions/:id/end",
       ({ params }) => {
-        const s = session(params.id)
+        const s = liveSession(params.id)
         if (s.status === "ending") return Response.json({ ok: true })
         setStatus(s.id, "ending")
         // A main session is debriefed before it ends, and ends once its debrief is written.
@@ -539,25 +598,42 @@ export function createFakeOffice(
         check(str(body?.text), "text must be a non-empty string")
         const q = question(params.id)
         if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
-        const parent = session(q.session_id)
-        const side = newSession({ person: q.asker, cwd: parent.cwd, kind: "side", question_id: q.id, seed: q.question })
-        userMessage(side.id, body.text)
-        updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
-        return Response.json(side)
+        if (SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
+        // One side session per question: later messages reach it too, and an ended one restarts.
+        let side = state.sessions.find((x) => x.id === q.side_session_id)
+        if (!side) {
+          const cwd = session(q.session_id).cwd
+          side = newSession({ person: q.asker, cwd, kind: "side", question_id: q.id, seed: q.question })
+          updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
+        } else if (!LIVE.includes(side.status)) setStatus(side.id, "idle")
+        turn(side.id, body)
+        return Response.json(session(side.id))
       },
     ],
     [
       "POST",
       "/questions/:id/send-back",
       ({ params, body }) => {
-        check(str(body?.note), "note must be a non-empty string")
-        return Response.json(close(params.id, { answer: body.note, answer_kind: "sent_back" }))
+        check(typeof body?.note === "string", "note must be a string")
+        const q = openModelQuestion(params.id, "cannot_send_back")
+        if (!q.discussion?.length && !q.carried_from)
+          throw fail(422, "no_discussion", `question ${q.id} has no discussion to send back`)
+        // A non-blank note becomes the discussion's last entry.
+        const note = body.note.trim() ? [{ role: "user" as const, text: body.note }] : []
+        const discussion = [...(q.discussion ?? []), ...note]
+        return Response.json(close(q.id, { answer: null, answer_kind: "sent_back", discussion }))
       },
     ],
     [
       "POST",
       "/questions/:id/stop",
-      ({ params }) => Response.json(close(params.id, { answer: null, answer_kind: "interrupted" })),
+      ({ params }) => {
+        const q = openModelQuestion(params.id, "cannot_stop")
+        // Stopping a live chat's ask_user is Esc on that chat: the reply stops and the chat waits.
+        const asker = session(q.session_id)
+        if (q.source === "ask_user" && asker.kind === "main" && asker.status === "busy") setStatus(asker.id, "idle")
+        return Response.json(close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" }))
+      },
     ],
     ["GET", "/profiles/:person", ({ params }) => Response.json(profile(params.person))],
     [
@@ -789,6 +865,7 @@ export function createFakeOffice(
     emit,
     live,
     addQuestion,
+    openTurn,
     setStatus,
     propose,
     addDebrief,
@@ -820,8 +897,8 @@ export function createFakeOffice(
       }
     },
     /**
-     * Calls `fn` after each prompt or steer is recorded and the session is set busy, and after a
-     * new profile manager session's first message (that session stays `starting`).
+     * Calls `fn` after a prompt that starts a reply is recorded and the session is set busy (not for
+     * a steer), and after a new profile manager session's first message (that session stays `starting`).
      */
     onPrompt(fn: (sessionId: string, req: PromptRequest) => void) {
       prompts.push(fn)
