@@ -2,8 +2,15 @@ import threading
 import time
 
 import pytest
+from agent_composer.tools import ToolSet
 
-from agent_corp.tools.workspace import AuditRecord, ToolOutcome, WorkspaceTools, TOOL_NAMES
+from agent_corp.tools.workspace import (
+    TOOL_NAMES,
+    AuditRecord,
+    ToolOutcome,
+    WorkspaceTools,
+    workspace_tool_functions,
+)
 
 pytestmark = pytest.mark.usefixtures("sandbox_available")
 
@@ -80,3 +87,28 @@ def test_every_tool_returns_an_audit_record(tools):
 def test_unknown_tool(tools):
     with pytest.raises(ValueError, match="unknown workspace tool"):
         tools.call("rm", {})
+
+
+def test_composer_accepts_the_tool_functions():
+    seen = []
+    functions = workspace_tool_functions(lambda name, args: seen.append((name, args)) or "ok")
+    assert set(functions) == set(TOOL_NAMES)
+    toolset = ToolSet(functions)
+    schemas = {t.name: set(t.tool_call_schema.model_fields) for t in toolset.resolve(list(TOOL_NAMES))}
+    assert schemas == {
+        "read_file": {"path", "offset", "limit"},
+        "write_file": {"path", "content"},
+        "edit_file": {"path", "old", "new", "replace_all"},
+        "list": {"path"},
+        "search": {"pattern", "path", "glob"},
+        "shell": {"command", "timeout"},
+    }
+    assert all(t.description for t in toolset.resolve(list(TOOL_NAMES)))
+    assert toolset.invoke("list", {}) == "ok"
+    assert seen == [("list", {"path": "."})]
+
+
+def test_tool_functions_drive_workspace_tools(tools, ws):
+    toolset = ToolSet(workspace_tool_functions(lambda name, args: tools.call(name, args).output))
+    assert toolset.invoke("write_file", {"path": "n.txt", "content": "hi"}) == "wrote 2 bytes to n.txt"
+    assert toolset.invoke("shell", {"command": "cat n.txt"}) == "hi\n[exit 0]"

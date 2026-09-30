@@ -189,3 +189,65 @@ def _summarize(args: Mapping[str, Any]) -> str:
             text = text[: _MAX_ARG_CHARS - 3] + "..."
         parts.append(f"{key}={text}")
     return " ".join(parts)
+
+
+def workspace_tool_functions(call: Callable[[str, dict[str, Any]], str]) -> dict[str, Callable[..., str]]:
+    """Return the model-facing workspace tools, keyed by tool name, for a composer run.
+
+    Each is a plain function whose signature is the tool's schema and whose docstring
+    is its description; calling it forwards `(name, args)` to `call` and returns its
+    result. Pass the dict as the run's `workspace` tool group.
+    """
+
+    def read_file(path: str, offset: int = 0, limit: int | None = None) -> str:
+        """Read a text file in the workspace.
+
+        `path` is relative to the workspace. `offset` is the first line to return
+        (0-based) and `limit` the number of lines; omit both for the whole file.
+        """
+        return call("read_file", {"path": path, "offset": offset, "limit": limit})
+
+    def write_file(path: str, content: str) -> str:
+        """Create or overwrite a file in the workspace with `content`.
+
+        Parent directories are created. `path` is relative to the workspace.
+        """
+        return call("write_file", {"path": path, "content": content})
+
+    def edit_file(path: str, old: str, new: str, replace_all: bool = False) -> str:
+        """Replace the exact text `old` with `new` in a workspace file.
+
+        `old` must appear exactly once, unless `replace_all` is true; include enough
+        surrounding text to make it unique.
+        """
+        return call("edit_file", {"path": path, "old": old, "new": new, "replace_all": replace_all})
+
+    def list_dir(path: str = ".") -> str:
+        """List a workspace directory; subdirectories end with `/`."""
+        return call("list", {"path": path})
+
+    def search(pattern: str, path: str = ".", glob: str | None = None) -> str:
+        """Search workspace files for a Python regex; returns `file:line:text` lines.
+
+        `path` limits the search to a file or directory. `glob` (such as `*.py`) filters
+        file names. `.git` and binary files are skipped.
+        """
+        return call("search", {"pattern": pattern, "path": path, "glob": glob})
+
+    def shell(command: str, timeout: float | None = None) -> str:
+        """Run a `/bin/sh` command in the workspace and return its output and exit status.
+
+        The command runs in a sandbox: only the workspace and a private temp directory
+        are available, the network may be off, and anything it starts is stopped when
+        it returns. `timeout` is in seconds (default 120, at most 600).
+        """
+        return call("shell", {"command": command, "timeout": timeout})
+
+    return {
+        "read_file": read_file,
+        "write_file": write_file,
+        "edit_file": edit_file,
+        "list": list_dir,
+        "search": search,
+        "shell": shell,
+    }
