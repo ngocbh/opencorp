@@ -600,3 +600,17 @@ def test_a_turn_that_opens_held_with_messages_queued_does_not_idle_end(make_harn
     harness.set_cost_cap(sid, 20)
     wait_for(lambda: texts(harness, sid)[-1:] == ["after the raise"], what="the held turn")
     assert "more" in asked(fake_llm, 2)
+
+
+def test_an_end_status_hook_picks_the_status_of_a_normal_end(harness, fake_llm, workspace):
+    ended = []
+    harness.hooks.end_status += [lambda s: None, lambda s: "debriefing" if s.kind == "main" else None,
+                                 lambda s: "ignored"]
+    harness.hooks.session_ended.append(lambda s: ended.append(s.status))
+    fake_llm.script({"content": "ok"})
+    sid = start(harness, workspace)
+    harness.end(sid)
+    wait_for(lambda: ended, what="session_ended")
+    session = harness.store.get_session(sid)
+    assert ended == ["debriefing"] and session.status == "debriefing"
+    assert harness.store.get_work_item(session.work_item_id).status == "done"
