@@ -1,10 +1,15 @@
 """The office's clone of the company repo: pinned worktrees, the repo lock, commits."""
 
+import os
+import shutil
+import stat
 import subprocess
 import threading
 from pathlib import Path
 
 _IDENTITY = ["-c", "user.name=agent-corp office", "-c", "user.email=office@agent-corp.local"]
+_PIN_MARKER = ".agent-corp-pin"
+_WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 
 
 class CompanyGit:
@@ -44,3 +49,28 @@ class CompanyGit:
                 return self.head()
             self._git("commit", "-q", "-m", message, "--", *paths)
             return self.head()
+
+    def pin(self, commit: str) -> Path:
+        """Return a read-only worktree for ``commit``, keyed by full sha, creating it if needed.
+
+        The marker file is written last, so a dir without it (a crash mid-setup, or a
+        half-deleted dir) is rebuilt from scratch. Only files are made read-only, so
+        ``git worktree remove --force`` and ``shutil.rmtree`` still work on a pin.
+        """
+        sha = self.resolve(commit)
+        path = self.worktrees / sha
+        with self.lock:
+            if not (path / _PIN_MARKER).is_file():
+                if path.exists():
+                    shutil.rmtree(path)
+                self._git("worktree", "prune")  # drop the registration of a removed dir
+                self.worktrees.mkdir(parents=True, exist_ok=True)
+                self._git("worktree", "add", "--detach", str(path), sha)
+                for dirpath, _, files in os.walk(path):
+                    for name in files:
+                        p = Path(dirpath, name)
+                        # chmod follows symlinks, which may point outside the pin.
+                        if name != ".git" and not p.is_symlink():
+                            p.chmod(p.stat().st_mode & ~_WRITE)
+                (path / _PIN_MARKER).write_text(sha + "\n")
+        return path

@@ -45,3 +45,50 @@ def test_lock_serializes_writers(g, company):
         t.join()
     assert sorted((company / PROFILE).read_text().splitlines()[1:]) == ["a", "b"]
     assert len(_git(company, "log", "--format=%s").splitlines()) == 3
+
+
+def test_pin_is_frozen_at_its_commit(g, company):
+    commit = g.head()
+    pinned = g.pin(commit)
+    (company / PROFILE).write_text("# changed\n")
+    g.commit([PROFILE], "profile(@minh): test")
+    assert (pinned / PROFILE).read_text() == "# Minh, Engineer\n"
+    assert g.pin(commit) == pinned  # cached
+
+
+def test_pin_is_read_only(g):
+    mode = os.stat(g.pin(g.head()) / "shared/flows/chat.yaml").st_mode
+    assert not mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+
+
+def test_pin_keys_by_full_sha(g):
+    assert g.pin("HEAD").name == g.head() == g.pin("main").name
+
+
+def test_pin_unknown_commit_raises(g):
+    with pytest.raises(ValueError):
+        g.pin("0" * 40)
+
+
+def test_pin_rebuilds_a_deleted_dir(g):
+    import shutil
+    pinned = g.pin("HEAD")
+    shutil.rmtree(pinned)
+    assert (g.pin("HEAD") / PROFILE).is_file()
+
+
+def test_pin_rebuilds_a_dir_without_marker(g):
+    pinned = g.pin("HEAD")
+    (pinned / ".agent-corp-pin").unlink()
+    (pinned / PROFILE).chmod(0o644)  # as if the crash came before chmod
+    pinned = g.pin("HEAD")
+    assert not os.stat(pinned / PROFILE).st_mode & stat.S_IWUSR
+
+
+def test_pin_leaves_symlink_targets_alone(g, company, tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("mine\n")
+    (company / "link.txt").symlink_to(outside)
+    g.commit(["link.txt"], "add link")
+    g.pin("HEAD")
+    assert os.stat(outside).st_mode & stat.S_IWUSR
