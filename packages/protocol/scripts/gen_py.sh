@@ -16,6 +16,6 @@ uv run --frozen --project "$root" datamodel-codegen \
   --use-annotated --use-standard-collections --use-union-operator \
   --collapse-root-models --enum-field-as-literal all \
   --target-python-version 3.12 --disable-timestamp \
-  --use-type-alias --strict-nullable --use-schema-description \
+  --use-type-alias --strict-nullable --use-schema-description --skip-root-model \
   --formatters builtin \
   --output "$out"

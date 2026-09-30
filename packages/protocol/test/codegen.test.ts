@@ -33,3 +33,10 @@ test("untyped subschemas become unknown at any depth", () => {
   expect(p.open.tsType).toBeUndefined()
   expect(p.typed.tsType).toBeUndefined()
 })
+
+test("exports are exactly the schema's $defs", () => {
+  const schema = JSON.parse(readFileSync(new URL("../schema/protocol.schema.json", import.meta.url), "utf8"))
+  const source = readFileSync(new URL("../src/gen/protocol.ts", import.meta.url), "utf8")
+  const exported = [...source.matchAll(/^export (?:type|interface) (\w+)/gm)].map((m) => m[1])
+  expect(exported.sort()).toEqual(Object.keys(schema.$defs).sort())
+})

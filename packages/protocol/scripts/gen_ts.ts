@@ -27,20 +27,22 @@ export function markUntyped(node: any): void {
   for (const child of children) markUntyped(child)
 }
 
+// The schema root only holds $defs; json-schema-to-typescript still emits it as this interface.
+const ROOT_INTERFACE = "export interface AgentCorpProtocol {\n  [k: string]: unknown;\n}\n"
+
 /** Compiles the schema to TS source, one named export per `$defs` entry. */
 export async function generate(): Promise<string> {
   const schema = JSON.parse(readFileSync(schemaUrl, "utf8"))
   for (const def of Object.values(schema.$defs)) markUntyped(def)
-  // Compile each $def as a named export; the root is only a container.
-  schema.type = "object"
-  schema.properties = Object.fromEntries(Object.keys(schema.$defs).map((k) => [k, { $ref: `#/$defs/${k}` }]))
-  schema.additionalProperties = false
-  return compile(schema, "AgentCorpProtocol", {
+  const out = await compile(schema, "AgentCorpProtocol", {
     bannerComment: "// Generated from schema/protocol.schema.json. Do not edit.",
+    // Emit every $def, including ones no other def references.
     unreachableDefinitions: true,
     // Length bounds are checked at runtime; tuple unions like [T] | [T, T] are noise in TS.
     ignoreMinAndMaxItems: true,
   })
+  if (!out.includes(ROOT_INTERFACE)) throw new Error("unexpected root output from json-schema-to-typescript")
+  return out.replace(ROOT_INTERFACE, "")
 }
 
 if (import.meta.main) writeFileSync(outUrl, await generate())

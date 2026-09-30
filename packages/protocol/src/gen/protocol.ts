@@ -37,60 +37,6 @@ export type Timestamp = string;
  */
 export type Part = TextPart | FilePart | ToolPart;
 
-export interface AgentCorpProtocol {
-  Id?: Id;
-  Handle?: Handle;
-  Ulid?: Ulid;
-  GitId?: GitId;
-  Timestamp?: Timestamp;
-  CompanyDefaults?: CompanyDefaults;
-  Company?: Company;
-  HarnessPolicy?: HarnessPolicy;
-  Sop?: Sop;
-  Routine?: Routine;
-  Person?: Person;
-  Group?: Group;
-  AssetTool?: AssetTool;
-  Grant?: Grant;
-  Asset?: Asset;
-  WorkItem?: WorkItem;
-  Comment?: Comment;
-  Session?: Session;
-  Message?: Message;
-  Part?: Part;
-  TextPart?: TextPart;
-  FilePart?: FilePart;
-  ToolPart?: ToolPart;
-  Permission?: Permission;
-  QuestionOption?: QuestionOption;
-  QuestionPage?: QuestionPage;
-  AnswerField?: AnswerField;
-  DiscussionEntry?: DiscussionEntry;
-  Question?: Question;
-  Profile?: Profile;
-  ProfileProposal?: ProfileProposal;
-  FollowUp?: FollowUp;
-  Debrief?: Debrief;
-  Feedback?: Feedback;
-  Event?: Event;
-  LiveEvent?: LiveEvent;
-  CreateSessionRequest?: CreateSessionRequest;
-  PromptRequest?: PromptRequest;
-  Ack?: Ack;
-  CostCapRequest?: CostCapRequest;
-  RepoIssue?: RepoIssue;
-  HireRequest?: HireRequest;
-  HireResponse?: HireResponse;
-  ApiError?: ApiError;
-  AnswerRequest?: AnswerRequest;
-  SideChatRequest?: SideChatRequest;
-  SendBackRequest?: SendBackRequest;
-  ProfileWriteRequest?: ProfileWriteRequest;
-  VersionConflict?: VersionConflict;
-  ProfileManagerRequest?: ProfileManagerRequest;
-  FeedbackRequest?: FeedbackRequest;
-  ConfirmFollowUpsRequest?: ConfirmFollowUpsRequest;
-}
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "CompanyDefaults".

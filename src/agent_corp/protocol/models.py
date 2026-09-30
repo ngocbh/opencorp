@@ -7,9 +7,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-type AgentCorpProtocol = Annotated[Any, Field(title='AgentCorpProtocol')]
-
-
 type Id = Annotated[
     str,
     Field(
