@@ -1,0 +1,7 @@
+# The company: its name, its CEO (the owner), and the defaults every session starts with.
+name: ${company}
+ceo: ${ceo}
+defaults:
+  cost_cap_usd: 5
+  idle_end: 2h
+  max_turns: 500
