@@ -104,7 +104,6 @@ class Hiring:
     def _draft(self, request: HireRequest, pid: str) -> tuple[Person, dict[str, str], list[RepoIssue]]:
         person = Person.model_validate({"id": pid, **request.model_dump(include=set(_FORM)), **NEW_AGENT})
         body = person.model_dump(mode="json", exclude_defaults=True)
-        body["manager"] = person.manager  # required, even when null
         base = f"people/{pid}"
         files = {f"{base}/person.yaml": yaml.safe_dump(body, sort_keys=False),
                  f"{base}/profile.md": f"# {person.name}, {person.title}\n"}
