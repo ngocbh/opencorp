@@ -107,6 +107,40 @@
         "grants": { "type": "array", "items": { "$ref": "#/$defs/Grant" }, "default": [] },
         "secrets": { "type": "array", "items": { "type": "string" }, "default": [] }
       }
+    },
+    "WorkItem": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "kind", "status", "requester", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "title": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["task", "question"] },
+        "status": { "enum": ["open", "in_progress", "done", "cancelled"] },
+        "requester": { "$ref": "#/$defs/Id" },
+        "assignee": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "parent_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/Id" }, "default": [] },
+        "gate": { "type": "boolean", "default": false },
+        "resolved_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "on_behalf_of": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "summary": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "cost": { "type": "number", "minimum": 0, "default": 0 },
+        "version": { "type": "integer", "minimum": 1, "default": 1 },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Comment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "work_item_id", "author", "body", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "work_item_id": { "$ref": "#/$defs/Ulid" },
+        "author": { "$ref": "#/$defs/Id" },
+        "body": { "type": "string" },
+        "on_behalf_of": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
     }
   }
 }
