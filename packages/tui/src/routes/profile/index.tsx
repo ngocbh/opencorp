@@ -201,10 +201,14 @@ export function Profile() {
     try {
       let base = start
       let text = base.text
+      let conflicted = false
       for (;;) {
         const out = await openEditor({ value: text, renderer })
-        if (out === undefined) return
-        const next = withoutConflict(out)
+        const next = out === undefined ? undefined : withoutConflict(out)
+        // After a lost race, an unchanged save drops the rejected edit below the marker.
+        if (conflicted && (next === undefined || next === base.text))
+          return toast.show({ variant: "warning", message: "Your edit was not saved" })
+        if (next === undefined) return
         if (next === base.text) return toast.show({ variant: "info", message: "No changes" })
         try {
           setProfile(await office.client.profiles.put(person, { text: next, base_version: base.version }))
@@ -214,6 +218,7 @@ export function Profile() {
           base = await office.client.profiles.get(person)
           setProfile(base)
           text = conflictText(base.text, next)
+          conflicted = true
         }
       }
     } catch (e) {

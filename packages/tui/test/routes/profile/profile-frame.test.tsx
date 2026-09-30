@@ -121,6 +121,32 @@ test("a save that lost a race re-opens the editor on the new text, the rejected 
   })
 })
 
+test("saving the conflict round without merging says the edit was not saved", async () => {
+  // First run: wait for the test to change the profile, then save an edit. Second run: save as is.
+  const d = editor(
+    [
+      `if [ ! -e "$D/first" ]; then cp "$1" "$D/first"; while [ ! -e "$D/go" ]; do sleep 0.02; done`,
+      `  printf 'Mine.\\n' > "$1"`,
+      `else touch "$D/second"; fi`,
+    ].join("\n"),
+  )
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    app.input.pressKey("e")
+    await until(() => existsSync(path.join(d, "first")))
+    const client = createOfficeClient({ socket: office.socket })
+    await client.profiles.put("minh", {
+      text: "# Minh\n\nNow writes docs too.\n",
+      base_version: office.state.profiles.minh.version,
+    })
+    writeFileSync(path.join(d, "go"), "")
+    const f = await app.until((f) => f.includes("Your edit was not saved"), 6000)
+    expect(f).not.toContain("No changes")
+    expect(existsSync(path.join(d, "second"))).toBe(true)
+    expect(office.requests.filter((r) => r.method === "PUT").length).toBe(2)
+  })
+})
+
 test("with no $EDITOR, e says how to set one; an unchanged save writes nothing", async () => {
   const office = createFakeOffice()
   await run(office, async (app) => {
