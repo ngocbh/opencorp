@@ -66,9 +66,6 @@ export type FakeState = {
 
 /** The routes the office answers with 501 today; pass as `notImplemented` to match it. */
 export const OFFICE_501_ROUTES = [
-  "POST /questions/:id/side",
-  "POST /questions/:id/send-back",
-  "POST /questions/:id/stop",
   "POST /profiles/:person/manager",
   "GET /profiles/:person/proposals",
   "POST /profile-proposals/:id/apply",
