@@ -301,35 +301,46 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
     return p
   }
 
+  /**
+   * The office's hire: a preview writes nothing and returns lint issues; a confirm must repeat the
+   * preview's fields and id, and is refused while lint has an error.
+   */
   function hire(body: any) {
     for (const f of ["name", "handle", "title", "manager"]) check(str(body?.[f]), `${f} must be a non-empty string`)
-    const taken = state.people.some((p) => p.handle === body.handle && p.id !== body.id)
-    const issues = taken
+    const id: string = body.id ?? nextId()
+    const file = `people/${id}/person.yaml`
+    const owner = state.people.find((p) => p.handle === body.handle && p.id !== id)
+    const issues = owner
       ? [
           {
-            path: `people/${body.handle}.md`,
-            code: "duplicate_handle",
-            message: `@${body.handle} exists`,
+            path: file,
+            code: "person.duplicate_handle",
+            message: `@${body.handle} is already used by ${owner.id}`,
             severity: "error",
           },
         ]
       : []
     const person: Person = {
-      id: body.id ?? nextId(),
+      id,
       handle: body.handle,
       name: body.name,
       kind: "agent",
       title: body.title,
       manager: body.manager,
     }
-    const diff = `+++ people/${person.handle}.md\n+name: ${person.name}\n+handle: ${person.handle}\n+title: ${person.title}\n`
+    const diff = `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
     if (!body.confirm) {
-      state.hires[person.id] = body
+      state.hires[id] = body
       return Response.json({ person, diff, issues, commit: null })
     }
-    check(body.id && state.hires[body.id], "confirm needs the id of a preview")
-    if (taken) throw fail(422, "invalid_body", `@${body.handle} exists`)
-    delete state.hires[body.id]
+    const previewed = state.hires[body.id]
+    check(body.id && previewed, "confirm needs the id of a preview")
+    const fields = ["name", "handle", "title", "manager"] as const
+    if (fields.some((f) => previewed[f] !== body[f])) {
+      throw fail(422, "lint_failed", "confirm must repeat the previewed fields")
+    }
+    if (owner) throw fail(422, "lint_failed", issues[0].message)
+    delete state.hires[id]
     state.people.push(person)
     return Response.json({ person, diff, issues, commit: blobId(diff) })
   }
