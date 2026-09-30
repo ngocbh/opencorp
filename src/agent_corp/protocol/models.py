@@ -652,7 +652,11 @@ class HireResponse(BaseModel):
     commit: GitId | None
 
 
-class Error(BaseModel):
+class ApiError(BaseModel):
+    """
+    The body of every error response, sent with its HTTP status.
+    """
+
     model_config = ConfigDict(
         extra='forbid',
     )

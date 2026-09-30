@@ -42,7 +42,7 @@ def test_every_entity_has_a_fixture():
 
 
 BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "RepoIssue", "HireRequest",
-          "HireResponse", "Error", "AnswerRequest", "SideChatRequest", "SendBackRequest",
+          "HireResponse", "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest",
           "ProfileWriteRequest", "VersionConflict", "ProfileManagerRequest", "FeedbackRequest",
           "ConfirmFollowUpsRequest"}
 

@@ -81,7 +81,7 @@ export interface AgentCorpProtocol {
   RepoIssue?: RepoIssue;
   HireRequest?: HireRequest;
   HireResponse?: HireResponse;
-  Error?: Error;
+  ApiError?: ApiError;
   AnswerRequest?: AnswerRequest;
   SideChatRequest?: SideChatRequest;
   SendBackRequest?: SendBackRequest;
@@ -600,10 +600,12 @@ export interface HireResponse {
   commit: GitId | null;
 }
 /**
+ * The body of every error response, sent with its HTTP status.
+ *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
- * via the `definition` "Error".
+ * via the `definition` "ApiError".
  */
-export interface Error {
+export interface ApiError {
   /**
    * A short code, such as not_implemented or not_found.
    */

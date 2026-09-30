@@ -456,8 +456,9 @@
         "commit": { "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }] }
       }
     },
-    "Error": {
+    "ApiError": {
       "type": "object", "additionalProperties": false, "required": ["error", "message"],
+      "description": "The body of every error response, sent with its HTTP status.",
       "properties": {
         "error": { "type": "string", "description": "A short code, such as not_implemented or not_found." },
         "message": { "type": "string" }
