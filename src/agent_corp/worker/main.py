@@ -79,8 +79,12 @@ def run_job(job: Job, channel: Channel, rpc: Rpc) -> dict[str, Any]:
                               learnable=job.learnable, **common)
         else:
             result = resume_flow(flow, **common)
+        backward = None
+        if job.kind == "backward":
+            outcome = result.backward(job.feedback)
+            backward = {"status": outcome.status, "failure": jsonable(outcome.failure)}
     return {"status": result.status, "run_id": result.run_id, "output": jsonable(result.output),
-            "failure": jsonable(result.failure), "backward": None}
+            "failure": jsonable(result.failure), "backward": backward}
 
 
 def read_frames(channel: Channel, rpc: Rpc, finished: threading.Event) -> None:
