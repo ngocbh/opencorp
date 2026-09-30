@@ -1,0 +1,174 @@
+"""The office daemon entry point: ``python -m agent_corp.daemon.main --home ~/.agent-corp``."""
+
+import argparse
+import asyncio
+import contextlib
+import fcntl
+import os
+import signal
+import socket
+import sys
+import threading
+from pathlib import Path
+
+import uvicorn
+
+from agent_corp.company.git import CompanyGit
+from agent_corp.daemon.app import Office, OfficePaths, create_app
+from agent_corp.daemon.bus import Bus
+from agent_corp.extensions import ExtensionError, load_extensions
+from agent_corp.store import Store
+
+# sockaddr_un.sun_path, including the terminating NUL.
+SUN_PATH_MAX = 104 if sys.platform == "darwin" else 108
+
+
+class OfficeStartError(Exception):
+    """The daemon can't start; the message says why."""
+
+
+class AlreadyRunning(OfficeStartError):
+    """Another daemon holds this home's pidfile."""
+
+    def __init__(self, pid: int | None) -> None:
+        super().__init__(f"office already running (pid {pid})")
+        self.pid = pid
+
+
+class PidFile:
+    """An exclusive ``flock`` on the pidfile, held for the daemon's lifetime."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        """Take the lock and write our pid; ``AlreadyRunning`` if another process holds it."""
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            text = os.read(fd, 32).decode(errors="replace").strip()
+            os.close(fd)
+            raise AlreadyRunning(int(text) if text.isdecimal() else None) from None
+        os.ftruncate(fd, 0)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        self._fd = fd
+
+    def release(self) -> None:
+        """Clear the pid and drop the lock."""
+        if self._fd is not None:
+            os.ftruncate(self._fd, 0)
+            os.close(self._fd)
+            self._fd = None
+
+
+def check_socket_path(path: Path) -> None:
+    """Raise ``OfficeStartError`` if ``path`` is too long for a unix socket."""
+    size = len(os.fsencode(path))
+    if size >= SUN_PATH_MAX:
+        raise OfficeStartError(f"socket path too long ({size} bytes, limit {SUN_PATH_MAX - 1}): {path}")
+
+
+def bind_socket(path: Path) -> socket.socket:
+    """A listening unix socket at ``path`` with mode 0600."""
+    check_socket_path(path)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # uvicorn's --uds chmods the socket to 0666; binding under this umask makes it 0600
+    # from the start, with no window where others can connect.
+    old = os.umask(0o177)
+    try:
+        sock.bind(str(path))
+    except OSError:
+        sock.close()
+        raise
+    finally:
+        os.umask(old)
+    sock.listen(128)
+    return sock
+
+
+class OfficeServer(uvicorn.Server):
+    """uvicorn, stopped by SIGINT/SIGTERM without re-raising the signal afterwards."""
+
+    def __init__(self, config: uvicorn.Config, office: Office) -> None:
+        super().__init__(config)
+        self.office = office
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        # uvicorn's own version re-raises the signal after shutdown, which kills the process
+        # before the socket file and pidfile are cleaned up.
+        if threading.current_thread() is not threading.main_thread():
+            yield
+            return
+        loop = asyncio.get_running_loop()
+        sigs = (signal.SIGINT, signal.SIGTERM)
+        for sig in sigs:
+            loop.add_signal_handler(sig, self.handle_exit, sig, None)
+        try:
+            yield
+        finally:
+            for sig in sigs:
+                loop.remove_signal_handler(sig)
+
+    def handle_exit(self, sig: int, frame: object) -> None:
+        # SSE responses never finish on their own; uvicorn waits for open responses.
+        self.office.bus.close()
+        super().handle_exit(sig, frame)
+
+
+def build_office(paths: OfficePaths) -> Office:
+    """Open the store and the company clone and assemble the office."""
+    return Office(paths=paths, store=Store(paths.store), git=CompanyGit(paths.company, paths.worktrees), bus=Bus())
+
+
+async def run(paths: OfficePaths, *, extensions: str = "agent_corp.extensions") -> None:
+    """Run the daemon until SIGINT or SIGTERM."""
+    paths.office.mkdir(parents=True, exist_ok=True, mode=0o700)
+    pidfile = PidFile(paths.pidfile)
+    pidfile.acquire()
+    try:
+        if not (paths.company / ".git").exists():
+            raise OfficeStartError(f"no company repo at {paths.company}")
+        check_socket_path(paths.socket)
+        office = build_office(paths)
+        try:
+            try:
+                load_extensions(office, extensions)
+            except ExtensionError as exc:
+                raise OfficeStartError(str(exc)) from exc
+            paths.socket.unlink(missing_ok=True)  # a crash's leftover; we hold the lock
+            sock = bind_socket(paths.socket)
+            server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="info",
+                                                 timeout_graceful_shutdown=5), office)
+            try:
+                await server.serve(sockets=[sock])
+            except SystemExit as exc:
+                # uvicorn exits this way when the app's lifespan startup fails.
+                raise OfficeStartError("the office app failed to start (see the log above)") from exc
+            finally:
+                sock.close()
+                paths.socket.unlink(missing_ok=True)
+        finally:
+            office.store.close()
+    finally:
+        pidfile.release()
+
+
+def main(argv: list[str] | None = None, *, extensions: str = "agent_corp.extensions") -> int:
+    """Parse arguments and run the daemon; returns the exit code."""
+    parser = argparse.ArgumentParser(prog="agent-corp-office")
+    parser.add_argument("--home", default="~/.agent-corp", help="agent-corp home directory")
+    args = parser.parse_args(argv)
+    paths = OfficePaths(Path(args.home).expanduser().resolve())
+    try:
+        asyncio.run(run(paths, extensions=extensions))
+    except OfficeStartError as exc:
+        print(f"agent-corp office: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

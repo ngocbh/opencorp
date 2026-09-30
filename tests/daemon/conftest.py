@@ -1,14 +1,21 @@
 """Office fixtures: a company repo, a store, an ASGI client, and test doubles."""
 
+import asyncio
+import contextlib
 import hashlib
+import shutil
+import tempfile
+from pathlib import Path
 
 import httpx
 import pytest
+import uvicorn
 from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
 
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app
 from agent_corp.daemon.bus import Bus
+from agent_corp.daemon.main import OfficeServer, bind_socket
 from agent_corp.store import Store
 from tests.company.conftest import _isolate_git, base_files, company, write_repo  # noqa: F401
 
@@ -82,3 +89,30 @@ async def client(office):
     async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
         yield c
     await office.stop()
+
+
+@pytest.fixture
+def short_dir():
+    """A directory with a short path: macOS unix socket paths are limited to 104 bytes."""
+    path = Path(tempfile.mkdtemp(prefix="ac-", dir="/tmp")).resolve()  # /tmp is /private/tmp on macOS
+    yield path
+    shutil.rmtree(path, ignore_errors=True)
+
+
+@contextlib.asynccontextmanager
+async def served(office, socket_path: Path):
+    """Serve ``office`` on ``socket_path`` in this loop; yields an httpx client over the socket."""
+    sock = bind_socket(socket_path)
+    server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="warning",
+                                         timeout_graceful_shutdown=2), office)
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    while not server.started:
+        await asyncio.sleep(0.01)
+    transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost", timeout=10) as c:
+        try:
+            yield c
+        finally:
+            server.handle_exit(0, None)
+            await task
+            socket_path.unlink(missing_ok=True)
