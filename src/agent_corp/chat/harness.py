@@ -15,7 +15,7 @@ from agent_composer.memory.storage.markdown import MarkdownStore
 
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
-from agent_corp.chat.provider import Provider
+from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds
 from agent_corp.company.loader import load_repo
@@ -188,7 +188,10 @@ class Harness:
     # --- starting ---------------------------------------------------------------------
 
     def start_session(self, person_id: str, cwd: str, harness: str = "composer") -> Session:
-        """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run."""
+        """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
+
+        A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
+        """
         if harness != "composer":
             raise HarnessError(422, "unsupported_harness", f"the {harness} harness is not supported yet")
         self.git.commit_hand_edits()
@@ -215,7 +218,14 @@ class Harness:
             id=session_id, person=person_id, harness="composer", office=socket.gethostname(), cwd=cwd,
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, created_at=t, updated_at=t))
         self.store.touch_worked_folder(person_id, cwd)
-        self.start_run(session, self.main_spec(session))
+        try:
+            self.start_run(session, self.main_spec(session))
+        except HarnessError:
+            raise
+        except Exception as exc:  # the session is failed; the client needs its id
+            # A provider error never echoes the file; anything else may hold anything, so it stays in the log.
+            why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
+            raise HarnessError(500, "start_failed", f"session {session_id} failed to start{why}") from exc
         return self.store.get_session(session_id)
 
     def main_spec(self, session: Session) -> RunSpec:

@@ -316,9 +316,13 @@ def test_a_provider_error_at_start_fails_the_session(harness, workspace):
     harness.provider = bad
     ended = []
     harness.hooks.session_ended.append(lambda session: ended.append(session.status))
-    with pytest.raises(ProviderError):
+    with pytest.raises(HarnessError) as err:
         harness.start_session("minh", str(workspace))
     (session,) = harness.store.list_sessions()
+    assert (err.value.status, err.value.code) == (500, "start_failed")
+    assert err.value.message == (f"session {session.id} failed to start: provider.json must be a regular file "
+                                 "private to its owner (mode 0600)")
+    assert isinstance(err.value.__cause__, ProviderError)
     assert session.status == "failed" and session.id not in harness._live
     assert ended == ["failed"]
     with pytest.raises(HarnessError) as err:
@@ -683,3 +687,14 @@ def test_turn_text_takes_only_a_str_and_skips_the_exit_command(harness, fake_llm
     assert harness.prompt(sid, MAIN_CHAT.exit) == "turn"  # the person typed the exit command
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
     assert seen == ["hi"]
+
+
+def test_a_start_that_fails_otherwise_names_the_session_but_not_the_error(harness, workspace, monkeypatch):
+    def broken(*args):
+        raise RuntimeError("sentinel detail")
+    monkeypatch.setattr(harness.registry, "spawn", broken)
+    with pytest.raises(HarnessError) as err:
+        harness.start_session("minh", str(workspace))
+    (session,) = harness.store.list_sessions()
+    assert (err.value.status, err.value.code, session.status) == (500, "start_failed", "failed")
+    assert session.id in err.value.message and "sentinel" not in err.value.message
