@@ -6,7 +6,9 @@ import sys
 import psutil
 import pytest
 
-from agent_corp.worker.reaper import reap
+from agent_corp.worker.reaper import kill_group, reap
+
+from tests.worker.conftest import Recorder, run
 
 # A process-group leader that starts a grandchild and prints its pid, as a worker running a shell tool would.
 LEADER = ("import subprocess, sys, time\n"
@@ -67,3 +69,19 @@ def test_reap_one_session(store, leftovers):
     assert [r.session_id for r in reap(store, "s2")] == ["s2"]
     assert second.wait(5) == -signal.SIGKILL and first.poll() is None
     assert [r.session_id for r in store.list_workers()] == ["s1"]
+
+
+def test_kill_group_ignores_a_group_it_may_not_signal(monkeypatch):
+    def refuse(pgid, sig):
+        raise PermissionError(1, "Operation not permitted")  # macOS, for a group of only zombies
+
+    monkeypatch.setattr(os, "killpg", refuse)
+    assert kill_group(12345) is False
+
+
+def test_spawn_reaps_a_leftover_worker_of_the_session(fake_llm, store, registry, make_job, session_dir, leftovers):
+    stale = leftovers()
+    record(store, "s1", stale)
+    fake_llm.script({"content": "fresh"})
+    rec = run(registry, make_job(), Recorder(), session_dir)
+    assert stale.wait(5) == -signal.SIGKILL and rec.outcome["output"] == "fresh"

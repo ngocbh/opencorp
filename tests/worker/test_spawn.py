@@ -9,6 +9,9 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
+from agent_corp.worker import channel as channel_module
+from agent_corp.worker import spawn as spawn_module
+from agent_corp.worker.channel import FrameTooLarge
 from agent_corp.worker.main import EXIT_ORPHANED, job_tools
 from agent_corp.worker.spawn import WorkerExists, WorkerRegistry
 
@@ -169,3 +172,27 @@ def test_a_failing_exit_step_still_finishes_the_worker(fake_llm, registry, store
     fake_llm.script({"content": "fine"})
     rec = run(registry, make_job(), Recorder(), session_dir)
     assert rec.returncode == 0 and rec.outcome["output"] == "fine"
+
+
+def test_a_start_frame_that_cannot_be_sent_leaves_nothing_behind(fake_llm, registry, store, make_job,
+                                                                  session_dir, monkeypatch):
+    started = []
+
+    def spawn_and_keep(path):
+        proc, sock = real_spawn_process(path)
+        started.append(proc)
+        return proc, sock
+
+    real_spawn_process = spawn_module.spawn_process
+    monkeypatch.setattr(spawn_module, "spawn_process", spawn_and_keep)
+    fds = psutil.Process().num_fds()
+    monkeypatch.setattr(channel_module, "MAX_FRAME", 2000)  # the office side only, as for a >64 MiB job
+    with pytest.raises(FrameTooLarge):
+        registry.spawn(make_job(inputs={"message": "x" * 5000}), session_dir, Recorder())
+    [proc] = started
+    assert proc.returncode is not None  # killed and reaped
+    assert registry.get("s1") is None and store.list_workers() == []
+    assert psutil.Process().num_fds() == fds
+    monkeypatch.setattr(channel_module, "MAX_FRAME", 64 << 20)
+    fake_llm.script({"content": "second try"})
+    assert run(registry, make_job(), Recorder(), session_dir).outcome["output"] == "second try"

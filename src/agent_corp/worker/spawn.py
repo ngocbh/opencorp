@@ -1,8 +1,6 @@
 """Spawn run workers, at most one per session, and route their frames to office handlers."""
 
 import logging
-import os
-import signal
 import socket
 import subprocess
 import sys
@@ -12,11 +10,10 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-import psutil
-
 from agent_corp.store import Store
 from agent_corp.worker.channel import Channel, ChannelClosed, FrameTooLarge
 from agent_corp.worker.job import Job
+from agent_corp.worker.reaper import kill_group, reap, start_time
 from agent_corp.worker.rpc import REQUEST_REPLIES, WorkerHandlers, answer_request
 
 log = logging.getLogger(__name__)
@@ -72,9 +69,18 @@ class Worker:
         self._reader = threading.Thread(target=self._read, name=f"worker-{self.session_id}", daemon=True)
 
     def start(self) -> None:
-        """Send the ``start`` frame and begin reading the worker's frames."""
-        self._send({"type": "start", "job": self.job.model_dump(mode="json")})
+        """Send the ``start`` frame and begin reading the worker's frames.
+
+        Raises ``FrameTooLarge`` or ``ChannelClosed`` if the frame can't be sent.
+        """
+        self.channel.send({"type": "start", "job": self.job.model_dump(mode="json")})
         self._reader.start()
+
+    def abandon(self) -> None:
+        """Tear down a worker whose ``start`` failed: close the channel, kill its group, reap it."""
+        self.channel.discard()
+        kill_group(self.pgid)
+        self.returncode = self.proc.wait()
 
     def steer(self, node_id: str, text: str) -> bool:
         """Queue ``text`` for the running node ``node_id``; False if the worker is gone.
@@ -157,20 +163,6 @@ class Worker:
             pass
 
 
-def _start_time(pid: int) -> float:
-    try:
-        return psutil.Process(pid).create_time()
-    except psutil.Error:
-        return 0.0
-
-
-def _kill_group(pgid: int) -> None:
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-
-
 class WorkerRegistry:
     """The office's live workers, at most one per session, each recorded in the store for ``reap``."""
 
@@ -178,24 +170,37 @@ class WorkerRegistry:
         self.store = store
         self._lock = threading.Lock()
         self._workers: dict[str, Worker] = {}
+        self._starting: set[str] = set()
 
     def spawn(self, job: Job, session_dir: Path, handlers: WorkerHandlers) -> Worker:
-        """Start a worker for ``job.session_id`` running ``job``; raise ``WorkerExists`` if one is live."""
+        """Start a worker for ``job.session_id`` running ``job``; raise ``WorkerExists`` if one is live.
+
+        A worker of the session left by an earlier office is reaped first. If the worker
+        can't be started (for example a start frame over ``MAX_FRAME``), nothing is left
+        behind: no process, registry entry, store record, or socket.
+        """
+        session_id = job.session_id
         with self._lock:
-            if job.session_id in self._workers:
-                raise WorkerExists(f"session {job.session_id} already has a live worker")
+            if session_id in self._workers or session_id in self._starting:
+                raise WorkerExists(f"session {session_id} already has a live worker")
+            # Reserve the session so the store calls below run outside the registry lock.
+            self._starting.add(session_id)
+        try:
+            reap(self.store, session_id)
             proc, sock = spawn_process(Path(session_dir))
             worker = Worker(job, proc, Channel(sock), handlers, self._exited)
-            self._workers[job.session_id] = worker
-        try:
-            self.store.record_worker(job.session_id, pid=proc.pid, pgid=worker.pgid, start_time=_start_time(proc.pid))
-        except BaseException:
-            _kill_group(worker.pgid)
-            proc.wait()
+            try:
+                self.store.record_worker(session_id, pid=proc.pid, pgid=worker.pgid,
+                                         start_time=start_time(proc.pid) or 0.0)
+                with self._lock:
+                    self._workers[session_id] = worker
+                worker.start()
+            except BaseException:
+                self._abandon(worker)
+                raise
+        finally:
             with self._lock:
-                self._workers.pop(job.session_id, None)
-            raise
-        worker.start()
+                self._starting.discard(session_id)
         return worker
 
     def get(self, session_id: str) -> Worker | None:
@@ -223,8 +228,20 @@ class WorkerRegistry:
         deadline = time.monotonic() + timeout
         for worker in workers:
             if worker.wait(max(0.0, deadline - time.monotonic())) is None:
-                _kill_group(worker.pgid)
+                kill_group(worker.pgid)
                 worker.wait(timeout)
+
+    def _abandon(self, worker: Worker) -> None:
+        try:
+            worker.abandon()
+        finally:
+            with self._lock:
+                if self._workers.get(worker.session_id) is worker:
+                    del self._workers[worker.session_id]
+            try:
+                self.store.remove_worker(worker.session_id)
+            except Exception:
+                log.exception("could not remove the record of worker %s", worker.session_id)
 
     def _exited(self, worker: Worker) -> None:
         # Never write to the store while holding the registry lock: the store holds its write

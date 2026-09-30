@@ -64,6 +64,11 @@ class Channel:
             pass
         self.sock.close()
 
+    def discard(self) -> None:
+        """Close a channel that no thread reads from, releasing its file descriptor at once."""
+        self.close()
+        self._reader.close()
+
     def _read(self, size: int) -> bytes:
         try:
             data = self._reader.read(size)
