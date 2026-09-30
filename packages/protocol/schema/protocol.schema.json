@@ -300,6 +300,30 @@
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "updated_at": { "$ref": "#/$defs/Timestamp" }
       }
+    },
+    "Profile": {
+      "type": "object", "additionalProperties": false, "required": ["person", "text", "version"],
+      "properties": {
+        "person": { "$ref": "#/$defs/Id" },
+        "text": { "type": "string" },
+        "version": { "$ref": "#/$defs/GitId" },
+        "over_budget": { "type": "boolean", "default": false }
+      }
+    },
+    "ProfileProposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "person", "base_version", "text", "diff", "status", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "person": { "$ref": "#/$defs/Id" },
+        "base_version": { "$ref": "#/$defs/GitId" },
+        "text": { "type": "string" },
+        "diff": { "type": "string" },
+        "status": { "enum": ["open", "applied", "discarded", "stale"] },
+        "commit": { "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
     }
   }
 }
