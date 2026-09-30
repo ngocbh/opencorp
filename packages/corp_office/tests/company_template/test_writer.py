@@ -123,3 +123,14 @@ def test_the_first_hire_into_a_new_company_lints_clean(tmp_path):
     assert preview.issues == []
     hiring.hire(HireRequest(**form, id=preview.person.id, confirm=True))
     assert lint(load_repo(root)) == []
+
+
+def test_missing_files_names_what_writing_again_would_add(tmp_path):
+    from agent_corp.company_template import missing_files
+
+    root = tmp_path / "company"
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
+    assert missing_files(root) == []
+    (root / DEBRIEF_FLOW).unlink()
+    commit_all(root, "drop debrief")
+    assert missing_files(root) == [DEBRIEF_FLOW] == write_company(root, tmp_path / "worktrees")

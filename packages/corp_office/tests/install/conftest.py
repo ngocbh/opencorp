@@ -36,7 +36,7 @@ GOLDEN = Path(__file__).parent / "golden"
 
 
 class Runner:
-    """Records commands and answers each from a table of ``(argv prefix, returncode, stderr)``."""
+    """Records commands and answers each from a table of ``(argv prefix, returncode, stderr[, stdout])``."""
 
     def __init__(self, answers=()):
         self.calls: list[list[str]] = []
@@ -44,9 +44,9 @@ class Runner:
 
     def __call__(self, argv):
         self.calls.append(list(argv))
-        for prefix, code, err in self.answers:
+        for prefix, code, err, *out in self.answers:
             if list(argv[: len(prefix)]) == list(prefix):
-                return subprocess.CompletedProcess(argv, code, "", err)
+                return subprocess.CompletedProcess(argv, code, out[0] if out else "", err)
         return subprocess.CompletedProcess(argv, 0, "", "")
 
 
