@@ -51,9 +51,10 @@ class Job(BaseModel):
     (``resume_flow`` then ``backward(feedback)``). ``flow`` is relative to ``pin``.
     ``env`` is applied to the worker's ``os.environ`` after it reads this job, so
     values such as provider keys never appear in the worker's exec environment.
+    Validation errors leave out input values, so an error frame can't echo ``env``.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     kind: Literal["chat", "resume", "backward"]
     session_id: str

@@ -1,5 +1,6 @@
 """Fixtures for worker tests: a fake LLM, a pinned company tree, a store, and a registry."""
 
+import os
 import socket
 import threading
 from contextlib import contextmanager
@@ -12,6 +13,7 @@ from agent_corp.store import Store
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from agent_corp.worker.channel import Channel
 from agent_corp.worker.job import Job
+from agent_corp.worker.main import main
 from agent_corp.worker.rpc import REQUEST_REPLIES, BaseHandlers, Rpc, answer_request
 from agent_corp.worker.spawn import WorkerRegistry
 from tests.company.conftest import CHAT
@@ -97,6 +99,42 @@ def office_end(handlers: BaseHandlers, *, threaded: bool = False):
     finally:
         office.close()
         worker.close()
+
+
+@pytest.fixture
+def worker_main(monkeypatch):
+    """Run the worker's ``main`` on a thread over a socket pair.
+
+    Calling the fixture starts it and returns the office's ``Channel`` and a dict that gets
+    ``code`` when ``main`` returns (or ``exit`` if the worker would have called ``os._exit``).
+    """
+    runs: list[tuple[Channel, threading.Thread]] = []
+
+    def fake_exit(code: int) -> None:
+        raise SystemExit(code)
+
+    monkeypatch.setattr(os, "_exit", fake_exit)
+
+    def start() -> tuple[Channel, dict[str, Any]]:
+        office_sock, worker_sock = socket.socketpair()
+        out: dict[str, Any] = {}
+
+        def target() -> None:
+            try:
+                out["code"] = main(["--fd", str(worker_sock.detach())])
+            except SystemExit as exc:
+                out["exit"] = exc.code
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        office = Channel(office_sock)
+        runs.append((office, thread))
+        return office, out
+
+    yield start
+    for office, thread in runs:
+        office.close()
+        thread.join(10)
 
 
 @pytest.fixture
