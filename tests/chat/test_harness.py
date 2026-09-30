@@ -479,11 +479,17 @@ def test_run_finished_hooks_never_see_the_model_key(make_harness, workspace):
 
 
 # Composer's LLMConfig forbids extra fields, so a key in llm_config fails the reply node and
-# the validation error echoes it into events and the run log. Drop the mark once the submodule
-# has LLMConfig.api_key.
+# the validation error echoes it into these frames and the run log. The test fails outright on
+# any other leak; drop the mark once the submodule has LLMConfig.api_key.
+KNOWN_HARNESS_LEAKS = {("frame", "event", "NodeFailed"), ("frame", "event", "RunFailed"), ("frame", "result", None),
+                       ("file", "office/runs/<id>/runs/<id>.jsonl")}
+
+
 @pytest.mark.xfail(strict=True, raises=AssertionError, reason="needs composer LLMConfig.api_key")
 def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fake_llm, workspace, tmp_path,
                                                                monkeypatch):
+    import re
+
     from agent_corp.chat import harness as harness_module
 
     frames = []
@@ -496,20 +502,28 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
 
         monkeypatch.setattr(harness_module._Handlers, name, record)
     harness = keyed(make_harness)
+    finished = []
+    harness.hooks.run_finished.append(lambda session, run_id, result: finished.append(result))
     fake_llm.script({"content": "ok"})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
-    wait_for(lambda: texts(harness, sid) == ["ok"] or len(harness.store.get_session(sid).run_ids) > 1,
-             what="the reply or a failed run")
+    wait_for(lambda: texts(harness, sid) == ["ok"] or len(harness.store.get_session(sid).run_ids) > 1
+             or status(harness, sid) == "failed", what="the reply or a failed run")
     harness.close_all()
 
-    leaks = [f["type"] for f in frames if SENTINEL in json.dumps(f, default=str)]
-    leaks += ["live event" for e in harness.office.bus.events
-              if SENTINEL in (e.model_dump_json() if hasattr(e, "model_dump_json") else json.dumps(e, default=str))]
-    leaks += [str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")
-              if p.is_file() and SENTINEL.encode() in p.read_bytes()]
-    assert SENTINEL not in json.dumps(fake_llm.requests())
-    assert leaks == []
+    def has_key(value):
+        return SENTINEL in json.dumps(value, default=str)
+
+    ulid = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
+    leaks = {("frame", f["type"], f.get("name")) for f in frames if has_key(f)}
+    leaks |= {("live", e.type) for e in harness.office.bus.events if SENTINEL in e.model_dump_json()}
+    leaks |= {("file", ulid.sub("<id>", str(p.relative_to(tmp_path)))) for p in tmp_path.rglob("*")
+              if p.is_file() and SENTINEL.encode() in p.read_bytes()}
+    leaks |= {("hook", "run_finished") for result in finished if has_key(result)}
+    leaks |= {("model request",) for request in fake_llm.requests() if has_key(request)}
+    if leaks - KNOWN_HARNESS_LEAKS:  # not an AssertionError: fails even under the xfail mark
+        pytest.fail(f"the model key leaks somewhere new: {sorted(leaks - KNOWN_HARNESS_LEAKS, key=str)}")
+    assert not leaks
     assert texts(harness, sid) == ["ok"]
 
 
