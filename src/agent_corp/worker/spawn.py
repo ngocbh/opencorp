@@ -112,9 +112,14 @@ class Worker:
 
     def abandon(self) -> None:
         """Tear down a worker whose ``start`` failed: close the channel, kill its group, reap it."""
-        self.channel.discard()
-        self.kill()
-        self.returncode = self.proc.wait()
+        try:
+            self.channel.discard()
+            with self._reap_lock:
+                kill_group(self.pgid)
+                self.returncode = self.proc.wait()
+        finally:
+            # A close() racing the failed start waits on this; there is no reader to set it.
+            self._done.set()
 
     def kill(self) -> None:
         """SIGKILL the worker's process group, unless the worker has been reaped."""

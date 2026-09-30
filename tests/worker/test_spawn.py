@@ -261,3 +261,32 @@ def test_the_office_closes_the_channel_of_a_worker_that_sends_a_bad_frame(make_j
     worker = Worker(make_job(), proc, Channel(office_sock), rec, lambda w: None)
     worker.start()
     assert worker.wait(10) == 0 and rec.returncode == 0 and rec.outcome is None
+
+
+def test_close_during_a_failing_start_returns_promptly(registry, store, make_job, session_dir, monkeypatch):
+    real_start = Worker.start
+
+    def slow_start(self):
+        time.sleep(0.3)  # close() lands between registering the worker and sending start
+        real_start(self)
+
+    monkeypatch.setattr(Worker, "start", slow_start)
+    failed = []
+
+    def spawner():
+        try:
+            registry.spawn(make_job(), session_dir, Recorder())
+        except Exception as exc:
+            failed.append(exc)
+
+    thread = threading.Thread(target=spawner)
+    thread.start()
+    deadline = time.monotonic() + 10
+    while registry.get("s1") is None and time.monotonic() < deadline:
+        time.sleep(0.001)
+    began = time.monotonic()
+    registry.close("s1", timeout=2)
+    assert time.monotonic() - began < 1.5  # not 2 × timeout
+    thread.join(5)
+    assert failed and registry.get("s1") is None and store.list_workers() == []
+
