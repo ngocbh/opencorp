@@ -59,6 +59,14 @@ def owner_launch() -> Launch:
 
 def make_host(tmp_path: Path, runner: Runner, platform: str = "darwin", which=lambda name: None,
               popen=None, answers=lambda socket: False) -> Host:
-    """A host whose home is ``tmp_path`` and whose commands go to ``runner``; nothing real runs."""
-    return Host(platform=platform, user_home=tmp_path, uid=501, run=runner,
-                popen=popen, which=which, sleep=lambda s: None, answers=answers)
+    """A host whose home is ``tmp_path`` and whose commands go to ``runner``; nothing real runs.
+
+    Its clock moves only when it sleeps, so waiting takes no real time.
+    """
+    now = [0.0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    return Host(platform=platform, user_home=tmp_path, uid=501, run=runner, popen=popen, which=which,
+                sleep=sleep, clock=lambda: now[0], answers=lambda socket, timeout=2.0: answers(socket))

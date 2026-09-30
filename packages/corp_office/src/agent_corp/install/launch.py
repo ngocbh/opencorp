@@ -80,18 +80,18 @@ def run_command(argv: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(argv, 124, "", f"{argv[0]} timed out")
 
 
-def office_answers(socket: Path) -> bool:
-    """Whether an office is serving on ``socket`` (``GET /people`` answers 200)."""
+def office_answers(socket: Path, timeout: float = 2.0) -> bool:
+    """Whether an office is serving on ``socket`` (``GET /people`` answers 200 within ``timeout`` seconds)."""
     # httpx leaks the socket when a unix-socket connect fails, so probe with one we close.
     with contextlib.closing(sock.socket(sock.AF_UNIX, sock.SOCK_STREAM)) as probe:
-        probe.settimeout(2)
+        probe.settimeout(timeout)
         try:
             probe.connect(str(socket))
         except OSError:
             return False
     try:
         with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office",
-                          timeout=2) as client:
+                          timeout=timeout) as client:
             return client.get("/people").status_code == 200
     except httpx.TransportError:
         return False
@@ -111,4 +111,6 @@ class Host:
     popen: Callable[..., object] = subprocess.Popen
     which: Callable[[str], str | None] = shutil.which
     sleep: Callable[[float], None] = time.sleep
-    answers: Callable[[Path], bool] = office_answers
+    clock: Callable[[], float] = time.monotonic
+    answers: Callable[..., bool] = office_answers
+    """``answers(socket, timeout=2.0)``: whether the office on ``socket`` answers."""

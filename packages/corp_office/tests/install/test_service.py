@@ -1,9 +1,12 @@
 import json
+import socket
+import time
 
 import pytest
 
 from agent_corp.install import service
-from agent_corp.install.launch import ServiceError, launch
+from agent_corp.install.launch import Host, ServiceError, launch
+from tests.daemon.conftest import short_dir  # noqa: F401
 
 from .conftest import Runner, make_host
 
@@ -106,6 +109,18 @@ def test_waiting_for_an_office_that_never_answers_shows_the_log(tmp_path, one):
     with pytest.raises(ServiceError, match="(?s)did not answer.*line 29\nagent-corp office: no company repo") as info:
         service.wait(one, make_host(tmp_path, Runner()), timeout=1)
     assert "line 9\n" not in str(info.value)
+
+
+def test_waiting_on_an_office_that_accepts_but_never_answers_stops_at_the_deadline(short_dir):
+    one = launch(short_dir, repo=short_dir, environ={})
+    one.office.mkdir()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as hung:
+        hung.bind(str(one.socket))
+        hung.listen(8)  # the kernel accepts connections; nothing ever reads or answers
+        began = time.monotonic()
+        with pytest.raises(ServiceError, match="did not answer"):
+            service.wait(one, Host(run=Runner()), timeout=0.5)
+        assert time.monotonic() - began < 1.5
 
 
 def test_a_broken_record_counts_as_no_record(tmp_path, one):
