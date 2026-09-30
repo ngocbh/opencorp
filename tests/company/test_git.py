@@ -288,3 +288,11 @@ def test_find_commit_matches_a_whole_line_on_the_path(g, company):
 def test_handle_is_public(g):
     assert g.handle(PROFILE) == "minh"
     assert g.handle("people/ghost/profile.md") == "ghost"
+
+
+def test_unstage_keeps_the_working_file(g, company):
+    (company / PROFILE).write_text("# staged\n")
+    _git(company, "add", PROFILE)
+    g.unstage([PROFILE])
+    assert _git(company, "status", "--porcelain") == "M people/minh/profile.md"
+    assert (company / PROFILE).read_text() == "# staged\n"

@@ -112,6 +112,11 @@ class CompanyGit:
             self._git("commit", "-q", "-m", message, "--", *_literal(paths))
             return self.head()
 
+    def unstage(self, paths: list[str]) -> None:
+        """Reset ``paths`` in the index to HEAD, leaving the working files alone."""
+        if paths:  # `git reset -q --` with no paths would reset the whole index
+            self._git("reset", "-q", "--", *_literal(paths))
+
     def pin(self, commit: str) -> Path:
         """Return a read-only worktree for ``commit``, keyed by full sha, creating it if needed.
 
