@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_corp.store import InvalidTransition
+from agent_corp.store import InvalidTransition, StoreError
 from tests.store.conftest import COMMIT, feedback, session
 
 
@@ -42,9 +42,19 @@ def test_learning_counts_attempts_then_applies(store, sid):
 def test_bad_moves_raise(store, sid, path, bad):
     f = store.add_feedback(feedback(sid))
     for step in path:
-        store.set_feedback_status(f.id, step)
+        store.set_feedback_status(f.id, step, commit=COMMIT if step == "applied" else None)
     with pytest.raises(InvalidTransition):
         store.set_feedback_status(f.id, bad)
+
+
+def test_commit_goes_with_applied_only(store, sid):
+    f = store.add_feedback(feedback(sid))
+    with pytest.raises(StoreError, match="commit"):
+        store.set_feedback_status(f.id, "learning", commit=COMMIT)
+    store.set_feedback_status(f.id, "learning")
+    with pytest.raises(StoreError, match="commit"):
+        store.set_feedback_status(f.id, "applied")
+    assert store.get_feedback(f.id).status == "learning"
 
 
 def test_list_feedback(store, sid):

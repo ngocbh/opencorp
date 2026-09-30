@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_corp.store import DuplicateKey, InvalidTransition
+from agent_corp.store import DuplicateKey, InvalidTransition, StoreError
 from tests.store.conftest import COMMIT, debrief, proposal, session
 
 
@@ -58,6 +58,15 @@ def test_proposal_apply_and_terminal_states(store, sid):
     for status in ("open", "stale", "discarded", "applied"):
         with pytest.raises(InvalidTransition):
             store.set_profile_proposal_status(p.id, status)
+
+
+def test_proposal_commit_goes_with_applied_only(store, sid):
+    p = store.add_profile_proposal(proposal(sid))
+    with pytest.raises(StoreError, match="commit"):
+        store.set_profile_proposal_status(p.id, "applied")
+    with pytest.raises(StoreError, match="commit"):
+        store.set_profile_proposal_status(p.id, "discarded", commit=COMMIT)
+    assert store.get_profile_proposal(p.id).status == "open"
 
 
 def test_list_proposals_per_person(store, sid):

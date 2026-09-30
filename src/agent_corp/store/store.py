@@ -228,6 +228,13 @@ def _check_move(kind: str, moves: dict[str, set[str]], old: str, new: str) -> No
         raise InvalidTransition(f"{kind} cannot move from {old} to {new}")
 
 
+def _check_commit(kind: str, status: str, commit: str | None) -> None:
+    """A move to ``applied`` records the company-repo commit; no other move takes one."""
+    if (status == "applied") != (commit is not None):
+        need = "needs a commit" if status == "applied" else "takes no commit"
+        raise StoreError(f"{kind} moving to {status} {need}")
+
+
 class Tx:
     """One write transaction on the calling thread's connection, owned by one asyncio task (or none)."""
 
@@ -831,11 +838,13 @@ class Store:
         """Move feedback along ``queued → learning → applied | learning_failed``.
 
         ``learning`` may go back to ``queued`` or start again; each move into ``learning``
-        counts one attempt. ``queued`` may fail directly. Emits ``feedback.updated``.
+        counts one attempt. ``queued`` may fail directly. ``commit`` is required for
+        ``applied`` and refused otherwise. Emits ``feedback.updated``.
         """
         with self.transaction() as tx:
             current = self._must(FEEDBACK, Feedback, feedback_id)
             _check_move("feedback", _FEEDBACK_MOVES, current.status, status)
+            _check_commit("feedback", status, commit)
             update: dict[str, Any] = {"status": status}
             if status == "learning":
                 update["attempts"] = current.attempts + 1
@@ -967,10 +976,14 @@ class Store:
     def set_profile_proposal_status(
         self, proposal_id: str, status: str, *, commit: str | None = None
     ) -> ProfileProposal:
-        """Move an open proposal to ``applied``, ``discarded``, or ``stale``; emits ``profile_proposal.updated``."""
+        """Move an open proposal to ``applied``, ``discarded``, or ``stale``; emits ``profile_proposal.updated``.
+
+        ``commit`` is required for ``applied`` and refused otherwise.
+        """
         with self.transaction() as tx:
             current = self._must(PROPOSALS, ProfileProposal, proposal_id)
             _check_move("profile proposal", _PROPOSAL_MOVES, current.status, status)
+            _check_commit("profile proposal", status, commit)
             update: dict[str, Any] = {"status": status}
             if commit is not None:
                 update["commit"] = commit
