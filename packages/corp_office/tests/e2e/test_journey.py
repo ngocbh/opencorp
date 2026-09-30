@@ -2,9 +2,13 @@
 
 import pytest
 
+from tests.profile.conftest import OUTPUT, debrief_reply, learner_reply
+
 from .fixtures.office import asked, wait_for
 
 pytestmark = pytest.mark.timeout(180)
+
+LEARNED = "- Keep replies short."
 
 
 def test_the_m1_journey(office, workspace, sandbox_available):
@@ -53,3 +57,14 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     assert not (workspace / "never.txt").exists()
     assert len(fake.requests()) == 6  # Esc made no model call of its own
     assert "Write never.txt" in asked(fake.requests()[5])  # the stopped turn stays in the history
+
+    # 3. `/end`, the debrief, then `ac feedback` on the ended session's run.
+    fake.script(debrief_reply())
+    ended = office.ac("end", cwd=workspace)
+    assert ended.stdout.strip() == f"Ending @minh's session {sid}; its debrief follows."
+    assert office.debriefed(sid)["summary"] == OUTPUT["summary"]
+    before = office.get(f"/profiles/{minh}")["text"]
+    fake.script(learner_reply(before + f"\n{LEARNED}\n"))
+    feedback = office.ac("feedback", "-m", "Keep replies short.", cwd=workspace)
+    [run_id] = office.session(sid)["run_ids"]
+    assert f"is queued for @minh (session {sid}, run {run_id})" in feedback.stdout
