@@ -71,6 +71,47 @@ test("one Esc while busy interrupts, and the reply stops showing at once", async
   }
 })
 
+test("a second Esc keeps hiding a reply that arrived after the first", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const reply = (text: string) => {
+    const message: Message = {
+      id: office.nextId(),
+      session_id: id,
+      role: "assistant",
+      created_at: new Date().toISOString(),
+      parts: [{ id: office.nextId(), type: "text", text }],
+    }
+    office.live({ type: "message.updated", session_id: id, data: message as never })
+  }
+  office.onPrompt(() => reply("Looking"))
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("go")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Looking") && f.includes("esc interrupt"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length === 1)
+    reply("late words")
+    // A session event after the late words: once the header shows it, they have arrived too.
+    office.state.sessions[0] = { ...office.state.sessions[0], cost: 0.5 }
+    office.setStatus(id, "busy")
+    await app.until((f) => f.includes("@minh · busy · $0.50"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length === 2)
+    office.state.sessions[0] = { ...office.state.sessions[0], cost: 0.75 }
+    office.setStatus(id, "busy")
+    await app.until((f) => f.includes("@minh · busy · $0.75"))
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(app.frame()).toContain("Looking")
+    expect(app.frame()).not.toContain("late words")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a 501 from the office shows as a toast, not a crash", async () => {
   const office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
   const app = await bootFrame(createStub(office))

@@ -41,3 +41,18 @@ test("a second freeze keeps what the first hid", () => {
   ])
   expect(frozenView(undefined, late)).toBe(late)
 })
+
+test("a second Esc before the next send keeps hiding what arrived after the first", () => {
+  const reply = msg("M", "assistant", text("a", "Looking"))
+  const late = msg("L", "assistant", text("l", "late"))
+  const steer = msg("V", "user", text("v", "a steer"))
+  const first = freeze([reply])
+  const second = freeze([reply, late, steer], first)
+  expect(second.active).toBe(true)
+  expect(frozenView(second, late)).toBeUndefined()
+  expect(frozenView(second, steer)).toBe(steer)
+  expect(frozenView(second, reply)).toBe(reply)
+  // It stays hidden after the next send too.
+  const after = unfreeze(second, [reply, late, steer])
+  expect(frozenView(after, late)).toBeUndefined()
+})

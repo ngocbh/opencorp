@@ -15,10 +15,14 @@ export type Freeze = {
   hidden: Record<string, true>
 }
 
-/** Freezes `messages` as they are now, keeping what an earlier freeze `prev` hid. */
+/**
+ * Freezes `messages` as they are now, keeping what an earlier freeze `prev` hid. While `prev` is
+ * still active, the assistant messages that arrived since are hidden rather than frozen.
+ */
 export function freeze(messages: Message[], prev?: Freeze): Freeze {
   const f: Freeze = { active: true, messages: {}, parts: {}, texts: {}, hidden: { ...prev?.hidden } }
   for (const m of messages) {
+    if (prev?.active && m.role === "assistant" && !prev.messages[m.id]) f.hidden[m.id] = true
     if (f.hidden[m.id]) continue
     f.messages[m.id] = true
     for (const p of m.parts) {
