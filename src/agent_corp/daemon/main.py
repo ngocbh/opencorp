@@ -15,11 +15,17 @@ from pathlib import Path
 
 import uvicorn
 
+from agent_corp.chat.harness import Harness
+from agent_corp.chat.provider import load_provider
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app
 from agent_corp.daemon.bus import Bus
 from agent_corp.extensions import ExtensionError, load_extensions
+from agent_corp.perm.monitor import Monitor
+from agent_corp.profile import GitProfileStore
+from agent_corp.secrets import SecretStore
 from agent_corp.store import Store
+from agent_corp.worker import reap
 
 # sockaddr_un.sun_path, including the terminating NUL.
 SUN_PATH_MAX = 104 if sys.platform == "darwin" else 108
@@ -158,8 +164,20 @@ class OfficeServer(uvicorn.Server):
 
 
 def build_office(paths: OfficePaths) -> Office:
-    """Open the store and the company clone and assemble the office."""
-    return Office(paths=paths, store=Store(paths.store), git=CompanyGit(paths.company, paths.worktrees), bus=Bus())
+    """Open the store and the company clone and assemble the office, with the composer harness as its workers.
+
+    Workers left by an earlier office are killed first; the harness resumes their sessions on start.
+    """
+    store = Store(paths.store)
+    git = CompanyGit(paths.company, paths.worktrees)
+    reap(store)
+    office = Office(paths=paths, store=store, git=git, bus=Bus(), profile_store=lambda pid: GitProfileStore(git, pid))
+    monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
+    harness = Harness(office, monitor, provider=lambda: load_provider(paths.office / "provider.json"))
+    office.workers = harness
+    office.extras["harness"] = harness
+    office.on_start.append(lambda: asyncio.to_thread(harness.restore))
+    return office
 
 
 async def run(paths: OfficePaths, *, extensions: str = "agent_corp.extensions") -> None:

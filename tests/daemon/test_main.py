@@ -312,3 +312,18 @@ def test_a_failing_stop_hook_does_not_stop_the_others(home, tmp_path, monkeypatc
         assert failure.rstrip().endswith("RuntimeError: no model key") and "c never started" not in failure
     finally:
         importlib.import_module("stopfail.a").stop.set()  # never leave the thread running
+
+
+async def test_build_office_runs_the_chat_harness(home):
+    from agent_corp.chat.harness import Harness
+    from agent_corp.daemon.main import build_office
+    from agent_corp.profile import GitProfileStore
+
+    office = build_office(OfficePaths(home))
+    try:
+        assert isinstance(office.workers, Harness) and office.extras["harness"] is office.workers
+        assert isinstance(office.profile_store("minh"), GitProfileStore)
+        await office.start()  # restores live sessions (none here)
+        await office.stop()
+    finally:
+        office.store.close()
