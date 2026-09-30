@@ -1,7 +1,49 @@
-"""The event stream."""
+"""The event stream: stored metadata events and live transcript events, as SSE."""
 
+from collections.abc import AsyncIterator
+
+from starlette.requests import Request
+from starlette.responses import StreamingResponse
 from starlette.routing import Route
 
-from agent_corp.daemon.http import not_implemented
+from agent_corp.daemon.bus import PING
+from agent_corp.daemon.http import get_office
+from agent_corp.protocol.models import Event, LiveEvent
 
-ROUTES = [Route("/events", not_implemented, methods=["GET"])]
+PING_S = 15.0
+"""Seconds of silence before a ``: ping`` comment keeps the stream open."""
+
+
+def frame(kind: str, event: Event | LiveEvent) -> bytes:
+    """One SSE frame; ``meta`` frames carry the event id."""
+    head = f"event: {kind}\n" + (f"id: {event.id}\n" if isinstance(event, Event) else "")
+    return f"{head}data: {event.model_dump_json()}\n\n".encode()
+
+
+async def stream_events(request: Request) -> StreamingResponse:
+    """Stream bus events, optionally for one session. There is no replay: clients re-read state with GETs."""
+    bus = get_office(request).bus
+    session = request.query_params.get("session")
+
+    async def body() -> AsyncIterator[bytes]:
+        # Subscribed before ": connected" is sent, so a client gets every event published
+        # after it sees that line. Subscribing here, not in the handler, means a response
+        # that never starts leaves no subscription behind.
+        sub = bus.subscribe(session)
+        try:
+            yield b": connected\n\n"
+            while True:
+                item = await sub.next(timeout=PING_S)
+                if item is None:
+                    return
+                if item is PING:
+                    yield b": ping\n\n"
+                else:
+                    yield frame(*item)
+        finally:
+            sub.close()
+
+    return StreamingResponse(body(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+
+
+ROUTES = [Route("/events", stream_events, methods=["GET"])]
