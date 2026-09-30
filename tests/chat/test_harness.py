@@ -24,10 +24,14 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
     wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
     assert texts(harness, sid, "user") == ["hi"]
 
+    seen = []  # the work item's status when each session status is stored
+    update = harness.store.update_session
+    harness.store.update_session = lambda sid_, **kw: (
+        seen.append((kw.get("status"), harness.store.get_work_item(session.work_item_id).status)),
+        update(sid_, **kw))[1]
     harness.end(sid)
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
-    # _finish sets the session's status before it closes the work item.
-    wait_for(lambda: harness.store.get_work_item(session.work_item_id).status == "done", what="the work item")
+    assert ("ended", "done") in seen and ("ended", "in_progress") not in seen
     with pytest.raises(HarnessError) as err:
         harness.prompt(sid, "late")
     assert err.value.code == "not_live"

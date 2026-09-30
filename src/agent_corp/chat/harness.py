@@ -706,13 +706,13 @@ class Harness:
         with self._lock:
             if self._live.get(live.session_id) is live:
                 del self._live[live.session_id]
-        ended = status == "ended"
-        if ended:
+        if status == "ended":
             session = self.store.get_session(live.session_id)
             status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
+            # Close the item first, so no client sees an ended session with its work still open.
+            if session.work_item_id:
+                self.store.update_work_item(session.work_item_id, status="done")
         session = self.store.update_session(live.session_id, status=status)
-        if ended and session.work_item_id:
-            self.store.update_work_item(session.work_item_id, status="done")
         self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
         self.hooks.fire("session_ended", session)
 
