@@ -35,7 +35,10 @@ def test_a_chat_job_streams_events_and_a_result(fake_llm, registry, store, make_
     assert (session_dir / "worker.log").exists()
 
 
-def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, make_job, session_dir):
+def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, make_job, session_dir,
+                                                   monkeypatch):
+    monkeypatch.setenv("OFFICE_SECRET", "office-env-secret")
+    monkeypatch.setenv("LC_CTYPE", "UTF-8")
     fake_llm.script({"content": "slow", "hold": 20})
     rec = Recorder()
     worker = registry.spawn(make_job(), session_dir, rec)
@@ -47,7 +50,10 @@ def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, ma
     assert os.getpgid(worker.pid) == worker.pid
     assert Path(proc.cwd()).resolve() == session_dir.resolve()
     assert proc.cmdline()[1:4] == ["-I", "-m", "agent_corp.worker.main"]
-    assert "VLLM_BASE_URL" not in proc.environ()  # it arrives in the start frame
+    env = proc.environ()
+    assert "VLLM_BASE_URL" not in env  # it arrives in the start frame
+    assert "OFFICE_SECRET" not in env  # only an allowlist of the office's env is passed on
+    assert env["LC_CTYPE"] == "UTF-8" and env["PATH"] == os.environ["PATH"]
     fake_llm.release()
     assert worker.wait(30) == 0 and rec.outcome["output"] == "slow"
 

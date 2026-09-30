@@ -1,6 +1,7 @@
 """Spawn run workers, at most one per session, and route their frames to office handlers."""
 
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -25,12 +26,24 @@ class WorkerExists(RuntimeError):
     """The session already has a live worker."""
 
 
+# The only parts of the office's environment a worker inherits; anything else it needs
+# (provider keys, endpoints, proxies) arrives in ``Job.env``.
+INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ")
+
+
+def worker_env() -> dict[str, str]:
+    """The environment a worker starts with: ``INHERITED_ENV`` and ``LC_*`` from the office's."""
+    return {key: value for key, value in os.environ.items()
+            if key in INHERITED_ENV or key.startswith("LC_")}
+
+
 def spawn_process(session_dir: Path) -> tuple[subprocess.Popen[bytes], socket.socket]:
     """Start ``python -I -m agent_corp.worker.main`` holding one end of a socket pair.
 
     The worker runs in ``session_dir`` (never a workspace, so a model-written ``.py``
     there can't shadow an import) as the leader of a new process group, with stdout
-    and stderr appended to ``session_dir/worker.log``. Returns the process and the
+    and stderr appended to ``session_dir/worker.log``, and with ``worker_env()`` as its
+    environment. Returns the process and the
     office's end of the pair.
     """
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -40,7 +53,7 @@ def spawn_process(session_dir: Path) -> tuple[subprocess.Popen[bytes], socket.so
         with open(session_dir / "worker.log", "ab") as out:
             proc = subprocess.Popen(
                 [sys.executable, "-I", "-m", "agent_corp.worker.main", "--fd", str(fd)],
-                cwd=session_dir, pass_fds=[fd], start_new_session=True,
+                cwd=session_dir, env=worker_env(), pass_fds=[fd], start_new_session=True,
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
             )
     except BaseException:
