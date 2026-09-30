@@ -87,4 +87,24 @@ def _check_ceo(repo: CompanyRepo) -> Iterator[RepoIssue]:
                         f"{ceo.id} reports to {ceo.manager}")
 
 
-CHECKS = [_check_id_case, _check_handles, _check_managers, _check_ceo]
+def _check_groups(repo: CompanyRepo) -> Iterator[RepoIssue]:
+    """Group parents and heads exist, and parents have no cycles."""
+    for gid, group in sorted(repo.groups.items()):
+        if group.parent is not None and group.parent not in repo.groups:
+            yield RepoIssue(f"groups/{gid}.yaml", "group.unknown_parent", group.parent)
+        if group.head is not None and group.head not in repo.people:
+            yield RepoIssue(f"groups/{gid}.yaml", "group.unknown_head", group.head)
+    for cycle in _cycles({gid: g.parent for gid, g in repo.groups.items()}):
+        yield RepoIssue(f"groups/{cycle[0]}.yaml", "group.parent_cycle", " -> ".join(cycle))
+
+
+def _check_person_groups(repo: CompanyRepo) -> Iterator[RepoIssue]:
+    """People belong only to groups that exist."""
+    for pid, person in sorted(repo.people.items()):
+        for gid in person.groups:
+            if gid not in repo.groups:
+                yield RepoIssue(_person_path(pid), "person.unknown_group", gid)
+
+
+CHECKS = [_check_id_case, _check_handles, _check_managers, _check_ceo, _check_groups,
+          _check_person_groups]

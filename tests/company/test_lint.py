@@ -59,3 +59,22 @@ def test_ids_that_differ_only_by_case(company):
     found = [i for i in lint(repo) if i.code == "repo.id_case_clash"]
     assert [(i.path, i.message) for i in found] == [(f"people/{lower}/person.yaml",
                                                      f"{upper} and {lower} differ only by case")]
+
+
+def test_unknown_group_parent_and_head(make_company):
+    group = {"id": "eng", "name": "Engineering", "parent": "nope", "head": "ghost"}
+    assert {"group.unknown_parent", "group.unknown_head"} <= codes(make_company(**{"groups/eng.yaml": group}))
+
+
+def test_group_parent_cycle(make_company):
+    root = make_company(**{
+        "groups/eng.yaml": {"id": "eng", "name": "Engineering", "parent": "infra", "head": None},
+        "groups/infra.yaml": {"id": "infra", "name": "Infra", "parent": "eng", "head": "minh"},
+    })
+    found = [i for i in lint(load_repo(root)) if i.code == "group.parent_cycle"]
+    assert [i.message for i in found] == ["eng -> infra"]
+
+
+def test_person_in_unknown_group(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", groups=["eng", "nope"])})
+    assert ("person.unknown_group", "people/minh/person.yaml") in issues(root)
