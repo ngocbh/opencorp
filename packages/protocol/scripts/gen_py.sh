@@ -2,7 +2,7 @@
 # Regenerate the office pydantic models from the protocol schema.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../../.." && pwd)"
-out="${1:-$root/src/agent_corp/protocol/models.py}"
+out="${1:-$root/packages/corp_office/src/agent_corp/protocol/models.py}"
 # --collapse-root-models inlines required refs such as Id but leaves `Id | None` and
 # `list[Id]` pointing at the def; --use-type-alias makes those defs Annotated str aliases
 # rather than RootModels, so every id is a plain, hashable str. --strict-nullable keeps a

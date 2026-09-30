@@ -9,7 +9,7 @@ from jsonschema import Draft202012Validator, ValidationError
 
 from agent_corp.protocol import models
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
 INVALID = ROOT / "packages/protocol/fixtures/invalid"
 CASES = sorted(INVALID.glob("*.json"))

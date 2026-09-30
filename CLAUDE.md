@@ -5,14 +5,14 @@ A local office daemon that runs AI employees on top of the agent-composer engine
 ## Layout
 
 ```
-pyproject.toml         # Python project "agent-corp" (import agent_corp)
-src/agent_corp/        # office daemon, run worker, sandbox launcher, permission layer, harness adapters
-tests/                 # Python tests, mirroring src/agent_corp/
-agent-composer/        # submodule; uv path dependency
-packages/protocol/     # JSON Schema → TS types + pydantic (schema planned)
-packages/tui/          # forked OpenCode TUI (planned)
-packages/ac/           # `ac` CLI entry (planned)
-docs/plans/            # design docs and plans (local only, gitignored)
+pyproject.toml                        # Python project "agent-corp" (import agent_corp)
+packages/corp_office/src/agent_corp/  # office daemon, run worker, sandbox launcher, permission layer, harness adapters
+packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/agent_corp/
+packages/agent-composer/              # submodule; uv path dependency
+packages/protocol/                    # JSON Schema → TS types + pydantic
+packages/tui/                         # forked OpenCode TUI
+packages/ac/                          # `ac` CLI entry
+docs/plans/                           # design docs and plans (local only, gitignored)
 ```
 
 The design docs in `docs/plans/` are gitignored, so a fresh clone does not have them; issue #1 is
@@ -28,23 +28,26 @@ bun install
 
 ## Tests
 
-- Python: `uv run pytest -q tests/<path>` (all: `uv run pytest -q tests`).
+- Python: `uv run pytest -q packages/corp_office/tests/<path>` (all: `uv run pytest -q`).
 - TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
   run each package's own `test` and `typecheck` scripts.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
-- `tests/<pkg>/` mirrors `src/agent_corp/<pkg>/`. Every test directory has an empty
-  `__init__.py` so same-named test modules in different directories don't collide.
+- `packages/corp_office/tests/<pkg>/` mirrors `packages/corp_office/src/agent_corp/<pkg>/`.
+  Every test directory has an empty `__init__.py` so same-named test modules in different
+  directories don't collide.
 
 ## Protocol schema
 
-Once `packages/protocol/schema/protocol.schema.json` exists, it changes only in a schema-only PR that:
+`packages/protocol/schema/protocol.schema.json` changes only in a schema-only PR that:
 
-- edits the schema and its fixtures, and regenerates `src/agent_corp/protocol/models.py`
-  and `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
+- edits the schema and its fixtures, and regenerates
+  `packages/corp_office/src/agent_corp/protocol/models.py` and
+  `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
 - only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
   type of anything merged code uses;
-- adds the matching store migration (`src/agent_corp/store/migrations/`) when a new field
-  lands on a `$def` the store persists, since inserts fail until the column exists;
+- adds the matching store migration (`packages/corp_office/src/agent_corp/store/migrations/`)
+  when a new field lands on a `$def` the store persists, since inserts fail until the column
+  exists;
 - merges before dependent work continues.
 
 Clients ignore enum values and event types they don't know. Make timestamps with
@@ -61,7 +64,8 @@ Clients ignore enum values and event types they don't know. Make timestamps with
 Work is complete only when the PR merges.
 
 agent-composer changes go to the agent-composer repo (github.com/ngocbh/agent-composer) as their
-own issue and PR; never edit the submodule here. Bump the submodule pointer in a separate commit.
+own issue and PR; never edit the submodule (`packages/agent-composer/`) here. Bump the submodule
+pointer in a separate commit.
 
 ## Code style
 

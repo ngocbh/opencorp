@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
 FIXTURES = ROOT / "packages/protocol/fixtures"
 ENTITIES = {"Company", "Person", "Group", "Asset", "WorkItem", "Comment", "Session", "Message",

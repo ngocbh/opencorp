@@ -10,9 +10,9 @@ from jsonschema import Draft202012Validator
 
 from agent_corp.protocol import models
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[4]
 FIXTURES = ROOT / "packages/protocol/fixtures"
-GENERATED = ROOT / "src/agent_corp/protocol/models.py"
+GENERATED = ROOT / "packages/corp_office/src/agent_corp/protocol/models.py"
 SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
 
 

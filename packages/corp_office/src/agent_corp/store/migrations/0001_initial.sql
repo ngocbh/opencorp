@@ -1,5 +1,5 @@
 -- The office store. Entity tables have one column per protocol model field
--- (src/agent_corp/protocol/models.py); list and object fields are JSON text.
+-- (packages/corp_office/src/agent_corp/protocol/models.py); list and object fields are JSON text.
 -- Enum values are not CHECKed: the schema may add enum members without a migration.
 
 CREATE TABLE work_items (
