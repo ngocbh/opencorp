@@ -6,12 +6,14 @@ import type {
   Event,
   Feedback,
   HireRequest,
+  HireResponse,
   LiveEvent,
   Message,
   Person,
   Profile,
   ProfileProposal,
   PromptRequest,
+  RepoIssue,
   Question,
   Session,
   WorkItem,
@@ -19,6 +21,7 @@ import type {
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
+import { HANDLE } from "../src/routes/picker/people"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 
 /** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
@@ -306,20 +309,23 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
    * preview's fields and id, and is refused while lint has an error.
    */
   function hire(body: any) {
-    for (const f of ["name", "handle", "title", "manager"]) check(str(body?.[f]), `${f} must be a non-empty string`)
+    const fields = ["name", "handle", "title", "manager"] as const
+    for (const f of fields) check(str(body?.[f]), `${f} must be a non-empty string`)
+    const extra = Object.keys(body).filter((k) => ![...fields, "id", "confirm"].includes(k))
+    check(!extra.length, `unexpected fields: ${extra.join(", ")}`)
+    check(HANDLE.test(body.handle), "handle must be lowercase letters, digits and dashes")
+    check(!state.people.some((p) => p.id === body.id), `id ${body.id} already belongs to a person`)
     const id: string = body.id ?? nextId()
     const file = `people/${id}/person.yaml`
-    const owner = state.people.find((p) => p.handle === body.handle && p.id !== id)
-    const issues = owner
-      ? [
-          {
-            path: file,
-            code: "person.duplicate_handle",
-            message: `@${body.handle} is already used by ${owner.id}`,
-            severity: "error",
-          },
-        ]
-      : []
+    const owner = state.people.find((p) => p.handle === body.handle)
+    const issues: RepoIssue[] = [
+      ...(owner
+        ? [{ path: file, code: "person.duplicate_handle", message: `@${body.handle} is already used by ${owner.id}` }]
+        : []),
+      ...(state.people.some((p) => p.id === body.manager)
+        ? []
+        : [{ path: file, code: "person.unknown_manager", message: body.manager }]),
+    ].map((i) => ({ ...i, severity: "error" as const }))
     const person: Person = {
       id,
       handle: body.handle,
@@ -331,18 +337,17 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
     const diff = `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
     if (!body.confirm) {
       state.hires[id] = body
-      return Response.json({ person, diff, issues, commit: null })
+      return Response.json({ person, diff, issues, commit: null } satisfies HireResponse)
     }
     const previewed = state.hires[body.id]
     check(body.id && previewed, "confirm needs the id of a preview")
-    const fields = ["name", "handle", "title", "manager"] as const
     if (fields.some((f) => previewed[f] !== body[f])) {
       throw fail(422, "lint_failed", "confirm must repeat the previewed fields")
     }
-    if (owner) throw fail(422, "lint_failed", issues[0].message)
+    if (issues.length) throw fail(422, "lint_failed", issues[0].message)
     delete state.hires[id]
     state.people.push(person)
-    return Response.json({ person, diff, issues, commit: blobId(diff) })
+    return Response.json({ person, diff, issues, commit: blobId(diff) } satisfies HireResponse)
   }
 
   const routes: [string, string, Handler][] = [

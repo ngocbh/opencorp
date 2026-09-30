@@ -108,6 +108,25 @@ test("a hire confirm repeats the preview; a taken handle is a lint issue on prev
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "@minh is already used by minh"])
 })
 
+test("a hire checks the body like the office; an unknown manager is a lint issue", async () => {
+  office = createFakeOffice()
+  const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
+  for (const body of [
+    { ...req, handle: "Lan" },
+    { ...req, extra: 1 },
+    { ...req, id: "minh" },
+  ]) {
+    const e = await failure(client().people.hire(body as any))
+    expect([e.status, e.code]).toEqual([422, "invalid_body"])
+  }
+  const orphan = await client().people.hire({ ...req, manager: "kai", confirm: false })
+  expect(orphan.issues).toEqual([
+    { path: `people/${orphan.person.id}/person.yaml`, code: "person.unknown_manager", message: "kai", severity: "error" },
+  ])
+  const refused = await failure(client().people.hire({ ...req, manager: "kai", id: orphan.person.id, confirm: true }))
+  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
+})
+
 test("routes switched off answer 501 like today's office", async () => {
   office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
   const err = await failure(client().sessions.create({ person: "minh", cwd: "/tmp/proj" }))
