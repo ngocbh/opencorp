@@ -106,17 +106,21 @@ export function SideChat(props: {
     // The side route opens or restarts a side session that isn't live.
     const sent =
       s && LIVE.includes(s.status)
-        ? office.client.sessions.prompt(s.id, { text })
-        : office.client.questions.side(props.question.id, { text }).then((s) => office.syncSession(s.id))
+        ? office.client.sessions.prompt(s.id, { text }).then(() => undefined)
+        : office.client.questions.side(props.question.id, { text })
     sent
-      .then(() => {
-        // The view may have closed meanwhile; an edit made since stays.
-        if (textarea && !textarea.isDestroyed && textarea.plainText.trim() === text) textarea.setText("")
-      })
-      .catch((error) => {
-        undo?.()
-        fail(error)
-      })
+      .then(
+        (side) => {
+          // Cleared once the office has the message, so a failed load can't leave it to be sent twice.
+          // The view may have closed meanwhile; an edit made since stays.
+          if (textarea && !textarea.isDestroyed && textarea.plainText.trim() === text) textarea.setText("")
+          if (side) return office.syncSession(side.id).catch(fail)
+        },
+        (error) => {
+          undo?.()
+          fail(error)
+        },
+      )
       .finally(() => (sending = false))
   }
 

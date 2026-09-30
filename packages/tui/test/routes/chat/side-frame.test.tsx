@@ -268,6 +268,33 @@ test("a side message the office refuses stays in the input", async () => {
   }
 })
 
+test("a side message clears once the side route takes it, before the side session loads", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh"))
+    // The new side session's messages load only once released.
+    const release = office.hold("GET /sessions/:id/messages")
+    app.input.typeText("why?")
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === `/questions/${q.id}/side`))
+    await app.until((f) => f.includes("Ask @minh about the question"))
+    app.input.pressEnter()
+    release()
+    const side = office.state.questions[q.id].side_session_id!
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side}/messages`))
+    await Bun.sleep(100)
+    expect(posts(office)).toEqual([[`/questions/${q.id}/side`, { text: "why?" }]])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a side send that fails puts the freeze back", async () => {
   const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
   const s = office.state.sessions[0]
