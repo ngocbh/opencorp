@@ -149,11 +149,20 @@ test("a hire checks the body like the office; an unknown manager is a lint issue
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
 })
 
-test("routes switched off answer 501 like today's office", async () => {
+test("today's office serves hires and the session routes, and answers 501 on the question side routes", async () => {
   office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
-  const err = await failure(client().sessions.create({ person: "minh", cwd: "/tmp/proj" }))
+  const id = office.state.sessions[0].id
+  await client().people.hire({ name: "Lan", handle: "lan", title: "QA", manager: "ngocbh", confirm: false })
+  expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).status).toBe("starting")
+  await client().sessions.prompt(id, { text: "go" })
+  await client().sessions.steer(id, { text: "faster" })
+  await client().sessions.interrupt(id)
+  await client().sessions.costCap(id, { cost_cap_usd: 5 })
+  await client().sessions.end(id)
+  const q = office.addQuestion({ session_id: id, source: "ask_user" })
+  const err = await failure(client().questions.stop(q.id))
   expect(isNotImplemented(err)).toBe(true)
-  expect(err.message).toBe("POST /sessions is not implemented yet")
+  expect(err.message).toBe(`POST /questions/${q.id}/stop is not implemented yet`)
 })
 
 test("unknown paths and wrong methods", async () => {

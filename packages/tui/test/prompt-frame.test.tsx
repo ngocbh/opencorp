@@ -1,6 +1,6 @@
 import type { Message } from "@agent-corp/protocol"
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub, OFFICE_501_ROUTES } from "../script/stub"
+import { createFakeOffice, createStub } from "../script/stub"
 import { bootFrame } from "./fixture/frame"
 
 test("Enter on home creates a session for the person in the cwd, prompts it, and opens it", async () => {
@@ -157,7 +157,7 @@ test("after Esc, a new reply that streams in before the prompt call returns show
 })
 
 test("a 501 from the office shows as a toast, not a crash", async () => {
-  const office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
+  const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
   const app = await bootFrame(createStub(office))
   try {
     await app.until((f) => f.includes("@minh"))

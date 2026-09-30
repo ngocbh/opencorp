@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub, OFFICE_501_ROUTES } from "../../../script/stub"
+import { createFakeOffice, createStub } from "../../../script/stub"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
 
@@ -67,7 +67,7 @@ test("a taken handle shows the lint error and blocks the hire; editing previews 
 })
 
 test("the form says what to fix before asking the office; office errors show inline", async () => {
-  const office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
+  const office = createFakeOffice({ notImplemented: ["POST /people"] })
   const app = await openHire(office)
   try {
     await fill(app, "Lan", "Lan!", "QA")
