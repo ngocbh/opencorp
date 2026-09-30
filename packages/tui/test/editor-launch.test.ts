@@ -3,7 +3,7 @@ import { spawn } from "node:child_process"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { launchEditor } from "../src/editor-launch"
+import { editorCommand, launchEditor } from "../src/editor-launch"
 
 test.skipIf(process.platform === "win32")(
   "launchEditor runs the editor setting through the shell with the file as its last argument",
@@ -59,3 +59,17 @@ test.skipIf(process.platform === "win32")(
     }
   },
 )
+
+test("editorCommand hands the file to sh as an argument on POSIX and quotes it for cmd.exe on Windows", () => {
+  expect(editorCommand("code --wait", "/tmp/ac-profile-x/profile.md", "darwin")).toEqual({
+    command: "sh",
+    args: ["-c", 'code --wait "$@"', "code --wait", "/tmp/ac-profile-x/profile.md"],
+    shell: false,
+  })
+  // With shell: true, Node joins the arguments unquoted, so a temp path with a space would split.
+  expect(editorCommand("code --wait", "C:\\Users\\Ann Lee\\AppData\\Local\\Temp\\p.md", "win32")).toEqual({
+    command: 'code --wait "C:\\Users\\Ann Lee\\AppData\\Local\\Temp\\p.md"',
+    args: [],
+    shell: true,
+  })
+})
