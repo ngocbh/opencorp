@@ -1,5 +1,6 @@
 """Opening the store: schema, WAL, per-thread connections."""
 
+import gc
 import sqlite3
 import threading
 
@@ -38,6 +39,33 @@ def test_one_connection_per_thread(store):
     t.join()
     assert store._conn() is store._conn()
     assert seen[0] is not store._conn()
+
+
+def test_finished_threads_release_their_connections(tmp_path):
+    s = Store(tmp_path / "s.sqlite")
+    started, done = threading.Event(), threading.Event()
+
+    def hold():
+        s._conn()
+        started.set()
+        done.wait(10)
+
+    held = threading.Thread(target=hold, daemon=True)
+    held.start()
+    started.wait(10)
+    try:
+        for _ in range(20):
+            t = threading.Thread(target=s.list_workers)
+            t.start()
+            t.join()
+        gc.collect()
+        # This thread's connection and the live thread's; the finished threads' are gone.
+        assert len(s._conns) == 2
+        s.close()
+        assert len(s._conns) == 0
+    finally:
+        done.set()
+        held.join()
 
 
 def test_reopen_keeps_data_and_version(tmp_path):

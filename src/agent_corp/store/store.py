@@ -13,6 +13,7 @@ import logging
 import sqlite3
 import threading
 import time
+import weakref
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -46,6 +47,10 @@ type Part = TextPart | FilePart | ToolPart
 type Listener = Callable[[Event], None]
 
 BUSY_TIMEOUT_S = 10.0
+
+
+class _Connection(sqlite3.Connection):
+    """A ``sqlite3.Connection`` that can be weakly referenced (the C type can't)."""
 
 
 def enable_wal(conn: sqlite3.Connection, *, timeout: float = BUSY_TIMEOUT_S) -> None:
@@ -277,7 +282,9 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
-        self._conns: list[sqlite3.Connection] = []
+        # Weak, so a finished thread's connection is closed once collected (its statement
+        # cache refers back to it, so that takes the cyclic GC, not just the thread ending).
+        self._conns: weakref.WeakSet[sqlite3.Connection] = weakref.WeakSet()
         self._conns_lock = threading.Lock()
         self._write_lock = threading.RLock()
         self._listeners: list[Listener] = []
@@ -295,7 +302,7 @@ class Store:
     def close(self) -> None:
         """Close every thread's connection."""
         with self._conns_lock:
-            for conn in self._conns:
+            for conn in list(self._conns):
                 conn.close()
             self._conns.clear()
         self._local = threading.local()
@@ -307,13 +314,16 @@ class Store:
         if conn is None:
             # check_same_thread=False only so close() can close every thread's connection;
             # each connection is still used by its own thread alone.
-            conn = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT_S, isolation_level=None, check_same_thread=False)
+            conn = sqlite3.connect(
+                self.path, timeout=BUSY_TIMEOUT_S, isolation_level=None, check_same_thread=False,
+                factory=_Connection,
+            )
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA synchronous = NORMAL")
             self._local.conn = conn
             with self._conns_lock:
-                self._conns.append(conn)
+                self._conns.add(conn)
         return conn
 
     @contextmanager
