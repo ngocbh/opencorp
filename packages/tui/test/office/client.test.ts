@@ -63,12 +63,15 @@ test("the first answer wins; the second gets 409 not_open", async () => {
 test("open questions are listed by session and status", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
+  // The seeded session's open turn is listed first.
+  const [turn] = Object.keys(office.state.questions)
   const a = office.addQuestion({})
   const b = office.addQuestion({})
   office.addQuestion({ session_id: "OTHER" })
   await client().questions.answer(b.id, { answer: "x", answer_kind: "text" })
-  expect((await client().questions.list({ session: id, status: "open" })).map((q) => q.id)).toEqual([a.id])
+  expect((await client().questions.list({ session: id, status: "open" })).map((q) => q.id)).toEqual([turn, a.id])
   expect((await client().questions.list({ session: id, status: ["open", "answered"] })).map((q) => q.id)).toEqual([
+    turn,
     a.id,
     b.id,
   ])

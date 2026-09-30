@@ -16,12 +16,12 @@ const failure = (p: Promise<unknown>): Promise<any> =>
   )
 const status = async (id: string) => (await client().sessions.get(id)).status
 
-test("a prompt answers the open turn; while busy it steers; interrupt goes back to idle", async () => {
+test("the seeded idle session has an open turn; a prompt answers it; while busy it steers", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
   const turns: string[] = []
   office.onPrompt((_, req) => turns.push(req.text))
-  const turn = office.openTurn(id)
+  const [turn] = await client().questions.list({ session: id, status: ["open"] })
   expect([turn.source, turn.node_id]).toEqual(["human_input", "chat#1/ask"])
   await client().sessions.prompt(id, { text: "fix it" })
   expect(office.state.questions[turn.id]).toMatchObject({ status: "answered", answer: "fix it", answer_kind: "text" })
@@ -29,6 +29,13 @@ test("a prompt answers the open turn; while busy it steers; interrupt goes back 
   await client().sessions.prompt(id, { text: "use a fake clock" })
   expect(turns).toEqual(["fix it"])
   expect(office.state.messages[id].map((m) => m.parts[0])).toMatchObject([{ text: "fix it" }, { text: "use a fake clock" }])
+  expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).status).toBe("idle")
+})
+
+test("interrupt answers the open ask_user questions; the session goes back to idle", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  await client().sessions.prompt(id, { text: "go" })
   const asked = office.addQuestion({ session_id: id, source: "ask_user" })
   await client().sessions.interrupt(id)
   expect(await status(id)).toBe("idle")

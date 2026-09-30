@@ -4,6 +4,7 @@ import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
 import { emptyState, openQuestions } from "../../src/office/store"
 import { createOfficeSync } from "../../src/office/sync"
+import { isTurn } from "../../src/office/turn"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
@@ -114,8 +115,10 @@ test("after a reconnect, questions opened and answered while away are current", 
   await until(() => sync.status() === "online")
   const id = office.state.sessions[0].id
   await sync.syncSession(id)
+  // The session's open turn is a question too; leave it out.
+  const asked = () => openQuestions(state, id).filter((q) => !isTurn(q))
   const seen = office.addQuestion({})
-  await until(() => openQuestions(state, id).length === 1)
+  await until(() => asked().length === 1)
   office.dropStreams()
   await until(() => sync.status() === "connecting")
   // While the stream is down: one question is answered, another opens; neither event reaches us.
@@ -124,7 +127,7 @@ test("after a reconnect, questions opened and answered while away are current", 
   await until(() => sync.status() === "online")
   await until(
     () =>
-      openQuestions(state, id)
+      asked()
         .map((q) => q.id)
         .join() === missed.id,
   )

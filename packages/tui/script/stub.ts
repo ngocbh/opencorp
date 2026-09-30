@@ -103,7 +103,10 @@ function counter() {
   return () => String(++n).padStart(26, "0")
 }
 
-/** A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human), one idle main session. */
+/**
+ * A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human), one idle main session
+ * waiting on its first turn.
+ */
 export function seed(nextId = counter()): FakeState {
   const at = now()
   const people: Person[] = [
@@ -124,13 +127,26 @@ export function seed(nextId = counter()): FakeState {
     created_at: at,
     updated_at: at,
   }
+  // An idle chat waits on its open turn, the chat flow's `chat#1/ask` human_input.
+  const turn: Question = {
+    id: nextId(),
+    session_id: session.id,
+    run_id: "run-1",
+    node_id: "chat#1/ask",
+    source: "human_input",
+    asker: "minh",
+    question: "You:",
+    status: "open",
+    created_at: at,
+    updated_at: at,
+  }
   const profile = "# Minh\n\nWrites small, tested changes.\n"
   return {
     people,
     folders: { "/tmp/proj": ["minh"] },
     sessions: [session],
     messages: { [session.id]: [] },
-    questions: {},
+    questions: { [turn.id]: turn },
     profiles: { minh: { person: "minh", text: profile, version: blobId(profile), over_budget: false } },
     proposals: {},
     workItems: {},
@@ -238,9 +254,10 @@ export function createFakeOffice(
   function setStatus(id: string, status: Session["status"]) {
     return upsertSession({ ...session(id), status, updated_at: now() })
   }
+  /** Creates a session; an idle one waits on its first turn. */
   function newSession(fields: Partial<Session> & Pick<Session, "person" | "cwd">): Session {
     const at = now()
-    return upsertSession(
+    const s = upsertSession(
       {
         id: nextId(),
         harness: "composer",
@@ -256,6 +273,8 @@ export function createFakeOffice(
       },
       "session.created",
     )
+    if (s.status === "idle") openTurn(s.id)
+    return s
   }
   function userMessage(sessionId: string, text: string) {
     const msg: Message = {
