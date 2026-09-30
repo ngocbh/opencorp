@@ -153,6 +153,7 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
   const notImplemented = new Set(opts.notImplemented ?? [])
   const requests: { method: string; path: string; raw: string; body: unknown }[] = []
   const holds = new Map<string, Promise<void>>()
+  const replyHolds = new Map<string, Promise<void>>()
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
@@ -614,12 +615,15 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
         { error: "not_implemented", message: `${req.method} ${url.pathname} is not implemented yet` },
         { status: 501 },
       )
+    let res: Response
     try {
-      return await route.h({ params: route.params, query: url.searchParams, body, path: url.pathname })
+      res = await route.h({ params: route.params, query: url.searchParams, body, path: url.pathname })
     } catch (e) {
-      if (e instanceof Fail) return Response.json({ error: e.error, message: e.message }, { status: e.status })
-      throw e
+      if (!(e instanceof Fail)) throw e
+      res = Response.json({ error: e.error, message: e.message }, { status: e.status })
     }
+    await replyHolds.get(key)
+    return res
   }
 
   const server = serveUnix(handle, opts.socket)
@@ -649,12 +653,17 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
     dropStreams: closeAll,
     /** The number of open event streams. */
     streams: () => streams.size,
-    /** Delays requests to a route (`"GET /sessions"`, `"GET /sessions/:id/messages"`) until the returned release is called. */
-    hold(key: string) {
+    /**
+     * Delays requests to a route (`"GET /sessions"`, `"GET /sessions/:id/messages"`) until the
+     * returned release is called: before they are handled, or with `"reply"`, after (so the
+     * reply is what the state was when the request came in).
+     */
+    hold(key: string, at: "request" | "reply" = "request") {
+      const map = at === "request" ? holds : replyHolds
       let release!: () => void
-      holds.set(key, new Promise<void>((r) => (release = r)))
+      map.set(key, new Promise<void>((r) => (release = r)))
       return () => {
-        holds.delete(key)
+        map.delete(key)
         release()
       }
     },

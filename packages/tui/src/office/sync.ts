@@ -37,9 +37,11 @@ export function createOfficeSync(opts: {
   let generation = 0
   // Set while a bootstrap runs: every stream event waits here until the snapshot is applied.
   let buffer: StreamEvent[] | undefined
-  // Sessions whose messages are held, and the live-event windows of those still loading.
+  // Sessions whose messages are held, the live-event windows of those still loading, and
+  // their loads in flight.
   const synced = new Set<string>()
   const pending = new Map<string, StreamEvent[]>()
+  const loads = new Map<string, Promise<void>>()
   const listeners = new Map<string, Set<(e: any) => void>>()
 
   function setStatus(next: OfficeStatus, message?: string) {
@@ -134,6 +136,37 @@ export function createOfficeSync(opts: {
     }
   }
 
+  /** Loads a session and applies it with the live events that arrived while it loaded. */
+  async function loadLive(id: string) {
+    mutate((s) => void (s.messages[id] ??= []))
+    for (;;) {
+      const mine = generation
+      const window: StreamEvent[] = []
+      pending.set(id, window)
+      let l: Awaited<ReturnType<typeof loadSession>>
+      try {
+        l = await loadSession(id)
+      } catch (e) {
+        pending.delete(id)
+        // While the office is down the next bootstrap loads it; any other failure is final.
+        if (!(e instanceof OfficeUnavailable)) synced.delete(id)
+        throw e
+      }
+      // The stream ended or restarted while this loaded, so events may have been missed
+      // between the read and the new stream: read again.
+      if (mine !== generation) continue
+      pending.delete(id)
+      mutate((s) => {
+        s.messages[id] = l.messages
+        upsertSession(s, l.session)
+        for (const q of l.questions) s.questions[q.id] = q
+        replay(s, window)
+      })
+      fire(window)
+      return
+    }
+  }
+
   async function bootstrap() {
     const mine = ++generation
     buffer = []
@@ -145,18 +178,18 @@ export function createOfficeSync(opts: {
         client.people.list(),
         readFolderPeople(),
         client.sessions.list({ limit: SESSION_LIMIT }),
-        Promise.all([...synced].filter((id) => !pending.has(id)).map(reload)),
+        // Sessions still loading too: their own load may have read state before the stream
+        // ended, so it will load again, but the snapshot shouldn't wait for that.
+        Promise.all([...synced].map(reload)),
         Promise.all(held.map(async (id) => [id, await recheck(id)] as const)),
       ])
       if (mine !== generation) return
       const events = buffer
       buffer = undefined
-      // Live events for sessions still loading belong to those sessions' windows.
-      const now = events.filter((e) => {
-        if (e.type !== "live" || !pending.has(e.event.session_id)) return true
-        pending.get(e.event.session_id)!.push(e)
-        return false
-      })
+      // A session still loading gets its events here, on this snapshot, and in its window, on
+      // the snapshot its load ends with; replaying an event twice is harmless.
+      for (const e of events) if (e.type === "live") pending.get(e.event.session_id)?.push(e)
+      const now = events
       mutate((s) => {
         s.people = people
         s.folderPeople = folderPeople
@@ -198,27 +231,14 @@ export function createOfficeSync(opts: {
     /** Why the last bootstrap failed, while the status is `error`. */
     error: () => error,
     /** Loads a session's messages and open questions, and keeps them live from then on. */
-    async syncSession(id: string) {
+    syncSession(id: string) {
       synced.add(id)
-      const window: StreamEvent[] = []
-      pending.set(id, window)
-      mutate((s) => void (s.messages[id] ??= []))
-      try {
-        const l = await loadSession(id)
-        pending.delete(id)
-        mutate((s) => {
-          s.messages[id] = l.messages
-          upsertSession(s, l.session)
-          for (const q of l.questions) s.questions[q.id] = q
-          replay(s, window)
-        })
-        fire(window)
-      } catch (e) {
-        pending.delete(id)
-        // While the office is down the next bootstrap loads it; any other failure is final.
-        if (!(e instanceof OfficeUnavailable)) synced.delete(id)
-        throw e
+      let load = loads.get(id)
+      if (!load) {
+        load = loadLive(id).finally(() => loads.delete(id))
+        loads.set(id, load)
       }
+      return load
     },
     /** Re-reads a question, e.g. after the office says it is no longer open; drops it if the office has none. */
     async refreshQuestion(id: string) {

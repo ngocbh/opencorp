@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
+import type { Message } from "@agent-corp/protocol"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
 import { emptyState, openQuestions } from "../../src/office/store"
@@ -221,4 +222,58 @@ test("folder people failing leaves the list empty and still comes online", async
   } finally {
     console.error = error
   }
+})
+
+const textMessage = (sessionId: string, id: string): Message => ({
+  id,
+  session_id: sessionId,
+  role: "assistant",
+  parts: [{ id: `${id}-p`, type: "text", text: id }],
+  created_at: "t",
+})
+
+test("a session load that spans a reconnect still ends up with what happened in the gap", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  const messages = `GET /sessions/${id}/messages`
+  office.state.messages[id] = [textMessage(id, "M1")]
+  const release = office.hold("GET /sessions/:id/messages", "reply")
+  const done = sync.syncSession(id)
+  await until(() => count(office!, messages) === 1) // its reply is read already: M1 only
+  office.dropStreams()
+  await until(() => sync.status() !== "online")
+  // While no stream is open, M2 lands; its event reaches no one.
+  const m2 = textMessage(id, "M2")
+  office.state.messages[id].push(m2)
+  office.live({ type: "message.updated", session_id: id, data: structuredClone(m2) as never })
+  await until(() => count(office!, messages) === 2) // the reconnect's bootstrap reloads it
+  release()
+  await done
+  await until(() => sync.status() === "online")
+  expect(state.messages[id].map((m) => m.id)).toEqual(["M1", "M2"])
+})
+
+test("a bootstrap whose stream ends before it finishes is dropped", async () => {
+  office = createFakeOffice()
+  const release = office.hold("GET /sessions")
+  const { state, sync } = start(office.socket)
+  await until(() => count(office!, "GET /sessions?limit=50") === 1)
+  office.notImplemented.add("GET /events") // it can't reconnect
+  office.dropStreams()
+  await until(() => sync.status() === "offline")
+  release()
+  await Bun.sleep(50)
+  expect(sync.status()).toBe("offline")
+  expect(state.sessions).toEqual([])
+})
+
+test("loading a session twice at once sends one request", async () => {
+  office = createFakeOffice()
+  const { sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  await Promise.all([sync.syncSession(id), sync.syncSession(id)])
+  expect(count(office, `GET /sessions/${id}/messages`)).toBe(1)
 })
