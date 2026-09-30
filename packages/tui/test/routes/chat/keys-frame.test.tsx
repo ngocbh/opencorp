@@ -66,3 +66,28 @@ test("/end ends the session: ending, then debriefing; with no debrief screen it 
     office.stop()
   }
 })
+
+test("Enter while a reply runs steers: the text goes to the same prompt route and starts no new reply", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const replies: string[] = []
+  office.onPrompt((_, req) => void replies.push(req.text))
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("fix the test")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("@minh · busy"))
+    app.input.typeText("use the retry helper")
+    app.input.pressEnter()
+    const prompts = () => office.requests.filter((r) => r.path === `/sessions/${s.id}/prompt`).map((r) => r.body)
+    await app.until(() => prompts().length === 2)
+    // The steer shows in the transcript, and the input box is empty again.
+    await app.until((f) => f.split("use the retry helper").length === 2 && f.includes("@minh · busy"))
+    expect(prompts()).toEqual([{ text: "fix the test" }, { text: "use the retry helper" }])
+    expect(replies).toEqual(["fix the test"])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
