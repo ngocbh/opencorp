@@ -32,18 +32,25 @@ export function useDebriefCommands() {
   }))
 }
 
-/** A session's debrief: summary, status, artifacts, decisions, follow-ups, open questions and cost. */
+/**
+ * A session's debrief: summary, status, artifacts, decisions, follow-ups, open questions and
+ * cost. Space marks follow-ups and `c` confirms them, which makes a work item for each.
+ */
 export function Debrief() {
   const data = useRouteData("debrief")
   const route = useRoute()
   const office = useOffice()
   const renderer = useRenderer()
+  const toast = useToast()
   const { theme } = useTheme()
   const id = data.sessionID
   const [debrief, setDebrief] = createSignal<DebriefData>()
   const [missing, setMissing] = createSignal(false)
   const [error, setError] = createSignal<string>()
   const session = () => office.state.sessions.find((s) => s.id === id)
+  const followUps = () => (debrief()?.state === "ready" ? (debrief()!.follow_ups ?? []) : [])
+  const [cursor, setCursor] = createSignal(0)
+  const [marked, setMarked] = createSignal<number[]>([])
 
   /** Reads the debrief; for a pending one, the read also makes the office retry it. */
   function load() {
@@ -63,11 +70,39 @@ export function Debrief() {
   onCleanup(office.on("debrief.created", put))
   onCleanup(office.on("debrief.updated", put))
 
+  const move = (by: number) => setCursor((c) => Math.max(0, Math.min(followUps().length - 1, c + by)))
+  function mark() {
+    const i = cursor()
+    if (!followUps()[i] || followUps()[i].confirmed) return
+    setMarked((m) => (m.includes(i) ? m.filter((x) => x !== i) : [...m, i].sort((a, b) => a - b)))
+  }
+  let confirming = false
+  /** Confirms the marked follow-ups, or the one under the cursor when none are marked. */
+  async function confirm() {
+    const indices = marked().length ? marked() : [cursor()]
+    const fresh = indices.filter((i) => followUps()[i] && !followUps()[i].confirmed)
+    if (confirming || !fresh.length) return
+    confirming = true
+    try {
+      setDebrief(await office.client.debriefs.confirm(id, { indices: fresh }))
+      setMarked([])
+      toast.show({ variant: "success", message: `Made ${fresh.length} work item${fresh.length === 1 ? "" : "s"}` })
+    } catch (e) {
+      toast.show({ variant: "error", message: errorMessage(e) })
+    } finally {
+      confirming = false
+    }
+  }
+
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
       { key: "r", group: "Debrief", cmd: load },
+      { key: "up", group: "Debrief", cmd: () => move(-1) },
+      { key: "down", group: "Debrief", cmd: () => move(1) },
+      { key: "space", group: "Debrief", cmd: mark },
+      { key: "c", group: "Debrief", cmd: () => void confirm() },
       { key: "escape", group: "Debrief", cmd: () => route.navigate({ type: "session", sessionID: id }) },
     ],
   }))
@@ -102,7 +137,23 @@ export function Debrief() {
             </text>
             <Section title="Artifacts" items={d().artifacts ?? []} />
             <Section title="Decisions" items={d().decisions ?? []} />
-            <Section title="Follow-ups" items={(d().follow_ups ?? []).map((f) => f.text)} />
+            <Show when={followUps().length}>
+              <box marginTop={1}>
+                <text fg={theme.text}>
+                  <span style={{ bold: true }}>Follow-ups</span>
+                  <span style={{ fg: theme.textMuted }}> · space mark · c confirm as work items</span>
+                </text>
+                <For each={followUps()}>
+                  {(f, i) => (
+                    <text fg={f.confirmed ? theme.textMuted : theme.text}>
+                      {i() === cursor() ? "› " : "  "}
+                      {f.confirmed ? "[x]" : marked().includes(i()) ? "[+]" : "[ ]"} {f.text}
+                      {f.work_item_id ? ` (work item ${f.work_item_id.slice(-6)})` : ""}
+                    </text>
+                  )}
+                </For>
+              </box>
+            </Show>
             <Section title="Open questions" items={d().open_questions ?? []} />
           </scrollbox>
         )}

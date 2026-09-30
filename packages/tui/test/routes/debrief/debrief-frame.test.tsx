@@ -72,3 +72,27 @@ test("no debrief yet says so; while debriefing it says it is being written; then
     await app.until((f) => f.includes("Fixed the flaky clock test") && !f.includes("Writing the debrief"))
   })
 })
+
+test("space marks follow-ups and c confirms them; each confirmed one shows its work item", async () => {
+  const office = createFakeOffice()
+  office.addDebrief(office.state.sessions[0].id, READY)
+  await run(office, async (app, id) => {
+    await app.until((f) => f.includes("› [ ] Add a CI job") && f.includes("  [ ] Bump the retry timeout"))
+    app.input.pressArrow("down")
+    app.input.pressKey(" ")
+    await app.until((f) => f.includes("› [+] Bump the retry timeout"))
+    app.input.pressKey("c")
+    await app.until((f) => f.includes("[x] Bump the retry timeout") && f.includes("Made 1 work item"))
+    expect(office.requests.find((r) => r.method === "POST")).toMatchObject({
+      path: `/debriefs/${id}/confirm`,
+      body: { indices: [1] },
+    })
+    const item = office.state.debriefs[id].follow_ups![1].work_item_id!
+    await app.until((f) => f.includes(`work item ${item.slice(-6)}`))
+    // With nothing marked, c confirms the follow-up under the cursor.
+    app.input.pressArrow("up")
+    app.input.pressKey("c")
+    await app.until((f) => f.includes("[x] Add a CI job"))
+    expect(office.requests.filter((r) => r.method === "POST").at(-1)?.body).toEqual({ indices: [0] })
+  })
+})
