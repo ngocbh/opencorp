@@ -9,6 +9,18 @@
         "typescript": "^5.6.0",
       },
     },
+    "packages/ac": {
+      "name": "@agent-corp/ac",
+      "version": "0.0.1",
+      "bin": {
+        "ac": "src/main.ts",
+      },
+      "dependencies": {
+        "@agent-corp/tui": "workspace:*",
+        "@opentui/solid": "catalog:",
+        "effect": "catalog:",
+      },
+    },
     "packages/protocol": {
       "name": "@agent-corp/protocol",
       "version": "0.0.1",
@@ -54,6 +66,8 @@
     "strip-ansi": "7.1.2",
   },
   "packages": {
+    "@agent-corp/ac": ["@agent-corp/ac@workspace:packages/ac"],
+
     "@agent-corp/protocol": ["@agent-corp/protocol@workspace:packages/protocol"],
 
     "@agent-corp/tui": ["@agent-corp/tui@workspace:packages/tui"],
