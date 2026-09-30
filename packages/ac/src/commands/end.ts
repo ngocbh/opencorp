@@ -1,10 +1,9 @@
 import { realpathSync } from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
+import type { Session } from "@agent-corp/protocol"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
 import { defaultSocket } from "@agent-corp/tui/office/paths"
-
-type Session = Awaited<ReturnType<OfficeClient["sessions"]["get"]>>
 
 // An ending session is already on its way out, and a debriefing or later one is not live.
 const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy"])
