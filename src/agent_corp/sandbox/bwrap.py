@@ -60,13 +60,38 @@ def command(policy: SandboxPolicy, argv: list[str]) -> list[str]:
     args += ["--bind", str(policy.tmpdir), str(policy.tmpdir)]
     ws = str(policy.workspace)
     if policy.writable:
-        args += ["--bind", ws, ws]
-        # Mounted after the workspace so they cover it. A missing .git/hooks stays
-        # missing, and is then writable: bind mounts need an existing source.
-        for path in map(str, policy.protected[1:]):
-            args += ["--ro-bind-try", path, path]
+        args += ["--bind", ws, ws, *_git_binds(policy)]
     else:
         args += ["--ro-bind", ws, ws]
     # The tmpfs root holds only mount points; read-only, so writes outside the
     # binds fail instead of landing in a throwaway directory.
     return [*args, "--remount-ro", "/", "--chdir", ws, "--", *argv]
+
+
+def _git_binds(policy: SandboxPolicy) -> list[str]:
+    """Return the mounts that keep a writable workspace's `.git` protected.
+
+    They come after the workspace bind so they cover it. `.git` is bound onto itself:
+    Linux refuses to rename a mount point, but not a directory that merely contains one,
+    so binding only `.git/hooks` and `.git/config` would leave `mv .git .git2` open.
+    A missing `.git/hooks` is created first, since a bind needs an existing source; a
+    missing `.git/config` stays missing, and is then writable.
+
+    Symlinks are never bound: bwrap follows them on both sides, so model code could point
+    `.git/config` at `~/.ssh/id_ed25519` and have the next call mount the key.
+    """
+    git, hooks, config = policy.protected
+    if git.is_symlink():
+        return []
+    if git.is_file():
+        # A worktree's .git file names the real git dir.
+        return ["--ro-bind", str(git), str(git)]
+    if not git.is_dir():
+        return []
+    if not os.path.lexists(hooks):
+        hooks.mkdir()
+    binds = ["--bind", str(git), str(git)]
+    for path in (hooks, config):
+        if not path.is_symlink():
+            binds += ["--ro-bind-try", str(path), str(path)]
+    return binds

@@ -42,12 +42,60 @@ def test_workspace_bind_mode(make):
 
 def test_git_paths_are_read_only_over_a_writable_workspace(make):
     policy = make()
+    (policy.workspace / ".git").mkdir()
     argv = bwrap.command(policy, ["x"])
-    ws_at = argv.index(str(policy.workspace))
+    ws, git = str(policy.workspace), str(policy.workspace / ".git")
+    # .git is bound onto itself so it is a mount point, which can't be renamed; binding
+    # only .git/hooks and .git/config would still let `mv .git .git2` succeed.
+    assert ("--bind", git, git) in triples(argv, "--bind")
+    # Later mounts cover earlier ones: workspace, then .git, then the read-only paths.
+    assert argv.index(ws) < argv.index(git)
     for path in map(str, policy.protected[1:]):
         assert ("--ro-bind-try", path, path) in triples(argv, "--ro-bind-try")
-        # Later mounts cover earlier ones, so these come after the workspace bind.
-        assert argv.index(path) > ws_at
+        assert argv.index(path) > argv.index(git)
+
+
+def test_missing_git_hooks_is_created_so_it_can_be_bound(make):
+    policy = make()
+    (policy.workspace / ".git").mkdir()
+    bwrap.command(policy, ["x"])
+    assert (policy.workspace / ".git/hooks").is_dir()
+
+
+def test_git_file_is_read_only(make):
+    # A worktree's .git is a file naming the real git dir; it must not be rewritten.
+    policy = make()
+    (policy.workspace / ".git").write_text("gitdir: /elsewhere\n")
+    argv = bwrap.command(policy, ["x"])
+    git = str(policy.workspace / ".git")
+    assert ("--ro-bind", git, git) in triples(argv, "--ro-bind")
+    assert ("--bind", git, git) not in triples(argv, "--bind")
+
+
+def test_git_symlinks_are_never_bound(make, tmp_path):
+    # bwrap follows symlinks, so binding one would mount its target in the sandbox.
+    secret = tmp_path / "secret"
+    secret.mkdir()
+    policy = make()
+    git = policy.workspace / ".git"
+    git.mkdir()
+    (git / "hooks").symlink_to(secret)
+    (git / "config").symlink_to(secret / "key")
+    argv = bwrap.command(policy, ["x"])
+    assert str(git / "hooks") not in argv and str(git / "config") not in argv
+    (git / "hooks").unlink()
+    (git / "config").unlink()
+    git.rmdir()
+    git.symlink_to(secret)
+    assert str(git) not in bwrap.command(policy, ["x"])
+    assert not (secret / "hooks").exists()
+
+
+def test_no_git_no_git_binds(make):
+    policy = make()
+    argv = bwrap.command(policy, ["x"])
+    assert not (policy.workspace / ".git").exists()
+    assert str(policy.workspace / ".git") not in argv
 
 
 def test_tmpdir_and_read_only(make):
