@@ -1,0 +1,97 @@
+# OpenCode TUI inventory
+
+What the agent-corp TUI takes from OpenCode's `packages/tui`, and what happens to each
+dependency on the rest of the OpenCode monorepo.
+
+- Upstream: https://github.com/anomalyco/opencode at `b471c2b4495747353af768fbf2e0790c9d820ce2`,
+  path `packages/tui` (`@opencode-ai/tui` 1.18.32).
+- Produced with
+  `grep -rnoE '"@opencode-ai/[^"]+"' src test` in the upstream package, then read file by file.
+  No file imports `@opencode-ai/session-ui`.
+
+Classification:
+
+- **keep**: used as is (from npm or copied).
+- **stand-in**: the upstream package is private; a small local module with the same exported
+  names replaces it.
+- **vendor**: copied into this package.
+- **replace**: the protocol client (typed by `packages/protocol`) replaces it when the TUI
+  talks to the office. Until then the published OpenCode SDK is kept so the copy builds.
+- **drop**: removed with the feature that uses it.
+
+## Imports from `@opencode-ai/*`
+
+### `@opencode-ai/sdk/v2` (35 import sites; published on npm)
+
+| Symbols | Importing files | Class | Reason |
+| --- | --- | --- | --- |
+| `createOpencodeClient` | `context/sdk.tsx` | replace | The protocol client (HTTP+SSE over the office socket) takes its place. |
+| `GlobalEvent`, `Event` | `context/sdk.tsx`, `context/event.ts`, `feature-plugins/system/notifications.ts`; tests `fixture/tui-sdk.ts`, `cli/tui/{data,use-event}.test.tsx`, `cli/cmd/tui/{sync,sync-live-hydration,notifications}.test.tsx` | replace | Protocol event `$defs`. |
+| `Session`, `SessionStatus`, `Message`, `UserMessage`, `AssistantMessage`, `Part`, `TextPart`, `ToolPart`, `ReasoningPart`, `FilePart`, `AgentPart` | `context/sync.tsx`, `routes/session/{index,subagent-footer,dialog-timeline,dialog-fork-from-timeline}.tsx`, `component/prompt/index.tsx`, `prompt/history.tsx`, `util/transcript.ts`, `feature-plugins/sidebar/context.tsx`; test `util/transcript.test.ts` | replace | Protocol session, message and part types. |
+| `PermissionRequest` | `context/sync.tsx`, `routes/session/permission.tsx` | replace | Protocol permission request. |
+| `QuestionRequest`, `QuestionAnswer` | `context/sync.tsx`, `routes/session/question.tsx` | replace | Protocol `PendingQuestion` and `AnswerRequest`; question cards build on this view. |
+| `Agent`, `Command`, `Config`, `Todo` | `context/sync.tsx` | replace | Employees replace agents; commands, config and todos follow the protocol or go. |
+| `Provider`, `ProviderListResponse`, `ProviderAuthMethod`, `ProviderAuthAuthorization`, `ConsoleState`, `ExperimentalConsoleListOrgsResponse` | `context/sync.tsx`, `util/{model,transcript}.ts`, `routes/session/index.tsx`, `component/dialog-{provider,console-org}.tsx`; test `util/transcript.test.ts` | drop | The office owns models and credentials; no provider pickers or auth in the TUI. |
+| `LspStatus`, `McpStatus`, `McpResource`, `FormatterStatus` | `context/sync.tsx` | drop | No LSP, MCP or formatter status in agent-corp. |
+| `VcsInfo`, `SnapshotFileDiff`, `VcsFileDiff`, `VcsFileStatus` | `context/sync.tsx`, `feature-plugins/system/diff-viewer.tsx`, `component/dialog-workspace-file-changes.tsx` | drop | The diff viewer and workspaces go. |
+| `Path` | `context/project.tsx` | replace | The working directory comes from `ac`. |
+| `Workspace`, `ExperimentalWorkspaceAdapterListResponse`, `ProjectDirectories` | `context/project.tsx`, `component/dialog-workspace-{create,list}.tsx`, `component/dialog-move-session.tsx` | drop | No OpenCode workspaces or session moves. |
+| `LocationRef`, `AgentV2Info`, `CommandV2Info`, `IntegrationInfo`, `ModelV2Info`, `PermissionSavedInfo`, `PermissionV2Request`, `ProviderV2Info`, `QuestionV2Request`, `ReferenceInfo`, `SessionMessage`, `SessionMessageAssistant`, `SessionMessageAssistantReasoning`, `SessionMessageAssistantText`, `SessionMessageAssistantTool`, `SessionV2Info`, `SkillV2Info`, `V2Event` | `context/{data,location}.tsx` | replace | OpenCode's v2 data layer; the protocol client's store replaces it. |
+| `FileSystemEntry` | `component/prompt/autocomplete.tsx` | replace | File mentions need an office route or a local listing. |
+
+### `@opencode-ai/plugin/tui` (24 import sites; types only; published on npm)
+
+| Symbols | Importing files | Class | Reason |
+| --- | --- | --- | --- |
+| `TuiPlugin`, `TuiPluginModule`, `TuiPluginApi`, `TuiPluginMeta`, `TuiPluginStatus`, `TuiPluginInstallOptions`, `TuiPluginInstallResult`, `TuiRouteCurrent`, `TuiRouteDefinition`, `TuiSlotContext`, `TuiSlotMap`, `TuiSlotProps`, `TuiDialogSelectOption`, `TuiCommand` | `plugin/{api,adapters,runtime,slots,command-shim}.ts(x)`, `feature-plugins/**`; tests `app-lifecycle.test.tsx`, `fixture/tui-plugin.ts`, `cli/tui/diff-viewer.test.tsx` | drop | agent-corp has no TUI plugins. Slots render their fallback children instead. |
+| `TuiAttention`, `TuiAttentionNotifyInput`, `TuiAttentionNotifyResult`, `TuiAttentionNotifySkipReason`, `TuiAttentionWhen`, `TuiAttentionSoundName`, `TuiAttentionSoundPack`, `TuiAttentionSoundPackInfo`, `TuiKV` | `attention.ts`, `feature-plugins/system/notifications.ts`; test `cli/cmd/tui/notifications.test.ts` | drop | Attention sounds and notifications are plugin features. |
+
+### `@opencode-ai/core/*` (20 import sites; private workspace package)
+
+| Module and symbols | Importing files | Class | Replacement |
+| --- | --- | --- | --- |
+| `@opencode-ai/core/global` `Global` | `app.tsx`, `context/{kv,theme}.tsx`; test `app-lifecycle.test.tsx` | stand-in | `src/core/global.ts`: the same `Global.Path` getters and `Global.Service`/`layer`, rooted at `$AGENT_CORP_HOME` or `~/.agent-corp`, then `tui/`. |
+| `@opencode-ai/core/flag/flag` `Flag` | `app.tsx`, `ui/dialog.tsx`, `context/sdk.tsx`, `component/prompt/index.tsx` | stand-in | `src/core/flag.ts`: only the flags the TUI reads, same env names and parsing. |
+| `@opencode-ai/core/installation/version` `InstallationVersion`, `InstallationChannel` | `app.tsx`, `component/{dialog-debug,error-component}.tsx`, `routes/session/sidebar.tsx` | stand-in | `src/core/version.ts`: a build-time `AGENT_CORP_VERSION`, else `local`. |
+| `@opencode-ai/core/open` `openUrl` | `app.tsx`, `ui/link.tsx`, `component/dialog-retry-action.tsx` | stand-in | `src/core/open.ts`: the same function (http and https only) on the `open` package. |
+| `@opencode-ai/core/util/which` `which` | `clipboard.ts` | stand-in | `Bun.which`. |
+| `@opencode-ai/core/util/glob` `Glob` | `context/theme.tsx` | stand-in | `Bun.Glob`. |
+| `@opencode-ai/core/util/flock` `Flock` | `context/kv.tsx` | drop | One TUI owns its state file, and writes are already atomic. |
+| `@opencode-ai/core/effect/app-node-builder` `AppNodeBuilder` | test `app-lifecycle.test.tsx` | drop | The test provides `Global.layer` directly. |
+
+### `@opencode-ai/ui/audio/*.mp3` (6 import sites; private workspace package)
+
+| Files | Importing files | Class | Reason |
+| --- | --- | --- | --- |
+| `bip-bop-01.mp3`, `bip-bop-03.mp3`, `staplebops-06.mp3`, `nope-03.mp3`, `yup-01.mp3` | `attention.ts` (declared in `audio.d.ts`) | vendor, then drop | Copied to `src/assets/audio/` so the copy builds; removed with attention sounds. |
+
+## Features and files
+
+Paths are relative to `src/` unless they start with `test/`. "Adapted by" names the later
+task that rewires a kept file.
+
+| Area | Files | Class | Adapted by / reason |
+| --- | --- | --- | --- |
+| App shell | `app.tsx`, `index.tsx`, `runtime.tsx`, `context/{args,exit,epilogue,helper,route,runtime,prompt,clipboard,path-format,thinking}.ts(x)`, `util/**` except below | keep | T4 swaps the SDK provider for the protocol client. |
+| Home | `routes/home.tsx`, `routes/home/session-destination.tsx`, `component/logo.tsx`, `logo.ts` | keep | T5 puts the employee picker on the home screen. |
+| Session view | `routes/session/{index,footer,sidebar,dialog-message,dialog-timeline,subagent-footer}.tsx` | keep | T6 chat screen. |
+| Permission and question views | `routes/session/{permission,question}.tsx`, `context/permission.tsx` | keep | T6 question cards. |
+| Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment,cwd}.ts(x)`, `prompt/**` | keep | T6 (Enter/steer, Esc/interrupt). |
+| Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-session-rename,dialog-session-delete-failed,dialog-stash,dialog-theme-list,dialog-debug,dialog-retry-action,error-component,startup-loading,spinner,register-spinner,todo-item,bg-pulse,bg-pulse-render}.ts(x)` | keep | Used by every later screen. |
+| Theme | `theme/**`, `context/theme.tsx` | keep | |
+| Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
+| Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` keeps agent and model selection state until T4 replaces it with employees. |
+| Data layer | `context/{sdk,sync,data,location,project,event,directory}.ts(x)` | replace | T4 protocol client and store. Sync still fetches LSP, MCP and formatter status until then. |
+| Editor | `editor.ts`, `editor-zed.ts`, `context/editor.ts` | keep | External `$EDITOR` for the prompt and editor selection context. |
+| Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts`, `parsers-config.ts` | keep | |
+| Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, the `plugin` route | drop | No TUI plugins. |
+| Built-in plugins | `feature-plugins/**` (home footer and tips, sidebar context/files/LSP/MCP/todo/footer, diff viewer, which-key, notifications, plugin manager) | drop | Plugin-based and OpenCode-specific. The chat and profile screens bring their own panels. |
+| Attention sounds | `attention.ts`, `audio.ts`, `audio.d.ts` | drop | Plugin feature with OpenCode sound packs. |
+| Provider and model pickers, auth | `component/dialog-{model,provider,variant,console-org}.tsx`, `component/use-connected.tsx`, `util/{model,provider-origin}.ts`, the empty-provider dialog in `app.tsx` | drop | The office owns models and credentials. |
+| MCP, LSP, formatter status | `component/dialog-{mcp,status}.tsx` | drop | Not in agent-corp. |
+| Share | session share and unshare commands | drop | Sessions are not shared through OpenCode. |
+| Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. |
+| Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | T5's employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
+| Fork and subagent dialogs | `routes/session/dialog-fork-from-timeline.tsx`, `routes/session/dialog-subagent.tsx` | drop | No forking in M1; `dialog-subagent` is unused upstream. |
+| Tests | `test/**` | keep, except the tests of dropped features | `test/fixture/tui-sdk.ts` stays until T4's fake office replaces it. |
+| SST glue | `sst-env.d.ts` | drop | Not copied. |
