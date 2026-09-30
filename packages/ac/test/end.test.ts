@@ -73,7 +73,11 @@ test("ac end ID ends that session and says the debrief follows; the office's ref
     const r = await capture(["end", id])
     expect([r.code, r.out]).toEqual([0, `Ending @minh's session ${id}; its debrief follows.`])
     // Ending an ending session is a no-op; once it is debriefing, the office refuses.
-    while (office.state.sessions[0].status !== "debriefing") await Bun.sleep(5)
+    office.state.sessions[0] = { ...office.state.sessions[0], status: "ending" }
+    const ending = await capture(["end", id])
+    expect([ending.code, ending.out]).toEqual([0, `Ending @minh's session ${id}; its debrief follows.`])
+    expect(office.state.sessions[0].status).toBe("ending")
+    office.setStatus(id, "debriefing")
     const again = await capture(["end", id])
     expect([again.code, again.err]).toEqual([1, `ac end: session ${id} has no live run`])
   } finally {
