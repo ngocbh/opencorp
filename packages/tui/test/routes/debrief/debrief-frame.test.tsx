@@ -47,11 +47,11 @@ test("/debrief shows the session's debrief; Esc goes back to the session", async
   })
 })
 
-test("a pending debrief says the office retries it; r asks again; the ready debrief arrives by event", async () => {
+test("a pending debrief says r retries it; r asks again; the ready debrief arrives by event", async () => {
   const office = createFakeOffice()
   office.addDebrief(office.state.sessions[0].id, { state: "pending" })
   await run(office, async (app, id) => {
-    await app.until((f) => f.includes("Debrief pending"))
+    await app.until((f) => f.includes("Debrief pending (r retries now)."))
     const gets = () => office.requests.filter((r) => r.path === `/debriefs/${id}`).length
     const before = gets()
     app.input.pressKey("r")

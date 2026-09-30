@@ -208,7 +208,7 @@ export function Debrief() {
   const notice = () => {
     if (debrief()?.state === "ready" || !(debrief() || missing())) return
     if (writing()) return "Writing the debrief…"
-    return debrief() ? "Debrief pending: the office will retry it (r retries now)." : "No debrief yet."
+    return debrief() ? "Debrief pending (r retries now)." : "No debrief yet."
   }
 
   return (
