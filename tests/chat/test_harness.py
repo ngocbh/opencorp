@@ -1,0 +1,265 @@
+import json
+
+import pytest
+
+from agent_corp.chat.harness import HarnessError
+from tests.chat.conftest import status, texts, wait_for
+
+
+def start(harness, workspace):
+    session = harness.start_session("minh", str(workspace))
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    return session.id
+
+
+def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspace):
+    fake_llm.script({"content": "Hello from Minh."})
+    sid = start(harness, workspace)
+    session = harness.store.get_session(sid)
+    assert (session.kind, session.harness, len(session.run_ids)) == ("main", "composer", 1)
+
+    assert harness.prompt(sid, "hi") == "turn"
+    wait_for(lambda: texts(harness, sid) == ["Hello from Minh."], what="the reply")
+    wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
+    assert texts(harness, sid, "user") == ["hi"]
+
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert harness.store.get_work_item(session.work_item_id).status == "done"
+    with pytest.raises(HarnessError) as err:
+        harness.prompt(sid, "late")
+    assert err.value.code == "not_live"
+
+
+def asked(fake_llm, n):
+    """The messages of the ``n``th model request (from 1), as JSON text."""
+    return json.dumps(fake_llm.wait_for_requests(n)[n - 1]["messages"])
+
+
+def echo_call(text="x"):
+    return {"name": "fake__echo", "arguments": {"text": text}}
+
+
+def test_a_steer_reaches_the_running_reply(harness, fake_llm, workspace):
+    fake_llm.script({"content": "Working", "tool_calls": [echo_call()], "hold": 30}, {"content": "Done."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    fake_llm.wait_for_requests(1)
+    assert harness.steer(sid, "Also mention Rome.") == "steer"
+    fake_llm.release()
+    assert "Also mention Rome." in asked(fake_llm, 2)
+    wait_for(lambda: status(harness, sid) == "idle" and texts(harness, sid)[-1:] == ["Done."], what="the reply")
+    assert texts(harness, sid, "user") == ["hi", "Also mention Rome."]
+
+
+def test_a_steer_the_reply_never_reads_is_the_next_turn(harness, fake_llm, workspace):
+    fake_llm.script({"content": "Done.", "hold": 30}, {"content": "Second."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    fake_llm.wait_for_requests(1)
+    assert harness.steer(sid, "one more thing") == "steer"
+    fake_llm.release()
+    assert "one more thing" in asked(fake_llm, 2)
+    wait_for(lambda: texts(harness, sid) == ["Done.", "Second."], what="the second reply")
+    assert texts(harness, sid, "user") == ["hi", "one more thing"]  # written once, when accepted
+
+
+def test_a_message_answers_the_models_open_question(harness, fake_llm, workspace):
+    fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which?", "options": ["A", "B"]}}]},
+                    {"content": "You chose."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    q = wait_for(lambda: harness.store.list_questions(session_id=sid, status="open", source="ask_user"),
+                 what="the model's question")[0]
+    assert status(harness, sid) == "busy"
+    assert harness.prompt(sid, "Option B, please") == "answer"
+    assert "Option B, please" in asked(fake_llm, 2)
+    wait_for(lambda: texts(harness, sid)[-1:] == ["You chose."], what="the reply")
+    assert harness.store.get_question(q.id).status == "consumed"
+
+
+def test_esc_answers_the_models_question_and_keeps_the_run(harness, fake_llm, workspace):
+    fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which?"}}]},
+                    {"content": "Next."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "first-turn-text")
+    q = wait_for(lambda: harness.store.list_questions(session_id=sid, status="open", source="ask_user"),
+                 what="the model's question")[0]
+    harness.interrupt(sid)
+    assert harness.store.get_question(q.id).answer_kind == "interrupted"
+    wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
+    harness.prompt(sid, "again")
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Next."], what="the next reply")
+    assert len(harness.store.get_session(sid).run_ids) == 1
+    assert len(fake_llm.requests()) == 2  # the interrupted reply made no more model calls
+    assert "first-turn-text" in asked(fake_llm, 2)  # session memory kept the interrupted turn
+
+
+def test_a_failed_run_starts_a_new_run(harness, fake_llm, workspace):
+    fake_llm.script({"error": 500}, {"content": "Back."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: len(harness.store.get_session(sid).run_ids) == 2 and status(harness, sid) == "idle",
+             what="the new run")
+    harness.prompt(sid, "again")
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Back."], what="the reply")
+
+
+def test_max_turns_ends_the_session(make_harness, fake_llm, workspace):
+    harness = make_harness(defaults={"max_turns": 2})
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "a")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="turn one")
+    harness.prompt(sid, "b")
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+
+
+def test_an_idle_session_ends(make_harness, fake_llm, workspace):
+    harness = make_harness(defaults={"idle_end": "1s"})
+    session = harness.start_session("minh", str(workspace))
+    wait_for(lambda: status(harness, session.id) == "ended", timeout=15, what="the idle end")
+
+
+def test_end_while_busy_interrupts_then_exits(harness, fake_llm, workspace):
+    fake_llm.script({"content": "Working", "tool_calls": [echo_call()], "hold": 30}, {"content": "never"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    fake_llm.wait_for_requests(1)
+    harness.end(sid)
+    assert status(harness, sid) == "ending"
+    with pytest.raises(HarnessError) as err:
+        harness.prompt(sid, "more")
+    assert (err.value.status, err.value.code) == (409, "ending")
+    fake_llm.release()
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert len(fake_llm.requests()) == 1
+
+
+def test_hooks_see_the_session(harness, fake_llm, workspace):
+    seen = []
+    harness.hooks.run_started.append(lambda s, run_id: seen.append(("run_started", run_id)))
+    harness.hooks.question_stored.append(lambda q: seen.append(("question_stored", q.source)))
+    harness.hooks.run_finished.append(lambda s, run_id, result: seen.append(("run_finished", result["status"])))
+    harness.hooks.session_ended.append(lambda s: seen.append(("session_ended", s.status)))
+    harness.hooks.answer_check.append(lambda q, answer, kind: "no swearing" if answer == "darn" else None)
+    fake_llm.script({"content": "ok"})
+    sid = start(harness, workspace)
+    turn = harness.store.list_questions(session_id=sid, status="open")[0]
+    with pytest.raises(HarnessError) as err:
+        harness.answer(turn.id, "darn", "text")
+    assert (err.value.code, err.value.message) == ("invalid_answer", "no swearing")
+    harness.answer(turn.id, "hello", "text")
+    wait_for(lambda: texts(harness, sid) == ["ok"] and status(harness, sid) == "idle", what="the reply")
+    harness.end(sid)
+    wait_for(lambda: ("session_ended", "ended") in seen, what="session_ended")
+    run_id = harness.store.get_session(sid).run_ids[0]
+    assert seen[0] == ("run_started", run_id)
+    assert seen[-2:] == [("run_finished", "succeeded"), ("session_ended", "ended")]
+    assert ("question_stored", "human_input") in seen
+
+
+def test_a_session_records_the_resolved_folder(harness, fake_llm, tmp_path, workspace):
+    link = tmp_path / "link"
+    link.symlink_to(workspace)
+    session = harness.start_session("minh", str(link))
+    real = str(workspace.resolve())
+    assert session.cwd == real
+    assert [f.cwd for f in harness.store.worked_folders("minh")] == [real]
+
+
+@pytest.mark.parametrize("person, cwd, code", [
+    ("nobody", None, "not_found"), ("ngocbh", None, "not_an_agent"),
+    ("minh", "relative/path", "invalid_body"), ("minh", "/", "unsafe_workspace"),
+])
+def test_start_refuses_bad_requests(harness, workspace, person, cwd, code):
+    with pytest.raises(HarnessError) as err:
+        harness.start_session(person, cwd or str(workspace))
+    assert err.value.code == code
+    assert harness.store.list_sessions() == []
+
+
+def test_esc_racing_the_end_of_a_reply_leaves_the_next_turn_open(harness, fake_llm, workspace):
+    fake_llm.script({"content": "Done.", "hold": True}, {"content": "Next."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    fake_llm.wait_for_requests(1)
+    fake_llm.release()
+    for _ in range(20):  # Esc again and again as the reply ends and the next turn opens
+        harness.interrupt(sid)
+    wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
+    harness.interrupt(sid)
+    turns = harness.store.list_questions(session_id=sid, source="human_input")
+    assert [q.status for q in turns] == ["consumed", "open"]
+    assert harness.prompt(sid, "again") == "turn"
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Next."], what="the next reply")
+
+
+def test_a_failing_hook_does_not_stop_the_session(harness, fake_llm, workspace):
+    def broken(*args):
+        raise RuntimeError("boom")
+
+    for name in ("question_stored", "run_started", "run_finished", "session_ended"):
+        getattr(harness.hooks, name).append(broken)
+    fake_llm.script({"content": "ok"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["ok"] and status(harness, sid) == "idle", what="the reply")
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+
+
+SENTINEL = "sk-sentinel-7c2a51"
+
+
+def keyed(make_harness):
+    from agent_corp.testing.fake_llm import LLM_CONFIG
+
+    return make_harness(llm_config={**LLM_CONFIG, "api_key": SENTINEL})
+
+
+def test_the_model_key_goes_to_the_job_llm_config_not_its_env(make_harness, workspace):
+    harness = keyed(make_harness)
+    jobs = []
+    spawn = harness.registry.spawn
+    harness.registry.spawn = lambda job, *args: (jobs.append(job), spawn(job, *args))[1]
+    sid = start(harness, workspace)
+    (job,) = jobs
+    assert job.llm_config["api_key"] == SENTINEL
+    assert SENTINEL not in json.dumps(job.env)
+    assert SENTINEL not in repr(harness.store.get_session(sid))
+
+
+# Composer's LLMConfig forbids extra fields, so a key in llm_config fails the reply node and
+# the validation error echoes it into events and the run log. Drop the mark once the submodule
+# has LLMConfig.api_key.
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason="needs composer LLMConfig.api_key")
+def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fake_llm, workspace, tmp_path,
+                                                               monkeypatch):
+    from agent_corp.chat import harness as harness_module
+
+    frames = []
+    for name in ("event", "stream", "result", "error"):
+        original = getattr(harness_module._Handlers, name)
+
+        def record(self, worker, frame, original=original):
+            frames.append(frame)
+            return original(self, worker, frame)
+
+        monkeypatch.setattr(harness_module._Handlers, name, record)
+    harness = keyed(make_harness)
+    fake_llm.script({"content": "ok"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["ok"] or len(harness.store.get_session(sid).run_ids) > 1,
+             what="the reply or a failed run")
+    harness.close_all()
+
+    leaks = [f["type"] for f in frames if SENTINEL in json.dumps(f, default=str)]
+    leaks += ["live event" for e in harness.office.bus.events
+              if SENTINEL in (e.model_dump_json() if hasattr(e, "model_dump_json") else json.dumps(e, default=str))]
+    leaks += [str(p.relative_to(tmp_path)) for p in tmp_path.rglob("*")
+              if p.is_file() and SENTINEL.encode() in p.read_bytes()]
+    assert SENTINEL not in json.dumps(fake_llm.requests())
+    assert leaks == []
+    assert texts(harness, sid) == ["ok"]
