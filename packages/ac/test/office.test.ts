@@ -1,11 +1,18 @@
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { doctor } from "../src/commands/doctor"
 import { onboard } from "../src/commands/onboard"
 import { start } from "../src/commands/start"
-import { type Deps, REPO, venvPython } from "../src/office"
+import { main } from "../src/main"
+import { type Deps, REPO, officeAnswers, venvPython } from "../src/office"
+import { createFakeOffice } from "../../tui/script/stub"
+
+const saved = { ...process.env }
+afterEach(() => {
+  process.env = { ...saved }
+})
 
 /** Deps whose programs all exist and exit `codes[program]` (0 if absent), recording each call. */
 function fake(codes: Record<string, number> = {}, missing: string[] = []) {
@@ -85,3 +92,36 @@ test("`ac start` on an AGENT_CORP_HOME with no office exits 3 with the onboardin
     fs.rmSync(home, { recursive: true, force: true })
   }
 }, 30_000)
+
+test("a running office answers the probe with one request; no socket is no office", async () => {
+  // A short path: unix socket paths are limited to about 100 bytes.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
+  const socket = path.join(home, "office.sock")
+  try {
+    expect(await officeAnswers(socket)).toBe(false)
+    const office = createFakeOffice({ socket })
+    try {
+      expect(await officeAnswers(socket)).toBe(true)
+      expect(office.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /people"])
+    } finally {
+      office.stop()
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test("`ac` with no office says so and exits 3 before loading the TUI", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
+  process.env.AGENT_CORP_HOME = home
+  const err: string[] = []
+  const error = console.error
+  console.error = (...a: unknown[]) => void err.push(a.join(" "))
+  try {
+    expect(await main(["--continue"])).toBe(3)
+    expect(err).toEqual(["The office isn't running. Run `ac doctor`."])
+  } finally {
+    console.error = error
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}, 10_000)

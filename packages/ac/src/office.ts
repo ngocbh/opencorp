@@ -1,6 +1,7 @@
-// Running the Python side of `ac`: onboarding, the doctor, and starting the office live in
-// `python -m agent_corp.install`, run with this checkout's venv. It reads the home from
-// $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed through.
+// Running the Python side of `ac`, and checking that the office is up. Onboarding, the doctor,
+// and starting the office live in `python -m agent_corp.install`, run with this checkout's venv;
+// it reads the home from $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed
+// through. `ac` never starts the office on its own: the service `ac onboard` installed does.
 import fs from "node:fs"
 import path from "node:path"
 
@@ -42,4 +43,23 @@ export async function runInstall(command: string, args: string[], deps: Deps = r
     return 1
   }
   return deps.spawn([python, "-m", "agent_corp.install", command, ...args], REPO)
+}
+
+/** Exit code when no office answers, as `python -m agent_corp.install start` exits with no office yet. */
+export const NO_OFFICE = 3
+
+/** Says the office isn't running; returns `NO_OFFICE`. */
+export function officeNotRunning(): number {
+  console.error("The office isn't running. Run `ac doctor`.")
+  return NO_OFFICE
+}
+
+/** Whether an office answers `GET /people` on the unix socket `socket` within 2 s. */
+export async function officeAnswers(socket: string): Promise<boolean> {
+  try {
+    const res = await fetch("http://office/people", { unix: socket, signal: AbortSignal.timeout(2000) })
+    return res.ok
+  } catch {
+    return false
+  }
 }
