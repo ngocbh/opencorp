@@ -231,7 +231,11 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     paths = OfficePaths(run.home)
     try:
         paths.home.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # mkdir leaves an existing home's mode alone; the home holds the company and the office.
+        os.chmod(paths.home, 0o700)
         make_office_dir(paths.office)
+    except OSError as exc:
+        raise OnboardError(f"can't set up the office home {paths.home}: {exc.strerror or exc}") from None
     except OfficeStartError as exc:
         raise OnboardError(str(exc)) from None
     prompter.say(f"Office home: {paths.home}")

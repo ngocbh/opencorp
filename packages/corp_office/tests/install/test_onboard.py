@@ -60,6 +60,16 @@ def test_a_company_whose_first_write_stopped_early_is_asked_for_and_finished(tmp
     assert lint(load_repo(company)) == [] and _git(company, "status", "--porcelain") == ""
 
 
+def test_an_existing_home_others_can_read_is_made_private(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
+    home = tmp_path / "home"
+    home.mkdir(mode=0o755)
+    home.chmod(0o755)
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, Script("Acme", "Me", "me"), host=make_host(tmp_path, Runner()))
+    assert stat.S_IMODE(os.stat(home).st_mode) == 0o700
+
+
 def test_no_hire_leaves_the_company_without_an_agent(tmp_path):
     home = tmp_path / "home"
     ask = Script("Acme", "Me", "me")
