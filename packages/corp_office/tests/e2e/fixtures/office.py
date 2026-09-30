@@ -170,6 +170,11 @@ class RunningOffice:
             assert done.returncode == 0, f"ac {' '.join(args)}: {done.stdout}{done.stderr}"
         return done
 
+    def git_log(self) -> list[str]:
+        """The company repo's commit subjects, newest first."""
+        return subprocess.run(["git", "-C", str(self.paths.company), "log", "--format=%s"],
+                              check=True, capture_output=True, text=True).stdout.splitlines()
+
     def stop(self) -> None:
         """Stop every office this test started, and any worker a killed office left behind."""
         self.http.close()

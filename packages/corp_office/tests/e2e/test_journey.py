@@ -68,3 +68,18 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     feedback = office.ac("feedback", "-m", "Keep replies short.", cwd=workspace)
     [run_id] = office.session(sid)["run_ids"]
     assert f"is queued for @minh (session {sid}, run {run_id})" in feedback.stdout
+
+    # 4. The learned rule is a commit, and Minh's next session starts from it.
+    subject = f"profile(@minh): from feedback on run {run_id} (ngocbh)"
+    wait_for(lambda: subject in office.git_log(), "the profile commit")
+    learned = office.get(f"/profiles/{minh}")["text"]
+    assert learned == before + f"\n{LEARNED}\n"
+    fake.script({"content": "Short."})
+    calls = len(fake.requests())
+    nxt = office.start_chat(minh, workspace, wait=False)
+    assert office.status(nxt) == "starting"
+    office.prompt(nxt, "Hello again")
+    office.settled(nxt, ["Short."])
+    # The profile rides in the first call as a JSON memory block, so compare line by line.
+    assert all(line in asked(fake.requests()[calls]) for line in learned.splitlines() if line)
+    assert LEARNED not in asked(fake.requests()[0])
