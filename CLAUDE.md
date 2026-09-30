@@ -1,0 +1,64 @@
+# agent-corp
+
+A local office daemon that runs AI employees on top of the agent-composer engine.
+
+## Layout
+
+```
+pyproject.toml         # Python project "agent-corp" (import agent_corp)
+src/agent_corp/        # office daemon, run worker, sandbox launcher, permission layer, harness adapters
+tests/                 # Python tests, mirroring src/agent_corp/
+agent-composer/        # submodule; uv path dependency
+packages/protocol/     # JSON Schema → TS types + pydantic (schema planned)
+packages/tui/          # forked OpenCode TUI (planned)
+packages/ac/           # `ac` CLI entry (planned)
+docs/plans/            # design docs and plans (local only, gitignored)
+```
+
+The design docs in `docs/plans/` are gitignored, so a fresh clone does not have them; issue #1 is
+the shared record of the design decisions.
+
+## Setup
+
+```
+git clone --recurse-submodules https://github.com/ngocbh/agent-corp.git && cd agent-corp
+uv sync        # uses a uv-managed Python 3.12
+bun install
+```
+
+## Tests
+
+- Python: `uv run pytest -q tests/<path>` (all: `uv run pytest -q tests`).
+- TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
+  run each package's own `test` and `typecheck` scripts.
+- CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
+- `tests/<pkg>/` mirrors `src/agent_corp/<pkg>/`. Every test directory has an empty
+  `__init__.py` so same-named test modules in different directories don't collide.
+
+## Protocol schema
+
+Once `packages/protocol/schema/protocol.schema.json` exists, it changes only in a schema-only PR that:
+
+- edits the schema and its fixtures, and regenerates `src/agent_corp/protocol/models.py`
+  and `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
+- only adds fields and `$defs`; never renames or removes one that merged code uses;
+- merges before dependent work continues.
+
+## GitHub workflow
+
+1. Open (or pick up) an issue.
+2. Post a plan as a comment on the issue.
+3. Branch `dev/<domain>/<short-name>`.
+4. Make small, test-first commits.
+5. Open a PR with `Fixes #N` that lists the exact checks you ran.
+
+Work is complete only when the PR merges.
+
+agent-composer changes go to the agent-composer repo (github.com/ngocbh/agent-composer) as their
+own issue and PR; never edit the submodule here. Bump the submodule pointer in a separate commit.
+
+## Code style
+
+- Keep code direct and scoped to the task.
+- Docstrings say what a symbol does; comments say why non-obvious code exists.
+- No task numbers or plan labels in source.
