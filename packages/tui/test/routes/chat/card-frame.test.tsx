@@ -358,3 +358,27 @@ test("an empty typed answer keeps the option picked on that page", async () => {
     office.stop()
   }
 })
+
+test("an office without the carried/dismiss route warns 'not available yet' too", async () => {
+  const office = createFakeOffice({ missing: ["POST /questions/:id/carried/dismiss"] })
+  const s = office.state.sessions[0]
+  const earlier = office.addQuestion({
+    session_id: s.id,
+    question: "Which database?",
+    status: "stale",
+    discussion: [{ role: "user", text: "why Postgres?" }],
+  })
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], carried_from: earlier.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("[Dismiss earlier discussion]"))
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Dismissing a discussion is not available yet"))
+    expect(f).toContain("From an earlier, expired question: Which database?")
+    expect(f).not.toContain("Dismissing failed")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

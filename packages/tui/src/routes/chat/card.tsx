@@ -5,7 +5,7 @@ import type { TextareaRenderable } from "@opentui/core"
 import { tint, useTheme } from "../../context/theme"
 import type { AnswerRequest, Question } from "@agent-corp/protocol"
 import { useOffice } from "../../context/office"
-import { OfficeError, isNotImplemented } from "../../office/errors"
+import { OfficeError, isMissingRoute, isNotImplemented } from "../../office/errors"
 import { errorMessage } from "../../util/error"
 import { personLabel } from "../../util/transcript"
 import { useToast } from "../../ui/toast"
@@ -138,7 +138,8 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
           office.putQuestion(q)
         })
         .catch((error) => {
-          if (isNotImplemented(error))
+          // Until WP10 adds carried/dismiss, the office answers it 404 no_route rather than 501.
+          if (isNotImplemented(error) || isMissingRoute(error))
             return toast.show({ message: "Dismissing a discussion is not available yet", variant: "warning" })
           toast.show({ title: "Dismissing failed", message: errorMessage(error), variant: "error" })
         }),

@@ -178,6 +178,8 @@ export function createFakeOffice(
     seed?: FakeState
     socket?: string
     notImplemented?: Iterable<string>
+    /** Route keys an older office doesn't have: it answers them `404 no_route`. */
+    missing?: Iterable<string>
     /** The company's `profile_max_chars`; a longer profile is `over_budget`. */
     profileMaxChars?: number
   } = {},
@@ -186,6 +188,7 @@ export function createFakeOffice(
   const profileMaxChars = opts.profileMaxChars ?? 32000
   const state = opts.seed ?? seed(nextId)
   const notImplemented = new Set(opts.notImplemented ?? [])
+  const missing = new Set(opts.missing ?? [])
   const requests: { method: string; path: string; raw: string; body: unknown }[] = []
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
@@ -906,10 +909,10 @@ export function createFakeOffice(
     const segs = url.pathname.split("/")
     const found = routes.flatMap(([method, pattern, h]) => {
       const params = match(pattern, segs)
-      return params ? [{ method, pattern, h, params }] : []
+      return params && !missing.has(`${method} ${pattern}`) ? [{ method, pattern, h, params }] : []
     })
     if (!found.length)
-      return Response.json({ error: "no_route", message: `no route for ${url.pathname}` }, { status: 404 })
+      return Response.json({ error: "no_route", message: `no route ${req.method} ${url.pathname}` }, { status: 404 })
     const route = found.find((r) => r.method === req.method)
     if (!route)
       return Response.json(

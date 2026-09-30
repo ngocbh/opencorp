@@ -47,3 +47,6 @@ export class VersionConflictError extends OfficeError {
 
 /** Whether `e` is the office's 501 for a route that hasn't landed yet. */
 export const isNotImplemented = (e: unknown) => e instanceof OfficeError && e.status === 501
+
+/** Whether `e` is an office's `404 no_route`: an office older than the route. */
+export const isMissingRoute = (e: unknown) => e instanceof OfficeError && e.status === 404 && e.code === "no_route"
