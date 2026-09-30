@@ -25,7 +25,21 @@ def frame(kind: str, event: Event | LiveEvent) -> bytes:
 
 
 async def stream_events(request: Request) -> Response:
-    """Stream bus events, optionally for one session. There is no replay: clients re-read state with GETs."""
+    """Stream bus events, optionally for one session.
+
+    There is no replay, so a client bootstraps in this order: open ``/events``, wait for
+    ``: connected``, GET the state it needs, then apply the events buffered since
+    ``: connected``, in order. A buffered event the snapshot already reflects is harmless to
+    apply: applying them all in order ends at the latest state.
+
+    ``part.delta`` only appends text. A client that joined mid-stream ignores deltas for a
+    part until it has that part from a ``part.updated`` or ``message.updated`` received after
+    its snapshot.
+
+    ``event: reset`` means the office dropped this client for falling behind; the stream then
+    ends, and the client reconnects and bootstraps again. Any other end of the stream (the
+    office stopping) also calls for a fresh bootstrap.
+    """
     if request.method != "GET":
         # Starlette serves HEAD on every GET route; a HEAD response to a stream that never
         # ends would hold the connection forever.
