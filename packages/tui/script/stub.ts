@@ -170,6 +170,8 @@ export function createFakeOffice(
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
+  // The run each debrief was written in; the protocol's Debrief doesn't carry it.
+  const debriefRuns = new Map<string, string>()
 
   const fail = (status: number, error: string, message: string) => new Fail(status, error, message)
   const need = <T>(value: T | undefined, what: string): T => {
@@ -298,6 +300,30 @@ export function createFakeOffice(
       ...fields,
     }
     return updateQuestion(q, "question.created")
+  }
+
+  /**
+   * Stores a session's debrief, as the office's debrief flow would, and publishes it. A ready
+   * debrief ends a debriefing session; a pending one leaves it debriefing (the flow may still run).
+   * `run` is the debrief's own run, which feedback may name once the debrief is ready.
+   */
+  function addDebrief(sessionId: string, fields: Partial<Debrief> = {}, opts: { run?: string } = {}) {
+    const type = state.debriefs[sessionId] ? "debrief.updated" : "debrief.created"
+    const s = session(sessionId)
+    if (opts.run) debriefRuns.set(s.id, opts.run)
+    const d: Debrief = { session_id: s.id, state: "ready", updated_at: now(), ...fields }
+    state.debriefs[sessionId] = d
+    publish(type, sessionId, d)
+    if (d.state === "ready" && s.status === "debriefing") setStatus(s.id, "ended")
+    return d
+  }
+  /** Moves a feedback item along the learning queue, as the office's backward job would. */
+  function feedbackStatus(id: string, status: Feedback["status"], fields: Partial<Feedback> = {}) {
+    const i = state.feedback.findIndex((f) => f.id === id)
+    const f: Feedback = { ...need(state.feedback[i], `feedback ${id}`), status, ...fields }
+    state.feedback[i] = f
+    publish("feedback.updated", id, f)
+    return f
   }
 
   function profile(person: string) {
@@ -443,7 +469,19 @@ export function createFakeOffice(
       "/sessions/:id/interrupt",
       ({ params }) => (setStatus(params.id, "interrupted"), Response.json({ ok: true })),
     ],
-    ["POST", "/sessions/:id/end", ({ params }) => (setStatus(params.id, "ended"), Response.json({ ok: true }))],
+    [
+      "POST",
+      "/sessions/:id/end",
+      ({ params }) => {
+        const s = session(params.id)
+        if (s.status === "ending") return Response.json({ ok: true })
+        setStatus(s.id, "ending")
+        // A main session is debriefed before it ends, and ends once its debrief is written.
+        const next = s.kind === "main" ? "debriefing" : "ended"
+        setTimeout(() => session(s.id).status === "ending" && setStatus(s.id, next), 20)
+        return Response.json({ ok: true })
+      },
+    ],
     [
       "POST",
       "/sessions/:id/cost-cap",
@@ -584,10 +622,21 @@ export function createFakeOffice(
       ({ body }) => {
         check(str(body?.session_id) && str(body?.text), "session_id and text are required")
         const s = session(body.session_id)
+        if (s.kind !== "main") throw fail(422, "not_learnable", `${s.id} is a ${s.kind} session`)
+        const runId: string | undefined = body.run_id ?? s.run_ids?.at(-1)
+        const runs = new Set(s.run_ids ?? [])
+        const debriefRun = debriefRuns.get(s.id)
+        if (debriefRun && state.debriefs[s.id]?.state === "ready") runs.add(debriefRun)
+        check(runId, `${s.id} has no runs`)
+        // A run of another session would be learned into the wrong person's profile.
+        check(runs.has(runId!), `run ${runId} is not in ${s.id}`)
+        // A session's latest run is still going (or may be killed) until the session has stopped.
+        const stopped = ["ended", "failed", "debriefing"].includes(s.status)
+        if (runId === s.run_ids?.at(-1) && !stopped) throw fail(409, "run_unfinished", `run ${runId} has not finished`)
         const f: Feedback = {
           id: nextId(),
           session_id: s.id,
-          run_id: body.run_id ?? s.run_ids?.at(-1) ?? "run-1",
+          run_id: runId!,
           author: human(),
           text: body.text,
           status: "queued",
@@ -602,23 +651,50 @@ export function createFakeOffice(
     [
       "GET",
       "/debriefs/:session",
-      ({ params }) => Response.json(need(state.debriefs[params.session], `debrief for ${params.session}`)),
+      ({ params }) => {
+        const s = session(params.session)
+        const d = state.debriefs[s.id]
+        if (d) return Response.json(d)
+        // A debriefing session has a debrief, pending until the flow stores it.
+        if (s.status === "debriefing")
+          return Response.json({ session_id: s.id, state: "pending", updated_at: s.updated_at } satisfies Debrief)
+        throw fail(404, "not_found", `no debrief for ${s.id}`)
+      },
     ],
     [
       "POST",
       "/debriefs/:session/confirm",
       ({ params, body }) => {
-        const d = need(state.debriefs[params.session], `debrief for ${params.session}`)
+        const s = session(params.session)
+        const d = state.debriefs[s.id]
+        if (d?.state !== "ready") throw fail(409, "not_ready", `the debrief for ${s.id} is not ready`)
         const ups = d.follow_ups ?? []
         check(
           Array.isArray(body?.indices) && body.indices.every((i: unknown) => Number.isInteger(i) && ups[i as number]),
           "indices must name follow-ups",
         )
-        const next: Debrief = {
-          ...d,
-          follow_ups: ups.map((f, i) => (body.indices.includes(i) ? { ...f, confirmed: true } : f)),
-          updated_at: now(),
-        }
+        const picked = new Set<number>(body.indices)
+        // A follow-up is confirmed once: confirming it again keeps its work item.
+        const follow_ups = ups.map((f, i) => {
+          if (!picked.has(i) || f.confirmed) return f
+          const at = now()
+          const item: WorkItem = {
+            id: nextId(),
+            title: f.text,
+            kind: "task",
+            status: "open",
+            // The fake's only client is the local human, so they are the one confirming.
+            requester: human(),
+            assignee: s.person,
+            parent_id: s.work_item_id ?? null,
+            created_at: at,
+            updated_at: at,
+          }
+          state.workItems[item.id] = item
+          publish("work_item.created", item.id, item)
+          return { ...f, confirmed: true, work_item_id: item.id }
+        })
+        const next: Debrief = { ...d, follow_ups, updated_at: now() }
         state.debriefs[params.session] = next
         publish("debrief.updated", params.session, next)
         return Response.json(next)
@@ -715,6 +791,8 @@ export function createFakeOffice(
     addQuestion,
     setStatus,
     propose,
+    addDebrief,
+    feedbackStatus,
     /** Writes an SSE comment line (`: text`) to every stream. */
     comment: (text: string) => write(`: ${text}\n\n`),
     ping: () => write(": ping\n\n"),

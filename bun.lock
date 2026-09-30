@@ -16,6 +16,7 @@
         "ac": "src/main.ts",
       },
       "dependencies": {
+        "@agent-corp/protocol": "workspace:*",
         "@agent-corp/tui": "workspace:*",
         "@opentui/solid": "catalog:",
         "effect": "catalog:",
