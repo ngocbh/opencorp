@@ -73,6 +73,13 @@ def test_background_process_dies_with_the_call(make_policy):
     assert gone("4242")
 
 
+def test_std_streams_by_path(make_policy):
+    script = "echo out > /dev/stdout; echo err > /dev/stderr; echo fd > /dev/fd/1; cat /dev/fd/0"
+    result = sh(make_policy(), script, stdin=b"in")
+    assert result.exit == 0, result.stderr
+    assert result.stdout == b"out\nfd\nin" and result.stderr == b"err\n"
+
+
 def test_output_is_capped(make_policy):
     result = sh(make_policy(), "head -c 100000 /dev/zero", max_output=1000)
     assert len(result.stdout) == 1000 and result.truncated

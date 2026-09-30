@@ -105,6 +105,8 @@ def profile(policy: SandboxPolicy) -> str:
             + [f"(literal {_q(p)})" for p in SYSTEM_LITERALS],
         ),
         '(allow file-write-data (literal "/dev/null"))',
+        ";; The call's own descriptors by path, so `echo x > /dev/stderr` works.",
+        '(allow file-read* file-write-data (subpath "/dev/fd") (literal "/dev/stdout") (literal "/dev/stderr"))',
         ";; Ancestors of allowed paths: metadata only, so lookups and realpath work.",
         _allow("file-read-metadata", [f"(literal {_q(p)})" for p in (*ROOT_LINKS, *_ancestors(readable))]),
         ";; The workspace.",
