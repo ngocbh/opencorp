@@ -93,10 +93,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           setSelected(id)
         },
         cycle(direction: 1 | -1) {
-          const people = list()
+          // Agents only, as in the picker; from a human, go to the first or last agent.
+          const people = list().filter((p) => p.kind === "agent")
           if (!people.length) return
           const index = people.findIndex((p) => p.id === current()?.id)
-          setSelected(people[(index + direction + people.length) % people.length].id)
+          setSelected(people.at(index < 0 ? (direction > 0 ? 0 : -1) : (index + direction) % people.length)!.id)
         },
         color(id: string | undefined) {
           const index = list().findIndex((p) => p.id === id)

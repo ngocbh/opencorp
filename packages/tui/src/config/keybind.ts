@@ -84,6 +84,7 @@ export const Definitions = {
   session_quick_switch_9: keybind("<leader>9", "Switch to session in quick slot 9"),
 
   stash_delete: keybind("ctrl+d", "Delete stash entry"),
+  person_list: keybind("<leader>p", "Switch person"),
   agent_cycle: keybind("tab", "Next person"),
   agent_cycle_reverse: keybind("shift+tab", "Previous person"),
 
@@ -217,6 +218,7 @@ export const CommandMap = {
   session_quick_switch_8: "session.quick_switch.8",
   session_quick_switch_9: "session.quick_switch.9",
   stash_delete: "stash.delete",
+  person_list: "person.list",
   agent_cycle: "agent.cycle",
   agent_cycle_reverse: "agent.cycle.reverse",
   messages_page_up: "session.page.up",

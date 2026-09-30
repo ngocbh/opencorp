@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createFakeOffice, createStub, type FakeOffice } from "../script/stub"
+import { createFakeOffice, createStub, seed, type FakeOffice } from "../script/stub"
 import { bootFrame } from "./fixture/frame"
 
 test("the home screen against a running office shows the logo, the prompt, and the person", async () => {
@@ -16,13 +16,19 @@ test("the home screen against a running office shows the logo, the prompt, and t
   }
 })
 
-test("Tab cycles to the next person; --person picks one at start", async () => {
-  const office = createFakeOffice()
+test("Tab cycles through agents, skipping humans; --person picks one at start", async () => {
+  const s = seed()
+  s.people.push({ id: "lan", handle: "lan", name: "Lan", kind: "agent", title: "QA engineer", manager: "ngocbh" })
+  const office = createFakeOffice({ seed: s })
   const app = await bootFrame(createStub(office))
   try {
     await app.until((f) => f.includes("@minh"))
     app.input.pressTab()
-    await app.until((f) => f.includes("@ngocbh") && f.includes("CEO"))
+    await app.until((f) => f.includes("@lan") && f.includes("QA engineer"))
+    app.input.pressTab()
+    await app.until((f) => f.includes("@minh") && f.includes("Software engineer"))
+    app.input.pressTab({ shift: true })
+    await app.until((f) => f.includes("@lan") && f.includes("QA engineer"))
   } finally {
     await app.stop()
   }
