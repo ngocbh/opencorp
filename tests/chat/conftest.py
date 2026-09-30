@@ -80,6 +80,12 @@ def make_harness(tmp_path, fake_llm):
     for harness in made:
         if not harness._stopping:
             harness.close_all()
+        elif not harness._closed:
+            # The test played a dead office. Its worker's reader thread and its dispatcher
+            # may still be handling the worker's exit, so let them finish before the store closes.
+            harness.registry.close_all()
+            harness._jobs.put(None)
+            harness._thread.join(10)
         harness.store.close()
 
 

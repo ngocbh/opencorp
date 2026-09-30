@@ -50,7 +50,24 @@ BUSY_TIMEOUT_S = 10.0
 
 
 class _Connection(sqlite3.Connection):
-    """A ``sqlite3.Connection`` that can be weakly referenced (the C type can't)."""
+    """A ``sqlite3.Connection`` that can be weakly referenced (the C type can't).
+
+    ``close`` waits for a statement running on another thread instead of closing under it.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # sqlite3 drops the GIL while a statement runs, then reads the connection's handle,
+        # which close() from another thread has already cleared: the interpreter crashes.
+        self._use = threading.Lock()
+
+    def execute(self, sql: str, params: Any = (), /) -> sqlite3.Cursor:
+        with self._use:
+            return super().execute(sql, params)
+
+    def close(self) -> None:
+        with self._use:
+            super().close()
 
 
 def enable_wal(conn: sqlite3.Connection, *, timeout: float = BUSY_TIMEOUT_S) -> None:
@@ -305,6 +322,7 @@ class Store:
         # cache refers back to it, so that takes the cyclic GC, not just the thread ending).
         self._conns: weakref.WeakSet[sqlite3.Connection] = weakref.WeakSet()
         self._conns_lock = threading.Lock()
+        self._closed = False
         self._write_lock = threading.RLock()
         self._listeners: list[Listener] = []
         self._table_columns: dict[str, frozenset[str]] = {}
@@ -319,11 +337,17 @@ class Store:
         self.close()
 
     def close(self) -> None:
-        """Close every thread's connection."""
+        """Close every thread's connection, each once its running statement ends.
+
+        From then on, store calls on any thread raise ``sqlite3.ProgrammingError``, as does
+        a transaction that another thread still has open.
+        """
         with self._conns_lock:
-            for conn in list(self._conns):
-                conn.close()
+            self._closed = True
+            conns = list(self._conns)
             self._conns.clear()
+        for conn in conns:
+            conn.close()
         self._local = threading.local()
 
     # --- connections and transactions -------------------------------------------------
@@ -331,6 +355,8 @@ class Store:
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
+            if self._closed:
+                raise sqlite3.ProgrammingError("the store is closed")
             # check_same_thread=False only so close() can close every thread's connection;
             # each connection is still used by its own thread alone.
             conn = sqlite3.connect(
@@ -340,9 +366,14 @@ class Store:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
             conn.execute("PRAGMA synchronous = NORMAL")
-            self._local.conn = conn
             with self._conns_lock:
-                self._conns.add(conn)
+                closed = self._closed
+                if not closed:
+                    self._conns.add(conn)
+            if closed:  # close() ran while this connection opened
+                conn.close()
+                raise sqlite3.ProgrammingError("the store is closed")
+            self._local.conn = conn
         return conn
 
     @contextmanager
