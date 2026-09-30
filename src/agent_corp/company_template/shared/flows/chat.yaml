@@ -1,0 +1,58 @@
+# A person's main chat: one LOOP iteration per turn. The reply agent keeps the
+# conversation in session memory; the person's profile is memory on the whole flow.
+id: chat
+name: chat
+description: Chat with a person in the office.
+long_term_memory: profile
+
+defs:
+  turn:
+    input:
+      exited: bool
+      reply: str
+    nodes:
+      ask:
+        kind: human_input
+        prompt: "You:"
+        output: str
+      route:
+        kind: case
+        on: ${ask.output}
+        cases:
+          - when: /exit
+            then: exit_turn
+        else: reply
+      exit_turn:
+        kind: code
+        output:
+          exited: bool
+        code: |
+          return {"exited": True}
+      reply:
+        kind: agent
+        mode: tool_calling
+        steerable: true
+        long_term_memory: session
+        env:
+          max_tool_iterations: 100
+        tools: [toolbox, workspace, company, ask_user]
+        skills: all
+        input:
+          message: ${ask.output}
+        output: str
+        prompt: "${message}"
+    # A LOOP body needs a record output of two or more fields; the last reply is the second.
+    output:
+      exited: ${exit_turn.output.exited == true}
+      reply: '${reply.output:-""}'
+
+nodes:
+  chat:
+    kind: loop
+    call: turn
+    input:
+      exited: false
+      reply: ""
+    while: not exited
+    max: 10000
+output: ${chat.output.reply}
