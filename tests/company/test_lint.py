@@ -142,7 +142,14 @@ def test_unexpected_flow_error_names_its_type(company, monkeypatch):
 
 def test_flow_outside_repo(make_company):
     root = make_company(**{"people/minh/person.yaml": person("minh", main="../../../etc/passwd")})
-    assert "person.flow_outside_repo" in codes(root)
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_outside_repo"]
+    assert str(root.parent.resolve()) not in issue.message and "../etc/passwd" in issue.message
+
+
+def test_flow_cycle_message_is_repo_relative(make_company):
+    root = make_company(**{"shared/flows/chat.yaml": parent_flow("chat")})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert str(root.resolve()) not in issue.message and "shared/flows/chat.yaml" in issue.message
 
 
 CHILD = "id: echo\nname: echo\ninput:\n  text: str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
@@ -162,7 +169,8 @@ def test_child_flow_inside_repo_is_fine(make_company):
 def test_child_flow_outside_repo(make_company, tmp_path):
     (tmp_path / "echo.yaml").write_text(CHILD)  # tmp_path/company is the repo
     root = make_company(**{"shared/flows/chat.yaml": parent_flow("../../../echo")})
-    assert "person.flow_outside_repo" in codes(root)
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_outside_repo"]
+    assert str(tmp_path.resolve()) not in issue.message and "../echo.yaml" in issue.message
 
 
 def test_repo_reached_through_a_symlink(company, tmp_path):

@@ -1,5 +1,6 @@
 """Load company flows with child flows confined to the repo."""
 
+import os
 from pathlib import Path
 
 import yaml
@@ -40,13 +41,14 @@ def _load(root: Path, path: Path, loading: frozenset[Path]) -> ComposedFlow:
     """
     # Compare resolved paths so /var -> /private/var on macOS and symlinked roots work.
     path = path.resolve()
+    shown = os.path.relpath(path, root)  # messages show repo-relative paths
     if not path.is_relative_to(root):
-        raise FlowOutsideRepo(f"{path} is outside the company repo")
+        raise FlowOutsideRepo(f"{shown} is outside the company repo")
     if path in loading:
-        raise ValueError(f"flow-reference cycle at {path}")
+        raise ValueError(f"flow-reference cycle at {shown}")
     text = path.read_text(encoding="utf-8")
     if _declares_system_paths(text):
-        raise ValueError(f"{path}: system.paths is not supported in company flows; "
+        raise ValueError(f"{shown}: system.paths is not supported in company flows; "
                          "use a relative uses: path")
 
     def resolve(ref: str, version: str | None = None) -> ComposedFlow:
@@ -55,4 +57,4 @@ def _load(root: Path, path: Path, loading: frozenset[Path]) -> ComposedFlow:
             raise ValueError(f"{ref} is version {child.version!r}, not {version!r}")
         return child
 
-    return load_flow(text, child_resolver=resolve, source_label=str(path))
+    return load_flow(text, child_resolver=resolve, source_label=shown)
