@@ -13,6 +13,15 @@ const agent = (handle: string, title: string): Person => ({
   manager: "ngocbh",
 })
 
+/** Renders a few more frames, well past the flush where the picker would open, and returns the last. */
+async function settled(app: Awaited<ReturnType<typeof bootFrame>>) {
+  for (let i = 0; i < 10; i++) {
+    await app.setup.renderOnce()
+    await Bun.sleep(20)
+  }
+  return app.until(() => true)
+}
+
 /** @minh worked in /tmp/proj; @lan has a main session elsewhere; @kai has neither. */
 function office() {
   const s = seed()
@@ -76,10 +85,51 @@ test("in a folder nobody has worked in, the picker opens at start; not with --pe
   }
   const chosen = await bootFrame({ ...createStub(fake), cwd: "/tmp/new" }, { person: "lan" })
   try {
-    // The picker would open in the same flush that brings @lan into the footer.
-    expect(await chosen.until((f) => f.includes("@lan"))).not.toContain("Who do you want")
+    await chosen.until((f) => f.includes("@lan"))
+    expect(await settled(chosen)).not.toContain("Who do you want")
   } finally {
     await chosen.stop()
     fake.stop()
   }
 })
+
+const seeded = seed().sessions[0].id
+for (const [flag, args, started] of [
+  ["--continue", { continue: true }, "GET /folders"],
+  ["--session", { sessionID: seeded }, `GET /sessions/${seeded}/messages`],
+  ["--prompt", { prompt: "hello" }, "POST /sessions"],
+] as const) {
+  test(`${flag} keeps the picker shut in a new folder`, async () => {
+    const fake = office()
+    const app = await bootFrame({ ...createStub(fake), cwd: "/tmp/new" }, args)
+    try {
+      await app.until(() => fake.requests.some((r) => `${r.method} ${r.path}`.startsWith(started)))
+      expect(await settled(app)).not.toContain("Who do you want")
+    } finally {
+      await app.stop()
+      fake.stop()
+    }
+  })
+}
+
+test("the picker opens when the office first comes online, and not again after a reconnect", async () => {
+  const socket = `/tmp/act-pick-${process.pid}.sock`
+  const app = await bootFrame({ ...createStub(), socket, cwd: "/tmp/new" })
+  let fake: ReturnType<typeof office> | undefined
+  try {
+    await app.until((f) => f.includes("Office is not running"))
+    fake = createFakeOffice({ socket })
+    await app.until((f) => f.includes("Who do you want to talk to?"), 8000)
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Who do you want"))
+    fake.stop()
+    await app.until((f) => f.includes("Office is not running"), 8000)
+    fake = createFakeOffice({ socket })
+    const back = fake
+    await app.until((f) => !f.includes("Office is not running") && back.requests.some((r) => r.path.startsWith("/folders")), 8000)
+    expect(await settled(app)).not.toContain("Who do you want")
+  } finally {
+    await app.stop()
+    fake?.stop()
+  }
+}, 30000)
