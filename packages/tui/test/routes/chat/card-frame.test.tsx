@@ -320,3 +320,39 @@ test("Ctrl+C while 'Stop @minh? y/N' shows leaves on the second press and never 
     office.stop()
   }
 })
+
+test("an empty typed answer keeps the option picked on that page", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Set up the release",
+    questions: [
+      { question: "Which channel?", header: "Channel", options: [{ label: "beta" }, { label: "stable" }] },
+      { question: "Which region?", header: "Region", options: [{ label: "eu" }, { label: "us" }] },
+    ],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Question 1 of 2 · Channel"))
+    app.input.pressKey("2")
+    await app.until((f) => f.includes("Question 2 of 2 · Region"))
+    app.input.pressArrow("left")
+    await app.until((f) => f.includes("Question 1 of 2 · Channel"))
+    app.input.pressKey("3")
+    await app.until((f) => f.split("Type your own answer").length > 2)
+    app.input.pressEnter()
+    await app.until((f) => f.split("Type your own answer").length === 2)
+    app.input.pressArrow("right")
+    await app.until((f) => f.includes("Question 2 of 2 · Region"))
+    app.input.pressKey("1")
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: { Channel: "stable", Region: "eu" },
+      answer_kind: "option",
+    })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

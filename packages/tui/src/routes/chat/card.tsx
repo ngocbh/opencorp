@@ -262,7 +262,8 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
         cmd: () => {
           const text = textarea?.plainText?.trim() ?? ""
           const multi = page()?.multi
-          setAnswer((a) => ({ picked: multi ? a.picked : [], text }))
+          // A typed answer replaces the pick on a single-choice page; an empty one leaves it.
+          setAnswer((a) => ({ picked: multi || !text ? a.picked : [], text }))
           setStore("editing", false)
           if (text) next()
         },
