@@ -1,13 +1,16 @@
 import type { Profile as ProfileData } from "@agent-corp/protocol"
+import { useRenderer } from "@opentui/solid"
 import { createEffect, createSignal, on, onCleanup, Show } from "solid-js"
 import { useLocal } from "../../context/local"
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
+import { openEditor } from "../../editor"
 import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
+import { VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
-import { shortVersion } from "./profile"
+import { conflictText, shortVersion, withoutConflict } from "./profile"
 
 /** Registers `/profile`: opens the profile of the session's person, or of the selected person. */
 export function useProfileCommands() {
@@ -41,6 +44,8 @@ export function Profile() {
   const data = useRouteData("profile")
   const route = useRoute()
   const office = useOffice()
+  const toast = useToast()
+  const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const person = data.person
   const [profile, setProfile] = createSignal<ProfileData>()
@@ -63,11 +68,52 @@ export function Profile() {
     }),
   )
 
+  let editing = false
+  /**
+   * Edits the profile in $EDITOR and saves it against the version the edit started from. When
+   * the profile changed meanwhile, re-opens the editor on the new text with the rejected edit
+   * below a marker, so nothing typed is lost.
+   */
+  async function edit() {
+    const start = profile()
+    if (editing || !start) return
+    if (!process.env.VISUAL && !process.env.EDITOR)
+      return toast.show({ variant: "warning", message: "Set $EDITOR (or $VISUAL) to edit the profile" })
+    editing = true
+    try {
+      let base = start
+      let text = base.text
+      for (;;) {
+        const out = await openEditor({ value: text, renderer })
+        if (out === undefined) return
+        const next = withoutConflict(out)
+        if (next === base.text) return toast.show({ variant: "info", message: "No changes" })
+        try {
+          setProfile(await office.client.profiles.put(person, { text: next, base_version: base.version }))
+          return toast.show({ variant: "success", message: "Profile saved" })
+        } catch (e) {
+          if (!(e instanceof VersionConflictError)) throw e
+          base = await office.client.profiles.get(person)
+          setProfile(base)
+          text = conflictText(base.text, next)
+        }
+      }
+    } catch (e) {
+      toast.show({ variant: "error", message: errorMessage(e) })
+    } finally {
+      editing = false
+    }
+  }
+
   const back = () => route.navigate(data.from ? { type: "session", sessionID: data.from } : { type: "home" })
 
   useBindings(() => ({
     mode: OPENCODE_BASE_MODE,
-    bindings: [{ key: "escape", group: "Profile", cmd: back }],
+    enabled: () => renderer.currentFocusedEditor === null,
+    bindings: [
+      { key: "e", group: "Profile", cmd: () => void edit() },
+      { key: "escape", group: "Profile", cmd: back },
+    ],
   }))
 
   return (
@@ -79,7 +125,7 @@ export function Profile() {
             {(p) => <span style={{ fg: theme.textMuted }}> {shortVersion(p().version)}</span>}
           </Show>
         </text>
-        <text fg={theme.textMuted}>esc back</text>
+        <text fg={theme.textMuted}>e edit · esc back</text>
       </box>
       <Show when={profile()?.over_budget}>
         <text fg={theme.warning} flexShrink={0}>
