@@ -1,6 +1,7 @@
 """Learning routes: profile manager, proposals, feedback, debriefs."""
 
 import asyncio
+import json
 
 import pytest
 
@@ -125,6 +126,21 @@ async def test_the_profile_manager_over_the_routes(learns, client, fake_llm):
     r = await client.post(f"/profile-proposals/{second.id}/apply")
     assert r.status_code == 409 and r.json() == {"expected": version, "current": profile.read()[1]}
     assert store.get_profile_proposal(second.id).status == "stale"
+
+
+async def test_a_manager_chat_takes_a_later_turn_over_the_session_routes(learns, client, fake_llm):
+    store = learns.store
+    fake_llm.script({"content": "What should change?"}, {"content": "Noted."})
+    r = await client.post("/profiles/minh/manager", json={"text": "Tidy my profile."})
+    sid = r.json()["id"]
+    await until(lambda: store.get_session(sid).status == "idle"
+                and [m.role for m in store.list_messages(sid)] == ["user", "assistant"])
+    r = await client.post(f"/sessions/{sid}/prompt", json={"text": "Drop the old team."})
+    assert r.json() == {"ok": True}
+    await until(lambda: [m.role for m in store.list_messages(sid)] == ["user", "assistant"] * 2)
+    assert [p.text for m in store.list_messages(sid) for p in m.parts if p.type == "text"] == [
+        "Tidy my profile.", "What should change?", "Drop the old team.", "Noted."]
+    assert "Drop the old team." in json.dumps(fake_llm.requests()[-1]["messages"])
 
 
 async def test_learning_routes_refuse_bad_requests(learns, client):
