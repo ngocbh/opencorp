@@ -14,7 +14,7 @@ import httpx
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
 
-from agent_corp.chat.provider import Provider, ProviderError, _errors, load_provider
+from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, template_files, write_company
@@ -94,7 +94,7 @@ def check_provider(data: object) -> Provider:
     try:
         provider = Provider.model_validate(data)
     except ValidationError as exc:
-        raise OnboardError(f"the provider isn't valid: {_errors(exc)}") from None
+        raise OnboardError(f"the provider isn't valid: {validation_errors(exc)}") from None
     llm = provider.llm_config or {}
     try:
         LLMConfig.model_validate(llm)

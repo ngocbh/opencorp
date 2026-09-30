@@ -82,7 +82,7 @@ def load_provider(path: Path) -> Provider:
             # Never echo the file: it holds keys. Errors leave out input values, extra field
             # names, model names, and env names that aren't variable names, since a key
             # pasted there would be one.
-            detail = _errors(exc) if isinstance(exc, ValidationError) else "not valid JSON"
+            detail = validation_errors(exc) if isinstance(exc, ValidationError) else "not valid JSON"
             raise ProviderError(f"{path}: {detail}") from None
 
 
@@ -91,7 +91,7 @@ def _shown(name: str) -> str:
     return name if _VARIABLE.match(name) else "an env name"
 
 
-def _errors(exc: ValidationError) -> str:
+def validation_errors(exc: ValidationError) -> str:
     """The validation errors, naming only fields the provider defines and env variable names."""
     lines = []
     for error in exc.errors(include_url=False, include_input=False, include_context=False):
