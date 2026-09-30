@@ -337,6 +337,29 @@ def test_nothing_the_harness_does_touches_the_store_after_close_all(harness, wor
     assert ran == [] and exited == []
 
 
+def test_close_all_refuses_and_cancels_worker_requests_only_once_the_channels_are_closed(harness, workspace):
+    from agent_corp.chat.harness import _Call
+
+    sid = start(harness, workspace)
+    call = _Call()
+    harness._live[sid].calls.add(call)
+    seen = []
+    close = harness.registry.close_all
+
+    def closing(*args, **kwargs):
+        with harness._in_call():  # a request arriving before its worker's channel closes
+            seen.append(("admitted", call.cancelled, harness._stopping))  # _stopping: no new spawn
+        close(*args, **kwargs)
+
+    harness.registry.close_all = closing
+    harness.close_all()
+    assert seen == [("admitted", False, True)]
+    assert call.cancelled
+    with pytest.raises(RuntimeError, match="stopping"):
+        with harness._in_call():
+            pass
+
+
 def test_a_stopping_harness_refuses_new_worker_requests(harness):
     harness.close_all()
     with pytest.raises(RuntimeError, match="stopping"):

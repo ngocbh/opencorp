@@ -175,7 +175,8 @@ class Harness:
         self.restorers: dict[str, Callable[[Session], RunSpec]] = {"main": self.main_spec}
         self._lock = threading.RLock()
         self._live: dict[str, _Live] = {}
-        self._stopping = False
+        self._stopping = False  # set when close_all starts: no new worker spawns
+        self._refusing = False  # set once the channels are closed: no new worker request is admitted
         self._closed = False  # set when close_all returns: the caller may close the store
         self._calls = 0
         self._calls_idle = threading.Condition()
@@ -450,24 +451,29 @@ class Harness:
     def close_all(self) -> None:
         """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
 
-        Workspace calls are killed and office calls answered first, and no new worker
-        request is admitted. Waits up to 10 seconds for worker requests still running to
-        finish. Once it returns, the caller may close the store: worker frames, dispatcher
+        No new worker spawns from the start. Once the workers' channels are closed, no new
+        worker request is admitted, workspace calls are killed, and office calls are
+        answered; a request arriving before then still runs, so a worker is never told its
+        ``ask_user`` failed because the office is stopping. Waits up to 10 seconds for worker
+        requests still running to finish. Once it returns, the caller may close the store: worker frames, dispatcher
         jobs, and worker exits that come later no longer touch it.
         """
         with self._lock:
             if self._stopping:
                 return
-            with self._calls_idle:
-                self._stopping = True  # _in_call admits no new worker request from here on
+            self._stopping = True
             for live in self._live.values():
                 if live.timer is not None:
                     live.timer.cancel()
+        self.registry.close_all()
+        with self._lock:
+            with self._calls_idle:
+                self._refusing = True
+            for live in self._live.values():
                 if live.spec.workspace is not None:
                     live.spec.workspace.interrupt()
                 for call in list(live.calls):
                     call.cancel()
-        self.registry.close_all()
         for live in list(self._live.values()):
             live.transcript.abort()
         self._jobs.put(None)
@@ -736,9 +742,9 @@ class Harness:
 
     @contextmanager
     def _in_call(self) -> Iterator[None]:
-        """Count a worker request running in the office, for ``close_all`` to wait on; refuse one once stopping."""
+        """Count a worker request running in the office, for ``close_all`` to wait on; refuse one once the channels are closed."""
         with self._calls_idle:
-            if self._stopping:
+            if self._refusing:
                 raise RuntimeError("the office is stopping")
             self._calls += 1
         try:
