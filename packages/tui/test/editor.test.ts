@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { normalizePromptContent, openEditor } from "../src/editor"
@@ -44,6 +44,33 @@ test.skipIf(process.platform === "win32")(
       expect(await openEditor({ value: "original", renderer: renderer as never, stdin: "ignore" })).toBe(
         "original edited",
       )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  },
+)
+
+test.skipIf(process.platform === "win32")(
+  "edits in a private temp dir it removes afterwards",
+  async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "act-ed-"))
+    try {
+      const script = path.join(dir, "ed.sh")
+      const seen = path.join(dir, "seen")
+      writeFileSync(script, `printf '%s\\n' "$1" > '${seen}'\nls -ld "$(dirname "$1")" | cut -c1-10 >> '${seen}'\n`)
+      delete process.env.VISUAL
+      process.env.EDITOR = `sh '${script}'`
+      const renderer = {
+        suspend() {},
+        resume() {},
+        requestRender() {},
+        currentRenderBuffer: { clear() {} },
+      }
+      await openEditor({ value: "original", renderer: renderer as never, stdin: "ignore" })
+      const [file, mode] = readFileSync(seen, "utf8").trim().split("\n")
+      expect(path.dirname(path.dirname(file!))).toBe(path.resolve(os.tmpdir()))
+      expect(mode).toBe("drwx------")
+      expect(existsSync(path.dirname(file!))).toBe(false)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

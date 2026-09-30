@@ -10,7 +10,7 @@ export const commands: Record<string, { summary: string; load: () => Promise<{ r
   tui: { summary: "Talk to a person in this folder (the default)", load: () => import("./commands/tui") },
   end: { summary: "End a session and start its debrief", load: () => import("./commands/end") },
   feedback: { summary: "Give feedback on a person's work", load: () => import("./commands/feedback") },
-  profile: { summary: "View or edit a person's profile", load: () => import("./commands/profile") },
+  profile: { summary: "Edit a person's profile in $EDITOR", load: () => import("./commands/profile") },
   onboard: { summary: "Set up the company and install the office", load: () => import("./commands/onboard") },
   doctor: { summary: "Check the office, its socket and the sandbox", load: () => import("./commands/doctor") },
 }
