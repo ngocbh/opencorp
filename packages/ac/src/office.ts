@@ -34,7 +34,8 @@ export function venvPython(repo = REPO) {
 
 /**
  * Runs `python -m agent_corp.install <command> ...args` from the venv and resolves to its exit
- * code; without a venv, says to run `ac onboard` and resolves to 1.
+ * code; without a venv, says to run `ac onboard` and resolves to 1. It runs in the caller's
+ * folder, so a relative `--home` or $AGENT_CORP_HOME means the same as it does to the TUI.
  */
 export async function runInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
   const python = venvPython()
@@ -42,7 +43,7 @@ export async function runInstall(command: string, args: string[], deps: Deps = r
     deps.error(`ac: no Python environment at ${path.dirname(path.dirname(python))}; run \`ac onboard\``)
     return 1
   }
-  return deps.spawn([python, "-m", "agent_corp.install", command, ...args], REPO)
+  return deps.spawn([python, "-m", "agent_corp.install", command, ...args])
 }
 
 /** Exit code when no office answers, as `python -m agent_corp.install start` exits with no office yet. */

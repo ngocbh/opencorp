@@ -40,7 +40,7 @@ test("onboard syncs the venv, then runs the Python onboarding with the flags it 
   expect(await onboard(["--service", "tmux", "--no-hire"], deps)).toBe(5)
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
-    { argv: [venvPython(), "-m", "agent_corp.install", "onboard", "--service", "tmux", "--no-hire"], cwd: REPO },
+    { argv: [venvPython(), "-m", "agent_corp.install", "onboard", "--service", "tmux", "--no-hire"], cwd: undefined },
   ])
 })
 
@@ -63,7 +63,7 @@ test("onboard stops when uv is missing or the sync fails", async () => {
 test("doctor runs the Python checks with its flags, or says to onboard when there is no venv", async () => {
   const { deps, calls } = fake({ python: 1 })
   expect(await doctor(["--home", "/h"], deps)).toBe(1)
-  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "doctor", "--home", "/h"], cwd: REPO }])
+  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "doctor", "--home", "/h"], cwd: undefined }])
   const bare = fake({}, [venvPython()])
   expect(await doctor([], bare.deps)).toBe(1)
   expect(bare.calls).toEqual([])
@@ -73,7 +73,7 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
 test("start runs the Python start with its flags", async () => {
   const { deps, calls } = fake({ python: 3 })
   expect(await start(["--home", "/h"], deps)).toBe(3)
-  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "start", "--home", "/h"], cwd: REPO }])
+  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "start", "--home", "/h"], cwd: undefined }])
 })
 
 test("`ac start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python", async () => {
