@@ -20,6 +20,8 @@ export const { use: useKV, provider: KVProvider } = createSimpleContext({
         setStore(x)
       })
       .catch((error) => {
+        // The state file does not exist until the first write.
+        if (error?.code === "ENOENT") return
         console.error("Failed to read KV state", { error })
       })
       .finally(() => {
