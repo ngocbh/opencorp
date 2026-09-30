@@ -1,10 +1,12 @@
+import plistlib
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
 from agent_corp.install import launchd
-from agent_corp.install.launch import ServiceError
+from agent_corp.install.launch import ServiceError, launch
 
 from .conftest import GOLDEN, Runner, make_host
 
@@ -18,6 +20,15 @@ def test_the_plist_matches_the_golden_file(owner_launch):
 @pytest.mark.skipif(shutil.which("plutil") is None, reason="needs macOS plutil")
 def test_the_golden_plist_is_one_launchd_accepts():
     subprocess.run(["plutil", "-lint", str(GOLDEN / "launchd.plist")], check=True, capture_output=True)
+
+
+def test_xml_special_characters_and_newlines_survive_the_plist():
+    odd = launch(Path("/Users/o <&> \"q\" 'a'\nb/.agent-corp"), repo=Path("/opt/a&b<c>"),
+                 environ={"LANG": "<&>]]>"}, user_home=Path("/Users/o"))
+    back = plistlib.loads(launchd.plist(odd))
+    assert back["ProgramArguments"] == list(odd.argv) and back["WorkingDirectory"] == str(odd.cwd)
+    assert back["EnvironmentVariables"] == {"LANG": "<&>]]>"}
+    assert back["StandardOutPath"] == back["StandardErrorPath"] == str(odd.log)
 
 
 def test_a_first_install_writes_the_plist_and_bootstraps_it(tmp_path, owner_launch):
