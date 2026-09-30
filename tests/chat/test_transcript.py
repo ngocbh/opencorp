@@ -79,3 +79,19 @@ def test_each_occurrence_gets_its_own_message(setup):
         t.stream(stream(n, text, exchange=f"x{i}"))
         t.event("NodeSucceeded", {"node_id": n, "output": text})
     assert [[p.text for p in m.parts] for m in store.list_messages(s.id)] == [["one"], ["two"]]
+
+
+def test_abort_marks_an_unfinished_text_part_and_interrupts_running_tools(setup):
+    store, s, t, live = setup
+    t.event("ModelCallStarted", {"node_id": "chat#0/reply", "exchange_id": "x1", "purpose": "chat"})
+    t.stream(stream("chat#0/reply", "half a sen"))
+    t.stream(stream("chat#0/reply", "tence"))
+    t.event("ToolCallStarted", {"node_id": "chat#0/reply", "tool_call_id": "c1", "name": "shell",
+                                "arguments": {"command": "sleep 9"}})
+    t.abort()
+    (message,) = store.list_messages(s.id)
+    text, tool = message.parts
+    assert text.text == "half a sentence\n\n[interrupted]"
+    assert tool.state == "interrupted"
+    t.abort()
+    assert store.list_messages(s.id) == [message]

@@ -273,6 +273,7 @@ class Harness:
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
+            self._interrupt_running_tools(session.id)
             if not session.run_ids:  # the office stopped before its first run was recorded
                 self.store.update_session(session.id, status="failed")
                 continue
@@ -290,6 +291,13 @@ class Harness:
                 self._spawn(live, "resume")
             except Exception:
                 pass  # _spawn logged it and failed the session
+
+    def _interrupt_running_tools(self, session_id: str) -> None:
+        """Mark tool parts a dead office left ``running`` as interrupted; their calls died with it."""
+        for message in self.store.list_messages(session_id):
+            for part in message.parts:
+                if part.type == "tool" and part.state == "running":
+                    self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
 
     def _spawn(self, live: _Live, kind: str) -> None:
         """Start ``live``'s worker; if anything fails, fail the session (dropping it from the live ones) and raise."""
@@ -460,6 +468,8 @@ class Harness:
                 for call in list(live.calls):
                     call.cancel()
         self.registry.close_all()
+        for live in list(self._live.values()):
+            live.transcript.abort()
         self._jobs.put(None)
         self._thread.join(10)
         if self._thread.is_alive():
@@ -636,8 +646,11 @@ class Harness:
             if live.timer is not None:
                 live.timer.cancel()
             outcome, live.outcome = live.outcome, None
+            if live.spec.workspace is not None:
+                live.spec.workspace.interrupt()  # nobody is left to read what its calls return
             for call in list(live.calls):
                 call.cancel()
+        live.transcript.abort()
         if outcome is None:
             if live.exits >= 1:  # died again before a new turn: a third try won't do better
                 self._finish(live, "failed", None)

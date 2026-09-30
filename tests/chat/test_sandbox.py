@@ -48,3 +48,25 @@ def test_close_all_kills_a_running_shell_call(harness, fake_llm, workspace):
     assert harness._calls == 0
     left = subprocess.run(["pgrep", "-f", "sleep 41[.]7"], capture_output=True, text=True).stdout.split()
     assert left == []
+
+
+def test_a_killed_worker_leaves_no_shell_call_or_tool_part_running(harness, fake_llm, workspace):
+    import os
+    import signal
+    import subprocess
+
+    fake_llm.script({"tool_calls": [{"name": "shell", "arguments": {"command": "sleep 43.9"}}]}, {"content": "x"})
+    session = harness.start_session("minh", str(workspace))
+    sid = session.id
+    wait_for(lambda: status(harness, sid) == "idle", what="the first turn")
+    harness.prompt(sid, "run it")
+    wait_for(lambda: [p for m in harness.store.list_messages(sid) for p in m.parts
+                      if p.type == "tool" and p.state == "running"], what="the shell call")
+    time.sleep(0.5)
+    old = harness._live[sid].worker
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: harness._live[sid].worker not in (None, old), what="the resume")
+    tools = [(p.tool, p.state) for m in harness.store.list_messages(sid) for p in m.parts if p.type == "tool"]
+    assert tools[0] == ("shell", "interrupted")
+    wait_for(lambda: not subprocess.run(["pgrep", "-f", "sleep 43[.]9"], capture_output=True).stdout,
+             timeout=5, what="the shell call to die")

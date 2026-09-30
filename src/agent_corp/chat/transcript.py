@@ -9,6 +9,8 @@ from agent_corp.protocol.models import LiveEvent, Message, TextPart, ToolPart
 from agent_corp.store import Store, new_id
 
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
+INTERRUPTED_TEXT = "\n\n[interrupted]"
+"""Appended to a text part its worker stopped streaming: a text part has no state to mark."""
 
 
 class Transcript:
@@ -18,6 +20,7 @@ class Transcript:
     text part, stored at its first and last chunk and streamed as ``part.delta`` in
     between; each tool call is a tool part. When the node ends, a tool part still
     running is ``interrupted``, and a node that streamed no text gets its output as text.
+    ``abort`` closes what a worker that died or was stopped left open.
     Methods are called from a worker's reader thread and from request threads.
     """
 
@@ -81,6 +84,17 @@ class Transcript:
                                           "text": frame["chunk"]})
             if frame.get("final") and key in self._texts:
                 self._put(node_id, self._texts.pop(key))
+
+    def abort(self) -> None:
+        """Store each unfinished text part with ``INTERRUPTED_TEXT`` and each running tool part as interrupted."""
+        with self._lock:
+            for (node_id, _), part in self._texts.items():
+                self._put(node_id, part.model_copy(update={"text": part.text + INTERRUPTED_TEXT}))
+            for (node_id, _), part in self._tools.items():
+                if part.state == "running":
+                    self._put(node_id, part.model_copy(update={"state": "interrupted"}))
+            self._texts.clear()
+            self._tools.clear()
 
     def _message(self, node_id: str) -> str:
         if node_id not in self._messages:

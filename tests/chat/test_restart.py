@@ -158,3 +158,47 @@ def test_a_session_ending_when_the_office_stops_ends_after_restore(make_harness,
     second = make_harness()
     second.restore()
     wait_for(lambda: status(second, sid) == "ended", what="the end")
+
+
+def half_a_reply(live):
+    """Leave a half-streamed text part and a running tool part in the session's transcript."""
+    live.transcript.event("ModelCallStarted", {"node_id": "chat#0/reply", "exchange_id": "x1", "purpose": "chat"})
+    live.transcript.stream({"type": "stream", "node_id": "chat#0/reply", "key": "reply", "chunk": "half",
+                            "final": False, "exchange_id": "x1"})
+    live.transcript.stream({"type": "stream", "node_id": "chat#0/reply", "key": "reply", "chunk": " a reply",
+                            "final": False, "exchange_id": "x1"})
+    live.transcript.event("ToolCallStarted", {"node_id": "chat#0/reply", "tool_call_id": "c1", "name": "shell",
+                                              "arguments": {"command": "sleep 9"}})
+
+
+def assistant_parts(harness, sid):
+    return [(p.type, p.text if p.type == "text" else p.state)
+            for m in harness.store.list_messages(sid) if m.role == "assistant" for p in m.parts]
+
+
+def test_a_killed_worker_leaves_no_part_unfinished(harness, workspace):
+    sid = start(harness, workspace)
+    old = harness._live[sid].worker
+    half_a_reply(harness._live[sid])
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: harness._live[sid].worker not in (None, old) and harness._live[sid].turn_q, what="the resume")
+    assert assistant_parts(harness, sid) == [("text", "half a reply\n\n[interrupted]"), ("tool", "interrupted")]
+
+
+def test_a_stopping_office_leaves_no_part_unfinished(harness, workspace):
+    sid = start(harness, workspace)
+    half_a_reply(harness._live[sid])
+    harness.close_all()
+    assert assistant_parts(harness, sid) == [("text", "half a reply\n\n[interrupted]"), ("tool", "interrupted")]
+
+
+def test_restore_interrupts_tool_parts_a_dead_office_left_running(make_harness, workspace):
+    first = make_harness()
+    sid = start(first, workspace)
+    half_a_reply(first._live[sid])
+    first._stopping = True  # the office died: nothing of it acts on its worker again
+
+    second = make_harness()
+    second.restore()
+    # The text part keeps what was stored at its first chunk: a text part has no state to mark.
+    assert assistant_parts(second, sid) == [("text", "half"), ("tool", "interrupted")]
