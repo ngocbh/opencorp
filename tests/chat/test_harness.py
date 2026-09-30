@@ -209,6 +209,22 @@ def test_a_failing_hook_does_not_stop_the_session(harness, fake_llm, workspace):
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
 
 
+def test_a_provider_error_at_start_fails_the_session(harness, workspace):
+    from agent_corp.chat.provider import ProviderError
+
+    def bad():
+        raise ProviderError("provider.json must be a regular file private to its owner (mode 0600)")
+
+    harness.provider = bad
+    with pytest.raises(ProviderError):
+        harness.start_session("minh", str(workspace))
+    (session,) = harness.store.list_sessions()
+    assert session.status == "failed" and session.id not in harness._live
+    with pytest.raises(HarnessError) as err:
+        harness.prompt(session.id, "hi")
+    assert err.value.code == "not_live"
+
+
 def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace):
     import threading
 

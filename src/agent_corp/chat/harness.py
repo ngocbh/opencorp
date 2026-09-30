@@ -235,57 +235,77 @@ class Harness:
             names=(person.id, person.handle, person.name), workspace=workspace)
 
     def start_run(self, session: Session, spec: RunSpec) -> str:
-        """Start a new run of ``spec`` for ``session`` (a stored session with no live run); return its run id."""
-        run_id = new_id()
-        self.store.add_session_run(session.id, run_id)
-        repo = load_repo(self.git.pin(session.repo_commit))
-        live = _Live(session.id, session.person, run_id, spec, _defaults(repo),
-                     Transcript(self.store, session.id, self.office.bus.publish_live))
+        """Start a new run of ``spec`` for ``session`` (a stored session with no live run); return its run id.
+
+        If the run can't start, the session is ``failed`` and has no live run.
+        """
+        with self._lock:
+            if session.id in self._live:
+                raise HarnessError(409, "live", f"session {session.id} already has a live run")
+        try:
+            run_id = new_id()
+            self.store.add_session_run(session.id, run_id)
+            live = self._new_live(session, run_id, spec)
+        except Exception:
+            log.exception("can't start a run for session %s", session.id)
+            self.store.update_session(session.id, status="failed")
+            raise
         with self._lock:
             if session.id in self._live:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
             self._live[session.id] = live
-        self._spawn(live, "chat")
+        self._spawn(live, "chat")  # on failure, it fails the session and drops the live entry
         return run_id
+
+    def _new_live(self, session: Session, run_id: str, spec: RunSpec) -> _Live:
+        repo = load_repo(self.git.pin(session.repo_commit))
+        return _Live(session.id, session.person, run_id, spec, _defaults(repo),
+                     Transcript(self.store, session.id, self.office.bus.publish_live))
 
     def restore(self) -> None:
         """Resume every session that was live when the office stopped, under the same run id."""
         for session in self.store.list_sessions(status=LIVE, limit=None):
-            if session.harness != "composer" or not session.run_ids or session.id in self._live:
+            if session.harness != "composer" or session.id in self._live:
                 continue
+            if not session.run_ids:  # the office stopped before its first run was recorded
+                self.store.update_session(session.id, status="failed")
+                continue
+            # One session that can't resume must not stop the others, or the office's start.
             try:
-                spec = self.restorers[session.kind](session)
-                repo = load_repo(self.git.pin(session.repo_commit))
+                live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
             except Exception:
                 log.exception("can't resume session %s", session.id)
                 self.store.update_session(session.id, status="failed")
                 continue
-            live = _Live(session.id, session.person, session.run_ids[-1], spec, _defaults(repo),
-                         Transcript(self.store, session.id, self.office.bus.publish_live))
             with self._lock:
                 self._live[session.id] = live
-            self._spawn(live, "resume")
+            try:
+                self._spawn(live, "resume")
+            except Exception:
+                pass  # _spawn logged it and failed the session
 
     def _spawn(self, live: _Live, kind: str) -> None:
-        if kind == "resume":
-            # The agent node that asked re-runs and asks afresh.
-            for q in self.store.list_questions(run_id=live.run_id, status="open"):
-                if q.node_id is None:
-                    self.store.set_question_status(q.id, "stale")
-        session = self.store.get_session(live.session_id)
-        live.provider = provider = self.provider()
-        on_question = self._on_question(live)
-        tools = live.spec.groups(session, live.run_id, on_question)
-        ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names, carried=self.answers.carried)
-        memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
-                  if m.kind == "profile" and m.llm_config is None else m for name, m in live.spec.memory.items()}
-        run_dir = self._run_dir(live.session_id)
-        job = Job(kind=kind, session_id=live.session_id, run_id=live.run_id, person_id=live.person_id,
-                  pin=str(self.git.pin(session.repo_commit)), flow=live.spec.flow,
-                  log=str(run_dir / "runs" / f"{live.run_id}.jsonl"), inputs=live.spec.inputs,
-                  llm_config=provider.llm_config, learnable=live.spec.learnable, skills=live.spec.skills,
-                  groups=group_specs(tools), memory=memory, env=provider.env)
+        """Start ``live``'s worker; if anything fails, fail the session (dropping it from the live ones) and raise."""
         try:
+            if kind == "resume":
+                # The agent node that asked re-runs and asks afresh.
+                for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                    if q.node_id is None:
+                        self.store.set_question_status(q.id, "stale")
+            session = self.store.get_session(live.session_id)
+            live.provider = provider = self.provider()
+            on_question = self._on_question(live)
+            tools = live.spec.groups(session, live.run_id, on_question)
+            ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names,
+                                carried=self.answers.carried)
+            memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
+                      if m.kind == "profile" and m.llm_config is None else m for name, m in live.spec.memory.items()}
+            run_dir = self._run_dir(live.session_id)
+            job = Job(kind=kind, session_id=live.session_id, run_id=live.run_id, person_id=live.person_id,
+                      pin=str(self.git.pin(session.repo_commit)), flow=live.spec.flow,
+                      log=str(run_dir / "runs" / f"{live.run_id}.jsonl"), inputs=live.spec.inputs,
+                      llm_config=provider.llm_config, learnable=live.spec.learnable, skills=live.spec.skills,
+                      groups=group_specs(tools), memory=memory, env=provider.env)
             # Under the lock, so a steer or close_all never meets a worker that is still starting.
             with self._lock:
                 if self._stopping:

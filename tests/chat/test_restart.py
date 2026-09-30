@@ -85,3 +85,42 @@ def test_an_office_that_dies_mid_turn_is_reaped_and_its_run_resumed(make_harness
     wait_for(lambda: texts(second, sid)[-1:] == ["Resumed."] and status(second, sid) == "idle", what="the resumed turn")
     assert second.store.get_session(sid).run_ids == [run_id]
     assert "a" in str(fake_llm.requests()[-1]["messages"])
+
+
+def test_a_worker_that_cant_start_at_restore_fails_only_its_session(make_harness, fake_llm, workspace):
+    from agent_corp.chat.provider import ProviderError
+
+    first = make_harness()
+    sids = {start(first, workspace), start(first, workspace)}
+    first.close_all()
+
+    second = make_harness()
+    good, calls = second.provider, []
+
+    def once_bad():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ProviderError("provider.json must be a regular file private to its owner (mode 0600)")
+        return good()
+
+    second.provider = once_bad
+    second.restore()  # doesn't raise
+    (restored,) = wait_for(lambda: [sid for sid in sids if sid in second._live and second._live[sid].turn_q],
+                           what="the other session's turn")
+    (failed,) = sids - {restored}
+    assert status(second, failed) == "failed" and status(second, restored) == "idle"
+
+
+def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_llm, workspace):
+    from agent_corp.store import new_id
+
+    first = make_harness()
+    sid = start(first, workspace)
+    orphan = first.store.create_session(first.store.get_session(sid).model_copy(
+        update={"id": new_id(), "run_ids": [], "status": "starting"}))  # the office died before its run
+    first.close_all()
+
+    second = make_harness()
+    second.restore()
+    assert status(second, orphan.id) == "failed" and orphan.id not in second._live
+    wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the restored turn")

@@ -327,3 +327,29 @@ async def test_build_office_runs_the_chat_harness(home):
         await office.stop()
     finally:
         office.store.close()
+
+
+async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts(home):
+    from agent_corp.daemon.main import build_office
+    from agent_corp.protocol import now
+    from agent_corp.protocol.models import Session
+    from agent_corp.store import new_id
+
+    paths = OfficePaths(home)
+    make_office_dir(paths.office)
+    (paths.office / "provider.json").write_text("{}")
+    os.chmod(paths.office / "provider.json", 0o644)  # not private: load_provider refuses it
+    workspace = home / "ws"
+    workspace.mkdir()
+    office = build_office(paths)
+    try:
+        t = now()
+        session = office.store.create_session(Session(
+            id=new_id(), person="minh", harness="composer", office="here", cwd=str(workspace),
+            repo_commit=office.git.head(), status="idle", kind="main", created_at=t, updated_at=t))
+        office.store.add_session_run(session.id, new_id())
+        await office.start()
+        assert office.store.get_session(session.id).status == "failed"
+        await office.stop()
+    finally:
+        office.store.close()
