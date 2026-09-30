@@ -1,6 +1,7 @@
 """The office's clone of the company repo: pinned worktrees, the repo lock, commits."""
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,6 +17,7 @@ _PIN_MARKER = ".agent-corp-pin"
 _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 # `:(glob)` makes `*` match one path segment, so only people/<id>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"
+_BLOB_ID = re.compile(r"[0-9a-f]{40}")
 
 
 class CompanyGitError(Exception):
@@ -71,6 +73,25 @@ class CompanyGit:
         """Return the git blob id of ``relpath`` at ``commit``, or None if it is absent."""
         out = self._git("rev-parse", "--verify", "--quiet", f"{commit}:{relpath}", check=False)
         return out.stdout.strip() or None
+
+    def read_blob(self, blob_id: str) -> bytes | None:
+        """Return the bytes of blob ``blob_id`` (40 lowercase hex), or None if the clone has no such blob."""
+        if not _BLOB_ID.fullmatch(blob_id):  # keep rev expressions such as HEAD:<path> away from git
+            return None
+        # Bytes, not _git's text mode, which turns \r\n into \n.
+        out = subprocess.run(["git", "-C", str(self.root), "cat-file", "blob", blob_id],
+                             capture_output=True, env=_env())
+        return out.stdout if out.returncode == 0 else None
+
+    def find_commit(self, relpath: str, line: str) -> str | None:
+        """Return the newest commit on HEAD that touches ``relpath`` and has ``line`` as a whole message line."""
+        out = self._git("log", "--fixed-strings", f"--grep={line}", "--format=%H%x00%B%x1e", "HEAD",
+                        "--", *_literal([relpath])).stdout
+        for record in out.split("\x1e"):
+            sha, _, body = record.strip("\n").partition("\0")
+            if line in body.splitlines():  # --grep matches substrings; a trailer must match whole
+                return sha
+        return None
 
     def commit(self, paths: list[str], message: str) -> str:
         """Stage ``paths`` and commit them; return the new HEAD, or HEAD unchanged if nothing changed."""
@@ -142,10 +163,10 @@ class CompanyGit:
                         paths.add(fields[i])
                     i += 1
             for rel in sorted(paths):
-                self.commit([rel], f"profile(@{self._handle(rel)}): hand edit")
+                self.commit([rel], f"profile(@{self.handle(rel)}): hand edit")
             return sorted(paths)
 
-    def _handle(self, profile_rel: str) -> str:
+    def handle(self, profile_rel: str) -> str:
         """The handle of the person who owns ``people/<id>/profile.md``, else the id."""
         pid = Path(profile_rel).parent.name
         try:
