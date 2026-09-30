@@ -81,24 +81,36 @@ def _git_init(root: Path) -> None:
     subprocess.run(["git", "init", "-q", "-b", "main", str(root)], check=True, capture_output=True, env=env)
 
 
+def is_new(root: Path) -> bool:
+    """Whether ``root`` has no company yet: no ``company.yaml``, or no commit (a first write that stopped early)."""
+    if not (root / "company.yaml").exists() or not (root / ".git").exists():
+        return True
+    try:
+        CompanyGit(root, root).head()
+    except ValueError:
+        return True
+    return False
+
+
 def write_company(root: Path, worktrees: Path, *, company: str | None = None,
                   owner: Owner | None = None) -> list[str]:
     """Create or top up the company repo at ``root``; return the repo paths written, sorted.
 
-    A missing repo is created (``git init``) from the template. An existing one gets only the
-    template files it lacks, such as flows added to the template after it was made: nothing
-    is overwritten, so the owner's edits stay. Only what was written is committed.
-    ``company`` and ``owner`` are needed only while ``company.yaml`` is missing.
+    A new repo (see ``is_new``) is created (``git init``) from the template, and every
+    template path in it is committed, so a first write that stopped part way is finished.
+    An existing one gets only the template files it lacks, such as flows added to the
+    template after it was made: nothing is overwritten, so the owner's edits stay. Only
+    what was written is committed. ``company`` and ``owner`` are needed only for a new repo.
 
     Raises:
-        ValueError: ``company.yaml`` is missing and ``company`` or ``owner`` is not given or
-            not valid. Nothing is written.
+        ValueError: the repo is new and ``company`` or ``owner`` is not given or not
+            valid. Nothing is written.
     """
-    new = not (root / "company.yaml").exists()
+    new = is_new(root)
     if not new:
         wanted = {rel: data for rel, data in _walk(files(__name__)).items() if rel not in _FILLED}
     elif company is None or owner is None:
-        raise ValueError(f"{root} has no company.yaml; a new company needs a name and an owner")
+        raise ValueError(f"{root} has no company yet; a new company needs a name and an owner")
     else:
         wanted = template_files(company, owner)
     missing = sorted(rel for rel in wanted if not os.path.lexists(root / rel))
@@ -109,5 +121,7 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
         path = root / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(wanted[rel])
-    CompanyGit(root, worktrees).commit(missing, "onboard: create the company" if new else "onboard: add template files")
+    # A new repo commits everything present: files an earlier, interrupted write left uncommitted too.
+    commit = sorted(rel for rel in wanted if os.path.lexists(root / rel)) if new else missing
+    CompanyGit(root, worktrees).commit(commit, "onboard: create the company" if new else "onboard: add template files")
     return missing

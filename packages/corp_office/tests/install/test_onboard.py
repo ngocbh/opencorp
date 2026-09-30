@@ -10,6 +10,7 @@ import pytest
 
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
+from agent_corp.company_template import Owner, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.launch import office_answers
@@ -30,7 +31,7 @@ def test_the_owner_defaults_come_from_the_login():
 
 def test_lint_errors_stop_onboarding_before_anything_runs(tmp_path):
     paths = OfficePaths(tmp_path / "home")
-    paths.company.mkdir(parents=True)
+    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("me", "me", "Me"))
     (paths.company / "company.yaml").write_text("name: Acme\nceo: nobody\n")
     run = Runner()
     with pytest.raises(OnboardError, match="company.unknown_ceo"):
@@ -46,6 +47,17 @@ def test_a_bad_handle_is_asked_again(tmp_path, monkeypatch):
         onboard(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
     assert any("should match pattern" in line for line in ask.seen)
     assert load_repo(tmp_path / "home" / "company").company.ceo == "me"
+
+
+def test_a_company_whose_first_write_stopped_early_is_asked_for_and_finished(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
+    company = OfficePaths(tmp_path / "home").company
+    company.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(company)], check=True)
+    (company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(tmp_path / "home", Script("Acme", "Me", "me"), host=make_host(tmp_path, Runner()))
+    assert lint(load_repo(company)) == [] and _git(company, "status", "--porcelain") == ""
 
 
 def test_no_hire_leaves_the_company_without_an_agent(tmp_path):

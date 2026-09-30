@@ -134,3 +134,43 @@ def test_missing_files_names_what_writing_again_would_add(tmp_path):
     (root / DEBRIEF_FLOW).unlink()
     commit_all(root, "drop debrief")
     assert missing_files(root) == [DEBRIEF_FLOW] == write_company(root, tmp_path / "worktrees")
+
+
+def test_a_first_write_that_stopped_before_the_owners_file_is_finished(tmp_path):
+    root = tmp_path / "company"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "company.yaml").write_bytes(template_files("Acme", OWNER)["company.yaml"])
+    written = write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
+    assert "people/ngocbh/person.yaml" in written and "company.yaml" not in written
+    assert lint(load_repo(root)) == []
+    assert git(root, "status", "--porcelain") == ""
+    assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
+
+
+def test_a_first_write_that_stopped_before_its_commit_is_committed(tmp_path):
+    root = tmp_path / "company"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    for rel, data in template_files("Acme", OWNER).items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+    with pytest.raises(ValueError, match="owner"):
+        write_company(root, tmp_path / "worktrees")  # still a new company: nothing is committed yet
+    assert write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER) == []
+    assert git(root, "status", "--porcelain") == ""
+    assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
+    assert set(git(root, "ls-files").splitlines()) == set(template_files("Acme", OWNER))
+
+
+def test_is_new_until_the_first_commit(tmp_path):
+    from agent_corp.company_template import is_new
+
+    root = tmp_path / "company"
+    assert is_new(root)
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    (root / "company.yaml").write_text("name: Acme\n")
+    assert is_new(root)
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
+    assert not is_new(root)

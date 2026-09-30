@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, template_files, write_company
+from agent_corp.company_template import Owner, is_new, template_files, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError, make_office_dir
 from agent_corp.install import service
@@ -236,7 +236,7 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
         raise OnboardError(str(exc)) from None
     prompter.say(f"Office home: {paths.home}")
 
-    new = not (paths.company / "company.yaml").exists()
+    new = is_new(paths.company)
     company, owner = _ask_company(prompter) if new else (None, None)
     written = write_company(paths.company, paths.worktrees, company=company, owner=owner)
     done = "created at" if new else f"added {len(written)} template files to" if written else "up to date at"
