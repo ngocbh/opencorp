@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import contextlib
+import errno
 import fcntl
 import os
 import signal
@@ -44,8 +45,16 @@ class PidFile:
         self._fd: int | None = None
 
     def acquire(self) -> None:
-        """Take the lock and write our pid; ``AlreadyRunning`` if another process holds it."""
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        """Take the lock and write our pid; ``AlreadyRunning`` if another process holds it.
+
+        The pidfile is opened without following a symlink, so it can't truncate another file.
+        """
+        try:
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise OfficeStartError(f"the pidfile {self.path} is a symlink") from exc
+            raise OfficeStartError(f"can't open the pidfile {self.path}: {exc}") from exc
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

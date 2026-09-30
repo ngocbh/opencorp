@@ -74,6 +74,15 @@ def test_second_pidfile_lock_is_refused(tmp_path):
     again.release()
 
 
+def test_a_symlinked_pidfile_is_refused_and_its_target_untouched(tmp_path):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("precious\n")
+    (tmp_path / "office.pid").symlink_to(victim)
+    with pytest.raises(OfficeStartError, match="symlink"):
+        PidFile(tmp_path / "office.pid").acquire()
+    assert victim.read_text() == "precious\n"
+
+
 async def test_served_over_a_real_socket(office, short_dir):
     async with served(office, short_dir / "o.sock") as c:
         r = await c.get("/people")
