@@ -22,6 +22,12 @@ class Handle:
     __str__ = __repr__
 
 
+def circular(secrets):
+    loop = {"token": secrets["vault_token"]}
+    loop["self"] = loop
+    return loop
+
+
 LEAKS = {
     "dict_key": lambda s: {s["vault_token"]: 1},
     "set": lambda s: {s["vault_token"]},
@@ -35,7 +41,7 @@ LEAKS = {
 
 
 def leak(asset, args, secrets):
-    return LEAKS[args["mode"]](secrets)
+    return {**LEAKS, "circular": circular}[args["mode"]](secrets)
 
 
 @pytest.fixture
@@ -86,3 +92,9 @@ def test_a_non_json_result_comes_back_as_plain_json(monitor):
 def test_mapping_keys_and_numbers_are_scrubbed():
     assert redact({"x-abcdefgh": 1, "pin": 12345678, "n": 7}, set(), ["abcdefgh", "12345678"]) == {
         "x-[redacted]": 1, "pin": "[redacted]", "n": 7}
+
+
+def test_a_result_that_is_not_json_is_an_audited_error(monitor, store):
+    got = monitor.call("minh", "r1", "vault__leak", {"mode": "circular"})
+    assert got == "error: ValueError: Circular reference detected"
+    assert [r.outcome for r in store.list_audit()] == ["error"]

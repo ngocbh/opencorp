@@ -90,20 +90,20 @@ class Monitor:
         if denial:
             audit("denied", denial)
             return f"permission denied: {denial}"
-        impl = self.kinds.get(asset.kind, {}).get(tool)
-        if impl is None:
-            return _error(audit, f"asset kind {asset.kind!r} has no tool {tool!r}")
         try:
+            impl = self.kinds.get(asset.kind, {}).get(tool)
+            if impl is None:
+                raise LookupError(f"asset kind {asset.kind!r} has no tool {tool!r}")
             secrets = {key: self.secrets.get(key) for key in asset.secrets}
-        except (KeyError, ValueError) as exc:
-            return _error(audit, exc.args[0])
-        values.extend(v for v in secrets.values() if v)
-        try:
+            values.extend(v for v in secrets.values() if v)
             # Plain JSON first, so a set, bytes, or an object's text is scrubbed too.
             result = redact(json.loads(json.dumps(impl.run(asset, args, secrets), default=str)), keys, values)
+            detail = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
         except Exception as exc:
-            return _error(audit, redact(f"{type(exc).__name__}: {exc}", keys, values))
-        audit("ok", result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str))
+            reason = redact(_reason(exc), keys, values)
+            audit("error", reason)
+            return f"error: {reason}"
+        audit("ok", detail)
         return result
 
     def workspace(self, tools: WorkspaceTools, person_id: str, run_id: str | None, *,
@@ -173,9 +173,12 @@ def _last_line(text: str) -> str:
     return next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
 
 
-def _error(audit: Callable[[str, str], None], reason: str) -> str:
-    audit("error", reason)
-    return f"error: {reason}"
+def _reason(exc: Exception) -> str:
+    # The monitor's own failures (no such kind tool, a secret not set) read as plain
+    # sentences; anything else, a kind's own error included, is named by its type.
+    if isinstance(exc, LookupError) and exc.args and isinstance(exc.args[0], str):
+        return exc.args[0]
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _subjects(repo: CompanyRepo, person_id: str) -> set[str]:

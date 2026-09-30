@@ -139,3 +139,21 @@ def test_tools_plug_into_group_specs_base_handlers_and_toolset(make_monitor, sto
     assert handlers.tool_call(None, "toolbox", "fake__echo", {"text": "hi"}) == "hi"
     assert ToolSet({"toolbox": list(toolbox.values())}).groups == ("toolbox",)
     assert [r.session_id for r in store.list_audit()] == ["s1"]
+
+
+def test_an_unreadable_secret_file_is_an_audited_error(make_monitor, store, secrets):
+    (secrets.root / "vault_token").chmod(0)
+    m = make_monitor(**{"assets/cluster-a.yaml": cluster([{"who": "minh", "can": ["read_logs"]}])})
+    got = m.call("minh", "r1", "cluster_a__read_logs", {})
+    assert got.startswith("error: ") and "vault_token" in got
+    [row] = store.list_audit()
+    assert row.outcome == "error" and row.detail == got.removeprefix("error: ")
+
+
+def test_a_directory_in_place_of_a_secret_file_is_an_audited_error(make_monitor, store, secrets):
+    (secrets.root / "vault_token").unlink()
+    (secrets.root / "vault_token").mkdir()
+    m = make_monitor(**{"assets/cluster-a.yaml": cluster([{"who": "minh", "can": ["read_logs"]}])})
+    got = m.call("minh", "r1", "cluster_a__read_logs", {})
+    assert got.startswith("error: ") and "vault_token" in got
+    assert [r.outcome for r in store.list_audit()] == ["error"]
