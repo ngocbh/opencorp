@@ -230,7 +230,14 @@ class Learning:
         """Start a debrief run on the session's transcript; the Debrief is pending until it succeeds."""
         if not self._reserve(session.id):
             return
-        if self.store.get_debrief_record(session.id) is None:
+        record = self.store.get_debrief_record(session.id)
+        if record is not None and record.debrief.state == "ready":
+            # An office stopped between storing the debrief and ending the session.
+            self._release(session.id)
+            if session.status == "debriefing":
+                self.store.update_session(session.id, status="ended")
+            return
+        if record is None:
             self.store.save_debrief(pending_debrief(session))  # the session shows "debrief pending" meanwhile
         run_id = new_id()
         try:

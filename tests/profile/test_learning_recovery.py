@@ -1,9 +1,11 @@
 from agent_corp.extensions.learning import Learning
+from agent_corp.profile.debrief import ready_debrief
 from agent_corp.protocol import now
 from agent_corp.protocol.models import Feedback
 from agent_corp.store import new_id
-from tests.profile.conftest import chat, debrief_reply, learner_reply, status, wait_for
+from tests.profile.conftest import OUTPUT, chat, debrief_reply, learner_reply, settled, status, wait_for
 from tests.profile.test_learning_feedback import PROFILE, feedback_status, profile_text
+from tests.store.conftest import session
 
 
 def test_a_new_office_finishes_the_debriefs_and_feedback_the_last_one_left(harness, fake_llm, workspace):
@@ -32,3 +34,18 @@ def test_a_new_office_finishes_the_debriefs_and_feedback_the_last_one_left(harne
         assert profile_text(harness) == PROFILE + "\n- Be brief.\n"
     finally:
         second.stop()
+
+
+def test_a_session_left_debriefing_with_a_ready_debrief_just_ends(harness, fake_llm):
+    s = harness.store.create_session(session(repo_commit=harness.git.head(), status="debriefing", run_ids=["r1"]))
+    harness.store.save_debrief(ready_debrief(s, OUTPUT), run_id="dbr", attempts=1)
+    learning = Learning(harness.office, harness, tick=None)
+    learning.start()
+    try:
+        wait_for(lambda: status(harness, s.id) == "ended", what="ended")
+        settled(learning)
+    finally:
+        learning.stop()
+    record = harness.store.get_debrief_record(s.id)
+    assert (record.debrief.state, record.run_id, record.attempts) == ("ready", "dbr", 1)
+    assert fake_llm.requests() == []  # no second debrief ran
