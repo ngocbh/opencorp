@@ -1,4 +1,4 @@
-import type { Profile as ProfileData } from "@agent-corp/protocol"
+import type { Profile as ProfileData, ProfileProposal } from "@agent-corp/protocol"
 import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
@@ -11,7 +11,15 @@ import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
 import { VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
-import { conflictText, managerSession, shortVersion, transcript, withoutConflict } from "./profile"
+import {
+  conflictText,
+  diffLines,
+  managerSession,
+  openProposal,
+  shortVersion,
+  transcript,
+  withoutConflict,
+} from "./profile"
 
 /** Registers `/profile`: opens the profile of the session's person, or of the selected person. */
 export function useProfileCommands() {
@@ -42,7 +50,7 @@ export function useProfileCommands() {
 
 /**
  * A person's profile: the rendered `profile.md`, its version, and whether it is over budget; `e`
- * edits it, and `m` asks the profile manager for a change.
+ * edits it, `m` asks the profile manager for a change, and `a` applies the change it proposes.
  */
 export function Profile() {
   const data = useRouteData("profile")
@@ -53,9 +61,13 @@ export function Profile() {
   const { theme, syntax } = useTheme()
   const person = data.person
   const [profile, setProfile] = createSignal<ProfileData>()
+  const [proposals, setProposals] = createSignal<ProfileProposal[]>([])
   const [error, setError] = createSignal<string>()
+  const proposal = createMemo(() => openProposal(proposals(), person))
   const handle = () => office.state.people.find((p) => p.id === person)?.handle ?? person
 
+  const loadProposals = () =>
+    office.client.profiles.proposals(person).then(setProposals, (e) => setError(errorMessage(e)))
   // The event stream has no replay, so re-read whenever the office comes (back) online.
   createEffect(
     on(office.status, (status) => {
@@ -64,6 +76,7 @@ export function Profile() {
         (p) => (setProfile(p), setError(undefined)),
         (e) => setError(errorMessage(e)),
       )
+      void loadProposals()
     }),
   )
   onCleanup(
@@ -71,6 +84,32 @@ export function Profile() {
       if (e.subject_id === person) setProfile(e.data as unknown as ProfileData)
     }),
   )
+  const putProposal = (e: { data: unknown }) => {
+    const p = e.data as ProfileProposal
+    if (p.person === person) setProposals((list) => [...list.filter((x) => x.id !== p.id), p])
+  }
+  onCleanup(office.on("profile_proposal.created", putProposal))
+  onCleanup(office.on("profile_proposal.updated", putProposal))
+
+  let applying = false
+  /** Applies the open proposal; the office refuses it (409) if the profile changed since it was made. */
+  async function apply() {
+    const p = proposal()
+    if (applying || !p) return
+    applying = true
+    try {
+      setProfile(await office.client.proposals.apply(p.id))
+      toast.show({ variant: "success", message: "Proposal applied" })
+    } catch (e) {
+      if (e instanceof VersionConflictError)
+        toast.show({ variant: "warning", message: "The profile changed after this proposal; ask the manager again" })
+      else toast.show({ variant: "error", message: errorMessage(e) })
+    } finally {
+      applying = false
+      // The office marks the proposal applied or stale; don't wait for the event to hide it.
+      await loadProposals()
+    }
+  }
 
   // The manager chat: the one this view started, else the person's newest live one.
   const [started, setStarted] = createSignal<string>()
@@ -145,6 +184,7 @@ export function Profile() {
     bindings: [
       { key: "e", group: "Profile", cmd: () => void edit() },
       { key: "m", group: "Profile", cmd: () => input?.focus() },
+      { key: "a", group: "Profile", cmd: () => void apply() },
       { key: "escape", group: "Profile", cmd: back },
     ],
   }))
@@ -153,6 +193,9 @@ export function Profile() {
     enabled: () => !!input && renderer.currentFocusedEditor === input,
     bindings: [{ key: "escape", group: "Profile", cmd: () => input?.blur() }],
   }))
+
+  const diffColor = (line: string) =>
+    line.startsWith("+") ? theme.diffAdded : line.startsWith("-") ? theme.diffRemoved : theme.textMuted
 
   return (
     <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
@@ -173,9 +216,36 @@ export function Profile() {
       <Show when={error()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
       <scrollbox flexGrow={1} minHeight={0}>
         <Show when={profile()}>
-          {(p) => <markdown syntaxStyle={syntax()} content={p().text} conceal={true} fg={theme.text} />}
+          {(p) => (
+            // Streaming mode in a non-shrinking box, as in the session transcript: without it the
+            // markdown blanks for a few frames each time the layout under it changes.
+            <box flexShrink={0}>
+              <markdown
+                syntaxStyle={syntax()}
+                streaming={true}
+                internalBlockMode="top-level"
+                content={p().text}
+                conceal={true}
+                fg={theme.markdownText}
+                bg={theme.background}
+              />
+            </box>
+          )}
         </Show>
       </scrollbox>
+      <Show when={proposal()}>
+        {(p) => (
+          <box flexShrink={0}>
+            <text fg={theme.text}>
+              <span style={{ bold: true }}>Proposed change</span>
+              <span style={{ fg: theme.textMuted }}> · a apply</span>
+            </text>
+            <box maxHeight={8} overflow="hidden">
+              <For each={diffLines(p().diff)}>{(line) => <text fg={diffColor(line)}>{line}</text>}</For>
+            </box>
+          </box>
+        )}
+      </Show>
       <Show when={lines().length}>
         <box flexShrink={0}>
           <For each={lines().slice(-4)}>

@@ -183,3 +183,42 @@ test("an open manager chat for the person is picked up with its transcript", asy
     expect(office.requests.filter((r) => r.method === "POST").at(-1)?.path).toBe(`/sessions/${manager.id}/prompt`)
   })
 })
+
+const PROPOSED = "# Minh\n\nWrites the test first, then small changes.\n"
+
+test("the open proposal shows as a diff; a applies it", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Tests first" })
+  const proposal = office.propose(manager.id, PROPOSED)
+  await run(office, async (app) => {
+    const f = await app.until((f) => f.includes("+Writes the test first, then small changes."))
+    expect(f).toContain("-Writes small, tested changes.")
+    expect(f).toContain("a apply")
+    // The profile itself still shows above the proposal once the chat grows under it.
+    reply(office, manager.id, "Here is a proposal.")
+    const profileShown = /^  Writes small, tested changes\. *$/m
+    await app.until((f) => f.includes("manager: Here is a proposal.") && profileShown.test(f))
+    app.input.pressKey("a")
+    await app.until((f) => f.includes("Proposal applied") && !f.includes("+Writes the test first"))
+    const last = office.requests.filter((r) => r.method === "POST").at(-1)
+    expect(last?.path).toBe(`/profile-proposals/${proposal.id}/apply`)
+    expect(office.state.profiles.minh.text).toBe(PROPOSED)
+  })
+})
+
+test("a proposal made while the view is open appears; applying it after a hand edit says it is stale", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Tests first" })
+  await run(office, async (app) => {
+    office.propose(manager.id, PROPOSED)
+    await app.until((f) => f.includes("+Writes the test first, then small changes."))
+    const base_version = office.state.profiles.minh.version
+    await client.profiles.put("minh", { text: "# Minh\n\nHand edit.\n", base_version })
+    await app.until((f) => f.includes("Hand edit."))
+    app.input.pressKey("a")
+    await app.until((f) => f.includes("The profile changed after this proposal") && !f.includes("a apply"))
+    expect(office.state.profiles.minh.text).toBe("# Minh\n\nHand edit.\n")
+  })
+})
