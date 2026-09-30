@@ -230,10 +230,10 @@ test("usage errors exit 2 and office errors exit 1", async () => {
   expect(puts()).toEqual([])
 })
 
-test("with no office running, edit says so and exits 1", async () => {
+test("with no office running, edit says so and exits 3", async () => {
   office.stop()
   rmSync(socket, { force: true })
   editor(`: # leaves the file as it is\n`)
   const r = await profile("edit", "minh")
-  expect([r.code, r.err]).toEqual([1, `ac profile: the office is not running (no socket at ${socket})`])
+  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `ac doctor`."])
 })

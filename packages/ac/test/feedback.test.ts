@@ -158,3 +158,10 @@ test("office errors exit 1: an unknown ID, and no session in this folder", async
   expect(none.code).toBe(1)
   expect(none.err).toContain(realpathSync(path.join(home, "proj")))
 })
+
+test("with no office running, feedback says so and exits 3", async () => {
+  office.stop()
+  rmSync(path.join(home, "office", "office.sock"), { force: true })
+  const r = await feedback("-m", "x")
+  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `ac doctor`."])
+})
