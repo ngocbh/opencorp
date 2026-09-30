@@ -134,6 +134,22 @@ function withTurns(office: Office) {
   return s.id
 }
 
+test("a rewritten debrief clears the marks and keeps the cursor on a follow-up", async () => {
+  const office = createFakeOffice()
+  office.addDebrief(office.state.sessions[0].id, READY)
+  await run(office, async (app, id) => {
+    await app.until((f) => f.includes("› [ ] Add a CI job"))
+    app.input.pressArrow("down")
+    app.input.pressKey(" ")
+    await app.until((f) => f.includes("› [+] Bump the retry timeout"))
+    office.addDebrief(id, { ...READY, follow_ups: [{ text: "Pin the clock" }] })
+    await app.until((f) => f.includes("› [ ] Pin the clock"))
+    app.input.pressKey("c")
+    await app.until((f) => f.includes("[x] Pin the clock"))
+    expect(office.requests.find((r) => r.method === "POST")?.body).toEqual({ indices: [0] })
+  })
+})
+
 test("t picks a turn and pre-fills About turn N with its text; Enter sends feedback on the latest run", async () => {
   const office = createFakeOffice()
   const id = withTurns(office)

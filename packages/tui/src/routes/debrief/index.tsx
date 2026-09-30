@@ -57,6 +57,12 @@ export function Debrief() {
   const followUps = () => (debrief()?.state === "ready" ? (debrief()!.follow_ups ?? []) : [])
   const [cursor, setCursor] = createSignal(0)
   const [marked, setMarked] = createSignal<number[]>([])
+  // A rewritten debrief may renumber its follow-ups, so marks by index would point at others.
+  createEffect(on(() => followUps().map((f) => f.text).join("\n"), () => setMarked([]), { defer: true }))
+  createEffect(() => {
+    const last = followUps().length - 1
+    setCursor((c) => Math.max(0, Math.min(last, c)))
+  })
 
   // Debrief events seen; a read that was in flight when one arrived may be older than it.
   let events = 0
