@@ -1,0 +1,57 @@
+import { afterEach, expect, test } from "bun:test"
+import { createFakeOffice, type FakeOffice } from "../../script/stub"
+import { createOfficeClient } from "../../src/office/client"
+
+let office: FakeOffice
+afterEach(() => office?.stop())
+const client = () => createOfficeClient({ socket: office.socket })
+const failure = (p: Promise<unknown>): Promise<any> => p.then(() => Promise.reject(new Error("resolved")), (e) => e)
+
+test("GET is a 404 until the session is debriefing, then pending until addDebrief writes it", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  expect((await failure(client().debriefs.get(id))).code).toBe("not_found")
+  office.setStatus(id, "ending")
+  expect((await failure(client().debriefs.get(id))).code).toBe("not_found")
+  office.setStatus(id, "debriefing")
+  expect(await client().debriefs.get(id)).toMatchObject({ session_id: id, state: "pending" })
+  office.setStatus(id, "ended")
+  expect((await client().debriefs.get(id)).state).toBe("pending")
+  office.addDebrief(id, { state: "ready", summary: "Fixed the flaky test", follow_ups: [{ text: "Add a CI job" }] })
+  const d = await client().debriefs.get(id)
+  expect([d.state, d.summary, d.follow_ups]).toEqual(["ready", "Fixed the flaky test", [{ text: "Add a CI job" }]])
+})
+
+test("confirm makes a work item per newly confirmed follow-up; indices are deduped, repeats are no-ops", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  office.addDebrief(id, { state: "ready", follow_ups: [{ text: "Add a CI job" }, { text: "Bump the timeout" }] })
+  const d = await client().debriefs.confirm(id, { indices: [1, 1] })
+  expect(d.follow_ups!.map((f) => f.confirmed ?? false)).toEqual([false, true])
+  const item = office.state.workItems[d.follow_ups![1].work_item_id!]
+  // Requested by the human who confirms, for the session's person.
+  expect([item.title, item.kind, item.status, item.requester, item.assignee]).toEqual([
+    "Bump the timeout",
+    "task",
+    "open",
+    "ngocbh",
+    "minh",
+  ])
+  const again = await client().debriefs.confirm(id, { indices: [0, 1] })
+  expect(Object.keys(office.state.workItems)).toHaveLength(2)
+  expect(again.follow_ups![1].work_item_id).toBe(item.id)
+  expect((await failure(client().debriefs.confirm(id, { indices: [2] }))).code).toBe("invalid_body")
+})
+
+test("feedback names a run of its session, the latest by default; feedbackStatus moves it along", async () => {
+  office = createFakeOffice()
+  const s = office.state.sessions[0]
+  s.run_ids = ["run-a", "run-b"]
+  expect((await client().feedback.create({ session_id: s.id, text: "About turn 1: x" })).run_id).toBe("run-b")
+  expect((await client().feedback.create({ session_id: s.id, text: "y", run_id: "run-a" })).run_id).toBe("run-a")
+  expect((await failure(client().feedback.create({ session_id: s.id, text: "z", run_id: "run-x" }))).code).toBe(
+    "invalid_body",
+  )
+  const f = office.feedbackStatus(office.state.feedback[0].id, "applied")
+  expect([f.status, office.state.feedback[0].status]).toEqual(["applied", "applied"])
+})

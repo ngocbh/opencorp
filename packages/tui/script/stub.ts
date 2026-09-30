@@ -300,6 +300,23 @@ export function createFakeOffice(
     return updateQuestion(q, "question.created")
   }
 
+  /** Stores a session's debrief, as the office's debrief flow would, and publishes it. */
+  function addDebrief(sessionId: string, fields: Partial<Debrief> = {}) {
+    const type = state.debriefs[sessionId] ? "debrief.updated" : "debrief.created"
+    const d: Debrief = { session_id: session(sessionId).id, state: "ready", updated_at: now(), ...fields }
+    state.debriefs[sessionId] = d
+    publish(type, sessionId, d)
+    return d
+  }
+  /** Moves a feedback item along the learning queue, as the office's backward job would. */
+  function feedbackStatus(id: string, status: Feedback["status"], fields: Partial<Feedback> = {}) {
+    const i = state.feedback.findIndex((f) => f.id === id)
+    const f: Feedback = { ...need(state.feedback[i], `feedback ${id}`), status, ...fields }
+    state.feedback[i] = f
+    publish("feedback.updated", id, f)
+    return f
+  }
+
   function profile(person: string) {
     need(
       state.people.find((p) => p.id === person),
@@ -584,6 +601,8 @@ export function createFakeOffice(
       ({ body }) => {
         check(str(body?.session_id) && str(body?.text), "session_id and text are required")
         const s = session(body.session_id)
+        // A run of another session would be learned into the wrong person's profile.
+        check(body.run_id == null || (s.run_ids ?? []).includes(body.run_id), `run ${body.run_id} is not in ${s.id}`)
         const f: Feedback = {
           id: nextId(),
           session_id: s.id,
@@ -602,7 +621,15 @@ export function createFakeOffice(
     [
       "GET",
       "/debriefs/:session",
-      ({ params }) => Response.json(need(state.debriefs[params.session], `debrief for ${params.session}`)),
+      ({ params }) => {
+        const s = session(params.session)
+        const d = state.debriefs[s.id]
+        if (d) return Response.json(d)
+        // Once a session reaches debriefing it has a debrief, pending until the flow writes it.
+        if (s.status === "debriefing" || s.status === "ended")
+          return Response.json({ session_id: s.id, state: "pending", updated_at: s.updated_at } satisfies Debrief)
+        throw fail(404, "not_found", `no debrief for ${s.id}`)
+      },
     ],
     [
       "POST",
@@ -614,11 +641,28 @@ export function createFakeOffice(
           Array.isArray(body?.indices) && body.indices.every((i: unknown) => Number.isInteger(i) && ups[i as number]),
           "indices must name follow-ups",
         )
-        const next: Debrief = {
-          ...d,
-          follow_ups: ups.map((f, i) => (body.indices.includes(i) ? { ...f, confirmed: true } : f)),
-          updated_at: now(),
-        }
+        const s = session(params.session)
+        const picked = new Set<number>(body.indices)
+        // A follow-up is confirmed once: confirming it again keeps its work item.
+        const follow_ups = ups.map((f, i) => {
+          if (!picked.has(i) || f.confirmed) return f
+          const at = now()
+          const item: WorkItem = {
+            id: nextId(),
+            title: f.text,
+            kind: "task",
+            status: "open",
+            // The fake's only client is the local human, so they are the one confirming.
+            requester: human(),
+            assignee: s.person,
+            created_at: at,
+            updated_at: at,
+          }
+          state.workItems[item.id] = item
+          publish("work_item.created", item.id, item)
+          return { ...f, confirmed: true, work_item_id: item.id }
+        })
+        const next: Debrief = { ...d, follow_ups, updated_at: now() }
         state.debriefs[params.session] = next
         publish("debrief.updated", params.session, next)
         return Response.json(next)
@@ -715,6 +759,8 @@ export function createFakeOffice(
     addQuestion,
     setStatus,
     propose,
+    addDebrief,
+    feedbackStatus,
     /** Writes an SSE comment line (`: text`) to every stream. */
     comment: (text: string) => write(`: ${text}\n\n`),
     ping: () => write(": ping\n\n"),
