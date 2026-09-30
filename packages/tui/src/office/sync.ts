@@ -33,7 +33,12 @@ export function createOfficeSync(opts: {
   /** Past this many held-back events a load is abandoned and the stream reconnected. */
   maxBuffered?: number
 }) {
-  const { client, cwd, mutate, maxBuffered = MAX_BUFFERED } = opts
+  const { client, cwd, maxBuffered = MAX_BUFFERED } = opts
+  // After stop(), loads still in flight must not touch the state.
+  let stopped = false
+  const mutate = (fn: (s: OfficeState) => void) => {
+    if (!stopped) opts.mutate(fn)
+  }
   let status: OfficeStatus = "connecting"
   let error: string | undefined
   let sub: Subscription | undefined
@@ -117,14 +122,20 @@ export function createOfficeSync(opts: {
     }
   }
 
-  /** Who worked in `cwd`; a failure only costs the list, not the bootstrap. */
+  /** Who worked in `cwd`, or undefined if that can't be read: it costs the list, not the bootstrap. */
   async function readFolderPeople() {
     try {
       return await client.people.inFolder(cwd)
     } catch (e) {
       console.error("Failed to read the folder's people", { error: e })
-      return []
+      return undefined
     }
+  }
+
+  /** Stops keeping a session live and drops its messages, which would only go stale. */
+  function unsync(id: string) {
+    synced.delete(id)
+    mutate((s) => void delete s.messages[id])
   }
 
   /** A question re-read by id, or undefined if the office no longer has it. */
@@ -146,13 +157,19 @@ export function createOfficeSync(opts: {
     return { id, session, messages, questions }
   }
 
-  /** Reloads a synced session for a bootstrap; one the office no longer has stops being synced. */
-  async function reload(id: string) {
+  /**
+   * Reloads a synced session for a bootstrap. One the office no longer has stops being synced;
+   * any other failure is noted in `failed` (to load on its own later) so the bootstrap goes on.
+   */
+  async function reload(id: string, failed: string[]) {
     try {
       return await loadSession(id)
     } catch (e) {
-      if (!(e instanceof OfficeError && e.code === "not_found")) throw e
-      synced.delete(id)
+      if (e instanceof OfficeError && e.code === "not_found") unsync(id)
+      else {
+        console.error("Failed to reload a session", { id, error: e })
+        failed.push(id)
+      }
       return undefined
     }
   }
@@ -170,9 +187,10 @@ export function createOfficeSync(opts: {
       } catch (e) {
         pending.delete(id)
         // While the office is down the next bootstrap loads it; any other failure is final.
-        if (!(e instanceof OfficeUnavailable)) synced.delete(id)
+        if (!(e instanceof OfficeUnavailable)) unsync(id)
         throw e
       }
+      if (stopped) return
       // The stream ended or restarted while this loaded, so events may have been missed
       // between the read and the new stream: read again.
       if (mine !== generation) continue
@@ -191,6 +209,7 @@ export function createOfficeSync(opts: {
   async function bootstrap() {
     const mine = ++generation
     buffer = []
+    const failed: string[] = []
     try {
       const held = Object.values(opts.state().questions)
         .filter((q) => q.status === "open")
@@ -201,7 +220,7 @@ export function createOfficeSync(opts: {
         client.sessions.list({ limit: SESSION_LIMIT }),
         // Sessions still loading too: their own load may have read state before the stream
         // ended, so it will load again, but the snapshot shouldn't wait for that.
-        Promise.all([...synced].map(reload)),
+        Promise.all([...synced].map((id) => reload(id, failed))),
         Promise.all(held.map(async (id) => [id, await recheck(id)] as const)),
       ])
       if (mine !== generation) return
@@ -213,7 +232,7 @@ export function createOfficeSync(opts: {
       const now = events
       mutate((s) => {
         s.people = people
-        s.folderPeople = folderPeople
+        if (folderPeople) s.folderPeople = folderPeople
         for (const session of sessions) upsertSession(s, session)
         for (const [id, q] of rechecked) {
           if (q) s.questions[id] = q
@@ -229,6 +248,9 @@ export function createOfficeSync(opts: {
       })
       setStatus("online")
       fire(now)
+      // Each in its own window, so one slow or broken history doesn't hold up the rest.
+      for (const id of failed)
+        if (synced.has(id)) syncSession(id).catch((error) => console.error("Failed to load a session", { id, error }))
     } catch (e) {
       if (mine !== generation) return
       buffer = undefined
@@ -238,12 +260,25 @@ export function createOfficeSync(opts: {
     }
   }
 
+  /** Loads a session's messages and open questions, and keeps them live from then on. */
+  function syncSession(id: string) {
+    synced.add(id)
+    let load = loads.get(id)
+    if (!load) {
+      load = loadLive(id).finally(() => loads.delete(id))
+      loads.set(id, load)
+    }
+    return load
+  }
+
   return {
     /** Starts following the office. */
     start() {
+      stopped = false
       sub ??= client.events.subscribe(onStream, opts.stream)
     },
     stop() {
+      stopped = true
       generation++
       sub?.close()
       sub = undefined
@@ -251,16 +286,7 @@ export function createOfficeSync(opts: {
     status: () => status,
     /** Why the last bootstrap failed, while the status is `error`. */
     error: () => error,
-    /** Loads a session's messages and open questions, and keeps them live from then on. */
-    syncSession(id: string) {
-      synced.add(id)
-      let load = loads.get(id)
-      if (!load) {
-        load = loadLive(id).finally(() => loads.delete(id))
-        loads.set(id, load)
-      }
-      return load
-    },
+    syncSession,
     /** Re-reads a question, e.g. after the office says it is no longer open; drops it if the office has none. */
     async refreshQuestion(id: string) {
       const q = await recheck(id)
@@ -278,7 +304,7 @@ export function createOfficeSync(opts: {
       const [people, folderPeople] = await Promise.all([client.people.list(), readFolderPeople()])
       mutate((s) => {
         s.people = people
-        s.folderPeople = folderPeople
+        if (folderPeople) s.folderPeople = folderPeople
       })
     },
     /** Calls `fn` for each event of `type` once it is applied; returns an unsubscribe. */

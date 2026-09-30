@@ -14,10 +14,10 @@ afterEach(() => {
   office?.stop()
   office = undefined
 })
-function start(socket: string, stream = fast, maxBuffered?: number) {
+function start(socket: string, stream = fast, maxBuffered?: number, timeoutMs?: number) {
   const state = emptyState()
   const sync = createOfficeSync({
-    client: createOfficeClient({ socket }),
+    client: createOfficeClient({ socket, timeoutMs }),
     cwd: "/tmp/proj",
     state: () => state,
     mutate: (f) => f(state),
@@ -308,4 +308,90 @@ test("too many events while a session loads abandon the load's window and reconn
   await done
   await until(() => sync.status() === "online")
   expect(state.messages[id].map((m) => m.id)).toEqual(["M1"])
+  expect(state.messages[id][0].parts.map((p) => (p as { text: string }).text)).toEqual(["M1"])
+})
+
+/** Silences console.error for `fn`, returning what it logged. */
+async function quietly(fn: () => Promise<void>) {
+  const logged: unknown[][] = []
+  const error = console.error
+  console.error = (...args: unknown[]) => void logged.push(args)
+  try {
+    await fn()
+  } finally {
+    console.error = error
+  }
+  return logged
+}
+
+test("a session that fails to reload doesn't fail the bootstrap, and retries on its own", async () => {
+  office = createFakeOffice()
+  const s1 = office.state.sessions[0]
+  office.state.sessions.push({ ...s1, id: "S2" })
+  office.state.messages.S2 = [textMessage("S2", "M1")]
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  await Promise.all([sync.syncSession(s1.id), sync.syncSession("S2")])
+  const logged = await quietly(async () => {
+    // S2's history can't be read now.
+    office!.notImplemented.add("GET /sessions/S2/messages")
+    office!.state.messages[s1.id].push(textMessage(s1.id, "M9"))
+    office!.reset()
+    await until(() => count(office!, "GET /sessions?limit=50") === 2)
+    await until(() => sync.status() === "online" && state.messages[s1.id].some((m) => m.id === "M9"))
+    // Once for syncSession, once in the bootstrap, once more on its own after it.
+    await until(() => count(office!, "GET /sessions/S2/messages") === 3)
+    // Still failing, so it stops being synced and its stale transcript goes.
+    await until(() => state.messages.S2 === undefined)
+  })
+  expect(sync.status()).toBe("online")
+  expect(logged.length).toBeGreaterThan(0)
+})
+
+test("a folder people read that fails keeps the list read before", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  expect(state.folderPeople.map((p) => p.handle)).toEqual(["minh"])
+  await quietly(async () => {
+    office!.notImplemented.add("GET /folders/:cwd/people")
+    office!.reset()
+    await until(() => count(office!, "GET /people") === 2)
+    await until(() => sync.status() === "online")
+    await sync.refreshPeople()
+  })
+  expect(state.folderPeople.map((p) => p.handle)).toEqual(["minh"])
+})
+
+test("a session load that times out drops the session's messages", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket, fast, undefined, 100)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  await sync.syncSession(id)
+  expect(state.messages[id]).toBeDefined()
+  const release = office.hold("GET /sessions/:id/messages")
+  office.reset()
+  await quietly(async () => {
+    await until(() => count(office!, `GET /sessions/${id}/messages`) === 3, 3000)
+    await until(() => state.messages[id] === undefined, 3000)
+  })
+  release()
+})
+
+test("a load in flight at stop() neither reads again nor changes state", async () => {
+  office = createFakeOffice()
+  const { state, sync } = start(office.socket)
+  await until(() => sync.status() === "online")
+  const id = office.state.sessions[0].id
+  office.state.messages[id] = [textMessage(id, "M1")]
+  const release = office.hold("GET /sessions/:id/messages")
+  const done = sync.syncSession(id)
+  await until(() => count(office!, `GET /sessions/${id}/messages`) === 1)
+  sync.stop()
+  release()
+  await done
+  await Bun.sleep(50)
+  expect(count(office, `GET /sessions/${id}/messages`)).toBe(1)
+  expect(state.messages[id]).toEqual([])
 })

@@ -610,7 +610,7 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
       )
     const key = `${route.method} ${route.pattern}`
     await holds.get(key)
-    if (notImplemented.has(key))
+    if (notImplemented.has(key) || notImplemented.has(`${req.method} ${url.pathname}`))
       return Response.json(
         { error: "not_implemented", message: `${req.method} ${url.pathname} is not implemented yet` },
         { status: 501 },
@@ -634,7 +634,7 @@ export function createFakeOffice(opts: { seed?: FakeState; socket?: string; notI
     state,
     /** Every request received, in order: `path` is decoded and keeps the query string, `raw` is as sent. */
     requests,
-    /** Route keys (`"POST /sessions/:id/prompt"`) answered with 501. */
+    /** Route keys (`"POST /sessions/:id/prompt"`) or exact paths (`"GET /sessions/S2/messages"`) answered with 501. */
     notImplemented,
     nextId,
     emit,
