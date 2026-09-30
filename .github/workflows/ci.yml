@@ -24,7 +24,8 @@ jobs:
       # setup-uv publishes no floating major tags, so pin the release.
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync
-      - run: uv run pytest -q packages/corp_office/tests
+      # tests/e2e needs bun and runs in the e2e job, on both OSes.
+      - run: uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e
   sandbox-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -45,6 +46,36 @@ jobs:
           fi
       - run: uv sync
       - run: uv run pytest -q packages/corp_office/tests/sandbox
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      UV_LOCKED: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # agent-composer is private
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor; bwrap needs them.
+      - if: runner.os == 'Linux'
+        run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - run: uv sync
+      - run: bun install --frozen-lockfile
+      - run: uv run pytest -q packages/corp_office/tests/e2e
   ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
