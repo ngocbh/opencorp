@@ -12,7 +12,7 @@ import { DialogSelect } from "../../ui/dialog-select"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
 import { personLabel } from "../../util/transcript"
-import { aboutTurn, turns } from "./debrief"
+import { aboutTurn, turns, written } from "./debrief"
 
 /** Registers `/debrief`: opens the current session's debrief. */
 export function useDebriefCommands() {
@@ -91,10 +91,13 @@ export function Debrief() {
   onCleanup(office.on("feedback.updated", (e) => putFeedback(e.data as unknown as Feedback)))
   const turnList = createMemo(() => turns(office.state.messages[id] ?? []))
   let input: InputRenderable | undefined
+  // The turn pre-fill the input starts with; sent alone, it says nothing.
+  let prefix = ""
   /** Focuses the feedback input with `text`; a tick later, so a closing dialog's refocus doesn't undo it. */
   function write(text: string) {
     setTimeout(() => {
       if (!input || input.isDestroyed) return
+      prefix = text
       input.value = text
       input.focus()
     }, 0)
@@ -115,11 +118,12 @@ export function Debrief() {
   }
   let sending = false
   /** Sends feedback on the session's latest run (the office's default when `run_id` is left out). */
-  async function send(text: string) {
-    if (sending || !text.trim()) return
+  async function send(draft: string) {
+    const text = written(draft, prefix)
+    if (sending || !text) return
     sending = true
     try {
-      putFeedback(await office.client.feedback.create({ session_id: id, text: text.trim() }))
+      putFeedback(await office.client.feedback.create({ session_id: id, text }))
       if (input) input.value = ""
       input?.blur()
       toast.show({ variant: "success", message: "Feedback queued" })

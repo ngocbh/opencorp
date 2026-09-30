@@ -24,3 +24,9 @@ export function aboutTurn(turn: { n: number; text: string }) {
   const quote = chars.length > 60 ? `${chars.slice(0, 60).join("")}…` : turn.text
   return `About turn ${turn.n} ("${quote}"): `
 }
+
+/** The feedback to send from `text`: trimmed, and empty when it holds only the pre-filled `prefix`. */
+export function written(text: string, prefix: string) {
+  const t = text.trim()
+  return t === prefix.trim() ? "" : t
+}

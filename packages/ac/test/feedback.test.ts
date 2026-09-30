@@ -103,7 +103,7 @@ test("without -m, $EDITOR opens on a template listing the turns; --turn pre-fill
   expect(posts()).toEqual([{ session_id: s.id, text: 'About turn 2 ("Use a fake clock"): \n\nmock the clock' }])
 })
 
-test("empty feedback isn't sent; no editor and no -m is a usage error; so is a turn that doesn't exist", async () => {
+test("empty or pre-fill-only feedback isn't sent; no editor and no -m, or no such turn, is a usage error", async () => {
   const s = sessionInProj()
   const noEditor = await feedback(s.id)
   expect(noEditor.code).toBe(2)
@@ -112,6 +112,10 @@ test("empty feedback isn't sent; no editor and no -m is a usage error; so is a t
   process.env.EDITOR = `sh ${path.join(home, "ed.sh")}`
   const empty = await feedback(s.id)
   expect(empty).toMatchObject({ code: 1, err: "ac feedback: no feedback written; nothing sent" })
+  // Quitting the editor unchanged leaves only the pre-fill, and that is empty too.
+  process.env.EDITOR = "true"
+  expect((await feedback(s.id, "--turn", "2")).code).toBe(1)
+  expect((await feedback(s.id, "--turn", "1", "-m", "")).code).toBe(1)
   const turn = await feedback(s.id, "--turn", "3", "-m", "x")
   expect(turn.code).toBe(2)
   expect(turn.err).toContain("turn 3")

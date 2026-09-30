@@ -137,12 +137,20 @@ test("t picks a turn and pre-fills About turn N with its text; Enter sends feedb
   })
 })
 
-test("f writes feedback on the whole run; Esc leaves the input, and empty feedback isn't sent", async () => {
+test("f writes feedback on the whole run; Esc leaves the input; pre-fill-only feedback isn't sent", async () => {
   const office = createFakeOffice()
   const id = withTurns(office)
   await run(office, async (app) => {
     await app.until((f) => f.includes("Fixed the flaky clock test"))
     app.input.pressKey("f")
+    await app.until(() => app.setup.renderer.currentFocusedEditor !== null)
+    app.input.pressEnter()
+    app.input.pressEscape()
+    await app.until(() => app.setup.renderer.currentFocusedEditor === null)
+    app.input.pressKey("t")
+    await app.until((f) => f.includes("Turn 1: Fix the flaky test"))
+    app.input.pressEnter()
+    await app.until((f) => !f.includes("Turn 1:") && f.includes('About turn 1 ("Fix the flaky test"): '))
     await app.until(() => app.setup.renderer.currentFocusedEditor !== null)
     app.input.pressEnter()
     app.input.pressEscape()

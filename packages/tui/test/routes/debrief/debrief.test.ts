@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Message } from "@agent-corp/protocol"
-import { aboutTurn, turns } from "../../../src/routes/debrief/debrief"
+import { aboutTurn, turns, written } from "../../../src/routes/debrief/debrief"
 
 const msg = (role: Message["role"], ...texts: string[]) =>
   ({ role, parts: texts.map((text) => ({ type: "text", text })) }) as unknown as Message
@@ -24,4 +24,12 @@ test("aboutTurn is the feedback pre-fill: it quotes the turn's first 60 characte
   const long = "Rewrite the retry loop so that it backs off exponentially and gives up after a minute"
   expect(aboutTurn({ n: 1, text: long })).toBe(`About turn 1 ("${long.slice(0, 60)}…"): `)
   expect(aboutTurn({ n: 2, text: "" })).toBe("About turn 2: ")
+})
+
+test("written is the feedback to send: trimmed, and empty when it is only the pre-fill", () => {
+  const prefix = 'About turn 2 ("Use a fake clock"): '
+  expect(written(`  ${prefix}inject it  `, prefix)).toBe(`${prefix}inject it`)
+  expect(written(`${prefix}  \n`, prefix)).toBe("")
+  expect(written(" \n ", "")).toBe("")
+  expect(written("Nice", "")).toBe("Nice")
 })

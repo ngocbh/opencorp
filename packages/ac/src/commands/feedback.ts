@@ -1,5 +1,5 @@
 import type { Session } from "@agent-corp/protocol"
-import { aboutTurn, turns } from "@agent-corp/tui/debrief"
+import { aboutTurn, turns, written } from "@agent-corp/tui/debrief"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
 import { OfficeError } from "@agent-corp/tui/office/errors"
 import { defaultSocket } from "@agent-corp/tui/office/paths"
@@ -93,7 +93,7 @@ export const run: CommandRun = async (argv) => {
     if (n !== undefined && n > list.length) throw new Usage(`there is no turn ${n}; the session has ${list.length}`)
     const handle = (await client.people.list()).find((p) => p.id === session.person)?.handle ?? session.person
     const prefix = n === undefined ? "" : aboutTurn(list[n - 1])
-    const text =
+    const draft =
       values.message === undefined
         ? edit(
             [
@@ -107,7 +107,8 @@ export const run: CommandRun = async (argv) => {
             ].join("\n"),
           )
         : prefix + values.message.trim()
-    if (!text.trim()) {
+    const text = written(draft, prefix)
+    if (!text) {
       console.error("ac feedback: no feedback written; nothing sent")
       return 1
     }
