@@ -62,3 +62,24 @@ test("/people opens the picker too", async () => {
     fake.stop()
   }
 })
+
+test("in a folder nobody has worked in, the picker opens at start; not with --person", async () => {
+  const fake = office()
+  const app = await bootFrame({ ...createStub(fake), cwd: "/tmp/new" })
+  try {
+    const f = await app.until((f) => f.includes("Who do you want to talk to?"))
+    expect(f).not.toContain("This folder")
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Who do you want") && f.includes("Ask anything"))
+  } finally {
+    await app.stop()
+  }
+  const chosen = await bootFrame({ ...createStub(fake), cwd: "/tmp/new" }, { person: "lan" })
+  try {
+    // The picker would open in the same flush that brings @lan into the footer.
+    expect(await chosen.until((f) => f.includes("@lan"))).not.toContain("Who do you want")
+  } finally {
+    await chosen.stop()
+    fake.stop()
+  }
+})

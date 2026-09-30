@@ -1,4 +1,6 @@
-import { createMemo } from "solid-js"
+import { createEffect, createMemo } from "solid-js"
+import { useArgs } from "../../context/args"
+import { useRoute } from "../../context/route"
 import { useOffice } from "../../context/office"
 import { useLocal } from "../../context/local"
 import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select"
@@ -34,4 +36,24 @@ export function DialogPeople() {
       }}
     />
   )
+}
+
+/**
+ * Opens the picker once, when the office first comes online, if the TUI started on home with no
+ * person, session, or prompt chosen and nobody has worked in this folder yet.
+ */
+export function usePickerOnStart() {
+  const office = useOffice()
+  const dialog = useDialog()
+  const args = useArgs()
+  const route = useRoute()
+  let decided = false
+  createEffect(() => {
+    // "online" is set only after the loaded lists reach `state`, so `folderPeople` is current here.
+    if (decided || office.status() !== "online") return
+    decided = true
+    const chosen = args.person || args.sessionID || args.continue || args.prompt
+    if (chosen || route.data.type !== "home" || office.state.folderPeople.length || dialog.stack.length) return
+    dialog.replace(() => <DialogPeople />)
+  })
 }
