@@ -1,5 +1,6 @@
 """Build throwaway company repos for tests."""
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -24,9 +25,25 @@ output: ${reply.output}
 """
 
 
+def _clean_env() -> dict[str, str]:
+    """os.environ without GIT_* and without the user's or system git config."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return env | {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git(monkeypatch):
+    """Keep the caller's GIT_* variables and git config out of every test."""
+    for key in [k for k in os.environ if k.startswith("GIT_")]:
+        monkeypatch.delenv(key)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+
+
 def _git(root: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t",
-                           *args], check=True, capture_output=True, text=True).stdout.strip()
+                           *args], check=True, capture_output=True, text=True,
+                          env=_clean_env()).stdout.strip()
 
 
 def base_files() -> dict[str, object]:
