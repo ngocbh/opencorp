@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
-import { OFFICE_501_ROUTES, createFakeOffice, type FakeOffice } from "../../script/stub"
+import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
-import { OfficeError, OfficeTimeout, VersionConflictError, isNotImplemented } from "../../src/office/errors"
+import { OfficeError, OfficeTimeout, VersionConflictError } from "../../src/office/errors"
 import { request } from "../../src/office/http"
 import { until } from "../fixture/until"
 
@@ -149,8 +149,8 @@ test("a hire checks the body like the office; an unknown manager is a lint issue
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
 })
 
-test("today's office serves hires, the session routes, and the question card routes, and answers 501 on the rest", async () => {
-  office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
+test("today's office serves hires, the session routes, and the question card routes", async () => {
+  office = createFakeOffice()
   const id = office.state.sessions[0].id
   await client().people.hire({ name: "Lan", handle: "lan", title: "QA", manager: "ngocbh", confirm: false })
   expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).status).toBe("starting")
@@ -161,9 +161,6 @@ test("today's office serves hires, the session routes, and the question card rou
   await client().sessions.end(id)
   const q = office.addQuestion({ session_id: id, source: "ask_user" })
   expect((await client().questions.stop(q.id)).answer_kind).toBe("interrupted")
-  const err = await failure(client().feedback.create({ session_id: id, text: "be brief" }))
-  expect(isNotImplemented(err)).toBe(true)
-  expect(err.message).toBe("POST /feedback is not implemented yet")
 })
 
 test("unknown paths and wrong methods", async () => {

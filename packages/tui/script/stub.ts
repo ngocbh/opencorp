@@ -64,16 +64,6 @@ export type FakeState = {
   hires: Record<string, HireRequest>
 }
 
-/** The routes the office answers with 501 today; pass as `notImplemented` to match it. */
-export const OFFICE_501_ROUTES = [
-  "POST /profiles/:person/manager",
-  "GET /profiles/:person/proposals",
-  "POST /profile-proposals/:id/apply",
-  "POST /feedback",
-  "GET /debriefs/:session",
-  "POST /debriefs/:session/confirm",
-]
-
 const now = () => new Date().toISOString()
 
 /** Words a side chat refuses, in any case: only the office ends a side run. */
