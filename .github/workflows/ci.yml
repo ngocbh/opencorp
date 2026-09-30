@@ -1,0 +1,31 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  office:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # agent-composer is private
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run pytest -q tests
+  ts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test
+        working-directory: packages/protocol
+      - if: ${{ hashFiles('packages/tui/package.json') != '' }}
+        run: bun test
+        working-directory: packages/tui
+      - if: ${{ hashFiles('packages/ac/package.json') != '' }}
+        run: bun test
+        working-directory: packages/ac
