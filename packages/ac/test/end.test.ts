@@ -80,3 +80,17 @@ test("ac end ID ends that session and says the debrief follows; the office's ref
     office.stop()
   }
 })
+
+test("ac end on a side session promises no debrief", async () => {
+  mkdirSync(path.dirname(socket), { recursive: true })
+  const office = createFakeOffice({ socket })
+  try {
+    const [main] = office.state.sessions
+    const side = { ...main, id: office.nextId(), kind: "side" as const }
+    office.state.sessions.push(side)
+    const r = await capture(["end", side.id])
+    expect([r.code, r.out]).toEqual([0, `Ending @minh's side session ${side.id}.`])
+  } finally {
+    office.stop()
+  }
+})
