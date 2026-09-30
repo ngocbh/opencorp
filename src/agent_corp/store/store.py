@@ -655,7 +655,8 @@ class Store:
         cols = _columns(QUESTIONS, question)
         # SQL NULL means "not answered"; an answered question stores its answer as JSON,
         # which may be the text 'null'.
-        cols["answer"] = json.dumps(question.answer) if question.status in _ANSWERED else None
+        answered = question.status in _ANSWERED
+        cols["answer"] = json.dumps(question.model_dump(mode="json", include={"answer"})["answer"]) if answered else None
         return cols
 
     def add_question(self, question: Question) -> Question:

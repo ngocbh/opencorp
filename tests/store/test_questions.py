@@ -1,5 +1,6 @@
 """Questions: round-trips, the human_input key, status moves, first answer wins."""
 
+import datetime
 import threading
 
 import pytest
@@ -131,3 +132,9 @@ def test_list_questions_filters(store, sid):
     store.answer_question(b.id, "x", "text")
     assert [q.id for q in store.list_questions(session_id=sid, status="open", source="ask_user")] == [a.id]
     assert [q.id for q in store.list_questions(session_id=sid, status=("answered", "consumed"))] == [b.id]
+
+
+def test_answer_is_stored_as_its_json_dump(store, sid):
+    q = store.add_question(make_question(sid))
+    got = store.answer_question(q.id, {"when": datetime.date(2026, 9, 30), "picks": ("a", "b")}, "text")
+    assert got.answer == {"when": "2026-09-30", "picks": ["a", "b"]} == store.get_question(q.id).answer
