@@ -14,7 +14,14 @@ export type SessionRoute = {
   prompt?: PromptInfo
 }
 
-export type Route = HomeRoute | SessionRoute
+export type ProfileRoute = {
+  type: "profile"
+  person: string
+  /** The session to go back to; home when absent. */
+  from?: string
+}
+
+export type Route = HomeRoute | SessionRoute | ProfileRoute
 
 export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",

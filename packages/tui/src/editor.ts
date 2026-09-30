@@ -32,12 +32,16 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
   input.renderer.currentRenderBuffer.clear()
   try {
     await new Promise<void>((resolve, reject) => {
-      const parts = editor.split(" ")
-      const child = spawn(parts[0]!, [...parts.slice(1), file], {
+      const options = {
         cwd: input.cwd && existsSync(input.cwd) ? input.cwd : process.cwd(),
-        stdio: [input.stdin ?? "inherit", "inherit", "inherit"],
-        shell: process.platform === "win32",
-      })
+        stdio: [input.stdin ?? "inherit", "inherit", "inherit"] as [EditorStdio, "inherit", "inherit"],
+      }
+      // As git does: the shell parses the editor setting (it may hold flags or a quoted path),
+      // and the file goes in as an argument.
+      const child =
+        process.platform === "win32"
+          ? spawn(editor, [file], { ...options, shell: true })
+          : spawn("sh", ["-c", `${editor} "$@"`, editor, file], options)
       child.on("error", reject)
       child.on("exit", (code, signal) => {
         if (code === 0) return resolve()
