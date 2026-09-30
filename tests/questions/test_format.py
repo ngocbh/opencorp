@@ -86,6 +86,30 @@ def test_the_discussion_is_capped_oldest_first(monkeypatch):
     assert entries[-1]["text"].startswith("message 5 ")
 
 
+def capped_with_carried(monkeypatch, cap):
+    monkeypatch.setattr(fmt, "DISCUSSION_CAP", cap)
+    q = answered("x", "text", discussion=[{"role": "user", "text": f"new {i} " + "y" * 40} for i in range(2)])
+    carried = [DiscussionEntry(role="user", text=f"old {i} " + "y" * 40) for i in range(4)]
+    last = format_answer(q, carried).splitlines()[-1]
+    assert len(last) <= cap
+    return json.loads(last)
+
+
+def test_a_capped_carried_discussion_keeps_its_note_and_counts_only_messages(monkeypatch):
+    entries = capped_with_carried(monkeypatch, 400)
+    old = [e["text"][:5] for e in entries if e["text"].startswith("old ")]
+    assert 0 < len(old) < 4 and old == [f"old {i}" for i in range(4 - len(old), 4)]
+    assert entries[:2] == [{"role": "note", "text": f"{4 - len(old)} earlier messages omitted"},
+                           {"role": "note", "text": "from an earlier, expired question"}]
+    assert [e["text"][:5] for e in entries[-2:]] == ["new 0", "new 1"]
+
+
+def test_a_carried_discussion_dropped_entirely_loses_its_note(monkeypatch):
+    entries = capped_with_carried(monkeypatch, 220)
+    assert entries[0] == {"role": "note", "text": "4 earlier messages omitted"}
+    assert [e["text"][:5] for e in entries[1:]] == ["new 0", "new 1"]
+
+
 def test_one_long_message_is_cut_to_fit(monkeypatch):
     monkeypatch.setattr(fmt, "DISCUSSION_CAP", 200)
     q = answered("x", "text", discussion=[{"role": "user", "text": "a\n" * 500}])

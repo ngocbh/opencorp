@@ -34,10 +34,8 @@ def format_answer(question: Question, carried: Iterable[DiscussionEntry] = ()) -
     if question.source == "human_input":
         return question.answer
     text = _choice(question)
-    entries = _entries(question.discussion)
-    if earlier := _entries(carried):
-        entries = [{"role": "note", "text": CARRIED_NOTE}, *earlier, *entries]
-    return f"{text}\n\n{DISCUSSION_BLOCK}{_capped(entries)}" if entries else text
+    earlier, entries = _entries(carried), _entries(question.discussion)
+    return f"{text}\n\n{DISCUSSION_BLOCK}{_capped(earlier, entries)}" if earlier or entries else text
 
 
 def _entries(discussion: Iterable[DiscussionEntry]) -> list[dict[str, str]]:
@@ -60,14 +58,21 @@ def _dumps(entries: list[dict[str, str]]) -> str:
     return json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
 
 
-def _capped(entries: list[dict[str, str]]) -> str:
-    """The entries as JSON within the cap: drop the oldest behind a note, then cut the last one's text."""
+def _capped(earlier: list[dict[str, str]], entries: list[dict[str, str]]) -> str:
+    """The carried then current entries as JSON within the cap.
+
+    The oldest are dropped behind a note counting them, and the carried ones keep their
+    own note while any remain; if the newest alone is still too long, its text is cut.
+    """
+    messages = earlier + entries
     dropped = 0
     while True:
-        note = [{"role": "note", "text": f"{dropped} earlier messages omitted"}] if dropped else []
-        shown = note + entries[dropped:]
+        notes = [{"role": "note", "text": f"{dropped} earlier messages omitted"}] if dropped else []
+        if dropped < len(earlier):
+            notes.append({"role": "note", "text": CARRIED_NOTE})
+        shown = notes + messages[dropped:]
         text = _dumps(shown)
-        if len(text) <= DISCUSSION_CAP or dropped == len(entries) - 1:
+        if len(text) <= DISCUSSION_CAP or dropped == len(messages) - 1:
             break
         dropped += 1
     if len(text) > DISCUSSION_CAP:
