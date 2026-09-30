@@ -14,6 +14,7 @@ import { errorMessage } from "../../util/error"
 import {
   conflictText,
   diffLines,
+  LIVE,
   managerSession,
   openProposal,
   shortVersion,
@@ -135,9 +136,15 @@ export function Profile() {
     }
   }
 
-  // The manager chat: the one this view started, else the person's newest live one.
+  // The manager chat: the one this view started while it is live (or not listed yet), else
+  // the person's newest live one.
   const [started, setStarted] = createSignal<string>()
-  const chat = createMemo(() => started() ?? managerSession(office.state.sessions, person)?.id)
+  const chat = createMemo(() => {
+    const id = started()
+    const s = id && office.state.sessions.find((x) => x.id === id)
+    if (id && (!s || LIVE.has(s.status))) return id
+    return managerSession(office.state.sessions, person)?.id
+  })
   const chatSession = () => office.state.sessions.find((s) => s.id === chat())
   const lines = createMemo(() => transcript(office.state.messages[chat() ?? ""] ?? []))
   createEffect(

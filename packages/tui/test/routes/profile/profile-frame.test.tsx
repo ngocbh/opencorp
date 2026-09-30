@@ -169,6 +169,26 @@ test("m starts a profile manager chat; later messages prompt the same session", 
   })
 })
 
+test("once the chat this view started ends, the next message starts a new one", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    app.input.pressKey("m")
+    await typeInto(app, "Say Minh writes tests first")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("you: Say Minh writes tests first"))
+    const first = office.state.sessions.find((s) => s.kind === "profile_manager")!
+    office.setStatus(first.id, "ended")
+    await app.until((f) => !f.includes("you: Say Minh writes tests first"))
+    await typeInto(app, "Shorter please")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("you: Shorter please"))
+    expect(office.requests.filter((r) => r.method === "POST").map((r) => r.path)).toEqual([
+      "/profiles/minh/manager",
+      "/profiles/minh/manager",
+    ])
+  })
+})
+
 test("an open manager chat for the person is picked up with its transcript", async () => {
   const office = createFakeOffice()
   const client = createOfficeClient({ socket: office.socket })

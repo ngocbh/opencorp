@@ -19,7 +19,8 @@ export function withoutConflict(text: string) {
   return text.slice(0, at).replace(/\n\n$/, "\n")
 }
 
-const LIVE = new Set<Session["status"]>(["starting", "idle", "busy"])
+/** The session statuses a manager chat can still take messages in. */
+export const LIVE = new Set<Session["status"]>(["starting", "idle", "busy"])
 
 /** The person's newest profile manager session that can still take a message. */
 export function managerSession(sessions: readonly Session[], person: string) {
