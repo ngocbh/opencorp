@@ -156,6 +156,53 @@ test("after Esc, a new reply that streams in before the prompt call returns show
   }
 })
 
+test("a send that fails after a newer Esc keeps that Esc's freeze", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
+  const id = office.state.sessions[0].id
+  const reply = (text: string) => {
+    const message: Message = {
+      id: office.nextId(),
+      session_id: id,
+      role: "assistant",
+      created_at: new Date().toISOString(),
+      parts: [{ id: office.nextId(), type: "text", text }],
+    }
+    office.live({ type: "message.updated", session_id: id, data: message as never })
+  }
+  // A session event after a reply: once the header shows it, the reply has arrived too.
+  const after = (cost: number) => {
+    office.state.sessions[0] = { ...office.state.sessions[0], cost }
+    office.setStatus(id, "busy")
+  }
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    reply("Looking")
+    after(0.25)
+    await app.until((f) => f.includes("Looking") && f.includes("@minh · busy · $0.25"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length === 1)
+    // The office answers the send, with its 501, only once released.
+    const release = office.hold("POST /sessions/:id/prompt")
+    app.input.typeText("again")
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/prompt`))
+    // The send lifted the first freeze, so the late words show; a second Esc freezes them in view.
+    reply("late words")
+    after(0.5)
+    await app.until((f) => f.includes("late words") && f.includes("@minh · busy · $0.50"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length === 2)
+    release()
+    await app.until((f) => f.includes("not implemented yet"))
+    for (let i = 0; i < 10; i++) await app.setup.renderOnce()
+    expect(app.frame()).toContain("late words")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a 501 from the office shows as a toast, not a crash", async () => {
   const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
   const app = await bootFrame(createStub(office))

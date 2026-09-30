@@ -149,8 +149,13 @@ export function Session() {
   function lift() {
     const f = frozen()
     if (!f?.active) return
-    setFrozen(unfreeze(f, messages()))
-    return () => setFrozen(f)
+    const lifted = unfreeze(f, messages())
+    const view = viewID()
+    setFrozen(lifted)
+    // A newer Esc, or a switch to or from the side view, has since replaced the lifted freeze.
+    return () => {
+      if (frozen() === lifted && viewID() === view) setFrozen(f)
+    }
   }
   // The side chat closes with its question.
   createEffect(() => {
