@@ -464,6 +464,20 @@ def test_the_model_key_goes_to_the_job_llm_config_not_its_env(make_harness, work
     assert SENTINEL not in repr(harness.store.get_session(sid))
 
 
+def test_run_finished_hooks_never_see_the_model_key(make_harness, workspace):
+    harness = keyed(make_harness)
+    seen = []
+    harness.hooks.run_finished.append(lambda session, run_id, result: seen.append(result))
+    sid = start(harness, workspace)
+    live = harness._live[sid]
+    harness._finish(live, "failed", {"type": "result", "status": "failed", "output": None, "failure": {
+        "node_id": "chat#0/reply", "message": f"1 validation error: api_key Input: '{SENTINEL}'",
+        "details": [{"input": {"api_key": SENTINEL}}, SENTINEL]}})
+    assert SENTINEL not in json.dumps(seen)
+    assert seen[0]["failure"]["message"] == "1 validation error: api_key Input: '[redacted]'"
+    assert seen[0]["failure"]["details"] == [{"input": {"api_key": "[redacted]"}}, "[redacted]"]
+
+
 # Composer's LLMConfig forbids extra fields, so a key in llm_config fails the reply node and
 # the validation error echoes it into events and the run log. Drop the mark once the submodule
 # has LLMConfig.api_key.

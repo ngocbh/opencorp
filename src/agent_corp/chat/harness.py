@@ -664,7 +664,7 @@ class Harness:
                                             or failure.get("cause_type") == "LoopMaxExceeded"):
             self._finish(live, "ended", outcome)
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
-            self.hooks.fire("run_finished", session, live.run_id, outcome)
+            self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
             for q in self.store.list_questions(run_id=live.run_id, status="open"):
                 self.store.set_question_status(q.id, "stale")
             live.run_id = new_id()
@@ -684,7 +684,7 @@ class Harness:
         session = self.store.update_session(live.session_id, status=status)
         if status == "ended" and session.work_item_id:
             self.store.update_work_item(session.work_item_id, status="done")
-        self.hooks.fire("run_finished", session, live.run_id, outcome)
+        self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
         self.hooks.fire("session_ended", session)
 
     def _fail(self, session_id: str) -> None:
@@ -786,3 +786,21 @@ def _defaults(repo: Any) -> CompanyDefaults:
 
 def _ceo(repo: Any) -> str | None:
     return repo.company.ceo if repo.company else None
+
+
+def _redact(value: Any, provider: Provider) -> Any:
+    """``value`` with the provider's model key replaced by ``[redacted]`` wherever it appears."""
+    key = (provider.llm_config or {}).get("api_key")
+    if not isinstance(key, str) or not key:
+        return value
+
+    def scrub(v: Any) -> Any:
+        if isinstance(v, str):
+            return v.replace(key, "[redacted]")
+        if isinstance(v, dict):
+            return {scrub(k): scrub(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [scrub(x) for x in v]
+        return v
+
+    return scrub(value)

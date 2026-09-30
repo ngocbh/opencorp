@@ -18,6 +18,7 @@ class Hooks:
     - ``run_started(session, run_id)``: a worker started a run or a resume of one.
     - ``run_finished(session, run_id, result)``: a run ended; ``result`` is the worker's
       result frame (``status``, ``output``, ``failure``), or ``None`` after an error frame.
+      The model key is replaced by ``[redacted]`` wherever it appears in ``result``.
     - ``worker_exited(session, returncode)``: the session's worker is gone.
     - ``session_ended(session)``: the session reached ``ended`` or ``failed`` (see
       ``session.status``); it fires once, including for a session that failed before its
