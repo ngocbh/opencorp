@@ -6,9 +6,10 @@ import time
 import pytest
 
 from agent_corp.company.git import CompanyGit
-from tests.company.conftest import _git
+from tests.company.conftest import _git, write_repo
 
 PROFILE = "people/minh/profile.md"
+OFFICE = "agent-corp office <office@agent-corp.local>"
 
 
 @pytest.fixture
@@ -128,3 +129,58 @@ def test_staged_rename_commits_both_paths(g, company):
     assert g.commit_hand_edits() == [PROFILE, "people/ngocbh/profile.md"]
     assert _git(company, "status", "--porcelain") == ""
     assert g.blob_id(PROFILE) is None and g.blob_id("people/ngocbh/profile.md") is not None
+
+
+def test_git_dir_in_the_environment_is_ignored(g, company, tmp_path, monkeypatch):
+    other = write_repo(tmp_path / "other", {"x.txt": "x\n"})
+    head = g.head()
+    monkeypatch.setenv("GIT_DIR", str(other / ".git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(other))
+    assert g.head() == head
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([PROFILE], "edit")
+    assert _git(company, "log", "-1", "--format=%s") == "edit"
+
+
+def test_author_env_does_not_override_the_office(g, company, monkeypatch):
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "leaked")
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([PROFILE], "edit")
+    assert _git(company, "log", "-1", "--format=%an <%ae>|%cn <%ce>") == f"{OFFICE}|{OFFICE}"
+
+
+def test_user_git_config_is_ignored(g, company, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".gitconfig").write_text("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL")
+    monkeypatch.delenv("GIT_CONFIG_NOSYSTEM")
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([PROFILE], "edit")
+    assert _git(company, "log", "-1", "--format=%s") == "edit"
+
+
+def test_repo_signing_config_is_ignored(g, company):
+    _git(company, "config", "commit.gpgsign", "true")
+    _git(company, "config", "gpg.program", "false")
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([PROFILE], "edit")
+    assert _git(company, "log", "-1", "--format=%s") == "edit"
+
+
+def _failing_hook(repo, name):
+    hook = repo / ".git/hooks" / name
+    hook.write_text("#!/bin/sh\necho refused >&2\nexit 1\n")
+    hook.chmod(0o755)
+
+
+def test_repo_hooks_do_not_run(g, company):
+    for name in ("pre-commit", "commit-msg", "post-checkout"):
+        _failing_hook(company, name)
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([PROFILE], "edit")
+    assert _git(company, "log", "-1", "--format=%s") == "edit"
+    assert (g.pin("HEAD") / PROFILE).read_text() == "# edited\n"
+

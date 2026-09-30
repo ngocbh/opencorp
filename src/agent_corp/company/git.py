@@ -10,10 +10,19 @@ from pathlib import Path
 import yaml
 
 _IDENTITY = ["-c", "user.name=agent-corp office", "-c", "user.email=office@agent-corp.local"]
+# Repo-local config and hooks still apply after the env is cleaned; never sign or run hooks.
+_NO_HOOKS = ["-c", "commit.gpgsign=false", "-c", f"core.hooksPath={os.devnull}"]
 _PIN_MARKER = ".agent-corp-pin"
 _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 # `:(glob)` makes `*` match one path segment, so only people/<id>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"
+
+
+def _env() -> dict[str, str]:
+    """os.environ without GIT_* variables, the system or user git config, or prompts."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    return env | {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                  "GIT_TERMINAL_PROMPT": "0"}
 
 
 class CompanyGit:
@@ -25,8 +34,8 @@ class CompanyGit:
         self.lock = threading.RLock()
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(["git", "-C", str(self.root), *_IDENTITY, *args],
-                              check=check, capture_output=True, text=True)
+        return subprocess.run(["git", "-C", str(self.root), *_IDENTITY, *_NO_HOOKS, *args],
+                              check=check, capture_output=True, text=True, env=_env())
 
     def head(self) -> str:
         """Return the commit id at HEAD."""
