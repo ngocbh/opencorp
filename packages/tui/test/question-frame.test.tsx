@@ -50,36 +50,25 @@ test("a question open before the session loads shows, and a typed answer is sent
   }
 })
 
-test("multi-page questions render from `questions`; a 409 says someone else answered", async () => {
+test("a 409 says someone else answered and re-reads the question", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
-  const q = office.addQuestion({
-    session_id: s.id,
-    question: "Set up the release",
-    questions: [
-      { question: "Which channel?", header: "Channel", options: [{ label: "beta" }, { label: "stable" }] },
-      { question: "Tag it?", header: "Tag", options: [{ label: "yes" }, { label: "no" }] },
-    ],
-  })
+  const q = office.addQuestion({ session_id: s.id, question: "Which channel?", options: ["beta", "stable"] })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    await app.until((f) => f.includes("Channel") && f.includes("Tag") && f.includes("Which channel?"))
+    await app.until((f) => f.includes("Which channel?") && f.includes("stable"))
     // Someone else answers without the TUI hearing about it.
-    office.state.questions[q.id] = { ...q, status: "answered", answer: "done", answer_kind: "text" }
+    office.state.questions[q.id] = { ...q, status: "answered", answer: "beta", answer_kind: "option" }
     app.input.pressKey("2")
-    await app.until((f) => f.includes("Tag it?"))
-    app.input.pressKey("1")
-    await app.until((f) => f.includes("Review"))
-    app.input.pressEnter()
     await app.until((f) => f.includes("This question was already answered"))
-    await app.until((f) => !f.includes("Which channel?") && !f.includes("Review"))
+    await app.until((f) => !f.includes("Which channel?"))
   } finally {
     await app.stop()
     office.stop()
   }
 })
 
-test("a multi-page answer is sent as one text answer, a line per page", async () => {
+test("a multi-page question shows that it can't be answered here, and Esc still stops it", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const q = office.addQuestion({
@@ -92,17 +81,41 @@ test("a multi-page answer is sent as one text answer, a line per page", async ()
   })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    await app.until((f) => f.includes("Which channel?"))
-    app.input.pressKey("2")
-    await app.until((f) => f.includes("Tag it?"))
+    const f = await app.until((f) => f.includes("can't be answered here yet"))
+    expect(f).toContain("Which channel?")
+    expect(f).toContain("Tag it?")
     app.input.pressKey("1")
-    await app.until((f) => f.includes("Review"))
     app.input.pressEnter()
-    await app.until(() => office.state.questions[q.id].status === "answered")
-    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
-      answer: "Channel: stable\nTag: yes",
-      answer_kind: "text",
-    })
+    await Bun.sleep(50)
+    expect(office.requests.some((r) => r.path === `/questions/${q.id}/answer`)).toBe(false)
+    app.input.pressEscape()
+    await app.until(() => office.state.questions[q.id].status !== "open")
+    expect(office.requests.some((r) => r.method === "POST" && r.path === `/questions/${q.id}/stop`)).toBe(true)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a single-page multi-select question can't be answered here either", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.addQuestion({
+    session_id: s.id,
+    question: "Pick targets",
+    questions: [
+      {
+        question: "Which targets?",
+        header: "Targets",
+        multi_select: true,
+        options: [{ label: "linux" }, { label: "mac" }],
+      },
+    ],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    const f = await app.until((f) => f.includes("can't be answered here yet"))
+    expect(f).toContain("Which targets?")
   } finally {
     await app.stop()
     office.stop()
