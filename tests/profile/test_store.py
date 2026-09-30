@@ -312,3 +312,28 @@ def test_a_forged_handle_cannot_add_a_commit_id(store, company):
     store.write("# Minh\nv1\n", base_version=store.read()[1])
     assert _git(company, "log", "-1", "--format=%B") == "profile(@minh): write"
     assert store.committed("forged") is None
+
+
+def test_a_hand_edit_just_before_the_replace_is_kept(store, git, company, monkeypatch):
+    base = store.read()[1]
+    handle = git.handle
+
+    def edit_by_hand(rel):  # runs after the first hand-edit check, before the file is replaced
+        (company / PROFILE).write_text("# Minh\nby hand\n")
+        return handle(rel)
+
+    monkeypatch.setattr(git, "handle", edit_by_hand)
+    with pytest.raises(MarkdownVersionMismatch) as caught:
+        store.write("# Minh\nby model\n", base_version=base)
+    assert caught.value.current == blob_id(b"# Minh\nby hand\n")
+    assert (company / PROFILE).read_text() == "# Minh\nby hand\n"
+    assert _subject(company) == "profile(@minh): hand edit"
+
+
+def test_bytes_git_normalizes_are_not_a_hand_edit(store, git, company):
+    (company / ".gitattributes").write_text("*.md text\n")
+    git.commit([".gitattributes"], "normalize line endings")
+    (company / PROFILE).write_bytes(MINH.replace("\n", "\r\n").encode())  # same blob once normalized
+    base = store.read()[1]
+    assert base == blob_id(MINH.encode())
+    assert store.write("# Minh\nv1\n", base_version=base) == blob_id(b"# Minh\nv1\n")

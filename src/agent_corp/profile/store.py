@@ -105,6 +105,12 @@ class GitProfileStore:
                 message = commit_message(self.git.handle(self.path), provenance)
                 target = self._target()
                 previous = target.read_bytes() if target.exists() else None
+                if (EMPTY_BLOB if previous is None else blob_id(previous)) != current:
+                    # A hand edit since commit_hand_edits(), or bytes git normalizes
+                    # (.gitattributes): let git decide which.
+                    self.git.commit_hand_edits()
+                    if (now := self._current()) != current:
+                        raise MarkdownVersionMismatch(base_version, now)
                 self._put(target, data)
                 try:
                     self.git.commit([self.path], message)
