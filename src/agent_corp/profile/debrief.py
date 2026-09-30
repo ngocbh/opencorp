@@ -12,12 +12,14 @@ DEBRIEF_FLOW = "shared/flows/debrief.yaml"
 TRANSCRIPT_MAX_CHARS = 100_000
 """How much of a transcript a debrief reads; the end of the session is kept."""
 _CUT = "[earlier messages left out]"
+_CUT_START = "[the start of this message left out]"
 
 
 def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX_CHARS) -> str:
     """A session's messages as plain text: ``role: text`` blocks, with ``[called <tool>]`` for tool calls.
 
-    Past ``max_chars`` the oldest messages are left out, so the debrief sees how the session ended.
+    Past ``max_chars`` the oldest messages are left out, so the debrief sees how the session ended;
+    a newest message longer than ``max_chars`` keeps its end.
     """
     blocks = []
     for message in messages:
@@ -28,7 +30,10 @@ def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX
     for block in reversed(blocks):
         size += len(block) + 2
         if size - 2 > max_chars:
-            kept.append(_CUT)
+            if not kept:
+                kept.append(_CUT_START + block[-max_chars:])
+            if len(kept) < len(blocks):
+                kept.append(_CUT)
             break
         kept.append(block)
     return "\n\n".join(reversed(kept))

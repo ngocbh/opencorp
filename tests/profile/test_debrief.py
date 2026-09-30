@@ -52,6 +52,14 @@ def test_a_long_transcript_keeps_its_end():
     assert len(text) <= 60 + len("[earlier messages left out]\n\n")
 
 
+def test_a_last_message_longer_than_the_budget_keeps_its_end():
+    last = "x" * 50 + "the end"
+    text = transcript_text([_message("user", _text("fix it")), _message("assistant", _text(last))], max_chars=20)
+    assert text == "[earlier messages left out]\n\n[the start of this message left out]" + ("x" * 50 + "the end")[-20:]
+    alone = transcript_text([_message("assistant", _text(last))], max_chars=20)
+    assert alone == "[the start of this message left out]" + last[-20:]
+
+
 def test_confirming_follow_ups_makes_one_work_item_each_once(store):
     s = store.create_session(session(status="ended", work_item_id=store.create_work_item(work_item()).id))
     store.save_debrief(ready_debrief(s, OUTPUT))
