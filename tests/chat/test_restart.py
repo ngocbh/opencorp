@@ -121,8 +121,11 @@ def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_ll
     first.close_all()
 
     second = make_harness()
+    ended = []
+    second.hooks.session_ended.append(lambda session: ended.append((session.id, session.status)))
     second.restore()
     assert status(second, orphan.id) == "failed" and orphan.id not in second._live
+    assert ended == [(orphan.id, "failed")]
     wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the restored turn")
 
 

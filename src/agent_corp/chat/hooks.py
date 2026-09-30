@@ -19,7 +19,9 @@ class Hooks:
     - ``run_finished(session, run_id, result)``: a run ended; ``result`` is the worker's
       result frame (``status``, ``output``, ``failure``), or ``None`` after an error frame.
     - ``worker_exited(session, returncode)``: the session's worker is gone.
-    - ``session_ended(session)``: the session reached ``ended``.
+    - ``session_ended(session)``: the session reached ``ended`` or ``failed`` (see
+      ``session.status``); it fires once, including for a session that failed before its
+      worker started.
 
     A callback that raises is logged and skipped; the rest still run.
     """

@@ -296,13 +296,28 @@ def test_a_provider_error_at_start_fails_the_session(harness, workspace):
         raise ProviderError("provider.json must be a regular file private to its owner (mode 0600)")
 
     harness.provider = bad
+    ended = []
+    harness.hooks.session_ended.append(lambda session: ended.append(session.status))
     with pytest.raises(ProviderError):
         harness.start_session("minh", str(workspace))
     (session,) = harness.store.list_sessions()
     assert session.status == "failed" and session.id not in harness._live
+    assert ended == ["failed"]
     with pytest.raises(HarnessError) as err:
         harness.prompt(session.id, "hi")
     assert err.value.code == "not_live"
+
+
+def test_a_run_that_cant_be_set_up_fails_the_session_and_says_so(harness, workspace, monkeypatch):
+    def no_run(*args):
+        raise OSError("disk full")
+
+    ended = []
+    harness.hooks.session_ended.append(lambda session: ended.append(session.status))
+    monkeypatch.setattr(harness.store, "add_session_run", no_run)
+    with pytest.raises(OSError):
+        harness.start_session("minh", str(workspace))
+    assert [s.status for s in harness.store.list_sessions()] == ended == ["failed"]
 
 
 def test_a_stopping_harness_refuses_new_worker_requests(harness):

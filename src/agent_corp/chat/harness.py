@@ -254,7 +254,7 @@ class Harness:
             live = self._new_live(session, run_id, spec)
         except Exception:
             log.exception("can't start a run for session %s", session.id)
-            self.store.update_session(session.id, status="failed")
+            self._fail(session.id)
             raise
         with self._lock:
             if session.id in self._live:
@@ -275,14 +275,14 @@ class Harness:
                 continue
             self._interrupt_running_tools(session.id)
             if not session.run_ids:  # the office stopped before its first run was recorded
-                self.store.update_session(session.id, status="failed")
+                self._fail(session.id)
                 continue
             # One session that can't resume must not stop the others, or the office's start.
             try:
                 live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
             except Exception:
                 log.exception("can't resume session %s", session.id)
-                self.store.update_session(session.id, status="failed")
+                self._fail(session.id)
                 continue
             live.ending = session.status == "ending"
             with self._lock:
@@ -686,6 +686,10 @@ class Harness:
             self.store.update_work_item(session.work_item_id, status="done")
         self.hooks.fire("run_finished", session, live.run_id, outcome)
         self.hooks.fire("session_ended", session)
+
+    def _fail(self, session_id: str) -> None:
+        """Fail a session that has no live run."""
+        self.hooks.fire("session_ended", self.store.update_session(session_id, status="failed"))
 
     # --- helpers ---------------------------------------------------------------------
 
