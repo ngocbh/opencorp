@@ -1,0 +1,7 @@
+{
+  "name": "@agent-corp/protocol",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "src/index.ts",
+  "devDependencies": { "json-schema-to-typescript": "^15.0.0" }
+}
