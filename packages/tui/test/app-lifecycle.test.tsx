@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { Global } from "../src/core/global"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
+import { createFakeOffice, createStub } from "../script/stub"
 
 async function renderUntil(setup: TestRendererSetup, text: string) {
   const deadline = Date.now() + 5000
@@ -62,29 +63,8 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
-  const events = createEventSource()
-  const session = {
-    id: "dummy",
-    title: "Demo session",
-    slug: "dummy",
-    projectID: "project",
-    directory,
-    version: "0.0.0-test",
-    time: { created: 0, updated: 0 },
-  }
-  let opened!: () => void
-  const sessionOpened = new Promise<void>((resolve) => {
-    opened = resolve
-  })
-  const calls = createFetch((url) => {
-    if (url.pathname === "/session") return json([session])
-    if (url.pathname === "/session/dummy") return json(session)
-    if (["/session/dummy/message", "/session/dummy/todo", "/session/dummy/diff"].includes(url.pathname)) {
-      opened()
-      return json([])
-    }
-    if (url.pathname === "/project/proj_test/directories") return json([])
-  })
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
   const originalWrite = process.stdout.write.bind(process.stdout)
   let stdout = ""
 
@@ -96,29 +76,20 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
   try {
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
-      run({
-        socket: "/tmp/act-none/o.sock",
-        cwd: "/tmp/proj",
-        url: "http://test",
-        directory,
-        config: createTuiResolvedConfig(),
-        fetch: calls.fetch,
-        events: events.source,
-        args: { continue: true },
-      }).pipe(Effect.provide(Global.layer)),
+      run({ ...createStub(office), args: { sessionID: s.id } }).pipe(Effect.provide(Global.layer)),
     )
 
-    await sessionOpened
-    await renderUntil(setup, "ctrl+p commands")
+    await renderUntil(setup, "@minh · idle")
     setup.mockInput.pressKey("d", { ctrl: true })
     await task
 
-    expect(stdout).toContain("Demo session")
-    expect(stdout).toContain("opencode -s dummy")
+    expect(stdout).toContain("@minh · /tmp/proj")
+    expect(stdout).toContain(`ac -s ${s.id}`)
   } finally {
     process.stdout.write = originalWrite
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
     mock.restore()
+    office.stop()
   }
 })
 

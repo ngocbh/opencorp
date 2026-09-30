@@ -1,62 +1,75 @@
-import { useSync } from "../../context/sync"
+import type { Session } from "@agent-corp/protocol"
 import { createMemo, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
-import { InstallationChannel, InstallationVersion } from "../../core/version"
-
+import { useOffice } from "../../context/office"
+import { useTuiPaths } from "../../context/runtime"
+import { abbreviateHome } from "../../runtime"
+import { personLabel } from "../../util/transcript"
 import { getScrollAcceleration } from "../../util/scroll"
 
+const usd = (n: number) => `$${n.toFixed(2)}`
+
+/** The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. */
+export function costLabel(session: Pick<Session, "cost" | "cost_cap_usd">) {
+  if (session.cost === undefined) return undefined
+  return session.cost_cap_usd == null ? usd(session.cost) : `${usd(session.cost)} of ${usd(session.cost_cap_usd)}`
+}
+
+/** The session's person, folder, status, cost, and id. */
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
-  const sync = useSync()
+  const office = useOffice()
+  const paths = useTuiPaths()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
-  const session = createMemo(() => sync.session.get(props.sessionID))
+  const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
+  const person = createMemo(() => office.state.people.find((p) => p.id === session()?.person))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
 
   return (
     <Show when={session()}>
-      <box
-        backgroundColor={theme.backgroundPanel}
-        width={42}
-        height="100%"
-        paddingTop={1}
-        paddingBottom={1}
-        paddingLeft={2}
-        paddingRight={2}
-        position={props.overlay ? "absolute" : "relative"}
-      >
-        <scrollbox
-          flexGrow={1}
-          scrollAcceleration={scrollAcceleration()}
-          verticalScrollbarOptions={{
-            trackOptions: {
-              backgroundColor: theme.background,
-              foregroundColor: theme.borderActive,
-            },
-          }}
+      {(current) => (
+        <box
+          backgroundColor={theme.backgroundPanel}
+          width={42}
+          height="100%"
+          paddingTop={1}
+          paddingBottom={1}
+          paddingLeft={2}
+          paddingRight={2}
+          position={props.overlay ? "absolute" : "relative"}
         >
-          <box flexShrink={0} gap={1} paddingRight={1}>
-            <box paddingRight={1}>
-              <text fg={theme.text}>
-                <b>{session()!.title}</b>
-              </text>
-              <Show when={InstallationChannel !== "latest"}>
-                <text fg={theme.textMuted}>{props.sessionID}</text>
-              </Show>
+          <scrollbox
+            flexGrow={1}
+            scrollAcceleration={scrollAcceleration()}
+            verticalScrollbarOptions={{
+              trackOptions: {
+                backgroundColor: theme.background,
+                foregroundColor: theme.borderActive,
+              },
+            }}
+          >
+            <box flexShrink={0} gap={1} paddingRight={1}>
+              <box>
+                <text fg={theme.text}>
+                  <b>{personLabel(office.state.people, current().person)}</b>
+                </text>
+                <Show when={person()?.title}>
+                  <text fg={theme.textMuted}>{person()!.title}</text>
+                </Show>
+              </box>
+              <box>
+                <text fg={theme.textMuted}>{abbreviateHome(current().cwd, paths.home)}</text>
+                <text fg={theme.textMuted}>
+                  {current().status}
+                  <Show when={costLabel(current())}> · {costLabel(current())}</Show>
+                </text>
+              </box>
+              <text fg={theme.textMuted}>{props.sessionID}</text>
             </box>
-          </box>
-        </scrollbox>
-
-        <box flexShrink={0} gap={1} paddingTop={1}>
-          <text fg={theme.textMuted}>
-            <span style={{ fg: theme.success }}>•</span> <b>Open</b>
-            <span style={{ fg: theme.text }}>
-              <b>Code</b>
-            </span>{" "}
-            <span>{InstallationVersion}</span>
-          </text>
+          </scrollbox>
         </box>
-      </box>
+      )}
     </Show>
   )
 }

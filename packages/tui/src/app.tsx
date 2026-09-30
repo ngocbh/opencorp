@@ -29,7 +29,8 @@ import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
-import { OfficeProvider } from "./context/office"
+import { OfficeProvider, useOffice } from "./context/office"
+import { personLabel } from "./util/transcript"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
@@ -46,7 +47,6 @@ import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { ToastProvider, useToast } from "./ui/toast"
-import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
@@ -320,6 +320,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const sync = useSync()
+  const office = useOffice()
   const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
@@ -358,22 +359,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   createEffect(() => {
     if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
 
-    if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
-      return
-    }
-
     if (route.data.type === "session") {
-      const session = sync.session.get(route.data.sessionID)
-      if (!session || isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
-        return
-      }
-
-      const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
-      return
+      const sessionID = route.data.sessionID
+      const session = office.state.sessions.find((s) => s.id === sessionID)
+      if (session) return renderer.setTerminalTitle(`ac | ${personLabel(office.state.people, session.person)}`)
     }
+    renderer.setTerminalTitle("ac")
   })
 
   const args = useArgs()
