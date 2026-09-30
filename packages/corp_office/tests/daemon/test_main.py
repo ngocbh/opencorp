@@ -174,7 +174,7 @@ def home(short_dir):
     return short_dir
 
 
-def test_daemon_serves_refuses_a_second_and_stops_cleanly(home):
+def test_daemon_serves_turns_away_a_second_and_stops_cleanly(home):
     paths = OfficePaths(home)
     proc = _daemon(home)
     try:
@@ -182,7 +182,8 @@ def test_daemon_serves_refuses_a_second_and_stops_cleanly(home):
         assert stat.S_IMODE(os.stat(paths.socket).st_mode) == 0o600
         second = subprocess.run([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
                                 capture_output=True, text=True, timeout=30)
-        assert second.returncode == 1 and f"office already running (pid {proc.pid})" in second.stderr
+        # Exit 0, so a service manager that restarts on failure doesn't retry the duplicate forever.
+        assert second.returncode == 0 and f"office already running (pid {proc.pid})" in second.stderr
     finally:
         _stop(home, proc)
     assert not paths.socket.exists()
