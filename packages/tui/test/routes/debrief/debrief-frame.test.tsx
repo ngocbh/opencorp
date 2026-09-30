@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test"
-import type { Debrief } from "@agent-corp/protocol"
+import type { Debrief, Message } from "@agent-corp/protocol"
 import { createFakeOffice, createStub } from "../../../script/stub"
 import { bootFrame } from "../../fixture/frame"
+import { typeInto } from "../picker/type"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
 type Office = ReturnType<typeof createFakeOffice>
@@ -94,5 +95,66 @@ test("space marks follow-ups and c confirms them; each confirmed one shows its w
     app.input.pressKey("c")
     await app.until((f) => f.includes("[x] Add a CI job"))
     expect(office.requests.filter((r) => r.method === "POST").at(-1)?.body).toEqual({ indices: [0] })
+  })
+})
+
+/** Gives the seeded session two runs and a transcript with two turns. */
+function withTurns(office: Office) {
+  const s = office.state.sessions[0]
+  s.run_ids = ["run-a", "run-b"]
+  const msg = (role: Message["role"], text: string): Message => {
+    const id = office.nextId()
+    return { id, session_id: s.id, role, parts: [{ id: id + "P", type: "text", text }], created_at: "t" }
+  }
+  office.state.messages[s.id] = [
+    msg("user", "Fix the flaky test"),
+    msg("assistant", "Done."),
+    msg("user", "Use a fake clock"),
+  ]
+  office.addDebrief(s.id, READY)
+  return s.id
+}
+
+test("t picks a turn and pre-fills About turn N with its text; Enter sends feedback on the latest run", async () => {
+  const office = createFakeOffice()
+  const id = withTurns(office)
+  const text = 'About turn 2 ("Use a fake clock"): inject the clock instead'
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    app.input.pressKey("t")
+    await app.until((f) => f.includes("Turn 1: Fix the flaky test") && f.includes("Turn 2: Use a fake clock"))
+    await typeInto(app, "fake clock")
+    app.input.pressEnter()
+    await app.until((f) => !f.includes("Turn 1:") && f.includes('About turn 2 ("Use a fake clock"): '))
+    await typeInto(app, "inject the clock instead")
+    app.input.pressEnter()
+    await app.until((f) => f.includes(`queued · ${text}`) && f.includes("Feedback queued"))
+    const post = office.requests.find((r) => r.method === "POST" && r.path === "/feedback")
+    expect(post?.body).toEqual({ session_id: id, text })
+    expect(office.state.feedback[0].run_id).toBe("run-b")
+    office.feedbackStatus(office.state.feedback[0].id, "applied")
+    await app.until((f) => f.includes(`applied · ${text}`))
+  })
+})
+
+test("f writes feedback on the whole run; Esc leaves the input, and empty feedback isn't sent", async () => {
+  const office = createFakeOffice()
+  const id = withTurns(office)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    app.input.pressKey("f")
+    await app.until(() => app.setup.renderer.currentFocusedEditor !== null)
+    app.input.pressEnter()
+    app.input.pressEscape()
+    await app.until(() => app.setup.renderer.currentFocusedEditor === null)
+    expect(office.requests.some((r) => r.path === "/feedback")).toBe(false)
+    app.input.pressKey("f")
+    await typeInto(app, "Good call on the fake clock")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("queued · Good call on the fake clock"))
+    expect(office.requests.find((r) => r.path === "/feedback")?.body).toEqual({
+      session_id: id,
+      text: "Good call on the fake clock",
+    })
   })
 })

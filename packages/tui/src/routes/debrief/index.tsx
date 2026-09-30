@@ -1,14 +1,18 @@
-import type { Debrief as DebriefData } from "@agent-corp/protocol"
+import type { Debrief as DebriefData, Feedback } from "@agent-corp/protocol"
+import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import { createEffect, createSignal, For, on, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
 import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
 import { OfficeError } from "../../office/errors"
+import { useDialog } from "../../ui/dialog"
+import { DialogSelect } from "../../ui/dialog-select"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
 import { personLabel } from "../../util/transcript"
+import { aboutTurn, turns } from "./debrief"
 
 /** Registers `/debrief`: opens the current session's debrief. */
 export function useDebriefCommands() {
@@ -34,7 +38,8 @@ export function useDebriefCommands() {
 
 /**
  * A session's debrief: summary, status, artifacts, decisions, follow-ups, open questions and
- * cost. Space marks follow-ups and `c` confirms them, which makes a work item for each.
+ * cost. Space marks follow-ups and `c` confirms them, which makes a work item for each; `t`
+ * starts feedback about one turn and `f` feedback on the whole run.
  */
 export function Debrief() {
   const data = useRouteData("debrief")
@@ -42,6 +47,7 @@ export function Debrief() {
   const office = useOffice()
   const renderer = useRenderer()
   const toast = useToast()
+  const dialog = useDialog()
   const { theme } = useTheme()
   const id = data.sessionID
   const [debrief, setDebrief] = createSignal<DebriefData>()
@@ -63,12 +69,66 @@ export function Debrief() {
     )
   }
   // The event stream has no replay, so re-read whenever the office comes (back) online.
-  createEffect(on(office.status, (status) => status === "online" && load()))
+  createEffect(
+    on(office.status, (status) => {
+      if (status !== "online") return
+      load()
+      // The turns to pick from.
+      office.syncSession(id).catch((e) => setError(errorMessage(e)))
+    }),
+  )
   const put = (e: { subject_id?: string; data: unknown }) => {
     if (e.subject_id === id) setDebrief(e.data as DebriefData)
   }
   onCleanup(office.on("debrief.created", put))
   onCleanup(office.on("debrief.updated", put))
+
+  // Feedback sent from this screen; there is no route to list a session's feedback.
+  const [sent, setSent] = createSignal<Feedback[]>([])
+  const putFeedback = (f: Feedback) =>
+    f.session_id === id && setSent((list) => [...list.filter((x) => x.id !== f.id), f])
+  onCleanup(office.on("feedback.created", (e) => putFeedback(e.data as unknown as Feedback)))
+  onCleanup(office.on("feedback.updated", (e) => putFeedback(e.data as unknown as Feedback)))
+  const turnList = createMemo(() => turns(office.state.messages[id] ?? []))
+  let input: InputRenderable | undefined
+  /** Focuses the feedback input with `text`; a tick later, so a closing dialog's refocus doesn't undo it. */
+  function write(text: string) {
+    setTimeout(() => {
+      if (!input || input.isDestroyed) return
+      input.value = text
+      input.focus()
+    }, 0)
+  }
+  function pickTurn() {
+    if (!turnList().length) return toast.show({ variant: "info", message: "No turns to pick from", duration: 3000 })
+    dialog.replace(() => (
+      <DialogSelect
+        title="About which turn?"
+        placeholder="Search turns"
+        options={turnList().map((t) => ({ title: `Turn ${t.n}: ${t.text}`, value: t }))}
+        onSelect={(option) => {
+          dialog.clear()
+          write(aboutTurn(option.value))
+        }}
+      />
+    ))
+  }
+  let sending = false
+  /** Sends feedback on the session's latest run (the office's default when `run_id` is left out). */
+  async function send(text: string) {
+    if (sending || !text.trim()) return
+    sending = true
+    try {
+      putFeedback(await office.client.feedback.create({ session_id: id, text: text.trim() }))
+      if (input) input.value = ""
+      input?.blur()
+      toast.show({ variant: "success", message: "Feedback queued" })
+    } catch (e) {
+      toast.show({ variant: "error", message: errorMessage(e) })
+    } finally {
+      sending = false
+    }
+  }
 
   const move = (by: number) => setCursor((c) => Math.max(0, Math.min(followUps().length - 1, c + by)))
   function mark() {
@@ -103,8 +163,15 @@ export function Debrief() {
       { key: "down", group: "Debrief", cmd: () => move(1) },
       { key: "space", group: "Debrief", cmd: mark },
       { key: "c", group: "Debrief", cmd: () => void confirm() },
+      { key: "t", group: "Debrief", cmd: pickTurn },
+      { key: "f", group: "Debrief", cmd: () => write("") },
       { key: "escape", group: "Debrief", cmd: () => route.navigate({ type: "session", sessionID: id }) },
     ],
+  }))
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    enabled: () => !!input && renderer.currentFocusedEditor === input,
+    bindings: [{ key: "escape", group: "Debrief", cmd: () => input?.blur() }],
   }))
 
   // The office answers 404 until the session is debriefing, then a pending debrief until it is
@@ -158,6 +225,32 @@ export function Debrief() {
           </scrollbox>
         )}
       </Show>
+      <Show when={sent().length}>
+        <box flexShrink={0}>
+          <text fg={theme.text}>
+            <span style={{ bold: true }}>Feedback</span>
+          </text>
+          <For each={sent()}>
+            {(f) => (
+              <text fg={f.status === "learning_failed" ? theme.error : theme.textMuted}>
+                {f.status.replace("_", " ")} · {f.text}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+      <box flexDirection="row" flexShrink={0}>
+        <text fg={theme.textMuted}>{"> "}</text>
+        <input
+          flexGrow={1}
+          ref={(r) => (input = r)}
+          placeholder="Feedback for the profile: t about a turn, f on the whole run"
+          placeholderColor={theme.textMuted}
+          focusedBackgroundColor={theme.backgroundPanel}
+          cursorColor={theme.primary}
+          onSubmit={() => void send(input?.value ?? "")}
+        />
+      </box>
       <Toast />
     </box>
   )
