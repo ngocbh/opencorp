@@ -47,17 +47,18 @@ def profile_tools(store: Store, profile: GitProfileStore, session: Session) -> d
 def propose(store: Store, session: Session, profile: GitProfileStore, base_version: str, base: str,
             text: str) -> ProfileProposal:
     """Store a proposal of ``text`` over ``base``; the session's earlier open proposals are discarded."""
-    for older in store.list_profile_proposals(profile.person_id, status="open"):
-        if older.session_id == session.id:
-            try:
-                store.set_profile_proposal_status(older.id, "discarded", commit=None)
-            except InvalidTransition:
-                pass  # applied meanwhile
     diff = "".join(difflib.unified_diff(base.splitlines(keepends=True), text.splitlines(keepends=True),
                                         f"a/{profile.path}", f"b/{profile.path}"))
-    return store.add_profile_proposal(ProfileProposal(
-        id=new_id(), session_id=session.id, person=profile.person_id, base_version=base_version, text=text,
-        diff=diff, status="open", created_at=now()))
+    with profile.git.lock:  # waits for an apply in progress, which then isn't discarded under it
+        for older in store.list_profile_proposals(profile.person_id, status="open"):
+            if older.session_id == session.id:
+                try:
+                    store.set_profile_proposal_status(older.id, "discarded", commit=None)
+                except InvalidTransition:
+                    pass  # applied meanwhile
+        return store.add_profile_proposal(ProfileProposal(
+            id=new_id(), session_id=session.id, person=profile.person_id, base_version=base_version, text=text,
+            diff=diff, status="open", created_at=now()))
 
 
 def apply_proposal(store: Store, git: CompanyGit, proposal_id: str, *, owner: str, max_chars: int) -> Profile:
@@ -67,22 +68,25 @@ def apply_proposal(store: Store, git: CompanyGit, proposal_id: str, *, owner: st
     open, and ``MarkdownVersionMismatch`` when the profile has moved on (the proposal is then
     ``stale``); the profile store's own errors pass through. Emits ``profile.updated``.
     """
-    proposal = store.get_profile_proposal(proposal_id)
-    if proposal is None:
-        raise LookupError(f"no profile proposal {proposal_id}")
-    if proposal.status != "open":
-        raise ProposalNotOpen(f"profile proposal {proposal_id} is {proposal.status}")
-    profile = GitProfileStore(git, proposal.person)
-    commit_id = f"proposal-{proposal.id}"
-    try:
-        version = profile.write(proposal.text, base_version=proposal.base_version,
-                                provenance={"source": f"{owner} via profile manager", "commit_id": commit_id})
-    except MarkdownVersionMismatch:
-        store.set_profile_proposal_status(proposal.id, "stale", commit=None)
-        raise
-    # A proposal of the text as it was commits nothing; its commit is then the current one.
-    commit = git.find_commit(profile.path, f"Commit-Id: {commit_id}") or git.head()
-    store.set_profile_proposal_status(proposal.id, "applied", commit=commit)
+    # The repo lock, held from the check to the status change, keeps a newer propose_edit
+    # (see propose) from discarding the proposal after it is committed.
+    with git.lock:
+        proposal = store.get_profile_proposal(proposal_id)
+        if proposal is None:
+            raise LookupError(f"no profile proposal {proposal_id}")
+        if proposal.status != "open":
+            raise ProposalNotOpen(f"profile proposal {proposal_id} is {proposal.status}")
+        profile = GitProfileStore(git, proposal.person)
+        commit_id = f"proposal-{proposal.id}"
+        try:
+            version = profile.write(proposal.text, base_version=proposal.base_version,
+                                    provenance={"source": f"{owner} via profile manager", "commit_id": commit_id})
+        except MarkdownVersionMismatch:
+            store.set_profile_proposal_status(proposal.id, "stale", commit=None)
+            raise
+        # A proposal of the text as it was commits nothing; its commit is then the current one.
+        commit = git.find_commit(profile.path, f"Commit-Id: {commit_id}") or git.head()
+        store.set_profile_proposal_status(proposal.id, "applied", commit=commit)
     applied = Profile(person=proposal.person, text=proposal.text, version=version,
                       over_budget=len(proposal.text) > max_chars)
     store.emit("profile.updated", proposal.person, applied)
