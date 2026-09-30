@@ -117,3 +117,68 @@ def test_gated_tool_granted_directly_is_a_warning(make_company):
     root = make_company(**files)
     assert codes(root) == set()
     assert "asset.gated_tool_granted" in codes(root, "warning")
+
+
+def test_missing_flow(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", main="../../shared/flows/nope.yaml")})
+    assert "person.flow_missing" in codes(root)
+
+
+def test_invalid_flow_carries_composer_message(make_company):
+    root = make_company(**{"shared/flows/chat.yaml": "id: chat\nname: chat\noutputs: 1\n"})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert "output" in issue.message
+
+
+def test_flow_outside_repo(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", main="../../../etc/passwd")})
+    assert "person.flow_outside_repo" in codes(root)
+
+
+CHILD = "id: echo\nname: echo\ninput:\n  text: str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
+
+
+def parent_flow(ref):
+    return ("id: chat\nname: chat\nuses:\n  echo: " + ref + "\nnodes:\n  ask:\n    kind: human_input\n"
+            "    prompt: \"you> \"\n    output: str\n  reply:\n    kind: call\n    call: echo\n"
+            "    input:\n      text: ${ask.output}\noutput: ${reply.output}\n")
+
+
+def test_child_flow_inside_repo_is_fine(make_company):
+    root = make_company(**{"shared/flows/chat.yaml": parent_flow("echo"), "shared/flows/echo.yaml": CHILD})
+    assert codes(root) == set()
+
+
+def test_child_flow_outside_repo(make_company, tmp_path):
+    (tmp_path / "echo.yaml").write_text(CHILD)  # tmp_path/company is the repo
+    root = make_company(**{"shared/flows/chat.yaml": parent_flow("../../../echo")})
+    assert "person.flow_outside_repo" in codes(root)
+
+
+def test_repo_reached_through_a_symlink(company, tmp_path):
+    (tmp_path / "link").symlink_to(company)
+    assert lint(load_repo(tmp_path / "link")) == []
+
+
+def test_sop_flows_are_checked(make_company):
+    sops = [{"flow": "../../shared/flows/nope.yaml"}]
+    assert "person.flow_missing" in codes(make_company(**{"people/minh/person.yaml": person("minh", sops=sops)}))
+
+
+def test_routine_flows_are_checked(make_company):
+    routines = [{"name": "daily", "flow": "../../shared/flows/nope.yaml"}]
+    root = make_company(**{"people/minh/person.yaml": person("minh", routines=routines)})
+    assert "person.flow_missing" in codes(root)
+
+
+def test_agent_needs_a_main_flow(make_company):
+    minh = person("minh")
+    del minh["main"]
+    assert ("person.no_main", "people/minh/person.yaml") in issues(make_company(**{"people/minh/person.yaml": minh}))
+
+
+def test_system_paths_is_refused(make_company):
+    flow = parent_flow("echo").replace("uses:", "system:\n  paths: [lib]\nuses:", 1)
+    root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert "system.paths" in issue.message

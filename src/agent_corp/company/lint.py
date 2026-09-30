@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 
+from agent_corp.company.flows import FlowOutsideRepo, load_confined
 from agent_corp.company.issues import RepoIssue
 from agent_corp.company.loader import CompanyRepo
 from agent_corp.company.naming import TOOL_NAME, asset_tool_name
@@ -130,5 +131,26 @@ def _check_assets(repo: CompanyRepo) -> Iterator[RepoIssue]:
                                     "warning")
 
 
+def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
+    """Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles."""
+    for pid, person in sorted(repo.people.items()):
+        if person.kind == "agent" and not person.main:
+            yield RepoIssue(_person_path(pid), "person.no_main", "agents need a main flow")
+        base = repo.root / "people" / pid
+        refs = (([person.main] if person.main else []) + [sop.flow for sop in person.sops]
+                + [routine.flow for routine in person.routines])
+        for ref in refs:
+            path = (base / ref).resolve()
+            if path.is_relative_to(repo.root) and not path.is_file():
+                yield RepoIssue(_person_path(pid), "person.flow_missing", f"{ref} does not exist")
+                continue
+            try:
+                load_confined(repo.root, path)
+            except FlowOutsideRepo as exc:
+                yield RepoIssue(_person_path(pid), "person.flow_outside_repo", f"{ref}: {exc}")
+            except Exception as exc:  # LoadError, or OSError/ValueError from a child file
+                yield RepoIssue(_person_path(pid), "person.flow_invalid", f"{ref}: {exc}")
+
+
 CHECKS = [_check_id_case, _check_handles, _check_managers, _check_ceo, _check_groups,
-          _check_person_groups, _check_assets]
+          _check_person_groups, _check_assets, _check_flows]
