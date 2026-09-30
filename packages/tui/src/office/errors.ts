@@ -22,6 +22,18 @@ export class OfficeUnavailable extends OfficeError {
   }
 }
 
+/** The office didn't answer within the request's time limit. */
+export class OfficeTimeout extends OfficeError {
+  constructor(
+    readonly method: string,
+    readonly path: string,
+    readonly timeoutMs: number,
+  ) {
+    super(0, "timeout", `${method} ${path}: no answer from the office within ${timeoutMs / 1000} s`)
+    this.name = "OfficeTimeout"
+  }
+}
+
 /** A profile write lost a race: the profile is at `current`, not `expected`. */
 export class VersionConflictError extends OfficeError {
   constructor(

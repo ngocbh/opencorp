@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { OFFICE_501_ROUTES, createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
-import { OfficeError, VersionConflictError, isNotImplemented } from "../../src/office/errors"
+import { OfficeError, OfficeTimeout, VersionConflictError, isNotImplemented } from "../../src/office/errors"
 import { request } from "../../src/office/http"
 
 let office: FakeOffice
@@ -102,4 +102,14 @@ test("unknown paths and wrong methods", async () => {
   expect((await failure(request(office.socket, "PUT", "/people", {}))).status).toBe(405)
   expect((await failure(client().sessions.get("NOPE"))).code).toBe("not_found")
   expect((await failure(request(office.socket, "POST", "/sessions", { person: 1 }))).code).toBe("invalid_body")
+})
+
+test("reads give up after timeoutMs with an OfficeTimeout", async () => {
+  office = createFakeOffice()
+  const release = office.hold("GET /sessions/:id/messages")
+  const c = createOfficeClient({ socket: office.socket, timeoutMs: 50 })
+  const err = await failure(c.sessions.messages(office.state.sessions[0].id))
+  release()
+  expect(err).toBeInstanceOf(OfficeTimeout)
+  expect(err.message).toContain("/messages")
 })

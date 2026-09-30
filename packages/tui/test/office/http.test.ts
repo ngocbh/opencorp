@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test"
 import { serveUnix } from "../../script/stub"
-import { OfficeError, OfficeUnavailable, VersionConflictError, isNotImplemented } from "../../src/office/errors"
+import {
+  OfficeError,
+  OfficeTimeout,
+  OfficeUnavailable,
+  VersionConflictError,
+  isNotImplemented,
+} from "../../src/office/errors"
 import { request } from "../../src/office/http"
 
 const stops: (() => void)[] = []
@@ -68,4 +74,48 @@ test("a missing socket is OfficeUnavailable", async () => {
   const err = await failure(request("/tmp/act-missing/o.sock", "GET", "/people"))
   expect(err).toBeInstanceOf(OfficeUnavailable)
   expect([err.status, err.code]).toEqual([0, "office_unavailable"])
+})
+
+test("a body that breaks off mid-read is a bad_response", async () => {
+  const socket = serve(
+    () =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('{"id":'))
+            setTimeout(() => c.error(new Error("gone")), 20) // after the headers are out
+          },
+        }),
+      ),
+  )
+  const err = await failure(request(socket, "GET", "/people"))
+  expect(err).toBeInstanceOf(OfficeError)
+  expect(err.code).toBe("bad_response")
+})
+
+test("a request with no answer inside timeoutMs is an OfficeTimeout", async () => {
+  const socket = serve(() => new Promise<Response>(() => {}))
+  const started = Date.now()
+  const err = await failure(request(socket, "GET", "/people", undefined, { timeoutMs: 50 }))
+  expect(err).toBeInstanceOf(OfficeTimeout)
+  expect([err.status, err.code]).toEqual([0, "timeout"])
+  expect(Date.now() - started).toBeLessThan(1000)
+})
+
+test("a body that stalls past timeoutMs is an OfficeTimeout", async () => {
+  const socket = serve(
+    () => new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode("[")) })),
+  )
+  const err = await failure(request(socket, "GET", "/people", undefined, { timeoutMs: 50 }))
+  expect(err).toBeInstanceOf(OfficeTimeout)
+})
+
+test("the caller's abort is passed through, not turned into a timeout", async () => {
+  const socket = serve(() => new Promise<Response>(() => {}))
+  const ctl = new AbortController()
+  const p = failure(request(socket, "GET", "/people", undefined, { signal: ctl.signal, timeoutMs: 5000 }))
+  ctl.abort()
+  const err = await p
+  expect(err).not.toBeInstanceOf(OfficeError)
+  expect(err.name).toBe("AbortError")
 })

@@ -1,4 +1,4 @@
-import { OfficeError, OfficeUnavailable, VersionConflictError } from "./errors"
+import { OfficeError, OfficeTimeout, OfficeUnavailable, VersionConflictError } from "./errors"
 
 // Bun sends the request over the socket; the host only fills the Host header.
 export const BASE = "http://localhost"
@@ -8,33 +8,52 @@ export type Method = "GET" | "POST" | "PUT"
 /** Encodes one path segment (an id or a folder path). */
 export const seg = encodeURIComponent
 
+export type RequestOptions = {
+  /** Aborts the request; the abort error is rethrown as is. */
+  signal?: AbortSignal
+  /** Gives up after this long, headers and body included, with `OfficeTimeout`. */
+  timeoutMs?: number
+}
+
 /** Sends one JSON request to the office and returns the parsed body. Throws `OfficeError`. */
 export async function request<T>(
   socket: string,
   method: Method,
   path: string,
   body?: unknown,
-  signal?: AbortSignal,
+  opts: RequestOptions = {},
 ): Promise<T> {
+  const { signal, timeoutMs } = opts
+  const timeout = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
+  const both = signal && timeout ? AbortSignal.any([signal, timeout]) : (signal ?? timeout)
+  const failed = (e: unknown, otherwise: () => OfficeError) => {
+    if (signal?.aborted) return e
+    if (timeout?.aborted) return new OfficeTimeout(method, path, timeoutMs!)
+    return otherwise()
+  }
   let res: Response
   try {
     res = await fetch(BASE + path, {
       method,
       unix: socket,
-      signal,
+      signal: both,
       headers: body === undefined ? undefined : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch (e) {
-    if (signal?.aborted) throw e
-    throw new OfficeUnavailable(socket, e)
+    throw failed(e, () => new OfficeUnavailable(socket, e))
   }
-  const text = await res.text()
   let data: unknown
   try {
-    data = text ? JSON.parse(text) : undefined
-  } catch {
-    throw new OfficeError(res.status, "bad_response", `${method} ${path}: HTTP ${res.status}, body is not JSON`)
+    const text = await res.text()
+    try {
+      data = text ? JSON.parse(text) : undefined
+    } catch {
+      throw new OfficeError(res.status, "bad_response", `${method} ${path}: HTTP ${res.status}, body is not JSON`)
+    }
+  } catch (e) {
+    if (e instanceof OfficeError) throw e
+    throw failed(e, () => new OfficeError(res.status, "bad_response", `${method} ${path}: the body could not be read`))
   }
   if (res.ok) return data as T
   const d = (data ?? {}) as Record<string, unknown>

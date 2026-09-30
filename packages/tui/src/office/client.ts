@@ -28,11 +28,16 @@ import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"
 
 export type OfficeClient = ReturnType<typeof createOfficeClient>
 
+/** How long a read waits for the office before failing with `OfficeTimeout`. */
+export const READ_TIMEOUT_MS = 15_000
+
 /** A typed client for the office's HTTP API on `socket`. Every method throws `OfficeError` on failure. */
-export function createOfficeClient(opts: { socket: string }) {
-  const { socket } = opts
+export function createOfficeClient(opts: { socket: string; timeoutMs?: number }) {
+  const { socket, timeoutMs = READ_TIMEOUT_MS } = opts
   const call = <T>(method: Method, path: string, body?: unknown) => request<T>(socket, method, path, body)
-  const get = <T>(path: string) => call<T>("GET", path)
+  // A hung read would stall the bootstrap or a session load forever; writes aren't retried,
+  // so they wait for the office's answer.
+  const get = <T>(path: string) => request<T>(socket, "GET", path, undefined, { timeoutMs })
   const post = <T>(path: string, body?: unknown) => call<T>("POST", path, body)
   const s = (id: string) => `/sessions/${seg(id)}`
   const q = (id: string) => `/questions/${seg(id)}`
