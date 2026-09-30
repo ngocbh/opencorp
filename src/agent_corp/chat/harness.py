@@ -37,6 +37,8 @@ log = logging.getLogger(__name__)
 
 INTERRUPTED_CALL = "interrupted; outcome unknown"
 """What an office tool call in flight returns on Esc: it runs on, so its side effect may still happen."""
+LIVE = ("starting", "idle", "busy", "ending")
+"""Session statuses that have (or should have) a live run."""
 _CAP_TITLE = "Raise the cost cap"
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
@@ -103,6 +105,7 @@ class _Live:
     pending: list[str] = field(default_factory=list)
     ending: bool = False
     capped: bool = False
+    exits: int = 0
     outcome: dict[str, Any] | None = None
     timer: threading.Timer | None = None
     calls: set[_Call] = field(default_factory=set)
@@ -164,6 +167,7 @@ class Harness:
         self.hooks = Hooks()
         self.registry = WorkerRegistry(self.store)
         self.answers = Answers(self.store)
+        self.restorers: dict[str, Callable[[Session], RunSpec]] = {"main": self.main_spec}
         self._lock = threading.RLock()
         self._live: dict[str, _Live] = {}
         self._stopping = False
@@ -244,7 +248,30 @@ class Harness:
         self._spawn(live, "chat")
         return run_id
 
+    def restore(self) -> None:
+        """Resume every session that was live when the office stopped, under the same run id."""
+        for session in self.store.list_sessions(status=LIVE, limit=None):
+            if session.harness != "composer" or not session.run_ids or session.id in self._live:
+                continue
+            try:
+                spec = self.restorers[session.kind](session)
+                repo = load_repo(self.git.pin(session.repo_commit))
+            except Exception:
+                log.exception("can't resume session %s", session.id)
+                self.store.update_session(session.id, status="failed")
+                continue
+            live = _Live(session.id, session.person, session.run_ids[-1], spec, _defaults(repo),
+                         Transcript(self.store, session.id, self.office.bus.publish_live))
+            with self._lock:
+                self._live[session.id] = live
+            self._spawn(live, "resume")
+
     def _spawn(self, live: _Live, kind: str) -> None:
+        if kind == "resume":
+            # The agent node that asked re-runs and asks afresh.
+            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                if q.node_id is None:
+                    self.store.set_question_status(q.id, "stale")
         session = self.store.get_session(live.session_id)
         live.provider = provider = self.provider()
         on_question = self._on_question(live)
@@ -384,7 +411,7 @@ class Harness:
         return session
 
     def close_all(self) -> None:
-        """Stop every worker, leaving their sessions' status as it is, and stop the dispatcher.
+        """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
 
         Returns once no worker request is still running (or after 10 seconds), so the
         caller can close the store.
@@ -409,7 +436,16 @@ class Harness:
     # --- turns ---------------------------------------------------------------------
 
     def _on_question(self, live: _Live) -> OnQuestion:
-        return self.answers.ask
+        def on_question(question: Question, *, work_item: WorkItem | None = None) -> Question:
+            chat = live.spec.chat
+            if chat is not None and chat.is_turn(question.node_id):
+                # A turn re-shown after a restart reuses its stored question: no question.created.
+                stored = self.store.get_question_by_node(question.run_id, question.node_id)
+                if stored is not None and stored.status == "open":
+                    self._post(self._turn_opened, live, stored.id)
+            return self.answers.ask(question, work_item=work_item)
+
+        return on_question
 
     def _stored(self, event: Event) -> None:
         # A store listener must not block: hand question changes to the dispatcher.
@@ -548,9 +584,14 @@ class Harness:
             outcome, live.outcome = live.outcome, None
             for call in list(live.calls):
                 call.cancel()
-        if outcome is None:  # the worker died
-            self._finish(live, "failed", None)
+        if outcome is None:
+            if live.exits >= 1:  # a worker that died twice in a row won't do better a third time
+                self._finish(live, "failed", None)
+            else:
+                live.exits += 1
+                self._spawn(live, "resume")
             return
+        live.exits = 0
         failure = outcome.get("failure") or {}
         if outcome["type"] == "result" and (outcome["status"] == "succeeded"
                                             or failure.get("cause_type") == "LoopMaxExceeded"):

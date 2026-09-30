@@ -236,6 +236,19 @@ def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace)
     leave.set()
 
 
+def test_ask_manager_opens_a_work_item_and_waits_for_the_answer(harness, fake_llm, workspace):
+    fake_llm.script({"tool_calls": [{"name": "ask_manager", "arguments": {"question": "Budget?"}}]},
+                    {"content": "Thanks."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    q = wait_for(lambda: harness.store.list_questions(session_id=sid, status="open", source="ask_manager"),
+                 what="the manager question")[0]
+    assert harness.store.get_work_item(q.work_item_id).assignee == "ngocbh"
+    harness.answer(q.id, "Yes", "text")
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Thanks."], what="the reply")
+    assert harness.store.get_work_item(q.work_item_id).status == "done"
+
+
 def settle(harness):
     """Wait until the harness has handled everything posted so far."""
     import threading

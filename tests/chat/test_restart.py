@@ -1,0 +1,87 @@
+import os
+import signal
+
+from tests.chat.conftest import status, texts, wait_for
+
+
+def start(harness, workspace):
+    session = harness.start_session("minh", str(workspace))
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    return session.id
+
+
+def test_a_killed_worker_resumes_the_same_run(harness, fake_llm, workspace):
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "a")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="turn one")
+    turn = harness._live[sid].turn_q
+    old = harness._live[sid].worker
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: harness._live[sid].worker not in (None, old) and harness._live[sid].turn_q, what="the resume")
+    assert harness._live[sid].turn_q == turn  # the same question, re-shown
+    harness.prompt(sid, "b")
+    wait_for(lambda: texts(harness, sid) == ["one", "two"], what="turn two")
+    assert len(harness.store.get_session(sid).run_ids) == 1
+    assert "a" in [m.parts[0].text for m in harness.store.list_messages(sid) if m.role == "user"]
+
+
+def test_a_second_kill_in_a_row_fails_the_session(harness, fake_llm, workspace):
+    sid = start(harness, workspace)
+    first = harness._live[sid].worker
+    os.killpg(first.pgid, signal.SIGKILL)
+    second = wait_for(lambda: (w := harness._live[sid].worker) not in (None, first) and w, what="the resume")
+    os.killpg(second.pgid, signal.SIGKILL)
+    wait_for(lambda: status(harness, sid) == "failed", what="the failure")
+    work_item = harness.store.get_session(sid).work_item_id
+    assert harness.store.get_work_item(work_item).status == "in_progress"  # left open for the manager
+
+
+def test_a_new_office_resumes_live_sessions(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    first = make_harness()
+    sid = start(first, workspace)
+    first.prompt(sid, "a")
+    wait_for(lambda: texts(first, sid) == ["one"] and status(first, sid) == "idle", what="turn one")
+    first.close_all()
+    assert status(first, sid) == "idle"  # left for the next office
+
+    second = make_harness()
+    second.restore()
+    wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the restored turn")
+    second.prompt(sid, "b")
+    wait_for(lambda: texts(second, sid) == ["one", "two"], what="turn two")
+    assert len(second.store.get_session(sid).run_ids) == 1
+    assert "one" in str(fake_llm.requests()[1]["messages"])  # the resumed run kept the conversation
+
+
+def test_max_turns_counts_turns_from_before_a_worker_restart(make_harness, fake_llm, workspace):
+    harness = make_harness(defaults={"max_turns": 2})
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "a")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="turn one")
+    old = harness._live[sid].worker
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: harness._live[sid].worker not in (None, old) and harness._live[sid].turn_q, what="the resume")
+    harness.prompt(sid, "b")
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+
+
+def test_an_office_that_dies_mid_turn_is_reaped_and_its_run_resumed(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "never seen", "hold": True}, {"content": "Resumed."})
+    first = make_harness()
+    sid = start(first, workspace)
+    first.prompt(sid, "a")
+    fake_llm.wait_for_requests(1)
+    old = first._live[sid].worker
+    run_id = first.store.get_session(sid).run_ids[0]
+    first._stopping = True  # the office died: nothing of it acts on its worker again
+
+    second = make_harness()
+    second.restore()  # spawn reaps the dead office's worker, then resumes the run
+    assert old.wait(10) is not None
+    fake_llm.release()
+    wait_for(lambda: texts(second, sid)[-1:] == ["Resumed."] and status(second, sid) == "idle", what="the resumed turn")
+    assert second.store.get_session(sid).run_ids == [run_id]
+    assert "a" in str(fake_llm.requests()[-1]["messages"])
