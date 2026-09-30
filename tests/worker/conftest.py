@@ -4,12 +4,16 @@ import socket
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from agent_corp.testing.fake_llm import FakeLLM
+from agent_corp.store import Store
+from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from agent_corp.worker.channel import Channel
+from agent_corp.worker.job import Job
 from agent_corp.worker.rpc import REQUEST_REPLIES, BaseHandlers, Rpc, answer_request
+from agent_corp.worker.spawn import WorkerRegistry
 from tests.company.conftest import CHAT
 
 
@@ -93,3 +97,77 @@ def office_end(handlers: BaseHandlers, *, threaded: bool = False):
     finally:
         office.close()
         worker.close()
+
+
+@pytest.fixture
+def store(tmp_path):
+    with Store(tmp_path / "office" / "store.sqlite") as s:
+        yield s
+
+
+@pytest.fixture
+def session_dir(tmp_path):
+    return tmp_path / "sessions" / "s1"
+
+
+@pytest.fixture
+def registry(store):
+    reg = WorkerRegistry(store)
+    yield reg
+    reg.close_all(timeout=5)
+
+
+@pytest.fixture
+def make_job(tmp_path, pin, fake_llm):
+    def make(flow: str = "flows/echo.yaml", **fields: Any) -> Job:
+        run_id = fields.pop("run_id", "r1")
+        values = {"kind": "chat", "session_id": "s1", "run_id": run_id, "person_id": "minh",
+                  "pin": str(pin), "flow": flow, "log": str(tmp_path / "runs" / f"{run_id}.jsonl"),
+                  "inputs": {"message": "hi"}, "llm_config": LLM_CONFIG, "env": fake_llm.env()}
+        return Job(**(values | fields))
+    return make
+
+
+class Recorder(BaseHandlers):
+    """Handlers that record every frame and answer questions from a list."""
+
+    def __init__(self, answers: list[Any] | None = None, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.frames: list[dict[str, Any]] = []
+        self.asked: list[dict[str, Any]] = []
+        self.answers = list(answers or [])
+        self.left: list[tuple[str, list[str]]] = []
+        self.outcome: dict[str, Any] | None = None
+        self.returncode: int | None = None
+
+    def event(self, worker, frame):
+        self.frames.append(frame)
+
+    def stream(self, worker, frame):
+        self.frames.append(frame)
+
+    def steer_left(self, worker, node_id, texts):
+        self.left.append((node_id, texts))
+
+    def result(self, worker, frame):
+        self.outcome = frame
+
+    def error(self, worker, frame):
+        self.outcome = frame
+
+    def exited(self, worker, returncode):
+        self.returncode = returncode
+
+    def ask_user(self, worker, request):
+        self.asked.append(request)
+        return self.answers.pop(0)
+
+    def names(self) -> list[str]:
+        return [f.get("name", f["type"]) for f in self.frames]
+
+
+def run(registry: WorkerRegistry, job: Job, handlers: Recorder, session_dir: Path, timeout: float = 30) -> Recorder:
+    """Spawn ``job`` and wait for its worker to exit."""
+    worker = registry.spawn(job, session_dir, handlers)
+    assert worker.wait(timeout) is not None, "the worker did not exit"
+    return handlers

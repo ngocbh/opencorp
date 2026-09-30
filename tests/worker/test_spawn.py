@@ -1,0 +1,125 @@
+import os
+import signal
+from pathlib import Path
+
+import psutil
+import pytest
+
+from agent_corp.worker.main import EXIT_ORPHANED, job_tools
+from agent_corp.worker.spawn import WorkerExists
+
+from tests.worker.conftest import Recorder, office_end, run
+
+
+def test_a_chat_job_streams_events_and_a_result(fake_llm, registry, store, make_job, session_dir):
+    fake_llm.script({"content": "hello there"})
+    rec = run(registry, make_job(), Recorder(), session_dir)
+    assert rec.returncode == 0
+    assert rec.outcome == {"type": "result", "status": "succeeded", "run_id": "r1", "output": "hello there",
+                           "failure": None, "backward": None}
+    names = rec.names()
+    assert names[0] == "RunStarted" and names[-1] == "RunSucceeded"
+    reply = [i for i, f in enumerate(rec.frames) if f.get("data", {}).get("node_id") == "reply"
+             or f.get("node_id") == "reply"]
+    kinds = [rec.frames[i].get("name", "stream") for i in reply]
+    assert kinds[0] == "NodeStarted" and kinds[-1] == "NodeSucceeded" and "stream" in kinds
+    assert "".join(f["chunk"] for f in rec.frames if f["type"] == "stream") == "hello there"
+    assert registry.get("s1") is None and store.list_workers() == []
+    assert (session_dir / "worker.log").exists()
+
+
+def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, make_job, session_dir):
+    fake_llm.script({"content": "slow", "hold": 20})
+    rec = Recorder()
+    worker = registry.spawn(make_job(), session_dir, rec)
+    fake_llm.wait_for_requests(1, timeout=30)
+    [record] = store.list_workers()
+    proc = psutil.Process(worker.pid)
+    assert (record.session_id, record.pid, record.pgid) == ("s1", worker.pid, worker.pid)
+    assert abs(record.start_time - proc.create_time()) < 0.01
+    assert os.getpgid(worker.pid) == worker.pid
+    assert Path(proc.cwd()).resolve() == session_dir.resolve()
+    assert proc.cmdline()[1:4] == ["-I", "-m", "agent_corp.worker.main"]
+    assert "VLLM_BASE_URL" not in proc.environ()  # it arrives in the start frame
+    fake_llm.release()
+    assert worker.wait(30) == 0 and rec.outcome["output"] == "slow"
+
+
+def test_a_model_ask_user_call_reaches_the_office(fake_llm, registry, make_job, session_dir):
+    fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which city?",
+                                                                      "options": ["Paris", "Rome"]}}]},
+                    {"content": "Booked Paris."})
+    rec = run(registry, make_job("flows/ask.yaml"), Recorder(answers=["Paris"]), session_dir)
+    [asked] = rec.asked
+    assert (asked["question"], asked["node_id"], asked["options"]) == ("Which city?", None, ["Paris", "Rome"])
+    assert rec.outcome["output"] == "Booked Paris."
+    assert "Paris" in str(fake_llm.requests()[-1]["messages"])
+
+
+def test_a_human_input_node_asks_through_the_same_stub(fake_llm, registry, make_job, session_dir):
+    fake_llm.script({"content": "hello"})
+    rec = run(registry, make_job("flows/chat.yaml", inputs={}), Recorder(answers=["hi there"]), session_dir)
+    [asked] = rec.asked
+    assert (asked["question"], asked["node_id"]) == ("you> ", "ask")
+    assert rec.outcome["output"] == "hello" and "hi there" in str(fake_llm.requests()[-1]["messages"])
+
+
+def test_one_live_worker_per_session(fake_llm, registry, make_job, session_dir, tmp_path):
+    fake_llm.script({"content": "one", "hold": 20}, {"content": "two"}, {"content": "three"})
+    first = registry.spawn(make_job(), session_dir, Recorder())
+    with pytest.raises(WorkerExists):
+        registry.spawn(make_job(run_id="r2"), session_dir, Recorder())
+    other = registry.spawn(make_job(session_id="s2", run_id="r3"), tmp_path / "sessions" / "s2", Recorder())
+    assert other.wait(30) == 0
+    fake_llm.release()
+    assert first.wait(30) == 0
+    assert run(registry, make_job(run_id="r4"), Recorder(), session_dir).returncode == 0
+
+
+def test_a_job_that_raises_sends_an_error_frame(fake_llm, registry, make_job, session_dir):
+    rec = run(registry, make_job("flows/missing.yaml"), Recorder(), session_dir)
+    assert rec.returncode == 1
+    assert rec.outcome["type"] == "error" and rec.outcome["message"].startswith("FileNotFoundError")
+    assert "Traceback" in rec.outcome["traceback"]
+    assert fake_llm.requests() == []
+
+
+def test_a_failed_run_is_a_result(fake_llm, registry, make_job, session_dir):
+    fake_llm.script({"error": 500})
+    rec = run(registry, make_job(), Recorder(), session_dir)
+    assert rec.returncode == 0
+    assert rec.outcome["status"] == "failed" and rec.outcome["failure"]["node_id"] == "reply"
+
+
+def test_a_failing_handler_does_not_stop_the_reader(fake_llm, registry, make_job, session_dir):
+    class Broken(Recorder):
+        def event(self, worker, frame):
+            raise RuntimeError("handler bug")
+
+    fake_llm.script({"content": "fine"})
+    rec = run(registry, make_job(), Broken(), session_dir)
+    assert rec.returncode == 0 and rec.outcome["output"] == "fine"
+
+
+def test_a_worker_exits_when_the_office_closes_its_channel(fake_llm, registry, make_job, session_dir):
+    fake_llm.script({"content": "never", "hold": 20})
+    registry.spawn(make_job(), session_dir, Recorder())
+    fake_llm.wait_for_requests(1, timeout=30)
+    assert registry.close("s1", timeout=10) == EXIT_ORPHANED
+
+
+def test_close_kills_a_worker_that_does_not_exit(fake_llm, registry, make_job, session_dir):
+    fake_llm.script({"content": "never", "hold": 20})
+    worker = registry.spawn(make_job(), session_dir, Recorder())
+    fake_llm.wait_for_requests(1, timeout=30)
+    os.kill(worker.pid, signal.SIGSTOP)  # it can't see the channel close
+    assert registry.close("s1", timeout=1) == -signal.SIGKILL
+
+
+@pytest.mark.parametrize("kind", ["chat", "resume", "backward"])
+def test_every_job_kind_gets_the_ask_user_stub(kind, make_job):
+    job = make_job(kind=kind, groups={"toolbox": [{"name": "shout"}]})
+    with office_end(Recorder()) as rpc:
+        tools = job_tools(job, rpc)
+    assert set(tools) == {"toolbox", "ask_user"}
+    assert [t.name for t in tools["toolbox"]] == ["shout"] and callable(tools["ask_user"])
