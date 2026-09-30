@@ -21,7 +21,10 @@ const { values } = parseArgs({
 
 const REPLY = "Looked at it. The flaky test waits on a timer; I'd swap it for a fake clock and rerun."
 
-/** Answers every prompt with REPLY, streamed a word at a time, then sets the session idle. */
+/**
+ * Answers every prompt with REPLY, streamed a word at a time, then sets the session idle; a
+ * profile manager then proposes a change.
+ */
 function scriptReplies(office: FakeOffice) {
   office.onPrompt(async (sessionId) => {
     const messageId = office.nextId()
@@ -46,6 +49,10 @@ function scriptReplies(office: FakeOffice) {
       })
     }
     office.setStatus(sessionId, "idle")
+    // A profile manager also proposes a change, as its propose tool would.
+    const session = office.state.sessions.find((s) => s.id === sessionId)
+    if (session?.kind === "profile_manager")
+      office.propose(sessionId, office.state.profiles[session.person].text + "\nRuns the tests before every push.\n")
   })
 }
 

@@ -541,8 +541,9 @@ export function createFakeOffice(
           `person ${params.person}`,
         )
         const s = newSession({ person: params.person, cwd: "/", kind: "profile_manager" })
-        userMessage(s.id, body.text)
-        return Response.json(s)
+        // The first message is the chat's first turn, as a prompt would be.
+        turn(s.id, body)
+        return Response.json(session(s.id))
       },
     ],
     [

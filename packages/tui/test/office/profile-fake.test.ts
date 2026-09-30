@@ -42,3 +42,11 @@ test("apply writes the profile; a stale base is a 409 and marks the proposal sta
   expect(err).toBeInstanceOf(VersionConflictError)
   expect(office.state.proposals[late.id].status).toBe("stale")
 })
+
+test("the manager route starts the first turn: the session is busy and prompt hooks run", async () => {
+  office = createFakeOffice()
+  const prompts: string[] = []
+  office.onPrompt((id, req) => prompts.push(`${id}:${req.text}`))
+  const s = await client().profiles.manager("minh", { text: "Mention tests" })
+  expect([s.kind, s.status, prompts]).toEqual(["profile_manager", "busy", [`${s.id}:Mention tests`]])
+})

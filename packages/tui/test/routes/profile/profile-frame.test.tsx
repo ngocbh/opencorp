@@ -222,3 +222,27 @@ test("a proposal made while the view is open appears; applying it after a hand e
     expect(office.state.profiles.minh.text).toBe("# Minh\n\nHand edit.\n")
   })
 })
+
+test("a reconnect re-reads the profile and the proposals (events sent while offline are lost)", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Tests first" })
+  await run(office, async (app) => {
+    // Direct edits send no events: only a re-read can find them.
+    const text = "# Minh\n\nChanged while offline.\n"
+    office.state.profiles.minh = { ...office.state.profiles.minh, text, version: "f".repeat(40) }
+    office.state.proposals.P1 = {
+      id: "P1",
+      session_id: manager.id,
+      person: "minh",
+      base_version: "f".repeat(40),
+      text: text + "More.\n",
+      diff: "@@ -1,3 +1,4 @@\n+More.\n",
+      status: "open",
+      commit: null,
+      created_at: new Date().toISOString(),
+    }
+    office.reset()
+    await app.until((f) => f.includes("Changed while offline.") && f.includes("+More.") && f.includes("fffffff"))
+  })
+})
