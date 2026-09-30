@@ -152,6 +152,13 @@ test("one side session per question: it records the discussion, refuses exit wor
   expect(await status(side.id)).toBe("ended")
 })
 
+test("a chat turn is not a card, so it has no side chat", async () => {
+  office = createFakeOffice()
+  const [turn] = await client().questions.list({ session: office.state.sessions[0].id, status: ["open"] })
+  const e = await failure(client().questions.side(turn.id, { text: "why?" }))
+  expect([e.status, e.code]).toEqual([422, "not_a_card"])
+})
+
 test("send back needs a discussion; neither send back nor stop is offered on human_input", async () => {
   office = createFakeOffice()
   const plain = office.addQuestion({ question: "Retry?" })

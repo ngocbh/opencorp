@@ -57,7 +57,7 @@ class Cards:
         """"Chat about this": send ``text`` to the question's side session, starting it if needed."""
         question = self._open(question_id)
         if self._is_turn(question):
-            raise HarnessError(422, "refused", "a chat turn is not a question card; reply in the chat")
+            raise HarnessError(422, "not_a_card", "a chat turn is not a question card; reply in the chat")
         refusal = self.refuse_exit(None, text)
         if refusal:
             raise HarnessError(422, "refused", refusal)

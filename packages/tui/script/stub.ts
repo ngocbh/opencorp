@@ -666,12 +666,14 @@ export function createFakeOffice(
         check(str(body?.text), "text must be a non-empty string")
         const q = question(params.id)
         if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+        if (isTurn(q)) throw fail(422, "not_a_card", "a chat turn is not a question card; reply in the chat")
         if (SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
         // One side session per question: later messages reach it too, and an ended one restarts.
         let side = state.sessions.find((x) => x.id === q.side_session_id)
         if (!side) {
           const cwd = session(q.session_id).cwd
-          side = newSession({ person: q.asker, cwd, kind: "side", question_id: q.id, seed: q.question })
+          // The office keeps the seed in the side session's run dir, not on the session.
+          side = newSession({ person: q.asker, cwd, kind: "side", question_id: q.id })
           updateQuestion({ ...q, side_session_id: side.id, updated_at: now() })
         } else if (!LIVE.includes(side.status)) {
           setStatus(side.id, "idle")

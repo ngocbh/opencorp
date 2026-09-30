@@ -104,7 +104,7 @@ async def test_chat_about_a_question_then_answer_it(cards, client, fake_llm, tmp
     assert (r.status_code, r.json()["error"]) == (409, "not_open")
     turn = await until(lambda: store.list_questions(session_id=sid, status="open", source="human_input"))
     r = await client.post(f"/questions/{turn[0].id}/side", json={"text": "why?"})  # a chat turn is no card
-    assert (r.status_code, r.json()["error"]) == (422, "refused")
+    assert (r.status_code, r.json()["error"]) == (422, "not_a_card")
 
 
 async def test_send_back_and_stop(cards, client, fake_llm, tmp_path):
