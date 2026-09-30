@@ -34,6 +34,8 @@ const ROOT_INTERFACE = "export interface AgentCorpProtocol {\n  [k: string]: unk
 export async function generate(): Promise<string> {
   const schema = JSON.parse(readFileSync(schemaUrl, "utf8"))
   for (const def of Object.values(schema.$defs)) markUntyped(def)
+  // A root description would become a JSDoc block left orphaned above the next export.
+  delete schema.description
   const out = await compile(schema, "AgentCorpProtocol", {
     bannerComment: "// Generated from schema/protocol.schema.json. Do not edit.",
     // Emit every $def, including ones no other def references.
