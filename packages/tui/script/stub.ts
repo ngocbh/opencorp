@@ -170,6 +170,8 @@ export function createFakeOffice(
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const streams = new Set<Stream>()
   const encoder = new TextEncoder()
+  // The run each debrief was written in; the protocol's Debrief doesn't carry it.
+  const debriefRuns = new Map<string, string>()
 
   const fail = (status: number, error: string, message: string) => new Fail(status, error, message)
   const need = <T>(value: T | undefined, what: string): T => {
@@ -303,10 +305,12 @@ export function createFakeOffice(
   /**
    * Stores a session's debrief, as the office's debrief flow would, and publishes it. A ready
    * debrief ends a debriefing session; a pending one leaves it debriefing (the flow may still run).
+   * `run` is the debrief's own run, which feedback may name once the debrief is ready.
    */
-  function addDebrief(sessionId: string, fields: Partial<Debrief> = {}) {
+  function addDebrief(sessionId: string, fields: Partial<Debrief> = {}, opts: { run?: string } = {}) {
     const type = state.debriefs[sessionId] ? "debrief.updated" : "debrief.created"
     const s = session(sessionId)
+    if (opts.run) debriefRuns.set(s.id, opts.run)
     const d: Debrief = { session_id: s.id, state: "ready", updated_at: now(), ...fields }
     state.debriefs[sessionId] = d
     publish(type, sessionId, d)
@@ -618,12 +622,18 @@ export function createFakeOffice(
       ({ body }) => {
         check(str(body?.session_id) && str(body?.text), "session_id and text are required")
         const s = session(body.session_id)
+        if (s.kind !== "main") throw fail(422, "not_learnable", `${s.id} is a ${s.kind} session`)
+        const runId: string | undefined = body.run_id ?? s.run_ids?.at(-1)
+        const runs = new Set(s.run_ids ?? [])
+        const debriefRun = debriefRuns.get(s.id)
+        if (debriefRun && state.debriefs[s.id]?.state === "ready") runs.add(debriefRun)
+        check(runId, `${s.id} has no runs`)
         // A run of another session would be learned into the wrong person's profile.
-        check(body.run_id == null || (s.run_ids ?? []).includes(body.run_id), `run ${body.run_id} is not in ${s.id}`)
+        check(runs.has(runId!), `run ${runId} is not in ${s.id}`)
         const f: Feedback = {
           id: nextId(),
           session_id: s.id,
-          run_id: body.run_id ?? s.run_ids?.at(-1) ?? "run-1",
+          run_id: runId!,
           author: human(),
           text: body.text,
           status: "queued",
@@ -652,13 +662,14 @@ export function createFakeOffice(
       "POST",
       "/debriefs/:session/confirm",
       ({ params, body }) => {
-        const d = need(state.debriefs[params.session], `debrief for ${params.session}`)
+        const s = session(params.session)
+        const d = state.debriefs[s.id]
+        if (d?.state !== "ready") throw fail(409, "not_ready", `the debrief for ${s.id} is not ready`)
         const ups = d.follow_ups ?? []
         check(
           Array.isArray(body?.indices) && body.indices.every((i: unknown) => Number.isInteger(i) && ups[i as number]),
           "indices must name follow-ups",
         )
-        const s = session(params.session)
         const picked = new Set<number>(body.indices)
         // A follow-up is confirmed once: confirming it again keeps its work item.
         const follow_ups = ups.map((f, i) => {
@@ -672,6 +683,7 @@ export function createFakeOffice(
             // The fake's only client is the local human, so they are the one confirming.
             requester: human(),
             assignee: s.person,
+            parent_id: s.work_item_id ?? null,
             created_at: at,
             updated_at: at,
           }

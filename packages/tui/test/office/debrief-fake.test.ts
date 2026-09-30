@@ -87,3 +87,39 @@ test("feedback names a run of its session, the latest by default; feedbackStatus
   const f = office.feedbackStatus(office.state.feedback[0].id, "applied")
   expect([f.status, office.state.feedback[0].status]).toEqual(["applied", "applied"])
 })
+
+test("confirm needs a ready debrief (409 not_ready); its work items hang under the session's work item", async () => {
+  office = createFakeOffice()
+  const s = office.state.sessions[0]
+  s.work_item_id = "wi-session"
+  const early = await failure(client().debriefs.confirm(s.id, { indices: [0] }))
+  expect(early).toMatchObject({ status: 409, code: "not_ready" })
+  office.addDebrief(s.id, { state: "pending" })
+  expect((await failure(client().debriefs.confirm(s.id, { indices: [0] }))).code).toBe("not_ready")
+  office.addDebrief(s.id, { state: "ready", follow_ups: [{ text: "Add a CI job" }] })
+  const d = await client().debriefs.confirm(s.id, { indices: [0] })
+  expect(office.state.workItems[d.follow_ups![0].work_item_id!].parent_id).toBe("wi-session")
+  expect((await failure(client().debriefs.confirm("nope", { indices: [0] }))).code).toBe("not_found")
+})
+
+test("feedback: only main sessions learn; a session needs a run; the ready debrief's run counts", async () => {
+  office = createFakeOffice()
+  const s = office.state.sessions[0]
+  Object.assign(s, { status: "ended", run_ids: [] })
+  expect((await failure(client().feedback.create({ session_id: s.id, text: "x" }))).code).toBe("invalid_body")
+  s.run_ids = ["run-a"]
+  office.addDebrief(s.id, { state: "pending" }, { run: "run-debrief" })
+  // A pending debrief's run hasn't finished well enough to learn from.
+  expect((await failure(client().feedback.create({ session_id: s.id, text: "x", run_id: "run-debrief" }))).code).toBe(
+    "invalid_body",
+  )
+  office.addDebrief(s.id, { state: "ready" }, { run: "run-debrief" })
+  expect((await client().feedback.create({ session_id: s.id, text: "x", run_id: "run-debrief" })).run_id).toBe(
+    "run-debrief",
+  )
+  Object.assign(s, { kind: "side" })
+  expect(await failure(client().feedback.create({ session_id: s.id, text: "x" }))).toMatchObject({
+    status: 422,
+    code: "not_learnable",
+  })
+})
