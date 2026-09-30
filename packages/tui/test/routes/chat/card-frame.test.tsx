@@ -108,3 +108,105 @@ test("a card whose question goes stale closes and says it expired", async () => 
     office.stop()
   }
 })
+
+test("a carried card shows the earlier discussion, can send it back, and can dismiss it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const earlier = office.addQuestion({
+    session_id: s.id,
+    question: "Which database?",
+    status: "stale",
+    discussion: [
+      { role: "user", text: "why Postgres?" },
+      { role: "assistant", text: "it scales past one node" },
+    ],
+  })
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    carried_from: earlier.id,
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    // The earlier question isn't open, so the card reads it from the office.
+    await app.until(
+      (f) =>
+        f.includes("From an earlier, expired question: Which database?") &&
+        f.includes("you: why Postgres?") &&
+        f.includes("@minh: it scales past one node") &&
+        f.includes("[Send discussion back]") &&
+        f.includes("[Dismiss earlier discussion]"),
+    )
+    // The rows wrap: up from the first option selects the last row.
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    await app.until((f) => !f.includes("From an earlier") && !f.includes("Dismiss earlier discussion"))
+    // With no discussion of its own left, there is nothing to send back.
+    const f = await app.until((f) => f.includes("Deploy now?") && f.includes("[Chat about this]"))
+    expect(f).not.toContain("Send discussion back")
+    expect(office.state.questions[q.id].carried_from ?? null).toBeNull()
+    expect(office.state.questions[q.id].status).toBe("open")
+    expect(office.requests.filter((r) => r.method === "POST").map((r) => r.path)).toEqual([
+      `/questions/${q.id}/carried/dismiss`,
+    ])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a carried card with no discussion of its own can still send the earlier one back", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const earlier = office.addQuestion({
+    session_id: s.id,
+    question: "Which database?",
+    status: "stale",
+    discussion: [{ role: "user", text: "why Postgres?" }],
+  })
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    carried_from: earlier.id,
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("you: why Postgres?") && f.includes("[Send discussion back]"))
+    app.input.pressArrow("up")
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.state.questions[q.id].answer_kind).toBe("sent_back")
+    expect(office.requests.filter((r) => r.method === "POST").map((r) => [r.path, r.body])).toEqual([
+      [`/questions/${q.id}/send-back`, { note: "" }],
+    ])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a 501 from carried/dismiss warns 'not available yet' and keeps the earlier discussion", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /questions/:id/carried/dismiss"] })
+  const s = office.state.sessions[0]
+  const earlier = office.addQuestion({
+    session_id: s.id,
+    question: "Which database?",
+    status: "stale",
+    discussion: [{ role: "user", text: "why Postgres?" }],
+  })
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], carried_from: earlier.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("[Dismiss earlier discussion]"))
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Dismissing a discussion is not available yet"))
+    expect(f).toContain("From an earlier, expired question: Which database?")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

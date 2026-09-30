@@ -115,3 +115,15 @@ test("stopping a busy chat's ask_user is Esc on that chat; other questions just 
   const again = await failure(client().questions.stop(asked.id))
   expect([again.status, again.code]).toEqual([409, "not_open"])
 })
+
+test("dismissing a carried discussion clears carried_from on an open question", async () => {
+  office = createFakeOffice()
+  const earlier = office.addQuestion({ status: "stale", discussion: [{ role: "user", text: "why?" }] })
+  const q = office.addQuestion({ carried_from: earlier.id })
+  expect((await client().questions.dismissCarried(q.id)).carried_from).toBeNull()
+  expect(office.state.questions[q.id].carried_from).toBeNull()
+  const closed = await failure(client().questions.dismissCarried(earlier.id))
+  expect([closed.status, closed.code]).toEqual([409, "not_open"])
+  const missing = await failure(client().questions.dismissCarried("nope"))
+  expect(missing.status).toBe(404)
+})

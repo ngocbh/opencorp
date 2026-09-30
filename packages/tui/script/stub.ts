@@ -642,6 +642,15 @@ export function createFakeOffice(
         return Response.json(close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" }))
       },
     ],
+    [
+      "POST",
+      "/questions/:id/carried/dismiss",
+      ({ params }) => {
+        const q = question(params.id)
+        if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+        return Response.json(updateQuestion({ ...q, carried_from: null, updated_at: now() }))
+      },
+    ],
     ["GET", "/profiles/:person", ({ params }) => Response.json(profile(params.person))],
     [
       "PUT",

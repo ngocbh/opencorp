@@ -19,8 +19,9 @@ const QUESTION_MODE = "question"
 
 /**
  * The open question card: a page per question to pick or type on, "Chat about this", and "Send
- * discussion back"; Esc then `y` stops the asker. It stays mounted, `hidden`, while its side chat
- * shows, so page answers survive the chat.
+ * discussion back"; Esc then `y` stops the asker. A question carried from an expired one shows
+ * that discussion, which can be dismissed. It stays mounted, `hidden`, while its side chat shows,
+ * so page answers survive the chat.
  */
 export function QuestionCard(props: { question: Question | undefined; hidden?: boolean; onChat: () => void }) {
   const office = useOffice()
@@ -53,6 +54,16 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
     return id ? (office.state.workItems[id] ?? fetched()) : undefined
   })
   const asker = createMemo(() => personLabel(office.state.people, question().asker))
+  // The expired question this one carries the discussion of. The store holds only open
+  // questions from the first load, so read it from the office when it isn't there.
+  const [earlierFetched] = createResource(
+    () => question().carried_from ?? undefined,
+    (id) => office.client.questions.get(id).catch(() => undefined),
+  )
+  const earlier = createMemo(() => {
+    const id = question().carried_from
+    return id ? (office.state.questions[id] ?? earlierFetched()) : undefined
+  })
   // A human_input is never interrupted, so its card has no stop.
   const stoppable = createMemo(() => question().source !== "human_input")
   const context = createMemo(() => {
@@ -67,9 +78,10 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   // The office's own actions come after the answer rows and never count as options.
   const actions = createMemo(() => [
     { label: "Chat about this", key: "ctrl+o", run: () => props.onChat() },
-    ...(stoppable() && question().discussion?.length
+    ...(stoppable() && (question().discussion?.length || question().carried_from)
       ? [{ label: "Send discussion back", key: "", run: () => sendBack() }]
       : []),
+    ...(question().carried_from ? [{ label: "Dismiss earlier discussion", key: "", run: () => dismiss() }] : []),
   ])
   const answerRows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
   const rows = createMemo(() => answerRows() + actions().length)
@@ -106,6 +118,20 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
         if (isNotImplemented(error))
           return toast.show({ message: "Sending a discussion back is not available yet", variant: "warning" })
         toast.show({ title: "Sending back failed", message: errorMessage(error), variant: "error" })
+      })
+  }
+
+  function dismiss() {
+    office.client.questions
+      .dismissCarried(question().id)
+      .then((q) => {
+        setStore("selected", 0)
+        office.putQuestion(q)
+      })
+      .catch((error) => {
+        if (isNotImplemented(error))
+          return toast.show({ message: "Dismissing a discussion is not available yet", variant: "warning" })
+        toast.show({ title: "Dismissing failed", message: errorMessage(error), variant: "error" })
       })
   }
 
@@ -303,6 +329,18 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
         <box paddingLeft={1}>
           <text fg={theme.textMuted}>{context()}</text>
         </box>
+        <Show when={earlier()}>
+          {(q) => (
+            <box paddingLeft={1}>
+              <text fg={theme.warning}>{`From an earlier, expired question: ${q().question}`}</text>
+              <For each={q().discussion ?? []}>
+                {(entry) => (
+                  <text fg={theme.textMuted}>{`${entry.role === "user" ? "you" : asker()}: ${entry.text}`}</text>
+                )}
+              </For>
+            </box>
+          )}
+        </Show>
         <Show
           when={model()}
           fallback={
