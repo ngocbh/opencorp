@@ -1,7 +1,8 @@
 """Feedback on a finished run: the handlers of its backward worker, and what each attempt's outcome means."""
 
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
+from pathlib import Path
 from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
@@ -34,19 +35,41 @@ def next_status(outcome: Mapping[str, Any] | None, *, committed: bool, attempts:
     return "retry" if failure.get("code") == MISMATCH else "retry_later"
 
 
+def find_committed(stores: Mapping[str, Any], commit_ids: Iterable[str]) -> str | None:
+    """The commit of the newest of ``commit_ids`` that a profile store in ``stores`` committed, or None."""
+    commit_ids = list(commit_ids)
+    for store in stores.values():
+        if isinstance(store, GitProfileStore):
+            for commit_id in reversed(commit_ids):
+                if (sha := store.git.find_commit(store.path, f"Commit-Id: {commit_id}")) is not None:
+                    return sha
+    return None
+
+
+def read_commit_log(path: Path) -> list[str]:
+    """The commit ids a ``FeedbackHandlers`` wrote to ``path``, oldest first; none if there is no file."""
+    try:
+        return path.read_text().split()
+    except FileNotFoundError:
+        return []
+
+
 class FeedbackHandlers(BaseHandlers):
     """A learning worker's handlers: profile writes are committed with ``source``; nobody answers questions.
 
     A backward worker gets a ``source``; a debrief worker (which writes nothing) needs none.
     ``exited(outcome)`` is called on the worker's reader thread once it exits, with its
-    result or error frame, or None.
+    result or error frame, or None. Each write's commit id is also appended to ``commit_log``,
+    so an office that stopped before taking the outcome can still find what the attempt committed.
     """
 
     def __init__(self, *, tools: Mapping[str, Mapping[str, Any]] | None = None,
                  stores: Mapping[str, MarkdownStore] | None = None, source: str | None = None,
-                 exited: Callable[[dict[str, Any] | None], None] | None = None) -> None:
+                 exited: Callable[[dict[str, Any] | None], None] | None = None,
+                 commit_log: Path | None = None) -> None:
         super().__init__(tools=tools, stores=stores)
         self.source = source
+        self.commit_log = commit_log
         self.commit_ids: list[str] = []
         self.outcome: dict[str, Any] | None = None
         self._on_exit = exited
@@ -60,6 +83,10 @@ class FeedbackHandlers(BaseHandlers):
         if isinstance(provenance.get("commit_id"), str):
             with self._lock:  # recorded before the write, so a write whose reply is lost is still checked
                 self.commit_ids.append(provenance["commit_id"])
+                if self.commit_log is not None:
+                    self.commit_log.parent.mkdir(parents=True, exist_ok=True)
+                    with self.commit_log.open("a") as f:
+                        f.write(provenance["commit_id"] + "\n")
         return super().store_write(worker, store, text, base_version, provenance)
 
     def result(self, worker: Any, frame: dict[str, Any]) -> None:
@@ -76,9 +103,4 @@ class FeedbackHandlers(BaseHandlers):
         """The newest commit this attempt's profile writes made, or None."""
         with self._lock:
             commit_ids = list(self.commit_ids)
-        for store in self.stores.values():
-            if isinstance(store, GitProfileStore):
-                for commit_id in reversed(commit_ids):
-                    if (sha := store.git.find_commit(store.path, f"Commit-Id: {commit_id}")) is not None:
-                        return sha
-        return None
+        return find_committed(self.stores, commit_ids)

@@ -19,7 +19,7 @@ from agent_corp.company.loader import load_repo
 from agent_corp.perm.monitor import redact
 from agent_corp.profile import GitProfileStore
 from agent_corp.profile.debrief import DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief, transcript_text
-from agent_corp.profile.feedback import FeedbackHandlers, next_status
+from agent_corp.profile.feedback import FeedbackHandlers, find_committed, next_status, read_commit_log
 from agent_corp.profile.manager import MANAGER_FLOW, apply_proposal, manager_spec
 from agent_corp.protocol import now
 from agent_corp.protocol.models import (CompanyDefaults, Debrief, Feedback, FeedbackRequest, Profile, ProfileProposal,
@@ -68,7 +68,12 @@ class Learning:
     def start(self) -> None:
         """Start the thread; pick up debriefs and feedback an earlier office left unfinished."""
         for feedback in self.store.list_feedback(status="learning"):
-            self.store.set_feedback_status(feedback.id, "queued")  # its worker was killed with the office
+            # Its worker was killed with the office. A write it committed stands, as after a failed
+            # attempt: learning the feedback again would add it twice.
+            if (commit := self._committed_before(feedback)) is not None:
+                self.store.set_feedback_status(feedback.id, "applied", commit=commit)
+            else:
+                self.store.set_feedback_status(feedback.id, "queued")
         self._thread.start()
         self._post(self._recover)
         self._schedule()
@@ -352,7 +357,8 @@ class Learning:
         source = f"from feedback on run {feedback.run_id} ({self.git.handle(f'people/{feedback.author}/profile.md')})"
         if record is not None and record.run_id == feedback.run_id:
             job, stores = self._debrief_job(session, feedback.run_id, kind="backward", feedback=feedback.text)
-            handlers = FeedbackHandlers(stores=stores, source=source, exited=exited)
+            handlers = FeedbackHandlers(stores=stores, source=source, exited=exited,
+                                        commit_log=self._commit_log(feedback))
             return job, handlers
         spec = self.harness.restorers[session.kind](session)
         provider = self._provider()
@@ -364,7 +370,8 @@ class Learning:
                   log=self._log(session.id, feedback.run_id), inputs=spec.inputs, llm_config=provider.llm_config,
                   learnable=spec.learnable, skills=spec.skills, groups=group_specs(tools), memory=memory,
                   env=provider.env, feedback=feedback.text)
-        handlers = FeedbackHandlers(tools=tools, stores=spec.stores, source=source, exited=exited)
+        handlers = FeedbackHandlers(tools=tools, stores=spec.stores, source=source, exited=exited,
+                                    commit_log=self._commit_log(feedback))
         return job, handlers
 
     # --- helpers ---------------------------------------------------------------------
@@ -471,6 +478,18 @@ class Learning:
 
     def _finished(self, session_id: str, run_id: str) -> bool:
         return (self._run_dir(session_id) / "runs" / f"{run_id}.finished").exists()
+
+    def _commit_log(self, feedback: Feedback) -> Path:
+        """Where the backward workers of ``feedback`` record the commit id of each profile write."""
+        return self._run_dir(feedback.session_id) / "feedback" / f"{feedback.id}.commit-ids"
+
+    def _committed_before(self, feedback: Feedback) -> str | None:
+        """The commit an earlier office's attempt at ``feedback`` made to its person's profile, or None."""
+        commit_ids = read_commit_log(self._commit_log(feedback))
+        if not commit_ids:
+            return None
+        person = self.store.get_session(feedback.session_id).person
+        return find_committed({"profile": GitProfileStore(self.git, person)}, commit_ids)
 
 
 def _no_questions(question: Any, **_: Any) -> Any:

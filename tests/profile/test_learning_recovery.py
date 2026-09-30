@@ -1,9 +1,10 @@
 from agent_corp.extensions.learning import Learning
 from agent_corp.profile.debrief import ready_debrief
 from agent_corp.protocol import now
-from agent_corp.protocol.models import Feedback
+from agent_corp.protocol.models import Feedback, FeedbackRequest
 from agent_corp.store import new_id
-from tests.profile.conftest import OUTPUT, chat, debrief_reply, learner_reply, settled, status, wait_for
+from tests.profile.conftest import (LEARNER_ASK, OUTPUT, asked, chat, debrief_reply, learner_reply, settled, status,
+                                    wait_for)
 from tests.profile.test_learning_feedback import PROFILE, feedback_status, profile_text
 from tests.store.conftest import session
 
@@ -49,3 +50,33 @@ def test_a_session_left_debriefing_with_a_ready_debrief_just_ends(harness, fake_
     record = harness.store.get_debrief_record(s.id)
     assert (record.debrief.state, record.run_id, record.attempts) == ("ready", "dbr", 1)
     assert fake_llm.requests() == []  # no second debrief ran
+
+
+def test_feedback_whose_attempt_committed_before_the_office_stopped_is_applied_not_learned_again(
+        harness, fake_llm, workspace):
+    first = Learning(harness.office, harness, tick=None)
+    first._learned = lambda *args: None  # the office stops before it takes the attempt's outcome
+    first.start()
+    try:
+        fake_llm.script(debrief_reply())
+        sid = chat(harness, fake_llm, workspace)
+        wait_for(lambda: status(harness, sid) == "ended", what="the end of the debrief")
+        fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+        fb = first.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+        wait_for(lambda: profile_text(harness) == PROFILE + "\n- Be brief.\n", what="the learner's commit")
+        wait_for(lambda: harness.registry.get(sid) is None, what="the backward worker to exit")
+    finally:
+        first.stop()
+    learned = harness.git.head()
+    assert feedback_status(harness, fb.id) == "learning"
+
+    second = Learning(harness.office, harness, tick=None)
+    second.start()
+    try:
+        settled(second)
+        applied = harness.store.get_feedback(fb.id)
+        assert (applied.status, applied.commit, applied.attempts) == ("applied", learned, 1)
+        assert sum(LEARNER_ASK in asked(r) for r in fake_llm.requests()) == 1
+        assert profile_text(harness) == PROFILE + "\n- Be brief.\n"
+    finally:
+        second.stop()
