@@ -32,7 +32,7 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
 
     A pinned commit without the side chat flow (a company made before side chats) gets
     the packaged one. Raises ``HarnessError`` (``422``) when that path is taken by
-    something other than a file, the asker isn't in the commit, or the folder is gone or
+    something other than a file, or leads out of the commit's checkout, the asker isn't in the commit, or the folder is gone or
     unsafe.
     """
     pin = harness.git.pin(session.repo_commit)
@@ -87,11 +87,13 @@ def _ensure_flow(harness: Harness, pin: Path) -> None:
     """
     path = pin / SIDE_CHAT_FLOW
     with harness.git.lock:
-        if path.is_file():
+        # Never use, or write through, a link that leads out of the pin: the worker would refuse the flow.
+        inside = path.resolve().is_relative_to(pin.resolve())
+        if inside and path.is_file():
             return
-        # Never write through a link that leads out of the pin.
-        if path.exists() or path.is_symlink() or not path.resolve().is_relative_to(pin.resolve()):
-            raise HarnessError(422, "no_side_chat_flow", f"{SIDE_CHAT_FLOW} in the company repo is not a file")
+        if not inside or path.exists() or path.is_symlink():
+            raise HarnessError(422, "no_side_chat_flow",
+                               f"{SIDE_CHAT_FLOW} in the company repo is not a file inside the repo")
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(PACKAGED_FLOW.read_text())
         path.chmod(0o444)

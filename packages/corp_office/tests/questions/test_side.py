@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 from importlib.resources import files
 
 import pytest
@@ -62,6 +63,22 @@ def test_a_pin_whose_side_chat_flow_is_not_a_file_is_refused(make_harness, works
         side_spec(h, side)
     assert (err.value.status, err.value.code) == (422, "no_side_chat_flow")
     assert not outside.exists()
+
+
+@pytest.mark.parametrize("link", [SIDE_CHAT_FLOW, "shared/flows"])
+def test_a_side_chat_flow_linked_from_outside_the_pin_is_refused(make_harness, workspace, tmp_path, link):  # noqa: F811
+    h = make_harness()
+    side = side_of(h, workspace)
+    pin = h.git.pin(side.repo_commit)
+    flows = tmp_path / "outside" / "flows"
+    shutil.copytree(pin / "shared" / "flows", flows)  # the other flows stay reachable
+    (flows / "side_chat.yaml").write_text(SIDE_FLOW)
+    if link == "shared/flows":
+        shutil.rmtree(pin / "shared" / "flows")
+    (pin / link).symlink_to(flows / "side_chat.yaml" if link == SIDE_CHAT_FLOW else flows)
+    with pytest.raises(HarnessError) as err:
+        side_spec(h, side)
+    assert (err.value.status, err.value.code) == (422, "no_side_chat_flow")
 
 
 def test_a_side_run_in_the_office_files_is_refused(make_harness):  # noqa: F811
