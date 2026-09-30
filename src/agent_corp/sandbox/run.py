@@ -10,14 +10,15 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import IO
 
-from agent_corp.sandbox import bwrap, seatbelt
+from agent_corp.sandbox import bwrap, escapees, seatbelt
 from agent_corp.sandbox.policy import SandboxPolicy
 
 SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 _POLL = 0.05
-_READER_GRACE = 5.0
+_READER_GRACE = 2.0
 
 
 class SandboxUnavailable(RuntimeError):
@@ -54,14 +55,16 @@ def scrubbed_env(policy: SandboxPolicy) -> dict[str, str]:
     }
 
 
-def command(policy: SandboxPolicy, argv: list[str]) -> list[str]:
+def command(policy: SandboxPolicy, argv: list[str], canary: Path | None = None) -> list[str]:
     """Return the host argv that runs `argv` under `policy` on this platform.
+
+    `canary` marks the call's processes on macOS (see `sandbox.escapees`).
 
     Raises:
         SandboxUnavailable: The platform is neither macOS nor Linux.
     """
     if sys.platform == "darwin":
-        return ["/usr/bin/sandbox-exec", "-p", seatbelt.profile(policy), *argv]
+        return ["/usr/bin/sandbox-exec", "-p", seatbelt.profile(policy, canary), *argv]
     if sys.platform.startswith("linux"):
         return bwrap.command(policy, argv)
     raise SandboxUnavailable(f"no sandbox for platform {sys.platform!r}")
@@ -80,12 +83,34 @@ def run(
 
     The call runs in a new process group. The group is killed when the call's first
     process exits (so nothing it started in the background survives), when `timeout`
-    seconds pass, when `cancel` is set, or when this function is interrupted.
+    seconds pass, when `cancel` is set, or when this function is interrupted. On macOS,
+    processes that left the group with `setsid` are then found and killed too; on
+    Linux the pid namespace dies with the call.
     Each output stream keeps at most `max_output` bytes.
     """
     start = time.monotonic()
+    canary = None
+    if sys.platform == "darwin":
+        canary = escapees.Canary(avoid=(policy.tmpdir, *([policy.workspace] if policy.writable else [])))
+    try:
+        return _run(policy, argv, stdin, timeout, cancel, max_output, canary, start)
+    finally:
+        if canary is not None:
+            canary.close()
+
+
+def _run(
+    policy: SandboxPolicy,
+    argv: list[str],
+    stdin: bytes | None,
+    timeout: float,
+    cancel: threading.Event | None,
+    max_output: int,
+    canary: escapees.Canary | None,
+    start: float,
+) -> Result:
     proc = subprocess.Popen(
-        command(policy, argv),
+        command(policy, argv, canary.allowed if canary else None),
         cwd=policy.workspace,
         env=scrubbed_env(policy),
         stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
@@ -111,13 +136,19 @@ def run(
                 timed_out = True
                 break
     finally:
-        # The leader is not reaped yet, so its pid (the group id) can't have been reused.
-        _kill_group(proc.pid)
-        watch.close()
-        proc.wait()
-    # A process that left the group could still hold the pipes; don't wait on it forever.
+        try:
+            # The leader is not reaped yet, so its pid (the group id) can't have been reused.
+            _kill_group(proc.pid)
+            if canary is not None:
+                escapees.kill_escaped(canary)
+        finally:
+            watch.close()
+            proc.wait()
+    # Every writer should be dead now, but an escapee that wasn't found could still hold
+    # the pipes; don't wait on it for long.
+    deadline = time.monotonic() + _READER_GRACE
     out.join(_READER_GRACE)
-    err.join(_READER_GRACE)
+    err.join(max(0.0, deadline - time.monotonic()))
     return Result(
         exit=None if timed_out or interrupted else proc.returncode,
         stdout=bytes(out.data),

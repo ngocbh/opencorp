@@ -69,7 +69,7 @@ SYSCTL_NAMES = (
 DNS_SOCKET = "/private/var/run/mDNSResponder"
 
 
-def profile(policy: SandboxPolicy) -> str:
+def profile(policy: SandboxPolicy, canary: Path | None = None) -> str:
     """Return a default-deny SBPL profile that allows exactly what `policy` grants.
 
     Allowed: system and toolchain paths read-only, the workspace (read, or read-write
@@ -77,6 +77,9 @@ def profile(policy: SandboxPolicy) -> str:
     policy's extra read-only paths, a few mach services, and IP networking only if
     `policy.network`. Everything else, including unix sockets, Apple Events, and
     LaunchServices, is denied.
+
+    `canary`, a directory, gets a `file-write-data` rule (a no-op on a directory) that
+    marks processes running under this profile; see `sandbox.escapees`.
     """
     developer = _developer_dir()
     readable = [str(policy.workspace), str(policy.tmpdir), *map(str, policy.read_only)]
@@ -127,6 +130,11 @@ def profile(policy: SandboxPolicy) -> str:
     ]
     if policy.read_only:
         lines.append(_allow("file-read*", [f"(subpath {_q(p)})" for p in policy.read_only]))
+    if canary is not None:
+        lines += [
+            ";; Marks this call's processes; see sandbox.escapees.",
+            f"(allow file-write-data (literal {_q(canary)}))",
+        ]
     if policy.network:
         lines += [
             ";; IP networking only: unix sockets (office, tmux) stay denied.",

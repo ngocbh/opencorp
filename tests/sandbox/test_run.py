@@ -6,6 +6,7 @@ import psutil
 import pytest
 
 from agent_corp.sandbox.run import SandboxUnavailable, command, run, scrubbed_env
+from agent_corp.tools.workspace import interpreter
 
 pytestmark = pytest.mark.usefixtures("sandbox_available")
 
@@ -96,6 +97,42 @@ def test_group_is_killed_before_the_leader_is_reaped(make_policy, monkeypatch):
     assert sh(make_policy(), "sleep 30", timeout=0.5).timed_out
     # psutil.Process raises if the pid is gone; after a timeout the leader is still alive.
     assert seen[0] == psutil.STATUS_ZOMBIE and len(seen) == 2
+
+
+SETSID_CHILD = """
+import os, time
+if os.fork() == 0:
+    os.setsid()
+    os.execv("/bin/sleep", ["sleep", "{marker}"])
+print("parent done")
+"""
+
+
+def py_call(policy, code, **kw):
+    return run(policy, [str(interpreter()[0]), "-I", "-S", "-c", code], **kw)
+
+
+def test_setsid_child_dies_with_the_call(make_policy):
+    # setsid leaves the process group, so killing the group misses it; the child also
+    # holds the output pipes, which must not stall the call.
+    policy = make_policy(read_only=interpreter()[1])
+    start = time.monotonic()
+    result = py_call(policy, SETSID_CHILD.format(marker="4545"))
+    assert result.stdout == b"parent done\n"
+    assert time.monotonic() - start < 3
+    assert gone("4545")
+
+
+def test_escape_cleanup_spares_concurrent_calls(make_policy):
+    policy = make_policy(read_only=interpreter()[1])
+    results = []
+    sibling = threading.Thread(target=lambda: results.append(sh(policy, "sleep 2; echo alive")))
+    sibling.start()
+    time.sleep(0.5)
+    assert py_call(policy, SETSID_CHILD.format(marker="4546")).exit == 0
+    sibling.join()
+    assert results[0].exit == 0 and results[0].stdout == b"alive\n"
+    assert gone("4546")
 
 
 def test_output_is_capped(make_policy):

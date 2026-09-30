@@ -105,6 +105,13 @@ def test_std_stream_paths(make):
     assert '(allow file-read* file-write-data (subpath "/dev/fd") (literal "/dev/stdout") (literal "/dev/stderr"))' in text
 
 
+def test_canary_gets_a_write_data_rule(make, tmp_path):
+    policy = make()
+    assert "file-write-data (literal" not in seatbelt.profile(policy).replace('(literal "/dev/null")', "")
+    text = seatbelt.profile(policy, tmp_path / "canary")
+    assert f'(allow file-write-data (literal "{tmp_path / "canary"}"))' in text
+
+
 def test_quotes_in_paths_are_escaped(tmp_path):
     ws = tmp_path / 'we"ird\\ws'
     tmp = tmp_path / "tmp"
