@@ -297,7 +297,12 @@ export function Profile() {
           <box flexShrink={0}>
             <text fg={theme.text}>
               <span style={{ bold: true }}>Proposed change</span>
-              <span style={{ fg: theme.textMuted }}> · a apply</span>
+              <Show
+                when={!profile() || p().base_version === profile()?.version}
+                fallback={<span style={{ fg: theme.warning }}> · out of date; ask the manager again</span>}
+              >
+                <span style={{ fg: theme.textMuted }}> · a apply</span>
+              </Show>
             </text>
             <For each={shown(p())}>{(line) => <text fg={diffColor(line)}>{line}</text>}</For>
             <Show when={diffLines(p().diff).length - shown(p()).length}>

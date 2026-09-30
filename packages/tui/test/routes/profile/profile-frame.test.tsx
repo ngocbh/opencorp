@@ -276,9 +276,11 @@ test("a proposal made while the view is open appears; applying it after a hand e
     await app.until((f) => f.includes("+Writes the test first, then small changes."))
     const base_version = office.state.profiles.minh.version
     await client.profiles.put("minh", { text: "# Minh\n\nHand edit.\n", base_version })
-    await app.until((f) => f.includes("Hand edit."))
+    // The view sees the proposal no longer matches the profile before the office is asked.
+    const f = await app.until((f) => f.includes("Hand edit.") && f.includes("out of date; ask the manager again"))
+    expect(f).not.toContain("a apply")
     app.input.pressKey("a")
-    await app.until((f) => f.includes("The profile changed after this proposal") && !f.includes("a apply"))
+    await app.until((f) => f.includes("The profile changed after this proposal") && !f.includes("+Writes the test first"))
     expect(office.state.profiles.minh.text).toBe("# Minh\n\nHand edit.\n")
   })
 })
