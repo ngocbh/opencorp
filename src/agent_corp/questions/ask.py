@@ -10,6 +10,9 @@ from agent_corp.questions.format import format_answer
 from agent_corp.questions.normalize import normalize_options
 from agent_corp.store import DuplicateKey, InvalidTransition, Store, new_id
 
+POLL_SECONDS = 30
+"""How often a waiting ask re-reads its question, to see answers written by another process."""
+
 
 class OnQuestion(Protocol):
     """Store an open question (with ``work_item``, if given), block until it is answered, and return it answered."""
@@ -19,6 +22,10 @@ class OnQuestion(Protocol):
 
 Carried = Callable[[Question], Iterable[DiscussionEntry]]
 """The discussion an answered question carries over from an earlier, expired one."""
+
+
+class AnswersClosed(RuntimeError):
+    """``Answers`` was closed before the question was answered."""
 
 
 class QuestionExpired(RuntimeError):
@@ -64,12 +71,18 @@ class Answers:
     def __init__(self, store: Store) -> None:
         self.store = store
         self._lock = threading.Lock()
+        self._closed = False
         self._waiting: dict[str, list[threading.Event]] = {}
         self._remove = store.add_listener(self._changed)
 
     def close(self) -> None:
-        """Stop listening to the store."""
+        """Stop listening to the store; every waiting ``ask`` raises ``AnswersClosed``, as does any later one."""
         self._remove()
+        with self._lock:
+            self._closed = True
+            waiting = [ready for events in self._waiting.values() for ready in events]
+        for ready in waiting:
+            ready.set()
 
     def ask(self, question: Question, *, work_item: WorkItem | None = None) -> Question:
         """Store ``question`` and return it once answered, marked ``consumed``.
@@ -81,6 +94,7 @@ class Answers:
 
         Raises:
             QuestionExpired: the question went stale first.
+            AnswersClosed: this ``Answers`` was closed first.
         """
         qid, ready = question.id, threading.Event()
         # Wait before storing, so an answer that lands at once still wakes this call.
@@ -112,8 +126,10 @@ class Answers:
 
     def _answered(self, qid: str, ready: threading.Event) -> Question:
         while (current := self.store.get_question(qid)).status == "open":
-            ready.wait()
+            ready.wait(POLL_SECONDS)
             ready.clear()
+            if self._closed:
+                raise AnswersClosed(f"stopped waiting for question {qid}")
         if current.status == "stale":
             raise QuestionExpired(f"question {qid} expired before it was answered")
         if current.status == "answered":
@@ -125,6 +141,8 @@ class Answers:
 
     def _watch(self, qid: str, ready: threading.Event) -> None:
         with self._lock:
+            if self._closed:
+                raise AnswersClosed("answers is closed")
             self._waiting.setdefault(qid, []).append(ready)
 
     def _unwatch(self, qid: str, ready: threading.Event) -> None:

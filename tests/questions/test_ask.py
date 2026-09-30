@@ -6,8 +6,9 @@ import pytest
 from agent_composer.tools import ToolSet
 
 from agent_corp.protocol.models import DiscussionEntry, Question
-from agent_corp.questions.ask import Answers, QuestionExpired, make_ask_user
-from agent_corp.store import NotFound
+from agent_corp.questions import ask as ask_module
+from agent_corp.questions.ask import Answers, AnswersClosed, QuestionExpired, make_ask_user
+from agent_corp.store import NotFound, Store
 from agent_corp.worker.rpc import ASK_KEYS, BaseHandlers, ask_user_stub
 from tests.store.conftest import question as make_question
 from tests.store.conftest import session, work_item
@@ -198,3 +199,64 @@ def test_a_question_that_goes_stale_cancels_its_work_item(store, answers, sid):
     t.join(5)
     assert isinstance(out["error"], QuestionExpired)
     assert store.get_work_item(item.id).status == "cancelled"
+
+
+def asking(answers, q):
+    """Run ``answers.ask(q)`` on a thread; ``out`` gets its result or its error."""
+    out = {}
+
+    def ask():
+        try:
+            out["result"] = answers.ask(q)
+        except Exception as exc:
+            out["error"] = exc
+
+    t = threading.Thread(target=ask, daemon=True)
+    t.start()
+    return t, out
+
+
+def test_close_wakes_every_waiting_ask(store, answers, sid):
+    waiting = [asking(answers, make_question(sid)) for _ in range(2)]
+    wait_open(store, sid, count=2)
+    answers.close()
+    for t, out in waiting:
+        t.join(5)
+        assert isinstance(out.get("error"), AnswersClosed)
+
+
+def test_ask_after_close_raises_and_stores_nothing(store, answers, sid):
+    answers.close()
+    with pytest.raises(AnswersClosed):
+        answers.ask(make_question(sid))
+    assert store.list_questions(session_id=sid) == []
+
+
+def test_an_answer_that_lands_between_the_check_and_the_wait_still_wakes_ask(store, answers, sid, monkeypatch):
+    monkeypatch.setattr(ask_module, "POLL_SECONDS", 60)
+    q = make_question(sid)
+    get_question = store.get_question
+
+    def answered_right_after(qid):
+        # ask sees the question open, then the answer lands before ask starts waiting.
+        seen = get_question(qid)
+        if seen.status == "open":
+            monkeypatch.setattr(store, "get_question", get_question)
+            store.answer_question(qid, "pg", "text")
+        return seen
+
+    monkeypatch.setattr(store, "get_question", answered_right_after)
+    t, out = asking(answers, q)
+    t.join(5)
+    assert not t.is_alive() and out["result"].answer == "pg"
+
+
+def test_an_answer_from_another_process_is_found_by_polling(store, answers, sid, monkeypatch, tmp_path):
+    monkeypatch.setattr(ask_module, "POLL_SECONDS", 0.05)
+    q = make_question(sid)
+    t, out = asking(answers, q)
+    wait_open(store, sid)
+    with Store(tmp_path / "office" / "store.sqlite") as other:
+        other.answer_question(q.id, "pg", "text")
+    t.join(5)
+    assert not t.is_alive() and out["result"].answer == "pg"
