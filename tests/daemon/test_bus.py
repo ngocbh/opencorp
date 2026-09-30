@@ -69,8 +69,8 @@ async def test_slow_subscriber_is_dropped_and_others_keep_going():
     for i in range(5):
         bus.publish_live(live(S1, str(i)))
         assert (await fast.next(timeout=1))[1].data["text"] == str(i)
-    assert [(await slow.next(timeout=1))[1].data["text"] for _ in range(3)] == ["0", "1", "2"]
-    assert await slow.next(timeout=1) is None
+    assert slow.dropped and not fast.dropped
+    assert await slow.next(timeout=1) is None  # its backlog was discarded
     assert bus.subscriber_count == 1
 
 
@@ -78,7 +78,7 @@ async def test_close_ends_every_subscription():
     bus = attached()
     sub = bus.subscribe()
     bus.close()
-    assert await sub.next(timeout=1) is None
+    assert await sub.next(timeout=1) is None and not sub.dropped
     assert await bus.subscribe().next(timeout=1) is None
     bus.publish_meta(meta(S1))  # dropped, no error
 

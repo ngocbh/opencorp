@@ -13,6 +13,10 @@ from agent_corp.protocol.models import Event, LiveEvent
 PING_S = 15.0
 """Seconds of silence before a ``: ping`` comment keeps the stream open."""
 
+# The empty data field makes standard SSE parsers (EventSource included) dispatch the event;
+# one with no data field at all is silently skipped.
+RESET = b"event: reset\ndata:\n\n"
+
 
 def frame(kind: str, event: Event | LiveEvent) -> bytes:
     """One SSE frame; ``meta`` frames carry the event id."""
@@ -35,6 +39,8 @@ async def stream_events(request: Request) -> StreamingResponse:
             while True:
                 item = await sub.next(timeout=PING_S)
                 if item is None:
+                    if sub.dropped:
+                        yield RESET
                     return
                 if item is PING:
                     yield b": ping\n\n"

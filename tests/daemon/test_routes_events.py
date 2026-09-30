@@ -112,3 +112,18 @@ async def test_client_disconnect_drops_its_subscription(office, short_dir):
         async with asyncio.timeout(5):
             while office.bus.subscriber_count:
                 await asyncio.sleep(0.02)
+
+
+async def test_a_dropped_subscriber_gets_reset_then_the_stream_ends(office, short_dir):
+    s = office.store.create_session(session())
+    office.bus.queue_size = 3
+    async with served(office, short_dir / "o.sock") as c, c.stream("GET", "/events") as r:
+        it = frames(r)
+        await take(it, 1)
+        # Published in one go on the loop, so the backlog overflows before the stream reads it.
+        for i in range(10):
+            office.bus.publish_live(LiveEvent(type="part.delta", session_id=s.id,
+                                              data={"message_id": "m", "part_id": "p", "text": str(i)}))
+        assert await take(it, 1) == [("reset", None, None)]
+        with pytest.raises(StopAsyncIteration):
+            await anext(it)

@@ -25,6 +25,8 @@ class Subscription:
         self.session = session
         self._queue: asyncio.Queue[Item | None] = asyncio.Queue()
         self._done = False
+        self.dropped = False
+        """Whether the bus dropped this subscription for falling behind."""
 
     def matches(self, item: Item) -> bool:
         """Whether ``item`` belongs to this subscription's session (always, without one)."""
@@ -48,12 +50,19 @@ class Subscription:
         return item
 
     def close(self) -> None:
-        """Stop receiving items."""
+        """Stop receiving items. Call it on the office loop's thread."""
         self._done = True
         self._bus._remove(self)
 
     def _end(self) -> None:
         self._queue.put_nowait(None)
+
+    def _drop(self) -> None:
+        # The backlog is discarded: a dropped client re-reads state with GETs anyway.
+        self.dropped = True
+        while not self._queue.empty():
+            self._queue.get_nowait()
+        self._end()
 
 
 class Bus:
@@ -61,7 +70,8 @@ class Bus:
 
     ``publish_*`` may be called from any thread: every publish is scheduled on the loop with
     ``call_soon_threadsafe``, so all of them keep one order. A subscriber whose backlog reaches
-    ``queue_size`` is dropped (its stream ends; the client reconnects and re-bootstraps).
+    ``queue_size`` is dropped: its backlog is discarded, ``dropped`` is set, and its next
+    ``next()`` returns ``None`` (the client reconnects and re-bootstraps).
     """
 
     def __init__(self, *, queue_size: int = 1000) -> None:
@@ -93,7 +103,7 @@ class Bus:
         self._post(("live", event))
 
     def subscribe(self, session: str | None = None) -> Subscription:
-        """A new subscription to every event, or to one session's."""
+        """A new subscription to every event, or to one session's. Call it on the office loop's thread."""
         sub = Subscription(self, session)
         if self._closed:
             sub._end()
@@ -134,7 +144,7 @@ class Bus:
                 continue
             if sub._queue.qsize() >= self.queue_size:
                 self._subs.remove(sub)
-                sub._end()
+                sub._drop()
             else:
                 sub._queue.put_nowait(item)
 
