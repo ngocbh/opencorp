@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import logging
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -18,6 +19,8 @@ from agent_corp.daemon.bus import Bus
 from agent_corp.daemon.http import EXCEPTION_HANDLERS
 from agent_corp.daemon.routes import all_routes
 from agent_corp.store import Store
+
+log = logging.getLogger(__name__)
 
 
 class OfficePaths:
@@ -83,7 +86,12 @@ class Office:
             raise
 
     async def stop(self) -> None:
-        """End SSE streams, stop the workers, and run ``on_stop`` in reverse order."""
+        """End SSE streams, stop the workers, and run ``on_stop`` in reverse order.
+
+        Every ``on_stop`` callback runs: one that raises is logged and the rest still run.
+        ``stop`` also runs after a failed ``start``, so an ``on_stop`` callback must cope with
+        its ``on_start`` never having run.
+        """
         self.bus.close()
         if self._unlisten is not None:
             self._unlisten()
@@ -91,7 +99,10 @@ class Office:
         if self.workers is not None:
             await asyncio.to_thread(self.workers.close_all)
         for callback in reversed(self.on_stop):
-            await _maybe_await(callback())
+            try:
+                await _maybe_await(callback())
+            except Exception:
+                log.exception("office on_stop callback %r failed", callback)
 
 
 class AbsoluteFormPaths:

@@ -86,6 +86,24 @@ async def test_failed_start_stops_the_office(office):
     assert await office.bus.subscribe().next(timeout=1) is None  # the bus is closed
 
 
+async def test_a_failing_stop_callback_does_not_skip_the_rest(office, caplog):
+    calls = []
+
+    def fail(what):
+        def cb():
+            calls.append(what)
+            raise RuntimeError(what)
+        return cb
+
+    office.on_start += [lambda: calls.append("a start"), fail("b start")]
+    office.on_stop += [lambda: calls.append("a stop"), lambda: calls.append("b stop"), fail("c stop")]
+    with pytest.raises(RuntimeError, match="b start"):
+        await office.start()
+    assert calls == ["a start", "b start", "c stop", "b stop", "a stop"]
+    [record] = [r for r in caplog.records if r.exc_info]
+    assert "on_stop" in record.getMessage() and str(record.exc_info[1]) == "c stop"
+
+
 async def test_lifespan_starts_and_stops_the_office(office):
     office.workers = FakePool()
     app = create_app(office)

@@ -272,3 +272,43 @@ def test_failing_start_hook_stops_what_earlier_hooks_started(home, tmp_path, mon
         assert not a.thread.is_alive()
     finally:
         importlib.import_module("partialstart.a").stop.set()  # never leave the thread running
+
+
+def test_a_failing_stop_hook_does_not_stop_the_others(home, tmp_path, monkeypatch, capsys):
+    pkg = tmp_path / "extpath" / "stopfail"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "a.py").write_text(
+        "import threading\n"
+        "stop = threading.Event()\n"
+        "thread = None\n"
+        "def register(office):\n"
+        "    def start():\n"
+        "        global thread\n"
+        "        thread = threading.Thread(target=stop.wait, name='checker')\n"
+        "        thread.start()\n"
+        "    office.on_start.append(start)\n"
+        "    office.on_stop.append(stop.set)\n")
+    (pkg / "b.py").write_text(
+        "def register(office):\n"
+        "    def fail():\n"
+        "        raise RuntimeError('no model key')\n"
+        "    office.on_start.append(fail)\n")
+    (pkg / "c.py").write_text(
+        "def register(office):\n"
+        "    def fail():\n"
+        "        raise RuntimeError('c never started')\n"
+        "    office.on_stop.append(fail)\n")
+    monkeypatch.syspath_prepend(str(tmp_path / "extpath"))
+    try:
+        assert main(["--home", str(home)], extensions="stopfail") == 1
+        a = importlib.import_module("stopfail.a")
+        assert a.stop.is_set()
+        a.thread.join(5)
+        assert not a.thread.is_alive()
+        err = capsys.readouterr().err
+        # uvicorn logs the start-up error: B's, not C's stop failure raised while cleaning up.
+        failure = err[err.index("Traceback"):err.index("Application startup failed")].rsplit("ERROR:", 1)[0]
+        assert failure.rstrip().endswith("RuntimeError: no model key") and "c never started" not in failure
+    finally:
+        importlib.import_module("stopfail.a").stop.set()  # never leave the thread running
