@@ -37,7 +37,6 @@ import { PermissionProvider } from "./context/permission"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
-import { DialogAgent } from "./component/dialog-agent"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
@@ -52,7 +51,6 @@ import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
 import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
-import { openUrl } from "./core/open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
 import { CommandPaletteDialog } from "./component/command-palette"
@@ -88,7 +86,6 @@ const appGlobalBindingCommands = [
 
 const appBindingCommands = [
   "command.palette.show",
-  "agent.list",
   "agent.cycle",
   "agent.cycle.reverse",
   "opencode.debug",
@@ -96,7 +93,6 @@ const appBindingCommands = [
   "theme.switch_mode",
   "theme.mode.lock",
   "help.show",
-  "docs.open",
   "app.debug",
   "app.console",
   "app.heap_snapshot",
@@ -496,15 +492,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         },
       })),
       {
-        name: "agent.list",
-        title: "Switch agent",
-        category: "Agent",
-        slashName: "agents",
-        run: () => {
-          dialog.replace(() => <DialogAgent />)
-        },
-      },
-      {
         name: "agent.cycle",
         title: "Agent cycle",
         category: "Agent",
@@ -565,15 +552,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         slashName: "help",
         run: () => {
           dialog.replace(() => <DialogHelp />)
-        },
-        category: "System",
-      },
-      {
-        name: "docs.open",
-        title: "Open docs",
-        run: () => {
-          openUrl("https://opencode.ai/docs").catch(() => {})
-          dialog.clear()
         },
         category: "System",
       },

@@ -45,7 +45,6 @@ import { DialogAlert } from "../../ui/dialog-alert"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
-import { DialogSkill } from "../dialog-skill"
 import { useArgs } from "../../context/args"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpencodeKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
@@ -501,26 +500,6 @@ export function Prompt(props: PromptProps) {
           input.cursorOffset = Bun.stringWidth(normalized)
         },
       },
-      {
-        title: "Skills",
-        name: "prompt.skills",
-        category: "Prompt",
-        slashName: "skills",
-        run: () => {
-          dialog.replace(() => (
-            <DialogSkill
-              onSelect={(skill) => {
-                input.setText(`/${skill} `)
-                setStore("prompt", {
-                  input: `/${skill} `,
-                  parts: [],
-                })
-                input.gotoBufferEnd()
-              }}
-            />
-          ))
-        },
-      },
     ].map((entry) => ({
       namespace: "palette",
       ...entry,
@@ -540,7 +519,6 @@ export function Prompt(props: PromptProps) {
       "prompt.stash",
       "prompt.stash.pop",
       "prompt.stash.list",
-      "prompt.skills",
       "session.interrupt",
     ]),
   }))

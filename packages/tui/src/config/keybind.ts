@@ -56,7 +56,6 @@ export const Definitions = {
   app_toggle_session_directory_filter: keybind("none", "Toggle session directory filtering"),
   command_list: keybind("ctrl+p", "List available commands"),
   help_show: keybind("none", "Open help dialog"),
-  docs_open: keybind("none", "Open documentation"),
 
   editor_open: keybind("<leader>e", "Open external editor"),
   theme_list: keybind("<leader>t", "List available themes"),
@@ -71,7 +70,6 @@ export const Definitions = {
   session_new: keybind("<leader>n", "Create a new session"),
   session_list: keybind("<leader>l", "List all sessions"),
   session_timeline: keybind("<leader>g", "Show session timeline"),
-  session_fork: keybind("none", "Fork session from message"),
   session_rename: keybind("ctrl+r", "Rename session"),
   session_delete: keybind("ctrl+d", "Delete session"),
   session_interrupt: keybind("escape", "Interrupt current session"),
@@ -96,7 +94,6 @@ export const Definitions = {
   session_quick_switch_9: keybind("<leader>9", "Switch to session in quick slot 9"),
 
   stash_delete: keybind("ctrl+d", "Delete stash entry"),
-  agent_list: keybind("<leader>a", "List agents"),
   agent_cycle: keybind("tab", "Next agent"),
   agent_cycle_reverse: keybind("shift+tab", "Previous agent"),
 
@@ -120,7 +117,6 @@ export const Definitions = {
 
   prompt_submit: keybind("none", "Submit prompt"),
   prompt_editor_context_clear: keybind("none", "Clear editor context"),
-  prompt_skills: keybind("none", "Open skill selector"),
   prompt_stash: keybind("none", "Stash prompt"),
   prompt_stash_pop: keybind("none", "Pop stashed prompt"),
   prompt_stash_list: keybind("none", "List stashed prompts"),
@@ -211,7 +207,6 @@ export const CommandMap = {
   app_toggle_session_directory_filter: "app.toggle.session_directory_filter",
   command_list: "command.palette.show",
   help_show: "help.show",
-  docs_open: "docs.open",
   editor_open: "prompt.editor",
   theme_list: "theme.switch",
   theme_switch_mode: "theme.switch_mode",
@@ -224,7 +219,6 @@ export const CommandMap = {
   session_new: "session.new",
   session_list: "session.list",
   session_timeline: "session.timeline",
-  session_fork: "session.fork",
   session_rename: "session.rename",
   session_delete: "session.delete",
   session_interrupt: "session.interrupt",
@@ -248,7 +242,6 @@ export const CommandMap = {
   session_quick_switch_8: "session.quick_switch.8",
   session_quick_switch_9: "session.quick_switch.9",
   stash_delete: "stash.delete",
-  agent_list: "agent.list",
   agent_cycle: "agent.cycle",
   agent_cycle_reverse: "agent.cycle.reverse",
   messages_page_up: "session.page.up",
@@ -270,7 +263,6 @@ export const CommandMap = {
   display_thinking: "session.toggle.thinking",
   prompt_submit: "prompt.submit",
   prompt_editor_context_clear: "prompt.editor_context.clear",
-  prompt_skills: "prompt.skills",
   prompt_stash: "prompt.stash",
   prompt_stash_pop: "prompt.stash.pop",
   prompt_stash_list: "prompt.stash.list",
