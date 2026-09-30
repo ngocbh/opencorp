@@ -63,6 +63,36 @@ def test_a_company_whose_first_write_stopped_early_is_asked_for_and_finished(tmp
     assert lint(load_repo(company)) == [] and _git(company, "status", "--porcelain") == ""
 
 
+def _stop_before_the_first_commit(tmp_path, monkeypatch):
+    """Run onboard as `an` of Acme until the company's first commit, which fails."""
+    import agent_corp.company_template as template
+
+    def fail(*a, **k):
+        raise template.CompanyGitError("killed")
+
+    with monkeypatch.context() as m:
+        m.setattr(template.CompanyGit, "commit", fail)
+        with pytest.raises(OnboardError, match="killed"):
+            onboard(tmp_path / "home", Script("Acme", "An", "an"), host=make_host(tmp_path, Runner()))
+    company = OfficePaths(tmp_path / "home").company
+    assert "ceo: \"an\"" in (company / "company.yaml").read_text()
+    return company
+
+
+@pytest.mark.parametrize("truncate", [False, True])
+def test_a_second_onboard_after_a_stopped_first_write_uses_the_new_answers(tmp_path, monkeypatch, truncate):
+    company = _stop_before_the_first_commit(tmp_path, monkeypatch)
+    if truncate:
+        (company / "company.yaml").write_text('name: "Ac')
+    monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(tmp_path / "home", Script("Beta", "Bo", "bo"), host=make_host(tmp_path, Runner()))
+    committed = _git(company, "show", "HEAD:company.yaml")
+    assert 'name: "Beta"' in committed and 'ceo: "bo"' in committed
+    assert "people/bo/person.yaml" in _git(company, "ls-files").splitlines()
+    assert lint(load_repo(company)) == []
+
+
 def test_an_existing_home_others_can_read_is_made_private(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
     home = tmp_path / "home"

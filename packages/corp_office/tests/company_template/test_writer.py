@@ -2,6 +2,7 @@ import subprocess
 from importlib.resources import files
 
 import pytest
+import yaml
 
 from agent_corp.company.flows import load_confined
 from agent_corp.company.lint import lint
@@ -142,7 +143,7 @@ def test_a_first_write_that_stopped_before_the_owners_file_is_finished(tmp_path)
     git(root, "init", "-q", "-b", "main")
     (root / "company.yaml").write_bytes(template_files("Acme", OWNER)["company.yaml"])
     written = write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
-    assert "people/ngocbh/person.yaml" in written and "company.yaml" not in written
+    assert {"company.yaml", "people/ngocbh/person.yaml"} <= set(written)
     assert lint(load_repo(root)) == []
     assert git(root, "status", "--porcelain") == ""
     assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
@@ -157,10 +158,39 @@ def test_a_first_write_that_stopped_before_its_commit_is_committed(tmp_path):
         (root / rel).write_bytes(data)
     with pytest.raises(ValueError, match="owner"):
         write_company(root, tmp_path / "worktrees")  # still a new company: nothing is committed yet
-    assert write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER) == []
+    written = write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
+    assert written == ["company.yaml", "people/ngocbh/person.yaml"]  # the filled files are rewritten
     assert git(root, "status", "--porcelain") == ""
     assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
     assert set(git(root, "ls-files").splitlines()) == set(template_files("Acme", OWNER))
+
+
+def _stopped_before_the_commit(root, company, owner):
+    root.mkdir()
+    git(root, "init", "-q", "-b", "main")
+    for rel, data in template_files(company, owner).items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_bytes(data)
+
+
+def test_a_first_write_that_stopped_is_finished_with_the_new_answers(tmp_path):
+    root = tmp_path / "company"
+    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    committed = yaml.safe_load(git(root, "show", "HEAD:company.yaml"))
+    assert (committed["name"], committed["ceo"]) == ("Beta", "bo")
+    assert "people/bo/person.yaml" in git(root, "ls-files").splitlines()
+    assert "people/an/person.yaml" not in git(root, "ls-files").splitlines()
+    assert lint(load_repo(root)) == []
+
+
+def test_a_truncated_company_yaml_from_a_stopped_first_write_is_rewritten(tmp_path):
+    root = tmp_path / "company"
+    _stopped_before_the_commit(root, "Acme", OWNER)
+    (root / "company.yaml").write_text('name: "Ac')
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
+    assert git(root, "show", "HEAD:company.yaml").encode() == template_files("Acme", OWNER)["company.yaml"]
+    assert lint(load_repo(root)) == [] and git(root, "status", "--porcelain") == ""
 
 
 def test_is_new_until_the_first_commit(tmp_path):

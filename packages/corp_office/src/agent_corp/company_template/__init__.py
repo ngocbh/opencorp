@@ -103,7 +103,8 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     """Create or top up the company repo at ``root``; return the repo paths written, sorted.
 
     A new repo (see ``is_new``) is created (``git init``) from the template, and every
-    template path in it is committed, so a first write that stopped part way is finished.
+    template path in it is committed, so a first write that stopped part way is finished;
+    ``company.yaml`` and the owner's file are always rewritten from the answers given.
     An existing one gets only the template files it lacks, such as flows added to the
     template after it was made: nothing is overwritten, so the owner's edits stay. Only
     what was written is committed. ``company`` and ``owner`` are needed only for a new repo.
@@ -116,11 +117,14 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     new = is_new(root)
     if not new:
         wanted = {rel: data for rel, data in _walk(files(__name__)).items() if rel not in _FILLED}
+        filled: set[str] = set()
     elif company is None or owner is None:
         raise ValueError(f"{root} has no company yet; a new company needs a name and an owner")
     else:
         wanted = template_files(company, owner)
-    missing = sorted(rel for rel in wanted if not os.path.lexists(root / rel))
+        # Nothing is committed yet, so an earlier, interrupted write's filled files are stale or partial.
+        filled = {rel.replace(_OWNER_DIR, f"people/{owner.id}", 1) for rel in _FILLED}
+    missing = sorted(rel for rel in wanted if rel in filled or not os.path.lexists(root / rel))
     if not (root / ".git").exists():
         root.mkdir(parents=True, exist_ok=True)
         _git_init(root)
