@@ -1,8 +1,8 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import { batch, createEffect, createMemo } from "solid-js"
-import { useSync } from "./sync"
-import { useEvent } from "./event"
+import type { Person, Session } from "@agent-corp/protocol"
+import { batch, createEffect, createMemo, createSignal } from "solid-js"
+import { useOffice } from "./office"
 import path from "path"
 import { useTuiPaths } from "./runtime"
 import { useArgs } from "./args"
@@ -11,7 +11,6 @@ import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
-import { usePermission } from "./permission"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -23,61 +22,37 @@ export type LocalTheme = {
   info: RGBA
 }
 
-export function parseModel(model: string) {
-  const [providerID, ...rest] = model.split("/")
-  return {
-    providerID: providerID,
-    modelID: rest.join("/"),
-  }
-}
-
-export function recentModels(
-  model: { providerID: string; modelID: string },
-  recent: { providerID: string; modelID: string }[],
-) {
-  const seen = new Set<string>()
-  return [model, ...recent]
-    .filter((item) => {
-      const key = `${item.providerID}/${item.modelID}`
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
-    .slice(0, 10)
-    .map((item) => ({ providerID: item.providerID, modelID: item.modelID }))
+/** The person to talk to: `--person` (id or handle), else the person of the newest main session in `cwd`, else the first person who works in `cwd`, else the first agent, else the first person. */
+export function pickPerson(input: {
+  arg?: string
+  people: readonly Person[]
+  folderPeople: readonly Person[]
+  sessions: readonly Session[]
+  cwd?: string
+}) {
+  const { people } = input
+  const known = (id: string | undefined) => (id && people.some((p) => p.id === id) ? id : undefined)
+  return (
+    people.find((p) => p.id === input.arg || p.handle === input.arg)?.id ??
+    known(input.sessions.find((s) => s.kind === "main" && s.cwd === input.cwd)?.person) ??
+    known(input.folderPeople[0]?.id) ??
+    people.find((p) => p.kind === "agent")?.id ??
+    people[0]?.id
+  )
 }
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
   init: () => {
-    const sync = useSync()
+    const office = useOffice()
     const toast = useToast()
     const theme = useTheme().theme
     const route = useRoute()
     const paths = useTuiPaths()
     const args = useArgs()
-    const event = useEvent()
-    const permission = usePermission()
 
-    function isModelValid(model: { providerID: string; modelID: string }) {
-      const provider = sync.data.provider.find((item) => item.id === model.providerID)
-      return !!provider?.models[model.modelID]
-    }
-
-    function getFirstValidModel(...modelFns: (() => { providerID: string; modelID: string } | undefined)[]) {
-      for (const modelFn of modelFns) {
-        const model = modelFn()
-        if (!model) continue
-        if (isModelValid(model)) return model
-      }
-    }
-
-    function createAgent() {
-      const agents = createMemo(() => sync.data.agent.filter((agent) => agent.mode !== "subagent" && !agent.hidden))
-      const visibleAgents = createMemo(() => sync.data.agent.filter((agent) => !agent.hidden))
-      const [agentStore, setAgentStore] = createStore({
-        current: undefined as string | undefined,
-      })
+    function createPerson() {
+      const [selected, setSelected] = createSignal<string>()
       const colors = createMemo(() => [
         theme.secondary,
         theme.accent,
@@ -87,324 +62,50 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         theme.error,
         theme.info,
       ])
+      const list = () => office.state.people
+      const picked = () =>
+        pickPerson({
+          arg: args.person,
+          people: list(),
+          folderPeople: office.state.folderPeople,
+          sessions: office.state.sessions,
+          cwd: office.cwd,
+        })
+      const current = createMemo(() => {
+        const id = selected()
+        return list().find((p) => p.id === id) ?? list().find((p) => p.id === picked())
+      })
+      // Hold the first pick once the office's state is in, so later sessions don't swap the person.
+      createEffect(() => {
+        if (selected() || office.status() !== "online") return
+        const id = picked()
+        if (!id) return
+        setSelected(id)
+        if (args.person && !list().some((p) => p.id === args.person || p.handle === args.person))
+          toast.show({ variant: "warning", message: `No one here matches --person ${args.person}`, duration: 10000 })
+      })
       return {
-        list() {
-          return agents()
+        list,
+        current,
+        set(id: string) {
+          if (!list().some((p) => p.id === id))
+            return toast.show({ variant: "warning", message: `No such person: ${id}`, duration: 3000 })
+          setSelected(id)
         },
-        current() {
-          return agents().find((x) => x.name === agentStore.current) ?? agents().at(0)
-        },
-        set(name: string) {
-          if (!agents().some((x) => x.name === name))
-            return toast.show({
-              variant: "warning",
-              message: `Agent not found: ${name}`,
-              duration: 3000,
-            })
-          setAgentStore("current", name)
-        },
-        move(direction: 1 | -1) {
-          batch(() => {
-            const current = this.current()
-            if (!current) return
-            let next = agents().findIndex((x) => x.name === current.name) + direction
-            if (next < 0) next = agents().length - 1
-            if (next >= agents().length) next = 0
-            const value = agents()[next]
-            setAgentStore("current", value.name)
-          })
-        },
-        color(name: string) {
-          const index = visibleAgents().findIndex((x) => x.name === name)
-          if (index === -1) return colors()[0]
-          const agent = visibleAgents()[index]
-
-          if (agent?.color) {
-            const color = agent.color
-            if (color.startsWith("#")) return RGBA.fromHex(color)
-            // already validated by config, just satisfying TS here
-            return theme[color as keyof typeof theme] as RGBA
-          }
-          return colors()[index % colors().length]
-        },
-      }
-    }
-
-    const agent = createAgent()
-
-    function createModel() {
-      const [modelStore, setModelStore] = createStore<{
-        ready: boolean
-        model: Record<
-          string,
-          {
-            providerID: string
-            modelID: string
-          }
-        >
-        recent: {
-          providerID: string
-          modelID: string
-        }[]
-        favorite: {
-          providerID: string
-          modelID: string
-        }[]
-        variant: Record<string, string | undefined>
-      }>({
-        ready: false,
-        model: {},
-        recent: [],
-        favorite: [],
-        variant: {},
-      })
-
-      const filePath = path.join(paths.state, "model.json")
-      const state = {
-        pending: false,
-      }
-
-      function save() {
-        if (!modelStore.ready) {
-          state.pending = true
-          return
-        }
-        state.pending = false
-        void writeJsonAtomic(filePath, {
-          recent: modelStore.recent,
-          favorite: modelStore.favorite,
-          variant: modelStore.variant,
-        })
-      }
-
-      readJson<unknown>(filePath)
-        .then((x) => {
-          if (!x || typeof x !== "object") return
-          const value = x as Record<string, unknown>
-          if (Array.isArray(value.recent)) setModelStore("recent", value.recent)
-          if (Array.isArray(value.favorite)) setModelStore("favorite", value.favorite)
-          if (typeof value.variant === "object" && value.variant !== null)
-            setModelStore("variant", value.variant as Record<string, string | undefined>)
-        })
-        .catch(() => {})
-        .finally(() => {
-          setModelStore("ready", true)
-          if (state.pending) save()
-        })
-
-      const fallbackModel = createMemo(() => {
-        if (args.model) {
-          const { providerID, modelID } = parseModel(args.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
-        }
-
-        if (sync.data.config.model) {
-          const { providerID, modelID } = parseModel(sync.data.config.model)
-          if (isModelValid({ providerID, modelID })) {
-            return {
-              providerID,
-              modelID,
-            }
-          }
-        }
-
-        for (const item of modelStore.recent) {
-          if (isModelValid(item)) {
-            return item
-          }
-        }
-
-        const provider = sync.data.provider[0]
-        if (!provider) return undefined
-        const defaultModel = sync.data.provider_default[provider.id]
-        const firstModel = Object.values(provider.models)[0]
-        const model = defaultModel ?? firstModel?.id
-        if (!model) return undefined
-        return {
-          providerID: provider.id,
-          modelID: model,
-        }
-      })
-
-      const currentModel = createMemo(() => {
-        const a = agent.current()
-        return (
-          getFirstValidModel(
-            () => a && modelStore.model[a.name],
-            () => a && a.model,
-            fallbackModel,
-          ) ?? undefined
-        )
-      })
-
-      return {
-        current: currentModel,
-        get ready() {
-          return modelStore.ready
-        },
-        recent() {
-          return modelStore.recent
-        },
-        favorite() {
-          return modelStore.favorite
-        },
-        parsed: createMemo(() => {
-          const value = currentModel()
-          if (!value) {
-            return {
-              provider: "",
-              model: "No model configured",
-              reasoning: false,
-            }
-          }
-          const provider = sync.data.provider.find((item) => item.id === value.providerID)
-          const info = provider?.models[value.modelID]
-          return {
-            provider: provider?.name ?? value.providerID,
-            model: info?.name ?? value.modelID,
-            reasoning: info?.capabilities?.reasoning ?? false,
-          }
-        }),
         cycle(direction: 1 | -1) {
-          const current = currentModel()
-          if (!current) return
-          const recent = modelStore.recent
-          const index = recent.findIndex((x) => x.providerID === current.providerID && x.modelID === current.modelID)
-          if (index === -1) return
-          let next = index + direction
-          if (next < 0) next = recent.length - 1
-          if (next >= recent.length) next = 0
-          const val = recent[next]
-          if (!val) return
-          const a = agent.current()
-          if (!a) return
-          setModelStore("model", a.name, { ...val })
+          const people = list()
+          if (!people.length) return
+          const index = people.findIndex((p) => p.id === current()?.id)
+          setSelected(people[(index + direction + people.length) % people.length].id)
         },
-        cycleFavorite(direction: 1 | -1) {
-          const favorites = modelStore.favorite.filter((item) => isModelValid(item))
-          if (!favorites.length) {
-            toast.show({
-              variant: "info",
-              message: "Add a favorite model to use this shortcut",
-              duration: 3000,
-            })
-            return
-          }
-          const current = currentModel()
-          let index = -1
-          if (current) {
-            index = favorites.findIndex((x) => x.providerID === current.providerID && x.modelID === current.modelID)
-          }
-          if (index === -1) {
-            index = direction === 1 ? 0 : favorites.length - 1
-          } else {
-            index += direction
-            if (index < 0) index = favorites.length - 1
-            if (index >= favorites.length) index = 0
-          }
-          const next = favorites[index]
-          if (!next) return
-          const a = agent.current()
-          if (!a) return
-          setModelStore("model", a.name, { ...next })
-          setModelStore("recent", recentModels(next, modelStore.recent))
-          save()
-        },
-        set(model: { providerID: string; modelID: string }, options?: { recent?: boolean }) {
-          batch(() => {
-            if (!isModelValid(model)) {
-              toast.show({
-                message: `Model ${model.providerID}/${model.modelID} is not valid`,
-                variant: "warning",
-                duration: 3000,
-              })
-              return
-            }
-            const a = agent.current()
-            if (!a) return
-            setModelStore("model", a.name, model)
-            if (options?.recent) {
-              setModelStore("recent", recentModels(model, modelStore.recent))
-              save()
-            }
-          })
-        },
-        toggleFavorite(model: { providerID: string; modelID: string }) {
-          batch(() => {
-            if (!isModelValid(model)) {
-              toast.show({
-                message: `Model ${model.providerID}/${model.modelID} is not valid`,
-                variant: "warning",
-                duration: 3000,
-              })
-              return
-            }
-            const exists = modelStore.favorite.some(
-              (x) => x.providerID === model.providerID && x.modelID === model.modelID,
-            )
-            const next = exists
-              ? modelStore.favorite.filter((x) => x.providerID !== model.providerID || x.modelID !== model.modelID)
-              : [model, ...modelStore.favorite]
-            setModelStore(
-              "favorite",
-              next.map((x) => ({ providerID: x.providerID, modelID: x.modelID })),
-            )
-            save()
-          })
-        },
-        variant: {
-          selected() {
-            const m = currentModel()
-            if (!m) return undefined
-            const key = `${m.providerID}/${m.modelID}`
-            return modelStore.variant[key]
-          },
-          current() {
-            const v = this.selected()
-            if (!v) return undefined
-            if (!this.list().includes(v)) return undefined
-            return v
-          },
-          list() {
-            const m = currentModel()
-            if (!m) return []
-            const provider = sync.data.provider.find((item) => item.id === m.providerID)
-            const info = provider?.models[m.modelID]
-            if (!info?.variants) return []
-            return Object.keys(info.variants)
-          },
-          set(value: string | undefined) {
-            const m = currentModel()
-            if (!m) return
-            const key = `${m.providerID}/${m.modelID}`
-            setModelStore("variant", key, value ?? "default")
-            save()
-          },
-          cycle() {
-            const variants = this.list()
-            if (variants.length === 0) return
-            const current = this.current()
-            if (!current) {
-              this.set(variants[0])
-              return
-            }
-            const index = variants.indexOf(current)
-            if (index === -1 || index === variants.length - 1) {
-              this.set(undefined)
-              return
-            }
-            this.set(variants[index + 1])
-          },
+        color(id: string | undefined) {
+          const index = list().findIndex((p) => p.id === id)
+          return colors()[Math.max(0, index) % colors().length]
         },
       }
     }
 
-    const model = createModel()
+    const person = createPerson()
 
     function createSession() {
       const [sessionStore, setSessionStore] = createStore<{
@@ -448,24 +149,8 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         })
 
       const slots = createMemo(() => {
-        const existing = new Set(sync.data.session.filter((x) => x.parentID === undefined).map((x) => x.id))
+        const existing = new Set(office.state.sessions.filter((x) => x.kind === "main").map((x) => x.id))
         return sessionStore.pinned.filter((id) => existing.has(id)).slice(0, 9)
-      })
-
-      function prune(sessionID: string) {
-        batch(() => {
-          if (sessionStore.pinned.includes(sessionID)) {
-            setSessionStore(
-              "pinned",
-              sessionStore.pinned.filter((x) => x !== sessionID),
-            )
-          }
-          save()
-        })
-      }
-
-      event.on("session.deleted", (evt) => {
-        prune(evt.properties.info.id)
       })
 
       return {
@@ -500,22 +185,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const session = createSession()
 
-    createEffect(() => {
-      const value = agent.current()
-      if (!value?.model) return
-      if (isModelValid(value.model)) return
-      toast.show({
-        variant: "warning",
-        message: `Agent ${value.name}'s configured model ${value.model.providerID}/${value.model.modelID} is not valid`,
-        duration: 3000,
-      })
-    })
-
     const result = {
-      model,
-      agent,
+      person,
       session,
-      permission,
     }
     return result
   },

@@ -1,7 +1,6 @@
 import { Prompt, type PromptRef } from "../component/prompt"
-import { createEffect, createMemo, createSignal, onMount } from "solid-js"
+import { createEffect, createMemo, createSignal, onMount, Show } from "solid-js"
 import { Logo } from "../component/logo"
-import { useSync } from "../context/sync"
 import { Toast } from "../ui/toast"
 import { useArgs } from "../context/args"
 import { useRouteData } from "../context/route"
@@ -10,15 +9,15 @@ import { useLocal } from "../context/local"
 import { useEditorContext } from "../context/editor"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
+import { useOffice } from "../context/office"
+import { useTheme } from "../context/theme"
+import { useTuiPaths } from "../context/runtime"
+import { abbreviateHome } from "../runtime"
 
 let once = false
-const placeholder = {
-  normal: ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"],
-  shell: ["ls -la", "git status", "pwd"],
-}
+const placeholder = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
 
 export function Home() {
-  const sync = useSync()
   const route = useRouteData("home")
   const promptRef = usePromptRef()
   const [ref, setRef] = createSignal<PromptRef | undefined>()
@@ -27,6 +26,9 @@ export function Home() {
   const editor = useEditorContext()
   const dimensions = useTerminalDimensions()
   const tuiConfig = useTuiConfig()
+  const office = useOffice()
+  const paths = useTuiPaths()
+  const { theme } = useTheme()
   const promptMaxWidth = createMemo(() => {
     const configured = tuiConfig.prompt?.max_width
     if (configured === "auto") return Math.max(75, Math.floor(dimensions().width * 0.7))
@@ -52,12 +54,12 @@ export function Home() {
     once = true
   }
 
-  // Wait for sync and model store to be ready before auto-submitting --prompt
+  // Wait for the office and a person before auto-submitting --prompt
   createEffect(() => {
     const r = ref()
     if (sent) return
     if (!r) return
-    if (!sync.ready || !local.model.ready) return
+    if (office.status() !== "online" || !local.person.current()) return
     if (!args.prompt) return
     if (r.current.input !== args.prompt) return
     sent = true
@@ -74,6 +76,16 @@ export function Home() {
       <box height={1} minHeight={0} flexShrink={1} />
       <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
         <Prompt ref={bind} placeholders={placeholder} />
+        <Show when={office.status() === "offline"}>
+          <text fg={theme.textMuted} paddingTop={1}>
+            Office is not running. Waiting for {abbreviateHome(office.client.socket, paths.home)}
+          </text>
+        </Show>
+        <Show when={office.status() === "error"}>
+          <text fg={theme.error} paddingTop={1}>
+            The office's state can't be read: {office.error()}. Retrying…
+          </text>
+        </Show>
       </box>
       <box flexGrow={1} minHeight={0} />
       <Toast />

@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test"
-import { run } from "../src"
+import { defaultSocket, Global, run } from "../src"
 
-test("exports the canonical application lifecycle", () => {
+test("exports the application lifecycle, its layer, and the default office socket", () => {
   expect(typeof run).toBe("function")
+  expect(Global.layer).toBeDefined()
+  expect(defaultSocket()).toBe(`${process.env.AGENT_CORP_HOME}/office/office.sock`)
 })

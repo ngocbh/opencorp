@@ -2,20 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal, For, Show } from "solid-js"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
-import {
-  formatCompletedSubagentDetail,
-  formatSubagentRetry,
-  formatSubagentTitle,
-  formatSubagentToolcalls,
-  InlineToolRow,
-  parseApplyPatchFiles,
-  parseDiagnostics,
-  parseQuestionAnswers,
-  parseQuestions,
-  parseTodos,
-  alwaysSeparate,
-  toolDisplay,
-} from "../../../src/routes/session"
+import { InlineToolRow, alwaysSeparate, toolView } from "../../../src/routes/session"
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
 
@@ -223,9 +210,20 @@ async function renderFrame(component: () => JSX.Element, options: { width: numbe
 }
 
 describe("TUI inline tool wrapping", () => {
-  test("falls back for unknown tool names", () => {
-    expect(toolDisplay("bash")).toBe("bash")
-    expect(toolDisplay("plugin_tool")).toBe("generic")
+  test("maps office tools onto renderers and falls back for unknown ones", () => {
+    expect(toolView("shell").view).toBe("shell")
+    expect(toolView("plugin_tool").view).toBe("generic")
+    expect(toolView("list").view).toBe("list")
+    expect(toolView("read_file", { path: "a.py", offset: 2 })).toEqual({
+      view: "read",
+      input: { filePath: "a.py", offset: 2 },
+    })
+    expect(toolView("edit_file", { path: "a.py", old: "x", new: "y" }).input).toEqual({
+      filePath: "a.py",
+      oldString: "x",
+      newString: "y",
+    })
+    expect(toolView("search", { pattern: "p", glob: "*.py" }).input).toEqual({ pattern: "p", include: "*.py" })
   })
 
   test("replaces pending copy when a tool fails before completion", async () => {
@@ -238,57 +236,6 @@ describe("TUI inline tool wrapping", () => {
     const frame = await renderFrame(() => <FailedCompleteToolFixture />, { width: 72, height: 3 })
     expect(frame).toContain("Read src/index.ts")
     expect(frame).not.toContain("Read failed")
-  })
-
-  test("filters malformed nested tool wire data", () => {
-    expect(
-      parseApplyPatchFiles([
-        null,
-        { type: "add" },
-        { type: "add", relativePath: "a.ts", filePath: "a.ts", patch: "diff", deletions: 0 },
-      ]),
-    ).toEqual([
-      { type: "add", relativePath: "a.ts", filePath: "a.ts", patch: "diff", deletions: 0, movePath: undefined },
-    ])
-    expect(parseTodos([null, { status: "pending" }, { status: "pending", content: "Safe" }])).toEqual([
-      { status: "pending", content: "Safe" },
-    ])
-    expect(parseQuestions([{}, { question: 1 }, { question: "Continue?" }])).toEqual([{ question: "Continue?" }])
-    expect(parseQuestionAnswers([null, ["yes", 1], "no"])).toEqual([[], ["yes"], []])
-    expect(parseQuestionAnswers({})).toBeUndefined()
-  })
-
-  test("ignores diagnostics with malformed nested ranges", () => {
-    expect(
-      parseDiagnostics(
-        {
-          "a.ts": [
-            { severity: 1, message: "missing range" },
-            { severity: 1, message: "bad line", range: { start: { line: "0", character: 1 } } },
-            { severity: 1, message: "valid", range: { start: { line: 2, character: 3 } } },
-          ],
-        },
-        "a.ts",
-      ),
-    ).toEqual([{ message: "valid", range: { start: { line: 2, character: 3 } } }])
-  })
-
-  test("formats completed subagent toolcall details", () => {
-    expect(formatCompletedSubagentDetail(0, "501ms")).toBe("501ms")
-    expect(formatCompletedSubagentDetail(1, "501ms")).toBe("1 toolcall · 501ms")
-    expect(formatCompletedSubagentDetail(2, "501ms")).toBe("2 toolcalls · 501ms")
-    expect(formatSubagentToolcalls(0)).toBe("0 toolcalls")
-  })
-
-  test("keeps background state attached to the subagent identity", () => {
-    expect(formatSubagentTitle("Explore", "Inspect renderer", false)).toBe("Explore Task — Inspect renderer")
-    expect(formatSubagentTitle("Explore", "Inspect renderer", true)).toBe(
-      "Explore Task (background) — Inspect renderer",
-    )
-  })
-
-  test("keeps retry status ahead of wrapping messages", () => {
-    expect(formatSubagentRetry(2, "Rate limited by provider")).toBe("Retrying (attempt 2) · Rate limited by provider")
   })
 
   test("snapshots consecutive grep, glob, and read rows at a narrow width", async () => {

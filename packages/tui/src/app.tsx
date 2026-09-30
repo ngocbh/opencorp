@@ -25,15 +25,11 @@ import {
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { ErrorComponent } from "./component/error-component"
-import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
-import { useEvent } from "./context/event"
-import { SDKProvider, useSDK } from "./context/sdk"
-import { SyncProvider, useSync } from "./context/sync"
-import { DataProvider } from "./context/data"
-import { LocationProvider } from "./context/location"
+import { OfficeProvider, useOffice } from "./context/office"
+import { sessionsIn } from "./office/store"
+import { personLabel } from "./util/transcript"
 import { LocalProvider, useLocal } from "./context/local"
-import { PermissionProvider } from "./context/permission"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
@@ -45,12 +41,10 @@ import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
 import { ToastProvider, useToast } from "./ui/toast"
-import { isDefaultTitle } from "./util/session"
 import { KVProvider, useKV } from "./context/kv"
-import * as Model from "./util/model"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
-import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
+import { TuiConfigProvider, useTuiConfig, resolve as resolveConfig, type TuiConfig } from "./config"
 import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
@@ -61,10 +55,9 @@ import {
   useOpencodeKeymap,
 } from "./keymap"
 
-import type { EventSource } from "./context/sdk"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
-import { cliErrorMessage, errorFormat } from "./util/error"
+import { errorFormat } from "./util/error"
 
 registerOpencodeSpinner()
 
@@ -104,32 +97,21 @@ const appBindingCommands = [
 ] as const
 
 export type TuiInput = {
-  url: string
+  /** The office's unix socket. */
+  socket: string
+  /** The folder the TUI works in. */
+  cwd: string
   args: Args
-  config: TuiConfig.Resolved
+  /** Keybinds and display settings; the defaults when omitted. */
+  config?: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
-  directory?: string
-  fetch?: typeof fetch
-  headers?: RequestInit["headers"]
-  events?: EventSource
 }
 
-function errorMessage(error: unknown) {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "data" in error &&
-    typeof error.data === "object" &&
-    error.data !== null &&
-    "message" in error.data &&
-    typeof error.data.message === "string"
-  ) {
-    return error.data.message
+export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
+  const input = {
+    ...opts,
+    config: opts.config ?? resolveConfig({}, { terminalSuspend: process.platform !== "win32" }),
   }
-  return error instanceof Error ? error.message : String(error)
-}
-
-export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   const global = yield* Global.Service
   const exit = { epilogue: undefined as string | undefined, reason: undefined as unknown }
   const result = yield* Effect.scoped(
@@ -218,52 +200,27 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                             <ArgsProvider {...input.args}>
                               <KVProvider>
                                 <ToastProvider>
-                                  <RouteProvider
-                                    initialRoute={
-                                      input.args.continue
-                                        ? {
-                                            type: "session",
-                                            sessionID: "dummy",
-                                          }
-                                        : undefined
-                                    }
-                                  >
+                                  <RouteProvider>
                                     <TuiConfigProvider config={input.config}>
-                                      <SDKProvider
-                                        url={input.url}
-                                        directory={input.directory}
-                                        fetch={input.fetch}
-                                        headers={input.headers}
-                                        events={input.events}
-                                      >
-                                        <PermissionProvider>
-                                          <ProjectProvider>
-                                            <SyncProvider>
-                                              <DataProvider>
-                                                <ThemeProvider mode={mode}>
-                                                  <LocalProvider>
-                                                    <PromptStashProvider>
-                                                      <DialogProvider>
-                                                        <FrecencyProvider>
-                                                          <PromptHistoryProvider>
-                                                            <PromptRefProvider>
-                                                              <EditorContextProvider>
-                                                                <LocationProvider>
-                                                                  <App onSnapshot={input.onSnapshot} />
-                                                                </LocationProvider>
-                                                              </EditorContextProvider>
-                                                            </PromptRefProvider>
-                                                          </PromptHistoryProvider>
-                                                        </FrecencyProvider>
-                                                      </DialogProvider>
-                                                    </PromptStashProvider>
-                                                  </LocalProvider>
-                                                </ThemeProvider>
-                                              </DataProvider>
-                                            </SyncProvider>
-                                          </ProjectProvider>
-                                        </PermissionProvider>
-                                      </SDKProvider>
+                                      <OfficeProvider socket={input.socket} cwd={input.cwd}>
+                                        <ThemeProvider mode={mode}>
+                                          <LocalProvider>
+                                            <PromptStashProvider>
+                                              <DialogProvider>
+                                                <FrecencyProvider>
+                                                  <PromptHistoryProvider>
+                                                    <PromptRefProvider>
+                                                      <EditorContextProvider>
+                                                        <App onSnapshot={input.onSnapshot} />
+                                                      </EditorContextProvider>
+                                                    </PromptRefProvider>
+                                                  </PromptHistoryProvider>
+                                                </FrecencyProvider>
+                                              </DialogProvider>
+                                            </PromptStashProvider>
+                                          </LocalProvider>
+                                        </ThemeProvider>
+                                      </OfficeProvider>
                                     </TuiConfigProvider>
                                   </RouteProvider>
                                 </ToastProvider>
@@ -287,7 +244,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   yield* Effect.sync(() => {
     win32FlushInputBuffer()
     if (result.reason !== undefined) {
-      process.stderr.write((cliErrorMessage(result.reason) ?? errorFormat(result.reason)) + "\n")
+      process.stderr.write(errorFormat(result.reason) + "\n")
       process.exitCode = 1
     }
     if (result.epilogue) process.stdout.write(result.epilogue + "\n")
@@ -303,13 +260,10 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const local = useLocal()
   const kv = useKV()
   const keymap = useOpencodeKeymap()
-  const event = useEvent()
-  const sdk = useSDK()
   const toast = useToast()
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
-  const sync = useSync()
-  const project = useProject()
+  const office = useOffice()
   const exit = useExit()
   const promptRef = usePromptRef()
   const clipboard = useClipboard()
@@ -339,47 +293,24 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     renderer.clearSelection()
   }
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
-  const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(
-    kv.get("paste_summary_enabled", !sync.data.config.experimental?.disable_paste_summary),
-  )
+  const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(kv.get("paste_summary_enabled", true))
 
   // Update terminal window title based on current route and session
   createEffect(() => {
     if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
 
-    if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
-      return
-    }
-
     if (route.data.type === "session") {
-      const session = sync.session.get(route.data.sessionID)
-      if (!session || isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
-        return
-      }
-
-      const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
-      return
+      const sessionID = route.data.sessionID
+      const session = office.state.sessions.find((s) => s.id === sessionID)
+      if (session) return renderer.setTerminalTitle(`ac | ${personLabel(office.state.people, session.person)}`)
     }
+    renderer.setTerminalTitle("ac")
   })
 
   const args = useArgs()
   onMount(() => {
     batch(() => {
-      if (args.agent) local.agent.set(args.agent)
-      if (args.model) {
-        const { providerID, modelID } = Model.parse(args.model)
-        if (!providerID || !modelID)
-          return toast.show({
-            variant: "warning",
-            message: `Invalid model format: ${args.model}`,
-            duration: 3000,
-          })
-        local.model.set({ providerID, modelID }, { recent: true })
-      }
-      if (args.sessionID && !args.fork) {
+      if (args.sessionID) {
         route.navigate({
           type: "session",
           sessionID: args.sessionID,
@@ -388,43 +319,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  // `--continue` opens the newest main session in cwd once the office has listed its sessions.
   let continued = false
   createEffect(() => {
-    // When using -c, session list is loaded in blocking phase, so we can navigate at "partial"
-    if (continued || sync.status === "loading" || !args.continue) return
-    const match = sync.data.session
-      .toSorted((a, b) => b.time.updated - a.time.updated)
-      .find((x) => x.parentID === undefined)?.id
-    if (match) {
-      continued = true
-      if (args.fork) {
-        void sdk.client.session.fork({ sessionID: match }).then((result) => {
-          if (result.data?.id) {
-            route.navigate({ type: "session", sessionID: result.data.id })
-          } else {
-            toast.show({ message: "Failed to fork session", variant: "error" })
-          }
-        })
-      } else {
-        route.navigate({ type: "session", sessionID: match })
-      }
-    }
-  })
-
-  // Handle --session with --fork: wait for sync to be fully complete before forking
-  // (session list loads in non-blocking phase for --session, so we must wait for "complete"
-  // to avoid a race where reconcile overwrites the newly forked session)
-  let forked = false
-  createEffect(() => {
-    if (forked || sync.status !== "complete" || !args.sessionID || !args.fork) return
-    forked = true
-    void sdk.client.session.fork({ sessionID: args.sessionID }).then((result) => {
-      if (result.data?.id) {
-        route.navigate({ type: "session", sessionID: result.data.id })
-      } else {
-        toast.show({ message: "Failed to fork session", variant: "error" })
-      }
-    })
+    if (continued || !args.continue || office.status() !== "online") return
+    continued = true
+    const match = sessionsIn(office.state, office.cwd)[0]
+    if (match) route.navigate({ type: "session", sessionID: match.id })
   })
 
   const appCommands = createMemo(() =>
@@ -442,7 +343,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "session.list",
         title: "Switch session",
         category: "Session",
-        suggested: sync.data.session.length > 0,
+        suggested: sessionsIn(office.state, office.cwd).length > 0,
         slashName: "sessions",
         slashAliases: ["resume", "continue"],
         run: () => {
@@ -474,20 +375,20 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       })),
       {
         name: "agent.cycle",
-        title: "Agent cycle",
-        category: "Agent",
+        title: "Next person",
+        category: "Person",
         hidden: true,
         run: () => {
-          local.agent.move(1)
+          local.person.cycle(1)
         },
       },
       {
         name: "agent.cycle.reverse",
-        title: "Agent cycle reverse",
-        category: "Agent",
+        title: "Previous person",
+        category: "Person",
         hidden: true,
         run: () => {
-          local.agent.move(-1)
+          local.person.cycle(-1)
         },
       },
       {
@@ -649,19 +550,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           ? "Disable session directory filtering"
           : "Enable session directory filtering",
         category: "System",
-        run: async () => {
-          kv.set("session_directory_filter_enabled", !kv.get("session_directory_filter_enabled", true))
-          await sync.session.refresh()
-          dialog.clear()
-        },
-      },
-      {
-        name: "permission.mode",
-        title:
-          local.permission.mode === "auto" ? "Disable auto-approve permissions" : "Enable auto-approve permissions",
-        category: "System",
         run: () => {
-          local.permission.toggle()
+          kv.set("session_directory_filter_enabled", !kv.get("session_directory_filter_enabled", true))
           dialog.clear()
         },
       },
@@ -693,52 +583,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     },
     bindings: tuiConfig.keybinds.gather("app_exit", ["app.exit"]),
   }))
-
-  event.on("tui.command.execute", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    keymap.dispatchCommand(evt.properties.command)
-  })
-
-  event.on("tui.toast.show", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    toast.show({
-      title: evt.properties.title,
-      message: evt.properties.message,
-      variant: evt.properties.variant,
-      duration: evt.properties.duration,
-    })
-  })
-
-  event.on("tui.session.select", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    route.navigate({
-      type: "session",
-      sessionID: evt.properties.sessionID,
-    })
-  })
-
-  event.on("session.deleted", (evt) => {
-    if (route.data.type === "session" && route.data.sessionID === evt.properties.info.id) {
-      route.navigate({ type: "home" })
-      toast.show({
-        variant: "info",
-        message: "The current session was deleted",
-      })
-    }
-  })
-
-  event.on("session.error", (evt, { workspace }) => {
-    if (workspace !== project.workspace.current()) return
-    const error = evt.properties.error
-    if (error && typeof error === "object" && error.name === "MessageAbortedError") return
-    const message = errorMessage(error)
-
-    toast.show({
-      variant: "error",
-      message,
-      duration: 5000,
-    })
-  })
 
   return (
     <box

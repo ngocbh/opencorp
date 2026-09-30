@@ -14,6 +14,18 @@ export function datetime(input: number): string {
   return `${localTime} · ${localDate}`
 }
 
+/** How long ago `input` was ("just now", "5m ago", "3h ago", "2d ago"), or its date after a week. */
+export function relative(input: number, now = Date.now()): string {
+  const minutes = Math.floor((now - input) / 60_000)
+  const hours = Math.floor(minutes / 60)
+  const days = Math.floor(hours / 24)
+  if (minutes < 1) return "just now"
+  if (minutes < 60) return `${minutes}m ago`
+  if (hours < 24) return `${hours}h ago`
+  if (days < 7) return `${days}d ago`
+  return datetime(input)
+}
+
 export function todayTimeOrDateTime(input: number): string {
   const date = new Date(input)
   const now = new Date()

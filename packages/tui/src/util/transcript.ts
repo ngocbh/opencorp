@@ -1,114 +1,76 @@
-import type { AssistantMessage, Part, Provider, UserMessage } from "@opencode-ai/sdk/v2"
-import { Locale } from "./locale"
-import * as Model from "./model"
+import type { Message, Part, Person, Session } from "@agent-corp/protocol"
 
 export type TranscriptOptions = {
-  thinking: boolean
   toolDetails: boolean
-  assistantMetadata: boolean
-  providers?: Provider[]
 }
 
-export type SessionInfo = {
-  id: string
-  title: string
-  time: {
-    created: number
-    updated: number
-  }
+/** The session's display name: `@handle`, or the raw person id if the person is unknown. */
+export function personLabel(people: readonly Person[], id: string) {
+  const person = people.find((p) => p.id === id)
+  return person ? `@${person.handle}` : id
 }
 
-export type MessageWithParts = {
-  info: UserMessage | AssistantMessage
-  parts: Part[]
-}
-
+/** A session as markdown: a header, then its messages in creation order. */
 export function formatTranscript(
-  session: SessionInfo,
-  messages: MessageWithParts[],
+  session: Session,
+  messages: readonly Message[],
+  people: readonly Person[],
   options: TranscriptOptions,
 ): string {
-  const providers = Model.index(options.providers)
-  let transcript = `# ${session.title}\n\n`
+  let transcript = `# ${personLabel(people, session.person)} · ${session.cwd}\n\n`
   transcript += `**Session ID:** ${session.id}\n`
-  transcript += `**Created:** ${new Date(session.time.created).toLocaleString()}\n`
-  transcript += `**Updated:** ${new Date(session.time.updated).toLocaleString()}\n\n`
+  transcript += `**Created:** ${new Date(session.created_at).toLocaleString()}\n`
+  transcript += `**Updated:** ${new Date(session.updated_at).toLocaleString()}\n\n`
   transcript += `---\n\n`
-
-  for (const msg of messages.toSorted(
-    (a, b) => a.info.time.created - b.info.time.created || a.info.id.localeCompare(b.info.id),
-  )) {
-    transcript += formatMessage(msg.info, msg.parts, options, providers)
+  for (const msg of messages.toSorted((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))) {
+    transcript += formatMessage(msg, session, people, options)
     transcript += `---\n\n`
   }
-
   return transcript
 }
 
+/** One message as markdown, headed `## User` or by the session person's handle. */
 export function formatMessage(
-  msg: UserMessage | AssistantMessage,
-  parts: Part[],
+  msg: Message,
+  session: Pick<Session, "person">,
+  people: readonly Person[],
   options: TranscriptOptions,
-  providers?: Provider[] | ReadonlyMap<string, Provider>,
 ): string {
-  let result = ""
-
-  if (msg.role === "user") {
-    result += `## User\n\n`
-  } else {
-    result += formatAssistantHeader(msg, options.assistantMetadata, providers ?? options.providers)
-  }
-
-  for (const part of parts) {
-    result += formatPart(part, options)
-  }
-
+  let result = msg.role === "user" ? `## User\n\n` : `## ${personLabel(people, session.person)}\n\n`
+  for (const part of msg.parts) result += formatPart(part, options)
   return result
 }
 
-export function formatAssistantHeader(
-  msg: AssistantMessage,
-  includeMetadata: boolean,
-  providers?: Provider[] | ReadonlyMap<string, Provider>,
-): string {
-  if (!includeMetadata) {
-    return `## Assistant\n\n`
-  }
+/** A tool output as text: strings as they are, anything else as JSON. */
+export function outputText(output: unknown) {
+  if (output === undefined || output === null) return ""
+  return typeof output === "string" ? output : JSON.stringify(output, null, 2)
+}
 
-  const duration =
-    msg.time.completed && msg.time.created ? ((msg.time.completed - msg.time.created) / 1000).toFixed(1) + "s" : ""
-
-  const modelName = Model.name(providers, msg.providerID, msg.modelID)
-
-  return `## Assistant (${Locale.titlecase(msg.agent)} · ${modelName}${duration ? ` · ${duration}` : ""})\n\n`
+/** A fenced block whose fence is longer than any backtick run inside `text`. */
+function fenced(text: string, lang = "") {
+  const longest = Math.max(0, ...[...text.matchAll(/`+/g)].map((m) => m[0].length))
+  const fence = "`".repeat(Math.max(3, longest + 1))
+  return `${fence}${lang}\n${text}\n${fence}\n`
 }
 
 export function formatPart(part: Part, options: TranscriptOptions): string {
-  if (part.type === "text" && !part.synthetic) {
-    return `${part.text}\n\n`
+  switch (part.type) {
+    case "text":
+      return `${part.text}\n\n`
+    case "file":
+      return `_File:_ ${part.path} (${part.mime})\n\n`
+    case "tool": {
+      let result = `**Tool: ${part.tool}**\n`
+      if (options.toolDetails) {
+        if (part.input && Object.keys(part.input).length)
+          result += `\n**Input:**\n` + fenced(JSON.stringify(part.input, null, 2), "json")
+        const output = outputText(part.output)
+        if (output) result += `\n**Output:**\n` + fenced(output)
+        if (part.error) result += `\n**Error:**\n` + fenced(part.error)
+      }
+      return result + `\n`
+    }
   }
-
-  if (part.type === "reasoning") {
-    if (options.thinking) {
-      return `_Thinking:_\n\n${part.text}\n\n`
-    }
-    return ""
-  }
-
-  if (part.type === "tool") {
-    let result = `**Tool: ${part.tool}**\n`
-    if (options.toolDetails && part.state.input) {
-      result += `\n**Input:**\n\`\`\`json\n${JSON.stringify(part.state.input, null, 2)}\n\`\`\`\n`
-    }
-    if (options.toolDetails && part.state.status === "completed" && part.state.output) {
-      result += `\n**Output:**\n\`\`\`\n${part.state.output}\n\`\`\`\n`
-    }
-    if (options.toolDetails && part.state.status === "error" && part.state.error) {
-      result += `\n**Error:**\n\`\`\`\n${part.state.error}\n\`\`\`\n`
-    }
-    result += `\n`
-    return result
-  }
-
   return ""
 }

@@ -8,17 +8,9 @@ import { useBindings } from "../keymap"
 
 export type DialogExportOptionsProps = {
   defaultFilename: string
-  defaultThinking: boolean
   defaultToolDetails: boolean
-  defaultAssistantMetadata: boolean
   defaultOpenWithoutSaving: boolean
-  onConfirm?: (options: {
-    filename: string
-    thinking: boolean
-    toolDetails: boolean
-    assistantMetadata: boolean
-    openWithoutSaving: boolean
-  }) => void
+  onConfirm?: (options: { filename: string; toolDetails: boolean; openWithoutSaving: boolean }) => void
   onCancel?: () => void
 }
 
@@ -28,11 +20,9 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
   const tuiConfig = useTuiConfig()
   let textarea: TextareaRenderable
   const [store, setStore] = createStore({
-    thinking: props.defaultThinking,
     toolDetails: props.defaultToolDetails,
-    assistantMetadata: props.defaultAssistantMetadata,
     openWithoutSaving: props.defaultOpenWithoutSaving,
-    active: "filename" as "filename" | "thinking" | "toolDetails" | "assistantMetadata" | "openWithoutSaving",
+    active: "filename" as "filename" | "toolDetails" | "openWithoutSaving",
   })
 
   useBindings(() => ({
@@ -42,11 +32,9 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
         desc: "Next export option",
         group: "Dialog",
         cmd: () => {
-          const order: Array<"filename" | "thinking" | "toolDetails" | "assistantMetadata" | "openWithoutSaving"> = [
+          const order: Array<"filename" | "toolDetails" | "openWithoutSaving"> = [
             "filename",
-            "thinking",
             "toolDetails",
-            "assistantMetadata",
             "openWithoutSaving",
           ]
           const currentIndex = order.indexOf(store.active)
@@ -65,9 +53,7 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
         desc: "Toggle export option",
         group: "Dialog",
         cmd: () => {
-          if (store.active === "thinking") setStore("thinking", !store.thinking)
           if (store.active === "toolDetails") setStore("toolDetails", !store.toolDetails)
-          if (store.active === "assistantMetadata") setStore("assistantMetadata", !store.assistantMetadata)
           if (store.active === "openWithoutSaving") setStore("openWithoutSaving", !store.openWithoutSaving)
         },
       },
@@ -101,9 +87,7 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
           onSubmit={() => {
             props.onConfirm?.({
               filename: textarea.plainText,
-              thinking: store.thinking,
               toolDetails: store.toolDetails,
-              assistantMetadata: store.assistantMetadata,
               openWithoutSaving: store.openWithoutSaving,
             })
           }}
@@ -126,18 +110,6 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
           flexDirection="row"
           gap={2}
           paddingLeft={1}
-          backgroundColor={store.active === "thinking" ? theme.backgroundElement : undefined}
-          onMouseUp={() => setStore("active", "thinking")}
-        >
-          <text fg={store.active === "thinking" ? theme.primary : theme.textMuted}>
-            {store.thinking ? "[x]" : "[ ]"}
-          </text>
-          <text fg={store.active === "thinking" ? theme.primary : theme.text}>Include thinking</text>
-        </box>
-        <box
-          flexDirection="row"
-          gap={2}
-          paddingLeft={1}
           backgroundColor={store.active === "toolDetails" ? theme.backgroundElement : undefined}
           onMouseUp={() => setStore("active", "toolDetails")}
         >
@@ -145,18 +117,6 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
             {store.toolDetails ? "[x]" : "[ ]"}
           </text>
           <text fg={store.active === "toolDetails" ? theme.primary : theme.text}>Include tool details</text>
-        </box>
-        <box
-          flexDirection="row"
-          gap={2}
-          paddingLeft={1}
-          backgroundColor={store.active === "assistantMetadata" ? theme.backgroundElement : undefined}
-          onMouseUp={() => setStore("active", "assistantMetadata")}
-        >
-          <text fg={store.active === "assistantMetadata" ? theme.primary : theme.textMuted}>
-            {store.assistantMetadata ? "[x]" : "[ ]"}
-          </text>
-          <text fg={store.active === "assistantMetadata" ? theme.primary : theme.text}>Include assistant metadata</text>
         </box>
         <box
           flexDirection="row"
@@ -190,25 +150,19 @@ export function DialogExportOptions(props: DialogExportOptionsProps) {
 DialogExportOptions.show = (
   dialog: DialogContext,
   defaultFilename: string,
-  defaultThinking: boolean,
   defaultToolDetails: boolean,
-  defaultAssistantMetadata: boolean,
   defaultOpenWithoutSaving: boolean,
 ) => {
   return new Promise<{
     filename: string
-    thinking: boolean
     toolDetails: boolean
-    assistantMetadata: boolean
     openWithoutSaving: boolean
   } | null>((resolve) => {
     dialog.replace(
       () => (
         <DialogExportOptions
           defaultFilename={defaultFilename}
-          defaultThinking={defaultThinking}
           defaultToolDetails={defaultToolDetails}
-          defaultAssistantMetadata={defaultAssistantMetadata}
           defaultOpenWithoutSaving={defaultOpenWithoutSaving}
           onConfirm={(options) => resolve(options)}
           onCancel={() => resolve(null)}
