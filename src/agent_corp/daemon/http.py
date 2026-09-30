@@ -38,11 +38,34 @@ def ok(body: BaseModel | list[BaseModel], status: int = 200) -> JSONResponse:
     return JSONResponse(content, status_code=status)
 
 
+MAX_BODY = 1 << 20
+"""The largest request body the office reads, in bytes."""
+
+
+def _too_large() -> HTTPError:
+    return HTTPError(413, "body_too_large", f"request body is over {MAX_BODY} bytes")
+
+
+async def read_body(request: Request) -> bytes:
+    """The request body; ``HTTPError(413)`` once it passes ``MAX_BODY``, reading no further."""
+    length = request.headers.get("content-length", "")
+    if length.isdecimal() and int(length) > MAX_BODY:
+        raise _too_large()
+    body = bytearray()
+    async for chunk in request.stream():  # a chunked body has no content-length to check
+        body += chunk
+        if len(body) > MAX_BODY:
+            raise _too_large()
+    return bytes(body)
+
+
 async def parse[M: BaseModel](request: Request, model: type[M]) -> M:
     """The request body validated as ``model``; ``HTTPError(422)`` when it isn't."""
+    body = await read_body(request)
+    # Parsed on the loop: at MAX_BODY this takes a few milliseconds.
     try:
-        return model.model_validate(json.loads(await request.body()))
-    except (ValueError, ValidationError) as exc:  # JSONDecodeError is a ValueError
+        return model.model_validate(json.loads(body))
+    except (ValueError, ValidationError, RecursionError) as exc:  # JSONDecodeError is a ValueError
         raise HTTPError(422, "invalid_body", str(exc)) from exc
 
 
