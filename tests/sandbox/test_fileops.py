@@ -44,6 +44,13 @@ def test_list(tmp_path):
     assert fileops.list_dir("d") == "(empty)"
 
 
+def test_list_is_capped(tmp_path, monkeypatch):
+    monkeypatch.setattr(fileops, "MAX_LIST_ENTRIES", 2)
+    for name in "abc":
+        (tmp_path / name).write_text("")
+    assert fileops.list_dir(".") == "a\nb\n[stopped at 2 of 3 entries]"
+
+
 def test_search(tmp_path):
     (tmp_path / "src").mkdir()
     (tmp_path / "src/a.py").write_text("def foo():\n    return 1\n")
@@ -70,6 +77,16 @@ def run_main(monkeypatch, request):
 def test_main_round_trip(monkeypatch, tmp_path):
     (tmp_path / "f").write_text("hi")
     assert run_main(monkeypatch, {"op": "read_file", "path": "f"}) == (0, {"ok": True, "output": "hi"})
+
+
+def test_main_writes_non_ascii_unescaped(monkeypatch, tmp_path):
+    (tmp_path / "f").write_text("é")
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"op": "read_file", "path": "f"})))
+    out = io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    with pytest.raises(SystemExit):
+        fileops.main()
+    assert out.getvalue() == '{"ok": true, "output": "é"}'
 
 
 def test_main_reports_errors(monkeypatch):

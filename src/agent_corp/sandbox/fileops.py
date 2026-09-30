@@ -15,6 +15,7 @@ import sys
 
 MAX_READ_CHARS = 200_000
 MAX_MATCHES = 200
+MAX_LIST_ENTRIES = 5000
 MAX_LINE_CHARS = 300
 MAX_SEARCH_FILE_BYTES = 2_000_000
 
@@ -64,9 +65,14 @@ def edit_file(path, old, new, replace_all=False):
 
 
 def list_dir(path="."):
-    """Return the directory's entries, sorted, with a `/` after each subdirectory."""
+    """Return the directory's entries, sorted, with a `/` after each subdirectory.
+
+    Stops after 5000 entries, so the reply stays bounded.
+    """
     with os.scandir(path) as entries:
         names = sorted(e.name + ("/" if e.is_dir(follow_symlinks=False) else "") for e in entries)
+    if len(names) > MAX_LIST_ENTRIES:
+        return "\n".join(names[:MAX_LIST_ENTRIES]) + f"\n[stopped at {MAX_LIST_ENTRIES} of {len(names)} entries]"
     return "\n".join(names) or "(empty)"
 
 
@@ -126,7 +132,11 @@ def main():
         reply = {"ok": False, "error": f"{exc.strerror}: {exc.filename}" if exc.filename else str(exc)}
     except (OpError, UnicodeError, TypeError, ValueError) as exc:
         reply = {"ok": False, "error": str(exc)}
-    json.dump(reply, sys.stdout)
+    # Unescaped non-ASCII keeps replies small (an escape is 6 bytes); a name that isn't
+    # valid UTF-8 would fail to encode, so it gets a replacement character.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    json.dump(reply, sys.stdout, ensure_ascii=False)
     sys.exit(0 if reply["ok"] else 1)
 
 

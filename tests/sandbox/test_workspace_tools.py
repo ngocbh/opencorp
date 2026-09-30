@@ -36,6 +36,20 @@ def test_errors_come_back_as_text(tools):
     assert out.audit.exit == 1
 
 
+def test_large_non_ascii_read(tools, ws):
+    # 200k characters of "é" are 1.2 MB as \u00e9 escapes; the reply must still fit.
+    (ws / "big.txt").write_text("é" * 300_000)
+    out = tools.read_file("big.txt").output
+    assert out.startswith("é" * 200_000 + "\n[truncated at 200000 characters")
+
+
+def test_oversized_reply_is_an_explicit_error(tools, ws, monkeypatch):
+    monkeypatch.setattr(workspace, "FILE_OUTPUT_CAP", 1000)
+    (ws / "f.txt").write_text("x" * 5000)
+    out = tools.read_file("f.txt")
+    assert out.output.startswith("error: read_file output too large (over 1000 bytes); ask for less")
+
+
 def test_shell(tools):
     out = tools.shell("echo hi; echo oops >&2; exit 2")
     assert out.output == "hi\n[stderr]\noops\n[exit 2]"

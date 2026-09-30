@@ -18,6 +18,10 @@ from agent_corp.sandbox.run import Result, run
 
 TOOL_NAMES = ("read_file", "write_file", "edit_file", "list", "search", "shell")
 MAX_SHELL_TIMEOUT = 600.0
+# Capture cap for a file tool's reply, above the largest reply the helper can produce
+# (every op's output is bounded: 200k read characters, 200 search matches, 5000 names,
+# each at most 6 bytes a character as JSON), so a cut-off reply is reported as an error.
+FILE_OUTPUT_CAP = 16 << 20
 # Bytes of shell output the model sees; the rest of the capture is cut from the middle.
 MAX_SHELL_OUTPUT = 64 * 1024
 _BULK_ARGS = frozenset({"content", "old", "new"})
@@ -131,21 +135,26 @@ class WorkspaceTools:
     def _file_op(self, tool: str, **args: Any) -> ToolOutcome:
         request = json.dumps({"op": tool, **args}).encode()
         argv = [str(self._python), "-I", "-S", "-c", _FILEOPS_SOURCE]
-        result = self._run(argv, request, self._file_timeout)
+        result = self._run(argv, request, self._file_timeout, FILE_OUTPUT_CAP)
         if result.timed_out:
             output = f"error: {tool} timed out after {self._file_timeout:g}s"
         elif result.interrupted:
             output = "[interrupted]"
+        elif result.truncated:
+            output = (
+                f"error: {tool} output too large (over {FILE_OUTPUT_CAP} bytes); "
+                "ask for less (offset and limit, a narrower path, or a glob)"
+            )
         else:
             output = _file_output(tool, result)
         return ToolOutcome(output, _audit(tool, args, result))
 
-    def _run(self, argv: list[str], stdin: bytes | None, timeout: float) -> Result:
+    def _run(self, argv: list[str], stdin: bytes | None, timeout: float, max_output: int = 1 << 20) -> Result:
         cancel = threading.Event()
         with self._lock:
             self._active.add(cancel)
         try:
-            return run(self._policy, argv, stdin, timeout, cancel=cancel)
+            return run(self._policy, argv, stdin, timeout, cancel=cancel, max_output=max_output)
         finally:
             with self._lock:
                 self._active.discard(cancel)
