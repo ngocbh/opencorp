@@ -219,6 +219,42 @@ def test_a_gate_takes_a_record_keyed_by_header_and_offers_no_send_back_or_stop(m
         stop(office)
 
 
+TYPED_GATE = """\
+id: gate
+name: gate
+nodes:
+  setup:
+    kind: human_input
+    questions:
+      - question: How many replicas?
+        header: count
+        options: [{label: "3"}, {label: "5"}]
+      - question: Ship it?
+        header: ship
+        options: [{label: "yes"}, {label: "no"}]
+    output: {count: int, ship: bool}
+output: ${setup.output}
+"""
+
+
+def test_a_typed_gate_takes_labels_and_the_harness_accepts_their_converted_values(make_harness, workspace):  # noqa: F811
+    h = make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW, "people/minh/gate.yaml": TYPED_GATE,
+                            "people/minh/person.yaml": person("minh", main="gate.yaml")})
+    office = wire(h)
+    outcomes = []
+    h.hooks.run_finished.append(lambda session, run_id, outcome: outcomes.append(outcome))
+    try:
+        session = h.start_session("minh", str(workspace))
+        q = wait_for(lambda: h.store.list_questions(session_id=session.id, status="open"), what="the gate")[0]
+        assert [(f.name, f.type) for f in q.answer_schema] == [("count", "int"), ("ship", "bool")]
+        typed = {"count": 3, "ship": True}
+        assert office.extras["cards"].answer(q.id, {"count": "3", "ship": "yes"}, "option").answer == typed
+        wait_for(lambda: status(h, session.id) == "ended", what="the flow to finish")
+        assert outcomes[-1]["output"] == typed
+    finally:
+        stop(office)
+
+
 def test_an_expired_question_hands_its_discussion_to_the_next_card(office, fake_llm, workspace):  # noqa: F811
     fake_llm.script(ASK, {"content": "Retries hide flakes."}, ASK, {"content": "OK."})
     h, cards = office.extras["harness"], office.extras["cards"]

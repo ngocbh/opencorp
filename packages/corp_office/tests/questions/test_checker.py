@@ -74,6 +74,41 @@ def test_a_schema_entry_types_its_page():
     assert check_answer(counted, {"n": "3"}, "option") == {"n": 3}
 
 
+def page(multi=False, **entry):
+    """A one-page gate whose ``p`` page has the schema entry ``entry``."""
+    return q(questions=[{"question": "Which?", "header": "p", "multi_select": multi,
+                         "options": [{"label": "3"}, {"label": "yes"}]}],
+             answer_schema=[{"name": "p", "required": True, **entry}])
+
+
+@pytest.mark.parametrize(("multi", "entry", "label", "value"), [
+    (False, {"type": "int"}, "3", 3),
+    (False, {"type": "float"}, "3", 3.0),
+    (False, {"type": "bool"}, "yes", True),
+    (False, {"type": "date"}, "2026-09-30", "2026-09-30"),
+    (False, {"type": "str", "enum": ["fast", "safe"]}, "safe", "safe"),
+    (False, {"type": "list[str]"}, "a", ["a"]),
+    (True, {"type": "list[str]", "enum": ["x", "y"]}, ["y", "x"], ["y", "x"]),
+    (True, {"type": "list[int]"}, ["3", "5"], [3, 5]),
+    (False, {"type": "None"}, "", None),
+])
+def test_a_typed_page_answer_converts_to_itself(multi, entry, label, value):
+    gate = page(multi, **entry)
+    assert check_answer(gate, {"p": label}, "option") == {"p": value}
+    assert check_answer(gate, {"p": value}, "option") == {"p": value}  # the harness checks the stored value again
+
+
+@pytest.mark.parametrize(("multi", "entry", "answer", "message"), [
+    (False, {"type": "int"}, " ", "'p' has no answer"),
+    (False, {"type": "int"}, "three", "'p' must be a whole number"),
+    (False, {"type": "str", "enum": ["fast", "safe"]}, ["safe"], "'p' must be one of"),
+    (True, {"type": "list[str]", "enum": ["x", "y"]}, ["z"], r"'p'\[0\] must be one of"),
+])
+def test_a_typed_page_refuses_what_its_entry_refuses(multi, entry, answer, message):
+    with pytest.raises(InvalidAnswer, match=message):
+        check_answer(page(multi, **entry), {"p": answer}, "option")
+
+
 def test_a_prompt_gate_without_a_schema_takes_text():
     assert check_answer(q(), "go ahead", "text") == "go ahead"
     with pytest.raises(InvalidAnswer):
