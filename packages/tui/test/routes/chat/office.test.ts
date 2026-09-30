@@ -32,7 +32,15 @@ test("the seeded idle session has an open turn; a prompt answers it; while busy 
     { text: "fix it" },
     { text: "use a fake clock" },
   ])
-  expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).status).toBe("idle")
+})
+
+test("a new session is starting; it goes idle when its first turn opens", async () => {
+  office = createFakeOffice()
+  const s = await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })
+  expect(s.status).toBe("starting")
+  await until(() => office.state.sessions.find((x) => x.id === s.id)?.status === "idle")
+  const turns = await client().questions.list({ session: s.id, status: ["open"] })
+  expect(turns.map((q) => [q.source, q.node_id])).toEqual([["human_input", "chat#1/ask"]])
 })
 
 test("interrupt answers the open ask_user questions; the session stays busy until its next turn opens", async () => {

@@ -580,7 +580,11 @@ export function createFakeOffice(
           `person ${body.person}`,
         )
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
-        return Response.json(newSession({ person: body.person, cwd: body.cwd, harness: body.harness ?? "composer" }))
+        const harness = body.harness ?? "composer"
+        const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting" })
+        // Like the office, the session starts its run first and goes idle when that run opens its first turn.
+        setTimeout(() => session(s.id).status === "starting" && openTurn(s.id), 10)
+        return Response.json(s)
       },
     ],
     ["GET", "/sessions/:id", ({ params }) => Response.json(session(params.id))],

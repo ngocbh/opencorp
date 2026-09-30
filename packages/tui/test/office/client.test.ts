@@ -29,8 +29,10 @@ test("create a session, prompt it, list it by person", async () => {
   const prompts: string[] = []
   office.onPrompt((_, req) => prompts.push(req.text))
   const s = await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })
-  expect([s.person, s.kind, s.status]).toEqual(["minh", "main", "idle"])
+  expect([s.person, s.kind, s.status]).toEqual(["minh", "main", "starting"])
+  // A prompt sent before the first turn opens waits for it.
   expect(await client().sessions.prompt(s.id, { text: "hi" })).toEqual({ ok: true })
+  await until(() => prompts.length > 0)
   expect(prompts).toEqual(["hi"])
   expect((await client().sessions.messages(s.id)).map((m) => m.role)).toEqual(["user"])
   expect((await client().sessions.get(s.id)).status).toBe("busy")
