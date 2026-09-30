@@ -19,8 +19,6 @@ from agent_corp.daemon.main import OfficeServer, bind_socket
 from agent_corp.store import Store
 from tests.company.conftest import _isolate_git, base_files, company, write_repo  # noqa: F401
 
-EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
-
 
 def blob_id(data: bytes) -> str:
     """The git blob id of ``data``."""

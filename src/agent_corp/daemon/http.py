@@ -79,4 +79,10 @@ async def _not_found(request: Request, exc: Exception) -> JSONResponse:
     return error(404, "not_found", str(exc))
 
 
-EXCEPTION_HANDLERS = {HTTPError: _http_error, HTTPException: _starlette_error, NotFound: _not_found}
+async def _internal_error(request: Request, exc: Exception) -> JSONResponse:
+    # Starlette still re-raises the exception after this response, so uvicorn logs it.
+    return error(500, "internal_error", "internal error")
+
+
+EXCEPTION_HANDLERS = {HTTPError: _http_error, HTTPException: _starlette_error, NotFound: _not_found,
+                      Exception: _internal_error}

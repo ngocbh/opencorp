@@ -1,5 +1,6 @@
 """The office app: error bodies, absolute-form targets, and start/stop."""
 
+import httpx
 import pytest
 
 from agent_corp.daemon.app import AbsoluteFormPaths, OfficePaths, create_app
@@ -121,3 +122,15 @@ async def test_every_table_route_is_served(client, method, path, body):
 async def test_wrong_method_is_405(client):
     r = await client.delete("/people")
     assert r.status_code == 405 and r.json()["error"] == "method_not_allowed"
+
+
+async def test_unexpected_error_is_a_500_api_error(office, monkeypatch):
+    def boom(session_id):
+        raise RuntimeError("disk on fire")
+
+    monkeypatch.setattr(office.store, "get_session", boom)
+    transport = httpx.ASGITransport(app=create_app(office), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
+        r = await c.get(f"/sessions/{ULID}")
+    assert r.status_code == 500
+    assert r.json() == {"error": "internal_error", "message": "internal error"}
