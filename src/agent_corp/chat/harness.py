@@ -120,10 +120,11 @@ class _Handlers(BaseHandlers):
         self.harness, self.live, self.ask = harness, live, ask
 
     def event(self, worker: Worker, frame: dict[str, Any]) -> None:
-        self.harness._event(self.live, worker, frame["name"], frame["data"])
+        if not self.harness._closed:
+            self.harness._event(self.live, worker, frame["name"], frame["data"])
 
     def stream(self, worker: Worker, frame: dict[str, Any]) -> None:
-        if self.live.worker is worker:
+        if self.live.worker is worker and not self.harness._closed:
             self.live.transcript.stream(frame)
 
     def steer_left(self, worker: Worker, node_id: str, texts: list[str]) -> None:
@@ -171,6 +172,7 @@ class Harness:
         self._lock = threading.RLock()
         self._live: dict[str, _Live] = {}
         self._stopping = False
+        self._closed = False  # set if close_all gave up waiting: the caller may close the store
         self._calls = 0
         self._calls_idle = threading.Condition()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -433,24 +435,34 @@ class Harness:
     def close_all(self) -> None:
         """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
 
-        Returns once no worker request is still running (or after 10 seconds), so the
-        caller can close the store.
+        Workspace calls are killed and office calls answered first, and no new worker
+        request is admitted. Returns once no worker request is still running, so the caller
+        can close the store; after 10 seconds it gives up, and worker frames that arrive
+        later no longer touch the store.
         """
         with self._lock:
             if self._stopping:
                 return
-            self._stopping = True
+            with self._calls_idle:
+                self._stopping = True  # _in_call admits no new worker request from here on
             for live in self._live.values():
                 if live.timer is not None:
                     live.timer.cancel()
+                if live.spec.workspace is not None:
+                    live.spec.workspace.interrupt()
+                for call in list(live.calls):
+                    call.cancel()
         self.registry.close_all()
         self._jobs.put(None)
         self._thread.join(10)
+        if self._thread.is_alive():
+            log.warning("harness: the dispatcher is still busy at close")
         self._unlisten()
         self.answers.close()
         # Request threads outlive their workers; let them leave the store before the office closes it.
         with self._calls_idle:
             if not self._calls_idle.wait_for(lambda: self._calls == 0, timeout=10):
+                self._closed = True
                 log.warning("harness: %d tool or ask_user calls still running at close", self._calls)
 
     # --- turns ---------------------------------------------------------------------
@@ -681,8 +693,10 @@ class Harness:
 
     @contextmanager
     def _in_call(self) -> Iterator[None]:
-        """Count a worker request running in the office, for ``close_all`` to wait on."""
+        """Count a worker request running in the office, for ``close_all`` to wait on; refuse one once stopping."""
         with self._calls_idle:
+            if self._stopping:
+                raise RuntimeError("the office is stopping")
             self._calls += 1
         try:
             yield

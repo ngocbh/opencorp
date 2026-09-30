@@ -225,6 +225,13 @@ def test_a_provider_error_at_start_fails_the_session(harness, workspace):
     assert err.value.code == "not_live"
 
 
+def test_a_stopping_harness_refuses_new_worker_requests(harness):
+    harness.close_all()
+    with pytest.raises(RuntimeError, match="stopping"):
+        with harness._in_call():
+            pass
+
+
 def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace):
     import threading
 
