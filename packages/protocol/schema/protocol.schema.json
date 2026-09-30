@@ -225,6 +225,81 @@
         "answered_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       }
+    },
+    "QuestionOption": {
+      "type": "object", "additionalProperties": false, "required": ["label"],
+      "properties": {
+        "label": { "type": "string" },
+        "description": { "type": "string", "default": "" }
+      }
+    },
+    "QuestionPage": {
+      "type": "object", "additionalProperties": false, "required": ["question", "header", "options"],
+      "properties": {
+        "question": { "type": "string" },
+        "header": { "type": "string" },
+        "options": { "type": "array", "items": { "$ref": "#/$defs/QuestionOption" } },
+        "multi_select": { "type": "boolean", "default": false }
+      }
+    },
+    "AnswerField": {
+      "type": "object", "additionalProperties": false, "required": ["name", "type", "required"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": {
+          "enum": ["None", "str", "int", "float", "date", "datetime", "bool", "object", "file",
+                   "list[Any]", "list[str]", "list[int]", "list[float]", "list[bool]", "list[object]"]
+        },
+        "required": { "type": "boolean" },
+        "enum": { "type": "array", "items": { "type": "string" } },
+        "fields": { "type": "array", "items": { "$ref": "#/$defs/AnswerField" } }
+      }
+    },
+    "DiscussionEntry": {
+      "type": "object", "additionalProperties": false, "required": ["role", "text"],
+      "properties": {
+        "role": { "enum": ["user", "assistant"] },
+        "text": { "type": "string" }
+      }
+    },
+    "Question": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "run_id", "node_id", "source", "asker", "question", "status", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "run_id": { "type": "string" },
+        "node_id": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }],
+          "description": "null for a model ask_user call."
+        },
+        "source": { "enum": ["ask_user", "human_input", "ask_manager"] },
+        "asker": { "$ref": "#/$defs/Id" },
+        "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "title": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "question": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "questions": {
+          "anyOf": [
+            { "type": "array", "items": { "$ref": "#/$defs/QuestionPage" }, "minItems": 1, "maxItems": 4 },
+            { "type": "null" }
+          ],
+          "default": null
+        },
+        "answer_schema": { "type": "array", "items": { "$ref": "#/$defs/AnswerField" }, "default": [] },
+        "discussion": { "type": "array", "items": { "$ref": "#/$defs/DiscussionEntry" }, "default": [] },
+        "gate": { "type": "boolean", "default": false },
+        "status": { "enum": ["open", "answered", "consumed", "stale"] },
+        "answer": { "description": "Absent until answered; may be null. Read status to tell whether it is answered." },
+        "answer_kind": {
+          "anyOf": [{ "enum": ["option", "text", "sent_back", "interrupted"] }, { "type": "null" }], "default": null
+        },
+        "answered_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "side_session_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "carried_from": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
     }
   }
 }
