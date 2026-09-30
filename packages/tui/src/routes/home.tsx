@@ -10,7 +10,6 @@ import { useLocal } from "../context/local"
 import { useEditorContext } from "../context/editor"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTuiConfig } from "../config"
-import { HomeSessionDestinationProvider } from "./home/session-destination"
 
 let once = false
 const placeholder = {
@@ -66,20 +65,18 @@ export function Home() {
   })
 
   return (
-    <HomeSessionDestinationProvider>
-      <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>
-        <box flexGrow={1} minHeight={0} />
-        <box height={4} minHeight={0} flexShrink={1} />
-        <box flexShrink={0}>
-          <Logo />
-        </box>
-        <box height={1} minHeight={0} flexShrink={1} />
-        <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
-          <Prompt ref={bind} placeholders={placeholder} />
-        </box>
-        <box flexGrow={1} minHeight={0} />
-        <Toast />
+    <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>
+      <box flexGrow={1} minHeight={0} />
+      <box height={4} minHeight={0} flexShrink={1} />
+      <box flexShrink={0}>
+        <Logo />
       </box>
-    </HomeSessionDestinationProvider>
+      <box height={1} minHeight={0} flexShrink={1} />
+      <box width="100%" maxWidth={promptMaxWidth()} zIndex={1000} paddingTop={1} flexShrink={0}>
+        <Prompt ref={bind} placeholders={placeholder} />
+      </box>
+      <box flexGrow={1} minHeight={0} />
+      <Toast />
+    </box>
   )
 }
