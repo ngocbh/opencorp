@@ -1,11 +1,12 @@
 """Transactions, the outbox, and listeners."""
 
+import asyncio
 import threading
 
 import pytest
 
 from agent_corp.protocol.models import Event
-from agent_corp.store import NotFound, Tx
+from agent_corp.store import NotFound, StoreError, Tx
 from tests.store.conftest import work_item
 
 
@@ -154,3 +155,40 @@ def test_listener_writes_are_delivered_in_commit_order(store):
     store.create_work_item(work_item())
     assert seen_by_b == [e.id for e in store.events_after()]
     assert [e.type for e in store.events_after()] == ["work_item.created", "work_item.updated"]
+
+
+def test_another_task_cannot_join_an_open_transaction(store):
+    a, b = work_item(), work_item()
+    errors = []
+
+    async def holder():
+        with store.transaction():
+            store.create_work_item(a)
+            await asyncio.sleep(0.05)
+
+    async def intruder():
+        await asyncio.sleep(0.01)
+        for write in (lambda: store.create_work_item(b), store.transaction().__enter__):
+            try:
+                write()
+            except StoreError as exc:
+                errors.append(str(exc))
+
+    async def main():
+        await asyncio.gather(holder(), intruder())
+
+    asyncio.run(main())
+    assert len(errors) == 2 and all("another task" in e for e in errors)
+    assert store.get_work_item(a.id) is not None and store.get_work_item(b.id) is None
+    assert [e.subject_id for e in store.events_after()] == [a.id]
+
+
+def test_one_task_nests_transactions(store):
+    item = work_item()
+
+    async def main():
+        with store.transaction():
+            store.create_work_item(item)
+
+    asyncio.run(main())
+    assert store.get_work_item(item.id) is not None

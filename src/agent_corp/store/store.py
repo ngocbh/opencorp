@@ -7,6 +7,7 @@ events after the commit. Messages and parts are live content and emit no events.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -194,16 +195,25 @@ def _quote(names: Iterable[str]) -> list[str]:
     return [f'"{n}"' for n in names]
 
 
+def _current_task() -> asyncio.Task[Any] | None:
+    """The asyncio task running on this thread, or ``None`` outside an event loop."""
+    try:
+        return asyncio.current_task()
+    except RuntimeError:
+        return None
+
+
 def _check_move(kind: str, moves: dict[str, set[str]], old: str, new: str) -> None:
     if new not in moves.get(old, set()):
         raise InvalidTransition(f"{kind} cannot move from {old} to {new}")
 
 
 class Tx:
-    """One write transaction on the calling thread's connection."""
+    """One write transaction on the calling thread's connection, owned by one asyncio task (or none)."""
 
-    def __init__(self, conn: sqlite3.Connection) -> None:
+    def __init__(self, conn: sqlite3.Connection, task: asyncio.Task[Any] | None = None) -> None:
         self.conn = conn
+        self.task = task
         self.events: list[Event] = []
         self.depth = 0
 
@@ -297,15 +307,24 @@ class Store:
         Store methods called inside it join it. A nested ``transaction()`` is a savepoint:
         if it raises, only its own writes and events are undone. Events are delivered to
         listeners after the outermost commit.
+
+        A transaction belongs to the asyncio task that opened it: another task on the same
+        thread that enters ``transaction()`` (or calls a store method that writes) while it
+        is open raises ``StoreError`` instead of silently joining it.
         """
         tx: Tx | None = getattr(self._local, "tx", None)
         if tx is not None:
+            if tx.task is not _current_task():
+                raise StoreError(
+                    "another task's store transaction is open on this thread; "
+                    "never await inside transaction()"
+                )
             yield from self._savepoint(tx)
             return
         with self._write_lock:
             conn = self._conn()
             conn.execute("BEGIN IMMEDIATE")
-            tx = self._local.tx = Tx(conn)
+            tx = self._local.tx = Tx(conn, _current_task())
             try:
                 yield tx
                 conn.execute("COMMIT")
