@@ -53,3 +53,11 @@ async def test_put_with_bad_version_is_422(client):
 async def test_no_profile_store_is_501(client, office):
     office.profile_store = None
     assert (await client.get("/profiles/minh")).status_code == 501
+
+
+async def test_put_checks_the_person_and_store_before_the_body(client, office):
+    r = await client.put("/profiles/ghost", content=b"not json")
+    assert r.status_code == 404 and r.json()["error"] == "not_found"
+    office.profile_store = None
+    r = await client.put("/profiles/minh", content=b"not json")
+    assert r.status_code == 501 and r.json()["error"] == "not_implemented"

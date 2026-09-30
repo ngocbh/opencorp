@@ -32,8 +32,8 @@ async def get_profile(request: Request) -> JSONResponse:
 
 async def put_profile(request: Request) -> JSONResponse:
     """Replace a profile if ``base_version`` is current; ``409`` with both versions if not."""
-    body = await parse(request, ProfileWriteRequest)
     pid, store, max_chars = await _open(request)
+    body = await parse(request, ProfileWriteRequest)
     try:
         version = await call(store.write, body.text, base_version=body.base_version, provenance={"source": "edit"})
     except MarkdownVersionMismatch as exc:
