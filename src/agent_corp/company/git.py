@@ -68,6 +68,8 @@ class CompanyGit:
 
     def commit(self, paths: list[str], message: str) -> str:
         """Stage ``paths`` and commit them; return the new HEAD, or HEAD unchanged if nothing changed."""
+        if not paths:  # `git commit --` with no paths would commit the whole index
+            return self.head()
         with self.lock:
             present = [p for p in paths if (self.root / p).exists()]
             if present:

@@ -210,3 +210,11 @@ def test_glob_characters_in_paths_are_literal(g, company):
     assert _git(company, "status", "--porcelain") == f"M {PROFILE}"
     assert g.commit_hand_edits() == [PROFILE]
     assert _git(company, "show", "--name-only", "--format=", "HEAD") == PROFILE
+
+
+def test_commit_of_no_paths_is_a_no_op(g, company):
+    (company / "groups/eng.yaml").write_text("id: eng\nname: Eng\nparent: null\nhead: null\n")
+    _git(company, "add", "groups/eng.yaml")
+    head = g.head()
+    assert g.commit([], "nothing") == head
+    assert _git(company, "status", "--porcelain") == "M  groups/eng.yaml"
