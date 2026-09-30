@@ -19,7 +19,7 @@ async function capture(argv: string[]) {
 }
 
 test("each stub command says it is not implemented yet and exits 2", async () => {
-  for (const name of ["end", "feedback", "profile", "onboard", "doctor"]) {
+  for (const name of ["end", "profile", "onboard", "doctor"]) {
     const r = await capture([name])
     expect(r.code).toBe(2)
     expect(r.err).toBe(`ac ${name}: not implemented yet`)

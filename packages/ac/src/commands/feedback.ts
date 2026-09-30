@@ -1,3 +1,112 @@
-import { notImplemented } from "./stub"
+import type { Session } from "@agent-corp/protocol"
+import { aboutTurn, turns } from "@agent-corp/tui/debrief"
+import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
+import { OfficeError } from "@agent-corp/tui/office/errors"
+import { defaultSocket } from "@agent-corp/tui/office/paths"
+import { spawnSync } from "node:child_process"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { parseArgs } from "node:util"
+import type { CommandRun } from "../main"
 
-export const run = notImplemented("feedback")
+const USAGE = "Usage: ac feedback [SESSION|RUN] [-m TEXT] [--turn N]"
+
+/** A usage error: printed with the usage line, exit 2. */
+class Usage extends Error {}
+
+/**
+ * The session and run feedback goes to: the session `id` names, or the session with a run `id`
+ * names (that run); with no `id`, the newest main session in this folder (its latest run).
+ */
+async function target(client: OfficeClient, id: string | undefined): Promise<{ session: Session; run?: string }> {
+  if (id === undefined) {
+    const cwd = realpathSync(process.cwd())
+    const session = (await client.sessions.list({ limit: 500 })).find((s) => s.kind === "main" && s.cwd === cwd)
+    if (!session) throw new Error(`no session in ${cwd}; pass a session or run ID`)
+    return { session }
+  }
+  try {
+    return { session: await client.sessions.get(id) }
+  } catch (e) {
+    if (!(e instanceof OfficeError && e.status === 404)) throw e
+  }
+  // Run IDs have no fixed shape, so an ID that isn't a session is looked up among recent runs.
+  const session = (await client.sessions.list({ limit: 500 })).find((s) => s.run_ids?.includes(id))
+  if (!session) throw new Error(`no session or run ${id}`)
+  return { session, run: id }
+}
+
+/** Opens $VISUAL or $EDITOR on `template`; returns what was saved, minus `#` lines, trimmed. */
+function edit(template: string) {
+  const editor = process.env.VISUAL || process.env.EDITOR
+  if (!editor) throw new Usage("set $EDITOR (or $VISUAL), or pass -m TEXT")
+  const dir = mkdtempSync(path.join(os.tmpdir(), "ac-feedback-"))
+  const file = path.join(dir, "FEEDBACK.md")
+  try {
+    writeFileSync(file, template)
+    // As git does: the shell parses $EDITOR (it may hold flags or a quoted path), and the file
+    // path goes in as an argument, so the feedback itself never passes through argv or env.
+    const r = spawnSync("sh", ["-c", `${editor} "$@"`, editor, file], { stdio: "inherit" })
+    if (r.error) throw r.error
+    if (r.status !== 0) throw new Error(`the editor exited with ${r.signal ?? `code ${r.status}`}`)
+    return readFileSync(file, "utf8")
+      .split("\n")
+      .filter((l) => !l.startsWith("#"))
+      .join("\n")
+      .trim()
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+/**
+ * `ac feedback [SESSION|RUN] [-m TEXT] [--turn N]`: queues feedback on a run for the person's
+ * profile. Without `-m` it opens $EDITOR on a template listing the session's turns; `--turn N`
+ * starts the text with `About turn N ("…"): `. Exits 1 on office errors and 2 on usage errors.
+ */
+export const run: CommandRun = async (argv) => {
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv,
+      allowPositionals: true,
+      options: { message: { type: "string", short: "m" }, turn: { type: "string" } },
+    })
+    if (positionals.length > 1) throw new Usage(`expected one SESSION or RUN, got ${positionals.join(" ")}`)
+    const n = values.turn === undefined ? undefined : Number(values.turn)
+    if (n !== undefined && !(Number.isInteger(n) && n >= 1)) throw new Usage("--turn takes a turn number")
+    const client = createOfficeClient({ socket: defaultSocket() })
+    const { session, run } = await target(client, positionals[0])
+    const list = turns(await client.sessions.messages(session.id))
+    if (n !== undefined && n > list.length) throw new Usage(`there is no turn ${n}; the session has ${list.length}`)
+    const handle = (await client.people.list()).find((p) => p.id === session.person)?.handle ?? session.person
+    const prefix = n === undefined ? "" : aboutTurn(list[n - 1])
+    const text =
+      values.message === undefined
+        ? edit(
+            [
+              prefix,
+              "",
+              `# Feedback for @${handle} on session ${session.id}, ${run ? `run ${run}` : "its latest run"}.`,
+              "# It is learned into their profile. Lines starting with # are dropped; an empty message sends nothing.",
+              "#",
+              ...list.map((t) => `# Turn ${t.n}: ${t.text}`),
+              "",
+            ].join("\n"),
+          )
+        : prefix + values.message.trim()
+    if (!text.trim()) {
+      console.error("ac feedback: no feedback written; nothing sent")
+      return 1
+    }
+    const f = await client.feedback.create({ session_id: session.id, ...(run && { run_id: run }), text })
+    console.log(`Feedback ${f.id} is queued for @${handle} (session ${session.id}, run ${f.run_id})`)
+    return 0
+  } catch (e) {
+    // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag or a missing value.
+    const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
+    const usage = e instanceof Usage || parse
+    console.error(`ac feedback: ${e instanceof Error ? e.message : e}${usage ? `\n${USAGE}` : ""}`)
+    return usage ? 2 : 1
+  }
+}

@@ -5,7 +5,9 @@
   "type": "module",
   "license": "MIT",
   "exports": {
-    ".": "./src/index.tsx"
+    ".": "./src/index.tsx",
+    "./office/*": "./src/office/*.ts",
+    "./debrief": "./src/routes/debrief/debrief.ts"
   },
   "scripts": {
     "dev": "bun run script/dev.ts",
