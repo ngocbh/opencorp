@@ -164,16 +164,24 @@ test("send back needs a discussion; neither send back nor stop is offered on hum
   expect([noStop.status, noStop.code]).toEqual([422, "cannot_stop"])
 })
 
-test("stopping a busy chat's ask_user is Esc on that chat; other questions just close", async () => {
+test("stopping a busy chat's ask_user is Esc on that chat: every open ask_user in its run is interrupted", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
+  const interrupts: string[] = []
+  office.onInterrupt((sid) => interrupts.push(sid))
   await client().sessions.prompt(id, { text: "go" })
   const asked = office.addQuestion({ session_id: id, source: "ask_user" })
+  const also = office.addQuestion({ session_id: id, source: "ask_user" })
+  const otherRun = office.addQuestion({ session_id: id, source: "ask_user", run_id: "run-0" })
   expect(await client().questions.stop(asked.id)).toMatchObject({
     answer: "[interrupted by the user]",
     answer_kind: "interrupted",
   })
-  expect(await status(id)).toBe("idle")
+  expect(office.state.questions[also.id]).toMatchObject({ status: "answered", answer_kind: "interrupted" })
+  expect(office.state.questions[otherRun.id].status).toBe("open")
+  expect(interrupts).toEqual([id])
+  // As with Esc, the chat stays busy until its next turn opens.
+  expect(await status(id)).toBe("busy")
   const again = await failure(client().questions.stop(asked.id))
   expect([again.status, again.code]).toEqual([409, "not_open"])
 })

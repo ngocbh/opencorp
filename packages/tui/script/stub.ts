@@ -326,12 +326,12 @@ export function createFakeOffice(
     for (const fn of prompts) fn(q.session_id, { text })
   }
   /**
-   * Esc: answers the open `ask_user` questions and stops the reply. The
+   * Esc: answers the open `ask_user` questions (of one run, when given) and stops the reply. The
    * session stays busy until the stopped reply's next turn opens; `onInterrupt` drivers open it.
    */
-  function interrupt(s: Session) {
+  function interrupt(s: Session, runId?: string) {
     for (const q of Object.values(state.questions))
-      if (q.session_id === s.id && q.status === "open" && q.source === "ask_user")
+      if (q.session_id === s.id && q.status === "open" && q.source === "ask_user" && (!runId || q.run_id === runId))
         close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
     for (const fn of interrupts) fn(s.id)
   }
@@ -700,9 +700,12 @@ export function createFakeOffice(
       "/questions/:id/stop",
       ({ params }) => {
         const q = openModelQuestion(params.id, "cannot_stop")
-        // Stopping a live chat's ask_user is Esc on that chat: the reply stops and the chat waits.
+        // Stopping a live main chat's ask_user is Esc on that chat, for every open ask_user of its run.
         const asker = session(q.session_id)
-        if (q.source === "ask_user" && asker.kind === "main" && asker.status === "busy") setStatus(asker.id, "idle")
+        if (q.source === "ask_user" && asker.kind === "main" && LIVE.includes(asker.status)) {
+          interrupt(asker, q.run_id)
+          return Response.json(question(q.id))
+        }
         return Response.json(close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" }))
       },
     ],
