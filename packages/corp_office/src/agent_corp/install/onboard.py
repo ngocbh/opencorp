@@ -172,7 +172,10 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None)
     else:
         data = _ask_provider(prompter)
     provider = check_provider(data)
-    write_private(path, (json.dumps(provider.model_dump(exclude_defaults=True), indent=2) + "\n").encode())
+    try:
+        write_private(path, (json.dumps(provider.model_dump(exclude_defaults=True), indent=2) + "\n").encode())
+    except OSError as exc:
+        raise OnboardError(f"can't write {path}: {exc.strerror or exc}") from None
     try:
         load_provider(path)
     except ProviderError as exc:

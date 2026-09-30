@@ -72,10 +72,11 @@ def load_provider(path: Path) -> Provider:
         return Provider()
     except OSError as exc:
         raise ProviderError(f"can't open {path}: {exc.strerror}") from None
+    st = os.fstat(fd)  # before fdopen, which refuses a directory with IsADirectoryError
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        os.close(fd)
+        raise ProviderError(f"{path} must be a regular file private to its owner (mode 0600)")
     with os.fdopen(fd, "rb") as f:
-        st = os.fstat(f.fileno())
-        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-            raise ProviderError(f"{path} must be a regular file private to its owner (mode 0600)")
         try:
             return Provider.model_validate(json.loads(f.read()))
         except (ValueError, ValidationError) as exc:

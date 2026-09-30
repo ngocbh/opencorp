@@ -171,3 +171,14 @@ def test_the_terminal_prompter_takes_presets_and_defaults():
     prompter = TtyPrompter({"Company name": "Acme", "Your name": ""}, interactive=False)
     assert prompter.ask("Company name", "My company") == "Acme"
     assert prompter.ask("Your name", "Me") == "Me"
+
+
+def test_a_directory_where_the_provider_goes_is_an_onboard_error(tmp_path):
+    (tmp_path / "provider.json").mkdir()
+    with pytest.raises(OnboardError, match="provider.json") as info:
+        ensure_provider(tmp_path / "provider.json", Script(), stdin=io.StringIO(
+            json.dumps({"llm_config": {"provider": "anthropic", "api_key": KEY}})))
+    assert KEY not in str(info.value)
+    assert os.listdir(tmp_path) == ["provider.json"]  # no temp file left
+    with pytest.raises(OnboardError, match="provider.json"):
+        ensure_provider(tmp_path / "provider.json", Script())
