@@ -55,8 +55,7 @@ test("one Esc while busy interrupts, and the reply stops showing at once", async
     reply("late words")
     // A session event after the late words: once the header shows it, they have arrived too.
     office.state.sessions[0] = { ...office.state.sessions[0], cost: 0.5 }
-    office.setStatus(id, "idle")
-    // The next prompt takes the next turn.
+    // The stopped reply's next turn opens, and the session is idle again.
     office.openTurn(id)
     await app.until((f) => f.includes("@minh · idle · $0.50"))
     for (let i = 0; i < 10; i++) await app.setup.renderOnce()

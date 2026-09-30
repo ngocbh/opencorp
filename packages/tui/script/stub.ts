@@ -190,6 +190,7 @@ export function createFakeOffice(
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
+  const interrupts: ((sessionId: string) => void)[] = []
   // Messages sent with no open turn and no reply running, by session; the next turn takes them.
   const queued = new Map<string, string[]>()
   const streams = new Set<Stream>()
@@ -323,6 +324,16 @@ export function createFakeOffice(
     updateQuestion({ ...q, status: "answered", answer: text, answer_kind: "text", answered_by: human(), updated_at: now() })
     setStatus(q.session_id, "busy")
     for (const fn of prompts) fn(q.session_id, { text })
+  }
+  /**
+   * Esc: answers the open `ask_user` questions and stops the reply. The
+   * session stays busy until the stopped reply's next turn opens; `onInterrupt` drivers open it.
+   */
+  function interrupt(s: Session) {
+    for (const q of Object.values(state.questions))
+      if (q.session_id === s.id && q.status === "open" && q.source === "ask_user")
+        close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
+    for (const fn of interrupts) fn(s.id)
   }
 
   const question = (id: string) => need(state.questions[id], `question ${id}`)
@@ -577,12 +588,7 @@ export function createFakeOffice(
       "POST",
       "/sessions/:id/interrupt",
       ({ params }) => {
-        const s = liveSession(params.id)
-        // Esc answers the model's open questions, and the chat waits for the next message.
-        for (const q of Object.values(state.questions))
-          if (q.session_id === s.id && q.status === "open" && q.source === "ask_user")
-            close(q.id, { answer: "[interrupted by the user]", answer_kind: "interrupted" })
-        if (s.status === "busy" || s.status === "starting") setStatus(s.id, "idle")
+        interrupt(liveSession(params.id))
         return Response.json({ ok: true })
       },
     ],
@@ -970,6 +976,10 @@ export function createFakeOffice(
         map.delete(key)
         release()
       }
+    },
+    /** Calls `fn` after an interrupt, as the reply's driver: it stops the reply and opens the next turn. */
+    onInterrupt(fn: (sessionId: string) => void) {
+      interrupts.push(fn)
     },
     /**
      * Calls `fn` after a prompt that starts a reply is recorded and the session is set busy (not for

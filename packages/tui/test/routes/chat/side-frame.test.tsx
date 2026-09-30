@@ -50,6 +50,8 @@ test("Ctrl+O opens a side chat: Enter goes to the side session, Esc interrupts i
     // Esc stops the side reply and never leaves the side chat.
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${side}/interrupt`))
+    // The stopped reply's next turn opens: the side session is idle again.
+    office.openTurn(side)
     await app.until((f) => f.includes("Side chat with @minh · idle"))
     expect(posts(office)).toEqual([
       [`/questions/${q.id}/side`, { text: "why?" }],

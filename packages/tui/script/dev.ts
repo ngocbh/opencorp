@@ -22,11 +22,19 @@ const { values } = parseArgs({
 const REPLY = "Looked at it. The flaky test waits on a timer; I'd swap it for a fake clock and rerun."
 
 /**
- * Answers every prompt with REPLY, streamed a word at a time, then sets the session idle and opens
- * its next turn; a profile manager then proposes a change.
+ * Answers every prompt with REPLY, streamed a word at a time, then opens the session's next turn;
+ * a profile manager then proposes a change. Esc stops the reply and opens the next turn at once.
  */
 function scriptReplies(office: FakeOffice) {
+  // The running reply per session; an interrupt or a newer reply ends it.
+  const replies = new Map<string, object>()
+  office.onInterrupt((sessionId) => {
+    if (!replies.delete(sessionId)) return
+    office.openTurn(sessionId)
+  })
   office.onPrompt(async (sessionId) => {
+    const reply = {}
+    replies.set(sessionId, reply)
     const messageId = office.nextId()
     const partId = office.nextId()
     const message: Message = {
@@ -40,6 +48,7 @@ function scriptReplies(office: FakeOffice) {
     office.live({ type: "message.updated", session_id: sessionId, data: structuredClone(message) as never })
     for (const word of REPLY.split(/(?= )/)) {
       await Bun.sleep(2000 / REPLY.split(" ").length)
+      if (replies.get(sessionId) !== reply) return
       const part = message.parts[0] as { text: string }
       part.text += word
       office.live({
@@ -48,7 +57,7 @@ function scriptReplies(office: FakeOffice) {
         data: { message_id: messageId, part_id: partId, text: word },
       })
     }
-    office.setStatus(sessionId, "idle")
+    replies.delete(sessionId)
     office.openTurn(sessionId)
     // A profile manager also proposes a change, as its propose tool would.
     const session = office.state.sessions.find((s) => s.id === sessionId)
