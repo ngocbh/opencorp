@@ -614,3 +614,41 @@ def test_an_end_status_hook_picks_the_status_of_a_normal_end(harness, fake_llm, 
     session = harness.store.get_session(sid)
     assert ended == ["debriefing"] and session.status == "debriefing"
     assert harness.store.get_work_item(session.work_item_id).status == "done"
+
+
+def test_a_prompt_check_refuses_a_message_before_it_reaches_the_session(harness, fake_llm, workspace):
+    harness.hooks.prompt_check.append(lambda s, text: "use /back" if text == "/exit" else None)
+    fake_llm.script({"content": "ok"})
+    sid = start(harness, workspace)
+    turn = harness.store.list_questions(session_id=sid, status="open")[0]
+    for call in (lambda: harness.prompt(sid, "/exit"), lambda: harness.steer(sid, "/exit"),
+                 lambda: harness.answer(turn.id, "/exit", "text")):
+        with pytest.raises(HarnessError) as err:
+            call()
+        assert (err.value.status, err.value.code, err.value.message) == (422, "refused", "use /back")
+    assert harness.store.get_question(turn.id).status == "open" and texts(harness, sid, "user") == []
+    assert harness.prompt(sid, "hi") == "turn"
+    wait_for(lambda: texts(harness, sid) == ["ok"], what="the reply")
+
+
+def test_turn_text_changes_what_the_turn_gets_but_not_the_transcript(harness, fake_llm, workspace):
+    seen = []
+
+    def turn_text(session, question, text):
+        seen.append((session.id, question.node_id, text))
+        return f"[context]\n\n{text}" if len(seen) == 1 else None
+
+    harness.hooks.turn_text.append(turn_text)
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="the first reply")
+    harness.prompt(sid, "again")
+    wait_for(lambda: texts(harness, sid) == ["one", "two"], what="the second reply")
+    assert "[context]\\n\\nhi" in asked(fake_llm, 1) and "[context]" not in json.dumps(
+        fake_llm.wait_for_requests(2)[1]["messages"][-1])
+    assert texts(harness, sid, "user") == ["hi", "again"]
+    assert [(s, text) for s, _, text in seen] == [(sid, "hi"), (sid, "again")]
+    harness.end(sid)  # the exit command is the office's, not the person's: no turn_text
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert len(seen) == 2

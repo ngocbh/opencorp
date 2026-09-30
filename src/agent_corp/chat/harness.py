@@ -345,6 +345,7 @@ class Harness:
             live = self._must(session_id)
             if live.ending:
                 raise HarnessError(409, "ending", f"session {session_id} is ending")
+            self._check_prompt(live, text)
             if live.spec.chat is not None and not self._held(live):
                 if live.turn_q is not None:
                     live.transcript.user(text)
@@ -365,6 +366,7 @@ class Harness:
         with self._lock:
             live = self._must(session_id)
             if live.reply_node is not None and live.worker is not None and not live.ending:
+                self._check_prompt(live, text)
                 live.transcript.user(text)
                 if live.worker.steer(live.reply_node, text):
                     return "steer"
@@ -422,6 +424,7 @@ class Harness:
             with self._lock:
                 if live.turn_q != question_id or self._held(live):
                     raise HarnessError(409, "not_open", f"question {question_id} can't take a turn now")
+                self._check_prompt(live, answer)
                 live.transcript.user(answer)
                 self._answer_turn(live, question_id, answer)
             return self.store.get_question(question_id)
@@ -562,8 +565,10 @@ class Harness:
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None | bool = True) -> None:
         """Answer the turn; if the store refuses, the turn stays open for the next try."""
+        # The person's message goes through turn_text; the office's exit command (by=None) doesn't.
+        answer = self._turn_text(live, question_id, text) if by is True else text
         try:
-            self.store.answer_question(question_id, text, "text", answered_by=live.owner if by is True else by)
+            self.store.answer_question(question_id, answer, "text", answered_by=live.owner if by is True else by)
             if live.turn_node is not None and text != live.spec.chat.exit:
                 live.next_reply = live.spec.chat.reply_after(live.turn_node)
         except InvalidTransition:
@@ -572,6 +577,18 @@ class Harness:
         if live.timer is not None:
             live.timer.cancel()
             live.timer = None
+
+    def _check_prompt(self, live: _Live, text: str) -> None:
+        """Raise ``422 refused`` if a ``prompt_check`` hook refuses the person's ``text``."""
+        session = self.store.get_session(live.session_id)
+        for refusal in self.hooks.fire("prompt_check", session, text):
+            if refusal:
+                raise HarnessError(422, "refused", str(refusal))
+
+    def _turn_text(self, live: _Live, question_id: str, text: str) -> str:
+        """What the turn question gets for the person's ``text``: the first ``turn_text`` result, else ``text``."""
+        session, question = self.store.get_session(live.session_id), self.store.get_question(question_id)
+        return next((t for t in self.hooks.fire("turn_text", session, question, text) if t is not None), text)
 
     def _turns(self, live: _Live) -> int:
         chat = live.spec.chat

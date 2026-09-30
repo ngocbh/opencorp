@@ -15,6 +15,11 @@ class Hooks:
     - ``question_stored(question)``: a question was stored (turn questions included).
     - ``answer_check(question, answer, answer_kind) -> str | None``: return a message to
       refuse an answer (the route answers ``422 invalid_answer``); ``None`` accepts it.
+    - ``prompt_check(session, text) -> str | None``: return a message to refuse a person's
+      message to the session (a prompt, a steer, or a turn answer; ``422 refused``).
+    - ``turn_text(session, question, text) -> str | None``: the text a turn question gets in
+      place of the person's ``text``; the transcript keeps ``text``. The first result that
+      isn't ``None`` wins.
     - ``run_started(session, run_id)``: a worker started a run or a resume of one.
     - ``run_finished(session, run_id, result)``: a run ended; ``result`` is the worker's
       result frame (``status``, ``output``, ``failure``), or ``None`` after an error frame.
@@ -31,6 +36,8 @@ class Hooks:
 
     question_stored: list[Callable[..., Any]] = field(default_factory=list)
     answer_check: list[Callable[..., Any]] = field(default_factory=list)
+    prompt_check: list[Callable[..., Any]] = field(default_factory=list)
+    turn_text: list[Callable[..., Any]] = field(default_factory=list)
     run_started: list[Callable[..., Any]] = field(default_factory=list)
     run_finished: list[Callable[..., Any]] = field(default_factory=list)
     worker_exited: list[Callable[..., Any]] = field(default_factory=list)
