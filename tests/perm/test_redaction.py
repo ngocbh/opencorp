@@ -52,8 +52,12 @@ LEAKS = {
 }
 
 
+def interrupt(secrets):
+    raise KeyboardInterrupt
+
+
 def leak(asset, args, secrets):
-    return {**LEAKS, "circular": circular}[args["mode"]](secrets)
+    return {**LEAKS, "circular": circular, "interrupt": interrupt}[args["mode"]](secrets)
 
 
 @pytest.fixture
@@ -111,3 +115,19 @@ def test_a_result_that_is_not_json_is_an_audited_error(monitor, store):
     got = monitor.call("minh", "r1", "vault__leak", {"mode": "circular"})
     assert got == "error: ValueError: Circular reference detected"
     assert [r.outcome for r in store.list_audit()] == ["error"]
+
+
+def test_a_kinds_own_key_error_is_named_by_its_type(monitor, store):
+    assert monitor.call("minh", "r1", "vault__leak", {"mode": "raise_repr"}) == "error: KeyError: '[redacted]'"
+
+
+def test_an_interrupt_inside_a_kind_is_audited_then_raised(monitor, store):
+    with pytest.raises(KeyboardInterrupt):
+        monitor.call("minh", "r1", "vault__leak", {"mode": "interrupt"})
+    [row] = store.list_audit()
+    assert (row.outcome, row.detail) == ("error", "KeyboardInterrupt")
+
+
+def test_keys_that_scrub_to_the_same_text_keep_every_value():
+    got = redact({"x-abcdefgh": 1, "x-12345678": 2, "[redacted]": 3, "abcdefgh": 4}, set(), ["abcdefgh", "12345678"])
+    assert got == {"x-[redacted]": 1, "x-[redacted]#2": 2, "[redacted]": 3, "[redacted]#2": 4}

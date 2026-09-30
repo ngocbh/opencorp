@@ -25,6 +25,10 @@ REASON_CHARS = 200
 """Characters of a killed workspace call's reason kept in its audit row."""
 
 
+class _MonitorError(Exception):
+    """A failure the monitor words itself, shown to the model as ``error: <message>``."""
+
+
 class Monitor:
     """The only holder of asset credentials: every asset-tool call is checked, run, and audited here.
 
@@ -94,18 +98,26 @@ class Monitor:
         try:
             impl = self.kinds.get(asset.kind, {}).get(tool)
             if impl is None:
-                raise LookupError(f"asset kind {asset.kind!r} has no tool {tool!r}")
-            secrets = {key: self.secrets.get(key) for key in asset.secrets}
+                raise _MonitorError(f"asset kind {asset.kind!r} has no tool {tool!r}")
+            secrets = {key: self._secret(key) for key in asset.secrets}
             values.extend(v for v in secrets.values() if v)
             # Plain JSON first, so a set, bytes, or an object's text is scrubbed too.
             result = redact(json.loads(json.dumps(impl.run(asset, args, secrets), default=str)), keys, values)
             detail = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
-        except Exception as exc:
+        except BaseException as exc:
             reason = redact(_reason(exc), keys, values)
             audit("error", reason)
+            if not isinstance(exc, Exception):  # an interrupt or exit still propagates, once audited
+                raise
             return f"error: {reason}"
         audit("ok", detail)
         return result
+
+    def _secret(self, name: str) -> str:
+        try:
+            return self.secrets.get(name)
+        except KeyError as exc:
+            raise _MonitorError(exc.args[0]) from None
 
     def workspace(self, tools: WorkspaceTools, person_id: str, run_id: str | None, *,
                   session_id: str | None = None) -> Callable[[str, dict[str, Any]], str]:
@@ -165,8 +177,15 @@ def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
             value = value.replace(needle, REDACTED)
         return value
     if isinstance(value, Mapping):
-        return {_scrub(k, keys, needles): REDACTED if k in keys else _scrub(v, keys, needles)
-                for k, v in value.items()}
+        scrubbed: dict[Any, Any] = {}
+        for k, v in value.items():
+            key = new = _scrub(k, keys, needles)
+            n = 1
+            while new in scrubbed:  # two keys scrubbed to the same text: keep both values
+                n += 1
+                new = f"{key}#{n}"
+            scrubbed[new] = REDACTED if k in keys else _scrub(v, keys, needles)
+        return scrubbed
     if isinstance(value, list | tuple):
         return [_scrub(v, keys, needles) for v in value]
     if isinstance(value, int | float) and not isinstance(value, bool) and any(n in str(value) for n in needles):
@@ -187,12 +206,12 @@ def _audit_args(args: Mapping[str, Any], keys: Collection[str], values: Iterable
     return redacted if len(text) <= DETAIL_CHARS else {"truncated": text[:DETAIL_CHARS]}
 
 
-def _reason(exc: Exception) -> str:
+def _reason(exc: BaseException) -> str:
     # The monitor's own failures (no such kind tool, a secret not set) read as plain
     # sentences; anything else, a kind's own error included, is named by its type.
-    if isinstance(exc, LookupError) and exc.args and isinstance(exc.args[0], str):
-        return exc.args[0]
-    return f"{type(exc).__name__}: {exc}"
+    if isinstance(exc, _MonitorError):
+        return str(exc)
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
 def _subjects(repo: CompanyRepo, person_id: str) -> set[str]:
