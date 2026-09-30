@@ -26,7 +26,8 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
 
     harness.end(sid)
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
-    assert harness.store.get_work_item(session.work_item_id).status == "done"
+    # _finish sets the session's status before it closes the work item.
+    wait_for(lambda: harness.store.get_work_item(session.work_item_id).status == "done", what="the work item")
     with pytest.raises(HarnessError) as err:
         harness.prompt(sid, "late")
     assert err.value.code == "not_live"
