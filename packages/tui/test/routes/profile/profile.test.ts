@@ -22,6 +22,12 @@ test("a rejected edit comes back under the marker; saving drops everything from 
   expect(withoutConflict("plain\n")).toBe("plain\n")
 })
 
+test("the marker is found by its start, so an editor that wraps or trims the line still cuts there", () => {
+  const wrapped = CONFLICT_MARKER.replace(" Your edit", "\nYour edit")
+  expect(withoutConflict(`# Minh\n\nNew line.\n\n${wrapped}\nMine.\n`)).toBe("# Minh\n\nNew line.\n")
+  expect(withoutConflict(`# Minh\n\n${CONFLICT_MARKER.slice(0, 45)}\nMine.\n`)).toBe("# Minh\n")
+})
+
 const session = (id: string, fields: Partial<Session>) =>
   ({ id, person: "minh", kind: "profile_manager", status: "idle", created_at: id, ...fields }) as Session
 

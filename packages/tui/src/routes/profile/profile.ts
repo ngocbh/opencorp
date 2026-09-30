@@ -12,9 +12,12 @@ export function conflictText(current: string, mine: string) {
   return `${current.endsWith("\n") ? current : current + "\n"}\n${CONFLICT_MARKER}\n${mine}`
 }
 
+// Found by its start, so an editor that wraps or trims the long line still cuts there.
+const CONFLICT_START = /^<!-- The profile changed as you edited\./m
+
 /** `text` without the conflict marker, everything after it, and the blank line before it. */
 export function withoutConflict(text: string) {
-  const at = text.indexOf(CONFLICT_MARKER)
+  const at = text.search(CONFLICT_START)
   if (at < 0) return text
   return text.slice(0, at).replace(/\n\n$/, "\n")
 }
