@@ -54,6 +54,14 @@ def test_provenance_arrives_as_json(remote, tmp_path):
     assert json.loads(line)["provenance"] == {"run_id": "r1", "frame": ["a", 1], "log": "/l"}
 
 
+def test_an_undecodable_document_is_a_value_error(tmp_path):
+    (tmp_path / "profile.md").write_bytes(b"\xff\xfe")
+    with office_end(BaseHandlers(stores={"profile": FileMarkdownStore(tmp_path / "profile.md")})) as rpc:
+        with pytest.raises(ValueError) as caught:
+            RemoteMarkdownStore(rpc, "profile").read()
+    assert not isinstance(caught.value, OSError)
+
+
 def test_any_other_failure_is_an_os_error(local):
     with office_end(BaseHandlers(stores={"profile": local})) as rpc:
         with pytest.raises(OSError, match="no store named 'notes'"):

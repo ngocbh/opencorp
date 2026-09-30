@@ -227,8 +227,9 @@ def answer_request(frame: dict[str, Any], handlers: WorkerHandlers, worker: Any)
     """The reply frame for a worker's request frame, from ``handlers``.
 
     A handler's exception becomes ``{"error": code, "message"}``: ``mismatch`` (with
-    ``expected`` and ``current``) for ``MarkdownVersionMismatch``, ``unknown_version``
-    for a ``LookupError`` from a store, and ``failed`` for anything else.
+    ``expected`` and ``current``) for ``MarkdownVersionMismatch``; from a store,
+    ``unknown_version`` for a ``LookupError``, ``invalid`` for a ``ValueError``, and
+    ``unavailable`` for an ``OSError``; and ``failed`` for anything else.
     """
     kind = frame["type"]
     head = {"type": REQUEST_REPLIES[kind], "id": frame["id"]}
@@ -246,9 +247,12 @@ def answer_request(frame: dict[str, Any], handlers: WorkerHandlers, worker: Any)
         return head | {"version": version}
     except MarkdownVersionMismatch as exc:
         return head | {"error": "mismatch", "message": str(exc), "expected": exc.expected, "current": exc.current}
-    except LookupError as exc:
+    except (LookupError, ValueError, OSError) as exc:
         if kind.startswith("store_"):
-            return head | {"error": "unknown_version", "message": str(exc)}
+            # The exceptions composer's MarkdownStore contract names, so the worker can raise the same one.
+            code = ("unknown_version" if isinstance(exc, LookupError)
+                    else "invalid" if isinstance(exc, ValueError) else "unavailable")
+            return head | {"error": code, "message": str(exc)}
         return head | _failed(kind, exc)
     except Exception as exc:
         return head | _failed(kind, exc)

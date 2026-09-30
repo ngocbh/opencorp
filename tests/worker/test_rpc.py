@@ -104,7 +104,31 @@ def test_answer_request_error_codes():
     tool = {"type": "tool_call", "id": 3, "group": "g", "name": "lookup", "args": {"key": "k"}}
     assert answer_request(tool, handlers, None) == {"type": "tool_result", "id": 3, "error": "failed", "message": "'k'"}
     other = answer_request(read | {"store": "other"}, handlers, None)
-    assert (other["error"], other["message"]) == ("failed", "no store named 'other'")
+    assert (other["error"], other["message"]) == ("unavailable", "no store named 'other'")
+
+
+def test_store_value_and_os_errors_keep_their_codes():
+    class Store:
+        def read(self, version=None):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+        def write(self, text, *, base_version, provenance=None):
+            raise OSError("git index is locked")
+
+    handlers = BaseHandlers(stores={"profile": Store()})
+    read = answer_request({"type": "store_read", "id": 1, "store": "profile"}, handlers, None)
+    assert read["error"] == "invalid" and "invalid start byte" in read["message"]
+    write = answer_request({"type": "store_write", "id": 2, "store": "profile", "text": "t", "base_version": "v1"},
+                           handlers, None)
+    assert (write["error"], write["message"]) == ("unavailable", "git index is locked")
+
+    def parse(text: str) -> str:
+        """Parse."""
+        raise ValueError("bad text")
+
+    tool = answer_request({"type": "tool_call", "id": 3, "group": "g", "name": "parse", "args": {"text": "x"}},
+                          BaseHandlers(tools={"g": {"parse": parse}}), None)
+    assert (tool["error"], tool["message"]) == ("failed", "bad text")
 
 
 def test_concurrent_requests_get_their_own_replies():

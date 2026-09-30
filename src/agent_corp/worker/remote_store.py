@@ -13,7 +13,7 @@ class RemoteMarkdownStore:
 
     Error replies are raised as the local store would raise them:
     ``MarkdownVersionMismatch`` for ``mismatch``, ``LookupError`` for ``unknown_version``,
-    and ``OSError`` for anything else.
+    ``ValueError`` for ``invalid``, and ``OSError`` for anything else.
     """
 
     def __init__(self, rpc: Rpc, store: str) -> None:
@@ -38,4 +38,6 @@ class RemoteMarkdownStore:
                 raise MarkdownVersionMismatch(exc.reply.get("expected"), exc.reply.get("current")) from None
             if exc.code == "unknown_version":
                 raise LookupError(str(exc)) from None
+            if exc.code == "invalid":
+                raise ValueError(str(exc)) from None
             raise OSError(str(exc)) from None
