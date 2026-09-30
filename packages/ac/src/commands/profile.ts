@@ -1,7 +1,7 @@
 import type { Person, Profile } from "@agent-corp/protocol"
 import { launchEditor } from "@agent-corp/tui/editor-launch"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
-import { VersionConflictError } from "@agent-corp/tui/office/errors"
+import { OfficeUnavailable, VersionConflictError } from "@agent-corp/tui/office/errors"
 import { defaultSocket } from "@agent-corp/tui/office/paths"
 import { conflictText, shortVersion, withoutConflict } from "@agent-corp/tui/profile"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
@@ -9,6 +9,7 @@ import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
+import { officeNotRunning } from "../office"
 
 const USAGE = "Usage: ac profile edit PERSON"
 
@@ -37,7 +38,7 @@ async function edit(editor: string, file: string, text: string) {
  * meanwhile, the editor re-opens on the new text with the rejected edit under a marker line;
  * saving drops the marker and everything below it. An empty save writes nothing. An edit that
  * ends up unsaved is kept in a file, and the path printed. Exits 1 on office errors, an empty
- * save and an unsaved edit, 2 on usage errors.
+ * save and an unsaved edit, 2 on usage errors, 3 when the office isn't running.
  */
 export const run: CommandRun = async (argv) => {
   let dir: string | undefined
@@ -92,6 +93,7 @@ export const run: CommandRun = async (argv) => {
       }
     }
   } catch (e) {
+    if (e instanceof OfficeUnavailable) return officeNotRunning()
     // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag.
     const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
     const usage = e instanceof Usage || parse

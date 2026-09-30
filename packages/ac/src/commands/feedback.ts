@@ -2,13 +2,14 @@ import type { Session } from "@agent-corp/protocol"
 import { aboutTurn, turns, written } from "@agent-corp/tui/debrief"
 import { launchEditor } from "@agent-corp/tui/editor-launch"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
-import { OfficeError } from "@agent-corp/tui/office/errors"
+import { OfficeError, OfficeUnavailable } from "@agent-corp/tui/office/errors"
 import { defaultSocket } from "@agent-corp/tui/office/paths"
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
+import { officeNotRunning } from "../office"
 
 const USAGE = "Usage: ac feedback [SESSION|RUN] [-m TEXT] [--turn N]"
 
@@ -72,7 +73,8 @@ async function edit(template: string) {
 /**
  * `ac feedback [SESSION|RUN] [-m TEXT] [--turn N]`: queues feedback on a run for the person's
  * profile. Without `-m` it opens $EDITOR on a template listing the session's turns; `--turn N`
- * starts the text with `About turn N ("…"): `. Exits 1 on office errors and 2 on usage errors.
+ * starts the text with `About turn N ("…"): `. Exits 1 on office errors, 2 on usage errors, and 3
+ * when the office isn't running.
  */
 export const run: CommandRun = async (argv) => {
   try {
@@ -118,6 +120,7 @@ export const run: CommandRun = async (argv) => {
     console.log(`Feedback ${f.id} is queued for @${handle} (session ${session.id}, run ${f.run_id})`)
     return 0
   } catch (e) {
+    if (e instanceof OfficeUnavailable) return officeNotRunning()
     // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag or a missing value.
     const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
     const usage = e instanceof Usage || parse

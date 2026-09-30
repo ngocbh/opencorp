@@ -12,6 +12,7 @@ export const commands: Record<string, { summary: string; load: () => Promise<{ r
   feedback: { summary: "Give feedback on a person's work", load: () => import("./commands/feedback") },
   profile: { summary: "Edit a person's profile in $EDITOR", load: () => import("./commands/profile") },
   onboard: { summary: "Set up the company and install the office", load: () => import("./commands/onboard") },
+  start: { summary: "Start the office if it isn't running", load: () => import("./commands/start") },
   doctor: { summary: "Check the office, its socket and the sandbox", load: () => import("./commands/doctor") },
 }
 

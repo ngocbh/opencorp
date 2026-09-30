@@ -1,8 +1,10 @@
 import { realpathSync } from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
+import { officeNotRunning } from "../office"
 import type { Session } from "@agent-corp/protocol"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
+import { OfficeUnavailable } from "@agent-corp/tui/office/errors"
 import { defaultSocket } from "@agent-corp/tui/office/paths"
 
 // An ending session is already on its way out, and a debriefing or later one is not live.
@@ -44,6 +46,7 @@ export const run: CommandRun = async (argv) => {
     else console.log(`Ending ${who}'s ${session.kind.replace("_", " ")} session ${session.id}.`)
     return 0
   } catch (e) {
+    if (e instanceof OfficeUnavailable) return officeNotRunning()
     console.error(`ac end: ${e instanceof Error ? e.message : e}`)
     return 1
   }

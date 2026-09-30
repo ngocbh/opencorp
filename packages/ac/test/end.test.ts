@@ -67,10 +67,10 @@ test("ac end finds the folder's live session behind more than a page of newer se
   }
 })
 
-test("ac end ID ends that session and says the debrief follows; the office's refusal exits 1", async () => {
+test("ac end ID ends that session and says the debrief follows; no office exits 3, its refusal 1", async () => {
   rmSync(path.dirname(socket), { recursive: true, force: true })
   const down = await capture(["end", "S1"])
-  expect([down.code, down.err]).toEqual([1, `ac end: the office is not running (no socket at ${socket})`])
+  expect([down.code, down.err]).toEqual([3, "The office isn't running. Run `ac doctor`."])
 
   mkdirSync(path.dirname(socket), { recursive: true })
   const office = createFakeOffice({ socket })
