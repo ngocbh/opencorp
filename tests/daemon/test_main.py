@@ -27,6 +27,15 @@ def test_socket_is_0600_even_with_a_loose_umask(short_dir):
     assert stat.S_IMODE(os.stat(short_dir / "s.sock").st_mode) == 0o600
 
 
+def test_socket_mode_does_not_touch_the_process_umask(short_dir, monkeypatch):
+    def no_umask(mask):
+        raise AssertionError("umask is process-wide: other threads' files would get it too")
+
+    monkeypatch.setattr(os, "umask", no_umask)
+    bind_socket(short_dir / "s.sock").close()
+    assert stat.S_IMODE(os.stat(short_dir / "s.sock").st_mode) == 0o600
+
+
 def test_too_long_socket_path_is_a_clear_error(tmp_path):
     with pytest.raises(OfficeStartError, match="socket path too long"):
         bind_socket(tmp_path / ("x" * 120) / "office.sock")

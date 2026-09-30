@@ -115,17 +115,15 @@ def bind_socket(path: Path) -> socket.socket:
     """A listening unix socket at ``path`` with mode 0600."""
     check_socket_path(path)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    # uvicorn's --uds chmods the socket to 0666; binding under this umask makes it 0600
-    # from the start, with no window where others can connect.
-    old = os.umask(0o177)
+    # uvicorn's --uds chmods the socket to 0666. Until listen() nobody can connect, so
+    # chmod between bind and listen leaves no window, without a process-wide umask change.
     try:
         sock.bind(str(path))
-    except OSError:
+        os.chmod(path, 0o600)
+        sock.listen(128)
+    except OSError as exc:
         sock.close()
-        raise
-    finally:
-        os.umask(old)
-    sock.listen(128)
+        raise OfficeStartError(f"can't listen on {path}: {exc}") from exc
     return sock
 
 
