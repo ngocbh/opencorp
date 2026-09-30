@@ -398,6 +398,62 @@
         "session_id": { "$ref": "#/$defs/Ulid" },
         "data": { "type": "object" }
       }
+    },
+    "CreateSessionRequest": {
+      "type": "object", "additionalProperties": false, "required": ["person", "cwd"],
+      "properties": {
+        "person": { "$ref": "#/$defs/Id" },
+        "cwd": { "type": "string" },
+        "harness": { "enum": ["composer", "codex", "claude"], "default": "composer" }
+      }
+    },
+    "PromptRequest": {
+      "type": "object", "additionalProperties": false, "required": ["text"],
+      "properties": { "text": { "type": "string", "minLength": 1 } }
+    },
+    "Ack": {
+      "type": "object", "additionalProperties": false, "required": ["ok"],
+      "properties": { "ok": { "const": true } }
+    },
+    "CostCapRequest": {
+      "type": "object", "additionalProperties": false, "required": ["cost_cap_usd"],
+      "properties": { "cost_cap_usd": { "type": "number", "minimum": 0 } }
+    },
+    "RepoIssue": {
+      "type": "object", "additionalProperties": false, "required": ["path", "code", "message"],
+      "properties": {
+        "path": { "type": "string" },
+        "code": { "type": "string" },
+        "message": { "type": "string" },
+        "severity": { "enum": ["error", "warning"], "default": "error" }
+      }
+    },
+    "HireRequest": {
+      "type": "object", "additionalProperties": false, "required": ["name", "handle", "title", "manager"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "handle": { "$ref": "#/$defs/Handle" },
+        "title": { "type": "string" },
+        "manager": { "$ref": "#/$defs/Id" },
+        "id": { "$ref": "#/$defs/Ulid", "description": "The preview's id; when absent the office mints one." },
+        "confirm": { "type": "boolean", "default": false }
+      }
+    },
+    "HireResponse": {
+      "type": "object", "additionalProperties": false, "required": ["person", "diff", "issues", "commit"],
+      "properties": {
+        "person": { "$ref": "#/$defs/Person" },
+        "diff": { "type": "string" },
+        "issues": { "type": "array", "items": { "$ref": "#/$defs/RepoIssue" } },
+        "commit": { "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }] }
+      }
+    },
+    "Error": {
+      "type": "object", "additionalProperties": false, "required": ["error", "message"],
+      "properties": {
+        "error": { "type": "string", "description": "A short code, such as not_implemented or not_found." },
+        "message": { "type": "string" }
+      }
     }
   }
 }

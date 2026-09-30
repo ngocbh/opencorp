@@ -39,3 +39,13 @@ def test_fixture_validates(path):
 
 def test_every_entity_has_a_fixture():
     assert ENTITIES <= {p.stem for p in FIXTURES.glob("*.json")}
+
+
+BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "RepoIssue", "HireRequest",
+          "HireResponse", "Error", "AnswerRequest", "SideChatRequest", "SendBackRequest",
+          "ProfileWriteRequest", "VersionConflict", "ProfileManagerRequest", "FeedbackRequest",
+          "ConfirmFollowUpsRequest"}
+
+
+def test_every_route_body_has_a_fixture():
+    assert BODIES <= {p.stem for p in FIXTURES.glob("*.json")}
