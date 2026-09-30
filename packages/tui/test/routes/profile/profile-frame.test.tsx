@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import path from "node:path"
 import { createFakeOffice, createStub } from "../../../script/stub"
 import { createOfficeClient } from "../../../src/office/client"
-import { CONFLICT_MARKER } from "../../../src/routes/profile/profile"
+import { CONFLICT_MARKER, diffLines } from "../../../src/routes/profile/profile"
 import { bootFrame } from "../../fixture/frame"
 import { until } from "../../fixture/until"
 import { typeInto } from "../picker/type"
@@ -250,6 +250,20 @@ test("the open proposal shows as a diff; a applies it", async () => {
     const last = office.requests.filter((r) => r.method === "POST").at(-1)
     expect(last?.path).toBe(`/profile-proposals/${proposal.id}/apply`)
     expect(office.state.profiles.minh.text).toBe(PROPOSED)
+  })
+})
+
+test("a long proposal shows its first lines and how many more there are", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Much more" })
+  const added = Array.from({ length: 12 }, (_, i) => `Rule ${i + 1}.`).join("\n")
+  const proposal = office.propose(manager.id, office.state.profiles.minh.text + added + "\n")
+  await run(office, async (app) => {
+    const more = diffLines(proposal.diff).length - 7
+    const f = await app.until((f) => f.includes(`… ${more} more lines`))
+    expect(f).toContain("+Rule 1.")
+    expect(f).not.toContain("+Rule 12.")
   })
 })
 

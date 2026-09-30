@@ -246,6 +246,11 @@ export function Profile() {
     bindings: [{ key: "escape", group: "Profile", cmd: () => input?.blur() }],
   }))
 
+  // The diff gets eight rows: all of it if it fits, else seven lines and a count of the rest.
+  const shown = (p: ProfileProposal) => {
+    const lines = diffLines(p.diff)
+    return lines.length > 8 ? lines.slice(0, 7) : lines
+  }
   const diffColor = (line: string) =>
     line.startsWith("+") ? theme.diffAdded : line.startsWith("-") ? theme.diffRemoved : theme.textMuted
 
@@ -265,7 +270,9 @@ export function Profile() {
           Over budget: feedback can't be learned into this profile until it is shorter.
         </text>
       </Show>
-      <Show when={profileError() ?? proposalsError() ?? chatError()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
+      <Show when={profileError() ?? proposalsError() ?? chatError()}>
+        {(e) => <text fg={theme.error}>{e()}</text>}
+      </Show>
       <scrollbox flexGrow={1} minHeight={0}>
         <Show when={profile()}>
           {(p) => (
@@ -292,9 +299,10 @@ export function Profile() {
               <span style={{ bold: true }}>Proposed change</span>
               <span style={{ fg: theme.textMuted }}> · a apply</span>
             </text>
-            <box maxHeight={8} overflow="hidden">
-              <For each={diffLines(p().diff)}>{(line) => <text fg={diffColor(line)}>{line}</text>}</For>
-            </box>
+            <For each={shown(p())}>{(line) => <text fg={diffColor(line)}>{line}</text>}</For>
+            <Show when={diffLines(p().diff).length - shown(p()).length}>
+              {(more) => <text fg={theme.textMuted}>… {more()} more lines</text>}
+            </Show>
           </box>
         )}
       </Show>
