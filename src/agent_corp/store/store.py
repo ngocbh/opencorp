@@ -12,6 +12,7 @@ import json
 import logging
 import sqlite3
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
@@ -45,6 +46,29 @@ type Part = TextPart | FilePart | ToolPart
 type Listener = Callable[[Event], None]
 
 BUSY_TIMEOUT_S = 10.0
+
+
+def enable_wal(conn: sqlite3.Connection, *, timeout: float = BUSY_TIMEOUT_S) -> None:
+    """Put the database in WAL mode, unless it already is.
+
+    Switching needs an exclusive lock. When several processes open a new database at
+    once, SQLite can report it busy without calling the busy handler, so retry with
+    backoff for up to ``timeout`` seconds.
+    """
+    deadline = time.monotonic() + timeout
+    delay = 0.005
+    while True:
+        try:
+            if conn.execute("PRAGMA journal_mode").fetchone()[0] != "wal":
+                conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            # The low byte is the primary result code (SQLITE_BUSY_RECOVERY is a BUSY too).
+            busy = (getattr(exc, "sqlite_errorcode", 0) & 0xFF) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+            if not busy or time.monotonic() + delay > deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.25)
 
 
 def new_id() -> str:
@@ -259,7 +283,7 @@ class Store:
         self._listeners: list[Listener] = []
         self._table_columns: dict[str, frozenset[str]] = {}
         conn = self._conn()
-        conn.execute("PRAGMA journal_mode = WAL")
+        enable_wal(conn)
         migrate(conn)
 
     def __enter__(self) -> Store:

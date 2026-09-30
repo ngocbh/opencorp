@@ -7,6 +7,7 @@ import pytest
 
 from agent_corp.store import MigrationError, Store
 from agent_corp.store.migrate import MIGRATIONS, ladder
+from agent_corp.store.store import enable_wal
 
 TABLES = {
     "work_items", "comments", "sessions", "session_runs", "questions", "feedback", "messages", "parts",
@@ -54,3 +55,41 @@ def test_newer_store_is_refused(tmp_path):
     conn.close()
     with pytest.raises(MigrationError, match="newer"):
         Store(path)
+
+
+class _FakeConn:
+    """Answers PRAGMA journal_mode; fails the first ``busy`` calls with SQLITE_BUSY."""
+
+    def __init__(self, mode, busy=0):
+        self.mode, self.busy, self.sql = mode, busy, []
+
+    def execute(self, sql):
+        self.sql.append(sql)
+        if self.busy:
+            self.busy -= 1
+            err = sqlite3.OperationalError("database is locked")
+            err.sqlite_errorcode = sqlite3.SQLITE_BUSY
+            raise err
+        if sql == "PRAGMA journal_mode = WAL":
+            self.mode = "wal"
+        return self
+
+    def fetchone(self):
+        return (self.mode,)
+
+
+def test_wal_is_left_alone_when_already_on():
+    conn = _FakeConn("wal")
+    enable_wal(conn)
+    assert conn.sql == ["PRAGMA journal_mode"]
+
+
+def test_wal_switch_retries_while_busy():
+    conn = _FakeConn("delete", busy=3)
+    enable_wal(conn)
+    assert conn.mode == "wal"
+
+
+def test_wal_switch_gives_up_after_the_timeout():
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        enable_wal(_FakeConn("delete", busy=10**6), timeout=0.05)
