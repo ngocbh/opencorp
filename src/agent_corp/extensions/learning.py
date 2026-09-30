@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+import os
 import queue
+import socket
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -15,8 +17,10 @@ from agent_corp.company.loader import load_repo
 from agent_corp.profile import GitProfileStore
 from agent_corp.profile.debrief import DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief, transcript_text
 from agent_corp.profile.feedback import FeedbackHandlers, next_status
+from agent_corp.profile.manager import MANAGER_FLOW, apply_proposal, manager_spec
 from agent_corp.protocol import now
-from agent_corp.protocol.models import CompanyDefaults, Debrief, Feedback, FeedbackRequest, Session
+from agent_corp.protocol.models import (CompanyDefaults, Debrief, Feedback, FeedbackRequest, Profile, ProfileProposal,
+                                        Session)
 from agent_corp.store import new_id
 from agent_corp.worker import Job, ProfileMemorySpec, Worker, group_specs
 
@@ -49,6 +53,7 @@ class Learning:
         self._thread = threading.Thread(target=self._run, name="learning", daemon=True)
         self._timer: threading.Timer | None = None
         self._stopping = False
+        harness.restorers["profile_manager"] = lambda session: manager_spec(harness, session)
         harness.hooks.end_status.append(self._end_status)
         harness.hooks.run_finished.append(self._run_finished)
         harness.hooks.session_ended.append(self._session_ended)
@@ -131,6 +136,41 @@ class Learning:
                 raise HarnessError(422, "invalid_body", str(exc)) from exc
             except LookupError as exc:
                 raise HarnessError(409, "not_ready", str(exc)) from exc
+
+    def start_manager(self, person_id: str, text: str) -> Session:
+        """Open a profile-manager session over a person's profile, with ``text`` as its first message."""
+        self.git.commit_hand_edits()
+        head = self.git.head()
+        pin = self.git.pin(head)
+        if person_id not in load_repo(pin).people:
+            raise HarnessError(404, "not_found", f"no person {person_id}")
+        if not (pin / MANAGER_FLOW).is_file():
+            raise HarnessError(422, "no_manager_flow", f"the company has no {MANAGER_FLOW}")
+        t = now()
+        session = self.store.create_session(Session(
+            id=new_id(), person=person_id, harness="composer", office=socket.gethostname(),
+            cwd=os.path.realpath(self.git.root), repo_commit=head, status="starting", kind="profile_manager",
+            created_at=t, updated_at=t))
+        self.harness.start_run(session, manager_spec(self.harness, session))
+        self.harness.prompt(session.id, text)  # the first turn takes it
+        return self.store.get_session(session.id)
+
+    def proposals(self, person_id: str) -> list[ProfileProposal]:
+        """A person's profile proposals, oldest first."""
+        if person_id not in load_repo(self.git.root).people:
+            raise HarnessError(404, "not_found", f"no person {person_id}")
+        return self.store.list_profile_proposals(person_id)
+
+    def apply(self, proposal_id: str) -> Profile:
+        """Apply a proposal as the owner; ``MarkdownVersionMismatch`` if the profile moved on."""
+        owner = self._owner()
+        try:
+            return apply_proposal(self.store, self.git, proposal_id, owner=self.git.handle(f"people/{owner}/profile.md"),
+                                  max_chars=self._defaults(load_repo(self.git.root)).profile_max_chars)
+        except LookupError as exc:
+            raise HarnessError(404, "not_found", str(exc)) from exc
+        except ValueError as exc:
+            raise HarnessError(409, "not_open", str(exc)) from exc
 
     # --- hooks (on the harness's thread: hand work to ours) ---------------------------
 
