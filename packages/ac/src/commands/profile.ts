@@ -1,4 +1,4 @@
-import type { Person } from "@agent-corp/protocol"
+import type { Person, Profile } from "@agent-corp/protocol"
 import { launchEditor } from "@agent-corp/tui/editor-launch"
 import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
 import { VersionConflictError } from "@agent-corp/tui/office/errors"
@@ -77,13 +77,16 @@ export const run: CommandRun = async (argv) => {
       try {
         const saved = await client.profiles.put(who.id, { text, base_version: base.version })
         unsaved = undefined
-        console.log(`Saved the profile of @${who.handle} (${shortVersion(saved.version)})`)
-        if (saved.over_budget) console.error("ac profile: the profile is over the company's profile budget")
-        return 0
+        return reportSaved(who, saved)
       } catch (e) {
         if (!(e instanceof VersionConflictError)) throw e
-        console.error("ac profile: the profile changed while you edited it; your edit is below the marker line")
         base = await client.profiles.get(who.id)
+        // The race was with the same edit (a retry, or the same change made elsewhere): it is in.
+        if (base.text === text) {
+          unsaved = undefined
+          return reportSaved(who, base)
+        }
+        console.error("ac profile: the profile changed while you edited it; your edit is below the marker line")
         draft = conflictText(base.text, text)
         conflicted = true
       }
@@ -97,6 +100,13 @@ export const run: CommandRun = async (argv) => {
   } finally {
     if (dir) keepOrRemove(dir, unsaved)
   }
+}
+
+/** Says the profile of `who` is saved at `profile`, and warns if it is over budget. */
+function reportSaved(who: Person, profile: Profile) {
+  console.log(`Saved the profile of @${who.handle} (${shortVersion(profile.version)})`)
+  if (profile.over_budget) console.error("ac profile: the profile is over the company's profile budget")
+  return 0
 }
 
 /** Removes the temp `dir`, or, if there is an `unsaved` edit, leaves it there and says where. */

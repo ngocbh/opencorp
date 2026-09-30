@@ -118,6 +118,16 @@ test("a conflict re-opens the editor on the new text with the rejected edit unde
   expect(office.state.profiles.minh!.text).toBe(merged)
 })
 
+test("a conflict with a profile that already holds the edit counts as saved", async () => {
+  const mine = office.state.profiles.minh!.text + "My line.\n"
+  racingEditor(":")
+  const { r, hand } = await editDuringHandEdit(mine)
+  expect(r).toMatchObject({ code: 0, out: `Saved the profile of @minh (${hand.version.slice(0, 7)})` })
+  expect(existsSync(path.join(home, "seen.md"))).toBe(false)
+  expect(r.err).not.toContain("kept")
+  expect(office.state.profiles.minh!.text).toBe(mine)
+})
+
 test("after a conflict, saving without merging keeps the rejected edit in a file and says so", async () => {
   const before = office.state.profiles.minh!
   const theirs = before.text + "Their line.\n"
