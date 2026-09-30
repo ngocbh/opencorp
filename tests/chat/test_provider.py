@@ -38,12 +38,29 @@ def test_reads_config_env_and_prices(tmp_path):
 
 
 @pytest.mark.parametrize("name", ["ANTHROPIC_API_KEY", "GH_TOKEN", "CLIENT_SECRET", "DB_PASSWORD",
-                                  "PASSWORD_FILE", "openai_api_key"])
+                                  "PASSWORD_FILE", "openai_api_key", "OPENAI_APIKEY", "DB_PASS",
+                                  "GOOGLE_APPLICATION_CREDENTIALS", "AWS_CREDENTIALS"])
 def test_a_credential_in_env_is_refused(tmp_path, name):
     path = write(tmp_path / "provider.json", {"env": {name: SENTINEL}})
     with pytest.raises(ProviderError, match=r"llm_config\.api_key") as info:
         load_provider(path)
     assert SENTINEL not in str(info.value)
+
+
+@pytest.mark.parametrize("url", [f"https://user:{SENTINEL}@proxy.example:3128", f"http://{SENTINEL}@llm.example",
+                                 f"socks5://u:{SENTINEL}@h"])
+def test_a_url_with_credentials_in_env_is_refused(tmp_path, url):
+    path = write(tmp_path / "provider.json", {"env": {"HTTPS_PROXY": url}})
+    with pytest.raises(ProviderError, match="HTTPS_PROXY") as info:
+        load_provider(path)
+    assert SENTINEL not in str(info.value)
+
+
+@pytest.mark.parametrize("value", ["https://proxy.example:3128", "http://llm.example/v1?user=a@b", "/etc/ssl/ca.pem",
+                                   "a@b.example"])
+def test_settings_that_arent_credentials_are_kept(tmp_path, value):
+    path = write(tmp_path / "provider.json", {"env": {"HTTPS_PROXY": value}})
+    assert load_provider(path).env == {"HTTPS_PROXY": value}
 
 
 def test_a_file_others_can_read_is_refused(tmp_path):

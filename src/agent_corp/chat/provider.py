@@ -3,13 +3,15 @@
 import fnmatch
 import json
 import os
+import re
 import stat
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-_CREDENTIAL_NAMES = ("*_KEY", "*_TOKEN", "*_SECRET", "*PASSWORD*")
+_CREDENTIAL_NAMES = ("*_KEY", "*_APIKEY", "*_TOKEN", "*_SECRET", "*PASSWORD*", "*_PASS", "*_CREDENTIALS")
+_USERINFO = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://[^/?#@]*@")  # scheme://user[:pass]@host
 
 
 class ProviderError(Exception):
@@ -48,6 +50,10 @@ class Provider(BaseModel):
         for name in env:
             if any(fnmatch.fnmatchcase(name.upper(), pattern) for pattern in _CREDENTIAL_NAMES):
                 raise ValueError(f"{name} looks like a credential; put the model key in llm_config.api_key")
+        for name, value in env.items():
+            if _USERINFO.match(value):
+                raise ValueError(f"{name} is a URL with credentials in it; keep credentials out of env "
+                                 f"(the model key goes in llm_config.api_key)")
         return env
 
 
