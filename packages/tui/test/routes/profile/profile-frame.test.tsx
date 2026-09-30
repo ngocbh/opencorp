@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import path from "node:path"
-import { createFakeOffice, createStub } from "../../../script/stub"
+import { createFakeOffice, createStub, seed } from "../../../script/stub"
 import { createOfficeClient } from "../../../src/office/client"
 import { CONFLICT_MARKER, diffLines } from "../../../src/routes/profile/profile"
 import { bootFrame } from "../../fixture/frame"
@@ -41,6 +41,44 @@ test("/profile shows the session person's profile and its version; Esc goes back
     app.input.pressEscape()
     await app.until((f) => !f.includes("@minh · profile") && f.includes("@minh · idle"))
   })
+})
+
+test("/profile from home opens the selected person's profile; Esc goes back home", async () => {
+  const office = createFakeOffice()
+  const app = await bootFrame(createStub(office))
+  try {
+    await app.until((f) => f.includes("@minh") && f.includes("Ask anything"))
+    await app.input.typeText("/profile")
+    await app.until((f) => f.includes("Open profile"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("@minh · profile") && f.includes("Writes small, tested changes."))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("@minh · profile") && f.includes("Ask anything"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("/profile with nobody picked says to pick a person first", async () => {
+  const office = createFakeOffice({ seed: { ...seed(), people: [], sessions: [], folders: {} } })
+  const app = await bootFrame(createStub(office))
+  try {
+    // The picker opens at start with no one to pick; close it.
+    await app.until((f) => f.includes("Who do you want to talk to?"))
+    // Let the picker take the keyboard before Esc.
+    await Bun.sleep(100)
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Who do you want to talk to?"))
+    await app.input.typeText("/profile")
+    await app.until((f) => f.includes("Open profile"))
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Pick a person first"))
+    expect(f).not.toContain("· profile")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
 })
 
 test("an over-budget profile says feedback can't be learned until it is shorter", async () => {
@@ -183,8 +221,10 @@ test("m starts a profile manager chat; later messages prompt the same session", 
       path: "/profiles/minh/manager",
       body: { text: "Say Minh writes tests first" },
     })
+    await app.until((f) => f.includes("The profile manager is thinking…"))
     reply(office, manager.id, "Proposed a change: see below.")
-    await app.until((f) => f.includes("manager: Proposed a change: see below."))
+    office.setStatus(manager.id, "idle")
+    await app.until((f) => f.includes("manager: Proposed a change: see below.") && !f.includes("thinking…"))
     await typeInto(app, "Shorter please")
     app.input.pressEnter()
     await app.until((f) => f.includes("you: Shorter please"))
@@ -264,6 +304,20 @@ test("a long proposal shows its first lines and how many more there are", async 
     const f = await app.until((f) => f.includes(`… ${more} more lines`))
     expect(f).toContain("+Rule 1.")
     expect(f).not.toContain("+Rule 12.")
+  })
+})
+
+test("applying a proposal the office already closed says so and hides it", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Tests first" })
+  const proposal = office.propose(manager.id, PROPOSED)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("+Writes the test first, then small changes."))
+    // A direct edit sends no event, so the view still shows it open.
+    office.state.proposals[proposal.id] = { ...proposal, status: "discarded" }
+    app.input.pressKey("a")
+    await app.until((f) => f.includes(`proposal ${proposal.id} is discarded, not`) && !f.includes("a apply"))
   })
 })
 
