@@ -7,9 +7,13 @@ import subprocess
 import threading
 from pathlib import Path
 
+import yaml
+
 _IDENTITY = ["-c", "user.name=agent-corp office", "-c", "user.email=office@agent-corp.local"]
 _PIN_MARKER = ".agent-corp-pin"
 _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+# `:(glob)` makes `*` match one path segment, so only people/<id>/profile.md matches.
+_PROFILES = ":(glob)people/*/profile.md"
 
 
 class CompanyGit:
@@ -43,7 +47,12 @@ class CompanyGit:
     def commit(self, paths: list[str], message: str) -> str:
         """Stage ``paths`` and commit them; return the new HEAD, or HEAD unchanged if nothing changed."""
         with self.lock:
-            self._git("add", "--", *paths)
+            present = [p for p in paths if (self.root / p).exists()]
+            if present:
+                self._git("add", "--", *present)
+            if gone := [p for p in paths if p not in present]:  # a deletion, maybe already staged
+                # `git add` fails on a path gone from both disk and index.
+                self._git("rm", "-q", "--cached", "--ignore-unmatch", "--", *gone)
             # `git commit` exits 1 on an empty commit; callers rely on a no-op write succeeding.
             if self._git("diff", "--cached", "--quiet", "--", *paths, check=False).returncode == 0:
                 return self.head()
@@ -74,3 +83,40 @@ class CompanyGit:
                             p.chmod(p.stat().st_mode & ~_WRITE)
                 (path / _PIN_MARKER).write_text(sha + "\n")
         return path
+
+    def commit_hand_edits(self) -> list[str]:
+        """Commit each changed, new, or deleted ``people/*/profile.md`` on its own; return their paths.
+
+        ``--porcelain -z`` entries are ``XY path``. A staged rename or copy is followed by
+        a second field, its original path; a rename's original is committed too (as a
+        deletion).
+        """
+        with self.lock:
+            # --untracked-files=all lists a new profile inside a wholly untracked people/<new>/.
+            out = self._git("status", "--porcelain", "-z", "--untracked-files=all", "--",
+                            _PROFILES).stdout
+            fields = out.split("\0")
+            paths: set[str] = set()
+            i = 0
+            while i < len(fields):
+                entry = fields[i]
+                i += 1
+                if not entry:
+                    continue
+                paths.add(entry[3:])
+                if entry[0] in "RC":
+                    if entry[0] == "R":
+                        paths.add(fields[i])
+                    i += 1
+            for rel in sorted(paths):
+                self.commit([rel], f"profile(@{self._handle(rel)}): hand edit")
+            return sorted(paths)
+
+    def _handle(self, profile_rel: str) -> str:
+        """The handle of the person who owns ``people/<id>/profile.md``, else the id."""
+        pid = Path(profile_rel).parent.name
+        try:
+            data = yaml.safe_load((self.root / "people" / pid / "person.yaml").read_text(encoding="utf-8"))
+            return str(data["handle"])
+        except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
+            return pid

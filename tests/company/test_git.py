@@ -92,3 +92,39 @@ def test_pin_leaves_symlink_targets_alone(g, company, tmp_path):
     g.commit(["link.txt"], "add link")
     g.pin("HEAD")
     assert os.stat(outside).st_mode & stat.S_IWUSR
+
+
+def test_hand_edit_is_committed_with_handle(g, company):
+    (company / PROFILE).write_text("# Minh\nlikes tests\n")
+    assert g.commit_hand_edits() == [PROFILE]
+    assert _git(company, "log", "-1", "--format=%s") == "profile(@minh): hand edit"
+    assert _git(company, "status", "--porcelain") == ""
+
+
+def test_other_dirty_files_stay_dirty(g, company):
+    (company / "groups/eng.yaml").write_text("id: eng\nname: Eng\nparent: null\nhead: null\n")
+    assert g.commit_hand_edits() == []
+    assert _git(company, "status", "--porcelain") == "M groups/eng.yaml"
+
+
+def test_new_profile_is_committed(g, company):
+    (company / "people/ava").mkdir()
+    (company / "people/ava/person.yaml").write_text("id: ava\nhandle: ava-h\n")
+    (company / "people/ava/profile.md").write_text("# Ava\n")
+    assert g.commit_hand_edits() == ["people/ava/profile.md"]
+    assert _git(company, "log", "-1", "--format=%s") == "profile(@ava-h): hand edit"
+    assert _git(company, "status", "--porcelain") == "?? people/ava/person.yaml"
+
+
+def test_deleted_profile_is_committed(g, company):
+    (company / PROFILE).unlink()
+    assert g.commit_hand_edits() == [PROFILE]
+    assert _git(company, "log", "-1", "--format=%s") == "profile(@minh): hand edit"
+    assert _git(company, "status", "--porcelain") == ""
+
+
+def test_staged_rename_commits_both_paths(g, company):
+    _git(company, "mv", PROFILE, "people/ngocbh/profile.md")
+    assert g.commit_hand_edits() == [PROFILE, "people/ngocbh/profile.md"]
+    assert _git(company, "status", "--porcelain") == ""
+    assert g.blob_id(PROFILE) is None and g.blob_id("people/ngocbh/profile.md") is not None
