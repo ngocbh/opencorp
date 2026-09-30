@@ -276,6 +276,22 @@ test("t and f keep a draft, swapping only the About turn pre-fill; text typed wh
   })
 })
 
+test("a failed confirm or send shows the office's error and keeps the follow-up and the draft", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /debriefs/:session/confirm", "POST /feedback"] })
+  withTurns(office)
+  await run(office, async (app, id) => {
+    await app.until((f) => f.includes("› [ ] Add a CI job"))
+    app.input.pressKey("c")
+    await app.until((f) => f.includes(`/debriefs/${id}/confirm is`) && f.includes("› [ ] Add a CI job"))
+    app.input.pressKey("f")
+    await typeInto(app, "Good call")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("/feedback is not implemented"))
+    expect(f).toContain("> Good call")
+    expect(f).not.toContain("queued ·")
+  })
+})
+
 test("feedback items keep their place as they move along, and a late update never moves one back", async () => {
   const office = createFakeOffice()
   withTurns(office)
