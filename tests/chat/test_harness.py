@@ -478,14 +478,6 @@ def test_run_finished_hooks_never_see_the_model_key(make_harness, workspace):
     assert seen[0]["failure"]["details"] == [{"input": {"api_key": "[redacted]"}}, "[redacted]"]
 
 
-# Composer's LLMConfig forbids extra fields, so a key in llm_config fails the reply node and
-# the validation error echoes it into these frames and the run log. The test fails outright on
-# any other leak; drop the mark once the submodule has LLMConfig.api_key.
-KNOWN_HARNESS_LEAKS = {("frame", "event", "NodeFailed"), ("frame", "event", "RunFailed"), ("frame", "result", None),
-                       ("file", "office/runs/<id>/runs/<id>.jsonl")}
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="needs composer LLMConfig.api_key")
 def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fake_llm, workspace, tmp_path,
                                                                monkeypatch):
     import re
@@ -521,9 +513,7 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
               if p.is_file() and SENTINEL.encode() in p.read_bytes()}
     leaks |= {("hook", "run_finished") for result in finished if has_key(result)}
     leaks |= {("model request",) for request in fake_llm.requests() if has_key(request)}
-    if leaks - KNOWN_HARNESS_LEAKS:  # not an AssertionError: fails even under the xfail mark
-        pytest.fail(f"the model key leaks somewhere new: {sorted(leaks - KNOWN_HARNESS_LEAKS, key=str)}")
-    assert not leaks
+    assert sorted(leaks, key=str) == []
     assert texts(harness, sid) == ["ok"]
 
 

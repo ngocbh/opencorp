@@ -109,14 +109,6 @@ class KeyedLLM(FakeLLM):
         return await super()._completions(request)
 
 
-# Composer 770800e's LLMConfig is extra="forbid" with no api_key field: the run fails, and the
-# pydantic error echoes the key into exactly these places. The test fails outright on any other
-# leak, and passes once composer takes a secret api_key in llm_config; then drop the marker.
-KNOWN_WORKER_LEAKS = {("frame", "event", "NodeFailed"), ("frame", "event", "RunFailed"), ("frame", "result", None),
-                      ("file", "sessions/s1/runs/r1.jsonl")}
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="composer's LLMConfig refuses api_key")
 def test_a_key_in_llm_config_reaches_the_model_and_nothing_else(tmp_path):
     """The key travels only in the start frame: not in the run log, the session dir, the store, or a frame."""
     flow = agent_flow("keyed", top="long_term_memory: session\n",
@@ -142,9 +134,7 @@ def test_a_key_in_llm_config_reaches_the_model_and_nothing_else(tmp_path):
     leaks |= {("model request",) for r in requests if SENTINEL in json.dumps(r)}
     leaks |= {("file", str(p.relative_to(tmp_path))) for root in (session_dir, tmp_path / "office")
               for p in root.rglob("*") if p.is_file() and SENTINEL.encode() in p.read_bytes()}
-    if leaks - KNOWN_WORKER_LEAKS:  # not an AssertionError: fails even under the xfail mark
-        pytest.fail(f"the key leaks somewhere new: {sorted(leaks - KNOWN_WORKER_LEAKS, key=str)}")
-    assert not leaks
+    assert sorted(leaks, key=str) == []
     assert handlers.outcome["status"] == "succeeded" and handlers.returncode == 0
     assert fake.tokens and all(token == f"Bearer {SENTINEL}" for token in fake.tokens)
     assert "ToolCallFinished" in json.dumps(handlers.frames)
