@@ -1,3 +1,6 @@
+import type { Event, LiveEvent } from "@agent-corp/protocol"
+import { BASE } from "./http"
+
 export type SseMessage = { event?: string; id?: string; data: string }
 
 /** An incremental text/event-stream parser: feed bytes as they arrive, in any split. */
@@ -33,6 +36,140 @@ export function createParser(onMessage: (m: SseMessage) => void, onComment: (tex
         line(buf.slice(0, at))
         buf = buf.slice(at + nl)
       }
+    },
+  }
+}
+
+export type StreamEvent =
+  /** A stream opened: re-read state now, since there is no replay. */
+  | { type: "connected" }
+  /** A connected stream ended; reconnecting. */
+  | { type: "disconnected"; error?: unknown }
+  /** A connect attempt failed (reported once per run of failures). */
+  | { type: "unreachable"; error?: unknown }
+  | { type: "meta"; id: string; event: Event }
+  | { type: "live"; event: LiveEvent }
+
+export type SubscribeOptions = {
+  /** Only this session's events (the office's `?session=`). */
+  session?: string
+  /** The first reconnect delay; it doubles up to `maxDelayMs`. */
+  minDelayMs?: number
+  maxDelayMs?: number
+  /** Silence after which the stream counts as dead. */
+  idleMs?: number
+}
+
+export type Subscription = {
+  /** Stops following the stream. */
+  close(): void
+  /** Drops the current stream and reconnects now (used when a bootstrap fails). */
+  reconnect(): void
+}
+
+/** Follows the office's event stream on `socket`, reconnecting until `close()`. */
+export function subscribe(
+  socket: string,
+  handler: (e: StreamEvent) => void,
+  opts: SubscribeOptions = {},
+): Subscription {
+  const { minDelayMs = 250, maxDelayMs = 5000, idleMs = 45_000 } = opts
+  const path = "/events" + (opts.session ? `?session=${encodeURIComponent(opts.session)}` : "")
+  let closed = false
+  let ctl: AbortController | undefined
+  let wake: (() => void) | undefined
+
+  async function once(): Promise<{ error?: unknown; reset: boolean; connected: boolean }> {
+    const abort = (ctl = new AbortController())
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let reset = false
+    let connected = false
+    // The office pings every 15 s; three missed pings mean the stream is dead even if the
+    // socket is still open.
+    const arm = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => abort.abort(), idleMs)
+    }
+    const parser = createParser(
+      (m) => {
+        if (m.event === "reset") {
+          reset = true
+          return abort.abort()
+        }
+        if (m.event !== "meta" && m.event !== "live") return
+        let data: unknown
+        try {
+          data = JSON.parse(m.data)
+        } catch {
+          return
+        }
+        if (!data || typeof data !== "object") return
+        if (m.event === "meta") handler({ type: "meta", id: m.id ?? (data as Event).id, event: data as Event })
+        else handler({ type: "live", event: data as LiveEvent })
+      },
+      (c) => {
+        if (c === "connected") {
+          connected = true
+          handler({ type: "connected" })
+        } else if (c === "dropped") {
+          reset = true
+          abort.abort()
+        }
+      },
+    )
+    try {
+      arm()
+      const res = await fetch(BASE + path, {
+        unix: socket,
+        signal: abort.signal,
+        headers: { accept: "text/event-stream" },
+      })
+      if (!res.ok || !res.body) return { error: new Error(`GET ${path}: HTTP ${res.status}`), reset, connected }
+      const reader = res.body.getReader()
+      for (let r = await reader.read(); !r.done; r = await reader.read()) {
+        arm()
+        parser.feed(r.value)
+      }
+      return { reset, connected }
+    } catch (error) {
+      return { error, reset, connected }
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  void (async () => {
+    let delay = minDelayMs
+    let reachable = true // so the first failed attempt reports `unreachable`
+    while (!closed) {
+      const { error, reset, connected } = await once()
+      if (closed) break
+      if (connected) {
+        delay = minDelayMs
+        reachable = true
+        handler({ type: "disconnected", error })
+        if (reset) continue // the office is up; it only dropped this subscriber
+      } else if (reachable) {
+        reachable = false
+        handler({ type: "unreachable", error })
+      }
+      await new Promise<void>((r) => {
+        wake = r
+        setTimeout(r, delay)
+      })
+      delay = Math.min(delay * 2, maxDelayMs)
+    }
+  })()
+
+  return {
+    close() {
+      closed = true
+      ctl?.abort()
+      wake?.()
+    },
+    reconnect() {
+      ctl?.abort()
+      wake?.()
     },
   }
 }

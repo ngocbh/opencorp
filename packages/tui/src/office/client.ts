@@ -24,6 +24,7 @@ import type {
   WorkItem,
 } from "@agent-corp/protocol"
 import { request, seg, type Method } from "./http"
+import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"
 
 export type OfficeClient = ReturnType<typeof createOfficeClient>
 
@@ -81,6 +82,10 @@ export function createOfficeClient(opts: { socket: string }) {
       get: (session: string) => get<Debrief>(`/debriefs/${seg(session)}`),
       confirm: (session: string, req: ConfirmFollowUpsRequest) =>
         post<Debrief>(`/debriefs/${seg(session)}/confirm`, req),
+    },
+    events: {
+      /** Follows `GET /events`, reconnecting until `close()`; see `subscribe`. */
+      subscribe: (handler: (e: StreamEvent) => void, opts?: SubscribeOptions) => subscribe(socket, handler, opts),
     },
   }
 }
