@@ -323,3 +323,91 @@ def test_a_first_reply_that_dies_leaves_the_seed_for_the_next_turn(office, fake_
     chat(office, q, "why, again?", 1)
     first = last_user(fake_llm, 3)
     assert first.startswith(FRAMING) and first.endswith("why, again?")
+
+
+def test_a_failed_side_chat_restarts_on_the_next_message(office, fake_llm, workspace):  # noqa: F811
+    fake_llm.script(ASK, {"content": "Quota."}, {"content": "Per hour."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    first = h._live[side.id].worker
+    os.killpg(first.pgid, signal.SIGKILL)
+    second = wait_for(lambda: (w := h._live[side.id].worker) not in (None, first) and w, what="the resume")
+    os.killpg(second.pgid, signal.SIGKILL)
+    wait_for(lambda: status(h, side.id) == "failed", what="the side session to fail")
+
+    again = chat(office, q, "how often?", 2)
+    assert again.id == side.id and len(h.store.get_session(side.id).run_ids) == 2
+    assert last_user(fake_llm, 3) == "how often?"
+
+
+def test_a_question_answered_while_its_side_chat_starts_ends_it(office, fake_llm, workspace, monkeypatch):  # noqa: F811
+    fake_llm.script(ASK, {"content": "OK."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    start_run = h.start_run
+
+    def start_then_answer(session, spec):
+        run_id = start_run(session, spec)
+        h.store.answer_question(q.id, "Retry", "option")  # another client answered meanwhile
+        return run_id
+
+    monkeypatch.setattr(h, "start_run", start_then_answer)
+    with pytest.raises(HarnessError) as err:
+        cards.open_side(q.id, "why?")
+    assert (err.value.status, err.value.code) == (409, "not_open")
+    side_id = h.store.get_question(q.id).side_session_id
+    wait_for(lambda: status(h, side_id) == "ended", what="the side session to end")
+    assert texts(h, side_id, "user") == []
+
+
+def gate_office(make_harness, **defaults):  # noqa: F811
+    """An office whose minh runs the gate flow: its card stays open across restarts and has no chat turns."""
+    return wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW, "people/minh/gate.yaml": GATE,
+                                    "people/minh/person.yaml": person("minh", main="gate.yaml")},
+                             defaults=defaults or None))
+
+
+def gate_card(office, workspace):  # noqa: F811
+    h = office.extras["harness"]
+    session = h.start_session("minh", str(workspace))
+    return wait_for(lambda: h.store.list_questions(session_id=session.id, status="open"), what="the gate")[0]
+
+
+def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, workspace):  # noqa: F811
+    fake_llm.script({"content": "Postgres scales."}, {"content": "SQLite is simpler."})
+    first = gate_office(make_harness)
+    q = gate_card(first, workspace)
+    side = chat(first, q, "why Postgres?", 1)
+    stop(first)
+    first.extras["harness"].close_all()
+    assert status(first.extras["harness"], side.id) == "idle"  # left for the next office
+
+    second = gate_office(make_harness)
+    h = second.extras["harness"]
+    try:
+        h.restore()  # the harness's own on_start, then the extension's sweep
+        second.extras["cards"].sweep()
+        wait_for(lambda: side.id in h._live and h._live[side.id].turn_q, what="the restored side turn")
+        assert h.store.get_question(q.id).status == "open"
+        chat(second, q, "and SQLite?", 2)
+        assert last_user(fake_llm, 2) == "and SQLite?" and asked(fake_llm, 2).count(FRAMING) == 1
+        assert [e.text for e in h.store.get_question(q.id).discussion] == [
+            "why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler."]
+    finally:
+        stop(second)
+
+
+def test_a_side_chat_that_idles_out_reopens_on_the_next_message(make_harness, fake_llm, workspace):  # noqa: F811
+    fake_llm.script({"content": "Postgres scales."}, {"content": "SQLite is simpler."})
+    office = gate_office(make_harness, idle_end="1s")
+    h = office.extras["harness"]
+    try:
+        q = gate_card(office, workspace)
+        side = chat(office, q, "why Postgres?", 1)
+        wait_for(lambda: status(h, side.id) == "ended", what="the side session to idle out")
+        assert h.store.get_question(q.id).status == "open"
+        chat(office, q, "and SQLite?", 2)
+        assert last_user(fake_llm, 2) == "and SQLite?" and asked(fake_llm, 2).count(FRAMING) == 1
+    finally:
+        stop(office)
