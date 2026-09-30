@@ -34,6 +34,8 @@ export function DialogHire() {
   const [error, setError] = createSignal<string>()
   const [busy, setBusy] = createSignal(false)
   const inputs: InputRenderable[] = []
+  // Counts edits, so a preview answered after an edit is dropped instead of shown for the old fields.
+  let edits = 0
 
   const focus = (i: number) => {
     const n = (i + FIELDS.length) % FIELDS.length
@@ -50,15 +52,20 @@ export function DialogHire() {
     if ("error" in built) return setError(built.error)
     setBusy(true)
     setError(undefined)
+    const at = edits
     try {
       const response = await office.client.people.hire(built.request)
-      if (!shown) return setPreview({ request: built.request, response })
+      if (!shown) {
+        if (edits === at) setPreview({ request: built.request, response })
+        return
+      }
       // There are no person events, so re-read the lists before selecting the new person.
       await office.refreshPeople()
       local.person.set(response.person.id)
       toast.show({ variant: "success", message: `Hired @${response.person.handle}` })
       dialog.clear()
     } catch (e) {
+      if (!shown && edits !== at) return
       setError(e instanceof Error ? e.message : String(e))
     } finally {
       setBusy(false)
@@ -105,6 +112,7 @@ export function DialogHire() {
                 cursorColor={theme.primary}
                 onInput={(value) => {
                   setForm(field.key, value)
+                  edits++
                   // An edit makes the preview stale; the next Enter previews again.
                   setPreview(undefined)
                 }}

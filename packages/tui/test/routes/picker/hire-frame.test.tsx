@@ -87,3 +87,34 @@ test("the form says what to fix before asking the office; office errors show inl
     office.stop()
   }
 })
+
+test("an edit while the preview is in flight drops that preview; the next Enter previews the new fields", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Lan", "lan", "QA")
+    const release = office.hold("POST /people")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Asking the office"))
+    app.input.pressEnter()
+    await app.input.typeText("X")
+    release()
+    await app.until((f) => !f.includes("Asking the office") && f.includes("enter preview"))
+    await Bun.sleep(50)
+    expect(await app.until(() => true)).not.toContain("+handle: lan")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("+title: QAX") && f.includes("enter hire"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Hired @lan"))
+    const posts = office.requests.filter((r) => r.method === "POST").map((r) => r.body as any)
+    expect(posts.map((b) => [b.title, b.confirm])).toEqual([
+      ["QA", false],
+      ["QAX", false],
+      ["QAX", true],
+    ])
+    expect(office.state.people.find((p) => p.handle === "lan")?.title).toBe("QAX")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
