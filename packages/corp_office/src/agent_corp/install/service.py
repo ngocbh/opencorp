@@ -124,7 +124,7 @@ def _tail(path: Path, lines: int = 20) -> str:
 
 
 def wait(launch: Launch, host: Host, timeout: float = 20.0) -> None:
-    """Wait up to ``timeout`` seconds for the office to answer on its socket; ``ServiceError`` with the log's tail if it doesn't."""
+    """Wait up to ``timeout`` seconds for the office to answer; ``ServiceError`` with the log's tail if it doesn't."""
     deadline = host.clock() + timeout
     while True:
         # Each probe gets only the time left, so an office that accepts but hangs can't stretch the wait.

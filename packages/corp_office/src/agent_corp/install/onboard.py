@@ -225,7 +225,8 @@ def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.Bas
     except httpx.HTTPError as exc:
         raise OnboardError(f"couldn't hire the first agent: the office didn't answer ({exc}); {again}") from None
     except (KeyError, TypeError, ValueError):
-        raise OnboardError(f"couldn't hire the first agent: the office's answer isn't a hire preview; {again}") from None
+        raise OnboardError("couldn't hire the first agent: the office's answer isn't a hire preview;"
+                           f" {again}") from None
     return f"{name} (@{handle})"
 
 
