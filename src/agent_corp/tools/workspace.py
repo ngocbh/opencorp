@@ -18,6 +18,8 @@ from agent_corp.sandbox.run import Result, run
 
 TOOL_NAMES = ("read_file", "write_file", "edit_file", "list", "search", "shell")
 MAX_SHELL_TIMEOUT = 600.0
+# Bytes of shell output the model sees; the rest of the capture is cut from the middle.
+MAX_SHELL_OUTPUT = 64 * 1024
 _BULK_ARGS = frozenset({"content", "old", "new"})
 _MAX_ARG_CHARS = 200
 _FILEOPS_SOURCE = Path(fileops.__file__).read_text(encoding="utf-8")
@@ -164,10 +166,10 @@ def _file_output(tool: str, result: Result) -> str:
 
 
 def _shell_output(result: Result, limit: float) -> str:
-    text = result.stdout.decode("utf-8", "replace")
-    stderr = result.stderr.decode("utf-8", "replace")
-    if stderr:
-        text += ("" if not text or text.endswith("\n") else "\n") + "[stderr]\n" + stderr
+    data = result.stdout
+    if result.stderr:
+        data += (b"" if not data or data.endswith(b"\n") else b"\n") + b"[stderr]\n" + result.stderr
+    text = _head_and_tail(data, MAX_SHELL_OUTPUT)
     if result.truncated:
         text += ("" if not text or text.endswith("\n") else "\n") + "[output truncated]"
     if result.timed_out:
@@ -177,6 +179,15 @@ def _shell_output(result: Result, limit: float) -> str:
     else:
         status = f"[exit {result.exit}]"
     return text + ("" if not text or text.endswith("\n") else "\n") + status
+
+
+def _head_and_tail(data: bytes, limit: int) -> str:
+    """Decode `data`; past `limit` bytes, keep only its first and last `limit // 2` bytes."""
+    if len(data) <= limit:
+        return data.decode("utf-8", "replace")
+    half = limit // 2
+    head, tail = data[:half].decode("utf-8", "replace"), data[-half:].decode("utf-8", "replace")
+    return f"{head}\n[{len(data) - 2 * half} bytes of output cut]\n{tail}"
 
 
 def _audit(tool: str, args: Mapping[str, Any], result: Result) -> AuditRecord:
@@ -247,7 +258,8 @@ def workspace_tool_functions(call: Callable[[str, dict[str, Any]], str]) -> dict
 
         The command runs in a sandbox: only the workspace and a private temp directory
         are available, the network may be off, and anything it starts is stopped when
-        it returns. `timeout` is in seconds (default 120, at most 600).
+        it returns. `timeout` is in seconds (default 120, at most 600). Output over
+        64 KB keeps only its start and end.
         """
         return call("shell", {"command": command, "timeout": timeout})
 

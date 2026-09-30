@@ -4,6 +4,7 @@ import time
 import pytest
 from agent_composer.tools import ToolSet
 
+from agent_corp.tools import workspace
 from agent_corp.tools.workspace import (
     TOOL_NAMES,
     AuditRecord,
@@ -39,6 +40,17 @@ def test_shell(tools):
     out = tools.shell("echo hi; echo oops >&2; exit 2")
     assert out.output == "hi\n[stderr]\noops\n[exit 2]"
     assert out.audit.exit == 2
+
+
+def test_shell_output_keeps_head_and_tail(tools):
+    out = tools.shell("echo START; head -c 200000 /dev/zero | tr '\\0' a; echo; echo END >&2").output
+    limit = workspace.MAX_SHELL_OUTPUT
+    head, note_and_tail = out.split("\n[", 1)
+    assert head.startswith("START\n") and len(head.encode()) <= limit // 2
+    cut = 6 + 200001 + len("[stderr]\nEND\n") - 2 * (limit // 2)
+    assert note_and_tail.startswith(f"{cut} bytes of output cut]\n")
+    assert out.endswith("a\n[stderr]\nEND\n[exit 0]")
+    assert len(out.encode()) < limit + 100
 
 
 def test_shell_timeout(tools):
