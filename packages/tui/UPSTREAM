@@ -4,3 +4,8 @@ path: packages/tui
 package: @opencode-ai/tui 1.18.32
 copied: 2026-09-29
 also copied: LICENSE (repository root), patches/solid-js@1.9.10.patch
+
+known peer mismatches (as upstream):
+- solid-js is pinned to 1.9.10 so the carried patch applies; @opentui/solid and
+  @opentui/keymap 0.4.5 declare a peer of solid-js 1.9.12.
+- opentui-spinner 0.0.7 declares a peer of @opentui/core ^0.3.4, behind the 0.4.5 in use.
