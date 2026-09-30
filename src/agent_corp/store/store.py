@@ -24,6 +24,7 @@ from agent_corp.protocol import now
 from agent_corp.protocol.models import (
     Comment,
     Event,
+    Question,
     Session,
     WorkItem,
 )
@@ -51,6 +52,10 @@ class NotFound(StoreError, LookupError):
 
 class DuplicateKey(StoreError):
     """A row with the same key already exists."""
+
+
+class InvalidTransition(StoreError, ValueError):
+    """A status change the entity's state machine does not allow."""
 
 
 class StaleVersion(StoreError):
@@ -83,6 +88,12 @@ class _Table:
 WORK_ITEMS = _Table("work_items", WorkItem, json=frozenset({"groups"}))
 COMMENTS = _Table("comments", Comment)
 SESSIONS = _Table("sessions", Session, derived=frozenset({"run_ids"}))
+QUESTIONS = _Table(
+    "questions", Question, json=frozenset({"options", "questions", "answer_schema", "discussion", "answer"})
+)
+
+_ANSWERED = frozenset({"answered", "consumed"})
+_QUESTION_MOVES = {"open": {"answered", "stale"}, "answered": {"consumed"}}
 
 
 def _columns(table: _Table, model: BaseModel) -> dict[str, Any]:
@@ -112,6 +123,11 @@ def _model[M: BaseModel](table: _Table, row: sqlite3.Row, model: type[M], **extr
 
 def _quote(names: Iterable[str]) -> list[str]:
     return [f'"{n}"' for n in names]
+
+
+def _check_move(kind: str, moves: dict[str, set[str]], old: str, new: str) -> None:
+    if new not in moves.get(old, set()):
+        raise InvalidTransition(f"{kind} cannot move from {old} to {new}")
 
 
 class Tx:
@@ -531,3 +547,97 @@ class Store:
             (person, limit),
         ).fetchall()
         return [WorkedFolder(r["cwd"], r["last_at"]) for r in rows]
+
+    # --- questions ----------------------------------------------------------------------
+
+    @staticmethod
+    def _question_columns(question: Question) -> dict[str, Any]:
+        cols = _columns(QUESTIONS, question)
+        # SQL NULL means "not answered"; an answered question stores its answer as JSON,
+        # which may be the text 'null'.
+        cols["answer"] = json.dumps(question.answer) if question.status in _ANSWERED else None
+        return cols
+
+    def add_question(self, question: Question) -> Question:
+        """Insert a question and emit ``question.created``.
+
+        A second question with the same ``(run_id, node_id)`` raises ``DuplicateKey``;
+        questions with a null ``node_id`` never collide.
+        """
+        with self.transaction() as tx:
+            tx.insert(QUESTIONS, self._question_columns(question))
+            stored = self._must(QUESTIONS, Question, question.id)
+            tx.emit("question.created", question.id, stored)
+        return stored
+
+    def get_question(self, question_id: str) -> Question | None:
+        """The question, or ``None``. ``answer`` is unset until the question is answered."""
+        return self._get(QUESTIONS, Question, question_id)
+
+    def get_question_by_node(self, run_id: str, node_id: str) -> Question | None:
+        """The ``human_input`` question stored for a run's node, or ``None``."""
+        row = self._conn().execute(
+            "SELECT * FROM questions WHERE run_id = ? AND node_id = ?", (run_id, node_id)
+        ).fetchone()
+        return None if row is None else _model(QUESTIONS, row, Question)
+
+    def list_questions(
+        self,
+        *,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        status: str | Iterable[str] | None = None,
+        source: str | None = None,
+    ) -> list[Question]:
+        """Questions, oldest first, optionally filtered."""
+        status = status if status is None or isinstance(status, str) else tuple(status)
+        where = {"session_id": session_id, "run_id": run_id, "status": status, "source": source}
+        return self._list(QUESTIONS, Question, where, "created_at, rowid")
+
+    def _write_question(self, tx: Tx, question: Question) -> Question:
+        tx.update(QUESTIONS, self._question_columns(question))
+        stored = self._must(QUESTIONS, Question, question.id)
+        tx.emit("question.updated", question.id, stored)
+        return stored
+
+    def answer_question(
+        self, question_id: str, answer: Any, answer_kind: str, *, answered_by: str | None = None
+    ) -> Question:
+        """Answer an open question and emit ``question.updated``.
+
+        The first answer wins: answering a question that is not open raises
+        ``InvalidTransition``.
+        """
+        with self.transaction() as tx:
+            current = self._must(QUESTIONS, Question, question_id)
+            _check_move("question", _QUESTION_MOVES, current.status, "answered")
+            question = self._changed(
+                current,
+                {
+                    "status": "answered",
+                    "answer": answer,
+                    "answer_kind": answer_kind,
+                    "answered_by": answered_by,
+                    "updated_at": now(),
+                },
+                set(),
+            )
+            return self._write_question(tx, question)
+
+    def set_question_status(self, question_id: str, status: str) -> Question:
+        """Move a question to ``consumed`` (from answered) or ``stale`` (from open)."""
+        if status == "answered":
+            raise InvalidTransition("answer a question with answer_question")
+        with self.transaction() as tx:
+            current = self._must(QUESTIONS, Question, question_id)
+            _check_move("question", _QUESTION_MOVES, current.status, status)
+            question = current.model_copy(update={"status": status, "updated_at": now()})
+            return self._write_question(tx, question)
+
+    def update_question(self, question_id: str, **changes: Any) -> Question:
+        """Change non-status fields (discussion, side_session_id, ...) and emit ``question.updated``."""
+        frozen = {"id", "session_id", "run_id", "node_id", "status", "answer", "answer_kind", "answered_by", "created_at"}
+        with self.transaction() as tx:
+            current = self._must(QUESTIONS, Question, question_id)
+            question = self._changed(current, {"updated_at": now(), **changes}, frozen)
+            return self._write_question(tx, question)

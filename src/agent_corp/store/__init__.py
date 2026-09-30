@@ -3,6 +3,7 @@
 from agent_corp.store.migrate import MigrationError, migrate
 from agent_corp.store.store import (
     DuplicateKey,
+    InvalidTransition,
     NotFound,
     StaleVersion,
     Store,
@@ -14,6 +15,7 @@ from agent_corp.store.store import (
 
 __all__ = [
     "DuplicateKey",
+    "InvalidTransition",
     "MigrationError",
     "NotFound",
     "StaleVersion",
