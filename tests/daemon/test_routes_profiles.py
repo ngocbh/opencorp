@@ -32,7 +32,7 @@ async def test_put_writes_emits_and_returns_the_profile(client, office, company,
     body = r.json()
     assert body["text"] == "# Minh\nterse\n" and body["version"] == blob_id(b"# Minh\nterse\n")
     assert (company / "people/minh/profile.md").read_text() == "# Minh\nterse\n"
-    assert profile_stores["minh"].provenance == [{"source": "edit"}]
+    assert profile_stores["minh"].provenance == [{"source": "hand edit"}]
     event = office.store.events_after()[-1]
     assert (event.type, event.subject_id, event.data) == ("profile.updated", "minh", body)
 

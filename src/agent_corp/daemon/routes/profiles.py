@@ -35,7 +35,7 @@ async def put_profile(request: Request) -> JSONResponse:
     pid, store, max_chars = await _open(request)
     body = await parse(request, ProfileWriteRequest)
     try:
-        version = await call(store.write, body.text, base_version=body.base_version, provenance={"source": "edit"})
+        version = await call(store.write, body.text, base_version=body.base_version, provenance={"source": "hand edit"})
     except MarkdownVersionMismatch as exc:
         conflict = VersionConflict(expected=exc.expected, current=exc.current)
         return JSONResponse(conflict.model_dump(mode="json"), status_code=409)
