@@ -1,13 +1,20 @@
 """A person's profile.md in the company clone as a composer MarkdownStore, versioned by git blob id."""
 
 import hashlib
+import os
 import re
+import tempfile
+from pathlib import Path
+
+from agent_composer.memory.contracts import JsonObject
+from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
 
 from agent_corp.company.git import CompanyGit, CompanyGitError
 
 EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 _ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*")  # the protocol's Id
 _ID_MAX = 64
+_TOKEN = re.compile(r"\S+")
 
 
 def blob_id(data: bytes) -> str:
@@ -15,12 +22,34 @@ def blob_id(data: bytes) -> str:
     return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
 
 
+def commit_message(handle: str, provenance: JsonObject | None) -> str:
+    """``profile(@<handle>): <source>``, with a ``Commit-Id`` trailer when ``provenance`` has one.
+
+    ``source`` falls back to ``from feedback on run <run_id>`` (composer's provenance has a
+    run id but no source), then to ``write``.
+    """
+    p = provenance or {}
+    source, run_id, commit_id = p.get("source"), p.get("run_id"), _commit_id(p)
+    if not (isinstance(source, str) and source.strip()):
+        source = f"from feedback on run {run_id}" if isinstance(run_id, str) and run_id else "write"
+    subject = f"profile(@{handle}): {' '.join(source.split())}"  # one line, whatever the caller sent
+    return subject if commit_id is None else f"{subject}\n\nCommit-Id: {commit_id}"
+
+
+def _commit_id(provenance: JsonObject | None) -> str | None:
+    """``provenance["commit_id"]``, or None; ValueError if it isn't one non-blank token."""
+    commit_id = (provenance or {}).get("commit_id")
+    if commit_id is not None and not (isinstance(commit_id, str) and _TOKEN.fullmatch(commit_id)):
+        raise ValueError(f"commit_id must be a string without whitespace, not {commit_id!r}")
+    return commit_id
+
+
 class GitProfileStore:
     """``people/<person_id>/profile.md`` in the company clone, as a composer ``MarkdownStore``.
 
     Versions are git blob ids, and every version handed out is committed, so it stays
-    readable. The constructor does no I/O: the office builds one per request on its
-    event loop.
+    readable. Every write is a commit. The constructor does no I/O: the office builds one
+    per request on its event loop.
     """
 
     def __init__(self, git: CompanyGit, person_id: str) -> None:
@@ -52,6 +81,28 @@ class GitProfileStore:
             raise OSError(f"blob {current} of {self.path} is missing from the clone")
         return data.decode("utf-8"), current
 
+    def write(self, text: str, *, base_version: str, provenance: JsonObject | None = None) -> str:
+        """Replace the profile and commit it if ``base_version`` is current; return the new version.
+
+        Raises ``MarkdownVersionMismatch`` for a stale base, ``ValueError`` for a bad commit id
+        or a profile path through a symlink, and ``OSError`` when git fails.
+        """
+        if type(text) is not str or type(base_version) is not str:
+            raise TypeError("text and base_version must be strings")
+        _commit_id(provenance)  # refuse a bad commit id before writing anything
+        data = text.encode("utf-8")
+        try:
+            with self.git.lock:
+                self.git.commit_hand_edits()  # a pending hand edit is the current version
+                current = self._current()
+                if current != base_version:
+                    raise MarkdownVersionMismatch(base_version, current)
+                self._replace(data)
+                self.git.commit([self.path], commit_message(self.git.handle(self.path), provenance))
+                return self._current()
+        except CompanyGitError as exc:
+            raise OSError(str(exc)) from exc
+
     def _current(self) -> str:
         """The blob id of the profile at HEAD; a missing profile is the empty blob."""
         return self.git.blob_id(self.path) or EMPTY_BLOB
@@ -59,3 +110,20 @@ class GitProfileStore:
     def _blob(self, version: str) -> bytes | None:
         # The empty blob is only in the object store once some empty file was committed.
         return b"" if version == EMPTY_BLOB else self.git.read_blob(version)
+
+    def _replace(self, data: bytes) -> None:
+        """Write the profile through a temporary file; refuse a path that leaves the person's directory."""
+        target = self.git.root / self.path
+        if target.is_symlink() or target.parent.resolve() != self.git.root.resolve() / "people" / self.person_id:
+            raise ValueError(f"{self.path} goes through a symlink; not writing it")
+        # mkstemp makes the file 0600; keep the profile's mode, or git's default for a new file.
+        mode = target.stat().st_mode & 0o777 if target.exists() else 0o644
+        fd, temporary = tempfile.mkstemp(dir=target.parent, prefix=".profile.md.")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                os.fchmod(handle.fileno(), mode)
+                handle.write(data)
+            os.replace(temporary, target)
+        except BaseException:
+            Path(temporary).unlink(missing_ok=True)
+            raise

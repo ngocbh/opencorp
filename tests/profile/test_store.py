@@ -1,9 +1,15 @@
 """GitProfileStore: profile.md in the company clone as a MarkdownStore versioned by git blob id."""
 
+import os
+import threading
+
 import pytest
+from agent_composer.memory import MemoryFrameRef, MemoryFrameSpec, MemoryOwner
+from agent_composer.memory.profile import ProfileMemory
+from agent_composer.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
 
 from agent_corp.company.git import CompanyGit
-from agent_corp.profile import EMPTY_BLOB, GitProfileStore, blob_id
+from agent_corp.profile import EMPTY_BLOB, GitProfileStore, blob_id, commit_message
 from tests.company.conftest import _git, _isolate_git, company  # noqa: F401
 
 PROFILE = "people/minh/profile.md"
@@ -86,3 +92,131 @@ def test_git_failure_is_an_os_error(tmp_path):
     store = GitProfileStore(CompanyGit(tmp_path / "not-a-repo", tmp_path / "worktrees"), "minh")
     with pytest.raises(OSError, match="exited"):
         store.read()
+
+
+def _count(company) -> int:
+    return int(_git(company, "rev-list", "--count", "HEAD"))
+
+
+# Writes
+
+
+def test_write_commits_with_the_provenance_message(store, git, company):
+    base = store.read()[1]
+    version = store.write("# Minh\nterse\n", base_version=base, provenance={"source": "ngocbh via profile manager"})
+    assert version == blob_id(b"# Minh\nterse\n") == git.blob_id(PROFILE)
+    assert (company / PROFILE).read_text() == "# Minh\nterse\n"
+    assert _subject(company) == "profile(@minh): ngocbh via profile manager"
+    assert _git(company, "status", "--porcelain") == ""
+
+
+def test_stale_base_raises_with_both_versions_and_writes_nothing(store, company):
+    stale = blob_id(b"old\n")
+    head = _git(company, "rev-parse", "HEAD")
+    with pytest.raises(MarkdownVersionMismatch) as caught:
+        store.write("x\n", base_version=stale)
+    assert (caught.value.expected, caught.value.current) == (stale, blob_id(MINH.encode()))
+    assert (company / PROFILE).read_text() == MINH and _git(company, "rev-parse", "HEAD") == head
+
+
+def test_a_hand_edit_makes_the_base_stale(store, company):
+    base = store.read()[1]
+    (company / PROFILE).write_text("# Minh\nby hand\n")
+    with pytest.raises(MarkdownVersionMismatch) as caught:
+        store.write("# Minh\nby model\n", base_version=base)
+    assert caught.value.current == blob_id(b"# Minh\nby hand\n")
+    assert (company / PROFILE).read_text() == "# Minh\nby hand\n"
+    assert _subject(company) == "profile(@minh): hand edit"
+
+
+def test_write_with_the_empty_base_creates_a_missing_profile(store, git, company):
+    _git(company, "rm", "-q", PROFILE)
+    _git(company, "commit", "-q", "-m", "drop")
+    version = store.write("# Minh\n", base_version=EMPTY_BLOB)
+    assert version == git.blob_id(PROFILE) == blob_id(b"# Minh\n")
+
+
+def test_unchanged_text_makes_no_commit(store, company):
+    base = store.read()[1]
+    before = _count(company)
+    assert store.write(MINH, base_version=base) == base
+    assert _count(company) == before
+
+
+def test_write_refuses_a_symlinked_profile(store, company, tmp_path):
+    outside = tmp_path / "outside.md"
+    outside.write_text(MINH)
+    (company / PROFILE).unlink()
+    os.symlink(outside, company / PROFILE)
+    base = store.read()[1]  # the symlink, committed as a hand edit
+    with pytest.raises(ValueError, match="symlink"):
+        store.write("pwned\n", base_version=base)
+    assert outside.read_text() == MINH
+
+
+def test_write_refuses_non_strings(store):
+    with pytest.raises(TypeError):
+        store.write(b"x", base_version=store.read()[1])
+
+
+def test_commit_message_sources():
+    assert commit_message("minh", None) == "profile(@minh): write"
+    assert commit_message("minh", {"source": "hand edit"}) == "profile(@minh): hand edit"
+    assert commit_message("minh", {"run_id": "01J", "commit_id": "ac-memory-v1:ab"}) == (
+        "profile(@minh): from feedback on run 01J\n\nCommit-Id: ac-memory-v1:ab")
+    assert commit_message("minh", {"source": "a\nb  c", "run_id": "01J"}) == "profile(@minh): a b c"
+
+
+@pytest.mark.parametrize("commit_id", ["", "a b", "a\nCommit-Id: b", 7])
+def test_bad_commit_id_is_a_value_error(store, commit_id):
+    with pytest.raises(ValueError, match="commit_id"):
+        store.write("x\n", base_version=store.read()[1], provenance={"commit_id": commit_id})
+
+
+# Concurrency, pins, and composer's ProfileMemory
+
+
+def test_two_threads_with_one_base_one_wins(git, company):
+    base = GitProfileStore(git, "minh").read()[1]
+    barrier, results = threading.Barrier(2), []
+
+    def write(text):
+        barrier.wait()
+        try:
+            results.append(GitProfileStore(git, "minh").write(text, base_version=base))
+        except MarkdownVersionMismatch as exc:
+            results.append(exc)
+
+    threads = [threading.Thread(target=write, args=(f"# Minh\n{n}\n",)) for n in "ab"]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(type(r).__name__ for r in results) == ["MarkdownVersionMismatch", "str"]
+    assert GitProfileStore(git, "minh").read()[1] in results
+
+
+def test_writes_leave_pinned_worktrees_alone(store, git):
+    pin = git.pin("HEAD")
+    store.write("# Minh\nnew\n", base_version=store.read()[1])
+    assert (pin / PROFILE).read_text() == MINH
+
+
+ROOT = MemoryFrameRef("chat", ("chat",), MemoryOwner.FLOW)
+
+
+def test_profile_memory_restores_a_snapshot_after_a_later_write(store):
+    assert isinstance(store, MarkdownStore)
+    memory = ProfileMemory(store, llm_config={"provider": "ollama", "model": "stub"})
+    with memory.open_run() as session:
+        recorded = session.snapshot
+    store.write("# Minh\nlater\n", base_version=store.read()[1])
+    with memory.open_run(snapshot=recorded) as restored:
+        assert restored.snapshot == recorded
+        assert restored.open_frame(MemoryFrameSpec(ROOT, "profile", {})).recall() == MINH
+
+
+def test_write_keeps_the_file_mode(store, company):
+    (company / PROFILE).chmod(0o644)
+    store.write("# Minh\nnew\n", base_version=store.read()[1])
+    assert (company / PROFILE).stat().st_mode & 0o777 == 0o644
