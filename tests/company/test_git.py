@@ -4,6 +4,7 @@ import threading
 import time
 
 import pytest
+import yaml
 
 from agent_corp.company.git import CompanyGit, CompanyGitError
 from tests.company.conftest import _git, write_repo
@@ -256,3 +257,49 @@ def test_unrelated_staged_file_stays_staged(g, company):
     assert g.commit_hand_edits() == [PROFILE]
     assert _git(company, "log", "-2", "--name-only", "--format=").split() == [PROFILE, PROFILE]
     assert _git(company, "status", "--porcelain") == "M  groups/eng.yaml"
+
+
+def test_read_blob_returns_exact_bytes(g, company):
+    (company / PROFILE).write_bytes(b"# Minh\r\nline\r\n")
+    g.commit([PROFILE], "crlf")
+    assert g.read_blob(g.blob_id(PROFILE)) == b"# Minh\r\nline\r\n"
+
+
+@pytest.mark.parametrize("ref", ["0" * 40, "HEAD", "HEAD:company.yaml", "--help",
+                                 "E69DE29BB2D1D6434B8B29AE775AD8C2E48C5391"])
+def test_read_blob_refuses_what_is_not_a_blob_id_here(g, ref):
+    assert g.read_blob(ref) is None
+
+
+def test_read_blob_refuses_a_commit_id(g):
+    assert g.read_blob(g.head()) is None
+
+
+def test_find_commit_matches_a_whole_line_on_the_path(g, company):
+    (company / PROFILE).write_text("# one\n")
+    first = g.commit([PROFILE], "profile(@minh): one\n\nCommit-Id: c-1")
+    (company / "groups/eng.yaml").write_text("id: eng\nname: Eng\nparent: null\nhead: null\n")
+    g.commit(["groups/eng.yaml"], "group\n\nCommit-Id: c-2")
+    assert g.find_commit(PROFILE, "Commit-Id: c-1") == first
+    assert g.find_commit(PROFILE, "Commit-Id: c-") is None  # a prefix is not a match
+    assert g.find_commit(PROFILE, "Commit-Id: c-2") is None  # another path's commit
+    assert g.find_commit("groups/eng.yaml", "Commit-Id: c-2") == g.head()
+
+
+def test_handle_is_public(g):
+    assert g.handle(PROFILE) == "minh"
+    assert g.handle("people/ghost/profile.md") == "ghost"
+
+
+def test_unstage_keeps_the_working_file(g, company):
+    (company / PROFILE).write_text("# staged\n")
+    _git(company, "add", PROFILE)
+    g.unstage([PROFILE])
+    assert _git(company, "status", "--porcelain") == "M people/minh/profile.md"
+    assert (company / PROFILE).read_text() == "# staged\n"
+
+
+@pytest.mark.parametrize("handle", ["m\n\nCommit-Id: c-1\n", "Minh", "m inh", "-minh"])
+def test_handle_falls_back_to_id_when_not_a_handle(g, company, handle):
+    (company / "people/minh/person.yaml").write_text(yaml.safe_dump({"id": "minh", "handle": handle}))
+    assert g.handle(PROFILE) == "minh"

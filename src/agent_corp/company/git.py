@@ -1,6 +1,7 @@
 """The office's clone of the company repo: pinned worktrees, the repo lock, commits."""
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,6 +17,8 @@ _PIN_MARKER = ".agent-corp-pin"
 _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 # `:(glob)` makes `*` match one path segment, so only people/<id>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"
+_BLOB_ID = re.compile(r"[0-9a-f]{40}")
+_HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?")  # the protocol's Handle
 
 
 class CompanyGitError(Exception):
@@ -72,6 +75,25 @@ class CompanyGit:
         out = self._git("rev-parse", "--verify", "--quiet", f"{commit}:{relpath}", check=False)
         return out.stdout.strip() or None
 
+    def read_blob(self, blob_id: str) -> bytes | None:
+        """Return the bytes of blob ``blob_id`` (40 lowercase hex), or None if the clone has no such blob."""
+        if not _BLOB_ID.fullmatch(blob_id):  # keep rev expressions such as HEAD:<path> away from git
+            return None
+        # Bytes, not _git's text mode, which turns \r\n into \n.
+        out = subprocess.run(["git", "-C", str(self.root), "cat-file", "blob", blob_id],
+                             capture_output=True, env=_env())
+        return out.stdout if out.returncode == 0 else None
+
+    def find_commit(self, relpath: str, line: str) -> str | None:
+        """Return the newest commit on HEAD that touches ``relpath`` and has ``line`` as a whole message line."""
+        out = self._git("log", "--fixed-strings", f"--grep={line}", "--format=%H%x00%B%x1e", "HEAD",
+                        "--", *_literal([relpath])).stdout
+        for record in out.split("\x1e"):
+            sha, _, body = record.strip("\n").partition("\0")
+            if line in body.splitlines():  # --grep matches substrings; a trailer must match whole
+                return sha
+        return None
+
     def commit(self, paths: list[str], message: str) -> str:
         """Stage ``paths`` and commit them; return the new HEAD, or HEAD unchanged if nothing changed."""
         if not paths:  # `git commit --` with no paths would commit the whole index
@@ -90,6 +112,11 @@ class CompanyGit:
                 return self.head()
             self._git("commit", "-q", "-m", message, "--", *_literal(paths))
             return self.head()
+
+    def unstage(self, paths: list[str]) -> None:
+        """Reset ``paths`` in the index to HEAD, leaving the working files alone."""
+        if paths:  # `git reset -q --` with no paths would reset the whole index
+            self._git("reset", "-q", "--", *_literal(paths))
 
     def pin(self, commit: str) -> Path:
         """Return a read-only worktree for ``commit``, keyed by full sha, creating it if needed.
@@ -142,14 +169,19 @@ class CompanyGit:
                         paths.add(fields[i])
                     i += 1
             for rel in sorted(paths):
-                self.commit([rel], f"profile(@{self._handle(rel)}): hand edit")
+                self.commit([rel], f"profile(@{self.handle(rel)}): hand edit")
             return sorted(paths)
 
-    def _handle(self, profile_rel: str) -> str:
-        """The handle of the person who owns ``people/<id>/profile.md``, else the id."""
+    def handle(self, profile_rel: str) -> str:
+        """The handle of the person who owns ``people/<id>/profile.md``, else the id.
+
+        A value that isn't a protocol handle falls back to the id too: the handle goes into
+        commit messages, where a newline could forge a ``Commit-Id`` trailer.
+        """
         pid = Path(profile_rel).parent.name
         try:
             data = yaml.safe_load((self.root / "people" / pid / "person.yaml").read_text(encoding="utf-8"))
-            return str(data["handle"])
+            handle = data["handle"]
         except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
             return pid
+        return handle if isinstance(handle, str) and _HANDLE.fullmatch(handle) else pid
