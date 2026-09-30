@@ -1,6 +1,7 @@
-// Runtime guards for live event `data`. The protocol types it as a plain object; these check
-// the fields the client reads, so a malformed event is skipped rather than corrupting state.
-import type { Message, Part } from "@agent-corp/protocol"
+// Runtime guards for event `data`. The protocol types it as a plain object; these check the
+// fields the client keys on or reads, so a malformed event is skipped rather than corrupting
+// state.
+import type { Event, Message, Part } from "@agent-corp/protocol"
 
 /** `part.updated` data: the whole part. */
 export type PartUpdated = { message_id: string; part: Part }
@@ -26,4 +27,24 @@ export function asPartUpdated(data: unknown): PartUpdated | undefined {
 export function asPartDelta(data: unknown): PartDelta | undefined {
   if (!isObject(data) || !isString(data.message_id) || !isString(data.part_id) || !isString(data.text)) return
   return data as PartDelta
+}
+
+const hasStrings = (v: unknown, keys: string[]) => isObject(v) && keys.every((k) => isString(v[k]))
+
+// The fields each metadata event's reducer keys on, sorts by, or filters by.
+const META_FIELDS: Record<string, string[]> = {
+  session: ["id", "person", "cwd", "kind", "status", "updated_at"],
+  question: ["id", "session_id", "status", "created_at"],
+  work_item: ["id"],
+  profile_proposal: ["id"],
+  feedback: ["id"],
+  debrief: ["session_id"],
+  profile: [],
+  comment: ["id", "work_item_id"],
+}
+
+/** Whether a metadata event's `data` has what its reducer needs; unknown types pass. */
+export function isMetaData(e: Event) {
+  const fields = META_FIELDS[e.type.slice(0, e.type.lastIndexOf("."))]
+  return fields === undefined || hasStrings(e.data, fields)
 }

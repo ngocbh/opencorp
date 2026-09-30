@@ -135,6 +135,18 @@ test("malformed live data is skipped", () => {
   expect(s.messages[S]).toEqual([])
 })
 
+test("malformed meta data is skipped", () => {
+  const s = emptyState()
+  applyMeta(s, meta("session.updated", { id: 3 }, "S1"))
+  applyMeta(s, meta("session.created", { ...session(), updated_at: undefined }))
+  applyMeta(s, meta("question.created", { id: "Q" }))
+  applyMeta(s, meta("work_item.updated", { title: "x" }, "W"))
+  applyMeta(s, meta("debrief.created", { id: "D" }))
+  applyMeta(s, meta("comment.created", { id: "C" }))
+  applyMeta(s, { ...meta("profile_proposal.created", {}, "P"), data: "nope" as never })
+  expect(s).toEqual(emptyState())
+})
+
 test("replay: a buffered delta for a snapshot part is dropped, not doubled", () => {
   const s = synced()
   s.messages[S] = [msg("M", [text("p1", "hello")])] // the snapshot already has "lo"

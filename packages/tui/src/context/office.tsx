@@ -1,6 +1,7 @@
 import { batch, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { createOfficeClient } from "../office/client"
+import { runEach } from "../office/queue"
 import { emptyState, type OfficeState } from "../office/store"
 import { createOfficeSync, type OfficeEvents, type OfficeStatus } from "../office/sync"
 import { createSimpleContext } from "./helper"
@@ -26,8 +27,9 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       const calls = after
       queue = []
       after = []
-      batch(() => setState(produce((s) => fns.forEach((f) => f(s)))))
-      calls.forEach((f) => f())
+      // One bad update mustn't drop the rest, or the callbacks waiting on them.
+      batch(() => setState(produce((s) => runEach(fns, s))))
+      runEach(calls)
     }
 
     const sync = createOfficeSync({

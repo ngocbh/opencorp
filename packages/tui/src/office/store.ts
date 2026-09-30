@@ -16,7 +16,7 @@ import type {
   Session,
   WorkItem,
 } from "@agent-corp/protocol"
-import { asMessage, asPartDelta, asPartUpdated } from "./live"
+import { asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
 import type { StreamEvent } from "./sse"
 
 export type OfficeState = {
@@ -76,8 +76,9 @@ export function upsertSession(s: OfficeState, session: Session) {
   s.sessions.splice(at < 0 ? s.sessions.length : at, 0, session)
 }
 
-/** Applies one metadata event. Unknown types are ignored. */
+/** Applies one metadata event. Unknown types and malformed data are ignored. */
 export function applyMeta(s: OfficeState, e: Event) {
+  if (!isMetaData(e)) return
   const data = e.data as any
   switch (e.type) {
     case "session.created":
