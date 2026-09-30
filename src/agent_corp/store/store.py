@@ -425,7 +425,15 @@ class Store:
         listener that raises is logged. Returns a function that removes the listener.
         """
         self._listeners.append(listener)
-        return lambda: self._listeners.remove(listener)
+        removed = False
+
+        def remove() -> None:
+            nonlocal removed
+            if not removed:
+                removed = True
+                self._listeners.remove(listener)
+
+        return remove
 
     def _deliver(self, events: list[Event]) -> None:
         pending: deque[Event] | None = getattr(self._local, "pending", None)

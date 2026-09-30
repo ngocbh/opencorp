@@ -227,3 +227,13 @@ def test_no_writes_after_sqlite_ended_the_transaction(store):
             with pytest.raises(StoreError, match="rolled back"):
                 tx.execute("UPDATE work_items SET summary = 'x'")
     assert store.get_work_item(later.id) is None and store.events_after() == []
+
+
+def test_remover_can_be_called_twice(store):
+    got = []
+    store.add_listener(got.append)
+    remove = store.add_listener(got.append)
+    remove()
+    remove()
+    store.create_work_item(work_item())
+    assert len(got) == 1
