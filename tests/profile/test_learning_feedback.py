@@ -1,8 +1,10 @@
 import subprocess
+import threading
 
 import pytest
 
 from agent_corp.chat.harness import HarnessError
+from agent_corp.profile.feedback import FeedbackHandlers
 from agent_corp.protocol.models import FeedbackRequest
 from tests.profile.conftest import (LEARNER_ASK, asked, chat, debrief_reply, learner_reply, review_reply, settled,
                                     status, wait_for)
@@ -24,6 +26,14 @@ def profile_text(harness):
     return (harness.git.root / "people/minh/profile.md").read_text()
 
 
+def other(harness):
+    """Commit a change that isn't the profile's, so HEAD moves on."""
+    (harness.git.root / "notes.md").write_text("notes\n")
+    for args in (["add", "notes.md"], ["commit", "-q", "-m", "notes"]):
+        subprocess.run(["git", "-C", str(harness.git.root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+
+
 def ended(harness, fake_llm, workspace):
     """A main session that ended and has its debrief."""
     fake_llm.script(debrief_reply())
@@ -35,15 +45,22 @@ def ended(harness, fake_llm, workspace):
 def test_feedback_on_a_finished_run_is_learned_and_the_next_session_sees_it(harness, fake_llm, workspace, learning):
     sid = ended(harness, fake_llm, workspace)
     session = harness.store.get_session(sid)
-    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n", hold=True))
     fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
     assert (fb.run_id, fb.author, fb.status) == (session.run_ids[-1], "ngocbh", "queued")
+    wait_for(lambda: any(LEARNER_ASK in asked(r) for r in fake_llm.requests()), what="the learner call")
+    hold = threading.Event()
+    learning._post(hold.wait, 10)  # Learning takes the attempt's outcome only once HEAD has moved on
+    fake_llm.release()
+    subject = f"profile(@minh): from feedback on run {fb.run_id} (ngocbh)"
+    wait_for(lambda: git_log(harness, "-1", "--format=%s").strip() == subject, what="the learner's commit")
+    learned = git_log(harness, "-1", "--format=%H").strip()
+    other(harness)
+    hold.set()
     wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
     applied = harness.store.get_feedback(fb.id)
-    assert (applied.attempts, applied.commit) == (1, harness.git.head())
+    assert (applied.attempts, applied.commit) == (1, learned)  # the learner's commit, not HEAD
     assert profile_text(harness) == PROFILE + "\n- Be brief.\n"
-    assert git_log(harness, "-1", "--format=%s").strip() == (
-        f"profile(@minh): from feedback on run {fb.run_id} (ngocbh)")
     learner = next(r for r in fake_llm.requests() if LEARNER_ASK in asked(r))
     assert "Be brief." in asked(learner)
     # The session's pinned worktree still has the profile its runs saw.
@@ -114,3 +131,23 @@ def test_feedback_needs_a_finished_run_of_the_session(harness, fake_llm, workspa
         learning.add_feedback(FeedbackRequest(session_id=side.id, run_id="r1", text="x"))
     assert (err.value.status, err.value.code) == (422, "not_learnable")
     assert harness.store.list_feedback() == []
+
+
+def test_feedback_whose_attempt_committed_and_then_failed_is_not_retried(harness, fake_llm, workspace, learning,
+                                                                          monkeypatch):
+    def failed_after_committing(self, worker, frame):
+        self.outcome = {**frame, "backward": {"status": "failed",
+                                              "failure": {"code": "provider_error", "message": "after the write"}}}
+
+    monkeypatch.setattr(FeedbackHandlers, "result", failed_after_committing)
+    sid = ended(harness, fake_llm, workspace)
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    wait_for(lambda: feedback_status(harness, fb.id) == "learning_failed", what="learning_failed")
+    assert git_log(harness, "-1", "--format=%s").strip() == (
+        f"profile(@minh): from feedback on run {fb.run_id} (ngocbh)")  # the write stands
+    learning.tick()
+    settled(learning)
+    failed = harness.store.get_feedback(fb.id)
+    assert (failed.status, failed.attempts) == ("learning_failed", 1)
+    assert sum(LEARNER_ASK in asked(r) for r in fake_llm.requests()) == 1

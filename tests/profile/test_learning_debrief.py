@@ -4,7 +4,8 @@ from types import SimpleNamespace
 import pytest
 
 from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions.learning import Learning, register
+from agent_corp.extensions.learning import MAX_DEBRIEFS, Learning, register
+from agent_corp.profile.debrief import pending_debrief
 from agent_corp.store import new_id
 from tests.profile.conftest import DEBRIEF_ASK, OUTPUT, asked, chat, debrief_reply, settled, status, wait_for
 from tests.store.conftest import message, session
@@ -119,3 +120,21 @@ def office_with(harness):
     """An office running ``harness``, as ``build_office`` makes it."""
     return SimpleNamespace(**vars(harness.office), extras={"harness": harness}, workers=harness,
                            on_start=[], on_stop=[])
+
+
+def test_reading_a_debrief_while_its_retry_runs_starts_no_second_one(harness, fake_llm, learning):
+    head = harness.git.head()
+    s = harness.store.create_session(session(repo_commit=head, status="ended", run_ids=["r1"]))
+    harness.store.add_message(message(s.id, parts=[{"id": new_id(), "type": "text", "text": "fix it"}]))
+    harness.store.save_debrief(pending_debrief(s), attempts=MAX_DEBRIEFS)  # the tick has given up
+    fake_llm.script(debrief_reply(hold=True))
+    assert learning.debrief(s.id).state == "pending"
+    wait_for(lambda: any(DEBRIEF_ASK in asked(r) for r in fake_llm.requests()), what="the retry")
+    for _ in range(3):
+        assert learning.debrief(s.id).state == "pending"
+    settled(learning)
+    fake_llm.release()
+    wait_for(lambda: debrief_state(harness, s.id) == "ready", what="the retried debrief")
+    settled(learning)
+    assert attempts(harness, s.id) == MAX_DEBRIEFS + 1
+    assert sum(DEBRIEF_ASK in asked(r) for r in fake_llm.requests()) == 1
