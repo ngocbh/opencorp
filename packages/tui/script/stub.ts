@@ -20,12 +20,5 @@ export function createStub(): Omit<TuiInput, "args"> {
     config: createTuiResolvedConfig(),
     fetch,
     events: events.source,
-    // No plugins are loaded; setting up the slot registry makes slots render their defaults.
-    pluginHost: {
-      async start(input) {
-        input.runtime.setupSlots(input.api)
-      },
-      async dispose() {},
-    },
   }
 }

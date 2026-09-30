@@ -1,12 +1,20 @@
 import { expect, mock, test } from "bun:test"
-import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
-import { createTestRenderer } from "@opentui/core/testing"
+import { createTestRenderer, type TestRendererSetup } from "@opentui/core/testing"
 import { Effect } from "effect"
 import { Global } from "../src/core/global"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
 
-test("SIGHUP clears title and disposes scoped resources once", async () => {
+async function renderUntil(setup: TestRendererSetup, text: string) {
+  for (let i = 0; i < 50; i++) {
+    await Bun.sleep(20)
+    await setup.renderOnce()
+    if (setup.captureCharFrame().includes(text)) return
+  }
+  throw new Error(`frame never showed ${JSON.stringify(text)}:\n${setup.captureCharFrame()}`)
+}
+
+test("SIGHUP destroys the renderer, clears the title and removes its listener", async () => {
   const setup = await createTestRenderer({ width: 80, height: 24, useThread: false })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
@@ -18,12 +26,9 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
   }
   const listeners = new Set(process.listeners("SIGHUP"))
   const events = createEventSource()
-  const calls = createFetch()
-  let started!: () => void
-  const ready = new Promise<void>((resolve) => {
-    started = resolve
+  const calls = createFetch((url) => {
+    if (url.pathname === "/project/proj_test/directories") return json([])
   })
-  let disposes = 0
 
   try {
     const { run } = await import("../src/app")
@@ -31,27 +36,18 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
       run({
         url: "http://test",
         directory,
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: createTuiResolvedConfig(),
         fetch: calls.fetch,
         events: events.source,
         args: {},
-        pluginHost: {
-          async start() {
-            started()
-          },
-          async dispose() {
-            disposes++
-          },
-        },
       }).pipe(Effect.provide(Global.layer)),
     )
-    await ready
+    await renderUntil(setup, "Ask anything")
     process.emit("SIGHUP")
     await task
 
     expect(setup.renderer.isDestroyed).toBe(true)
     expect(titles.at(-1)).toBe("")
-    expect(disposes).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
   } finally {
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()
@@ -64,27 +60,33 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const events = createEventSource()
+  const session = {
+    id: "dummy",
+    title: "Demo session",
+    slug: "dummy",
+    projectID: "project",
+    directory,
+    version: "0.0.0-test",
+    time: { created: 0, updated: 0 },
+  }
+  // One configured provider keeps the connect-a-provider dialog from taking the keyboard.
+  const provider = { id: "stub", name: "Stub", source: "custom", env: [], options: {}, models: {} }
+  let opened!: () => void
+  const sessionOpened = new Promise<void>((resolve) => {
+    opened = resolve
+  })
   const calls = createFetch((url) => {
-    if (url.pathname === "/session")
-      return json([
-        {
-          id: "dummy",
-          title: "Demo session",
-          slug: "dummy",
-          projectID: "project",
-          directory,
-          version: "0.0.0-test",
-          time: { created: 0, updated: 0 },
-        },
-      ])
+    if (url.pathname === "/config/providers") return json({ providers: [provider], default: {} })
+    if (url.pathname === "/session") return json([session])
+    if (url.pathname === "/session/dummy") return json(session)
+    if (["/session/dummy/message", "/session/dummy/todo", "/session/dummy/diff"].includes(url.pathname)) {
+      opened()
+      return json([])
+    }
+    if (url.pathname === "/project/proj_test/directories") return json([])
   })
   const originalWrite = process.stdout.write.bind(process.stdout)
   let stdout = ""
-  let api: TuiPluginApi | undefined
-  let started!: () => void
-  const ready = new Promise<void>((resolve) => {
-    started = resolve
-  })
 
   process.stdout.write = ((chunk: string | Uint8Array) => {
     stdout += String(chunk)
@@ -97,24 +99,16 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
       run({
         url: "http://test",
         directory,
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: createTuiResolvedConfig(),
         fetch: calls.fetch,
         events: events.source,
         args: { continue: true },
-        pluginHost: {
-          async start(input) {
-            api = input.api
-            started()
-          },
-          async dispose() {},
-        },
       }).pipe(Effect.provide(Global.layer)),
     )
 
-    await ready
-    await setup.renderOnce()
-    await setup.renderOnce()
-    api?.keymap.dispatchCommand("app.exit")
+    await sessionOpened
+    await renderUntil(setup, "ctrl+p commands")
+    setup.mockInput.pressKey("d", { ctrl: true })
     await task
 
     expect(stdout).toContain("Demo session")
@@ -145,7 +139,6 @@ test("fatal startup errors set a nonzero exit after scoped cleanup", async () =>
       )
     return undefined
   })
-  let disposes = 0
   const originalWrite = process.stderr.write.bind(process.stderr)
   const originalExitCode = process.exitCode ?? 0
   let stderr = ""
@@ -161,16 +154,10 @@ test("fatal startup errors set a nonzero exit after scoped cleanup", async () =>
       run({
         url: "http://test",
         directory,
-        config: createTuiResolvedConfig({ plugin_enabled: {} }),
+        config: createTuiResolvedConfig(),
         fetch: calls.fetch,
         events: events.source,
         args: {},
-        pluginHost: {
-          async start() {},
-          async dispose() {
-            disposes++
-          },
-        },
       }).pipe(Effect.provide(Global.layer)),
     )
 
@@ -179,7 +166,6 @@ test("fatal startup errors set a nonzero exit after scoped cleanup", async () =>
     expect(stderr).not.toContain("Unexpected server error")
     expect(process.exitCode).toBe(1)
     expect(setup.renderer.isDestroyed).toBe(true)
-    expect(disposes).toBe(1)
   } finally {
     process.stderr.write = originalWrite
     process.exitCode = originalExitCode

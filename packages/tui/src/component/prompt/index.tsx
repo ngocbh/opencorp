@@ -639,7 +639,7 @@ export function Prompt(props: PromptProps) {
       return
     }
 
-    // Slot/plugin updates can remount the background prompt while a dialog is open.
+    // The background prompt can remount while a dialog is open.
     // Keep focus with the dialog and let the prompt reclaim it after the dialog closes.
     if (!input.focused) input.focus()
   })

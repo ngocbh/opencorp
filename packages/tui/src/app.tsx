@@ -4,7 +4,6 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { Global } from "./core/global"
 import { Flag } from "./core/flag"
-import { InstallationVersion } from "./core/version"
 import { ClipboardProvider, useClipboard } from "./context/clipboard"
 import { ExitProvider, useExit } from "./context/exit"
 import { EpilogueProvider } from "./context/epilogue"
@@ -24,16 +23,14 @@ import {
   Show,
   on,
 } from "solid-js"
-import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
+import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
 import { ErrorComponent } from "./component/error-component"
-import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
-import { StartupLoading } from "./component/startup-loading"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
@@ -66,9 +63,6 @@ import { ArgsProvider, useArgs, type Args } from "./context/args"
 import { openUrl } from "./core/open"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 import { TuiConfigProvider, useTuiConfig, type TuiConfig } from "./config"
-import { createTuiApiAdapters } from "./plugin/adapters"
-import { createTuiApi } from "./plugin/api"
-import { createPluginRuntime, PluginRuntimeProvider, usePluginRuntime, type TuiPluginHost } from "./plugin/runtime"
 import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
@@ -125,7 +119,6 @@ const appBindingCommands = [
   "theme.mode.lock",
   "help.show",
   "docs.open",
-  "diff.open",
   "workspace.list",
   "app.debug",
   "app.console",
@@ -148,7 +141,6 @@ export type TuiInput = {
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
   events?: EventSource
-  pluginHost: TuiPluginHost
 }
 
 function errorMessage(error: unknown) {
@@ -217,15 +209,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         Effect.sync(() => registerOpencodeKeymap(keymap, renderer, input.config)),
         (unregister) => Effect.sync(unregister),
       )
-      yield* Effect.addFinalizer(() =>
-        Effect.promise(async () => {
-          try {
-            await input.pluginHost.dispose()
-          } catch (error) {
-            console.error("Failed to dispose TUI plugins", error)
-          }
-        }),
-      )
       yield* Effect.addFinalizer(() => Effect.sync(TuiAudio.dispose))
       const shutdown = yield* Deferred.make<unknown>()
       const onSighup = () => destroyRenderer(renderer)
@@ -234,7 +217,6 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
         () => Effect.sync(() => process.off("SIGHUP", onSighup)),
       )
       renderer.once("destroy", () => Deferred.doneUnsafe(shutdown, Effect.void))
-      const pluginRuntime = createPluginRuntime()
 
       yield* Effect.tryPromise(async () => {
         // Prewarm palette before ThemeProvider mounts so `system` theme avoids a first-paint fallback flash.
@@ -294,46 +276,41 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                     }
                                   >
                                     <TuiConfigProvider config={input.config}>
-                                      <PluginRuntimeProvider value={pluginRuntime}>
-                                        <SDKProvider
-                                          url={input.url}
-                                          directory={input.directory}
-                                          fetch={input.fetch}
-                                          headers={input.headers}
-                                          events={input.events}
-                                        >
-                                          <PermissionProvider>
-                                            <ProjectProvider>
-                                              <SyncProvider>
-                                                <DataProvider>
-                                                  <ThemeProvider mode={mode}>
-                                                    <LocalProvider>
-                                                      <PromptStashProvider>
-                                                        <DialogProvider>
-                                                          <FrecencyProvider>
-                                                            <PromptHistoryProvider>
-                                                              <PromptRefProvider>
-                                                                <EditorContextProvider>
-                                                                  <LocationProvider>
-                                                                    <App
-                                                                      onSnapshot={input.onSnapshot}
-                                                                      pluginHost={input.pluginHost}
-                                                                    />
-                                                                  </LocationProvider>
-                                                                </EditorContextProvider>
-                                                              </PromptRefProvider>
-                                                            </PromptHistoryProvider>
-                                                          </FrecencyProvider>
-                                                        </DialogProvider>
-                                                      </PromptStashProvider>
-                                                    </LocalProvider>
-                                                  </ThemeProvider>
-                                                </DataProvider>
-                                              </SyncProvider>
-                                            </ProjectProvider>
-                                          </PermissionProvider>
-                                        </SDKProvider>
-                                      </PluginRuntimeProvider>
+                                      <SDKProvider
+                                        url={input.url}
+                                        directory={input.directory}
+                                        fetch={input.fetch}
+                                        headers={input.headers}
+                                        events={input.events}
+                                      >
+                                        <PermissionProvider>
+                                          <ProjectProvider>
+                                            <SyncProvider>
+                                              <DataProvider>
+                                                <ThemeProvider mode={mode}>
+                                                  <LocalProvider>
+                                                    <PromptStashProvider>
+                                                      <DialogProvider>
+                                                        <FrecencyProvider>
+                                                          <PromptHistoryProvider>
+                                                            <PromptRefProvider>
+                                                              <EditorContextProvider>
+                                                                <LocationProvider>
+                                                                  <App onSnapshot={input.onSnapshot} />
+                                                                </LocationProvider>
+                                                              </EditorContextProvider>
+                                                            </PromptRefProvider>
+                                                          </PromptHistoryProvider>
+                                                        </FrecencyProvider>
+                                                      </DialogProvider>
+                                                    </PromptStashProvider>
+                                                  </LocalProvider>
+                                                </ThemeProvider>
+                                              </DataProvider>
+                                            </SyncProvider>
+                                          </ProjectProvider>
+                                        </PermissionProvider>
+                                      </SDKProvider>
                                     </TuiConfigProvider>
                                   </RouteProvider>
                                 </ToastProvider>
@@ -364,8 +341,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
-  const startup = useTuiStartup()
+function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const tuiConfig = useTuiConfig()
   const route = useRoute()
   const dimensions = useTerminalDimensions()
@@ -383,43 +359,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   const project = useProject()
   const exit = useExit()
   const promptRef = usePromptRef()
-  const pluginRuntime = usePluginRuntime()
   const attention = createTuiAttention({ renderer, config: tuiConfig, kv })
   const clipboard = useClipboard()
-
-  const api = createTuiApi(
-    createTuiApiAdapters({
-      version: InstallationVersion,
-      tuiConfig,
-      dialog,
-      keymap,
-      kv,
-      route,
-      routes: pluginRuntime.routes,
-      event,
-      sdk,
-      sync,
-      theme: themeState,
-      toast,
-      renderer,
-      attention,
-      Slot: pluginRuntime.Slot,
-    }),
-  )
-  const [ready, setReady] = createSignal(false)
-  props.pluginHost
-    .start({
-      api,
-      config: tuiConfig,
-      runtime: pluginRuntime,
-      dispose: () => attention.dispose(),
-    })
-    .catch((error) => {
-      console.error("Failed to load TUI plugins", error)
-    })
-    .finally(() => {
-      setReady(true)
-    })
 
   // Let selection copy/dismiss win ahead of normal bindings when explicit copy is required.
   const offSelectionKeys = keymap.intercept(
@@ -470,10 +411,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "…" : session.title
       renderer.setTerminalTitle(`OC | ${title}`)
       return
-    }
-
-    if (route.data.type === "plugin") {
-      renderer.setTerminalTitle(`OC | ${route.data.id}`)
     }
   })
 
@@ -1078,14 +1015,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     void exit()
   })
 
-  const plugin = createMemo(() => {
-    if (!ready()) return
-    if (route.data.type !== "plugin") return
-    const render = pluginRuntime.routes.get(route.data.id)
-    if (!render) return <PluginRouteMissing id={route.data.id} onHome={() => route.navigate({ type: "home" })} />
-    return render({ params: route.data.data })
-  })
-
   return (
     <box
       width={dimensions().width}
@@ -1109,28 +1038,18 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       <Show when={Flag.OPENCODE_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
-      <Show when={ready()}>
-        <box flexGrow={1} minHeight={0} flexDirection="column">
-          <Switch>
-            <Match when={route.data.type === "home"}>
-              <Home />
-            </Match>
-            <Match when={route.data.type === "session"}>
-              <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-                {(_) => <Session />}
-              </Show>
-            </Match>
-          </Switch>
-          {plugin()}
-        </box>
-        <box flexShrink={0}>
-          <pluginRuntime.Slot name="app_bottom" />
-        </box>
-        <pluginRuntime.Slot name="app" />
-      </Show>
-      <Show when={!startup.skipInitialLoading}>
-        <StartupLoading ready={ready} />
-      </Show>
+      <box flexGrow={1} minHeight={0} flexDirection="column">
+        <Switch>
+          <Match when={route.data.type === "home"}>
+            <Home />
+          </Match>
+          <Match when={route.data.type === "session"}>
+            <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+              {(_) => <Session />}
+            </Show>
+          </Match>
+        </Switch>
+      </box>
     </box>
   )
 }
