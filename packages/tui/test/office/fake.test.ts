@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { BASE } from "../../src/office/http"
+import { until } from "../fixture/until"
 
 let office: FakeOffice
 afterEach(() => office?.stop())
@@ -21,9 +22,6 @@ async function open(path = "/events") {
     out.ended = true
   })()
   return out
-}
-async function until(cond: () => boolean, ms = 2000) {
-  for (const end = Date.now() + ms; !cond(); await Bun.sleep(5)) if (Date.now() > end) throw new Error("timed out")
 }
 
 test("emit reaches an open stream; ?session= filters by subject_id or data.session_id", async () => {

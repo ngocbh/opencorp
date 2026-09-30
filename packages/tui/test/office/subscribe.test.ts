@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, serveUnix } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
 import { subscribe, type StreamEvent, type SubscribeOptions } from "../../src/office/sse"
+import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
 const cleanup: (() => void)[] = []
@@ -12,9 +13,6 @@ function watch(socket: string, opts: SubscribeOptions = {}) {
   const sub = subscribe(socket, (e) => seen.push(e), { ...fast, ...opts })
   cleanup.push(sub.close)
   return { seen, types: () => seen.map((e) => e.type), sub }
-}
-async function until(cond: () => boolean, ms = 2000) {
-  for (const end = Date.now() + ms; !cond(); await Bun.sleep(5)) if (Date.now() > end) throw new Error("timed out")
 }
 const fake = () => {
   const o = createFakeOffice()
@@ -99,9 +97,10 @@ test("ping timeout: silence past idleMs is a dead stream", async () => {
 
 test("pings keep a quiet stream alive", async () => {
   const office = fake()
-  const w = watch(office.socket, { idleMs: 100 })
+  // Pings every 40 ms against a 300 ms idle limit: a slow tick can't fake a dead stream.
+  const w = watch(office.socket, { idleMs: 300 })
   await until(() => w.types().includes("connected"))
-  for (let i = 0; i < 8; i++) (office.ping(), await Bun.sleep(40))
+  for (let i = 0; i < 16; i++) (office.ping(), await Bun.sleep(40))
   expect(w.types()).toEqual(["connected"])
 })
 

@@ -3,6 +3,7 @@ import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
 import { emptyState, openQuestions } from "../../src/office/store"
 import { createOfficeSync } from "../../src/office/sync"
+import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
 let office: FakeOffice | undefined
@@ -12,9 +13,6 @@ afterEach(() => {
   office?.stop()
   office = undefined
 })
-async function until(cond: () => boolean, ms = 2000) {
-  for (const end = Date.now() + ms; !cond(); await Bun.sleep(5)) if (Date.now() > end) throw new Error("timed out")
-}
 function start(socket: string) {
   const state = emptyState()
   const sync = createOfficeSync({
