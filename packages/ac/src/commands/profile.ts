@@ -41,7 +41,8 @@ async function edit(editor: string, text: string) {
  * `ac profile edit PERSON`: edits a person's profile.md in $EDITOR and saves it over the
  * version it started from, which the office commits as a hand edit. If the profile changed
  * meanwhile, the editor re-opens on the new text with the rejected edit under a marker line;
- * saving drops the marker and everything below it. Exits 1 on office errors, 2 on usage errors.
+ * saving drops the marker and everything below it. An empty save writes nothing. Exits 1 on
+ * office errors and an empty save, 2 on usage errors.
  */
 export const run: CommandRun = async (argv) => {
   try {
@@ -65,6 +66,11 @@ export const run: CommandRun = async (argv) => {
         }
         console.log("No changes")
         return 0
+      }
+      // As git aborts on an empty message: an emptied file is far likelier a mistake than intent.
+      if (!text.trim()) {
+        console.error("ac profile: the file is empty; nothing saved")
+        return 1
       }
       try {
         const saved = await client.profiles.put(who.id, { text, base_version: base.version })

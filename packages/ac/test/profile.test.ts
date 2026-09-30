@@ -128,6 +128,13 @@ test("saving the text unchanged writes nothing", async () => {
   expect(puts()).toEqual([])
 })
 
+test("saving an empty file writes nothing", async () => {
+  editor(`: > "$1"\n`)
+  const r = await profile("edit", "minh")
+  expect(r).toMatchObject({ code: 1, err: "ac profile: the file is empty; nothing saved" })
+  expect(puts()).toEqual([])
+})
+
 test("a save over the profile budget warns", async () => {
   office.stop()
   office = createFakeOffice({ socket, profileMaxChars: 10 })
