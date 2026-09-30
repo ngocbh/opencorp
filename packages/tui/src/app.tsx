@@ -37,8 +37,8 @@ import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogPeople, usePickerOnStart } from "./routes/picker/dialog-people"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
-import { Session } from "./routes/session"
 import { Profile, useProfileCommands } from "./routes/profile"
+import { Session } from "./routes/session"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -270,8 +270,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const exit = useExit()
   const promptRef = usePromptRef()
   const clipboard = useClipboard()
-  usePickerOnStart()
   useProfileCommands()
+  usePickerOnStart()
 
   // Let selection copy/dismiss win ahead of normal bindings when explicit copy is required.
   const offSelectionKeys = keymap.intercept(
@@ -626,14 +626,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           <Match when={route.data.type === "home"}>
             <Home />
           </Match>
-          <Match when={route.data.type === "session"}>
-            <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
-              {(_) => <Session />}
-            </Show>
-          </Match>
           <Match when={route.data.type === "profile"}>
             <Show when={route.data.type === "profile" ? route.data.person : undefined} keyed>
               {(_) => <Profile />}
+            </Show>
+          </Match>
+          <Match when={route.data.type === "session"}>
+            <Show when={route.data.type === "session" ? route.data.sessionID : undefined} keyed>
+              {(_) => <Session />}
             </Show>
           </Match>
         </Switch>
