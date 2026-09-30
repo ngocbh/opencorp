@@ -93,6 +93,46 @@ class WorkedFolder:
 
 
 @dataclass(frozen=True)
+class AuditEntry:
+    """One tool call as recorded by the permission layer."""
+
+    id: int
+    at: str
+    person: str
+    kind: str
+    tool: str
+    args: dict[str, Any]
+    outcome: str
+    session_id: str | None
+    run_id: str | None
+    detail: str | None
+
+
+@dataclass(frozen=True)
+class UsageRecord:
+    """Token usage and price of one model call."""
+
+    id: int
+    at: str
+    session_id: str
+    run_id: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    usd: float
+
+
+@dataclass(frozen=True)
+class WorkerRecord:
+    """A spawned worker process, for the reaper."""
+
+    session_id: str
+    pid: int
+    pgid: int
+    start_time: float
+
+
+@dataclass(frozen=True)
 class _Table:
     name: str
     model: type[BaseModel]
@@ -844,3 +884,93 @@ class Store:
             stored = self._must(PROPOSALS, ProfileProposal, proposal_id)
             tx.emit("profile_proposal.updated", proposal_id, stored)
         return stored
+
+    # --- audit, usage, workers (office bookkeeping: no events) --------------------------
+
+    def record_audit(
+        self,
+        *,
+        person: str,
+        kind: str,
+        tool: str,
+        args: dict[str, Any],
+        outcome: str,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        detail: str | None = None,
+    ) -> AuditEntry:
+        """Append an audit row. ``args`` must already be redacted."""
+        at = now()
+        with self.transaction() as tx:
+            cur = tx.execute(
+                "INSERT INTO audit (at, person, session_id, run_id, kind, tool, args, outcome, detail) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (at, person, session_id, run_id, kind, tool, json.dumps(args), outcome, detail),
+            )
+        return AuditEntry(cur.lastrowid, at, person, kind, tool, args, outcome, session_id, run_id, detail)
+
+    def list_audit(self, *, session_id: str | None = None, person: str | None = None) -> list[AuditEntry]:
+        """Audit rows in the order they were written, optionally filtered."""
+        clauses, params = [], []
+        if session_id is not None:
+            clauses, params = [*clauses, "session_id = ?"], [*params, session_id]
+        if person is not None:
+            clauses, params = [*clauses, "person = ?"], [*params, person]
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        rows = self._conn().execute(f"SELECT * FROM audit{where} ORDER BY id", params).fetchall()
+        return [
+            AuditEntry(
+                r["id"], r["at"], r["person"], r["kind"], r["tool"], json.loads(r["args"]),
+                r["outcome"], r["session_id"], r["run_id"], r["detail"],
+            )
+            for r in rows
+        ]
+
+    def record_usage(
+        self, *, session_id: str, run_id: str, model: str, input_tokens: int, output_tokens: int, usd: float
+    ) -> UsageRecord:
+        """Append the usage of one model call."""
+        at = now()
+        with self.transaction() as tx:
+            cur = tx.execute(
+                "INSERT INTO usage (at, session_id, run_id, model, input_tokens, output_tokens, usd) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (at, session_id, run_id, model, input_tokens, output_tokens, usd),
+            )
+        return UsageRecord(cur.lastrowid, at, session_id, run_id, model, input_tokens, output_tokens, usd)
+
+    def list_usage(self, session_id: str) -> list[UsageRecord]:
+        """A session's usage rows in the order they were written."""
+        rows = self._conn().execute("SELECT * FROM usage WHERE session_id = ? ORDER BY id", (session_id,)).fetchall()
+        return [
+            UsageRecord(
+                r["id"], r["at"], r["session_id"], r["run_id"], r["model"], r["input_tokens"], r["output_tokens"], r["usd"]
+            )
+            for r in rows
+        ]
+
+    def session_usage_usd(self, session_id: str) -> float:
+        """The summed price of a session's model calls."""
+        row = self._conn().execute("SELECT COALESCE(SUM(usd), 0) FROM usage WHERE session_id = ?", (session_id,))
+        return float(row.fetchone()[0])
+
+    def record_worker(self, session_id: str, *, pid: int, pgid: int, start_time: float) -> WorkerRecord:
+        """Record a session's worker, replacing any earlier record for the session."""
+        with self.transaction() as tx:
+            tx.execute(
+                "INSERT INTO workers (session_id, pid, pgid, start_time) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (session_id) DO UPDATE SET pid = excluded.pid, pgid = excluded.pgid, "
+                "start_time = excluded.start_time",
+                (session_id, pid, pgid, start_time),
+            )
+        return WorkerRecord(session_id, pid, pgid, start_time)
+
+    def list_workers(self) -> list[WorkerRecord]:
+        """Every recorded worker."""
+        rows = self._conn().execute("SELECT * FROM workers ORDER BY rowid").fetchall()
+        return [WorkerRecord(r["session_id"], r["pid"], r["pgid"], r["start_time"]) for r in rows]
+
+    def remove_worker(self, session_id: str) -> None:
+        """Forget a session's worker (a no-op when none is recorded)."""
+        with self.transaction() as tx:
+            tx.execute("DELETE FROM workers WHERE session_id = ?", (session_id,))

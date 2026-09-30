@@ -2,6 +2,7 @@
 
 from agent_corp.store.migrate import MigrationError, migrate
 from agent_corp.store.store import (
+    AuditEntry,
     DebriefRecord,
     DuplicateKey,
     InvalidTransition,
@@ -10,11 +11,14 @@ from agent_corp.store.store import (
     Store,
     StoreError,
     Tx,
+    UsageRecord,
     WorkedFolder,
+    WorkerRecord,
     new_id,
 )
 
 __all__ = [
+    "AuditEntry",
     "DebriefRecord",
     "DuplicateKey",
     "InvalidTransition",
@@ -24,7 +28,9 @@ __all__ = [
     "Store",
     "StoreError",
     "Tx",
+    "UsageRecord",
     "WorkedFolder",
+    "WorkerRecord",
     "migrate",
     "new_id",
 ]
