@@ -4,6 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { doctor } from "../src/commands/doctor"
 import { onboard } from "../src/commands/onboard"
+import { start } from "../src/commands/start"
 import { type Deps, REPO, venvPython } from "../src/office"
 
 /** Deps whose programs all exist and exit `codes[program]` (0 if absent), recording each call. */
@@ -61,3 +62,26 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
   expect(bare.calls).toEqual([])
   expect(bare.errors.join("\n")).toContain("run `ac onboard`")
 })
+
+test("start runs the Python start with its flags", async () => {
+  const { deps, calls } = fake({ python: 3 })
+  expect(await start(["--home", "/h"], deps)).toBe(3)
+  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "start", "--home", "/h"], cwd: REPO }])
+})
+
+test("`ac start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python", async () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ac-home-")))
+  try {
+    const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "ac", "src", "main.ts"), "start"], {
+      env: { ...process.env, AGENT_CORP_HOME: home },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+    })
+    const stderr = await new Response(proc.stderr).text()
+    expect(await proc.exited).toBe(3)
+    expect(stderr).toContain(`no office at ${home} yet; run \`ac onboard\``)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}, 30_000)
