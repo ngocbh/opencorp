@@ -22,9 +22,12 @@ def check_answer(question: Question, answer: Any, kind: str) -> Any:
     model question (``ask_user``, ``ask_manager``) takes text, and an ``option`` answer
     must be one of its options. A ``human_input`` question with pages takes a record
     keyed by each page's ``header``: a label, or a list of labels for a multi-select
-    page. One without pages takes what its ``answer_schema`` says; text is converted to
-    the field's type (numbers, ISO dates, yes/no, one list item per line). Nothing looser
-    than the engine's own check is returned, and a converted value converts to itself.
+    page, which must also fit the page's ``answer_schema`` entry if it has one. One
+    without pages takes what its ``answer_schema`` says; text is converted to the field's
+    type (numbers, ISO dates, yes/no, one list item per line). Blank text is no answer: a
+    required field refuses it, and an optional one is ``None`` (omitted in a record).
+    Nothing looser than the engine's own check is returned, and a converted value
+    converts to itself.
     """
     if kind in ("sent_back", "interrupted"):
         return answer
@@ -52,21 +55,20 @@ def _pages(question: Question, answer: Any) -> dict[str, Any]:
     headers = [page.header for page in question.questions]
     if extra := sorted(set(answer) - set(headers)):
         raise InvalidAnswer(f"no question has the header {extra[0]!r}")
-    enums = {f.name: f.enum for f in question.answer_schema if f.enum is not None}
+    entries = {f.name: f for f in question.answer_schema}
     record: dict[str, Any] = {}
     for page in question.questions:
         if page.header not in answer:
             raise InvalidAnswer(f"{page.header!r} has no answer")
-        value, allowed = answer[page.header], enums.get(page.header)
+        value, entry = answer[page.header], entries.get(page.header)
         values = value if page.multi_select else [value]
         if not isinstance(values, list) or not all(isinstance(v, str) and v.strip() for v in values):
             shape = "a list of labels" if page.multi_select else "one label"
             raise InvalidAnswer(f"{page.header!r} takes {shape}")
-        if not page.multi_select and not values:
-            raise InvalidAnswer(f"{page.header!r} takes one label")
-        if allowed is not None and (bad := [v for v in values if v not in allowed]):
-            raise InvalidAnswer(f"{page.header!r} must be one of {allowed}, not {bad[0]!r}")
-        record[page.header] = value
+        if entry is not None and entry.enum is not None and (bad := [v for v in values if v not in entry.enum]):
+            raise InvalidAnswer(f"{page.header!r} must be one of {entry.enum}, not {bad[0]!r}")
+        # The engine checks the record against the schema, so an entry's type holds for its page too.
+        record[page.header] = value if entry is None else _field(entry, value, repr(page.header))
     return record
 
 
@@ -94,7 +96,7 @@ def _blank(value: Any) -> bool:
 
 
 def _field(f: AnswerField, value: Any, where: str) -> Any:
-    if value is None or (f.type != "str" and _blank(value)):
+    if _blank(value):  # as in a record: required refuses it, optional gives None
         if f.required and f.type != "None":
             raise InvalidAnswer(f"{where} is required")
         return None

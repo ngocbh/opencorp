@@ -65,6 +65,15 @@ def test_an_enum_in_the_schema_hides_free_text_on_its_page():
         check_answer(gate, {"db": "MySQL", "features": []}, "text")
 
 
+def test_a_schema_entry_types_its_page():
+    gate = q(questions=PAGES, answer_schema=fields(("db", "str", True), ("features", "str", True)))
+    with pytest.raises(InvalidAnswer, match="'features' must be text"):
+        check_answer(gate, {"db": "SQLite", "features": ["auth"]}, "option")
+    counted = q(questions=[{"question": "How many?", "header": "n", "options": [{"label": "3"}]}],
+                answer_schema=fields(("n", "int", True)))
+    assert check_answer(counted, {"n": "3"}, "option") == {"n": 3}
+
+
 def test_a_prompt_gate_without_a_schema_takes_text():
     assert check_answer(q(), "go ahead", "text") == "go ahead"
     with pytest.raises(InvalidAnswer):
@@ -85,6 +94,8 @@ def test_a_prompt_gate_without_a_schema_takes_text():
     (("answer", "list[int]", True), "1\n\n2\n", [1, 2]),
     (("answer", "list[str]", True), ["x", "y"], ["x", "y"]),
     (("answer", "int", False), "", None),
+    (("answer", "str", False), "  ", None),
+    (("answer", "str", False), None, None),
     (("answer", "object", True), '{"k": 1}', {"k": 1}),
 ])
 def test_a_single_answer_is_converted_to_its_type(entry, answer, value):
@@ -102,6 +113,8 @@ def test_a_single_answer_is_converted_to_its_type(entry, answer, value):
     (("answer", "float", True), "nan", "a number"),
     (("answer", "date", True), "30/09/2026", "ISO-8601 date"),
     (("answer", "int", True), "", "is required"),
+    (("answer", "str", True), "", "is required"),
+    (("answer", "str", True), " \n ", "is required"),
     (("answer", "list[int]", True), "1\ntwo", r"answer\[1\] must be a whole number"),
     (("answer", "file", True), "x", "can't answer|cannot answer"),
 ])
@@ -118,6 +131,7 @@ def test_a_record_gate_converts_each_field_and_omits_blank_optional_ones():
     assert check_answer(gate, '{"days": 4, "who": {"name": "Bo"}}', "text") == {"days": 4, "who": {"name": "Bo"}}
     for answer, message in [({"note": "x", "who": {"name": "A"}}, r"answer.days is required"),
                             ({"days": 1, "who": {"name": "A"}, "zzz": 1}, "no field 'zzz'"),
-                            ({"days": 1, "who": {}}, r"answer.who.name is required")]:
+                            ({"days": 1, "who": {}}, r"answer.who.name is required"),
+                            ({"days": 1, "who": {"name": "  "}}, r"answer.who.name is required")]:
         with pytest.raises(InvalidAnswer, match=message):
             check_answer(gate, answer, "text")
