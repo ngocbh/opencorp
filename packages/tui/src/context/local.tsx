@@ -92,13 +92,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
             return toast.show({ variant: "warning", message: `No such person: ${id}`, duration: 3000 })
           setSelected(id)
         },
-        /** Moves to the next or previous agent; humans are skipped, as in the picker. */
         cycle(direction: 1 | -1) {
-          const agents = list().filter((p) => p.kind === "agent")
-          if (!agents.length) return
-          const index = agents.findIndex((p) => p.id === current()?.id)
-          const next = index < 0 ? (direction > 0 ? 0 : agents.length - 1) : (index + direction + agents.length) % agents.length
-          setSelected(agents[next].id)
+          // Agents only, as in the picker; from a human, go to the first or last agent.
+          const people = list().filter((p) => p.kind === "agent")
+          if (!people.length) return
+          const index = people.findIndex((p) => p.id === current()?.id)
+          setSelected(people.at(index < 0 ? (direction > 0 ? 0 : -1) : (index + direction) % people.length)!.id)
         },
         color(id: string | undefined) {
           const index = list().findIndex((p) => p.id === id)
