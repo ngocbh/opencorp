@@ -1,7 +1,69 @@
-// Runs the TUI in this terminal against the stub server: `bun run dev`.
+// Runs the TUI in this terminal: `bun run dev` against a seeded fake office that streams a
+// scripted reply to each prompt; `bun run dev --office` against the office at the default
+// socket, or `--socket PATH` against the one at PATH (both in the current folder).
+import type { Message } from "@agent-corp/protocol"
 import { Effect } from "effect"
+import { parseArgs } from "node:util"
 import { run } from "../src/app"
 import { Global } from "../src/core/global"
-import { createStub } from "./stub"
+import { defaultSocket } from "../src/office/paths"
+import { createFakeOffice, type FakeOffice } from "./stub"
 
-await Effect.runPromise(run({ ...createStub(), args: {} }).pipe(Effect.provide(Global.layer)))
+const { values } = parseArgs({
+  options: {
+    socket: { type: "string" },
+    office: { type: "boolean" },
+    session: { type: "string", short: "s" },
+    continue: { type: "boolean", short: "c" },
+    person: { type: "string" },
+  },
+})
+
+const REPLY = "Looked at it. The flaky test waits on a timer; I'd swap it for a fake clock and rerun."
+
+/** Answers every prompt with REPLY, streamed a word at a time, then sets the session idle. */
+function scriptReplies(office: FakeOffice) {
+  office.onPrompt(async (sessionId) => {
+    const messageId = office.nextId()
+    const partId = office.nextId()
+    const message: Message = {
+      id: messageId,
+      session_id: sessionId,
+      role: "assistant",
+      parts: [{ id: partId, type: "text", text: "" }],
+      created_at: new Date().toISOString(),
+    }
+    office.state.messages[sessionId] = [...(office.state.messages[sessionId] ?? []), message]
+    office.live({ type: "message.updated", session_id: sessionId, data: structuredClone(message) as never })
+    for (const word of REPLY.split(/(?= )/)) {
+      await Bun.sleep(2000 / REPLY.split(" ").length)
+      const part = message.parts[0] as { text: string }
+      part.text += word
+      office.live({
+        type: "part.delta",
+        session_id: sessionId,
+        data: { message_id: messageId, part_id: partId, text: word },
+      })
+    }
+    office.setStatus(sessionId, "idle")
+  })
+}
+
+const real = values.socket ?? (values.office ? defaultSocket() : undefined)
+const fake = real ? undefined : createFakeOffice()
+if (fake) scriptReplies(fake)
+// The fake's seeded sessions and people are in /tmp/proj.
+const cwd = fake ? "/tmp/proj" : process.cwd()
+const socket = real ?? fake!.socket
+
+try {
+  await Effect.runPromise(
+    run({
+      socket,
+      cwd,
+      args: { sessionID: values.session, continue: values.continue, person: values.person },
+    }).pipe(Effect.provide(Global.layer)),
+  )
+} finally {
+  fake?.stop()
+}
