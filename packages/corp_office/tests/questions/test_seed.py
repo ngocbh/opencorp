@@ -4,6 +4,7 @@ import pytest
 
 from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import DiscussionEntry
+from agent_corp.questions.format import DISCUSSION_CAP
 from agent_corp.questions.seed import FRAMING, build_seed, card_text, first_message
 from agent_corp.store import new_id
 from tests.company.conftest import base_files, write_repo
@@ -70,6 +71,32 @@ def test_a_long_transcript_keeps_its_start_and_end(store, repo):  # noqa: F811
     assert head == list(range(len(head))) and tail == list(range(40 - len(tail), 40))
     assert 0 < len(head) < len(tail)  # the newest events get more of the room
     assert f"…{40 - len(kept)} events omitted…" in seed
+
+
+def test_an_oversized_header_loses_its_comments_first_and_never_the_card(store, repo, asked):  # noqa: F811
+    for n in range(30):
+        store.add_comment(comment(asked.work_item_id, body=f"comment {n} " + "z" * 300))
+    seed = build_seed(store, repo, asked, max_chars=5000)
+    assert len(seed) <= 5000
+    assert seed.startswith(FRAMING) and seed.rstrip().endswith("2. Back off")
+    assert "comment 0" not in seed and '"Fix the build"' in seed
+
+    # Even a work item too long to show at all leaves the framing and the card.
+    store.update_work_item(asked.work_item_id, summary="w" * 20_000)
+    seed = build_seed(store, repo, asked, max_chars=3000)
+    assert len(seed) <= 3000
+    assert seed.startswith(FRAMING) and "# The question you asked" in seed and seed.rstrip().endswith("2. Back off")
+
+
+def test_a_carried_discussion_is_capped_in_the_card():
+    ask = question(new_id(), question="Retry?")
+    carried = [DiscussionEntry(role="user" if n % 2 else "assistant", text=f"message {n:03d} " + "c" * 500)
+               for n in range(100)]
+    card = card_text(ask, carried)
+    carried_json = card.splitlines()[-1]
+    assert len(carried_json) <= DISCUSSION_CAP
+    assert "earlier messages omitted" in carried_json and "message 099" in carried_json
+    assert "message 000" not in carried_json
 
 
 def test_the_card_lists_pages_and_fields_and_carries_an_earlier_discussion():
