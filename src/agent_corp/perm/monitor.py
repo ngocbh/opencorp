@@ -13,10 +13,13 @@ from agent_corp.company.naming import asset_tool_name
 from agent_corp.protocol.models import Asset, Grant
 from agent_corp.secrets import SecretStore
 from agent_corp.store import Store
+from agent_corp.tools.workspace import WorkspaceTools
 
 REDACTED = "[redacted]"
 DETAIL_CHARS = 2000
 """Characters of a result kept in its audit row."""
+REASON_CHARS = 200
+"""Characters of a killed workspace call's reason kept in its audit row."""
 
 
 class Monitor:
@@ -100,6 +103,33 @@ class Monitor:
         audit("ok", result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str))
         return result
 
+    def workspace(self, tools: WorkspaceTools, person_id: str, run_id: str | None, *,
+                  session_id: str | None = None) -> Callable[[str, dict[str, Any]], str]:
+        """A ``call(name, args)`` for ``workspace_tool_functions`` that audits each workspace call.
+
+        The row's outcome is ``ok`` for exit 0 and ``error`` otherwise. A call with no exit
+        status (timed out, interrupted, or bad arguments) has the reason from its output
+        in the detail. A call that raises is recorded as ``error`` and raised again.
+        """
+
+        def call(name: str, args: dict[str, Any]) -> str:
+            try:
+                outcome = tools.call(name, args)
+            except Exception as exc:
+                self.store.record_audit(person=person_id, kind="workspace", tool=name, args={}, outcome="error",
+                                        session_id=session_id, run_id=run_id, detail=f"{type(exc).__name__}: {exc}")
+                raise
+            a = outcome.audit
+            detail = f"exit={a.exit} duration={a.duration:.3f}s"
+            if a.exit is None:
+                detail += f": {_last_line(outcome.output)[:REASON_CHARS]}"
+            self.store.record_audit(person=person_id, kind="workspace", tool=a.tool, args={"summary": a.args_summary},
+                                    outcome="ok" if a.exit == 0 else "error", session_id=session_id,
+                                    run_id=run_id, detail=detail)
+            return outcome.output
+
+        return call
+
 
 def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     """``value`` with entries under ``keys`` and every secret in ``values`` replaced by ``[redacted]``."""
@@ -113,6 +143,12 @@ def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     if isinstance(value, list | tuple):
         return [redact(v, keys, values) for v in value]
     return value
+
+
+def _last_line(text: str) -> str:
+    # A killed shell call ends its output with "[timed out after Ns]" or "[interrupted]";
+    # a file tool's or a bad-arguments reply is one line.
+    return next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
 
 
 def _error(audit: Callable[[str, str], None], reason: str) -> str:
