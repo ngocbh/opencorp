@@ -1,0 +1,6 @@
+repository: https://github.com/anomalyco/opencode
+commit: b471c2b4495747353af768fbf2e0790c9d820ce2
+path: packages/tui
+package: @opencode-ai/tui 1.18.32
+copied: 2026-09-29
+also copied: LICENSE (repository root), patches/solid-js@1.9.10.patch
