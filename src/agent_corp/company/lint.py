@@ -3,6 +3,7 @@
 from collections.abc import Iterator
 from pathlib import Path
 
+from agent_composer import LoadError
 from agent_composer.compose.skills import load_skill_dir
 from agent_composer.skills import SkillError
 
@@ -156,8 +157,11 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
                 load_confined(repo.root, path)
             except FlowOutsideRepo as exc:
                 yield RepoIssue(_person_path(pid), "person.flow_outside_repo", f"{ref}: {exc}")
-            except Exception as exc:  # LoadError, or OSError/ValueError from a child file
+            except LoadError as exc:
                 yield RepoIssue(_person_path(pid), "person.flow_invalid", f"{ref}: {exc}")
+            except Exception as exc:  # OSError/ValueError from a child file, or a surprise
+                yield RepoIssue(_person_path(pid), "person.flow_invalid",
+                                f"{ref}: {type(exc).__name__}: {exc}")
 
 
 def _skill_root(root: Path, rel: str, issues: list[RepoIssue]) -> set[str]:

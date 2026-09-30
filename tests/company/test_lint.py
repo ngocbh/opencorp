@@ -129,7 +129,15 @@ def test_missing_flow(make_company):
 def test_invalid_flow_carries_composer_message(make_company):
     root = make_company(**{"shared/flows/chat.yaml": "id: chat\nname: chat\noutputs: 1\n"})
     [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
-    assert "output" in issue.message
+    assert "output" in issue.message and "LoadError" not in issue.message
+
+
+def test_unexpected_flow_error_names_its_type(company, monkeypatch):
+    def boom(root, path):
+        raise KeyError("x")
+    monkeypatch.setattr("agent_corp.company.lint.load_confined", boom)
+    [issue] = [i for i in lint(load_repo(company)) if i.code == "person.flow_invalid"]
+    assert issue.message == "../../shared/flows/chat.yaml: KeyError: 'x'"
 
 
 def test_flow_outside_repo(make_company):
