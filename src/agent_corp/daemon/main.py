@@ -7,6 +7,7 @@ import fcntl
 import os
 import signal
 import socket
+import stat
 import sys
 import threading
 from pathlib import Path
@@ -61,6 +62,26 @@ class PidFile:
             os.ftruncate(self._fd, 0)
             os.close(self._fd)
             self._fd = None
+
+
+def make_office_dir(path: Path) -> None:
+    """Create ``path`` if needed and make it 0700; ``OfficeStartError`` if it isn't ours to use.
+
+    The office dir holds the socket, pidfile, store, and secrets, so a symlink (which could
+    point anywhere) or a directory owned by another user is refused.
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    except OSError as exc:
+        raise OfficeStartError(f"can't create the office directory {path}: {exc}") from exc
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode):
+        raise OfficeStartError(f"the office directory {path} is a symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        raise OfficeStartError(f"the office directory {path} is not a directory")
+    if st.st_uid != os.getuid():
+        raise OfficeStartError(f"the office directory {path} is owned by uid {st.st_uid}, not {os.getuid()}")
+    os.chmod(path, 0o700)
 
 
 def check_socket_path(path: Path) -> None:
@@ -125,7 +146,7 @@ def build_office(paths: OfficePaths) -> Office:
 
 async def run(paths: OfficePaths, *, extensions: str = "agent_corp.extensions") -> None:
     """Run the daemon until SIGINT or SIGTERM."""
-    paths.office.mkdir(parents=True, exist_ok=True, mode=0o700)
+    make_office_dir(paths.office)
     pidfile = PidFile(paths.pidfile)
     pidfile.acquire()
     try:

@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 from agent_corp.daemon.app import OfficePaths
-from agent_corp.daemon.main import AlreadyRunning, OfficeStartError, PidFile, bind_socket, main
+from agent_corp.daemon.main import AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir
 from tests.daemon.conftest import base_files, served, write_repo
 
 
@@ -29,6 +29,37 @@ def test_socket_is_0600_even_with_a_loose_umask(short_dir):
 def test_too_long_socket_path_is_a_clear_error(tmp_path):
     with pytest.raises(OfficeStartError, match="socket path too long"):
         bind_socket(tmp_path / ("x" * 120) / "office.sock")
+
+
+def test_office_dir_is_created_0700(short_dir):
+    make_office_dir(short_dir / "home" / "office")
+    assert stat.S_IMODE(os.stat(short_dir / "home" / "office").st_mode) == 0o700
+
+
+def test_a_loose_office_dir_is_tightened_to_0700(short_dir):
+    office = short_dir / "office"
+    office.mkdir()
+    os.chmod(office, 0o755)
+    assert main(["--home", str(short_dir)]) == 1  # no company repo, but the dir is checked first
+    assert stat.S_IMODE(os.stat(office).st_mode) == 0o700
+
+
+@pytest.mark.parametrize("target", ["dir", "missing"])
+def test_a_symlinked_office_dir_is_refused(short_dir, capsys, target):
+    elsewhere = short_dir / "elsewhere"
+    if target == "dir":
+        elsewhere.mkdir()
+    (short_dir / "office").symlink_to(elsewhere)
+    assert main(["--home", str(short_dir)]) == 1
+    assert f"{short_dir / 'office'}" in capsys.readouterr().err
+    assert not elsewhere.exists() or list(elsewhere.iterdir()) == []
+
+
+def test_an_office_dir_owned_by_someone_else_is_refused(short_dir, monkeypatch):
+    (short_dir / "office").mkdir()
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(short_dir).st_uid + 1)
+    with pytest.raises(OfficeStartError, match="owned by uid"):
+        make_office_dir(short_dir / "office")
 
 
 def test_second_pidfile_lock_is_refused(tmp_path):
