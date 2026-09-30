@@ -25,6 +25,26 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync
       - run: uv run pytest -q tests
+  sandbox-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_LOCKED: 1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # agent-composer is private
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.2.0
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor; bwrap needs them.
+      - run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - run: uv sync
+      - run: uv run pytest -q tests/sandbox
   ts:
     runs-on: ubuntu-latest
     timeout-minutes: 10
