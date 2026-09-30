@@ -20,9 +20,11 @@ class Hooks:
       result frame (``status``, ``output``, ``failure``), or ``None`` after an error frame.
       The model key is replaced by ``[redacted]`` wherever it appears in ``result``.
     - ``worker_exited(session, returncode)``: the session's worker is gone.
-    - ``session_ended(session)``: the session reached ``ended`` or ``failed`` (see
-      ``session.status``); it fires once, including for a session that failed before its
-      worker started.
+    - ``end_status(session) -> str | None``: the session's run ended normally; the first
+      status returned (for example ``debriefing``) is stored instead of ``ended``.
+    - ``session_ended(session)``: the session reached ``ended``, the ``end_status`` one, or
+      ``failed`` (see ``session.status``); it fires once, including for a session that
+      failed before its worker started.
 
     A callback that raises is logged and skipped; the rest still run.
     """
@@ -32,6 +34,7 @@ class Hooks:
     run_started: list[Callable[..., Any]] = field(default_factory=list)
     run_finished: list[Callable[..., Any]] = field(default_factory=list)
     worker_exited: list[Callable[..., Any]] = field(default_factory=list)
+    end_status: list[Callable[..., Any]] = field(default_factory=list)
     session_ended: list[Callable[..., Any]] = field(default_factory=list)
 
     def fire(self, name: str, *args: Any) -> list[Any]:
