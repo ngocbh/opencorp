@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions.learning import MAX_DEBRIEFS, Learning, register
+from agent_corp.extensions.learning import DEBRIEFS_PER_TICK, MAX_DEBRIEFS, Learning, register
 from agent_corp.profile.debrief import pending_debrief
 from agent_corp.store import new_id
 from tests.profile.conftest import (DEBRIEF_ASK, OUTPUT, asked, chat, debrief_reply, fails_once, settled, status,
@@ -153,3 +153,39 @@ def test_a_debrief_whose_first_write_fails_releases_the_session_and_ends_it(harn
     fake_llm.script(debrief_reply())
     learning.tick()
     wait_for(lambda: debrief_state(harness, s.id) == "ready", what="the retried debrief")
+
+
+def test_a_tick_starts_at_most_two_debriefs_and_the_next_tick_the_rest(harness, fake_llm, learning):
+    head = harness.git.head()
+    failed = []
+    for i in range(3):
+        s = harness.store.create_session(session(repo_commit=head, status="failed", run_ids=[f"r{i}"]))
+        harness.store.add_message(message(s.id, parts=[{"id": new_id(), "type": "text", "text": "fix it"}]))
+        failed.append(s.id)
+    fake_llm.script(*[debrief_reply(hold=True) for _ in range(3)])
+    learning.tick()
+    fake_llm.wait_for_requests(DEBRIEFS_PER_TICK)
+    settled(learning)
+    assert sum(w is not None for w in learning._active.values()) == DEBRIEFS_PER_TICK
+    fake_llm.release()
+    wait_for(lambda: [debrief_state(harness, sid) for sid in failed].count("ready") == DEBRIEFS_PER_TICK,
+             what="the first two debriefs")
+    settled(learning)
+    assert [debrief_state(harness, sid) for sid in failed].count(None) == 1  # it waits for the next tick
+    learning.tick()
+    fake_llm.wait_for_requests(DEBRIEFS_PER_TICK + 1)
+    fake_llm.release()
+    wait_for(lambda: all(debrief_state(harness, sid) == "ready" for sid in failed), what="the third debrief")
+
+
+def test_a_session_with_no_messages_gets_no_debrief(harness, fake_llm, learning):
+    head = harness.git.head()
+    failed = harness.store.create_session(session(repo_commit=head, status="failed", run_ids=["r1"]))
+    ending = harness.store.create_session(session(repo_commit=head, status="debriefing", run_ids=["r2"]))
+    learning._post(learning._ended, ending.id)
+    learning.tick()
+    wait_for(lambda: status(harness, ending.id) == "ended", what="ended")
+    settled(learning)
+    assert harness.store.get_debrief(failed.id) is None and harness.store.get_debrief(ending.id) is None
+    assert status(harness, failed.id) == "failed"
+    assert fake_llm.requests() == []

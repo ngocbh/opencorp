@@ -7,7 +7,7 @@ import queue
 import socket
 import threading
 import traceback
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +33,8 @@ TICK_SECONDS = 60.0
 """How often pending debriefs and feedback waiting to retry are tried again."""
 MAX_DEBRIEFS = 3
 """Debrief runs that may fail before the tick stops retrying; ``GET /debriefs/{session}`` always retries."""
+DEBRIEFS_PER_TICK = 2
+"""Debriefs a tick starts at most, so a backlog (after a restart, say) doesn't start them all at once."""
 _BUSY = (*LIVE, "debriefing")
 _LOGGED_CHARS = 300  # of a failure message
 
@@ -199,7 +201,7 @@ class Learning:
     def _undebriefed(self, session: Session) -> bool:
         """A main session that failed after a run and has no debrief: it gets one, as an ended one does."""
         return (session.kind == "main" and session.status == "failed" and bool(session.run_ids)
-                and self.store.get_debrief_record(session.id) is None)
+                and self.store.get_debrief_record(session.id) is None and bool(self.store.list_messages(session.id)))
 
     def _ended(self, session_id: str) -> None:
         session = self.store.get_session(session_id)
@@ -209,21 +211,29 @@ class Learning:
             self._drain(session_id)
 
     def _recover(self) -> None:
-        for session in self.store.list_sessions(status="debriefing", kind="main", limit=None):
-            self._debrief(session)
         self._tick()
 
     def _tick(self) -> None:
         self._waiting.clear()
+        started = 0
+        for session in self._due():
+            if started == DEBRIEFS_PER_TICK:
+                break
+            started += self._debrief(session)
+        for session_id in dict.fromkeys(f.session_id for f in self.store.list_feedback(status="queued")):
+            self._drain(session_id)
+
+    def _due(self) -> Iterator[Session]:
+        """Main sessions whose debrief the tick should start, lazily."""
+        # Left debriefing by an earlier office (or not yet picked up from the hook: _debrief can tell).
+        yield from self.store.list_sessions(status="debriefing", kind="main", limit=None)
         for record in self.store.list_debrief_records(state="pending"):
             session = self.store.get_session(record.debrief.session_id)
             if record.attempts < MAX_DEBRIEFS and session.status not in _BUSY:
-                self._debrief(session)
+                yield session
         for session in self.store.list_sessions(status="failed", kind="main", limit=None):
             if self._undebriefed(session):  # also one whose failure fired no hook, such as a failed restore
-                self._debrief(session)
-        for session_id in dict.fromkeys(f.session_id for f in self.store.list_feedback(status="queued")):
-            self._drain(session_id)
+                yield session
 
     def _retry_debrief(self, session_id: str) -> None:
         record = self.store.get_debrief_record(session_id)
@@ -231,19 +241,24 @@ class Learning:
         if record.debrief.state == "pending" and session.status not in _BUSY:
             self._debrief(session)
 
-    def _debrief(self, session: Session) -> None:
-        """Start a debrief run on the session's transcript; the Debrief is pending until it succeeds."""
+    def _debrief(self, session: Session) -> bool:
+        """Start a debrief run on the session's transcript; the Debrief is pending until it succeeds.
+
+        Returns whether it tried to start one.
+        """
         if not self._reserve(session.id):
-            return
+            return False
         run_id = new_id()
         spawned = failed = False
         try:
             record = self.store.get_debrief_record(session.id)
-            if record is not None and record.debrief.state == "ready":
-                # An office stopped between storing the debrief and ending the session.
+            # A ready debrief: an office stopped between storing it and ending the session.
+            # No messages: nothing to debrief.
+            if (record is not None and record.debrief.state == "ready"
+                    or record is None and not self.store.list_messages(session.id)):
                 if session.status == "debriefing":
                     self.store.update_session(session.id, status="ended")
-                return
+                return False
             if record is None:
                 self.store.save_debrief(pending_debrief(session))  # the session shows "debrief pending" meanwhile
             job, stores = self._debrief_job(session, run_id, kind="chat")
@@ -259,6 +274,7 @@ class Learning:
                 self._release(session.id)
         if failed:  # released first: what it drains next may reserve the session again
             self._debriefed(session.id, run_id, None)
+        return spawned or failed
 
     def _debriefed(self, session_id: str, run_id: str, outcome: dict[str, Any] | None) -> None:
         self._release(session_id)
