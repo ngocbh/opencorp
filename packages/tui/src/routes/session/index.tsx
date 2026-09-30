@@ -142,6 +142,16 @@ export function Session() {
   const [frozen, setFrozen] = createSignal<Freeze>()
   const shown = createMemo(() => messages().flatMap((m) => frozenView(frozen(), m) ?? []))
   createEffect(on(viewID, () => setFrozen(undefined), { defer: true }))
+  /**
+   * Ends the freeze as the user sends, before the office answers, so the new reply's first
+   * message shows even if it streams in first; returns an undo for a send that fails.
+   */
+  function lift() {
+    const f = frozen()
+    if (!f?.active) return
+    setFrozen(unfreeze(f, messages()))
+    return () => setFrozen(f)
+  }
   // The side chat closes with its question.
   createEffect(() => {
     if (sideOf() && !sideQuestion()) setSideOf(undefined)
@@ -552,11 +562,8 @@ export function Session() {
                       <Prompt
                         visible={true}
                         ref={bind}
-                        onSubmit={() => {
-                          const f = frozen()
-                          if (f?.active) setFrozen(unfreeze(f, messages()))
-                          toBottom()
-                        }}
+                        onSend={lift}
+                        onSubmit={() => toBottom()}
                         onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                         sessionID={route.sessionID}
                       />
@@ -576,8 +583,7 @@ export function Session() {
                               session={sideSession()}
                               onBack={() => setSideOf(undefined)}
                               onSent={() => {
-                                const f = frozen()
-                                if (f?.active) setFrozen(unfreeze(f, messages()))
+                                lift()
                                 toBottom()
                               }}
                               onInterrupt={() => setFrozen(freeze(messages(), frozen()))}

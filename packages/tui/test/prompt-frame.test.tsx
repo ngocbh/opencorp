@@ -112,6 +112,47 @@ test("a second Esc keeps hiding a reply that arrived after the first", async () 
   }
 })
 
+test("after Esc, a new reply that streams in before the prompt call returns shows", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const reply = (text: string) => {
+    const message: Message = {
+      id: office.nextId(),
+      session_id: id,
+      role: "assistant",
+      created_at: new Date().toISOString(),
+      parts: [{ id: office.nextId(), type: "text", text }],
+    }
+    office.live({ type: "message.updated", session_id: id, data: message as never })
+  }
+  office.onPrompt((_, req) => {
+    reply(req.text === "go" ? "Looking" : "Fresh start")
+    // A session event after the reply: once the header shows it, the reply has arrived too.
+    office.state.sessions[0] = { ...office.state.sessions[0], cost: req.text === "go" ? 0.5 : 0.75 }
+    office.setStatus(id, "busy")
+  })
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("go")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Looking") && f.includes("@minh · busy · $0.50"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
+    // The office answers the next prompt only after its reply has streamed.
+    const release = office.hold("POST /sessions/:id/prompt", "reply")
+    app.input.typeText("again")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("@minh · busy · $0.75") && f.includes("Fresh start"))
+    release()
+    // The input clears once the call returns: "again" is left only in the transcript.
+    await app.until((f) => f.split("again").length === 2 && f.includes("Fresh start"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a 501 from the office shows as a toast, not a crash", async () => {
   const office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
   const app = await bootFrame(createStub(office))

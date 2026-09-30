@@ -49,6 +49,8 @@ export type PromptProps = {
   visible?: boolean
   disabled?: boolean
   onSubmit?: () => void
+  /** Called just before the text goes to the office; returns an undo for a send that fails. */
+  onSend?: () => (() => void) | void
   /** Called when Esc interrupts the session, before the office is asked to. */
   onInterrupt?: () => void
   ref?: (ref: PromptRef | undefined) => void
@@ -661,14 +663,17 @@ export function Prompt(props: PromptProps) {
     const text = promptText()
 
     let sessionID = props.sessionID
+    let undo: (() => void) | void = undefined
     try {
       if (!sessionID) {
         const created = await office.client.sessions.create({ person: person!.id, cwd: office.cwd })
         sessionID = created.id
         await office.syncSession(sessionID)
       }
+      undo = props.onSend?.()
       await office.client.sessions.prompt(sessionID, { text })
     } catch (error) {
+      undo?.()
       showError(sessionID ? "Failed to send prompt" : "Creating a session failed")(error)
       // A new session opens even if its prompt failed; the unsent text follows it there.
       if (sessionID && !props.sessionID) route.navigate({ type: "session", sessionID })
