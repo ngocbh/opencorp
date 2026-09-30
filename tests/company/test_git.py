@@ -189,3 +189,12 @@ def test_git_failure_carries_stderr(g, tmp_path):
     (tmp_path / "outside.txt").write_text("x\n")
     with pytest.raises(CompanyGitError, match="outside repository"):
         g.commit(["../outside.txt"], "edit")
+
+
+def test_worktree_rename_commits_both_paths(g, company):
+    (company / "people/ava").mkdir()
+    (company / PROFILE).rename(company / "people/ava/profile.md")
+    _git(company, "add", "-N", "people/ava/profile.md")  # status now reports " R new\0old"
+    assert g.commit_hand_edits() == ["people/ava/profile.md", PROFILE]
+    assert _git(company, "status", "--porcelain") == ""
+    assert g.blob_id(PROFILE) is None and g.blob_id("people/ava/profile.md") is not None

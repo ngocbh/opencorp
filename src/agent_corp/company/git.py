@@ -104,9 +104,9 @@ class CompanyGit:
     def commit_hand_edits(self) -> list[str]:
         """Commit each changed, new, or deleted ``people/*/profile.md`` on its own; return their paths.
 
-        ``--porcelain -z`` entries are ``XY path``. A staged rename or copy is followed by
-        a second field, its original path; a rename's original is committed too (as a
-        deletion).
+        ``--porcelain -z`` entries are ``XY path``. A rename or copy, staged (X) or in the
+        worktree (Y, after ``git add -N``), is followed by a second field, its original
+        path; a rename's original is committed too (as a deletion).
         """
         with self.lock:
             # --untracked-files=all lists a new profile inside a wholly untracked people/<new>/.
@@ -121,8 +121,9 @@ class CompanyGit:
                 if not entry:
                     continue
                 paths.add(entry[3:])
-                if entry[0] in "RC":
-                    if entry[0] == "R":
+                xy = entry[:2]
+                if "R" in xy or "C" in xy:
+                    if "R" in xy:
                         paths.add(fields[i])
                     i += 1
             for rel in sorted(paths):
