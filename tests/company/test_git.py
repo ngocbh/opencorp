@@ -238,3 +238,21 @@ def test_non_utf8_paths_round_trip(g, company):
     assert g.commit_hand_edits() == [odd]  # absent from disk, so a deletion
     assert g.blob_id(odd) is None
     assert _git(company, "status", "--porcelain") == ""
+
+
+def test_handle_falls_back_to_id_on_non_utf8_person(g, company):
+    (company / "people/minh/person.yaml").write_bytes(b"handle: m\xffinh\n")
+    (company / PROFILE).write_text("# edited\n")
+    assert g.commit_hand_edits() == [PROFILE]
+    assert _git(company, "log", "-1", "--format=%s") == "profile(@minh): hand edit"
+
+
+def test_unrelated_staged_file_stays_staged(g, company):
+    (company / "groups/eng.yaml").write_text("id: eng\nname: Eng\nparent: null\nhead: null\n")
+    _git(company, "add", "groups/eng.yaml")
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([PROFILE], "edit")
+    (company / PROFILE).write_text("# edited again\n")
+    assert g.commit_hand_edits() == [PROFILE]
+    assert _git(company, "log", "-2", "--name-only", "--format=").split() == [PROFILE, PROFILE]
+    assert _git(company, "status", "--porcelain") == "M  groups/eng.yaml"
