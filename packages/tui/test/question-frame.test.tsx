@@ -227,3 +227,19 @@ test("dismissing calls stop; a 501 toasts 'not available yet' and the question s
     office.stop()
   }
 })
+
+test("the chat's own turn question is the prompt, not a card", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.addQuestion({ session_id: s.id, source: "human_input", node_id: "chat#1/ask", question: "You:" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · idle") && f.includes("@minh · Software engineer"))
+    expect(app.frame()).not.toContain("Type your own answer")
+    office.addQuestion({ session_id: s.id, source: "human_input", node_id: "chat#1/review", question: "Ship it?" })
+    await app.until((f) => f.includes("Ship it?") && f.includes("Type your own answer"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

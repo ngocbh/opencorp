@@ -48,8 +48,8 @@ import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable } from "../../office/errors"
-import { openQuestions } from "../../office/store"
 import { QuestionPrompt } from "./question"
+import { cardQuestions } from "../chat/turn"
 
 export const alwaysSeparate = new WeakSet<BoxRenderable>()
 
@@ -123,7 +123,7 @@ export function Session() {
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
   const messages = createMemo(() => office.state.messages[route.sessionID] ?? [])
-  const question = createMemo(() => openQuestions(office.state, route.sessionID)[0])
+  const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
   const person = createMemo(() => personLabel(office.state.people, session()?.person ?? ""))
 
   createEffect(() => {
