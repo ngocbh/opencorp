@@ -140,6 +140,18 @@ def test_daemon_serves_refuses_a_second_and_stops_cleanly(home):
     assert not paths.socket.exists()
 
 
+@pytest.mark.parametrize("sig", [signal.SIGINT, signal.SIGHUP])
+def test_sigint_and_sighup_stop_the_daemon_cleanly(home, sig):
+    paths = OfficePaths(home)
+    proc = _daemon(home)
+    try:
+        _wait_for_socket(home, proc)
+    finally:
+        _stop(home, proc, sig)
+    assert not paths.socket.exists()
+    PidFile(paths.pidfile).acquire()  # released
+
+
 def test_stale_socket_file_is_replaced(home):
     paths = OfficePaths(home)
     paths.office.mkdir(parents=True)

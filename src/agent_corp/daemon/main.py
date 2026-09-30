@@ -110,7 +110,7 @@ def bind_socket(path: Path) -> socket.socket:
 
 
 class OfficeServer(uvicorn.Server):
-    """uvicorn, stopped by SIGINT/SIGTERM without re-raising the signal afterwards."""
+    """uvicorn, stopped by SIGINT/SIGTERM/SIGHUP without re-raising the signal afterwards."""
 
     def __init__(self, config: uvicorn.Config, office: Office) -> None:
         super().__init__(config)
@@ -124,7 +124,7 @@ class OfficeServer(uvicorn.Server):
             yield
             return
         loop = asyncio.get_running_loop()
-        sigs = (signal.SIGINT, signal.SIGTERM)
+        sigs = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
         for sig in sigs:
             loop.add_signal_handler(sig, self.handle_exit, sig, None)
         try:
@@ -145,7 +145,7 @@ def build_office(paths: OfficePaths) -> Office:
 
 
 async def run(paths: OfficePaths, *, extensions: str = "agent_corp.extensions") -> None:
-    """Run the daemon until SIGINT or SIGTERM."""
+    """Run the daemon until SIGINT, SIGTERM, or SIGHUP."""
     make_office_dir(paths.office)
     pidfile = PidFile(paths.pidfile)
     pidfile.acquire()
