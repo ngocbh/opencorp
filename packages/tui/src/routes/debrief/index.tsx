@@ -85,8 +85,20 @@ export function Debrief() {
 
   // Feedback sent from this screen; there is no route to list a session's feedback.
   const [sent, setSent] = createSignal<Feedback[]>([])
-  const putFeedback = (f: Feedback) =>
-    f.session_id === id && setSent((list) => [...list.filter((x) => x.id !== f.id), f])
+  // Feedback moves queued → learning → applied or learning_failed, and back to queued only for a
+  // new attempt. So done beats not done, then a later attempt beats an earlier one, then the
+  // later status wins; a reply or event that arrives late is older than what is shown.
+  const RANK = { queued: 0, learning: 1, applied: 2, learning_failed: 2 }
+  const order = (f: Feedback) => (RANK[f.status] === 2 ? 1e6 : 0) + (f.attempts ?? 0) * 10 + RANK[f.status]
+  /** Adds or updates a sent feedback item in place, unless the update is older than what is shown. */
+  const putFeedback = (f: Feedback) => {
+    if (f.session_id !== id) return
+    setSent((list) => {
+      const i = list.findIndex((x) => x.id === f.id)
+      if (i < 0) return [...list, f]
+      return order(f) < order(list[i]) ? list : list.with(i, f)
+    })
+  }
   onCleanup(office.on("feedback.created", (e) => putFeedback(e.data as unknown as Feedback)))
   onCleanup(office.on("feedback.updated", (e) => putFeedback(e.data as unknown as Feedback)))
   const turnList = createMemo(() => turns(office.state.messages[id] ?? []))

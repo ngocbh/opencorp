@@ -167,6 +167,28 @@ test("f writes feedback on the whole run; Esc leaves the input; pre-fill-only fe
   })
 })
 
+test("feedback items keep their place as they move along, and a late update never moves one back", async () => {
+  const office = createFakeOffice()
+  withTurns(office)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    for (const text of ["Good call", "Too slow"]) {
+      app.input.pressKey("f")
+      await typeInto(app, text)
+      app.input.pressEnter()
+      await app.until((f) => f.includes(`queued · ${text}`) && app.setup.renderer.currentFocusedEditor === null)
+    }
+    const [first, second] = office.state.feedback
+    office.feedbackStatus(first.id, "applied")
+    let f = await app.until((f) => f.includes("applied · Good call"))
+    expect(f.indexOf("applied · Good call")).toBeLessThan(f.indexOf("queued · Too slow"))
+    office.feedbackStatus(first.id, "learning")
+    office.feedbackStatus(second.id, "learning")
+    f = await app.until((f) => f.includes("learning · Too slow"))
+    expect(f).toContain("applied · Good call")
+  })
+})
+
 test("a reconnect re-reads the debrief, since events missed while offline are not replayed", async () => {
   const office = createFakeOffice()
   office.addDebrief(office.state.sessions[0].id, { state: "pending" })
