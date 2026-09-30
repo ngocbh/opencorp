@@ -7,9 +7,11 @@ from agent_composer.tools import ToolSet
 
 from agent_corp.protocol.models import DiscussionEntry, Question
 from agent_corp.questions.ask import Answers, QuestionExpired, make_ask_user
+from agent_corp.worker.rpc import ASK_KEYS, BaseHandlers, ask_user_stub
 from tests.store.conftest import question as make_question
 from tests.store.conftest import session
 from tests.store.conftest import store  # noqa: F401
+from tests.worker.conftest import office_end
 
 PAGES = [{"question": "Which db?", "header": "DB", "options": [{"label": "sqlite", "description": "local"}],
           "multi_select": False}]
@@ -46,6 +48,21 @@ def test_the_handler_passes_composers_check_and_takes_its_calls():
     desk.answer = {"DB": "sqlite"}
     assert tools.invoke_trusted("ask_user", human_input_call()) == {"DB": "sqlite"}
     assert [q.source for q in desk.asked] == ["ask_user", "human_input"]
+    assert set(ASK_KEYS) == set(model_call())
+
+
+def test_the_handler_answers_through_the_workers_stub():
+    desk = Desk("B")
+    handler = make_ask_user(session(), "run-1", desk)
+
+    class Handlers(BaseHandlers):
+        def ask_user(self, worker, request):
+            return handler(**request)
+
+    with office_end(Handlers(), threaded=True) as rpc:
+        tools = ToolSet({"ask_user": ask_user_stub(rpc)})
+        got = tools.invoke("ask_user", {"question": "A or B?", "options": ["A", "B"]})
+    assert got == 'The user chose "B" (option 2 of the 2 shown).' and desk.asked[0].options == ["A", "B"]
 
 
 def test_a_model_call_stores_a_flat_question_and_returns_the_formatted_answer():

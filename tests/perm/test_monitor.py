@@ -1,5 +1,9 @@
 """The reference monitor: which asset tools a person gets, and every call's check and audit."""
 
+from agent_composer.tools import ToolSet
+
+from agent_corp.worker.job import group_specs
+from agent_corp.worker.rpc import BaseHandlers
 from tests.company.conftest import person
 from tests.perm.conftest import TOKEN, cluster, set_file
 
@@ -123,3 +127,15 @@ def test_toolbox_tools_carry_the_kind_schema_and_audit_the_run(make_monitor, sto
     assert submit.description == "Submit a job." and submit.tool_call_schema["required"] == ["job"]
     assert toolbox["fake__echo"].invoke({"text": "hi"}) == "hi"
     assert [(r.run_id, r.session_id) for r in store.list_audit()] == [("r1", "s1")]
+
+
+def test_tools_plug_into_group_specs_base_handlers_and_toolset(make_monitor, store):
+    m = make_monitor(**{"assets/cluster-a.yaml": cluster([{"who": "minh", "can": ["submit_job"]}])})
+    toolbox = m.tools("minh", run_id="r1", session_id="s1")
+    [submit, echo] = sorted(group_specs({"toolbox": toolbox})["toolbox"], key=lambda s: s.name)
+    assert submit.name == "cluster_a__submit_job" and submit.description == "Submit a job."
+    assert submit.parameters["required"] == ["job"] and echo.parameters["properties"] == {"text": {"type": "string"}}
+    handlers = BaseHandlers(tools={"toolbox": toolbox})
+    assert handlers.tool_call(None, "toolbox", "fake__echo", {"text": "hi"}) == "hi"
+    assert ToolSet({"toolbox": list(toolbox.values())}).groups == ("toolbox",)
+    assert [r.session_id for r in store.list_audit()] == ["s1"]

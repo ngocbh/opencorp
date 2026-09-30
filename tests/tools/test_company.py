@@ -5,6 +5,8 @@ from agent_composer.tools import ToolSet
 
 from agent_corp.company.loader import load_repo
 from agent_corp.tools.company import company_tools
+from agent_corp.worker.job import group_specs
+from agent_corp.worker.rpc import model_from_schema
 from tests.questions.test_ask import Desk
 from tests.store.conftest import session, work_item
 
@@ -21,6 +23,8 @@ def setup(store, company):
 def test_the_group_has_three_tools_and_no_ask_user(setup):
     *_, tools = setup
     assert set(tools) == {"ask_manager", "create_work_item", "comment"}
+    [spec] = [s for s in group_specs({"company": tools})["company"] if s.name == "ask_manager"]
+    assert spec.parameters["required"] == ["question"]
     assert ToolSet({"company": list(tools.values())}).groups == ("company",)
 
 
@@ -35,6 +39,14 @@ def test_ask_manager_opens_a_work_item_and_returns_the_formatted_answer(setup):
     assert (item.kind, item.requester, item.assignee, item.parent_id, item.title) == (
         "question", "minh", "ngocbh", parent.id, "Retry or back off?")
     assert item.status == "done"
+
+
+def test_ask_manager_options_accept_any_shape(setup):
+    *_, desk, tools = setup
+    spec = next(s for s in group_specs({"company": tools})["company"] if s.name == "ask_manager")
+    args = model_from_schema("ask_manager_args", spec.parameters)(question="q?", options={"bad": 1})
+    tools["ask_manager"](**args.model_dump())
+    assert desk.asked[0].options == []
 
 
 @pytest.mark.parametrize("kind", ["sent_back", "interrupted"])
