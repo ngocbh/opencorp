@@ -1,31 +1,37 @@
-"""The options normalizer: question-card §7.3 rules, then the office's action labels."""
+"""The options normalizer: composer's label cleaning, then dropping the card's own action labels."""
 
 import pytest
+from agent_composer.tools.registry import _normalize_options
 
-from agent_corp.questions.normalize import normalize_options
+from agent_corp.questions.normalize import _labels, normalize_options
+
+CASES = [
+    (None, []),
+    (["A", "B"], ["A", "B"]),
+    ('["A","B"]', ["A", "B"]),
+    ('["A", 2]', ["A"]),
+    ("A, B", ["A, B"]),
+    ("[broken", ["[broken"]),
+    (["A", 3, None, {"label": "x"}], ["A"]),
+    ({"label": "x"}, []),
+    (42, []),
+    ([], []),
+    (["  two\n  lines ", "", "   "], ["two lines"]),
+    (["Yes", "yes", "YES", "No"], ["Yes", "No"]),
+    ([str(i) for i in range(9)], ["0", "1", "2", "3", "4", "5"]),
+    (["x" * 100], ["x" * 79 + "…"]),
+]
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (None, []),
-        (["A", "B"], ["A", "B"]),
-        ('["A","B"]', ["A", "B"]),
-        ('["A", 2]', ["A"]),
-        ("A, B", ["A, B"]),
-        ("[broken", ["[broken"]),
-        (["A", 3, None, {"label": "x"}], ["A"]),
-        ({"label": "x"}, []),
-        (42, []),
-        ([], []),
-        (["  two\n  lines ", "", "   "], ["two lines"]),
-        (["Yes", "yes", "YES", "No"], ["Yes", "No"]),
-        ([str(i) for i in range(9)], ["0", "1", "2", "3", "4", "5"]),
-        (["x" * 100], ["x" * 79 + "…"]),
-    ],
-)
-def test_section_7_3_rules(value, expected):
+@pytest.mark.parametrize(("value", "expected"), CASES)
+def test_labels_are_parsed_squeezed_cut_deduplicated_and_at_most_six(value, expected):
     assert normalize_options(value) == expected
+
+
+@pytest.mark.parametrize("value", [value for value, _ in CASES])
+def test_labels_match_composers_cleaning(value):
+    # The office copies composer's private cleaning; this catches the two drifting apart.
+    assert _labels(value) == (_normalize_options(value) or [])
 
 
 def test_action_labels_are_dropped():

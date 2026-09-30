@@ -1,4 +1,4 @@
-"""The tool result a model gets for an answered question (question-card §4)."""
+"""The tool result a model gets for an answered question: the choice, then any discussion as JSON."""
 
 import json
 from collections.abc import Iterable

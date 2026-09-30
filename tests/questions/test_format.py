@@ -1,4 +1,4 @@
-"""The answer text a model sees (question-card §4), as golden strings."""
+"""The answer text a model sees for each kind of answer, as golden strings."""
 
 import json
 
