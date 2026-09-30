@@ -131,6 +131,7 @@ class GitProfileStore:
             raise OSError(str(exc)) from exc
 
     def _committed(self, commit_id: str) -> str | None:
+        """The profile's blob id in the newest commit with a ``Commit-Id: <commit_id>`` line, or None."""
         sha = self.git.find_commit(self.path, f"Commit-Id: {commit_id}")
         return None if sha is None else self.git.blob_id(self.path, sha) or EMPTY_BLOB
 

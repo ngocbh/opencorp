@@ -1,6 +1,7 @@
 """GitProfileStore: profile.md in the company clone as a MarkdownStore versioned by git blob id."""
 
 import os
+import subprocess
 import threading
 
 import agent_composer.memory.profile as composer_profile
@@ -35,11 +36,15 @@ def _subject(company) -> str:
 # Reads
 
 
-def test_constructor_does_no_io(tmp_path):
+def test_constructor_does_no_io(tmp_path, monkeypatch):
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("the constructor ran a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", no_subprocess)
     GitProfileStore(CompanyGit(tmp_path / "missing", tmp_path / "worktrees"), "minh")
 
 
-@pytest.mark.parametrize("pid", ["", "../minh", "minh/x", "Minh", "a_b", "a--b", "a" * 65])
+@pytest.mark.parametrize("pid", ["", "../minh", "minh/x", "Minh", "a_b", "a--b", "-minh", "a" * 65])
 def test_constructor_refuses_a_bad_person_id(git, pid):
     with pytest.raises(ValueError, match="not a person id"):
         GitProfileStore(git, pid)
@@ -337,3 +342,19 @@ def test_bytes_git_normalizes_are_not_a_hand_edit(store, git, company):
     base = store.read()[1]
     assert base == blob_id(MINH.encode())
     assert store.write("# Minh\nv1\n", base_version=base) == blob_id(b"# Minh\nv1\n")
+
+
+def test_write_turns_a_git_failure_into_an_os_error(tmp_path):
+    (tmp_path / "not-a-repo").mkdir()
+    store = GitProfileStore(CompanyGit(tmp_path / "not-a-repo", tmp_path / "worktrees"), "minh")
+    with pytest.raises(OSError, match="exited"):
+        store.write("# Minh\n", base_version=EMPTY_BLOB)
+
+
+def test_write_refuses_a_symlinked_person_directory(git, company, tmp_path):
+    outside = tmp_path / "outside"
+    (company / "people/minh").rename(outside)
+    os.symlink(outside, company / "people/minh")
+    with pytest.raises((OSError, ValueError)):
+        GitProfileStore(git, "minh").write("pwned\n", base_version=blob_id(MINH.encode()))
+    assert (outside / "profile.md").read_text() == MINH
