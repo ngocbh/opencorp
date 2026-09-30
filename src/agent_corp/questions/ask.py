@@ -81,8 +81,10 @@ class Answers:
     def close(self) -> None:
         """Stop listening to the store and wake every waiting ``ask``.
 
-        A waiter whose question is still open marks it stale and raises ``AnswersClosed``;
-        one whose answer already landed returns it. Any later ``ask`` raises ``AnswersClosed``.
+        A waiter whose answer already landed returns it; one whose question is still open
+        raises ``AnswersClosed`` and leaves the question and its work item as they are, since
+        stopping the office is not the question expiring. Any later ``ask`` raises
+        ``AnswersClosed``.
         """
         self._remove()
         with self._lock:
@@ -95,8 +97,7 @@ class Answers:
         """Store ``question`` and return it once answered, marked ``consumed``.
 
         ``work_item``, if given, is stored in the same transaction as the question, and
-        set to ``cancelled`` if the question goes stale or this ``Answers`` is closed while
-        the question is still open (the question is then marked stale). A ``human_input`` asked
+        set to ``cancelled`` if the question goes stale. A ``human_input`` asked
         again for the same run and node (after a restart) reuses the question already
         stored, and its answer if it has one.
 
@@ -129,13 +130,13 @@ class Answers:
 
     def _answered(self, qid: str, ready: threading.Event, work_item: WorkItem | None) -> Question:
         while (current := self.store.get_question(qid)).status == "open":
-            if self._closed and self._abandon(qid, work_item):
+            if self._closed:
                 raise AnswersClosed(f"stopped waiting for question {qid}")
             ready.wait(POLL_SECONDS)
             ready.clear()
         if current.status == "stale":
             if work_item is not None:
-                self._cleanup(qid, lambda: self.store.update_work_item(work_item.id, status="cancelled"))
+                self._cancel(qid, work_item)
             raise QuestionExpired(f"question {qid} expired before it was answered")
         if current.status == "answered":
             try:
@@ -144,32 +145,12 @@ class Answers:
                 current = self.store.get_question(qid)
         return current
 
-    def _abandon(self, qid: str, work_item: WorkItem | None) -> bool:
-        """Mark the question stale and its work item cancelled if the question is still open.
-
-        Returns False if an answer landed first, so the caller takes it instead.
-        """
-        still_open = True
-
-        def abandon() -> None:
-            nonlocal still_open
-            with self.store.transaction():
-                still_open = self.store.get_question(qid).status == "open"
-                if still_open:
-                    self.store.set_question_status(qid, "stale")
-                    if work_item is not None:
-                        self.store.update_work_item(work_item.id, status="cancelled")
-
-        self._cleanup(qid, abandon)
-        return still_open
-
-    @staticmethod
-    def _cleanup(qid: str, step: Callable[[], Any]) -> None:
-        # Logged, not raised: the caller is already raising why it gave up on the question.
+    def _cancel(self, qid: str, work_item: WorkItem) -> None:
+        # Logged, not raised: the caller is already raising QuestionExpired.
         try:
-            step()
+            self.store.update_work_item(work_item.id, status="cancelled")
         except Exception:
-            log.exception("could not clean up after question %s", qid)
+            log.exception("could not cancel the work item of expired question %s", qid)
 
     def _watch(self, qid: str, ready: threading.Event) -> None:
         with self._lock:

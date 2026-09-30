@@ -262,16 +262,17 @@ def test_an_answer_from_another_process_is_found_by_polling(store, answers, sid,
     assert not t.is_alive() and out["result"].answer == "pg"
 
 
-def test_close_marks_the_open_question_stale_and_cancels_its_work_item(store, answers, sid):
+def test_close_leaves_the_open_question_and_its_work_item_as_they_are(store, answers, sid):
     item = work_item(kind="question")
     q = make_question(sid, work_item_id=item.id)
     t, out = asking(answers, q, item)
     wait_open(store, sid)
     answers.close()
     t.join(5)
+    # Stopping the office is not the question expiring: the run resumes after a restart.
     assert isinstance(out.get("error"), AnswersClosed)
-    assert store.get_question(q.id).status == "stale"
-    assert store.get_work_item(item.id).status == "cancelled"
+    assert store.get_question(q.id).status == "open"
+    assert store.get_work_item(item.id).status == "open"
 
 
 def test_an_answer_committed_just_before_close_is_returned(store, answers, sid, monkeypatch, tmp_path):
