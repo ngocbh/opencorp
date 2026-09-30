@@ -1,6 +1,7 @@
 import type { Profile as ProfileData } from "@agent-corp/protocol"
+import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
-import { createEffect, createSignal, on, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
 import { useLocal } from "../../context/local"
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
@@ -10,7 +11,7 @@ import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
 import { VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
-import { conflictText, shortVersion, withoutConflict } from "./profile"
+import { conflictText, managerSession, shortVersion, transcript, withoutConflict } from "./profile"
 
 /** Registers `/profile`: opens the profile of the session's person, or of the selected person. */
 export function useProfileCommands() {
@@ -39,7 +40,10 @@ export function useProfileCommands() {
   }))
 }
 
-/** A person's profile: the rendered `profile.md`, its version, and whether it is over budget. */
+/**
+ * A person's profile: the rendered `profile.md`, its version, and whether it is over budget; `e`
+ * edits it, and `m` asks the profile manager for a change.
+ */
 export function Profile() {
   const data = useRouteData("profile")
   const route = useRoute()
@@ -67,6 +71,34 @@ export function Profile() {
       if (e.subject_id === person) setProfile(e.data as unknown as ProfileData)
     }),
   )
+
+  // The manager chat: the one this view started, else the person's newest live one.
+  const [started, setStarted] = createSignal<string>()
+  const chat = createMemo(() => started() ?? managerSession(office.state.sessions, person)?.id)
+  const chatSession = () => office.state.sessions.find((s) => s.id === chat())
+  const lines = createMemo(() => transcript(office.state.messages[chat() ?? ""] ?? []))
+  createEffect(
+    on([chat, office.status], ([id, status]) => {
+      if (id && status === "online") office.syncSession(id).catch((e) => setError(errorMessage(e)))
+    }),
+  )
+  let input: InputRenderable | undefined
+  let sending = false
+  /** Sends `text` to the manager chat, starting one on the first message. */
+  async function send(text: string) {
+    if (sending || !text.trim()) return
+    sending = true
+    try {
+      const id = chat()
+      if (id) await office.client.sessions.prompt(id, { text })
+      else setStarted((await office.client.profiles.manager(person, { text })).id)
+      if (input) input.value = ""
+    } catch (e) {
+      toast.show({ variant: "error", message: errorMessage(e) })
+    } finally {
+      sending = false
+    }
+  }
 
   let editing = false
   /**
@@ -112,8 +144,14 @@ export function Profile() {
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
       { key: "e", group: "Profile", cmd: () => void edit() },
+      { key: "m", group: "Profile", cmd: () => input?.focus() },
       { key: "escape", group: "Profile", cmd: back },
     ],
+  }))
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    enabled: () => !!input && renderer.currentFocusedEditor === input,
+    bindings: [{ key: "escape", group: "Profile", cmd: () => input?.blur() }],
   }))
 
   return (
@@ -125,7 +163,7 @@ export function Profile() {
             {(p) => <span style={{ fg: theme.textMuted }}> {shortVersion(p().version)}</span>}
           </Show>
         </text>
-        <text fg={theme.textMuted}>e edit · esc back</text>
+        <text fg={theme.textMuted}>e edit · m message the manager · esc back</text>
       </box>
       <Show when={profile()?.over_budget}>
         <text fg={theme.warning} flexShrink={0}>
@@ -138,6 +176,35 @@ export function Profile() {
           {(p) => <markdown syntaxStyle={syntax()} content={p().text} conceal={true} fg={theme.text} />}
         </Show>
       </scrollbox>
+      <Show when={lines().length}>
+        <box flexShrink={0}>
+          <For each={lines().slice(-4)}>
+            {(l) => (
+              <text fg={l.role === "user" ? theme.text : theme.textMuted}>
+                {l.role === "user" ? "you: " : "manager: "}
+                {l.text}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
+      <Show when={chatSession()?.status === "busy" || chatSession()?.status === "starting"}>
+        <text fg={theme.textMuted} flexShrink={0}>
+          The profile manager is thinking…
+        </text>
+      </Show>
+      <box flexDirection="row" flexShrink={0}>
+        <text fg={theme.textMuted}>{"> "}</text>
+        <input
+          flexGrow={1}
+          ref={(r) => (input = r)}
+          placeholder="Ask the profile manager for a change (m)"
+          placeholderColor={theme.textMuted}
+          focusedBackgroundColor={theme.backgroundPanel}
+          cursorColor={theme.primary}
+          onSubmit={() => void send(input?.value ?? "")}
+        />
+      </box>
       <Toast />
     </box>
   )

@@ -6,6 +6,7 @@ import { createOfficeClient } from "../../../src/office/client"
 import { CONFLICT_MARKER } from "../../../src/routes/profile/profile"
 import { bootFrame } from "../../fixture/frame"
 import { until } from "../../fixture/until"
+import { typeInto } from "../picker/type"
 
 type App = Awaited<ReturnType<typeof bootFrame>>
 
@@ -131,5 +132,54 @@ test("with no $EDITOR, e says how to set one; an unchanged save writes nothing",
     app.input.pressKey("e")
     await app.until((f) => f.includes("No changes"))
     expect(office.requests.some((r) => r.method === "PUT")).toBe(false)
+  })
+})
+
+/** Streams an assistant message into a session, as the harness would. */
+function reply(office: ReturnType<typeof createFakeOffice>, sessionId: string, text: string) {
+  const at = new Date().toISOString()
+  const id = office.nextId()
+  const parts = [{ id: id + "P", type: "text", text }]
+  const msg = { id, session_id: sessionId, role: "assistant", parts, created_at: at }
+  office.state.messages[sessionId].push(msg as never)
+  office.live({ type: "message.updated", session_id: sessionId, data: msg as never })
+}
+
+test("m starts a profile manager chat; later messages prompt the same session", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    app.input.pressKey("m")
+    await typeInto(app, "Say Minh writes tests first")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("you: Say Minh writes tests first"))
+    const manager = office.state.sessions.find((s) => s.kind === "profile_manager")!
+    expect(office.requests.find((r) => r.method === "POST")).toMatchObject({
+      path: "/profiles/minh/manager",
+      body: { text: "Say Minh writes tests first" },
+    })
+    reply(office, manager.id, "Proposed a change: see below.")
+    await app.until((f) => f.includes("manager: Proposed a change: see below."))
+    await typeInto(app, "Shorter please")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("you: Shorter please"))
+    expect(office.requests.filter((r) => r.method === "POST").at(-1)).toMatchObject({
+      path: `/sessions/${manager.id}/prompt`,
+      body: { text: "Shorter please" },
+    })
+  })
+})
+
+test("an open manager chat for the person is picked up with its transcript", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Earlier ask" })
+  reply(office, manager.id, "Earlier answer")
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("you: Earlier ask") && f.includes("manager: Earlier answer"))
+    app.input.pressKey("m")
+    await typeInto(app, "Again")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("you: Again"))
+    expect(office.requests.filter((r) => r.method === "POST").at(-1)?.path).toBe(`/sessions/${manager.id}/prompt`)
   })
 })
