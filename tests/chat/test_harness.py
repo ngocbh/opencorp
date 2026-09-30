@@ -657,3 +657,16 @@ def test_turn_text_changes_what_the_turn_gets_but_not_the_transcript(harness, fa
     harness.end(sid)  # the exit command is the office's, not the person's: no turn_text
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
     assert len(seen) == 2
+
+
+def test_turn_text_takes_only_a_str_and_skips_the_exit_command(harness, fake_llm, workspace):
+    seen = []
+    harness.hooks.turn_text += [lambda s, q, text: seen.append(text) or 42, lambda s, q, text: f"<{text}>"]
+    fake_llm.script({"content": "one"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["one"] and status(harness, sid) == "idle", what="the reply")
+    assert "<hi>" in asked(fake_llm, 1)  # 42 isn't text, so the next result wins
+    assert harness.prompt(sid, MAIN_CHAT.exit) == "turn"  # the person typed the exit command
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert seen == ["hi"]

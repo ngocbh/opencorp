@@ -18,8 +18,11 @@ class Hooks:
     - ``prompt_check(session, text) -> str | None``: return a message to refuse a person's
       message to the session (a prompt, a steer, or a turn answer; ``422 refused``).
     - ``turn_text(session, question, text) -> str | None``: the text a turn question gets in
-      place of the person's ``text``; the transcript keeps ``text``. The first result that
-      isn't ``None`` wins.
+      place of the person's ``text``; the transcript keeps ``text``. The first ``str`` result
+      wins; other results are ignored. The exit command skips it.
+
+      ``prompt_check`` and ``turn_text`` run under the harness lock, so they must be quick and
+      must never wait on another thread or call back into the harness.
     - ``run_started(session, run_id)``: a worker started a run or a resume of one.
     - ``run_finished(session, run_id, result)``: a run ended; ``result`` is the worker's
       result frame (``status``, ``output``, ``failure``), or ``None`` after an error frame.

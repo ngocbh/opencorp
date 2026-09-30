@@ -565,8 +565,8 @@ class Harness:
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None | bool = True) -> None:
         """Answer the turn; if the store refuses, the turn stays open for the next try."""
-        # The person's message goes through turn_text; the office's exit command (by=None) doesn't.
-        answer = self._turn_text(live, question_id, text) if by is True else text
+        # The person's message goes through turn_text; the exit command, typed or the office's, doesn't.
+        answer = self._turn_text(live, question_id, text) if by is True and text != live.spec.chat.exit else text
         try:
             self.store.answer_question(question_id, answer, "text", answered_by=live.owner if by is True else by)
             if live.turn_node is not None and text != live.spec.chat.exit:
@@ -586,9 +586,9 @@ class Harness:
                 raise HarnessError(422, "refused", str(refusal))
 
     def _turn_text(self, live: _Live, question_id: str, text: str) -> str:
-        """What the turn question gets for the person's ``text``: the first ``turn_text`` result, else ``text``."""
+        """What the turn question gets for the person's ``text``: the first ``str`` from ``turn_text``, else ``text``."""
         session, question = self.store.get_session(live.session_id), self.store.get_question(question_id)
-        return next((t for t in self.hooks.fire("turn_text", session, question, text) if t is not None), text)
+        return next((t for t in self.hooks.fire("turn_text", session, question, text) if isinstance(t, str)), text)
 
     def _turns(self, live: _Live) -> int:
         chat = live.spec.chat
