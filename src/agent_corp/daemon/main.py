@@ -100,6 +100,17 @@ def check_socket_path(path: Path) -> None:
         raise OfficeStartError(f"socket path too long ({size} bytes, limit {SUN_PATH_MAX - 1}): {path}")
 
 
+def remove_stale_socket(path: Path) -> None:
+    """Unlink the socket a crashed daemon left at ``path``; ``OfficeStartError`` if something else is there."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return
+    if not stat.S_ISSOCK(st.st_mode):
+        raise OfficeStartError(f"{path} exists and is not a socket")
+    path.unlink(missing_ok=True)
+
+
 def bind_socket(path: Path) -> socket.socket:
     """A listening unix socket at ``path`` with mode 0600."""
     check_socket_path(path)
@@ -168,7 +179,7 @@ async def run(paths: OfficePaths, *, extensions: str = "agent_corp.extensions") 
                 load_extensions(office, extensions)
             except ExtensionError as exc:
                 raise OfficeStartError(str(exc)) from exc
-            paths.socket.unlink(missing_ok=True)  # a crash's leftover; we hold the lock
+            remove_stale_socket(paths.socket)  # we hold the lock, so no live daemon owns it
             sock = bind_socket(paths.socket)
             server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="info",
                                                  timeout_graceful_shutdown=5), office)

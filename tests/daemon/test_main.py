@@ -12,7 +12,8 @@ import httpx
 import pytest
 
 from agent_corp.daemon.app import OfficePaths
-from agent_corp.daemon.main import AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir
+from agent_corp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir,
+                                    remove_stale_socket)
 from tests.daemon.conftest import base_files, served, write_repo
 
 
@@ -62,6 +63,36 @@ def test_an_office_dir_owned_by_someone_else_is_refused(short_dir, monkeypatch):
         make_office_dir(short_dir / "office")
 
 
+def test_a_stale_socket_is_removed(short_dir):
+    bind_socket(short_dir / "s.sock").close()  # closing leaves the file, as a crash does
+    remove_stale_socket(short_dir / "s.sock")
+    assert not (short_dir / "s.sock").exists()
+    remove_stale_socket(short_dir / "s.sock")  # nothing there is fine
+
+
+@pytest.mark.parametrize("kind", ["dir", "file", "symlink"])
+def test_something_else_at_the_socket_path_is_refused(short_dir, kind):
+    path = short_dir / "s.sock"
+    if kind == "dir":
+        path.mkdir()
+    elif kind == "file":
+        path.write_text("mine")
+    else:
+        bind_socket(short_dir / "real.sock").close()
+        path.symlink_to(short_dir / "real.sock")
+    with pytest.raises(OfficeStartError, match="not a socket"):
+        remove_stale_socket(path)
+    assert os.path.lexists(path)
+
+
+def test_a_directory_at_the_socket_path_exits_1(home, capsys):
+    paths = OfficePaths(home)
+    paths.socket.mkdir(parents=True)
+    assert main(["--home", str(home)]) == 1
+    assert f"{paths.socket} exists and is not a socket" in capsys.readouterr().err
+    PidFile(paths.pidfile).acquire()  # released
+
+
 def test_second_pidfile_lock_is_refused(tmp_path):
     first = PidFile(tmp_path / "office.pid")
     first.acquire()
@@ -101,19 +132,20 @@ def _log(home):
     return (home / "daemon.log").read_text()
 
 
-def _is_socket(path):
+def _serving(path):
     try:
-        return stat.S_ISSOCK(os.lstat(path).st_mode)
-    except FileNotFoundError:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(path)), base_url="http://localhost", timeout=1) as c:
+            return c.get("/people").status_code == 200
+    except httpx.TransportError:
         return False
 
 
-def _wait_for_socket(home, proc, timeout=20.0):
+def _wait_until_serving(home, proc, timeout=20.0):
     path = OfficePaths(home).socket
     deadline = time.monotonic() + timeout
-    while not _is_socket(path):
+    while not _serving(path):
         assert proc.poll() is None, f"daemon exited {proc.returncode}:\n{_log(home)}"
-        assert time.monotonic() < deadline, f"daemon did not create its socket:\n{_log(home)}"
+        assert time.monotonic() < deadline, f"daemon is not serving on {path}:\n{_log(home)}"
         time.sleep(0.05)
 
 
@@ -137,10 +169,8 @@ def test_daemon_serves_refuses_a_second_and_stops_cleanly(home):
     paths = OfficePaths(home)
     proc = _daemon(home)
     try:
-        _wait_for_socket(home, proc)
+        _wait_until_serving(home, proc)
         assert stat.S_IMODE(os.stat(paths.socket).st_mode) == 0o600
-        with httpx.Client(transport=httpx.HTTPTransport(uds=str(paths.socket)), base_url="http://localhost") as c:
-            assert c.get("/people").status_code == 200
         second = subprocess.run([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
                                 capture_output=True, text=True, timeout=30)
         assert second.returncode == 1 and f"office already running (pid {proc.pid})" in second.stderr
@@ -154,7 +184,7 @@ def test_sigint_and_sighup_stop_the_daemon_cleanly(home, sig):
     paths = OfficePaths(home)
     proc = _daemon(home)
     try:
-        _wait_for_socket(home, proc)
+        _wait_until_serving(home, proc)
     finally:
         _stop(home, proc, sig)
     assert not paths.socket.exists()
@@ -164,10 +194,10 @@ def test_sigint_and_sighup_stop_the_daemon_cleanly(home, sig):
 def test_stale_socket_file_is_replaced(home):
     paths = OfficePaths(home)
     paths.office.mkdir(parents=True)
-    paths.socket.write_text("left by a crash")
+    bind_socket(paths.socket).close()  # left by a crash
     proc = _daemon(home)
     try:
-        _wait_for_socket(home, proc)
+        _wait_until_serving(home, proc)
     finally:
         _stop(home, proc)
 
