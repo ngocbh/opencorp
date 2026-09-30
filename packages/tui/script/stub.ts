@@ -329,6 +329,32 @@ export function createFakeOffice(
     if (side && side.status !== "ended") setStatus(side.id, "ended")
     return updateQuestion({ ...q, status: "stale", updated_at: now() })
   }
+  /**
+   * The office's answer check, loosely: a model question takes text (an option one of its
+   * options), a question with pages a record with a label (a list for multi-select) per header.
+   */
+  function checkAnswer(q: Question, answer: unknown, kind: string) {
+    const invalid = (message: string) => fail(422, "invalid_answer", message)
+    const label = (v: unknown) => typeof v === "string" && v.trim().length > 0
+    if (q.source !== "human_input") {
+      if (!label(answer)) throw invalid("the answer must be text")
+      if (kind === "option" && !q.options?.includes(answer as string))
+        throw invalid(`${JSON.stringify(answer)} is not one of the options`)
+      return
+    }
+    if (!q.questions?.length) return
+    if (!answer || typeof answer !== "object" || Array.isArray(answer))
+      throw invalid("the answer must be a record with one entry per question header")
+    const record = answer as Record<string, unknown>
+    const extra = Object.keys(record).find((h) => !q.questions!.some((p) => p.header === h))
+    if (extra) throw invalid(`no question has the header ${JSON.stringify(extra)}`)
+    for (const page of q.questions) {
+      if (!(page.header in record)) throw invalid(`${JSON.stringify(page.header)} has no answer`)
+      const value = record[page.header]
+      const ok = page.multi_select ? Array.isArray(value) && value.every(label) : label(value)
+      if (!ok) throw invalid(`${JSON.stringify(page.header)} takes ${page.multi_select ? "a list of labels" : "one label"}`)
+    }
+  }
   /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
   function openModelQuestion(id: string, code: string) {
     const q = question(id)
@@ -595,6 +621,7 @@ export function createFakeOffice(
           body && "answer" in body && ["option", "text"].includes(body.answer_kind),
           "answer_kind must be option or text",
         )
+        checkAnswer(question(params.id), body.answer, body.answer_kind)
         return Response.json(close(params.id, { answer: body.answer, answer_kind: body.answer_kind }))
       },
     ],

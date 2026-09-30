@@ -326,6 +326,8 @@ test("an empty typed answer keeps the option picked on that page", async () => {
   const s = office.state.sessions[0]
   const q = office.addQuestion({
     session_id: s.id,
+    source: "human_input",
+    node_id: "release",
     question: "Set up the release",
     questions: [
       { question: "Which channel?", header: "Channel", options: [{ label: "beta" }, { label: "stable" }] },

@@ -36,6 +36,38 @@ test("a prompt answers the open turn; while busy it steers; interrupt goes back 
   expect(office.openTurn(id).node_id).toBe("chat#2/ask")
 })
 
+test("an answer the question doesn't take is 422 invalid_answer", async () => {
+  office = createFakeOffice()
+  const invalid = async (id: string, req: any) => {
+    const e = await failure(client().questions.answer(id, req))
+    return [e.status, e.code]
+  }
+  const asked = office.addQuestion({ options: ["yes", "no"] })
+  expect(await invalid(asked.id, { answer: "maybe", answer_kind: "option" })).toEqual([422, "invalid_answer"])
+  expect(await invalid(asked.id, { answer: " ", answer_kind: "text" })).toEqual([422, "invalid_answer"])
+  expect(await invalid(asked.id, { answer: { a: 1 }, answer_kind: "text" })).toEqual([422, "invalid_answer"])
+  const pages = office.addQuestion({
+    source: "human_input",
+    node_id: "release",
+    questions: [
+      { question: "Which channel?", header: "Channel", options: [{ label: "beta" }, { label: "stable" }] },
+      { question: "Targets?", header: "Targets", multi_select: true, options: [{ label: "linux" }, { label: "mac" }] },
+    ],
+  })
+  for (const answer of [
+    "beta",
+    { Channel: "beta" },
+    { Channel: "beta", Targets: "linux" },
+    { Channel: ["beta"], Targets: [] },
+    { Channel: "beta", Targets: [], Other: "x" },
+  ])
+    expect(await invalid(pages.id, { answer, answer_kind: "option" })).toEqual([422, "invalid_answer"])
+  expect(office.state.questions[pages.id].status).toBe("open")
+  const ok = await client().questions.answer(pages.id, { answer: { Channel: "beta", Targets: [] }, answer_kind: "option" })
+  expect(ok.status).toBe("answered")
+  expect((await client().questions.answer(asked.id, { answer: "yes", answer_kind: "option" })).status).toBe("answered")
+})
+
 test("end goes ending, then debriefing; prompts are refused from the start", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
