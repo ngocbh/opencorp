@@ -11,13 +11,15 @@ from agent_corp.assets.registry import Kinds, builtin_kinds
 from agent_corp.company.loader import CompanyRepo, load_repo
 from agent_corp.company.naming import asset_tool_name
 from agent_corp.protocol.models import Asset, Grant
-from agent_corp.secrets import SecretStore
+from agent_corp.secrets import MIN_VALUE_CHARS, SecretStore
 from agent_corp.store import Store
 from agent_corp.tools.workspace import WorkspaceTools
 
 REDACTED = "[redacted]"
 DETAIL_CHARS = 2000
 """Characters of a result kept in its audit row."""
+SECRET_LINE_CHARS = MIN_VALUE_CHARS
+"""Lines of a multi-line secret this long or longer are scrubbed on their own."""
 REASON_CHARS = 200
 """Characters of a killed workspace call's reason kept in its audit row."""
 
@@ -132,16 +134,32 @@ class Monitor:
 
 
 def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
-    """``value`` with entries under ``keys`` and every secret in ``values`` replaced by ``[redacted]``."""
-    values = [v for v in values if v]
+    """``value`` with entries under ``keys`` and every secret in ``values`` replaced by ``[redacted]``.
+
+    Each secret is scrubbed as stored, without surrounding whitespace, and line by line
+    for lines of at least ``SECRET_LINE_CHARS`` (one line of a PEM key), longest first,
+    so a secret inside a longer one never leaves the longer one's ends behind.
+    """
+    return _scrub(value, keys, _needles(values))
+
+
+def _needles(values: Iterable[str]) -> list[str]:
+    found: set[str] = set()
+    for value in values:
+        found.update((value, value.strip()))
+        found.update(line.strip() for line in value.splitlines() if len(line.strip()) >= SECRET_LINE_CHARS)
+    return sorted((n for n in found if n), key=len, reverse=True)
+
+
+def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
     if isinstance(value, str):
-        for secret in values:
-            value = value.replace(secret, REDACTED)
+        for needle in needles:
+            value = value.replace(needle, REDACTED)
         return value
     if isinstance(value, Mapping):
-        return {k: REDACTED if k in keys else redact(v, keys, values) for k, v in value.items()}
+        return {k: REDACTED if k in keys else _scrub(v, keys, needles) for k, v in value.items()}
     if isinstance(value, list | tuple):
-        return [redact(v, keys, values) for v in value]
+        return [_scrub(v, keys, needles) for v in value]
     return value
 
 
