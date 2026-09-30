@@ -83,6 +83,7 @@ def test_a_human_input_node_asks_through_the_same_stub(fake_llm, registry, make_
 def test_one_live_worker_per_session(fake_llm, registry, make_job, session_dir, tmp_path):
     fake_llm.script({"content": "one", "hold": True}, {"content": "two"}, {"content": "three"})
     first = registry.spawn(make_job(), session_dir, Recorder())
+    fake_llm.wait_for_requests(1, timeout=30)  # so the first worker takes the held reply
     with pytest.raises(WorkerExists):
         registry.spawn(make_job(run_id="r2"), session_dir, Recorder())
     other = registry.spawn(make_job(session_id="s2", run_id="r3"), tmp_path / "sessions" / "s2", Recorder())
