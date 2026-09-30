@@ -82,7 +82,7 @@ class Monitor:
         values: list[str] = []
 
         def audit(outcome: str, detail: str) -> None:
-            self.store.record_audit(person=person_id, kind="asset", tool=name, args=redact(args, keys, values),
+            self.store.record_audit(person=person_id, kind="asset", tool=name, args=_audit_args(args, keys, values),
                                     outcome=outcome, session_id=session_id, run_id=run_id,
                                     detail=redact(detail, keys, values)[:DETAIL_CHARS])
 
@@ -162,7 +162,7 @@ def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
                 for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_scrub(v, keys, needles) for v in value]
-    if isinstance(value, int | float) and not isinstance(value, bool) and _scrub(str(value), keys, needles) != str(value):
+    if isinstance(value, int | float) and not isinstance(value, bool) and any(n in str(value) for n in needles):
         return REDACTED  # an all-digit secret
     return value
 
@@ -171,6 +171,13 @@ def _last_line(text: str) -> str:
     # A killed shell call ends its output with "[timed out after Ns]" or "[interrupted]";
     # a file tool's or a bad-arguments reply is one line.
     return next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+
+
+def _audit_args(args: Mapping[str, Any], keys: Collection[str], values: Iterable[str]) -> dict[str, Any]:
+    """``args`` redacted, or, when their JSON is longer than ``DETAIL_CHARS``, that JSON cut to fit."""
+    redacted = redact(json.loads(json.dumps(args, default=str)), keys, values)
+    text = json.dumps(redacted, ensure_ascii=False)
+    return redacted if len(text) <= DETAIL_CHARS else {"truncated": text[:DETAIL_CHARS]}
 
 
 def _reason(exc: Exception) -> str:

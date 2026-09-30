@@ -2,6 +2,7 @@
 
 from agent_composer.tools import ToolSet
 
+from agent_corp.perm.monitor import DETAIL_CHARS
 from agent_corp.worker.job import group_specs
 from agent_corp.worker.rpc import BaseHandlers
 from tests.company.conftest import person
@@ -170,3 +171,14 @@ def test_a_directory_in_place_of_a_secret_file_is_an_audited_error(make_monitor,
     got = m.call("minh", "r1", "cluster_a__read_logs", {})
     assert got.startswith("error: ") and "vault_token" in got
     assert [r.outcome for r in store.list_audit()] == ["error"]
+
+
+def test_large_audit_args_are_cut_like_the_detail(make_monitor, store):
+    m = make_monitor(**{"assets/cluster-a.yaml": cluster([{"who": "minh", "can": ["submit_job"]}])})
+    job = "x" * 3000 + TOKEN
+    m.call("minh", "r1", "cluster_a__submit_job", {"job": job})
+    [row] = store.list_audit(person="minh")
+    assert set(row.args) == {"truncated"} and len(row.args["truncated"]) == DETAIL_CHARS
+    assert row.args["truncated"].startswith('{"job": "xxx') and TOKEN not in repr(row)
+    m.call("minh", "r1", "cluster_a__submit_job", {"job": "small"})
+    assert store.list_audit(person="minh")[-1].args == {"job": "small"}
