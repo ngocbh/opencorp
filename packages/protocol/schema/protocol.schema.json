@@ -141,6 +141,32 @@
         "on_behalf_of": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       }
+    },
+    "Session": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "person", "harness", "office", "cwd", "repo_commit", "status", "kind", "created_at", "updated_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "person": { "$ref": "#/$defs/Id" },
+        "harness": { "enum": ["composer", "codex", "claude"] },
+        "office": { "type": "string" },
+        "cwd": { "type": "string" },
+        "repo_commit": { "$ref": "#/$defs/GitId" },
+        "status": { "enum": ["starting", "idle", "busy", "ending", "debriefing", "ended", "failed", "interrupted"] },
+        "kind": { "enum": ["main", "side", "profile_manager"] },
+        "harness_session_id": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "run_ids": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "question_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "seed": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "cost": { "type": "number", "minimum": 0, "default": 0 },
+        "cost_cap_usd": {
+          "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }], "default": null,
+          "description": "null means company.defaults.cost_cap_usd."
+        },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
     }
   }
 }
