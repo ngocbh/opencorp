@@ -295,6 +295,21 @@ def test_the_seed_goes_once_when_no_ceo_answers_for_the_human(make_harness, fake
         stop(office)
 
 
+def test_an_ended_side_chat_restarts_on_its_memory_without_the_seed_again(office, fake_llm, workspace):  # noqa: F811
+    fake_llm.script(ASK, {"content": "Quota."}, {"content": "Per hour."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    h.end(side.id)
+    wait_for(lambda: status(h, side.id) == "ended", what="the side session to end")
+    assert h.store.get_question(q.id).status == "open"
+
+    again = chat(office, q, "how often?", 2)
+    assert again.id == side.id and len(h.store.get_session(side.id).run_ids) == 2
+    assert last_user(fake_llm, 3) == "how often?"
+    assert asked(fake_llm, 3).count(FRAMING) == 1  # from the first run's memory
+
+
 def test_a_first_reply_that_dies_leaves_the_seed_for_the_next_turn(office, fake_llm, workspace):  # noqa: F811
     fake_llm.script(ASK, {"error": 500}, {"content": "Quota."})
     h, cards = office.extras["harness"], office.extras["cards"]
