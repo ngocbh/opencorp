@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import stat
+import threading
 from importlib.resources import files
 
 import pytest
@@ -143,6 +144,28 @@ def test_send_back_needs_a_discussion_and_returns_it_undecided(office, fake_llm,
     with pytest.raises(HarnessError) as err:
         cards.send_back(q.id, "")
     assert (err.value.status, err.value.code) == (409, "not_open")
+
+
+def test_a_side_turn_stored_during_send_back_keeps_the_note(office, fake_llm, workspace, monkeypatch):  # noqa: F811
+    fake_llm.script(ASK, {"content": "It depends on the quota."}, {"content": "I'll ask better."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "what quota?", 1)
+    turn = h.store.list_questions(session_id=side.id, status="open", source="human_input")[0]
+    answer, late = h.answer, []
+
+    def answer_after_a_side_turn(question_id, value, kind):
+        # A side turn is stored after the note is added and before the answer lands.
+        late.append(threading.Thread(target=cards.stored, args=(turn,)))
+        late[0].start()
+        late[0].join(0.3)
+        return answer(question_id, value, kind)
+
+    monkeypatch.setattr(h, "answer", answer_after_a_side_turn)
+    cards.send_back(q.id, "list the quotas as options")
+    late[0].join(5)
+    assert [e.text for e in h.store.get_question(q.id).discussion] == [
+        "what quota?", "It depends on the quota.", "list the quotas as options"]
 
 
 def test_stop_is_esc_on_the_asking_chat(office, fake_llm, workspace):  # noqa: F811

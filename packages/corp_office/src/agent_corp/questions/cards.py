@@ -34,6 +34,9 @@ class Cards:
     def __init__(self, office: Any, harness: Harness) -> None:
         self.office, self.harness, self.store = office, harness, office.store
         self._lock = threading.Lock()
+        # Held while a discussion is copied onto a question or a send-back note is added and
+        # answered, so a side turn's copy can't replace the note before the answer lands.
+        self._discussion = threading.Lock()
         # Store listeners must not block; closing a side session waits on the harness.
         self._pool = ThreadPoolExecutor(1, thread_name_prefix="cards")
         self._unlisten = self.store.add_listener(self._stored)
@@ -82,13 +85,14 @@ class Cards:
         question = self._open(question_id)
         if question.source == "human_input":
             raise HarnessError(422, "cannot_send_back", "a flow's own question can't be sent back")
-        question = self.snapshot(question)
-        if not question.discussion and not question.carried_from:
-            raise HarnessError(422, "no_discussion", "chat about the question before sending it back")
-        if note.strip():
-            self.store.update_question(question_id, discussion=[*question.discussion,
-                                                                DiscussionEntry(role="user", text=note)])
-        return self.harness.answer(question_id, None, "sent_back")
+        with self._discussion:
+            question = self.snapshot(self._open(question_id))
+            if not question.discussion and not question.carried_from:
+                raise HarnessError(422, "no_discussion", "chat about the question before sending it back")
+            if note.strip():
+                self.store.update_question(question_id, discussion=[*question.discussion,
+                                                                    DiscussionEntry(role="user", text=note)])
+            return self.harness.answer(question_id, None, "sent_back")
 
     def stop(self, question_id: str) -> Question:
         """Stop the asker from the card: it gets ``[interrupted by the user]`` with the discussion.
@@ -162,9 +166,10 @@ class Cards:
         if session is None:
             return
         if session.kind == "side":
-            parent = self.store.get_question(session.question_id) if session.question_id else None
-            if parent is not None and parent.status == "open":
-                self.snapshot(parent)
+            with self._discussion:
+                parent = self.store.get_question(session.question_id) if session.question_id else None
+                if parent is not None and parent.status == "open":
+                    self.snapshot(parent)
             return
         if self._is_turn(question):
             return
