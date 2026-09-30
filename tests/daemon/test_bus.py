@@ -102,3 +102,21 @@ async def test_store_events_are_published_after_commit(office):
     assert kind == "meta" and event.type == "session.created" and event.subject_id == created.id
     assert event == office.store.events_after()[-1]
     await office.stop()
+
+
+class _ClosingLoop:
+    """A loop that closes between the bus's is_closed() check and its call_soon_threadsafe."""
+
+    def is_closed(self):
+        return False
+
+    def call_soon_threadsafe(self, *args):
+        raise RuntimeError("Event loop is closed")
+
+
+def test_publish_and_close_racing_a_closing_loop_are_dropped():
+    bus = Bus()
+    bus.attach(_ClosingLoop())
+    bus.publish_meta(meta(S1))
+    bus.publish_live(live(S1))
+    bus.close()

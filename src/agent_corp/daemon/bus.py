@@ -68,8 +68,9 @@ class Subscription:
 class Bus:
     """Fans office events out to subscribers on the office loop.
 
-    ``publish_*`` may be called from any thread: every publish is scheduled on the loop with
-    ``call_soon_threadsafe``, so all of them keep one order. A subscriber whose backlog reaches
+    ``publish_*`` and ``close`` may be called from any thread: every publish is scheduled on
+    the loop with ``call_soon_threadsafe``, so all of them keep one order. ``subscribe`` and
+    ``Subscription.close`` run on the loop's thread. A subscriber whose backlog reaches
     ``queue_size`` is dropped: its backlog is discarded, ``dropped`` is set, and its next
     ``next()`` returns ``None`` (the client reconnects and re-bootstraps).
     """
@@ -124,7 +125,10 @@ class Bus:
             if running is loop:
                 self._close()
             else:
-                loop.call_soon_threadsafe(self._close)
+                try:
+                    loop.call_soon_threadsafe(self._close)
+                except RuntimeError:  # the loop closed after the is_closed() check
+                    self._close()
 
     def _close(self) -> None:
         self._closed = True
@@ -136,7 +140,10 @@ class Bus:
         loop = self._loop
         if loop is None or self._closed or loop.is_closed():
             return
-        loop.call_soon_threadsafe(self._fanout, item)
+        try:
+            loop.call_soon_threadsafe(self._fanout, item)
+        except RuntimeError:  # the loop closed after the is_closed() check; nobody is listening
+            pass
 
     def _fanout(self, item: Item) -> None:
         for sub in list(self._subs):
