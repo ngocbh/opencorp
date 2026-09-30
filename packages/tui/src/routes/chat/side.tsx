@@ -1,13 +1,13 @@
 import type { Question, Session } from "@agent-corp/protocol"
 import type { TextareaRenderable } from "@opentui/core"
-import { createMemo, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, on, onCleanup, onMount, Show } from "solid-js"
 import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
 import { useBindings, useOpencodeModeStack } from "../../keymap"
 import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
-import { isNotImplemented } from "../../office/errors"
+import { OfficeUnavailable, isNotImplemented } from "../../office/errors"
 import { errorMessage } from "../../util/error"
 import { personLabel } from "../../util/transcript"
 import { leaveBindings } from "./leave"
@@ -76,6 +76,19 @@ export function SideChat(props: {
     if (isNotImplemented(error)) return toast.show({ message: "Side chats are not available yet", variant: "warning" })
     toast.show({ title: "Side chat failed", message: errorMessage(error), variant: "error" })
   }
+
+  // A side session that predates this view (another client started it, or it was seen before a
+  // restart) is not synced yet: load it, so its history shows and its replies stream in.
+  createEffect(
+    on(
+      () => props.question.side_session_id,
+      (id) => {
+        if (!id || office.state.messages[id]) return
+        // An office that is down loads it when it comes back.
+        office.syncSession(id).catch((error) => error instanceof OfficeUnavailable || fail(error))
+      },
+    ),
+  )
 
   function submit() {
     const text = textarea?.plainText.trim() ?? ""

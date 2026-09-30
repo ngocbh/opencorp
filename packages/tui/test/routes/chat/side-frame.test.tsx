@@ -213,3 +213,36 @@ test("a 501 from the side route or send back warns 'not available yet' and keeps
     office.stop()
   }
 })
+
+test("a side session another client started loads when the side chat opens, and its replies show", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "idle" as const }
+  // Written straight into the office's state: as if made before this TUI connected.
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  say(office, side.id, "Staging went green an hour ago")
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    side_session_id: side.id,
+  })
+  office.onPrompt((id, req) => {
+    if (id === side.id && req.text === "and prod?") say(office, id, "Prod is next")
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · idle") && f.includes("Staging went green an hour ago"))
+    app.input.typeText("and prod?")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Prod is next"))
+    expect(posts(office)).toEqual([[`/sessions/${side.id}/prompt`, { text: "and prod?" }]])
+    expect(office.state.questions[q.id].status).toBe("open")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
