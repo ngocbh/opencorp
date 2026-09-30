@@ -25,7 +25,7 @@ export type Ulid = string;
  */
 export type GitId = string;
 /**
- * UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.
+ * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "Timestamp".

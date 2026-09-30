@@ -22,7 +22,7 @@ export const extraField: Person = {
 
 export const message: Message = {
   id: "01JA1M0000000000000000000A", session_id: "01JA1S0000000000000000000A", role: "assistant",
-  created_at: "2026-09-29T10:00:05Z",
+  created_at: "2026-09-29T10:00:05.000Z",
   parts: [{ id: "01JA1P0000000000000000000A", type: "text", text: "hi" }],
 }
 

@@ -10,8 +10,8 @@
     "Ulid": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
     "GitId": { "type": "string", "pattern": "^[0-9a-f]{40,64}$", "description": "A git commit or blob id." },
     "Timestamp": {
-      "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$",
-      "description": "UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged."
+      "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
+      "description": "UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged."
     },
     "CompanyDefaults": {
       "type": "object", "additionalProperties": false,

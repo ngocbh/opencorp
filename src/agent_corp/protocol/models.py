@@ -190,15 +190,15 @@ class WorkItem(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
     updated_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -222,8 +222,8 @@ class Comment(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -267,15 +267,15 @@ class Session(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
     updated_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -326,8 +326,8 @@ class Permission(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -411,15 +411,15 @@ class Question(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
     updated_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -467,8 +467,8 @@ class ProfileProposal(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -500,8 +500,8 @@ class Debrief(BaseModel):
     updated_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -530,8 +530,8 @@ class Feedback(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
@@ -549,8 +549,8 @@ class Event(BaseModel):
     at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
     subject_id: str
@@ -745,8 +745,8 @@ class Message(BaseModel):
     created_at: Annotated[
         str,
         Field(
-            description='UTC, ISO-8601 with a Z suffix. A plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?Z$',
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
         ),
     ]
 
