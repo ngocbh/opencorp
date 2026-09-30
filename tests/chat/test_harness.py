@@ -539,8 +539,10 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
     fake_llm.script({"content": "ok"})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
-    wait_for(lambda: texts(harness, sid) == ["ok"] or len(harness.store.get_session(sid).run_ids) > 1
-             or status(harness, sid) == "failed", what="the reply or a failed run")
+    # The next turn, not just the text: the text part is stored at its first chunk, before it ends.
+    wait_for(lambda: (texts(harness, sid) == ["ok"] and status(harness, sid) == "idle")
+             or len(harness.store.get_session(sid).run_ids) > 1 or status(harness, sid) == "failed",
+             what="the next turn or a failed run")
     harness.close_all()
 
     def has_key(value):
