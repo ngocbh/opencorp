@@ -23,6 +23,9 @@ dev = [
     "datamodel-code-generator==0.83.0",
 ]
 
+[tool.uv]
+python-preference = "only-managed"
+
 [tool.uv.sources]
 agent-composer = { path = "agent-composer", editable = true }
 
