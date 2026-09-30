@@ -25,7 +25,7 @@ from agent_corp.protocol import now
 from agent_corp.protocol.models import CompanyDefaults, Event, Question, Session, WorkItem
 from agent_corp.questions.ask import Answers, OnQuestion, make_ask_user
 from agent_corp.questions.format import INTERRUPTED
-from agent_corp.sandbox.policy import SandboxPolicy
+from agent_corp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from agent_corp.store import InvalidTransition, new_id
 from agent_corp.tools.company import company_tools
 from agent_corp.tools.workspace import WorkspaceTools, workspace_tool_functions
@@ -800,8 +800,20 @@ class Harness:
         return self.office.paths.run_dir(session_id)
 
     def _policy(self, person_id: str, policy: Any, cwd: str, session_id: str) -> SandboxPolicy:
+        """The sandbox for ``cwd``; a missing or unsafe folder is refused before the run's tmp is made."""
         if not Path(cwd).is_dir():
             raise HarnessError(422, "invalid_body", f"cwd {cwd!r} is not a folder")
+        real = Path(os.path.realpath(cwd))
+        try:
+            check_workspace(real)
+        except UnsafeWorkspace as exc:
+            raise HarnessError(422, "unsafe_workspace", str(exc)) from exc
+        # The sandbox guards ~/.agent-corp; this office's home may be elsewhere.
+        for kept in (self.office.paths.company, self.office.paths.office):
+            kept = Path(os.path.realpath(kept))
+            if real.is_relative_to(kept) or kept.is_relative_to(real):
+                raise HarnessError(422, "unsafe_workspace",
+                                   f"workspace {real} overlaps the office's files at {kept}; use a project folder")
         tmp = self._run_dir(session_id) / "tmp"
         tmp.mkdir(parents=True, exist_ok=True)
         try:

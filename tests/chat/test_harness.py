@@ -262,6 +262,19 @@ def test_start_refuses_bad_requests(harness, workspace, person, cwd, code):
         harness.start_session(person, cwd or str(workspace))
     assert err.value.code == code
     assert harness.store.list_sessions() == []
+    assert not harness.office.paths.runs.exists()  # refused before the run's tmp is made
+
+
+@pytest.mark.parametrize("where", ["", "company", "office", "office/runs"])  # "" is the home
+def test_start_refuses_the_offices_own_folders(harness, where):
+    paths = harness.office.paths
+    cwd = paths.home / where
+    cwd.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(HarnessError) as err:
+        harness.start_session("minh", str(cwd))
+    assert (err.value.status, err.value.code) == (422, "unsafe_workspace")
+    assert harness.store.list_sessions() == []
+    assert not paths.runs.exists() or not any(paths.runs.iterdir())
 
 
 def test_esc_racing_the_end_of_a_reply_leaves_the_next_turn_open(harness, fake_llm, workspace):
