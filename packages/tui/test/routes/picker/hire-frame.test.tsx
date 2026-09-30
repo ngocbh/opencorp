@@ -1,0 +1,89 @@
+import { expect, test } from "bun:test"
+import { createFakeOffice, createStub, OFFICE_501_ROUTES } from "../../../script/stub"
+import { bootFrame } from "../../fixture/frame"
+import { typeInto } from "./type"
+
+/** Boots in a folder nobody has worked in, so the picker opens, and picks "Hire new…". */
+async function openHire(office: ReturnType<typeof createFakeOffice>) {
+  const app = await bootFrame({ ...createStub(office), cwd: "/tmp/new" })
+  await app.until((f) => f.includes("Hire new…"))
+  await typeInto(app, "hire")
+  // The picker's filter keeps focus until the form focuses its first field a tick later.
+  const filter = app.setup.renderer.currentFocusedRenderable
+  app.input.pressEnter()
+  await app.until(
+    (f) => f.includes("Hire a new person") && f.includes("@ngocbh") && app.setup.renderer.currentFocusedRenderable !== filter,
+  )
+  return app
+}
+
+async function fill(app: Awaited<ReturnType<typeof bootFrame>>, name: string, handle: string, title: string) {
+  await typeInto(app, name)
+  app.input.pressTab()
+  await typeInto(app, handle)
+  app.input.pressTab()
+  await typeInto(app, title)
+}
+
+test("Enter previews the hire, Enter again hires and selects the new person", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Lan Tran", "lan", "QA engineer")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("+handle: lan") && f.includes("person.yaml"))
+    expect(f).toContain("enter hire")
+    expect(office.state.people.some((p) => p.handle === "lan")).toBe(false)
+    app.input.pressEnter()
+    await app.until((f) => !f.includes("Hire a new person") && f.includes("@lan · QA engineer") && f.includes("Hired @lan"))
+    const [preview, confirm] = office.requests.filter((r) => r.method === "POST").map((r) => r.body as any)
+    expect(preview).toEqual({ name: "Lan Tran", handle: "lan", title: "QA engineer", manager: "ngocbh", confirm: false })
+    expect(confirm).toEqual({ ...preview, id: office.state.people.find((p) => p.handle === "lan")!.id, confirm: true })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a taken handle shows the lint error and blocks the hire; editing previews again", async () => {
+  const office = createFakeOffice()
+  const app = await openHire(office)
+  try {
+    await fill(app, "Minh Two", "minh", "Engineer")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("@minh is already used by minh") && f.includes("edit to fix"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Fix the errors above"))
+    expect(office.requests.filter((r) => r.method === "POST")).toHaveLength(1)
+    // Title → Manager → Name: the edit lands in the name and makes the preview stale.
+    app.input.pressTab()
+    app.input.pressTab()
+    await typeInto(app, "2")
+    await app.until((f) => !f.includes("@minh is already used by minh") && f.includes("enter preview"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("the form says what to fix before asking the office; office errors show inline", async () => {
+  const office = createFakeOffice({ notImplemented: OFFICE_501_ROUTES })
+  const app = await openHire(office)
+  try {
+    await fill(app, "Lan", "Lan!", "QA")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Handle: lowercase letters"))
+    expect(office.requests.some((r) => r.method === "POST")).toBe(false)
+    // Title → Manager → Name → Handle.
+    app.input.pressTab()
+    app.input.pressTab()
+    app.input.pressTab()
+    for (let i = 0; i < 4; i++) app.input.pressBackspace()
+    await typeInto(app, "lan")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("POST /people is not implemented yet"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
