@@ -31,7 +31,9 @@ def test_another_home_gets_its_own_service_name():
 
 def test_the_daemon_gets_only_the_worker_allowlist_never_keys():
     environ = {"PATH": "/usr/bin", "HOME": "/Users/owner", "LC_ALL": "C", "LANG": "en_US.UTF-8",
-               "ANTHROPIC_API_KEY": "sk-secret", "GITHUB_TOKEN": "ghp", "AGENT_CORP_HOME": "/x"}
+               "ANTHROPIC_API_KEY": "sk-secret", "GITHUB_TOKEN": "ghp", "AGENT_CORP_HOME": "/x",
+               # iTerm's, which change with its version: they'd rewrite the service file for nothing.
+               "LC_TERMINAL": "iTerm2", "LC_TERMINAL_VERSION": "3.5.0"}
     assert daemon_env(environ) == {"PATH": "/usr/bin", "HOME": "/Users/owner", "LC_ALL": "C", "LANG": "en_US.UTF-8"}
 
 

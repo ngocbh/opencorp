@@ -18,6 +18,7 @@ _INSTALL = {"launchd": launchd.install, "systemd": systemd.install,
             "tmux": fallback.start_tmux, "background": fallback.start_background}
 _START = {"launchd": launchd.start, "systemd": systemd.start,
           "tmux": fallback.start_tmux, "background": fallback.start_background}
+_NOT_MANAGED = {"launchd": launchd.not_loaded, "systemd": systemd.not_enabled}
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,9 @@ def install(launch: Launch, host: Host, mode: str = "auto") -> Installed:
     """Install the office under ``mode``, or under the first that works when ``mode`` is ``auto``.
 
     A running office stays under the mode it was recorded with; asking for another raises
-    ``ServiceError``, and one started by hand is left alone with nothing installed.
+    ``ServiceError``, and one started by hand is left alone with nothing installed. A running
+    office's launchd or systemd service is only checked, never rewritten: the new file would
+    differ with the caller's environment, and loading it would restart the office.
 
     Raises:
         ServiceError: the chosen mode, or the last one tried, failed.
@@ -70,6 +73,11 @@ def install(launch: Launch, host: Host, mode: str = "auto") -> Installed:
                                     " a service; stop it and run `ac onboard` again to install one"])
         if mode not in ("auto", recorded):
             raise ServiceError(f"the office is already running under {recorded}; stop it before moving it to {mode}")
+        if recorded in _NOT_MANAGED:
+            if (problem := _NOT_MANAGED[recorded](launch, host)) is not None:
+                raise ServiceError(f"the office is running, but {recorded} doesn't have its service ({problem});"
+                                   " stop the office and run `ac onboard` again")
+            return Installed(recorded, [])
         if recorded == "background":
             # Nothing to bring up to date, and starting it again would only spawn a daemon that exits.
             return Installed(recorded, [])

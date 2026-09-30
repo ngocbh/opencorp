@@ -35,6 +35,12 @@ def plist(launch: Launch) -> bytes:
     })
 
 
+def not_loaded(launch: Launch, host: Host) -> str | None:
+    """Why launchd doesn't have this office's agent loaded, or None if it does."""
+    done = host.run(["launchctl", "print", f"gui/{host.uid}/{label(launch)}"])
+    return None if done.returncode == 0 else done.stderr.strip() or f"launchctl print exited {done.returncode}"
+
+
 def install(launch: Launch, host: Host) -> None:
     """Write the plist and load it, or kickstart it if it is already loaded and unchanged.
 

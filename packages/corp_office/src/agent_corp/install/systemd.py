@@ -60,6 +60,14 @@ def unit(launch: Launch) -> str:
     )
 
 
+def not_enabled(launch: Launch, host: Host) -> str | None:
+    """Why this office's unit isn't enabled (systemctl's own words), or None if it is."""
+    done = host.run(["systemctl", "--user", "is-enabled", unit_name(launch)])
+    if done.returncode == 0:
+        return None
+    return done.stderr.strip() or done.stdout.strip() or f"systemctl --user is-enabled exited {done.returncode}"
+
+
 def install(launch: Launch, host: Host) -> None:
     """Write the unit, enable it, and (re)start it.
 

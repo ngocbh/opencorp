@@ -84,6 +84,30 @@ def _git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout
 
 
+def _onboard_twice(tmp_path, platform, started):
+    """Onboard with auto, then again from a shell with other env; return the second run's commands."""
+    run = Runner()
+    host = make_host(tmp_path, run, platform=platform,
+                     answers=lambda s: any(c[:3] in started for c in run.calls))
+    provider = '{"llm_config": {"provider": "openai"}}'
+    onboard(tmp_path / "home", Script("Acme", "Me", "me"), stdin=io.StringIO(provider), host=host,
+            environ={"PATH": "/usr/bin", "LC_TERMINAL_VERSION": "3.5.0"}, hire=False)
+    first = len(run.calls)
+    onboard(tmp_path / "home", Script(), stdin=io.StringIO(provider), host=host,
+            environ={"PATH": "/opt/homebrew/bin:/usr/bin", "LC_TERMINAL_VERSION": "3.6.0"}, hire=False)
+    return run.calls[first:]
+
+
+def test_a_second_onboard_from_another_shell_leaves_a_running_launch_agent_alone(tmp_path):
+    again = _onboard_twice(tmp_path, "darwin", [["launchctl", "bootstrap", "gui/501"]])
+    assert [c[1] for c in again] == ["print"]
+
+
+def test_a_second_onboard_from_another_shell_leaves_a_running_systemd_unit_alone(tmp_path):
+    again = _onboard_twice(tmp_path, "linux", [["systemctl", "--user", "restart"]])
+    assert [c[2] for c in again] == ["is-enabled"]
+
+
 def _stop(paths):
     if paths.pidfile.exists() and (pid := paths.pidfile.read_text().strip()):
         os.kill(int(pid), signal.SIGTERM)

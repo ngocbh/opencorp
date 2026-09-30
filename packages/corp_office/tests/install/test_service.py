@@ -60,13 +60,35 @@ def test_a_chosen_mode_that_fails_is_an_error_not_a_fallback(tmp_path, one):
     assert not (one.office / "install.json").exists()
 
 
-def test_a_running_office_keeps_its_recorded_service(tmp_path, one):
-    run = Runner([(["launchctl", "print"], 113, "")])
-    service.install(one, make_host(tmp_path, run))
+def test_a_running_office_under_launchd_is_only_checked_not_reinstalled(tmp_path, one):
+    service.install(one, make_host(tmp_path, Runner([(["launchctl", "print"], 113, "")])))
+    plist = tmp_path / "Library" / "LaunchAgents" / f"com.agent-corp.{one.name}.plist"
+    before = plist.read_bytes()
+    moved = launch(one.home, repo=one.cwd, environ={"PATH": "/opt/bin", "LC_CTYPE": "C"}, user_home=tmp_path)
     again = Runner()
-    got = service.install(one, make_host(tmp_path, again, answers=lambda s: True, which=lambda n: "/usr/bin/tmux"))
+    got = service.install(moved, make_host(tmp_path, again, answers=lambda s: True, which=lambda n: "/usr/bin/tmux"))
     assert got == service.Installed("launchd", [])
-    assert again.calls[0][:2] == ["launchctl", "print"]  # the plist is still brought up to date
+    assert again.calls == [["launchctl", "print", f"gui/501/com.agent-corp.{one.name}"]]
+    assert plist.read_bytes() == before
+
+
+def test_a_running_office_under_systemd_is_only_checked_not_restarted(tmp_path, one):
+    service.install(one, make_host(tmp_path, Runner(), platform="linux"))
+    unit = tmp_path / ".config" / "systemd" / "user" / f"agent-corp-{one.name}.service"
+    before = unit.read_text()
+    moved = launch(one.home, repo=one.cwd, environ={"PATH": "/opt/bin"}, user_home=tmp_path)
+    again = Runner()
+    got = service.install(moved, make_host(tmp_path, again, platform="linux", answers=lambda s: True))
+    assert got == service.Installed("systemd", [])
+    assert again.calls == [["systemctl", "--user", "is-enabled", f"agent-corp-{one.name}.service"]]
+    assert unit.read_text() == before
+
+
+def test_a_running_office_its_service_manager_lost_is_an_error(tmp_path, one):
+    service.install(one, make_host(tmp_path, Runner(), platform="linux"))
+    run = Runner([(["systemctl", "--user", "is-enabled"], 1, "Failed to get unit file state: No such file")])
+    with pytest.raises(ServiceError, match="(?s)No such file.*stop the office"):
+        service.install(one, make_host(tmp_path, run, platform="linux", answers=lambda s: True))
 
 
 def test_a_running_office_in_tmux_or_the_background_is_not_started_twice(tmp_path, one):
