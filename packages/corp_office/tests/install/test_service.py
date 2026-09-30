@@ -45,6 +45,17 @@ def test_a_loaded_agent_that_wont_kickstart_is_removed_before_falling_back(tmp_p
     assert not list((tmp_path / "Library" / "LaunchAgents").iterdir())
 
 
+@pytest.mark.parametrize(("platform", "where"), [("darwin", "Library/LaunchAgents"), ("linux", ".config/systemd/user")])
+def test_a_service_file_that_cant_be_written_falls_back_to_tmux(tmp_path, one, platform, where):
+    locked = tmp_path / where
+    locked.mkdir(parents=True)
+    locked.chmod(0o500)
+    run = Runner([(["launchctl", "print"], 113, ""), (["tmux", "has-session"], 1, "")])
+    got = service.install(one, make_host(tmp_path, run, platform=platform, which=lambda name: f"/usr/bin/{name}"))
+    assert got.mode == "tmux" and "can't write" in got.notes[0] and "Permission denied" in got.notes[0]
+    assert recorded(one)["mode"] == "tmux"
+
+
 def test_linux_without_a_user_bus_or_tmux_runs_it_in_the_background(tmp_path, one):
     started = []
     run = Runner([(["systemctl"], 1, "Failed to connect to bus")])

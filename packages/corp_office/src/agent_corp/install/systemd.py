@@ -71,9 +71,9 @@ def not_enabled(launch: Launch, host: Host) -> str | None:
 def install(launch: Launch, host: Host) -> None:
     """Write the unit, enable it, and (re)start it.
 
-    Raises ``ServiceError`` if a path can't go in a unit (a newline), or if ``systemctl
-    --user`` is missing, has no user bus, or refuses; the unit and its
-    ``default.target.wants`` link are then removed.
+    Raises ``ServiceError`` if a path can't go in a unit (a newline), if the unit can't be
+    written, or if ``systemctl --user`` is missing, has no user bus, or refuses; in the
+    last case the unit and its ``default.target.wants`` link are removed.
     """
     path = unit_path(launch, host)
     name = unit_name(launch)
@@ -81,7 +81,10 @@ def install(launch: Launch, host: Host) -> None:
         text = unit(launch)
     except ValueError as exc:
         raise ServiceError(str(exc)) from None
-    changed = write_if_changed(path, text.encode())
+    try:
+        changed = write_if_changed(path, text.encode())
+    except OSError as exc:
+        raise ServiceError(f"can't write {path}: {exc.strerror or exc}") from None
     for verb in ("daemon-reload", "enable", "restart" if changed else "start"):
         argv = ["systemctl", "--user", verb] + ([] if verb == "daemon-reload" else [name])
         done = host.run(argv)
