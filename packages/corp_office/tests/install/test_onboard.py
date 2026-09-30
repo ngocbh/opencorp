@@ -93,6 +93,15 @@ def test_a_second_onboard_after_a_stopped_first_write_uses_the_new_answers(tmp_p
     assert lint(load_repo(company)) == []
 
 
+def test_a_user_id_without_an_account_is_an_onboard_error(tmp_path, monkeypatch):
+    def unknown(uid):
+        raise KeyError(f"getpwuid(): uid not found: {uid}")
+
+    monkeypatch.setattr(onboard_module.pwd, "getpwuid", unknown)
+    with pytest.raises(OnboardError, match="no account"):
+        onboard(tmp_path / "home", Script(), host=make_host(tmp_path, Runner()))
+
+
 def test_an_existing_home_others_can_read_is_made_private(tmp_path, monkeypatch):
     monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
     home = tmp_path / "home"

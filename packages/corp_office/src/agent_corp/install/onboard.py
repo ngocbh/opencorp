@@ -193,7 +193,10 @@ def owner_defaults(login: str, gecos: str) -> tuple[str, str]:
 
 
 def _ask_company(prompter: Prompter) -> tuple[str, Owner]:
-    login = pwd.getpwuid(os.getuid())
+    try:
+        login = pwd.getpwuid(os.getuid())
+    except KeyError:
+        raise OnboardError(f"user id {os.getuid()} has no account in the password database") from None
     name, handle = owner_defaults(login.pw_name, login.pw_gecos)
     while True:
         company = prompter.ask("Company name", "My company")
