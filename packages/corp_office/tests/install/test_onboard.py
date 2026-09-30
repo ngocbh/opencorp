@@ -11,7 +11,7 @@ import pytest
 
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, write_company
+from agent_corp.company_template import Owner, missing_files, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import onboard as onboard_module
 from agent_corp.profile.debrief import DEBRIEF_FLOW
@@ -153,7 +153,8 @@ def test_onboard_sets_up_the_office_and_a_second_run_changes_nothing(short_dir):
         onboard(short_dir, first, mode="background")
         assert office_answers(paths.socket)
         repo = load_repo(paths.company)
-        assert lint(repo) == []
+        assert lint(repo) == [] and missing_files(paths.company) == []
+        assert (paths.company / "shared/flows/side_chat.yaml").is_file()
         assert {p.handle: p.kind for p in repo.people.values()} == {"ngocbh": "human", "minh": "agent"}
         assert repo.company.ceo == "ngocbh"
         assert _git(paths.company, "log", "--format=%s").splitlines() == [

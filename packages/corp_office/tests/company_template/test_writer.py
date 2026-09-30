@@ -174,3 +174,14 @@ def test_is_new_until_the_first_commit(tmp_path):
     assert is_new(root)
     write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
     assert not is_new(root)
+
+
+@pytest.mark.parametrize("flow", sorted(PACKAGED_FLOWS))
+def test_every_packaged_flow_is_found_missing_and_topped_up(tmp_path, flow):
+    from agent_corp.company_template import missing_files
+
+    root = tmp_path / "company"
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
+    (root / flow).unlink()
+    commit_all(root, f"drop {flow}")
+    assert missing_files(root) == [flow] == write_company(root, tmp_path / "worktrees")
