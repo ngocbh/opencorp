@@ -1,12 +1,16 @@
 import os
 import signal
+import sqlite3
+import threading
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
 
 from agent_corp.worker.main import EXIT_ORPHANED, job_tools
-from agent_corp.worker.spawn import WorkerExists
+from agent_corp.worker.spawn import WorkerExists, WorkerRegistry
 
 from tests.worker.conftest import Recorder, office_end, run
 
@@ -123,3 +127,45 @@ def test_every_job_kind_gets_the_ask_user_stub(kind, make_job):
         tools = job_tools(job, rpc)
     assert set(tools) == {"toolbox", "ask_user"}
     assert [t.name for t in tools["toolbox"]] == ["shout"] and callable(tools["ask_user"])
+
+
+def test_a_worker_exiting_during_a_store_transaction_does_not_deadlock(store):
+    # The store holds its write lock through a transaction (and while listeners run); the
+    # registry must never make a store write while holding its own lock.
+    registry = WorkerRegistry(store)
+    worker = SimpleNamespace(session_id="s1")
+    registry._workers["s1"] = worker
+    store.record_worker("s1", pid=1, pgid=1, start_time=0.0)
+    in_tx, done = threading.Event(), []
+
+    def office():
+        with store.transaction():
+            in_tx.set()
+            time.sleep(0.3)  # the exiting worker's reader takes the registry lock meanwhile
+            registry.get("s1")
+        done.append("office")
+
+    def reader():
+        in_tx.wait()
+        time.sleep(0.1)
+        registry._exited(worker)
+        done.append("reader")
+
+    threads = [threading.Thread(target=f, daemon=True) for f in (office, reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(8)
+    assert sorted(done) == ["office", "reader"], "deadlock"
+    assert registry.get("s1") is None and store.list_workers() == []
+
+
+def test_a_failing_exit_step_still_finishes_the_worker(fake_llm, registry, store, make_job, session_dir,
+                                                       monkeypatch):
+    def broken(session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "remove_worker", broken)
+    fake_llm.script({"content": "fine"})
+    rec = run(registry, make_job(), Recorder(), session_dir)
+    assert rec.returncode == 0 and rec.outcome["output"] == "fine"

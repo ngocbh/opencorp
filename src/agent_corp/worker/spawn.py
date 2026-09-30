@@ -112,11 +112,22 @@ class Worker:
         except Exception:
             log.exception("worker %s sent a bad frame; closing its channel", self.session_id)
         finally:
-            self.channel.close()
-            self.returncode = self.proc.wait()
-            self._on_exit(self)
-            self._notify(self.handlers.exited, self.returncode)
+            self._finish()
+
+    def _finish(self) -> None:
+        # Each step runs even if an earlier one fails, and wait() always returns.
+        try:
+            for step in (self.channel.close, self._reap, lambda: self._on_exit(self),
+                         lambda: self.handlers.exited(self, self.returncode)):
+                try:
+                    step()
+                except Exception:
+                    log.exception("worker %s: an exit step failed", self.session_id)
+        finally:
             self._done.set()
+
+    def _reap(self) -> None:
+        self.returncode = self.proc.wait()
 
     def _dispatch(self, frame: dict[str, Any]) -> None:
         kind = frame.get("type")
@@ -216,7 +227,16 @@ class WorkerRegistry:
                 worker.wait(timeout)
 
     def _exited(self, worker: Worker) -> None:
+        # Never write to the store while holding the registry lock: the store holds its write
+        # lock through transactions and listeners, which may call get(). The record goes
+        # first, while the entry still refuses a new spawn for the session, so a new worker's
+        # record is never the one removed.
         with self._lock:
-            if self._workers.get(worker.session_id) is worker:
-                self.store.remove_worker(worker.session_id)
-                del self._workers[worker.session_id]
+            if self._workers.get(worker.session_id) is not worker:
+                return
+        try:
+            self.store.remove_worker(worker.session_id)
+        finally:
+            with self._lock:
+                if self._workers.get(worker.session_id) is worker:
+                    del self._workers[worker.session_id]
