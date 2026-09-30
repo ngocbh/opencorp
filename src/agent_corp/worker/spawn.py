@@ -11,6 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from agent_corp.store import Store
 from agent_corp.worker.channel import Channel, ChannelClosed
 from agent_corp.worker.job import Job
@@ -64,6 +66,24 @@ def spawn_process(session_dir: Path) -> tuple[subprocess.Popen[bytes], socket.so
     return proc, office_end
 
 
+EXIT_GRACE = 5.0  # seconds a worker has to exit after its channel closes, before its group is killed
+
+
+def _wait_exited(pid: int, timeout: float) -> bool:
+    """Wait until ``pid`` has exited, without reaping it; False on timeout."""
+    deadline, pause = time.monotonic() + timeout, 0.001
+    while True:
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(pause)
+        pause = min(pause * 2, 0.05)
+
+
 class Worker:
     """A live worker process and the office's end of its channel."""
 
@@ -79,6 +99,7 @@ class Worker:
         self.returncode: int | None = None
         self._on_exit = on_exit
         self._done = threading.Event()
+        self._reap_lock = threading.Lock()
         self._reader = threading.Thread(target=self._read, name=f"worker-{self.session_id}", daemon=True)
 
     def start(self) -> None:
@@ -92,8 +113,15 @@ class Worker:
     def abandon(self) -> None:
         """Tear down a worker whose ``start`` failed: close the channel, kill its group, reap it."""
         self.channel.discard()
-        kill_group(self.pgid)
+        self.kill()
         self.returncode = self.proc.wait()
+
+    def kill(self) -> None:
+        """SIGKILL the worker's process group, unless the worker has been reaped."""
+        # Once reaped, its pid (and so its group id) may belong to someone else.
+        with self._reap_lock:
+            if self.returncode is None:
+                kill_group(self.pgid)
 
     def steer(self, node_id: str, text: str) -> bool:
         """Queue ``text`` for the node ``node_id``; False if the worker is gone or its run is over.
@@ -152,7 +180,12 @@ class Worker:
             self._done.set()
 
     def _reap(self) -> None:
-        self.returncode = self.proc.wait()
+        # Kill what the worker leaves in its group (a subprocess of the run, say) after the
+        # leader exits by itself, but before reaping it frees the group id for reuse.
+        _wait_exited(self.pid, EXIT_GRACE)
+        with self._reap_lock:
+            kill_group(self.pgid)
+            self.returncode = self.proc.wait()
 
     def _dispatch(self, frame: dict[str, Any]) -> None:
         kind = frame.get("type")
@@ -254,7 +287,7 @@ class WorkerRegistry:
         deadline = time.monotonic() + timeout
         for worker in workers:
             if worker.wait(max(0.0, deadline - time.monotonic())) is None:
-                kill_group(worker.pgid)
+                worker.kill()
                 worker.wait(timeout)
 
     def _abandon(self, worker: Worker) -> None:

@@ -2,6 +2,8 @@ import os
 import signal
 import socket
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -205,10 +207,24 @@ def test_a_start_frame_that_cannot_be_sent_leaves_nothing_behind(fake_llm, regis
     assert run(registry, make_job(), Recorder(), session_dir).outcome["output"] == "second try"
 
 
-def unstarted_worker(job, handlers):
-    """A ``Worker`` over an in-process socket pair, with no process; returns it and the worker's end."""
+def unstarted_worker(job, handlers, proc=None):
+    """A ``Worker`` over an in-process socket pair (with no process by default); returns it and the worker's end."""
     office_sock, worker_sock = socket.socketpair()
-    return Worker(job, SimpleNamespace(pid=0), Channel(office_sock), handlers, lambda w: None), Channel(worker_sock)
+    proc = proc or SimpleNamespace(pid=0)
+    return Worker(job, proc, Channel(office_sock), handlers, lambda w: None), Channel(worker_sock)
+
+
+def test_a_worker_that_exits_takes_its_process_group_with_it(make_job):
+    code = ("import subprocess, sys\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(child.pid, flush=True)\n")
+    leader = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True,
+                              start_new_session=True)
+    child = psutil.Process(int(leader.stdout.readline()))
+    worker, _ = unstarted_worker(make_job(), Recorder(), proc=leader)
+    worker._reap()
+    assert worker.returncode == 0  # the leader exited by itself before its group was killed
+    child.wait(5)
 
 
 def test_a_reply_that_cannot_be_sent_becomes_a_failed_reply(make_job, monkeypatch):
