@@ -46,13 +46,15 @@ def test_stop_the_asker_is_dropped_but_other_stops_stay():
 
 @pytest.mark.parametrize("label", [
     "Stop.", "Stop!", "Chat about this?", "Type an answer…", "Ｓｔｏｐ", "St\u200bop", "Send discussion-back",
-    "\u201cStop\u201d", "Stop, minh", "stop\u00a0MINH",
+    "\u201cStop\u201d", "Stop, minh", "stop\u00a0MINH", "Stop ✋", "Stop ✋\ufe0f", "🛑Stop", "⛔ Stop minh",
+    "Stop → minh",
 ])
-def test_action_labels_match_through_punctuation_width_and_invisible_characters(label):
+def test_action_labels_match_through_punctuation_symbols_width_and_invisible_characters(label):
     assert normalize_options([label, "Keep going"], names=("minh",)) == ["Keep going"]
 
 
-@pytest.mark.parametrize("label", ["Stopwatch", "Stop the deploy", "Stop minh's job", "Chat about that"])
+@pytest.mark.parametrize("label", ["Stopwatch", "Stop the deploy", "Stop minh's job", "Chat about that",
+                                   "Stop ✋ the deploy"])
 def test_labels_that_only_look_like_actions_stay(label):
     assert normalize_options([label], names=("minh",)) == [label]
 

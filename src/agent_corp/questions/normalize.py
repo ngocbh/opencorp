@@ -1,6 +1,7 @@
 """Clean the options a model sends with a question."""
 
 import json
+import re
 import unicodedata
 from collections.abc import Iterable
 from typing import Any
@@ -10,6 +11,8 @@ MAX_OPTION_CHARS = 80
 
 # The card's own controls; a model option with one of these labels would look like one.
 ACTION_LABELS = ("type an answer", "chat about this", "send discussion back", "stop")
+
+_VARIATION_SELECTOR = re.compile("[\ufe00-\ufe0f\U000e0100-\U000e01ef]")
 
 
 def normalize_options(value: Any, *, names: Iterable[str] = ()) -> list[str]:
@@ -28,15 +31,15 @@ def normalize_options(value: Any, *, names: Iterable[str] = ()) -> list[str]:
 def _key(label: str) -> str:
     """``label`` for comparing with an action.
 
-    NFKC-normalized, punctuation as spaces, invisible format characters removed, spaces
-    collapsed, and casefolded.
+    NFKC-normalized, punctuation and symbols (emoji included) as spaces, invisible format
+    characters and variation selectors removed, spaces collapsed, and casefolded.
     """
     kept = []
     for char in unicodedata.normalize("NFKC", label):
         category = unicodedata.category(char)
-        if category == "Cf":
+        if category == "Cf" or _VARIATION_SELECTOR.match(char):
             continue
-        kept.append(" " if category.startswith("P") else char)
+        kept.append(" " if category[0] in "PS" else char)
     return " ".join("".join(kept).split()).casefold()
 
 
