@@ -20,8 +20,18 @@ export function launchEditor(editor: string, file: string, opts: { cwd?: string;
       process.platform === "win32"
         ? spawn(editor, [file], { ...options, shell: true })
         : spawn("sh", ["-c", `${editor} "$@"`, editor, file], options)
-    child.on("error", reject)
+    // As git's launch_editor does: Ctrl-C (or Ctrl-\) while the editor runs is for the editor,
+    // so the caller outlives it and sees it exit, and can clean up rather than die mid-edit.
+    const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT"] : ["SIGINT", "SIGQUIT"]
+    const ignore = () => {}
+    for (const s of signals) process.on(s, ignore)
+    const restore = () => signals.forEach((s) => process.off(s, ignore))
+    child.on("error", (e) => {
+      restore()
+      reject(e)
+    })
     child.on("exit", (code, signal) => {
+      restore()
       if (code === 0) return resolve()
       reject(new Error(`the editor exited with ${signal ? `signal ${signal}` : `code ${code}`}`))
     })
