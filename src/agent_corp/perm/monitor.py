@@ -99,7 +99,8 @@ class Monitor:
             return _error(audit, exc.args[0])
         values.extend(v for v in secrets.values() if v)
         try:
-            result = redact(impl.run(asset, args, secrets), keys, values)
+            # Plain JSON first, so a set, bytes, or an object's text is scrubbed too.
+            result = redact(json.loads(json.dumps(impl.run(asset, args, secrets), default=str)), keys, values)
         except Exception as exc:
             return _error(audit, redact(f"{type(exc).__name__}: {exc}", keys, values))
         audit("ok", result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str))
@@ -157,9 +158,12 @@ def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
             value = value.replace(needle, REDACTED)
         return value
     if isinstance(value, Mapping):
-        return {k: REDACTED if k in keys else _scrub(v, keys, needles) for k, v in value.items()}
+        return {_scrub(k, keys, needles): REDACTED if k in keys else _scrub(v, keys, needles)
+                for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_scrub(v, keys, needles) for v in value]
+    if isinstance(value, int | float) and not isinstance(value, bool) and _scrub(str(value), keys, needles) != str(value):
+        return REDACTED  # an all-digit secret
     return value
 
 

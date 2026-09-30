@@ -7,9 +7,27 @@ from agent_corp.perm.monitor import Monitor, redact
 from tests.perm.conftest import KINDS, TOKEN
 
 PADDED = "p4dded-secret-value"
+PIN = "20260930"
 PEM = "-----BEGIN KEY-----\nAAAABBBBCCCCDDDD\nEEEEFFFFGGGGHHHH\n-----END KEY-----\n"
 
+class Handle:
+    """An object whose text holds the secret."""
+
+    def __init__(self, secret):
+        self.secret = secret
+
+    def __repr__(self):
+        return f"Handle({self.secret})"
+
+    __str__ = __repr__
+
+
 LEAKS = {
+    "dict_key": lambda s: {s["vault_token"]: 1},
+    "set": lambda s: {s["vault_token"]},
+    "bytes": lambda s: s["vault_token"].encode(),
+    "object": lambda s: Handle(s["vault_token"]),
+    "number": lambda s: {"code": int(s["pin"])},
     "stripped": lambda s: f"used {s['padded'].strip()}",
     "pem_line": lambda s: "bad line: " + s["pem"].splitlines()[1],
     "raise_stripped": lambda s: (_ for _ in ()).throw(RuntimeError(f"auth failed for {s['padded'].strip()}")),
@@ -24,14 +42,15 @@ def leak(asset, args, secrets):
 def monitor(make_company, store, secrets):
     secrets.set("padded", PADDED + "\n")
     secrets.set("pem", PEM)
-    asset = {"id": "vault", "kind": "leaky", "secrets": ["vault_token", "padded", "pem"], "tools": {"leak": {}},
+    secrets.set("pin", PIN)
+    asset = {"id": "vault", "kind": "leaky", "secrets": ["vault_token", "padded", "pem", "pin"], "tools": {"leak": {}},
              "grants": [{"who": "minh", "can": ["leak"]}]}
     root = make_company(**{"assets/vault.yaml": asset})
     return Monitor(root, store, secrets, {**KINDS, "leaky": {"leak": KindTool(leak)}})
 
 
 def leaked(text):
-    return any(s in text for s in (TOKEN, PADDED, "AAAABBBBCCCCDDDD", "EEEEFFFFGGGGHHHH"))
+    return any(s in text for s in (TOKEN, PADDED, PIN, "AAAABBBBCCCCDDDD", "EEEEFFFFGGGGHHHH"))
 
 
 @pytest.mark.parametrize("mode", sorted(LEAKS))
@@ -57,3 +76,13 @@ def test_short_lines_of_a_secret_are_left_alone():
 def test_a_secret_inside_a_longer_one_is_scrubbed_longest_first():
     assert redact("xxabcdefghyy", set(), ["abcdefgh", "xxabcdefghyy"]) == "[redacted]"
     assert redact("xxabcdefghyy", set(), ["xxabcdefghyy", "abcdefgh"]) == "[redacted]"
+
+
+def test_a_non_json_result_comes_back_as_plain_json(monitor):
+    assert monitor.call("minh", "r1", "vault__leak", {"mode": "set"}) == "{'[redacted]'}"
+    assert monitor.call("minh", "r1", "vault__leak", {"mode": "dict_key"}) == {"[redacted]": 1}
+
+
+def test_mapping_keys_and_numbers_are_scrubbed():
+    assert redact({"x-abcdefgh": 1, "pin": 12345678, "n": 7}, set(), ["abcdefgh", "12345678"]) == {
+        "x-[redacted]": 1, "pin": "[redacted]", "n": 7}
