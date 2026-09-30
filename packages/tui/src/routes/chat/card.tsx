@@ -89,62 +89,74 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
 
   let textarea: TextareaRenderable | undefined
 
-  // One answer at a time: a second pick while the first is in flight would race it.
+  // One office call at a time: a second pick, stop, send back, or dismiss while one is in flight
+  // would race it.
   let sending = false
 
-  function send(req: AnswerRequest) {
+  function call(run: () => Promise<unknown>) {
     if (sending) return
     sending = true
+    run().finally(() => (sending = false))
+  }
+
+  function send(req: AnswerRequest) {
     const id = question().id
-    office.client.questions
-      .answer(id, req)
-      .then((q) => office.putQuestion(q))
-      .catch((error) => {
-        if (error instanceof OfficeError && error.status === 409) {
-          toast.show({ message: "This question was already answered", variant: "warning" })
-          return office.refreshQuestion(id).catch(() => {})
-        }
-        toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
-      })
-      .finally(() => (sending = false))
+    call(() =>
+      office.client.questions
+        .answer(id, req)
+        .then((q) => office.putQuestion(q))
+        .catch((error) => {
+          if (error instanceof OfficeError && error.status === 409) {
+            toast.show({ message: "This question was already answered", variant: "warning" })
+            return office.refreshQuestion(id).catch(() => {})
+          }
+          toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
+        }),
+    )
   }
 
   function sendBack() {
     const id = question().id
-    office.client.questions
-      .sendBack(id, { note: "" })
-      .then((q) => office.putQuestion(q))
-      .catch((error) => {
-        if (isNotImplemented(error))
-          return toast.show({ message: "Sending a discussion back is not available yet", variant: "warning" })
-        toast.show({ title: "Sending back failed", message: errorMessage(error), variant: "error" })
-      })
+    call(() =>
+      office.client.questions
+        .sendBack(id, { note: "" })
+        .then((q) => office.putQuestion(q))
+        .catch((error) => {
+          if (isNotImplemented(error))
+            return toast.show({ message: "Sending a discussion back is not available yet", variant: "warning" })
+          toast.show({ title: "Sending back failed", message: errorMessage(error), variant: "error" })
+        }),
+    )
   }
 
   function dismiss() {
-    office.client.questions
-      .dismissCarried(question().id)
-      .then((q) => {
-        setStore("selected", 0)
-        office.putQuestion(q)
-      })
-      .catch((error) => {
-        if (isNotImplemented(error))
-          return toast.show({ message: "Dismissing a discussion is not available yet", variant: "warning" })
-        toast.show({ title: "Dismissing failed", message: errorMessage(error), variant: "error" })
-      })
+    call(() =>
+      office.client.questions
+        .dismissCarried(question().id)
+        .then((q) => {
+          setStore("selected", 0)
+          office.putQuestion(q)
+        })
+        .catch((error) => {
+          if (isNotImplemented(error))
+            return toast.show({ message: "Dismissing a discussion is not available yet", variant: "warning" })
+          toast.show({ title: "Dismissing failed", message: errorMessage(error), variant: "error" })
+        }),
+    )
   }
 
   function stop() {
     setStore("confirming", false)
-    office.client.questions
-      .stop(question().id)
-      .then((q) => office.putQuestion(q))
-      .catch((error) => {
-        if (isNotImplemented(error))
-          return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
-        toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
-      })
+    call(() =>
+      office.client.questions
+        .stop(question().id)
+        .then((q) => office.putQuestion(q))
+        .catch((error) => {
+          if (isNotImplemented(error))
+            return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
+          toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
+        }),
+    )
   }
 
   function setAnswer(change: (a: PageAnswer) => PageAnswer) {

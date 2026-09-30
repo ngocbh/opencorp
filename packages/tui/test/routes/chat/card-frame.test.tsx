@@ -231,3 +231,72 @@ test("the question stop returns closes the card without waiting for its event", 
     office.stop()
   }
 })
+
+test("a second stop while the first is in flight sends nothing", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?") && f.includes("esc stop @minh"))
+    const release = office.hold("POST /questions/:id/stop")
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("y")
+    await app.until(() => stops(office, q.id).length === 1)
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("y")
+    await Bun.sleep(100)
+    release()
+    await app.until((f) => !f.includes("Deploy now?"))
+    expect(stops(office, q.id)).toHaveLength(1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a second dismiss or send back while the first is in flight sends nothing", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const earlier = office.addQuestion({
+    session_id: s.id,
+    question: "Which database?",
+    status: "stale",
+    discussion: [{ role: "user", text: "why Postgres?" }],
+  })
+  const q = office.addQuestion({
+    session_id: s.id,
+    question: "Deploy now?",
+    options: ["yes", "no"],
+    carried_from: earlier.id,
+    discussion: [{ role: "user", text: "is staging green?" }],
+  })
+  const posts = () => office.requests.filter((r) => r.method === "POST").map((r) => r.path)
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("[Dismiss earlier discussion]"))
+    let release = office.hold("POST /questions/:id/carried/dismiss")
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    await app.until(() => posts().length === 1)
+    app.input.pressEnter()
+    await Bun.sleep(100)
+    release()
+    await app.until((f) => !f.includes("Dismiss earlier discussion") && f.includes("[Send discussion back]"))
+    release = office.hold("POST /questions/:id/send-back")
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    await app.until(() => posts().length === 2)
+    app.input.pressEnter()
+    await Bun.sleep(100)
+    release()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    await app.until((f) => !f.includes("Deploy now?"))
+    expect(posts()).toEqual([`/questions/${q.id}/carried/dismiss`, `/questions/${q.id}/send-back`])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
