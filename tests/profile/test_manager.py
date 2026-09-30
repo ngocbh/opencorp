@@ -7,7 +7,7 @@ from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
 from agent_corp.company.flows import load_confined
 from agent_corp.company.git import CompanyGit
 from agent_corp.profile import GitProfileStore
-from agent_corp.profile.manager import MANAGER_FLOW, apply_proposal, profile_tools
+from agent_corp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_proposal, profile_tools
 from agent_corp.store import Store
 from tests.company.conftest import _isolate_git, base_files, write_repo  # noqa: F401
 from tests.store.conftest import session
@@ -65,7 +65,7 @@ def test_apply_commits_the_proposal_as_the_owner_via_the_profile_manager(office)
     applied = store.get_profile_proposal(proposal.id)
     assert (applied.status, applied.commit) == ("applied", git.head())
     assert [e.type for e in store.events_after()][-2:] == ["profile_proposal.updated", "profile.updated"]
-    with pytest.raises(ValueError, match="is applied"):
+    with pytest.raises(ProposalNotOpen, match="is applied"):
         apply_proposal(store, git, proposal.id, owner="ngocbh", max_chars=5)
     with pytest.raises(LookupError):
         apply_proposal(store, git, "01J00000000000000000000000", owner="ngocbh", max_chars=5)

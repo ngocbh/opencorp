@@ -4,8 +4,10 @@ import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.profile import GitProfileStore
+from agent_corp.profile.manager import profile_tools
 from tests.profile.conftest import asked, status, texts, wait_for
 from tests.profile.test_learning_feedback import PROFILE, git_log, profile_text
+from tests.store.conftest import session
 
 
 def test_the_profile_manager_proposes_an_edit_that_the_owner_applies(harness, fake_llm, learning):
@@ -46,3 +48,18 @@ def test_the_profile_manager_needs_a_known_person(harness, learning):
         learning.proposals("nobody")
     assert err.value.status == 404
     assert harness.store.list_sessions(kind="profile_manager", limit=None) == []
+
+
+def test_a_store_error_while_applying_is_not_a_not_open_conflict(harness, learning, monkeypatch):
+    s = harness.store.create_session(session(kind="profile_manager", repo_commit=harness.git.head()))
+    tools = profile_tools(harness.store, GitProfileStore(harness.git, "minh"), s)
+    tools["propose_edit"](text="# Minh\n", base_version=tools["read"]()["version"])
+    [proposal] = learning.proposals("minh")
+
+    def through_a_symlink(self, *args, **kwargs):
+        raise ValueError("people/minh/profile.md goes through a symlink; not writing it")
+
+    monkeypatch.setattr(GitProfileStore, "write", through_a_symlink)
+    with pytest.raises(ValueError, match="symlink"):
+        learning.apply(proposal.id)
+    assert learning.proposals("minh")[0].status == "open"

@@ -20,7 +20,7 @@ from agent_corp.perm.monitor import redact
 from agent_corp.profile import GitProfileStore
 from agent_corp.profile.debrief import DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief, transcript_text
 from agent_corp.profile.feedback import FeedbackHandlers, find_committed, next_status, read_commit_log
-from agent_corp.profile.manager import MANAGER_FLOW, apply_proposal, manager_spec
+from agent_corp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_proposal, manager_spec
 from agent_corp.protocol import now
 from agent_corp.protocol.models import (CompanyDefaults, Debrief, Feedback, FeedbackRequest, Profile, ProfileProposal,
                                         Session)
@@ -181,7 +181,7 @@ class Learning:
                                   max_chars=self._defaults(load_repo(self.git.root)).profile_max_chars)
         except LookupError as exc:
             raise HarnessError(404, "not_found", str(exc)) from exc
-        except ValueError as exc:
+        except ProposalNotOpen as exc:
             raise HarnessError(409, "not_open", str(exc)) from exc
 
     # --- hooks (on the harness's thread: hand work to ours) ---------------------------

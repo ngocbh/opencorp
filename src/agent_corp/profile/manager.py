@@ -20,6 +20,10 @@ MANAGER_FLOW = "shared/flows/profile_manager.yaml"
 """The profile manager's flow, relative to the session's pinned commit."""
 
 
+class ProposalNotOpen(Exception):
+    """The profile proposal is no longer open: applied, discarded, or stale."""
+
+
 def profile_tools(store: Store, profile: GitProfileStore, session: Session) -> dict[str, Callable[..., Any]]:
     """The ``profile`` tool group of a profile-manager session: ``read`` and ``propose_edit``."""
 
@@ -59,15 +63,15 @@ def propose(store: Store, session: Session, profile: GitProfileStore, base_versi
 def apply_proposal(store: Store, git: CompanyGit, proposal_id: str, *, owner: str, max_chars: int) -> Profile:
     """Write an open proposal over its base version and commit it as ``<owner> via profile manager``.
 
-    Raises ``LookupError`` for an unknown proposal, ``ValueError`` for one that isn't open,
-    and ``MarkdownVersionMismatch`` when the profile has moved on (the proposal is then
-    ``stale``). Emits ``profile.updated``.
+    Raises ``LookupError`` for an unknown proposal, ``ProposalNotOpen`` for one that isn't
+    open, and ``MarkdownVersionMismatch`` when the profile has moved on (the proposal is then
+    ``stale``); the profile store's own errors pass through. Emits ``profile.updated``.
     """
     proposal = store.get_profile_proposal(proposal_id)
     if proposal is None:
         raise LookupError(f"no profile proposal {proposal_id}")
     if proposal.status != "open":
-        raise ValueError(f"profile proposal {proposal_id} is {proposal.status}")
+        raise ProposalNotOpen(f"profile proposal {proposal_id} is {proposal.status}")
     profile = GitProfileStore(git, proposal.person)
     commit_id = f"proposal-{proposal.id}"
     try:
