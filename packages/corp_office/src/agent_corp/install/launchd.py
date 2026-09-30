@@ -1,7 +1,6 @@
 """The office as a macOS launch agent: a plist in ``~/Library/LaunchAgents`` loaded with ``launchctl``."""
 
 import plistlib
-import subprocess
 from pathlib import Path
 
 from agent_corp.install.files import write_if_changed
@@ -60,11 +59,7 @@ def install(launch: Launch, host: Host) -> None:
     except OSError as exc:
         raise ServiceError(f"can't write {path}: {exc.strerror or exc}") from None
     if loaded and not changed:
-        done = host.run(["launchctl", "kickstart", service])
-        if done.returncode != 0:
-            host.run(["launchctl", "bootout", service])
-            path.unlink(missing_ok=True)
-            raise ServiceError(f"launchctl kickstart failed: {done.stderr.strip()}")
+        start(launch, host)
         return
     if loaded:
         host.run(["launchctl", "bootout", service])
@@ -78,10 +73,14 @@ def install(launch: Launch, host: Host) -> None:
 
 
 def start(launch: Launch, host: Host) -> None:
-    """Start the installed launch agent if it isn't running."""
-    _check(host.run(["launchctl", "kickstart", f"gui/{host.uid}/{label(launch)}"]), "kickstart")
+    """Start the installed launch agent if it isn't running.
 
-
-def _check(done: subprocess.CompletedProcess[str], what: str) -> None:
+    Raises ``ServiceError`` if ``launchctl kickstart`` refuses; the agent is then booted out
+    and its plist removed, so the next login doesn't start a service the caller moved off.
+    """
+    service = f"gui/{host.uid}/{label(launch)}"
+    done = host.run(["launchctl", "kickstart", service])
     if done.returncode != 0:
-        raise ServiceError(f"launchctl {what} failed: {done.stderr.strip()}")
+        host.run(["launchctl", "bootout", service])
+        plist_path(launch, host).unlink(missing_ok=True)
+        raise ServiceError(f"launchctl kickstart failed: {done.stderr.strip()}")

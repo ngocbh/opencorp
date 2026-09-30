@@ -148,6 +148,17 @@ def test_start_falls_back_to_the_background_when_the_service_wont_start(tmp_path
     assert recorded(one)["mode"] == "background"  # so the doctor doesn't call it a managed service
 
 
+def test_start_removes_a_launch_agent_that_wont_kickstart_before_falling_back(tmp_path, one):
+    service.install(one, make_host(tmp_path, Runner()))
+    run = Runner([(["launchctl", "kickstart"], 1, "Operation not permitted")])
+    got = service.start(one, make_host(tmp_path, run, popen=lambda argv, **kw: None))
+    assert got.mode == "background" and "Operation not permitted" in got.notes[0]
+    # Left loaded, RunAtLoad would start it under launchd at the next login while the record says background.
+    assert ["launchctl", "bootout", f"gui/501/com.agent-corp.{one.name}"] in run.calls
+    assert not list((tmp_path / "Library" / "LaunchAgents").iterdir())
+    assert recorded(one)["mode"] == "background"
+
+
 def test_start_without_an_install_runs_it_in_the_background(tmp_path, one):
     started = []
     got = service.start(one, make_host(tmp_path, Runner(), popen=lambda argv, **kw: started.append(argv)))
