@@ -6,7 +6,7 @@ import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
 import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
-import { OfficeError } from "../../office/errors"
+import { OfficeError, OfficeUnavailable } from "../../office/errors"
 import { useDialog } from "../../ui/dialog"
 import { DialogSelect } from "../../ui/dialog-select"
 import { Toast, useToast } from "../../ui/toast"
@@ -52,7 +52,9 @@ export function Debrief() {
   const id = data.sessionID
   const [debrief, setDebrief] = createSignal<DebriefData>()
   const [missing, setMissing] = createSignal(false)
-  const [error, setError] = createSignal<string>()
+  // Reading the debrief and loading the transcript fail separately; each clears its own error.
+  const [loadError, setLoadError] = createSignal<string>()
+  const [syncError, setSyncError] = createSignal<string>()
   const session = () => office.state.sessions.find((s) => s.id === id)
   const followUps = () => (debrief()?.state === "ready" ? (debrief()!.follow_ups ?? []) : [])
   const [cursor, setCursor] = createSignal(0)
@@ -70,27 +72,31 @@ export function Debrief() {
   function load() {
     const at = events
     office.client.debriefs.get(id).then(
-      (d) => at === events && (setDebrief(d), setMissing(false), setError(undefined)),
+      (d) => at === events && (setDebrief(d), setMissing(false), setLoadError(undefined)),
       (e) => {
         if (at !== events) return
         if (e instanceof OfficeError && e.status === 404) return setMissing(true)
-        setError(errorMessage(e))
+        setLoadError(errorMessage(e))
       },
     )
   }
   // The event stream has no replay, so re-read whenever the office comes (back) online.
-  createEffect(
-    on(office.status, (status) => {
-      if (status !== "online") return
-      load()
-      // The turns to pick from.
-      office.syncSession(id).catch((e) => setError(errorMessage(e)))
-    }),
-  )
+  createEffect(on(office.status, (status) => status === "online" && load()))
+  // The turns to pick from. Loaded once: the office context reloads synced sessions when it
+  // comes back, so an office that is down isn't an error here.
+  const sync = () =>
+    office.syncSession(id).then(
+      () => setSyncError(undefined),
+      (e) => e instanceof OfficeUnavailable || setSyncError(errorMessage(e)),
+    )
+  sync()
+  /** `r`: reads the debrief again, and the transcript too if loading it failed. */
+  const refresh = () => (load(), syncError() && sync())
   const put = (e: { subject_id?: string; data: unknown }) => {
     if (e.subject_id !== id) return
     events++
     setDebrief(e.data as DebriefData)
+    setLoadError(undefined)
   }
   onCleanup(office.on("debrief.created", put))
   onCleanup(office.on("debrief.updated", put))
@@ -186,7 +192,7 @@ export function Debrief() {
     mode: OPENCODE_BASE_MODE,
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
-      { key: "r", group: "Debrief", cmd: load },
+      { key: "r", group: "Debrief", cmd: refresh },
       { key: "up", group: "Debrief", cmd: () => move(-1) },
       { key: "down", group: "Debrief", cmd: () => move(1) },
       { key: "space", group: "Debrief", cmd: mark },
@@ -219,7 +225,8 @@ export function Debrief() {
         </text>
         <text fg={theme.textMuted}>r refresh · esc back</text>
       </box>
-      <Show when={error()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
+      <Show when={loadError()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
+      <Show when={syncError()}>{(e) => <text fg={theme.error}>{e()}</text>}</Show>
       <Show when={notice()}>
         {(n) => <text fg={debrief() && !writing() ? theme.warning : theme.textMuted}>{n()}</text>}
       </Show>

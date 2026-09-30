@@ -18,12 +18,13 @@ const READY: Partial<Debrief> = {
   cost: 0.034,
 }
 
-/** Opens the seeded session, then its debrief with /debrief. */
-async function run(office: Office, body: (app: App, sessionId: string) => Promise<void>) {
+/** Opens the seeded session, then (after `before`) its debrief with /debrief. */
+async function run(office: Office, body: (app: App, sessionId: string) => Promise<void>, before = () => {}) {
   const id = office.state.sessions[0].id
   const app = await bootFrame(createStub(office), { sessionID: id })
   try {
     await app.until((f) => f.includes("@minh"))
+    before()
     await app.input.typeText("/debrief")
     await app.until((f) => f.includes("Open debrief"))
     app.input.pressEnter()
@@ -78,6 +79,37 @@ test("a read that was in flight when a newer debrief arrived by event is dropped
     await Bun.sleep(100)
     expect(await app.until((f) => f.includes("Debrief ·"))).toContain("Fixed the flaky clock test")
   })
+})
+
+test("a failed read shows its error until the debrief arrives by event", async () => {
+  const office = createFakeOffice({ notImplemented: ["GET /debriefs/:session"] })
+  await run(office, async (app, id) => {
+    await app.until((f) => f.includes(`/debriefs/${id} is not implemented`))
+    office.notImplemented.delete("GET /debriefs/:session")
+    office.addDebrief(id, READY)
+    await app.until((f) => f.includes("Fixed the flaky clock test") && !f.includes("not implemented"))
+  })
+})
+
+test("a failed transcript load stays shown after the debrief reads fine, until r loads it", async () => {
+  const office = createFakeOffice()
+  office.addDebrief(office.state.sessions[0].id, { state: "pending" })
+  const before = () => office.notImplemented.add("GET /sessions/:id/messages")
+  await run(
+    office,
+    async (app, id) => {
+      await app.until((f) => f.includes("/messages is not implemented") && f.includes("Debrief pending"))
+      office.state.debriefs[id] = { ...office.state.debriefs[id], ...READY } as Debrief
+      app.input.pressKey("r")
+      const f = await app.until((f) => f.includes("Fixed the flaky clock test"))
+      expect(f).toContain("/messages is not implemented")
+      // r also retries the transcript while loading it has failed.
+      office.notImplemented.delete("GET /sessions/:id/messages")
+      app.input.pressKey("r")
+      await app.until((f) => !f.includes("/messages is not implemented"))
+    },
+    before,
+  )
 })
 
 test("no debrief yet says so; while debriefing it says it is being written; then it fills in", async () => {
