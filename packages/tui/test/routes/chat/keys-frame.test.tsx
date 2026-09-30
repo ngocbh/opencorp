@@ -20,6 +20,24 @@ test("in a chat, one Ctrl+C shows a hint and a second leaves; the session keeps 
   }
 })
 
+test("in an ended session, the Ctrl+C hint doesn't say the session keeps running", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.state.sessions[0] = { ...s, status: "ended" }
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · ended"))
+    app.input.pressKey("c", { ctrl: true })
+    const f = await app.until((f) => f.includes("Press again to leave"))
+    expect(f).not.toContain("keeps running")
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("in a chat, <leader>q leaves on one press", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

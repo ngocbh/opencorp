@@ -470,7 +470,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         run: () => {
           // A chat keeps running after the view closes, so leaving it takes a second press.
           if (route.data.type !== "session" || leave()) return exit()
-          toast.show({ message: "Press again to leave; the session keeps running.", variant: "info" })
+          const sessionID = route.data.sessionID
+          const status = office.state.sessions.find((s) => s.id === sessionID)?.status
+          const over = status === "ended" || status === "failed"
+          toast.show({
+            message: over ? "Press again to leave." : "Press again to leave; the session keeps running.",
+            variant: "info",
+          })
         },
         category: "System",
       },
