@@ -246,3 +246,29 @@ test("a reconnect re-reads the profile and the proposals (events sent while offl
     await app.until((f) => f.includes("Changed while offline.") && f.includes("+More.") && f.includes("fffffff"))
   })
 })
+
+test("a re-read that answers after newer events doesn't undo them", async () => {
+  const office = createFakeOffice()
+  const client = createOfficeClient({ socket: office.socket })
+  const manager = await client.profiles.manager("minh", { text: "Tests first" })
+  await run(office, async (app) => {
+    const reads = () => office.requests.filter((r) => r.method === "GET" && r.path.startsWith("/profiles/minh")).length
+    const before = reads()
+    // Both re-reads answer with the state from when they arrived, after the events below.
+    const releaseProfile = office.hold("GET /profiles/:person", "reply")
+    const releaseProposals = office.hold("GET /profiles/:person/proposals", "reply")
+    office.reset()
+    await until(() => reads() === before + 2)
+    await client.profiles.put("minh", { text: "# Minh\n\nNewer.\n", base_version: office.state.profiles.minh.version })
+    office.propose(manager.id, "# Minh\n\nNewer, proposed.\n")
+    await app.until((f) => f.includes("Newer.") && f.includes("+Newer, proposed."))
+    releaseProfile()
+    releaseProposals()
+    // Give the held replies time to land.
+    await Bun.sleep(200)
+    const f = await app.until(() => true)
+    expect(f).toContain("Newer.")
+    expect(f).toContain("+Newer, proposed.")
+    expect(f).not.toContain("Writes small, tested changes.")
+  })
+})

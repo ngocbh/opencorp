@@ -66,14 +66,34 @@ export function Profile() {
   const proposal = createMemo(() => openProposal(proposals(), person))
   const handle = () => office.state.people.find((p) => p.id === person)?.handle ?? person
 
-  const loadProposals = () =>
-    office.client.profiles.proposals(person).then(setProposals, (e) => setError(errorMessage(e)))
+  // A re-read can answer after newer events: the profile read is dropped if a newer version
+  // arrived meanwhile, and proposals seen from events while a read is out win over its list.
+  let profileEvents = 0
+  let reading = 0
+  const seen = new Map<string, ProfileProposal>()
+  async function loadProposals() {
+    reading++
+    try {
+      const list = await office.client.profiles.proposals(person)
+      const merged = new Map(list.map((p) => [p.id, p]))
+      for (const p of seen.values()) merged.set(p.id, p)
+      setProposals([...merged.values()])
+    } catch (e) {
+      setError(errorMessage(e))
+    } finally {
+      if (--reading === 0) seen.clear()
+    }
+  }
   // The event stream has no replay, so re-read whenever the office comes (back) online.
   createEffect(
     on(office.status, (status) => {
       if (status !== "online") return
+      const at = profileEvents
       office.client.profiles.get(person).then(
-        (p) => (setProfile(p), setError(undefined)),
+        (p) => {
+          if (profileEvents === at) setProfile(p)
+          setError(undefined)
+        },
         (e) => setError(errorMessage(e)),
       )
       void loadProposals()
@@ -81,12 +101,16 @@ export function Profile() {
   )
   onCleanup(
     office.on("profile.updated", (e) => {
-      if (e.subject_id === person) setProfile(e.data as unknown as ProfileData)
+      if (e.subject_id !== person) return
+      profileEvents++
+      setProfile(e.data as unknown as ProfileData)
     }),
   )
   const putProposal = (e: { data: unknown }) => {
     const p = e.data as ProfileProposal
-    if (p.person === person) setProposals((list) => [...list.filter((x) => x.id !== p.id), p])
+    if (p.person !== person) return
+    if (reading) seen.set(p.id, p)
+    setProposals((list) => [...list.filter((x) => x.id !== p.id), p])
   }
   onCleanup(office.on("profile_proposal.created", putProposal))
   onCleanup(office.on("profile_proposal.updated", putProposal))
