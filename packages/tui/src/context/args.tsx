@@ -8,6 +8,8 @@ export interface Args {
   sessionID?: string
   fork?: boolean
   auto?: boolean
+  /** The person to talk to, by id or handle. */
+  person?: string
 }
 
 export const { use: useArgs, provider: ArgsProvider } = createSimpleContext({

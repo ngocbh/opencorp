@@ -29,6 +29,7 @@ import { ProjectProvider, useProject } from "./context/project"
 import { EditorContextProvider } from "./context/editor"
 import { useEvent } from "./context/event"
 import { SDKProvider, useSDK } from "./context/sdk"
+import { OfficeProvider } from "./context/office"
 import { SyncProvider, useSync } from "./context/sync"
 import { DataProvider } from "./context/data"
 import { LocationProvider } from "./context/location"
@@ -104,13 +105,22 @@ const appBindingCommands = [
 ] as const
 
 export type TuiInput = {
-  url: string
+  /** The office's unix socket. */
+  socket: string
+  /** The folder the TUI works in. */
+  cwd: string
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
+  /** @deprecated The OpenCode server URL; goes with the OpenCode data layer. */
+  url: string
+  /** @deprecated */
   directory?: string
+  /** @deprecated */
   fetch?: typeof fetch
+  /** @deprecated */
   headers?: RequestInit["headers"]
+  /** @deprecated */
   events?: EventSource
 }
 
@@ -229,41 +239,43 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                     }
                                   >
                                     <TuiConfigProvider config={input.config}>
-                                      <SDKProvider
-                                        url={input.url}
-                                        directory={input.directory}
-                                        fetch={input.fetch}
-                                        headers={input.headers}
-                                        events={input.events}
-                                      >
-                                        <PermissionProvider>
-                                          <ProjectProvider>
-                                            <SyncProvider>
-                                              <DataProvider>
-                                                <ThemeProvider mode={mode}>
-                                                  <LocalProvider>
-                                                    <PromptStashProvider>
-                                                      <DialogProvider>
-                                                        <FrecencyProvider>
-                                                          <PromptHistoryProvider>
-                                                            <PromptRefProvider>
-                                                              <EditorContextProvider>
-                                                                <LocationProvider>
-                                                                  <App onSnapshot={input.onSnapshot} />
-                                                                </LocationProvider>
-                                                              </EditorContextProvider>
-                                                            </PromptRefProvider>
-                                                          </PromptHistoryProvider>
-                                                        </FrecencyProvider>
-                                                      </DialogProvider>
-                                                    </PromptStashProvider>
-                                                  </LocalProvider>
-                                                </ThemeProvider>
-                                              </DataProvider>
-                                            </SyncProvider>
-                                          </ProjectProvider>
-                                        </PermissionProvider>
-                                      </SDKProvider>
+                                      <OfficeProvider socket={input.socket} cwd={input.cwd}>
+                                        <SDKProvider
+                                          url={input.url}
+                                          directory={input.directory}
+                                          fetch={input.fetch}
+                                          headers={input.headers}
+                                          events={input.events}
+                                        >
+                                          <PermissionProvider>
+                                            <ProjectProvider>
+                                              <SyncProvider>
+                                                <DataProvider>
+                                                  <ThemeProvider mode={mode}>
+                                                    <LocalProvider>
+                                                      <PromptStashProvider>
+                                                        <DialogProvider>
+                                                          <FrecencyProvider>
+                                                            <PromptHistoryProvider>
+                                                              <PromptRefProvider>
+                                                                <EditorContextProvider>
+                                                                  <LocationProvider>
+                                                                    <App onSnapshot={input.onSnapshot} />
+                                                                  </LocationProvider>
+                                                                </EditorContextProvider>
+                                                              </PromptRefProvider>
+                                                            </PromptHistoryProvider>
+                                                          </FrecencyProvider>
+                                                        </DialogProvider>
+                                                      </PromptStashProvider>
+                                                    </LocalProvider>
+                                                  </ThemeProvider>
+                                                </DataProvider>
+                                              </SyncProvider>
+                                            </ProjectProvider>
+                                          </PermissionProvider>
+                                        </SDKProvider>
+                                      </OfficeProvider>
                                     </TuiConfigProvider>
                                   </RouteProvider>
                                 </ToastProvider>

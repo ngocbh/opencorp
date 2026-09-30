@@ -22,13 +22,15 @@ import type { TuiInput } from "../src/app"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "../test/fixture/tui-sdk"
 
-/** Returns `run()` input (minus `args`) wired to the stub server. */
-export function createStub(): Omit<TuiInput, "args"> {
+/** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
+export function createStub(office?: FakeOffice): Omit<TuiInput, "args"> {
   const events = createEventSource()
   const { fetch } = createFetch((url) => {
     if (url.pathname === "/project/proj_test/directories") return json([])
   }, events)
   return {
+    socket: office?.socket ?? "/tmp/act-none/o.sock",
+    cwd: "/tmp/proj",
     url: "http://stub",
     directory,
     config: createTuiResolvedConfig(),

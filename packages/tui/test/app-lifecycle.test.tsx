@@ -35,6 +35,8 @@ test("SIGHUP destroys the renderer, clears the title and removes its listener", 
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
       run({
+        socket: "/tmp/act-none/o.sock",
+        cwd: "/tmp/proj",
         url: "http://test",
         directory,
         config: createTuiResolvedConfig(),
@@ -95,6 +97,8 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
       run({
+        socket: "/tmp/act-none/o.sock",
+        cwd: "/tmp/proj",
         url: "http://test",
         directory,
         config: createTuiResolvedConfig(),
@@ -150,6 +154,8 @@ test("fatal startup errors set a nonzero exit after scoped cleanup", async () =>
     const { run } = await import("../src/app")
     const task = Effect.runPromise(
       run({
+        socket: "/tmp/act-none/o.sock",
+        cwd: "/tmp/proj",
         url: "http://test",
         directory,
         config: createTuiResolvedConfig(),
