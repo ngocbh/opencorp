@@ -236,6 +236,64 @@ def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace)
     leave.set()
 
 
+def settle(harness):
+    """Wait until the harness has handled everything posted so far."""
+    import threading
+
+    done = threading.Event()
+    harness._post(done.set)
+    assert done.wait(30)
+
+
+def cap_items(harness):
+    return [w for w in harness.store.list_work_items() if w.title.startswith("Raise the cost cap")]
+
+
+def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace):
+    from agent_corp.chat.provider import Price
+
+    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})  # $1 per input token
+    fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}},
+                    {"content": "after the raise"})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: status(harness, sid) == "idle" and harness.store.get_session(sid).cost == 6, what="the charge")
+    items = wait_for(lambda: cap_items(harness), what="the cap work item")
+    assert items[0].assignee == "ngocbh"
+    assert harness.prompt(sid, "held") == "queued"
+    with pytest.raises(HarnessError) as err:
+        harness.set_cost_cap(sid, 6)
+    assert err.value.code == "cap_too_low"
+    harness.set_cost_cap(sid, 20)
+    assert "held" in asked(fake_llm, 2)
+    wait_for(lambda: texts(harness, sid)[-1:] == ["after the raise"], what="the held turn")
+
+
+def test_a_session_over_its_cap_again_keeps_one_open_cap_item(make_harness, fake_llm, workspace):
+    from agent_corp.chat.provider import Price
+
+    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})  # $1 per input token
+    fake_llm.script(*({"content": f"reply {n}", "usage": {"prompt_tokens": 6, "completion_tokens": 1}}
+                      for n in range(3)))
+    sid = start(harness, workspace)
+    parent = harness.store.get_session(sid).work_item_id
+    for n, cap in enumerate((None, 7, 13)):
+        if cap is None:
+            harness.prompt(sid, "hi")
+        else:
+            assert harness.prompt(sid, f"more {n}") == "queued"  # held at the cap
+            harness.set_cost_cap(sid, cap)
+        wait_for(lambda: harness.store.get_session(sid).cost == 6 * (n + 1) and status(harness, sid) == "idle",
+                 what=f"charge {n}")
+        settle(harness)
+        if n == 1:  # the first item is still open: no second one
+            assert len(cap_items(harness)) == 1
+            harness.store.update_work_item(cap_items(harness)[0].id, status="done")
+    items = cap_items(harness)
+    assert [w.status for w in items] == ["open", "done"]  # a new one once the first was closed
+    assert {w.parent_id for w in items} == {parent}
+
+
 SENTINEL = "sk-sentinel-7c2a51"
 
 

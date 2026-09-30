@@ -13,6 +13,7 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
+from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.provider import Provider
 from agent_corp.chat.transcript import Transcript
@@ -36,6 +37,7 @@ log = logging.getLogger(__name__)
 
 INTERRUPTED_CALL = "interrupted; outcome unknown"
 """What an office tool call in flight returns on Esc: it runs on, so its side effect may still happen."""
+_CAP_TITLE = "Raise the cost cap"
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
@@ -95,10 +97,12 @@ class _Live:
     defaults: CompanyDefaults
     transcript: Transcript
     worker: Worker | None = None
+    provider: Provider = field(default_factory=Provider)
     reply_node: str | None = None
     turn_q: str | None = None
     pending: list[str] = field(default_factory=list)
     ending: bool = False
+    capped: bool = False
     outcome: dict[str, Any] | None = None
     timer: threading.Timer | None = None
     calls: set[_Call] = field(default_factory=set)
@@ -242,7 +246,7 @@ class Harness:
 
     def _spawn(self, live: _Live, kind: str) -> None:
         session = self.store.get_session(live.session_id)
-        provider = self.provider()
+        live.provider = provider = self.provider()
         on_question = self._on_question(live)
         tools = live.spec.groups(session, live.run_id, on_question)
         ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names, carried=self.answers.carried)
@@ -272,13 +276,13 @@ class Harness:
         """Take a message: a new turn, an answer to the model's open question, a steer, or queued.
 
         Returns which one: ``turn``, ``answer``, ``steer``, or ``queued`` (the next turn
-        takes it).
+        takes it; so do messages while the session is over its cost cap).
         """
         with self._lock:
             live = self._must(session_id)
             if live.ending:
                 raise HarnessError(409, "ending", f"session {session_id} is ending")
-            if live.spec.chat is not None:
+            if live.spec.chat is not None and not self._held(live):
                 if live.turn_q is not None:
                     live.transcript.user(text)
                     self._answer_turn(live, live.turn_q, text)
@@ -354,7 +358,7 @@ class Harness:
             if not isinstance(answer, str) or not answer:
                 raise HarnessError(422, "invalid_answer", "a chat turn takes text")
             with self._lock:
-                if live.turn_q != question_id:
+                if live.turn_q != question_id or self._held(live):
                     raise HarnessError(409, "not_open", f"question {question_id} can't take a turn now")
                 live.transcript.user(answer)
                 self._answer_turn(live, question_id, answer)
@@ -363,6 +367,21 @@ class Harness:
             return self.store.answer_question(question_id, answer, kind, answered_by=self._owner())
         except InvalidTransition as exc:
             raise HarnessError(409, "not_open", str(exc)) from exc
+
+    def set_cost_cap(self, session_id: str, usd: float) -> Session:
+        """Set the session's cost cap; it must be above the cost so far. Held turns go on."""
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise HarnessError(404, "not_found", f"no session {session_id}")
+        if usd <= session.cost:
+            raise HarnessError(422, "cap_too_low", f"the cap must be above the cost so far (${session.cost:.4f})")
+        session = self.store.update_session(session_id, cost_cap_usd=usd)
+        with self._lock:
+            live = self._live.get(session_id)
+            if live is not None:
+                live.capped = False
+                self._deliver(live)
+        return session
 
     def close_all(self) -> None:
         """Stop every worker, leaving their sessions' status as it is, and stop the dispatcher.
@@ -432,8 +451,8 @@ class Harness:
                 live.timer.start()
 
     def _deliver(self, live: _Live) -> bool:
-        """Answer the open turn with the queued messages; True if it did."""
-        if live.turn_q is None or not live.pending or live.ending:
+        """Answer the open turn with the queued messages, unless held; True if it did."""
+        if live.turn_q is None or not live.pending or live.ending or self._held(live):
             return False
         text = "\n\n".join(live.pending)
         live.pending.clear()
@@ -480,6 +499,42 @@ class Harness:
             elif name in _ENDED and node_id is not None and node_id == live.reply_node:
                 live.reply_node = None
         live.transcript.event(name, data)
+        if name == "ModelCallFinished" and data.get("usage"):
+            self._charge(live, data)
+
+    def _charge(self, live: _Live, data: dict[str, Any]) -> None:
+        usage = data["usage"]
+        self.store.record_usage(session_id=live.session_id, run_id=live.run_id, model=data.get("model") or "",
+                                input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
+                                usd=call_usd(live.provider.prices, data.get("model"), usage))
+        session = self.store.update_session(live.session_id, cost=self.store.session_usage_usd(live.session_id))
+        if session.cost >= cost_cap(session, live.defaults) and not live.capped:
+            live.capped = True
+            self._post(self._over_cap, live)  # interrupt() must not run on the reader thread
+
+    def _over_cap(self, live: _Live) -> None:
+        if not self._current(live):
+            return
+        self.interrupt(live.session_id)
+        session = self.store.get_session(live.session_id)
+        if self._cap_item(session) is not None:
+            return  # the manager already has one to act on
+        repo = load_repo(self.git.pin(session.repo_commit))
+        person = repo.people.get(live.person_id)
+        manager = (person.manager if person else None) or (repo.company.ceo if repo.company else None)
+        cap = cost_cap(session, live.defaults)
+        t = now()
+        self.store.create_work_item(WorkItem(
+            id=new_id(), title=f"{_CAP_TITLE} of @{person.handle if person else live.person_id}'s session",
+            kind="task", status="open", requester=live.person_id, assignee=manager, parent_id=session.work_item_id,
+            summary=f"Session {session.id} reached its ${cap:.2f} cap (cost ${session.cost:.4f}). "
+                    f"Its turns wait until the cap is raised.",
+            created_at=t, updated_at=t))
+
+    def _cap_item(self, session: Session) -> WorkItem | None:
+        """The session's open "raise the cost cap" work item, if any."""
+        return next((w for w in self.store.list_work_items(status=("open", "in_progress"))
+                     if w.parent_id == session.work_item_id and w.title.startswith(_CAP_TITLE)), None)
 
     def _exited(self, live: _Live, worker: Worker, returncode: int) -> None:
         session = self.store.get_session(live.session_id)
@@ -585,6 +640,10 @@ class Harness:
                 raise HarnessError(404, "not_found", f"no session {session_id}")
             raise HarnessError(409, "not_live", f"session {session_id} has no live run")
         return live
+
+    def _held(self, live: _Live) -> bool:
+        session = self.store.get_session(live.session_id)
+        return session.cost >= cost_cap(session, live.defaults)
 
     def _owner(self) -> str | None:
         repo = load_repo(self.git.root)
