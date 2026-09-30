@@ -29,6 +29,11 @@ def _env() -> dict[str, str]:
                   "GIT_TERMINAL_PROMPT": "0"}
 
 
+def _literal(paths: list[str]) -> list[str]:
+    """Pathspecs that match ``paths`` exactly, with no glob expansion."""
+    return [f":(literal){p}" for p in paths]
+
+
 class CompanyGit:
     """Git operations on one company clone. Hold ``lock`` around any write sequence."""
 
@@ -66,14 +71,15 @@ class CompanyGit:
         with self.lock:
             present = [p for p in paths if (self.root / p).exists()]
             if present:
-                self._git("add", "--", *present)
+                self._git("add", "--", *_literal(present))
             if gone := [p for p in paths if p not in present]:  # a deletion, maybe already staged
                 # `git add` fails on a path gone from both disk and index.
-                self._git("rm", "-q", "--cached", "--ignore-unmatch", "--", *gone)
+                self._git("rm", "-q", "--cached", "--ignore-unmatch", "--", *_literal(gone))
             # `git commit` exits 1 on an empty commit; callers rely on a no-op write succeeding.
-            if self._git("diff", "--cached", "--quiet", "--", *paths, check=False).returncode == 0:
+            if self._git("diff", "--cached", "--quiet", "--", *_literal(paths),
+                         check=False).returncode == 0:
                 return self.head()
-            self._git("commit", "-q", "-m", message, "--", *paths)
+            self._git("commit", "-q", "-m", message, "--", *_literal(paths))
             return self.head()
 
     def pin(self, commit: str) -> Path:

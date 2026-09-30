@@ -198,3 +198,15 @@ def test_worktree_rename_commits_both_paths(g, company):
     assert g.commit_hand_edits() == ["people/ava/profile.md", PROFILE]
     assert _git(company, "status", "--porcelain") == ""
     assert g.blob_id(PROFILE) is None and g.blob_id("people/ava/profile.md") is not None
+
+
+def test_glob_characters_in_paths_are_literal(g, company):
+    odd = "people/[mn]inh/profile.md"
+    (company / "people/[mn]inh").mkdir()
+    (company / odd).write_text("# odd\n")
+    (company / PROFILE).write_text("# edited\n")
+    g.commit([odd], "odd")
+    assert _git(company, "show", "--name-only", "--format=", "HEAD") == odd
+    assert _git(company, "status", "--porcelain") == f"M {PROFILE}"
+    assert g.commit_hand_edits() == [PROFILE]
+    assert _git(company, "show", "--name-only", "--format=", "HEAD") == PROFILE
