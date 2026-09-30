@@ -167,6 +167,64 @@
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "updated_at": { "$ref": "#/$defs/Timestamp" }
       }
+    },
+    "Message": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "role", "parts", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "role": { "enum": ["user", "assistant"] },
+        "parts": { "type": "array", "items": { "$ref": "#/$defs/Part" } },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "Part": {
+      "oneOf": [{ "$ref": "#/$defs/TextPart" }, { "$ref": "#/$defs/FilePart" }, { "$ref": "#/$defs/ToolPart" }]
+    },
+    "TextPart": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "text"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "text" },
+        "text": { "type": "string" }
+      }
+    },
+    "FilePart": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "path", "mime"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "file" },
+        "path": { "type": "string" },
+        "mime": { "type": "string" }
+      }
+    },
+    "ToolPart": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "call_id", "tool", "state", "input"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "tool" },
+        "call_id": { "type": "string" },
+        "tool": { "type": "string" },
+        "state": { "enum": ["pending", "running", "completed", "error", "interrupted"] },
+        "input": { "type": "object" },
+        "output": { "default": {} },
+        "error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "Permission": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "session_id", "tool", "input", "status", "created_at"],
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "tool": { "type": "string" },
+        "input": { "type": "object" },
+        "status": { "enum": ["pending", "allowed", "denied"] },
+        "answered_by": { "anyOf": [{ "$ref": "#/$defs/Id" }, { "type": "null" }], "default": null },
+        "created_at": { "$ref": "#/$defs/Timestamp" }
+      }
     }
   }
 }
