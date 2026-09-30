@@ -44,8 +44,10 @@ def test_stop_the_asker_is_dropped_but_other_stops_stay():
     assert got == ["Stop the deploy"]
 
 
-@pytest.mark.parametrize("label", ["Stop.", "Stop!", "Chat about this?", "Type an answer…", "Ｓｔｏｐ", "St\u200bop",
-                                   "Send discussion-back", "\u201cStop\u201d", "Stop, minh", "stop\u00a0MINH"])
+@pytest.mark.parametrize("label", [
+    "Stop.", "Stop!", "Chat about this?", "Type an answer…", "Ｓｔｏｐ", "St\u200bop", "Send discussion-back",
+    "\u201cStop\u201d", "Stop, minh", "stop\u00a0MINH",
+])
 def test_action_labels_match_through_punctuation_width_and_invisible_characters(label):
     assert normalize_options([label, "Keep going"], names=("minh",)) == ["Keep going"]
 

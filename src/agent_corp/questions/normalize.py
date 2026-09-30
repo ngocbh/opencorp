@@ -26,7 +26,11 @@ def normalize_options(value: Any, *, names: Iterable[str] = ()) -> list[str]:
 
 
 def _key(label: str) -> str:
-    """``label`` for comparing with an action: NFKC, punctuation as spaces, invisible format characters gone, casefolded."""
+    """``label`` for comparing with an action.
+
+    NFKC-normalized, punctuation as spaces, invisible format characters removed, spaces
+    collapsed, and casefolded.
+    """
     kept = []
     for char in unicodedata.normalize("NFKC", label):
         category = unicodedata.category(char)
