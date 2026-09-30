@@ -8,6 +8,7 @@
     ".": "./src/index.tsx"
   },
   "scripts": {
+    "dev": "bun run script/dev.ts",
     "test": "bun test",
     "typecheck": "tsc -p ."
   },
