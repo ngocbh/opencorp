@@ -58,6 +58,11 @@ def _dumps(entries: list[dict[str, str]]) -> str:
     return json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
 
 
+def capped_json(entries: Iterable[DiscussionEntry]) -> str:
+    """``entries`` as one line of JSON within ``DISCUSSION_CAP``, the oldest dropped first behind a note."""
+    return _capped([], _entries(entries))
+
+
 def _capped(earlier: list[dict[str, str]], entries: list[dict[str, str]]) -> str:
     """The carried then current entries as JSON within the cap.
 

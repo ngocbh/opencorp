@@ -1,0 +1,59 @@
+# "Chat about this" on a question card: a chat with the person who asked, in a side
+# session of its own. The office answers the first turn with the question's context
+# and the card before the human's message, and ends the chat with /exit when the
+# question closes. The reply has read-only lookups only.
+id: side_chat
+name: side_chat
+description: Talk through a question with the person who asked it.
+long_term_memory: profile
+
+defs:
+  turn:
+    input:
+      exited: bool
+      reply: str
+    nodes:
+      ask:
+        kind: human_input
+        prompt: "You:"
+        output: str
+      route:
+        kind: case
+        on: ${ask.output}
+        cases:
+          - when: /exit
+            then: exit_turn
+        else: reply
+      exit_turn:
+        kind: code
+        output:
+          exited: bool
+        code: |
+          return {"exited": True}
+      reply:
+        kind: agent
+        mode: tool_calling
+        steerable: true
+        long_term_memory: session
+        env:
+          max_tool_iterations: 50
+        tools: [workspace, work_items]
+        input:
+          message: ${ask.output}
+        output: str
+        prompt: "${message}"
+    # A LOOP body needs a record output of two or more fields; the last reply is the second.
+    output:
+      exited: ${exit_turn.output.exited == true}
+      reply: '${reply.output:-""}'
+
+nodes:
+  chat:
+    kind: loop
+    call: turn
+    input:
+      exited: false
+      reply: ""
+    while: not exited
+    max: 10000
+output: ${chat.output.reply}
