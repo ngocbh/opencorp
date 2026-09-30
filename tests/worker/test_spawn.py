@@ -42,7 +42,7 @@ def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, ma
                                                    monkeypatch):
     monkeypatch.setenv("OFFICE_SECRET", "office-env-secret")
     monkeypatch.setenv("LC_CTYPE", "UTF-8")
-    fake_llm.script({"content": "slow", "hold": 20})
+    fake_llm.script({"content": "slow", "hold": True})
     rec = Recorder()
     worker = registry.spawn(make_job(), session_dir, rec)
     fake_llm.wait_for_requests(1, timeout=30)
@@ -81,7 +81,7 @@ def test_a_human_input_node_asks_through_the_same_stub(fake_llm, registry, make_
 
 
 def test_one_live_worker_per_session(fake_llm, registry, make_job, session_dir, tmp_path):
-    fake_llm.script({"content": "one", "hold": 20}, {"content": "two"}, {"content": "three"})
+    fake_llm.script({"content": "one", "hold": True}, {"content": "two"}, {"content": "three"})
     first = registry.spawn(make_job(), session_dir, Recorder())
     with pytest.raises(WorkerExists):
         registry.spawn(make_job(run_id="r2"), session_dir, Recorder())
@@ -118,14 +118,14 @@ def test_a_failing_handler_does_not_stop_the_reader(fake_llm, registry, make_job
 
 
 def test_a_worker_exits_when_the_office_closes_its_channel(fake_llm, registry, make_job, session_dir):
-    fake_llm.script({"content": "never", "hold": 20})
+    fake_llm.script({"content": "never", "hold": True})
     registry.spawn(make_job(), session_dir, Recorder())
     fake_llm.wait_for_requests(1, timeout=30)
     assert registry.close("s1", timeout=10) == EXIT_ORPHANED
 
 
 def test_close_kills_a_worker_that_does_not_exit(fake_llm, registry, make_job, session_dir):
-    fake_llm.script({"content": "never", "hold": 20})
+    fake_llm.script({"content": "never", "hold": True})
     worker = registry.spawn(make_job(), session_dir, Recorder())
     fake_llm.wait_for_requests(1, timeout=30)
     os.kill(worker.pid, signal.SIGSTOP)  # it can't see the channel close

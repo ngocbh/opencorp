@@ -84,7 +84,7 @@ def test_a_steer_the_node_never_reads_comes_back(fake_llm, registry, make_job, s
 
 
 def test_a_steer_for_a_finished_node_comes_back_at_once(fake_llm, registry, make_job, session_dir):
-    fake_llm.script({"content": "hello", "hold": 20})
+    fake_llm.script({"content": "hello", "hold": True})
     rec = Recorder(answers=["hi"])
     worker = registry.spawn(make_job("flows/chat.yaml", inputs={}), session_dir, rec)
     fake_llm.wait_for_requests(1, timeout=30)

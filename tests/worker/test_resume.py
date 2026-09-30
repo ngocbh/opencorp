@@ -5,7 +5,7 @@ from tests.worker.conftest import Recorder, run
 
 
 def test_a_killed_run_resumes_in_a_new_worker(fake_llm, registry, store, make_job, session_dir):
-    fake_llm.script({"content": "lost", "hold": 20})
+    fake_llm.script({"content": "lost", "hold": True})
     worker = registry.spawn(make_job(), session_dir, Recorder())
     fake_llm.wait_for_requests(1, timeout=30)
     os.killpg(worker.pgid, signal.SIGKILL)

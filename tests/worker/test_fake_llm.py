@@ -87,3 +87,18 @@ def test_the_http_routes_script_record_and_release(fake_llm):
     caller.join(5)
     assert got["choices"][0]["message"]["content"] == "held"
     assert httpx.get(f"{base}/_requests").json() == [body]
+
+
+def test_hold_true_waits_until_release(fake_llm):
+    fake_llm.script({"content": "held", "hold": True})
+    got = {}
+    body = {"model": "stub", "messages": [{"role": "user", "content": "x"}]}
+    caller = threading.Thread(target=lambda: got.update(httpx.post(f"{fake_llm.base_url}/v1/chat/completions",
+                                                                   json=body, timeout=20).json()))
+    caller.start()
+    fake_llm.wait_for_requests(1)
+    caller.join(1.5)  # longer than float(True) seconds
+    assert caller.is_alive()
+    fake_llm.release()
+    caller.join(5)
+    assert got["choices"][0]["message"]["content"] == "held"

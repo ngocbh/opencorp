@@ -32,7 +32,8 @@ class FakeLLM:
     Each scripted reply is a dict with any of: ``content`` (str), ``tool_calls`` (a list
     of ``{"name", "arguments", "id"?}``), ``usage`` (``prompt_tokens``/``completion_tokens``),
     ``match`` (a substring the request's messages must contain), ``error`` (an HTTP
-    status to return instead), and ``hold`` (seconds to wait, or until ``release()``).
+    status to return instead), and ``hold`` (``True`` to wait until ``release()``, or at
+    most that many seconds).
     A request takes the first queued reply it matches; an unmatched request gets a
     ``500`` carrying the request. Error replies are never retried by the SDK.
 
@@ -145,7 +146,8 @@ class FakeLLM:
             event = threading.Event()
             with self._lock:
                 self._holds.append(event)
-            await asyncio.to_thread(event.wait, float(reply["hold"]))
+            timeout = None if reply["hold"] is True else float(reply["hold"])
+            await asyncio.to_thread(event.wait, timeout)
         if reply.get("error"):
             return JSONResponse({"error": {"message": f"scripted error {reply['error']}", "type": "server_error"}},
                                 status_code=int(reply["error"]), headers=NO_RETRY)
