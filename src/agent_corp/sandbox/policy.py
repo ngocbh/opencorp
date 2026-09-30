@@ -8,8 +8,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+# Home paths holding credentials or office state; a workspace may not be one of them or
+# lie inside one, since the workspace is readable (and maybe writable) by model code.
+SENSITIVE_HOME_PATHS = (
+    ".agent-corp",
+    ".ssh",
+    ".aws",
+    ".gnupg",
+    ".config",
+    "Library",
+    ".claude",
+    ".codex",
+    ".docker",
+    ".kube",
+    ".netrc",
+)
+
+
 class UnsafeWorkspace(ValueError):
-    """The workspace would expose the home directory or the whole disk."""
+    """The workspace would expose the home directory, the whole disk, or credentials."""
 
 
 def _real(path: str | os.PathLike[str]) -> Path:
@@ -32,7 +49,8 @@ class SandboxPolicy:
 
     Raises:
         ValueError: `workspace` or `tmpdir` is not an existing directory.
-        UnsafeWorkspace: `workspace` is `/` or contains the home directory.
+        UnsafeWorkspace: `workspace` is `/`, contains the home directory, or is or lies
+            inside a sensitive home path (`SENSITIVE_HOME_PATHS`).
     """
 
     workspace: Path
@@ -55,6 +73,13 @@ class SandboxPolicy:
                 f"workspace {self.workspace} contains the home directory {home}; "
                 "use a project folder"
             )
+        for rel in SENSITIVE_HOME_PATHS:
+            sensitive = _real(home / rel)
+            if self.workspace.is_relative_to(sensitive):
+                raise UnsafeWorkspace(
+                    f"workspace {self.workspace} is inside the sensitive path {sensitive}; "
+                    "use a project folder"
+                )
 
     @property
     def protected(self) -> tuple[Path, ...]:

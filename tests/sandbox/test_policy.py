@@ -59,6 +59,34 @@ def test_home_and_its_ancestors_are_not_workspaces(tmp_path, monkeypatch):
     assert SandboxPolicy(project, False, False, tmp).workspace.name == "project"
 
 
+@pytest.mark.parametrize("rel", [
+    ".agent-corp", ".agent-corp/office/runs", ".ssh", ".aws", ".gnupg", ".config/agent-composer",
+    "Library/Keychains", ".claude", ".codex", ".docker", ".kube", ".netrc",
+])
+def test_sensitive_home_paths_are_not_workspaces(tmp_path, monkeypatch, rel):
+    home = tmp_path / "home"
+    (home / rel).mkdir(parents=True)
+    _, tmp = dirs(tmp_path)
+    monkeypatch.setenv("HOME", str(home))
+    with pytest.raises(UnsafeWorkspace, match="sensitive"):
+        SandboxPolicy(home / rel, False, False, tmp)
+
+
+def test_sensitive_paths_are_compared_resolved(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".ssh").mkdir(parents=True)
+    _, tmp = dirs(tmp_path)
+    link = tmp_path / "innocent"
+    link.symlink_to(home / ".ssh")
+    monkeypatch.setenv("HOME", str(tmp_path / "home-link"))
+    (tmp_path / "home-link").symlink_to(home)
+    with pytest.raises(UnsafeWorkspace):
+        SandboxPolicy(link, False, False, tmp)
+    # Names that merely start like a sensitive path are fine.
+    (home / ".sshfs-mounts").mkdir()
+    assert SandboxPolicy(home / ".sshfs-mounts", False, False, tmp).workspace.name == ".sshfs-mounts"
+
+
 def test_protected_paths(tmp_path):
     ws, tmp = dirs(tmp_path)
     policy = SandboxPolicy(ws, True, False, tmp)
