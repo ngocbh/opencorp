@@ -52,7 +52,7 @@ class Provider(BaseModel):
             if any(fnmatch.fnmatchcase(name.upper(), pattern) for pattern in _CREDENTIAL_NAMES):
                 raise ValueError(f"{_shown(name)} looks like a credential; put the model key in llm_config.api_key")
         for name, value in env.items():
-            if _USERINFO.match(value):
+            if _USERINFO.match(value.strip()):
                 raise ValueError(f"{_shown(name)} is a URL with credentials in it; keep credentials out of env "
                                  f"(the model key goes in llm_config.api_key)")
         return env
@@ -79,8 +79,9 @@ def load_provider(path: Path) -> Provider:
         try:
             return Provider.model_validate(json.loads(f.read()))
         except (ValueError, ValidationError) as exc:
-            # Never echo the file: it holds keys. Errors leave out input values, and env names
-            # that aren't variable names, since a key pasted there would be one.
+            # Never echo the file: it holds keys. Errors leave out input values, extra field
+            # names, model names, and env names that aren't variable names, since a key
+            # pasted there would be one.
             detail = _errors(exc) if isinstance(exc, ValidationError) else "not valid JSON"
             raise ProviderError(f"{path}: {detail}") from None
 
@@ -91,10 +92,15 @@ def _shown(name: str) -> str:
 
 
 def _errors(exc: ValidationError) -> str:
+    """The validation errors, naming only fields the provider defines and env variable names."""
     lines = []
     for error in exc.errors(include_url=False, include_input=False, include_context=False):
         loc = [str(p) for p in error["loc"]]
         if len(loc) > 1 and loc[0] == "env":
             loc[1] = _shown(loc[1])
+        if len(loc) > 1 and loc[0] == "prices":
+            loc[1] = "a model"
+        if error["type"] == "extra_forbidden":
+            loc[-1] = "an extra field"
         lines.append(f"{'.'.join(loc) or 'provider'}: {error['msg']}")
     return "; ".join(lines)

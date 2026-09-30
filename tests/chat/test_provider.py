@@ -48,7 +48,7 @@ def test_a_credential_in_env_is_refused(tmp_path, name):
 
 
 @pytest.mark.parametrize("url", [f"https://user:{SENTINEL}@proxy.example:3128", f"http://{SENTINEL}@llm.example",
-                                 f"socks5://u:{SENTINEL}@h"])
+                                 f"socks5://u:{SENTINEL}@h", f"  https://u:{SENTINEL}@h", f"\thttp://{SENTINEL}@h"])
 def test_a_url_with_credentials_in_env_is_refused(tmp_path, url):
     path = write(tmp_path / "provider.json", {"env": {"HTTPS_PROXY": url}})
     with pytest.raises(ProviderError, match="HTTPS_PROXY") as info:
@@ -67,6 +67,24 @@ def test_settings_that_arent_credentials_are_kept(tmp_path, value):
 def test_an_env_name_that_isnt_a_variable_name_is_never_echoed(tmp_path, env):
     path = write(tmp_path / "provider.json", {"env": env})
     with pytest.raises(ProviderError) as info:
+        load_provider(path)
+    assert SENTINEL not in str(info.value)
+
+
+@pytest.mark.parametrize("data", [{SENTINEL: "v"}, {"api_key": SENTINEL},
+                                  {"prices": {"m": {"input": 1, "output": 1, SENTINEL: 1}}}])
+def test_an_extra_field_is_never_named(tmp_path, data):
+    path = write(tmp_path / "provider.json", data)
+    with pytest.raises(ProviderError, match="an extra field") as info:
+        load_provider(path)
+    assert SENTINEL not in str(info.value) and "api_key" not in str(info.value)
+
+
+@pytest.mark.parametrize("prices", [{SENTINEL: {"input": "x", "output": 1}}, {SENTINEL: {"input": -1, "output": 1}},
+                                    {SENTINEL: 5}])
+def test_a_model_name_in_prices_is_never_echoed(tmp_path, prices):
+    path = write(tmp_path / "provider.json", {"prices": prices})
+    with pytest.raises(ProviderError, match="prices") as info:
         load_provider(path)
     assert SENTINEL not in str(info.value)
 
