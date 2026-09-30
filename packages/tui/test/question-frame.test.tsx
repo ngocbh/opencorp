@@ -156,42 +156,27 @@ test("a 409 says someone else answered and re-reads the question", async () => {
   }
 })
 
-test("a multi-page question shows that it can't be answered here, and Esc still stops it", async () => {
+test("a multi-page question answers with a record, page by page; the header names the work item", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
+  const at = new Date().toISOString()
+  office.state.workItems["w1"] = {
+    id: "w1",
+    title: "Cut the release",
+    kind: "task",
+    status: "in_progress",
+    requester: "lan",
+    created_at: at,
+    updated_at: at,
+  }
   const q = office.addQuestion({
     session_id: s.id,
+    source: "human_input",
+    node_id: "release",
+    work_item_id: "w1",
     question: "Set up the release",
     questions: [
       { question: "Which channel?", header: "Channel", options: [{ label: "beta" }, { label: "stable" }] },
-      { question: "Tag it?", header: "Tag", options: [{ label: "yes" }, { label: "no" }] },
-    ],
-  })
-  const app = await bootFrame(createStub(office), { sessionID: s.id })
-  try {
-    const f = await app.until((f) => f.includes("can't be answered here yet"))
-    expect(f).toContain("Which channel?")
-    expect(f).toContain("Tag it?")
-    app.input.pressKey("1")
-    app.input.pressEnter()
-    await Bun.sleep(50)
-    expect(office.requests.some((r) => r.path === `/questions/${q.id}/answer`)).toBe(false)
-    app.input.pressEscape()
-    await app.until(() => office.state.questions[q.id].status !== "open")
-    expect(office.requests.some((r) => r.method === "POST" && r.path === `/questions/${q.id}/stop`)).toBe(true)
-  } finally {
-    await app.stop()
-    office.stop()
-  }
-})
-
-test("a single-page multi-select question can't be answered here either", async () => {
-  const office = createFakeOffice()
-  const s = office.state.sessions[0]
-  office.addQuestion({
-    session_id: s.id,
-    question: "Pick targets",
-    questions: [
       {
         question: "Which targets?",
         header: "Targets",
@@ -202,8 +187,49 @@ test("a single-page multi-select question can't be answered here either", async 
   })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
+    await app.until(
+      (f) => f.includes('@minh asks · work item "Cut the release"') && f.includes("Question 1 of 2 · Channel"),
+    )
+    app.input.pressKey("2")
+    await app.until((f) => f.includes("Question 2 of 2 · Targets") && f.includes("[ ] linux"))
+    app.input.pressKey("1")
+    app.input.pressKey("2")
+    await app.until((f) => f.includes("[x] linux") && f.includes("[x] mac"))
+    expect(office.requests.some((r) => r.path === `/questions/${q.id}/answer`)).toBe(false)
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: { Channel: "stable", Targets: ["linux", "mac"] },
+      answer_kind: "option",
+    })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a prompt gate with a record output can't be answered here", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    source: "human_input",
+    node_id: "fill",
+    question: "Describe the bug",
+    answer_schema: [
+      { name: "title", type: "str", required: true },
+      { name: "severity", type: "int", required: true },
+    ],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
     const f = await app.until((f) => f.includes("can't be answered here yet"))
-    expect(f).toContain("Which targets?")
+    expect(f).toContain("Describe the bug")
+    expect(f).toContain("@minh asks")
+    app.input.pressKey("1")
+    app.input.pressEnter()
+    await Bun.sleep(50)
+    expect(office.requests.some((r) => r.path === `/questions/${q.id}/answer`)).toBe(false)
   } finally {
     await app.stop()
     office.stop()

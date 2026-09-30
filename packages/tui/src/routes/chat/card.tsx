@@ -1,0 +1,400 @@
+import { createStore, produce } from "solid-js/store"
+import { createMemo, createResource, For, onCleanup, onMount, Show } from "solid-js"
+import { useRenderer } from "@opentui/solid"
+import type { TextareaRenderable } from "@opentui/core"
+import { tint, useTheme } from "../../context/theme"
+import type { AnswerRequest, Question } from "@agent-corp/protocol"
+import { useOffice } from "../../context/office"
+import { OfficeError, isNotImplemented } from "../../office/errors"
+import { errorMessage } from "../../util/error"
+import { personLabel } from "../../util/transcript"
+import { useToast } from "../../ui/toast"
+import { SplitBorder } from "../../ui/border"
+import { useTuiConfig } from "../../config"
+import { useBindings, useOpencodeModeStack } from "../../keymap"
+import { buildAnswer, cardModel, type PageAnswer } from "./answer"
+
+const QUESTION_MODE = "question"
+
+/** The open question card: a page per question to pick or type on; Esc stops the question. */
+export function QuestionCard(props: { question: Question | undefined }) {
+  const office = useOffice()
+  const toast = useToast()
+  const { theme } = useTheme()
+  const renderer = useRenderer()
+  const tuiConfig = useTuiConfig()
+  const modeStack = useOpencodeModeStack()
+
+  // The card stays mounted while its question is replaced by a newer copy (a reconnect re-reads
+  // it); keep the last copy for the moment the question goes before the card does.
+  const question = createMemo<Question>((prev) => props.question ?? prev, props.question!)
+  const model = createMemo(() => cardModel(question()))
+  const [store, setStore] = createStore({
+    page: 0,
+    selected: 0,
+    editing: false,
+    answers: [] as PageAnswer[],
+  })
+
+  // The context header: who asks, and for which work item. The store has a work item only once
+  // an event carried it, so fetch it when it isn't there.
+  const [fetched] = createResource(
+    () => question().work_item_id ?? undefined,
+    (id) => office.client.workItems.get(id).catch(() => undefined),
+  )
+  const workItem = createMemo(() => {
+    const id = question().work_item_id
+    return id ? (office.state.workItems[id] ?? fetched()) : undefined
+  })
+  const context = createMemo(() => {
+    const asker = `${personLabel(office.state.people, question().asker)} asks`
+    const item = workItem()
+    return item ? `${asker} · work item "${item.title}"` : asker
+  })
+
+  const pages = createMemo(() => model()?.pages ?? [])
+  const page = createMemo(() => pages()[store.page])
+  const answer = createMemo<PageAnswer>(() => store.answers[store.page] ?? { picked: [], text: "" })
+  const options = createMemo(() => page()?.options ?? [])
+  const rows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
+  const other = createMemo(() => page()?.typed === true && store.selected === options().length)
+
+  let textarea: TextareaRenderable | undefined
+
+  // One answer at a time: a second pick while the first is in flight would race it.
+  let sending = false
+
+  function send(req: AnswerRequest) {
+    if (sending) return
+    sending = true
+    const id = question().id
+    office.client.questions
+      .answer(id, req)
+      .then((q) => office.putQuestion(q))
+      .catch((error) => {
+        if (error instanceof OfficeError && error.status === 409) {
+          toast.show({ message: "This question was already answered", variant: "warning" })
+          return office.refreshQuestion(id).catch(() => {})
+        }
+        toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
+      })
+      .finally(() => (sending = false))
+  }
+
+  function reject() {
+    office.client.questions.stop(question().id).catch((error) => {
+      if (isNotImplemented(error))
+        return toast.show({ message: "Stopping a question is not available yet", variant: "warning" })
+      toast.show({ title: "Stopping failed", message: errorMessage(error), variant: "error" })
+    })
+  }
+
+  function setAnswer(change: (a: PageAnswer) => PageAnswer) {
+    setStore(
+      produce((s) => {
+        s.answers[s.page] = change(s.answers[s.page] ?? { picked: [], text: "" })
+      }),
+    )
+  }
+
+  function goTo(index: number) {
+    setStore({ page: index, selected: 0, editing: false })
+  }
+
+  /** Moves to the next page, or sends the answer from the last one. */
+  function next() {
+    const m = model()
+    if (!m) return
+    if (store.page < m.pages.length - 1) return goTo(store.page + 1)
+    const req = buildAnswer(m, store.answers)
+    if (req) return send(req)
+    // A page left without an answer: go back to it.
+    goTo(m.pages.findIndex((p, i) => !p.multi && !store.answers[i]?.picked.length && !store.answers[i]?.text.trim()))
+  }
+
+  function toggle(index: number) {
+    setAnswer((a) => {
+      const picked = a.picked.includes(index) ? a.picked.filter((n) => n !== index) : [...a.picked, index]
+      return { ...a, picked: picked.sort((x, y) => x - y) }
+    })
+  }
+
+  /** Enter on the selected row: open the typed answer, confirm a multi-select page, or pick. */
+  function selectRow() {
+    if (other()) return setStore("editing", true)
+    if (page()?.multi) return next()
+    if (!options()[store.selected]) return
+    setAnswer(() => ({ picked: [store.selected], text: "" }))
+    next()
+  }
+
+  onMount(() => {
+    const popMode = modeStack.push(QUESTION_MODE)
+    onCleanup(popMode)
+  })
+
+  useBindings(() => ({
+    mode: QUESTION_MODE,
+    enabled: store.editing,
+    commands: [
+      {
+        name: "prompt.clear",
+        title: "Clear answer edit",
+        category: "Question",
+        run() {
+          const text = textarea?.plainText ?? ""
+          if (!text) {
+            setStore("editing", false)
+            return
+          }
+          textarea?.setText("")
+        },
+      },
+    ],
+    bindings: [
+      {
+        key: "escape",
+        desc: "Cancel answer edit",
+        group: "Question",
+        cmd: () => {
+          setStore("editing", false)
+        },
+      },
+      ...tuiConfig.keybinds.get("prompt.clear"),
+      {
+        key: "return",
+        desc: "Submit answer edit",
+        group: "Question",
+        cmd: () => {
+          const text = textarea?.plainText?.trim() ?? ""
+          const multi = page()?.multi
+          setAnswer((a) => ({ picked: multi ? a.picked : [], text }))
+          setStore("editing", false)
+          if (text) next()
+        },
+      },
+    ],
+  }))
+
+  useBindings(() => {
+    const total = rows()
+    const move = (by: number) => total && setStore("selected", (store.selected + by + total) % total)
+    const stop = [
+      { key: "escape", desc: "Reject question", group: "Question", cmd: () => reject() },
+      ...tuiConfig.keybinds.get("app.exit"),
+    ]
+    const paging =
+      pages().length > 1
+        ? [
+            { key: "left", desc: "Previous question", group: "Question", cmd: () => goTo(Math.max(store.page - 1, 0)) },
+            {
+              key: "right",
+              desc: "Next question",
+              group: "Question",
+              cmd: () => goTo(Math.min(store.page + 1, pages().length - 1)),
+            },
+          ]
+        : []
+    return {
+      mode: QUESTION_MODE,
+      enabled: !store.editing,
+      commands: [
+        {
+          name: "app.exit",
+          title: "Reject question",
+          category: "Question",
+          run() {
+            reject()
+          },
+        },
+      ],
+      bindings: !model()
+        ? stop
+        : [
+            ...Array.from({ length: Math.min(total, 9) }, (_, index) => ({
+              key: String(index + 1),
+              desc: `Select answer ${index + 1}`,
+              group: "Question",
+              cmd: () => {
+                setStore("selected", index)
+                if (page()?.multi && index < options().length) return toggle(index)
+                selectRow()
+              },
+            })),
+            { key: "up", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
+            { key: "k", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
+            { key: "down", desc: "Next answer", group: "Question", cmd: () => move(1) },
+            { key: "j", desc: "Next answer", group: "Question", cmd: () => move(1) },
+            {
+              key: "space",
+              desc: "Toggle answer",
+              group: "Question",
+              cmd: () => {
+                if (page()?.multi && !other()) toggle(store.selected)
+              },
+            },
+            { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
+            ...paging,
+            ...stop,
+          ],
+    }
+  })
+
+  const marker = (i: number) => {
+    if (!page()?.multi) return `${i + 1}.`
+    return answer().picked.includes(i) ? `${i + 1}. [x]` : `${i + 1}. [ ]`
+  }
+
+  return (
+    <box
+      backgroundColor={theme.backgroundPanel}
+      border={["left"]}
+      borderColor={theme.accent}
+      customBorderChars={SplitBorder.customBorderChars}
+    >
+      <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
+        <box paddingLeft={1}>
+          <text fg={theme.textMuted}>{context()}</text>
+        </box>
+        <Show
+          when={model()}
+          fallback={
+            <box paddingLeft={1} gap={1}>
+              <text fg={theme.text}>{question().title ?? question().question}</text>
+              <Show when={question().title}>
+                <text fg={theme.text}>{question().question}</text>
+              </Show>
+              <text fg={theme.warning}>This question can't be answered here yet.</text>
+            </box>
+          }
+        >
+          <box paddingLeft={1} gap={1}>
+            <box>
+              <Show when={pages().length > 1}>
+                <text fg={theme.textMuted}>
+                  {`Question ${store.page + 1} of ${pages().length} · ${page()?.header}`}
+                </text>
+              </Show>
+              <text fg={theme.text}>{page()?.question}</text>
+            </box>
+            <box>
+              <For each={options()}>
+                {(opt, i) => {
+                  const active = () => i() === store.selected
+                  return (
+                    <box
+                      onMouseOver={() => setStore("selected", i())}
+                      onMouseDown={() => setStore("selected", i())}
+                      onMouseUp={() => {
+                        if (renderer.getSelection()?.getSelectedText()) return
+                        if (page()?.multi) return toggle(i())
+                        selectRow()
+                      }}
+                    >
+                      <box flexDirection="row">
+                        <box backgroundColor={active() ? theme.backgroundElement : undefined} paddingRight={1}>
+                          <text fg={active() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
+                            {marker(i())}
+                          </text>
+                        </box>
+                        <box backgroundColor={active() ? theme.backgroundElement : undefined}>
+                          <text fg={active() ? theme.secondary : theme.text}>{opt.label}</text>
+                        </box>
+                      </box>
+
+                      <box paddingLeft={3}>
+                        <text fg={theme.textMuted}>{opt.description}</text>
+                      </box>
+                    </box>
+                  )
+                }}
+              </For>
+              <Show when={page()?.typed}>
+                <box
+                  onMouseOver={() => setStore("selected", options().length)}
+                  onMouseDown={() => setStore("selected", options().length)}
+                  onMouseUp={() => {
+                    if (renderer.getSelection()?.getSelectedText()) return
+                    selectRow()
+                  }}
+                >
+                  <box flexDirection="row">
+                    <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
+                      <text fg={other() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
+                        {`${options().length + 1}.`}
+                      </text>
+                    </box>
+                    <box backgroundColor={other() ? theme.backgroundElement : undefined}>
+                      <text fg={other() ? theme.secondary : theme.text}>Type your own answer</text>
+                    </box>
+                  </box>
+                  <Show when={store.editing}>
+                    <box paddingLeft={3}>
+                      <textarea
+                        ref={(val: TextareaRenderable) => {
+                          textarea = val
+                          val.traits = { status: "ANSWER" }
+                          queueMicrotask(() => {
+                            val.focus()
+                            val.gotoLineEnd()
+                          })
+                        }}
+                        initialValue={answer().text}
+                        placeholder="Type your own answer"
+                        placeholderColor={theme.textMuted}
+                        minHeight={1}
+                        maxHeight={6}
+                        textColor={theme.text}
+                        focusedTextColor={theme.text}
+                        cursorColor={theme.primary}
+                        cursorStyle={tuiConfig.cursor}
+                      />
+                    </box>
+                  </Show>
+                  <Show when={!store.editing && answer().text}>
+                    <box paddingLeft={3}>
+                      <text fg={theme.textMuted}>{answer().text}</text>
+                    </box>
+                  </Show>
+                </box>
+              </Show>
+            </box>
+          </box>
+        </Show>
+      </box>
+      <box
+        flexDirection="row"
+        flexShrink={0}
+        gap={1}
+        paddingLeft={2}
+        paddingRight={3}
+        paddingBottom={1}
+        justifyContent="space-between"
+      >
+        <box flexDirection="row" gap={2}>
+          <Show when={model()}>
+            <text fg={theme.text}>
+              {"↑↓"} <span style={{ fg: theme.textMuted }}>select</span>
+            </text>
+            <Show when={page()?.multi}>
+              <text fg={theme.text}>
+                space <span style={{ fg: theme.textMuted }}>toggle</span>
+              </text>
+            </Show>
+            <Show when={pages().length > 1}>
+              <text fg={theme.text}>
+                {"←→"} <span style={{ fg: theme.textMuted }}>question</span>
+              </text>
+            </Show>
+            <text fg={theme.text}>
+              enter <span style={{ fg: theme.textMuted }}>{store.page < pages().length - 1 ? "next" : "submit"}</span>
+            </text>
+          </Show>
+          <text fg={theme.text}>
+            esc <span style={{ fg: theme.textMuted }}>dismiss</span>
+          </text>
+        </box>
+      </box>
+    </box>
+  )
+}

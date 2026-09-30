@@ -48,7 +48,7 @@ import { OPENCODE_BASE_MODE, useBindings, useOpencodeKeymap } from "../../keymap
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
-import { QuestionPrompt } from "./question"
+import { QuestionCard } from "../chat/card"
 import { cardQuestions } from "../chat/turn"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
 
@@ -543,7 +543,7 @@ export function Session() {
                       />
                     }
                   >
-                    {(_id) => <QuestionPrompt question={question()} />}
+                    {(_id) => <QuestionCard question={question()} />}
                   </Show>
                 </box>
               </>
