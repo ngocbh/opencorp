@@ -370,8 +370,11 @@ class Harness:
                     return "turn"
                 asked = self.store.list_questions(run_id=live.run_id, status="open", source="ask_user")
                 if asked:
-                    self.store.answer_question(asked[0].id, text, "text", answered_by=live.owner)
-                    return "answer"
+                    try:
+                        self.store.answer_question(asked[0].id, text, "text", answered_by=live.owner)
+                        return "answer"
+                    except InvalidTransition:
+                        pass  # a card answered it first (cards don't take this lock); the text is the next message
             live.transcript.user(text)
             if live.reply_node is not None and live.worker is not None and live.worker.steer(live.reply_node, text):
                 return "steer"

@@ -84,6 +84,29 @@ def test_a_message_answers_the_models_open_question(harness, fake_llm, workspace
     assert harness.store.get_question(q.id).status == "consumed"
 
 
+def test_a_message_that_loses_the_question_to_a_card_answer_is_the_next_message(harness, fake_llm, workspace):
+    fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which?", "options": ["A", "B"]}}]},
+                    {"content": "You chose."}, {"content": "Noted."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    q = wait_for(lambda: harness.store.list_questions(session_id=sid, status="open", source="ask_user"),
+                 what="the model's question")[0]
+    answer = harness.store.answer_question
+
+    def card_first(question_id, *args, **kwargs):
+        # The card's answer lands between the message's look-up and its own answer.
+        harness.store.answer_question = answer
+        answer(question_id, "A", "option", answered_by="ceo")
+        return answer(question_id, *args, **kwargs)
+
+    harness.store.answer_question = card_first
+    assert harness.prompt(sid, "B, and keep it short") in ("steer", "queued")
+    assert harness.store.get_question(q.id).answer == "A"
+    wait_for(lambda: "B, and keep it short" in json.dumps(fake_llm.requests()), what="the message reaching the model")
+    wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
+    assert texts(harness, sid, "user") == ["hi", "B, and keep it short"]
+
+
 def test_esc_answers_the_models_question_and_keeps_the_run(harness, fake_llm, workspace):
     fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which?"}}]},
                     {"content": "Next."})
