@@ -1,11 +1,15 @@
 """Session routes: listing, reading, transcripts, and session actions."""
 
+from collections.abc import Callable
+from typing import Any
+
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_corp.daemon.http import HTTPError, call, get_office, not_implemented, ok
-from agent_corp.protocol.models import Session
+from agent_corp.chat.harness import Harness, HarnessError
+from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
+from agent_corp.protocol.models import Ack, CostCapRequest, CreateSessionRequest, PromptRequest, Session
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
@@ -49,14 +53,68 @@ async def list_messages(request: Request) -> JSONResponse:
     return ok(await call(get_office(request).store.list_messages, session.id))
 
 
+def harness(request: Request) -> Harness:
+    """The office's chat harness; ``501`` if this office runs none."""
+    found = get_office(request).extras.get("harness")
+    if found is None:
+        raise HTTPError(501, "not_implemented", f"{request.method} {request.url.path} is not implemented yet")
+    return found
+
+
+async def harness_call[T](fn: Callable[..., T], *args: Any) -> T:
+    """Run a blocking harness call in a thread; a ``HarnessError`` becomes its ``ApiError``."""
+    try:
+        return await call(fn, *args)
+    except HarnessError as exc:
+        raise HTTPError(exc.status, exc.code, exc.message) from exc
+
+
+async def create_session(request: Request) -> JSONResponse:
+    """Start a person's main chat in a folder."""
+    body = await parse(request, CreateSessionRequest)
+    return ok(await harness_call(harness(request).start_session, body.person, body.cwd, body.harness))
+
+
+async def prompt(request: Request) -> JSONResponse:
+    """Send a message: the next turn, an answer to the model's question, a steer, or queued."""
+    body = await parse(request, PromptRequest)
+    await harness_call(harness(request).prompt, request.path_params["id"], body.text)
+    return ok(Ack(ok=True))
+
+
+async def steer(request: Request) -> JSONResponse:
+    """Steer the running reply (a prompt when none is running)."""
+    body = await parse(request, PromptRequest)
+    await harness_call(harness(request).steer, request.path_params["id"], body.text)
+    return ok(Ack(ok=True))
+
+
+async def interrupt(request: Request) -> JSONResponse:
+    """Esc: stop the running reply and its calls; the session stays open."""
+    await harness_call(harness(request).interrupt, request.path_params["id"])
+    return ok(Ack(ok=True))
+
+
+async def end(request: Request) -> JSONResponse:
+    """End the session (interrupting a busy reply first); a session already ending is left as it is."""
+    await harness_call(harness(request).end, request.path_params["id"])
+    return ok(Ack(ok=True))
+
+
+async def cost_cap(request: Request) -> JSONResponse:
+    """Set the session's cost cap; it must be above the cost so far. Held turns go on."""
+    body = await parse(request, CostCapRequest)
+    return ok(await harness_call(harness(request).set_cost_cap, request.path_params["id"], body.cost_cap_usd))
+
+
 ROUTES = [
     Route("/sessions", list_sessions, methods=["GET"]),
-    Route("/sessions", not_implemented, methods=["POST"]),
+    Route("/sessions", create_session, methods=["POST"]),
     Route("/sessions/{id}", get_session, methods=["GET"]),
     Route("/sessions/{id}/messages", list_messages, methods=["GET"]),
-    Route("/sessions/{id}/prompt", not_implemented, methods=["POST"]),
-    Route("/sessions/{id}/steer", not_implemented, methods=["POST"]),
-    Route("/sessions/{id}/interrupt", not_implemented, methods=["POST"]),
-    Route("/sessions/{id}/end", not_implemented, methods=["POST"]),
-    Route("/sessions/{id}/cost-cap", not_implemented, methods=["POST"]),
+    Route("/sessions/{id}/prompt", prompt, methods=["POST"]),
+    Route("/sessions/{id}/steer", steer, methods=["POST"]),
+    Route("/sessions/{id}/interrupt", interrupt, methods=["POST"]),
+    Route("/sessions/{id}/end", end, methods=["POST"]),
+    Route("/sessions/{id}/cost-cap", cost_cap, methods=["POST"]),
 ]
