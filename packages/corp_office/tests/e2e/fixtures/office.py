@@ -38,6 +38,11 @@ def folder(path: Path) -> Path:
     return path.resolve()
 
 
+def asked(request) -> str:
+    """A model request's messages as JSON text."""
+    return json.dumps(request["messages"])
+
+
 class RunningOffice:
     """An office daemon on ``home`` whose provider is ``fake``, driven over its unix socket."""
 
@@ -106,6 +111,10 @@ class RunningOffice:
         """The text of Minh's replies in session ``sid``, oldest first."""
         return [p["text"] for p in self._parts(sid, "assistant", "text")]
 
+    def users(self, sid: str) -> list[str]:
+        """The text of the owner's messages in session ``sid``, oldest first."""
+        return [p["text"] for p in self._parts(sid, "user", "text")]
+
     def tools(self, sid: str) -> list[tuple[str, str]]:
         """Each tool part in session ``sid`` as ``(tool, state)``."""
         return [(p["tool"], p["state"]) for p in self._parts(sid, "assistant", "tool")]
@@ -123,6 +132,17 @@ class RunningOffice:
     def prompt(self, sid: str, text: str):
         """Send ``text`` as the TUI does every message: a turn when idle, a steer when busy."""
         return self.post(f"/sessions/{sid}/prompt", {"text": text})
+
+    def replying(self, sid: str) -> None:
+        """Wait until the office has seen Minh's reply start in session ``sid``: the newest message is his."""
+        # A prompt steers only once the office has handled the reply's start frame, which can
+        # arrive just after the model request does.
+        wait_for(lambda: self.get(f"/sessions/{sid}/messages")[-1]["role"] == "assistant",
+                 f"session {sid}'s reply to start")
+
+    def interrupt(self, sid: str):
+        """Esc in the TUI."""
+        return self.post(f"/sessions/{sid}/interrupt")
 
     def settled(self, sid: str, texts: list[str]) -> None:
         """Wait until session ``sid`` is idle with exactly ``texts`` as Minh's replies."""

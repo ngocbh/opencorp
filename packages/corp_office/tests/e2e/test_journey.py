@@ -2,6 +2,8 @@
 
 import pytest
 
+from .fixtures.office import asked, wait_for
+
 pytestmark = pytest.mark.timeout(180)
 
 
@@ -23,3 +25,31 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     office.settled(sid, ["Marked it done."])
     assert (workspace / "README.md").read_text() == "# Demo\n\nStatus: done\n"
     assert office.tools(sid) == [("edit_file", "completed")]
+
+    # 2. Steer mid-reply: the TUI sends the follow-up with prompt, and it reaches the model's next call.
+    fake.script({"content": "Looking.", "tool_calls": [{"name": "list", "arguments": {"path": "."}}], "hold": True},
+                {"content": "Added both."})
+    office.prompt(sid, "Add a changelog")
+    fake.wait_for_requests(3, timeout=40)
+    office.replying(sid)
+    assert office.status(sid) == "busy"
+    office.prompt(sid, "Also mention the date")
+    fake.release()
+    office.settled(sid, ["Marked it done.", "Looking.", "Added both."])
+    assert "Also mention the date" in asked(fake.requests()[3])
+    assert office.users(sid) == ["Mark the README done", "Add a changelog", "Also mention the date"]
+
+    # Then Esc: the held reply and its write never land, and the next prompt gets a fresh reply.
+    fake.script({"content": "Writing.", "tool_calls": [{"name": "write_file", "arguments": {"path": "never.txt", "content": "x"}}], "hold": True},
+                {"content": "Starting over."})
+    office.prompt(sid, "Write never.txt")
+    fake.wait_for_requests(5, timeout=40)
+    office.replying(sid)
+    office.interrupt(sid)
+    fake.release()
+    wait_for(lambda: office.status(sid) == "idle", "the interrupted turn to stop")
+    office.prompt(sid, "Start over")
+    office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "Starting over."])
+    assert not (workspace / "never.txt").exists()
+    assert len(fake.requests()) == 6  # Esc made no model call of its own
+    assert "Write never.txt" in asked(fake.requests()[5])  # the stopped turn stays in the history
