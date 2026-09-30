@@ -188,7 +188,7 @@ export interface Grant {
   /**
    * @minItems 1
    */
-  can: [string, ...string[]];
+  can: string[];
   where?: {
     [k: string]: unknown[];
   } | null;
@@ -397,12 +397,7 @@ export interface Question {
   title?: string | null;
   question: string;
   options?: string[];
-  questions?:
-    | [QuestionPage]
-    | [QuestionPage, QuestionPage]
-    | [QuestionPage, QuestionPage, QuestionPage]
-    | [QuestionPage, QuestionPage, QuestionPage, QuestionPage]
-    | null;
+  questions?: QuestionPage[] | null;
   answer_schema?: AnswerField[];
   discussion?: DiscussionEntry[];
   gate?: boolean;
