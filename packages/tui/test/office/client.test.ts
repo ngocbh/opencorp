@@ -3,6 +3,7 @@ import { OFFICE_501_ROUTES, createFakeOffice, type FakeOffice } from "../../scri
 import { createOfficeClient } from "../../src/office/client"
 import { OfficeError, OfficeTimeout, VersionConflictError, isNotImplemented } from "../../src/office/errors"
 import { request } from "../../src/office/http"
+import { until } from "../fixture/until"
 
 let office: FakeOffice
 afterEach(() => office?.stop())
@@ -45,7 +46,8 @@ test("interrupt, end, and the cost cap", async () => {
   expect((await failure(client().sessions.costCap(id, { cost_cap_usd: 0 }))).code).toBe("invalid_body")
   await client().sessions.end(id)
   // A main session is debriefed before it ends.
-  expect((await client().sessions.get(id)).status).toBe("debriefing")
+  expect((await client().sessions.get(id)).status).toBe("ending")
+  await until(() => office.state.sessions[0].status === "debriefing")
 })
 
 test("the first answer wins; the second gets 409 not_open", async () => {

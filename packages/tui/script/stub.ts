@@ -473,12 +473,12 @@ export function createFakeOffice(
       "POST",
       "/sessions/:id/end",
       ({ params }) => {
-        // A main session is debriefed before it ends; addDebrief ends it. Other kinds end at once.
-        if (session(params.id).kind !== "main") setStatus(params.id, "ended")
-        else {
-          setStatus(params.id, "ending")
-          setStatus(params.id, "debriefing")
-        }
+        const s = session(params.id)
+        if (s.status === "ending") return Response.json({ ok: true })
+        setStatus(s.id, "ending")
+        // A main session is debriefed before it ends, and ends once its debrief is written.
+        const next = s.kind === "main" ? "debriefing" : "ended"
+        setTimeout(() => session(s.id).status === "ending" && setStatus(s.id, next), 20)
         return Response.json({ ok: true })
       },
     ],

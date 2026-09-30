@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
+import { until } from "../fixture/until"
 
 let office: FakeOffice
 afterEach(() => office?.stop())
@@ -27,7 +28,7 @@ test("an ended session with no debrief is a 404: only debriefing implies one", a
   expect((await failure(client().debriefs.get(id))).code).toBe("not_found")
 })
 
-test("ending a main session goes ending, then debriefing; a ready debrief ends it", async () => {
+test("ending a main session goes ending, then debriefing a moment later; a ready debrief ends it", async () => {
   office = createFakeOffice()
   const id = office.state.sessions[0].id
   const seen: string[] = []
@@ -39,7 +40,10 @@ test("ending a main session goes ending, then debriefing; a ready debrief ends i
   })
   await open
   await client().sessions.end(id)
-  expect((await client().sessions.get(id)).status).toBe("debriefing")
+  expect((await client().sessions.get(id)).status).toBe("ending")
+  // A second end while ending is a no-op.
+  await client().sessions.end(id)
+  await until(() => office.state.sessions[0].status === "debriefing")
   office.addDebrief(id, { state: "pending" })
   expect((await client().sessions.get(id)).status).toBe("debriefing")
   office.addDebrief(id, { state: "ready" })
@@ -47,11 +51,12 @@ test("ending a main session goes ending, then debriefing; a ready debrief ends i
   await Bun.sleep(50)
   events.close()
   expect(seen).toEqual(["ending", "debriefing", "ended"])
-  // Other kinds aren't debriefed: they end at once.
+  // Other kinds aren't debriefed: they go from ending to ended.
   const side = office.state.sessions[0]
   Object.assign(side, { kind: "side", status: "idle" })
   await client().sessions.end(side.id)
-  expect((await client().sessions.get(side.id)).status).toBe("ended")
+  expect((await client().sessions.get(side.id)).status).toBe("ending")
+  await until(() => office.state.sessions[0].status === "ended")
 })
 
 test("confirm makes a work item per newly confirmed follow-up; indices are deduped, repeats are no-ops", async () => {
