@@ -100,7 +100,7 @@ def _async(calls, name):
     return cb
 
 
-# (method, path, body) for every non-SSE route in the WP1 route table. GET /events is
+# (method, path, body) for every non-SSE route in the route table. GET /events is
 # covered over a real socket in test_routes_events.py.
 ULID = "01JA1H0000000000000000000A"
 TABLE = [
