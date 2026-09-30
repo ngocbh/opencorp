@@ -223,6 +223,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
         group: "Question",
         cmd: () => setStore("confirming", false),
       })),
+      ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
     ],
   }))
 

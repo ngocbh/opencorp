@@ -300,3 +300,23 @@ test("a second dismiss or send back while the first is in flight sends nothing",
     office.stop()
   }
 })
+
+test("Ctrl+C while 'Stop @minh? y/N' shows leaves on the second press and never stops", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?") && f.includes("esc stop @minh"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("Press again to leave"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+    expect(stops(office, q.id)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
