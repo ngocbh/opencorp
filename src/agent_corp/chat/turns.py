@@ -1,0 +1,42 @@
+"""Which node of a conversation flow is the turn, and small helpers for chat timing."""
+
+import re
+from dataclasses import dataclass
+
+_OCCURRENCE = re.compile(r"#\d+$")
+_DURATION = re.compile(r"^([0-9]+)([smhd])$")
+_UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def turn_path(node_id: str) -> str:
+    """``node_id`` without the ``#<n>`` LOOP/MAP occurrence suffix of each segment (``chat#3/ask`` → ``chat/ask``)."""
+    return "/".join(_OCCURRENCE.sub("", segment) for segment in node_id.split("/"))
+
+
+@dataclass(frozen=True)
+class ChatFlow:
+    """A conversation flow's shape: its turn node, its steerable reply node, and its exit command."""
+
+    turn: str = "chat/ask"
+    reply: str = "chat/reply"
+    exit: str = "/exit"
+
+    def is_turn(self, node_id: str | None) -> bool:
+        """True for an occurrence of the turn node."""
+        return node_id is not None and turn_path(node_id) == self.turn
+
+    def is_reply(self, node_id: str | None) -> bool:
+        """True for an occurrence of the reply node."""
+        return node_id is not None and turn_path(node_id) == self.reply
+
+
+MAIN_CHAT = ChatFlow()
+"""The shape of ``shared/flows/chat.yaml``; a person's own main flow must keep these node names."""
+
+
+def seconds(duration: str) -> int:
+    """``"90s"``, ``"15m"``, ``"2h"``, or ``"1d"`` in seconds (``CompanyDefaults.idle_end``)."""
+    match = _DURATION.fullmatch(duration)
+    if match is None:
+        raise ValueError(f"not a duration: {duration!r}")
+    return int(match[1]) * _UNIT[match[2]]
