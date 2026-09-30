@@ -18,6 +18,7 @@ _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 # `:(glob)` makes `*` match one path segment, so only people/<id>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"
 _BLOB_ID = re.compile(r"[0-9a-f]{40}")
+_HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?")  # the protocol's Handle
 
 
 class CompanyGitError(Exception):
@@ -172,10 +173,15 @@ class CompanyGit:
             return sorted(paths)
 
     def handle(self, profile_rel: str) -> str:
-        """The handle of the person who owns ``people/<id>/profile.md``, else the id."""
+        """The handle of the person who owns ``people/<id>/profile.md``, else the id.
+
+        A value that isn't a protocol handle falls back to the id too: the handle goes into
+        commit messages, where a newline could forge a ``Commit-Id`` trailer.
+        """
         pid = Path(profile_rel).parent.name
         try:
             data = yaml.safe_load((self.root / "people" / pid / "person.yaml").read_text(encoding="utf-8"))
-            return str(data["handle"])
+            handle = data["handle"]
         except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
             return pid
+        return handle if isinstance(handle, str) and _HANDLE.fullmatch(handle) else pid

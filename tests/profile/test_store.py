@@ -167,6 +167,7 @@ def test_commit_message_sources():
     assert commit_message("minh", {"run_id": "01J", "commit_id": "ac-memory-v1:ab"}) == (
         "profile(@minh): from feedback on run 01J\n\nCommit-Id: ac-memory-v1:ab")
     assert commit_message("minh", {"source": "a\nb  c", "run_id": "01J"}) == "profile(@minh): a b c"
+    assert commit_message("minh\n\nCommit-Id: x", None) == "profile(@minh Commit-Id: x): write"
 
 
 @pytest.mark.parametrize("commit_id", ["", "a b", "a\nCommit-Id: b", 7])
@@ -303,3 +304,11 @@ def test_a_failed_commit_removes_a_new_profile(store, git, company, monkeypatch)
         store.write("# Minh\n", base_version=EMPTY_BLOB)
     assert not (company / PROFILE).exists()
     assert _git(company, "status", "--porcelain") == ""
+
+
+def test_a_forged_handle_cannot_add_a_commit_id(store, company):
+    person = company / "people/minh/person.yaml"
+    person.write_text(person.read_text().replace("handle: minh", 'handle: "minh\\n\\nCommit-Id: forged\\n"'))
+    store.write("# Minh\nv1\n", base_version=store.read()[1])
+    assert _git(company, "log", "-1", "--format=%B") == "profile(@minh): write"
+    assert store.committed("forged") is None

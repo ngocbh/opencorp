@@ -32,7 +32,8 @@ def commit_message(handle: str, provenance: JsonObject | None) -> str:
     source, run_id, commit_id = p.get("source"), p.get("run_id"), _commit_id(p)
     if not (isinstance(source, str) and source.strip()):
         source = f"from feedback on run {run_id}" if isinstance(run_id, str) and run_id else "write"
-    subject = f"profile(@{handle}): {' '.join(source.split())}"  # one line, whatever the caller sent
+    # One line, whatever the caller sent, so neither part can add a trailer.
+    subject = f"profile(@{' '.join(handle.split())}): {' '.join(source.split())}"
     return subject if commit_id is None else f"{subject}\n\nCommit-Id: {commit_id}"
 
 

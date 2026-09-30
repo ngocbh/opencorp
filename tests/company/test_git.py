@@ -4,6 +4,7 @@ import threading
 import time
 
 import pytest
+import yaml
 
 from agent_corp.company.git import CompanyGit, CompanyGitError
 from tests.company.conftest import _git, write_repo
@@ -296,3 +297,9 @@ def test_unstage_keeps_the_working_file(g, company):
     g.unstage([PROFILE])
     assert _git(company, "status", "--porcelain") == "M people/minh/profile.md"
     assert (company / PROFILE).read_text() == "# staged\n"
+
+
+@pytest.mark.parametrize("handle", ["m\n\nCommit-Id: c-1\n", "Minh", "m inh", "-minh"])
+def test_handle_falls_back_to_id_when_not_a_handle(g, company, handle):
+    (company / "people/minh/person.yaml").write_text(yaml.safe_dump({"id": "minh", "handle": handle}))
+    assert g.handle(PROFILE) == "minh"
