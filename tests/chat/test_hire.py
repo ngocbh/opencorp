@@ -8,7 +8,7 @@ from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import HireRequest
 from tests.chat.conftest import CHAT_FLOW
-from tests.company.conftest import base_files, write_repo
+from tests.company.conftest import base_files, person, write_repo
 
 
 @pytest.fixture
@@ -107,3 +107,21 @@ def test_a_newline_in_the_title_cant_forge_a_commit_trailer(git):
     hiring.hire(HireRequest(**form, id=pid, confirm=True))
     log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%B"], capture_output=True, text=True)
     assert log.stdout.strip() == "hire(@lan): Lan, QA Commit-Id: forged"
+
+
+def test_an_existing_lint_error_is_a_warning_and_doesnt_block_a_hire(tmp_path):
+    files = base_files() | {"shared/flows/chat.yaml": CHAT_FLOW,
+                            "people/minh/person.yaml": person("minh", manager="kai")}
+    git = CompanyGit(write_repo(tmp_path / "company", files), tmp_path / "worktrees")
+    hiring = Hiring(git)
+    preview = hiring.hire(HireRequest(**FORM))
+    old = [i for i in preview.issues if i.path == "people/minh/person.yaml"]
+    assert old and {i.severity for i in old} == {"warning"}
+    assert all(i.severity == "warning" for i in preview.issues)
+    done = hiring.hire(HireRequest(**FORM, id=preview.person.id, confirm=True))
+    assert done.commit == git.head()
+
+    bad = hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}))  # the same error, new
+    assert any(i.severity == "error" and i.path.startswith(f"people/{bad.person.id}/") for i in bad.issues)
+    with pytest.raises(HireRefused):
+        hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}, id=bad.person.id, confirm=True))

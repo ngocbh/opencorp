@@ -46,7 +46,10 @@ class Hiring:
         return self.confirm(request) if request.confirm else self.preview(request)
 
     def preview(self, request: HireRequest) -> HireResponse:
-        """The person, diff, and lint issues (errors included) the hire would make; nothing is written."""
+        """The person, diff, and lint issues the hire would make; nothing is written.
+
+        Only issues the hire brings are errors; ones the repo already had are warnings.
+        """
         pid = request.id or new_id()
         with self.git.lock:
             self.git.commit_hand_edits()
@@ -56,7 +59,7 @@ class Hiring:
         return HireResponse(person=person, diff=_diff(files), issues=issues, commit=None)
 
     def confirm(self, request: HireRequest) -> HireResponse:
-        """Write and commit the previewed hire, unless its fields changed or lint finds an error."""
+        """Write and commit the previewed hire, unless its fields changed or it brings a lint error."""
         if request.id is None:
             raise HireRefused("invalid_body", "a confirm needs the preview's id")
         with self._lock:
@@ -112,7 +115,11 @@ class Hiring:
             for rel, text in files.items():
                 (scratch / rel).parent.mkdir(parents=True, exist_ok=True)
                 (scratch / rel).write_text(text)
-            issues = [RepoIssue(**asdict(i)) for i in lint(load_repo(scratch))]
+            # An error the repo already had isn't this hire's to fix; it shows as a warning.
+            known = {(i.path, i.code, i.message) for i in lint(before)}
+            issues = [RepoIssue(**asdict(i) | ({"severity": "warning"} if (i.path, i.code, i.message) in known
+                                               and not i.path.startswith(f"{base}/") else {}))
+                      for i in lint(load_repo(scratch))]
         # Lint names the later of two people sharing a handle; the new hire is the one to blame.
         owner = next((other for other, p in sorted(before.people.items()) if p.handle == person.handle), None)
         if owner is not None:
