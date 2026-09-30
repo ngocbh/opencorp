@@ -1,5 +1,8 @@
 """Secret values never leave the monitor, whatever shape a kind's result or error takes."""
 
+import json
+from urllib.parse import quote
+
 import pytest
 
 from agent_corp.assets.registry import KindTool
@@ -9,6 +12,9 @@ from tests.perm.conftest import KINDS, TOKEN
 PADDED = "p4dded-secret-value"
 PIN = "20260930"
 PEM = "-----BEGIN KEY-----\nAAAABBBBCCCCDDDD\nEEEEFFFFGGGGHHHH\n-----END KEY-----\n"
+ESCAPED = 'pa\\ss"wörd-123'
+ESCAPED_FORMS = (ESCAPED, json.dumps(ESCAPED)[1:-1], json.dumps(ESCAPED, ensure_ascii=False)[1:-1],
+                 repr(ESCAPED)[1:-1], quote(ESCAPED, safe=""))
 
 class Handle:
     """An object whose text holds the secret."""
@@ -36,6 +42,12 @@ LEAKS = {
     "number": lambda s: {"code": int(s["pin"])},
     "stripped": lambda s: f"used {s['padded'].strip()}",
     "pem_line": lambda s: "bad line: " + s["pem"].splitlines()[1],
+    "key_error": lambda s: str(KeyError(s["escaped"])),
+    "repr": lambda s: f"bad password {s['escaped']!r}",
+    "json_text": lambda s: json.dumps({"p": s["escaped"]}),
+    "json_text_unicode": lambda s: json.dumps({"p": s["escaped"]}, ensure_ascii=False),
+    "url": lambda s: "https://host/login?p=" + quote(s["escaped"], safe=""),
+    "raise_repr": lambda s: (_ for _ in ()).throw(KeyError(s["escaped"])),
     "raise_stripped": lambda s: (_ for _ in ()).throw(RuntimeError(f"auth failed for {s['padded'].strip()}")),
 }
 
@@ -49,20 +61,21 @@ def monitor(make_company, store, secrets):
     secrets.set("padded", PADDED + "\n")
     secrets.set("pem", PEM)
     secrets.set("pin", PIN)
-    asset = {"id": "vault", "kind": "leaky", "secrets": ["vault_token", "padded", "pem", "pin"], "tools": {"leak": {}},
-             "grants": [{"who": "minh", "can": ["leak"]}]}
+    secrets.set("escaped", ESCAPED)
+    asset = {"id": "vault", "kind": "leaky", "secrets": ["vault_token", "padded", "pem", "pin", "escaped"],
+             "tools": {"leak": {}}, "grants": [{"who": "minh", "can": ["leak"]}]}
     root = make_company(**{"assets/vault.yaml": asset})
     return Monitor(root, store, secrets, {**KINDS, "leaky": {"leak": KindTool(leak)}})
 
 
 def leaked(text):
-    return any(s in text for s in (TOKEN, PADDED, PIN, "AAAABBBBCCCCDDDD", "EEEEFFFFGGGGHHHH"))
+    return any(s in text for s in (TOKEN, PADDED, PIN, "AAAABBBBCCCCDDDD", "EEEEFFFFGGGGHHHH", *ESCAPED_FORMS))
 
 
 @pytest.mark.parametrize("mode", sorted(LEAKS))
 def test_no_form_of_a_secret_reaches_the_result_or_the_audit(monitor, store, mode):
     got = monitor.call("minh", "r1", "vault__leak", {"mode": mode})
-    assert "[redacted]" in repr(got) and not leaked(repr(got))
+    assert "[redacted]" in repr(got) and not leaked(repr(got)) and not leaked(str(got))
     [row] = store.list_audit()
     assert not leaked(repr(row))
 

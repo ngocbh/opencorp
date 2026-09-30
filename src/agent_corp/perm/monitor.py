@@ -4,6 +4,7 @@ import json
 from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -138,18 +139,24 @@ def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     """``value`` with entries under ``keys`` and every secret in ``values`` replaced by ``[redacted]``.
 
     Each secret is scrubbed as stored, without surrounding whitespace, and line by line
-    for lines of at least ``SECRET_LINE_CHARS`` (one line of a PEM key), longest first,
+    for lines of at least ``SECRET_LINE_CHARS`` (one line of a PEM key; a line that is not
+    secret, such as the key's armor, may be scrubbed too). Each of those is also scrubbed as
+    it reads escaped inside JSON, a Python repr, or a URL. All are scrubbed longest first,
     so a secret inside a longer one never leaves the longer one's ends behind.
     """
     return _scrub(value, keys, _needles(values))
 
 
 def _needles(values: Iterable[str]) -> list[str]:
-    found: set[str] = set()
+    plain: set[str] = set()
     for value in values:
-        found.update((value, value.strip()))
-        found.update(line.strip() for line in value.splitlines() if len(line.strip()) >= SECRET_LINE_CHARS)
-    return sorted((n for n in found if n), key=len, reverse=True)
+        plain.update((value, value.strip()))
+        plain.update(line.strip() for line in value.splitlines() if len(line.strip()) >= SECRET_LINE_CHARS)
+    found = set()
+    for needle in plain:
+        found.update((needle, json.dumps(needle)[1:-1], json.dumps(needle, ensure_ascii=False)[1:-1],
+                      repr(needle)[1:-1], quote(needle, safe="")))
+    return sorted((n for n in found if n), key=lambda n: (-len(n), n))
 
 
 def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
