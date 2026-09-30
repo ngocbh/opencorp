@@ -1,14 +1,36 @@
-"""The office's SQLite store."""
+"""The office's SQLite store: protocol entities, office bookkeeping, and the event outbox.
+
+Entities go in and come out as the generated protocol models. Every write that changes
+metadata inserts its ``Event`` into ``outbox`` in the same transaction; listeners see the
+events after the commit. Messages and parts are live content and emit no events.
+"""
 
 from __future__ import annotations
 
+import json
+import logging
 import sqlite3
 import threading
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from pydantic import BaseModel
 from ulid import ULID
 
+from agent_corp.protocol import now
+from agent_corp.protocol.models import (
+    Comment,
+    Event,
+    WorkItem,
+)
 from agent_corp.store.migrate import migrate
+
+log = logging.getLogger(__name__)
+
+type Listener = Callable[[Event], None]
 
 BUSY_TIMEOUT_S = 10.0
 
@@ -18,8 +40,118 @@ def new_id() -> str:
     return str(ULID())
 
 
+class StoreError(Exception):
+    """A store operation was refused."""
+
+
+class NotFound(StoreError, LookupError):
+    """The row to change does not exist."""
+
+
+class DuplicateKey(StoreError):
+    """A row with the same key already exists."""
+
+
+class StaleVersion(StoreError):
+    """A work item update was based on an older version."""
+
+    def __init__(self, expected: int, current: int) -> None:
+        super().__init__(f"based on version {expected}, current is {current}")
+        self.expected = expected
+        self.current = current
+
+
+@dataclass(frozen=True)
+class _Table:
+    name: str
+    model: type[BaseModel]
+    key: str = "id"
+    json: frozenset[str] = frozenset()
+    # Model fields kept in a child table rather than a column.
+    derived: frozenset[str] = frozenset()
+
+
+WORK_ITEMS = _Table("work_items", WorkItem, json=frozenset({"groups"}))
+COMMENTS = _Table("comments", Comment)
+
+
+def _columns(table: _Table, model: BaseModel) -> dict[str, Any]:
+    """The row for ``model``: its full JSON dump, with list and object fields as JSON text."""
+    cols = model.model_dump(mode="json", exclude=set(table.derived))
+    for name in table.json:
+        if cols[name] is not None:
+            cols[name] = json.dumps(cols[name])
+    return cols
+
+
+def _model[M: BaseModel](table: _Table, row: sqlite3.Row, model: type[M], **extra: Any) -> M:
+    """Build ``model`` from ``row``. A NULL column with a model default is left unset."""
+    fields = model.model_fields
+    data: dict[str, Any] = {}
+    for name in row.keys():
+        if name not in fields:
+            continue
+        value = row[name]
+        if value is None:
+            if fields[name].is_required():
+                data[name] = None
+            continue
+        data[name] = json.loads(value) if name in table.json else value
+    return model.model_validate({**data, **extra})
+
+
+def _quote(names: Iterable[str]) -> list[str]:
+    return [f'"{n}"' for n in names]
+
+
+class Tx:
+    """One write transaction on the calling thread's connection."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        self.events: list[Event] = []
+        self.depth = 0
+
+    def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
+        """Run one statement in this transaction."""
+        return self.conn.execute(sql, tuple(params))
+
+    def emit(self, type: str, subject_id: str, data: BaseModel | dict[str, Any]) -> Event:
+        """Insert an ``Event`` into the outbox; listeners get it once the transaction commits."""
+        payload = data.model_dump(mode="json") if isinstance(data, BaseModel) else data
+        event = Event(id=new_id(), type=type, at=now(), subject_id=subject_id, data=payload)
+        self.conn.execute(
+            "INSERT INTO outbox (id, type, subject_id, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+            (event.id, event.type, event.subject_id, json.dumps(event.data), event.at),
+        )
+        self.events.append(event)
+        return event
+
+    def insert(self, table: _Table, cols: dict[str, Any]) -> None:
+        names = list(cols)
+        sql = f"INSERT INTO {table.name} ({', '.join(_quote(names))}) VALUES ({', '.join('?' * len(names))})"
+        try:
+            self.conn.execute(sql, tuple(cols.values()))
+        except sqlite3.IntegrityError as exc:
+            if "UNIQUE" in str(exc):
+                raise DuplicateKey(f"{table.name}: {exc}") from exc
+            raise StoreError(f"{table.name}: {exc}") from exc
+
+    def update(self, table: _Table, cols: dict[str, Any]) -> None:
+        names = [n for n in cols if n != table.key]
+        sets = ", ".join(f"{q} = ?" for q in _quote(names))
+        self.conn.execute(
+            f'UPDATE {table.name} SET {sets} WHERE "{table.key}" = ?',
+            (*(cols[n] for n in names), cols[table.key]),
+        )
+
+
 class Store:
-    """The office store at ``path``: WAL mode, one connection per thread, migrated on open."""
+    """The office store at ``path``: WAL mode, one connection per thread, migrated on open.
+
+    Writes take ``BEGIN IMMEDIATE`` and are also serialized in-process, so listeners see
+    events in commit order. Never ``await`` inside a transaction.
+    """
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
@@ -27,6 +159,8 @@ class Store:
         self._local = threading.local()
         self._conns: list[sqlite3.Connection] = []
         self._conns_lock = threading.Lock()
+        self._write_lock = threading.RLock()
+        self._listeners: list[Listener] = []
         conn = self._conn()
         conn.execute("PRAGMA journal_mode = WAL")
         migrate(conn)
@@ -45,6 +179,8 @@ class Store:
             self._conns.clear()
         self._local = threading.local()
 
+    # --- connections and transactions -------------------------------------------------
+
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
@@ -58,3 +194,213 @@ class Store:
             with self._conns_lock:
                 self._conns.append(conn)
         return conn
+
+    @contextmanager
+    def transaction(self) -> Iterator[Tx]:
+        """A write transaction (``BEGIN IMMEDIATE``) on this thread's connection.
+
+        Store methods called inside it join it. A nested ``transaction()`` is a savepoint:
+        if it raises, only its own writes and events are undone. Events are delivered to
+        listeners after the outermost commit.
+        """
+        tx: Tx | None = getattr(self._local, "tx", None)
+        if tx is not None:
+            yield from self._savepoint(tx)
+            return
+        with self._write_lock:
+            conn = self._conn()
+            conn.execute("BEGIN IMMEDIATE")
+            tx = self._local.tx = Tx(conn)
+            try:
+                yield tx
+                conn.execute("COMMIT")
+            except BaseException:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+            finally:
+                self._local.tx = None
+            for event in tx.events:
+                self._deliver(event)
+
+    def _savepoint(self, tx: Tx) -> Iterator[Tx]:
+        tx.depth += 1
+        name = f"sp{tx.depth}"
+        mark = len(tx.events)
+        tx.conn.execute(f"SAVEPOINT {name}")
+        try:
+            yield tx
+        except BaseException:
+            tx.conn.execute(f"ROLLBACK TO {name}")
+            tx.conn.execute(f"RELEASE {name}")
+            del tx.events[mark:]
+            raise
+        else:
+            tx.conn.execute(f"RELEASE {name}")
+        finally:
+            tx.depth -= 1
+
+    @contextmanager
+    def _read(self) -> Iterator[sqlite3.Connection]:
+        """A consistent snapshot for reads that span several statements."""
+        conn = self._conn()
+        if conn.in_transaction:
+            yield conn
+            return
+        conn.execute("BEGIN")
+        try:
+            yield conn
+        finally:
+            conn.execute("COMMIT")
+
+    # --- outbox -------------------------------------------------------------------------
+
+    def add_listener(self, listener: Listener) -> Callable[[], None]:
+        """Call ``listener(event)`` for each event after its transaction commits.
+
+        Listeners run on the committing thread while in-process writes are held, so they
+        see commit order; they must not block. A listener that raises is logged. Returns a
+        function that removes the listener.
+        """
+        self._listeners.append(listener)
+        return lambda: self._listeners.remove(listener)
+
+    def _deliver(self, event: Event) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener(event)
+            except Exception:
+                log.exception("store listener failed on %s %s", event.type, event.id)
+
+    def emit(self, type: str, subject_id: str, data: BaseModel | dict[str, Any]) -> Event:
+        """Write an event with no other change (for metadata kept outside the store)."""
+        with self.transaction() as tx:
+            return tx.emit(type, subject_id, data)
+
+    @staticmethod
+    def _event(row: sqlite3.Row) -> Event:
+        return Event(
+            id=row["id"], type=row["type"], at=row["created_at"], subject_id=row["subject_id"], data=json.loads(row["payload"])
+        )
+
+    def events_after(self, event_id: str | None = None, *, limit: int | None = None) -> list[Event]:
+        """Events in commit order, after ``event_id`` (all of them when ``None``)."""
+        with self._read() as conn:
+            after = 0
+            if event_id is not None:
+                row = conn.execute("SELECT seq FROM outbox WHERE id = ?", (event_id,)).fetchone()
+                if row is None:
+                    raise NotFound(f"no event {event_id}")
+                after = row[0]
+            rows = conn.execute(
+                "SELECT * FROM outbox WHERE seq > ? ORDER BY seq LIMIT ?", (after, -1 if limit is None else limit)
+            ).fetchall()
+        return [self._event(r) for r in rows]
+
+    def unsent_events(self, *, limit: int | None = None) -> list[Event]:
+        """Events not yet marked sent, in commit order."""
+        rows = self._conn().execute(
+            "SELECT * FROM outbox WHERE sent_at IS NULL ORDER BY seq LIMIT ?", (-1 if limit is None else limit,)
+        ).fetchall()
+        return [self._event(r) for r in rows]
+
+    def mark_sent(self, event_ids: Iterable[str]) -> None:
+        """Mark events as relayed. Marking one twice keeps its first ``sent_at``."""
+        at = now()
+        with self.transaction() as tx:
+            for event_id in event_ids:
+                tx.execute("UPDATE outbox SET sent_at = ? WHERE id = ? AND sent_at IS NULL", (at, event_id))
+
+    # --- generic row access -------------------------------------------------------------
+
+    def _row(self, table: _Table, key: str) -> sqlite3.Row | None:
+        return self._conn().execute(f'SELECT * FROM {table.name} WHERE "{table.key}" = ?', (key,)).fetchone()
+
+    def _get[M: BaseModel](self, table: _Table, model: type[M], key: str) -> M | None:
+        row = self._row(table, key)
+        return None if row is None else _model(table, row, model)
+
+    def _must[M: BaseModel](self, table: _Table, model: type[M], key: str) -> M:
+        found = self._get(table, model, key)
+        if found is None:
+            raise NotFound(f"no {table.name} row {key}")
+        return found
+
+    def _list[M: BaseModel](
+        self, table: _Table, model: type[M], where: dict[str, Any], order: str, limit: int | None = None
+    ) -> list[M]:
+        clauses, params = [], []
+        for name, value in where.items():
+            if value is None:
+                continue
+            if isinstance(value, (tuple, list, set, frozenset)):
+                clauses.append(f'"{name}" IN ({", ".join("?" * len(value))})')
+                params.extend(value)
+            else:
+                clauses.append(f'"{name}" = ?')
+                params.append(value)
+        sql = f"SELECT * FROM {table.name}"
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += f" ORDER BY {order} LIMIT ?"
+        rows = self._conn().execute(sql, (*params, -1 if limit is None else limit)).fetchall()
+        return [_model(table, r, model) for r in rows]
+
+    @staticmethod
+    def _changed[M: BaseModel](current: M, changes: dict[str, Any], frozen: set[str]) -> M:
+        bad = frozen & changes.keys()
+        if bad:
+            raise StoreError(f"cannot change {sorted(bad)} this way")
+        return type(current).model_validate({**current.model_dump(mode="json"), **changes})
+
+    # --- work items and comments --------------------------------------------------------
+
+    def create_work_item(self, item: WorkItem) -> WorkItem:
+        """Insert a work item and emit ``work_item.created``."""
+        with self.transaction() as tx:
+            tx.insert(WORK_ITEMS, _columns(WORK_ITEMS, item))
+            stored = self._must(WORK_ITEMS, WorkItem, item.id)
+            tx.emit("work_item.created", item.id, stored)
+        return stored
+
+    def get_work_item(self, item_id: str) -> WorkItem | None:
+        """The work item, or ``None``."""
+        return self._get(WORK_ITEMS, WorkItem, item_id)
+
+    def list_work_items(
+        self, *, assignee: str | None = None, status: str | Iterable[str] | None = None, limit: int | None = None
+    ) -> list[WorkItem]:
+        """Work items, newest first, optionally filtered."""
+        status = status if status is None or isinstance(status, str) else tuple(status)
+        return self._list(
+            WORK_ITEMS, WorkItem, {"assignee": assignee, "status": status}, "created_at DESC, rowid DESC", limit
+        )
+
+    def update_work_item(self, item_id: str, *, base_version: int | None = None, **changes: Any) -> WorkItem:
+        """Change fields of a work item, bump its version, and emit ``work_item.updated``.
+
+        With ``base_version``, a work item at another version raises ``StaleVersion``.
+        """
+        with self.transaction() as tx:
+            current = self._must(WORK_ITEMS, WorkItem, item_id)
+            if base_version is not None and base_version != current.version:
+                raise StaleVersion(base_version, current.version)
+            changes = {"updated_at": now(), **changes}
+            item = self._changed(current, changes, {"id", "version", "created_at"})
+            item = item.model_copy(update={"version": current.version + 1})
+            tx.update(WORK_ITEMS, _columns(WORK_ITEMS, item))
+            stored = self._must(WORK_ITEMS, WorkItem, item_id)
+            tx.emit("work_item.updated", item_id, stored)
+        return stored
+
+    def add_comment(self, comment: Comment) -> Comment:
+        """Insert a comment and emit ``comment.created``."""
+        with self.transaction() as tx:
+            tx.insert(COMMENTS, _columns(COMMENTS, comment))
+            stored = self._must(COMMENTS, Comment, comment.id)
+            tx.emit("comment.created", comment.id, stored)
+        return stored
+
+    def list_comments(self, work_item_id: str) -> list[Comment]:
+        """A work item's comments, oldest first."""
+        return self._list(COMMENTS, Comment, {"work_item_id": work_item_id}, "created_at, rowid")
