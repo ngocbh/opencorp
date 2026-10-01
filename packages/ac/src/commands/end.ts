@@ -39,8 +39,7 @@ export const run: CommandRun = async (argv) => {
   try {
     // The office keys folders by their real path.
     const session = await endSession({ client, cwd: realpathSync(process.cwd()), id })
-    const person = (await client.people.list().catch(() => [])).find((p) => p.id === session.person)
-    const who = person ? `@${person.handle}` : session.person
+    const who = `@${session.person}`
     // Only a main session is debriefed.
     if (session.kind === "main") console.log(`Ending ${who}'s session ${session.id}; its debrief follows.`)
     else console.log(`Ending ${who}'s ${session.kind.replace("_", " ")} session ${session.id}.`)

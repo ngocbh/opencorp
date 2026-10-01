@@ -406,7 +406,7 @@ test("a profile read that succeeds doesn't hide a failed proposals read", async 
     office.reset()
     await until(() => office.requests.slice(reads).filter((r) => r.path.startsWith("/profiles/minh")).length === 2)
     // The profile read is answered already; the proposals read now finds no such person.
-    const minh = office.state.people.findIndex((p) => p.id === "minh")
+    const minh = office.state.people.findIndex((p) => p.handle === "minh")
     office.state.people.splice(minh, 1)
     releaseProposals()
     await app.until((f) => f.includes("no person minh"))

@@ -3,7 +3,7 @@ import { defaultSocket } from "@agent-corp/tui/office/paths"
 import type { CommandRun } from "../main"
 import { officeAnswers, officeNotRunning } from "../office"
 
-/** The TUI's args from `ac`'s flags: `-s/--session ID`, `-c/--continue`, `--person ID`, `--prompt TEXT`. */
+/** The TUI's args from `ac`'s flags: `-s/--session ID`, `-c/--continue`, `--person HANDLE`, `--prompt TEXT`. */
 export function parseTuiArgs(argv: string[]) {
   const { values } = parseArgs({
     args: argv,

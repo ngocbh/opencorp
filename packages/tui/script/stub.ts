@@ -49,7 +49,7 @@ export function serveUnix(fetch: (req: Request) => Response | Promise<Response>,
 
 export type FakeState = {
   people: Person[]
-  /** cwd → person ids, most recent first. */
+  /** cwd → handles, most recent first. */
   folders: Record<string, string[]>
   sessions: Session[]
   messages: Record<string, Message[]>
@@ -60,7 +60,7 @@ export type FakeState = {
   comments: Record<string, Comment[]>
   debriefs: Record<string, Debrief>
   feedback: Feedback[]
-  /** Hire previews by the previewed person's id. */
+  /** Hire previews by handle. */
   hires: Record<string, HireRequest>
 }
 
@@ -90,8 +90,8 @@ function counter() {
 export function seed(nextId = counter()): FakeState {
   const at = now()
   const people: Person[] = [
-    { id: "minh", handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: "ngocbh" },
-    { id: "ngocbh", handle: "ngocbh", name: "Ngoc Bui", kind: "human", title: "CEO", manager: null },
+    { handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: "ngocbh" },
+    { handle: "ngocbh", name: "Ngoc Bui", kind: "human", title: "CEO", manager: null },
   ]
   const session: Session = {
     id: nextId(),
@@ -191,7 +191,7 @@ export function createFakeOffice(
     if (!ok) throw fail(422, "invalid_body", message)
   }
   const str = (v: unknown) => typeof v === "string" && v.length > 0
-  const human = () => state.people.find((p) => p.kind === "human")?.id ?? "ngocbh"
+  const human = () => state.people.find((p) => p.kind === "human")?.handle ?? "ngocbh"
 
   function write(text: string, filter?: (s: Stream) => boolean) {
     for (const s of streams) {
@@ -433,7 +433,7 @@ export function createFakeOffice(
 
   function profile(person: string) {
     need(
-      state.people.find((p) => p.id === person),
+      state.people.find((p) => p.handle === person),
       `person ${person}`,
     )
     const p = need(state.profiles[person], `profile for ${person}`)
@@ -482,28 +482,24 @@ export function createFakeOffice(
 
   /**
    * The office's hire: a preview writes nothing and returns lint issues; a confirm must repeat the
-   * preview's fields and id, and is refused while lint has an error or when the id was never previewed.
+   * preview's fields, and is refused while lint has an error or when the handle was never previewed.
    */
   function hire(body: any) {
     const fields = ["name", "handle", "title", "manager"] as const
     for (const f of fields) check(str(body?.[f]), `${f} must be a non-empty string`)
-    const extra = Object.keys(body).filter((k) => ![...fields, "id", "confirm"].includes(k))
+    const extra = Object.keys(body).filter((k) => ![...fields, "confirm"].includes(k))
     check(!extra.length, `unexpected fields: ${extra.join(", ")}`)
     check(HANDLE.test(body.handle), "handle must be lowercase letters, digits and dashes")
-    check(!state.people.some((p) => p.id === body.id), `id ${body.id} already belongs to a person`)
-    const id: string = body.id ?? nextId()
-    const file = `people/${id}/person.yaml`
-    const owner = state.people.find((p) => p.handle === body.handle)
+    const file = `people/${body.handle}/person.yaml`
     const issues: RepoIssue[] = [
-      ...(owner
-        ? [{ path: file, code: "person.duplicate_handle", message: `@${body.handle} is already used by ${owner.id}` }]
+      ...(state.people.some((p) => p.handle === body.handle)
+        ? [{ path: file, code: "person.duplicate_handle", message: `@${body.handle} is already taken` }]
         : []),
-      ...(state.people.some((p) => p.id === body.manager)
+      ...(state.people.some((p) => p.handle === body.manager)
         ? []
         : [{ path: file, code: "person.unknown_manager", message: body.manager }]),
     ].map((i) => ({ ...i, severity: "error" as const }))
     const person: Person = {
-      id,
       handle: body.handle,
       name: body.name,
       kind: "agent",
@@ -512,18 +508,17 @@ export function createFakeOffice(
     }
     const diff = `+++ b/${file}\n+name: ${person.name}\n+handle: ${person.handle}\n+kind: agent\n+title: ${person.title}\n+manager: ${person.manager}\n`
     if (!body.confirm) {
-      state.hires[id] = body
+      state.hires[body.handle] = body
       return Response.json({ person, diff, issues, commit: null } satisfies HireResponse)
     }
-    check(str(body.id), "confirm needs the id of a preview")
-    const previewed = state.hires[body.id]
-    // The office keeps previews in memory, so an id it never previewed (or lost on restart) is a lint failure.
-    if (!previewed) throw fail(422, "lint_failed", `no preview of ${body.id}; preview it again`)
+    const previewed = state.hires[body.handle]
+    // The office keeps previews in memory, so a hire it never previewed (or lost on restart) is a lint failure.
+    if (!previewed) throw fail(422, "lint_failed", `no preview of @${body.handle}; preview it again`)
     if (fields.some((f) => previewed[f] !== body[f])) {
       throw fail(422, "lint_failed", "confirm must repeat the previewed fields")
     }
     if (issues.length) throw fail(422, "lint_failed", issues[0].message)
-    delete state.hires[id]
+    delete state.hires[body.handle]
     state.people.push(person)
     return Response.json({ person, diff, issues, commit: blobId(diff) } satisfies HireResponse)
   }
@@ -534,7 +529,9 @@ export function createFakeOffice(
       "GET",
       "/folders/:cwd/people",
       ({ params }) =>
-        Response.json((state.folders[params.cwd] ?? []).flatMap((id) => state.people.filter((p) => p.id === id))),
+        Response.json(
+          (state.folders[params.cwd] ?? []).flatMap((handle) => state.people.filter((p) => p.handle === handle)),
+        ),
     ],
     ["POST", "/people", ({ body }) => hire(body)],
     [
@@ -556,7 +553,7 @@ export function createFakeOffice(
       ({ body }) => {
         check(str(body?.person) && str(body?.cwd), "person and cwd must be non-empty strings")
         need(
-          state.people.find((p) => p.id === body.person),
+          state.people.find((p) => p.handle === body.person),
           `person ${body.person}`,
         )
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
@@ -731,7 +728,7 @@ export function createFakeOffice(
       ({ params, body }) => {
         check(str(body?.text), "text must be a non-empty string")
         need(
-          state.people.find((p) => p.id === params.person),
+          state.people.find((p) => p.handle === params.person),
           `person ${params.person}`,
         )
         const s = newSession({ person: params.person, cwd: "/", kind: "profile_manager", status: "starting" })
@@ -746,7 +743,7 @@ export function createFakeOffice(
       "/profiles/:person/proposals",
       ({ params }) => {
         need(
-          state.people.find((p) => p.id === params.person),
+          state.people.find((p) => p.handle === params.person),
           `person ${params.person}`,
         )
         return Response.json(Object.values(state.proposals).filter((p) => p.person === params.person))

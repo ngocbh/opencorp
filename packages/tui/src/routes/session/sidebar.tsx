@@ -23,7 +23,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
-  const person = createMemo(() => office.state.people.find((p) => p.id === session()?.person))
+  const person = createMemo(() => office.state.people.find((p) => p.handle === session()?.person))
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
 
   return (

@@ -8,7 +8,7 @@ const ago = (ms: number) => new Date(Date.now() - ms).toISOString()
 /** An office with @minh's session in /tmp/proj 5m ago, @lan's there 2h ago, and @minh's elsewhere 1m ago. */
 function office(sessions = ["proj", "lan", "other"]) {
   const state = seed()
-  state.people.push({ id: "lan", handle: "lan", name: "Lan", kind: "agent", title: "Designer", manager: "ngocbh" })
+  state.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "Designer", manager: "ngocbh" })
   const base = state.sessions[0]
   const all: Record<string, Session> = {
     proj: { ...base, id: "S1", updated_at: ago(5 * 60_000) },

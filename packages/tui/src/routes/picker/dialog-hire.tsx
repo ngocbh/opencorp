@@ -60,7 +60,7 @@ export function DialogHire() {
     if (busy()) return
     const shown = preview()
     if (shown && blocks(shown.response.issues)) return setError("Fix the errors above, then press Enter")
-    const built = shown ? { request: confirmRequest(shown.request, shown.response) } : hireRequest(form, office.state.people)
+    const built = shown ? { request: confirmRequest(shown.request) } : hireRequest(form, office.state.people)
     if ("error" in built) return setError(built.error)
     setBusy(true)
     setError(undefined)
@@ -94,7 +94,7 @@ export function DialogHire() {
     await office.refreshPeople().catch(() => {})
     toast.show({ variant: "success", message: `Hired @${person.handle}` })
     if (closed) return
-    if (office.state.people.some((p) => p.id === person.id)) local.person.set(person.id)
+    if (office.state.people.some((p) => p.handle === person.handle)) local.person.set(person.handle)
     dialog.clear()
   }
 

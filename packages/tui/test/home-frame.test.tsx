@@ -18,7 +18,7 @@ test("the home screen against a running office shows the logo, the prompt, and t
 
 test("Tab cycles through agents, skipping humans; --person picks one at start", async () => {
   const s = seed()
-  s.people.push({ id: "lan", handle: "lan", name: "Lan", kind: "agent", title: "QA engineer", manager: "ngocbh" })
+  s.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "QA engineer", manager: "ngocbh" })
   const office = createFakeOffice({ seed: s })
   const app = await bootFrame(createStub(office))
   try {

@@ -38,7 +38,7 @@ test("Enter previews the hire, Enter again hires and selects the new person", as
     await app.until((f) => !f.includes("Hire a new person") && f.includes("@lan · QA engineer") && f.includes("Hired @lan"))
     const [preview, confirm] = office.requests.filter((r) => r.method === "POST").map((r) => r.body as any)
     expect(preview).toEqual({ name: "Lan Tran", handle: "lan", title: "QA engineer", manager: "ngocbh", confirm: false })
-    expect(confirm).toEqual({ ...preview, id: office.state.people.find((p) => p.handle === "lan")!.id, confirm: true })
+    expect(confirm).toEqual({ ...preview, confirm: true })
   } finally {
     await app.stop()
     office.stop()
@@ -51,7 +51,7 @@ test("a taken handle shows the lint error and blocks the hire; editing previews 
   try {
     await fill(app, "Minh Two", "minh", "Engineer")
     app.input.pressEnter()
-    await app.until((f) => f.includes("@minh is already used by minh") && f.includes("edit to fix"))
+    await app.until((f) => f.includes("@minh is already taken") && f.includes("edit to fix"))
     app.input.pressEnter()
     await app.until((f) => f.includes("Fix the errors above"))
     expect(office.requests.filter((r) => r.method === "POST")).toHaveLength(1)
@@ -59,7 +59,7 @@ test("a taken handle shows the lint error and blocks the hire; editing previews 
     app.input.pressTab()
     app.input.pressTab()
     await typeInto(app, "2")
-    await app.until((f) => !f.includes("@minh is already used by minh") && f.includes("enter preview"))
+    await app.until((f) => !f.includes("@minh is already taken") && f.includes("enter preview"))
   } finally {
     await app.stop()
     office.stop()
@@ -127,9 +127,9 @@ test("a failed confirm drops the preview, so the next Enter previews again", asy
     app.input.pressEnter()
     await app.until((f) => f.includes("enter hire"))
     // Someone else takes @lan between the preview and the confirm.
-    office.state.people.push({ id: "lan2", handle: "lan", name: "L", kind: "agent", title: "x", manager: "ngocbh" })
+    office.state.people.push({ handle: "lan", name: "L", kind: "agent", title: "x", manager: "ngocbh" })
     app.input.pressEnter()
-    const f = await app.until((f) => f.includes("@lan is already used by lan2") && f.includes("enter preview"))
+    const f = await app.until((f) => f.includes("@lan is already taken") && f.includes("enter preview"))
     expect(f).not.toContain("+handle: lan")
     app.input.pressEnter()
     await app.until((f) => f.includes("+handle: lan") && f.includes("edit to fix"))

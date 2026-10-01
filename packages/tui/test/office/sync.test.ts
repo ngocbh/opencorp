@@ -164,7 +164,7 @@ test("refreshPeople re-reads both people lists", async () => {
   office = createFakeOffice()
   const { state, sync } = start(office.socket)
   await until(() => sync.status() === "online")
-  office.state.people.push({ ...office.state.people[0], id: "lan", handle: "lan" })
+  office.state.people.push({ ...office.state.people[0], handle: "lan" })
   await sync.refreshPeople()
   expect(state.people.map((p) => p.handle)).toContain("lan")
 })

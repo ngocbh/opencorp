@@ -666,7 +666,7 @@ export function Prompt(props: PromptProps) {
     let undo: (() => void) | void = undefined
     try {
       if (!sessionID) {
-        const created = await office.client.sessions.create({ person: person!.id, cwd: office.cwd })
+        const created = await office.client.sessions.create({ person: person!.handle, cwd: office.cwd })
         sessionID = created.id
         await office.syncSession(sessionID)
       }
@@ -772,7 +772,7 @@ export function Prompt(props: PromptProps) {
     if (leader()) return theme.border
     const person = local.person.current()
     if (!person) return theme.border
-    return local.person.color(person.id)
+    return local.person.color(person.handle)
   })
 
   const agentMetaAlpha = createFadeIn(() => !!local.person.current(), animationsEnabled)
@@ -787,7 +787,7 @@ export function Prompt(props: PromptProps) {
 
   const spinnerDef = createMemo(() => {
     const person = local.person.current()
-    const color = person ? local.person.color(person.id) : theme.border
+    const color = person ? local.person.color(person.handle) : theme.border
     return {
       frames: createFrames({
         color,

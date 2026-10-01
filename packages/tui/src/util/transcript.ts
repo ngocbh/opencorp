@@ -4,10 +4,9 @@ export type TranscriptOptions = {
   toolDetails: boolean
 }
 
-/** The session's display name: `@handle`, or the raw person id if the person is unknown. */
-export function personLabel(people: readonly Person[], id: string) {
-  const person = people.find((p) => p.id === id)
-  return person ? `@${person.handle}` : id
+/** The session's display name: `@handle`, or the bare handle if the person is unknown. */
+export function personLabel(people: readonly Person[], handle: string) {
+  return people.some((p) => p.handle === handle) ? `@${handle}` : handle
 }
 
 /** A session as markdown: a header, then its messages in creation order. */

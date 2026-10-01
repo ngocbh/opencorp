@@ -92,12 +92,16 @@ test("a stale profile write is a VersionConflictError", async () => {
   expect(err).toBeInstanceOf(VersionConflictError)
 })
 
-test("hire previews, then confirms with the preview's id", async () => {
+test("hire previews, then confirms by handle with no id", async () => {
   office = createFakeOffice()
   const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
   const preview = await client().people.hire({ ...req, confirm: false })
-  expect([preview.commit, preview.diff.includes("lan")]).toEqual([null, true])
-  const done = await client().people.hire({ ...req, id: preview.person.id, confirm: true })
+  expect([preview.commit, preview.diff.includes("people/lan/person.yaml"), "id" in preview.person]).toEqual([
+    null,
+    true,
+    false,
+  ])
+  const done = await client().people.hire({ ...req, confirm: true })
   expect(done.commit).not.toBeNull()
   expect((await client().people.list()).map((p) => p.handle)).toContain("lan")
 })
@@ -105,27 +109,21 @@ test("hire previews, then confirms with the preview's id", async () => {
 test("a hire confirm repeats the preview; a taken handle is a lint issue on preview and a 422 on confirm", async () => {
   office = createFakeOffice()
   const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
-  const preview = await client().people.hire({ ...req, confirm: false })
-  const changed = await failure(client().people.hire({ ...req, title: "Lead", id: preview.person.id, confirm: true }))
+  await client().people.hire({ ...req, confirm: false })
+  const changed = await failure(client().people.hire({ ...req, title: "Lead", confirm: true }))
   expect([changed.status, changed.code]).toEqual([422, "lint_failed"])
   const dup = await client().people.hire({ ...req, handle: "minh", confirm: false })
   expect(dup.issues).toEqual([
-    {
-      path: `people/${dup.person.id}/person.yaml`,
-      code: "person.duplicate_handle",
-      message: "@minh is already used by minh",
-      severity: "error",
-    },
+    { path: "people/minh/person.yaml", code: "person.duplicate_handle", message: "@minh is already taken", severity: "error" },
   ])
-  const refused = await failure(client().people.hire({ ...req, handle: "minh", id: dup.person.id, confirm: true }))
-  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "@minh is already used by minh"])
+  const refused = await failure(client().people.hire({ ...req, handle: "minh", confirm: true }))
+  expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "@minh is already taken"])
 })
 
-test("a hire confirm with no id is invalid_body; with an id never previewed it is lint_failed", async () => {
+test("a hire confirm never previewed is lint_failed", async () => {
   office = createFakeOffice()
   const req = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh" }
-  expect((await failure(client().people.hire({ ...req, confirm: true }))).code).toBe("invalid_body")
-  const unseen = await failure(client().people.hire({ ...req, id: "01JA1H0000000000000000NEW0", confirm: true }))
+  const unseen = await failure(client().people.hire({ ...req, confirm: true }))
   expect([unseen.status, unseen.code]).toEqual([422, "lint_failed"])
   expect(unseen.message).toContain("preview it again")
 })
@@ -143,9 +141,9 @@ test("a hire checks the body like the office; an unknown manager is a lint issue
   }
   const orphan = await client().people.hire({ ...req, manager: "kai", confirm: false })
   expect(orphan.issues).toEqual([
-    { path: `people/${orphan.person.id}/person.yaml`, code: "person.unknown_manager", message: "kai", severity: "error" },
+    { path: "people/lan/person.yaml", code: "person.unknown_manager", message: "kai", severity: "error" },
   ])
-  const refused = await failure(client().people.hire({ ...req, manager: "kai", id: orphan.person.id, confirm: true }))
+  const refused = await failure(client().people.hire({ ...req, manager: "kai", confirm: true }))
   expect([refused.status, refused.code, refused.message]).toEqual([422, "lint_failed", "kai"])
 })
 
