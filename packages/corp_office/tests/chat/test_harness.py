@@ -5,6 +5,10 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
 from tests.chat.conftest import errors, status, texts, wait_for
+from tests.store.conftest import session as stored_session
+
+MINH = {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
+        "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}
 
 
 def start(harness, workspace):
@@ -35,6 +39,11 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
     with pytest.raises(HarnessError) as err:
         harness.prompt(sid, "late")
     assert err.value.code == "not_live"
+
+
+def test_a_main_run_gets_the_persons_identity(harness, workspace):
+    session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head()))
+    assert harness.main_spec(session).inputs == {"person": MINH}
 
 
 def asked(fake_llm, n):
