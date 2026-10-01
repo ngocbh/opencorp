@@ -34,13 +34,28 @@ type GitId = Annotated[
 ]
 
 
-type PublicKey = Annotated[
-    str,
-    Field(
-        description="An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment.",
-        pattern='^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}(?: [^\\r\\n]*)?$',
-    ),
-]
+class Device(BaseModel):
+    """
+    A device a human uses ac from: requests carrying the token whose hash this is act as that person.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    name: Annotated[
+        str,
+        Field(
+            description="A device's name within one person, such as 'macbook'.",
+            pattern='^[a-z0-9][a-z0-9._-]{0,62}$',
+        ),
+    ]
+    token_sha256: Annotated[
+        str,
+        Field(
+            description='The lowercase hex sha256 of a device token. Tokens are long random secrets, so the hash is safe to publish.',
+            pattern='^[0-9a-f]{64}$',
+        ),
+    ]
 
 
 class CompanyDefaults(BaseModel):
@@ -121,10 +136,11 @@ class Person(BaseModel):
     harness_policy: HarnessPolicy | None = None
     routines: Annotated[list[Routine], Field(validate_default=True)] = []
     provider_policy: str = 'default'
-    keys: Annotated[
-        list[PublicKey],
+    devices: Annotated[
+        list[Device],
         Field(
-            description='OpenSSH public key lines of the devices this human uses ac from; requests signed by one of them act as this person.'
+            description='The devices this human uses ac from, each with a unique name.',
+            validate_default=True,
         ),
     ] = []
 
@@ -774,19 +790,26 @@ class ConfirmFollowUpsRequest(BaseModel):
     indices: list[Indice]
 
 
-class AddKeyRequest(BaseModel):
+class AddDeviceRequest(BaseModel):
     """
-    The body of POST /people/{handle}/keys.
+    The body of POST /people/{handle}/devices.
     """
 
     model_config = ConfigDict(
         extra='forbid',
     )
-    key: Annotated[
+    name: Annotated[
         str,
         Field(
-            description="An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment.",
-            pattern='^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}(?: [^\\r\\n]*)?$',
+            description="A device's name within one person, such as 'macbook'.",
+            pattern='^[a-z0-9][a-z0-9._-]{0,62}$',
+        ),
+    ]
+    token_sha256: Annotated[
+        str,
+        Field(
+            description='The lowercase hex sha256 of a device token. Tokens are long random secrets, so the hash is safe to publish.',
+            pattern='^[0-9a-f]{64}$',
         ),
     ]
 
