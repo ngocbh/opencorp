@@ -237,6 +237,12 @@ def test_uninstalling_a_launchd_office_that_isnt_loaded_still_removes_its_plist(
     assert not plist.exists()
 
 
+def test_a_recorded_launchd_office_without_its_plist_is_still_booted_out(tmp_path, one):
+    installed_as(one, "launchd")
+    service.uninstall(one, make_host(tmp_path, run := Runner()))
+    assert run.calls == [["launchctl", "bootout", f"gui/501/{launchd.label(one)}"]]
+
+
 def test_uninstalling_a_systemd_office_disables_and_stops_it_and_removes_its_unit(tmp_path, one):
     installed_as(one, "systemd")
     host = make_host(tmp_path, run := Runner(), platform="linux")

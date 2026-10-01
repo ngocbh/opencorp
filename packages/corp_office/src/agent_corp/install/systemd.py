@@ -113,10 +113,14 @@ def start(launch: Launch, host: Host) -> None:
         raise ServiceError(f"systemctl --user start failed: {done.stderr.strip()}")
 
 
-def uninstall(launch: Launch, host: Host) -> str | None:
-    """Disable and stop the unit and remove it; say what was done, or None if there was no unit."""
+def uninstall(launch: Launch, host: Host, recorded: bool = False) -> str | None:
+    """Disable and stop the unit and remove it; say what was done, or None if there was nothing.
+
+    With ``recorded`` (systemd is the recorded mode) the unit is stopped even without its file.
+    """
     path = unit_path(launch, host)
-    if not path.exists() and not (path.parent / "default.target.wants" / unit_name(launch)).is_symlink():
+    wants = path.parent / "default.target.wants" / unit_name(launch)
+    if not path.exists() and not wants.is_symlink() and not recorded:
         return None
     host.run(["systemctl", "--user", "disable", "--now", unit_name(launch)])
     _remove(launch, host)

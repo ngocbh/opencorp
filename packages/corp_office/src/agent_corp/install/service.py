@@ -152,7 +152,8 @@ def uninstall(launch: Launch, host: Host, timeout: float = 15.0) -> list[str]:
         ServiceError: the office still answers afterwards.
     """
     recorded = recorded_mode(launch)
-    done = [launchd.uninstall(launch, host), systemd.uninstall(launch, host)]
+    done = [launchd.uninstall(launch, host, recorded == "launchd"),
+            systemd.uninstall(launch, host, recorded == "systemd")]
     if recorded == "tmux" or host.which("tmux"):
         done.append(fallback.stop_tmux(launch, host))
     if stopped := fallback.stop_process(launch, timeout):
