@@ -1,5 +1,6 @@
 """Device tokens at the office: enforcement, the acting person, the open probe, and device routes."""
 
+import asyncio
 import time
 from urllib.parse import quote
 
@@ -12,6 +13,7 @@ from starlette.routing import Route
 from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.daemon.app import create_app
 from agent_corp.daemon.auth import acting_person
+from agent_corp.install.launch import office_answers
 from tests.company.conftest import _git
 
 from .conftest import served
@@ -267,3 +269,9 @@ async def test_removing_the_last_device_turns_enforcement_off(client, company):
     assert r.status_code == 200
     assert devices(company, "ngocbh") is None
     assert (await client.get("/whoami")).json() == {"person": "ngocbh", "device": None}
+
+
+async def test_the_liveness_probe_works_once_tokens_are_needed(office, company, short_dir):
+    give_device(company, "ngocbh", "mac", new_token())
+    async with served(office, short_dir / "o.sock"):
+        assert await asyncio.to_thread(office_answers, short_dir / "o.sock")
