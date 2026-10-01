@@ -236,3 +236,35 @@ def test_agent_without_profile_is_a_warning(make_company):
 
 def test_human_without_profile_is_fine(company):
     assert "person.no_profile" not in codes(company, "warning")
+
+
+def _device(name: str, digit: str = "a") -> dict:
+    return {"name": name, "token_sha256": digit * 64}
+
+
+def test_an_agent_with_devices(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", devices=[_device("box")])})
+    assert ("person.agent_devices", "people/minh/person.yaml") in issues(root)
+
+
+def test_two_devices_with_one_name(make_company):
+    root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", devices=[_device("mac"),
+                                                                                 _device("mac", "b")])})
+    found = [i for i in lint(load_repo(root)) if i.code == "person.duplicate_device"]
+    assert [(i.path, i.message) for i in found] == [("people/ngocbh/person.yaml", "mac")]
+
+
+def test_a_token_hash_two_people_list(make_company):
+    ava = dict(person("ngocbh", handle="ava", name="Ava", manager="ngocbh"), devices=[_device("pc")])
+    root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", devices=[_device("mac")]),
+                           "people/ava/person.yaml": ava})
+    found = sorted((i.path, i.message) for i in lint(load_repo(root)) if i.code == "person.shared_device_token")
+    assert found == [("people/ava/person.yaml", "device pc's token is also listed by ngocbh"),
+                     ("people/ngocbh/person.yaml", "device mac's token is also listed by ava")]
+    assert "token_sha256" not in str(found) and "a" * 64 not in str(found)
+
+
+def test_devices_with_distinct_names_and_hashes_are_clean(make_company):
+    root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", devices=[_device("mac"),
+                                                                                 _device("pc", "b")])})
+    assert lint(load_repo(root)) == []
