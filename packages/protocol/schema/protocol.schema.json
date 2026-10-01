@@ -182,10 +182,16 @@
       }
     },
     "Part": {
-      "oneOf": [{ "$ref": "#/$defs/TextPart" }, { "$ref": "#/$defs/FilePart" }, { "$ref": "#/$defs/ToolPart" }],
+      "oneOf": [
+        { "$ref": "#/$defs/TextPart" }, { "$ref": "#/$defs/FilePart" }, { "$ref": "#/$defs/ToolPart" },
+        { "$ref": "#/$defs/ErrorPart" }
+      ],
       "discriminator": {
         "propertyName": "type",
-        "mapping": { "text": "#/$defs/TextPart", "file": "#/$defs/FilePart", "tool": "#/$defs/ToolPart" }
+        "mapping": {
+          "text": "#/$defs/TextPart", "file": "#/$defs/FilePart", "tool": "#/$defs/ToolPart",
+          "error": "#/$defs/ErrorPart"
+        }
       }
     },
     "TextPart": {
@@ -217,6 +223,15 @@
         "input": { "type": "object" },
         "output": { "default": {} },
         "error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "ErrorPart": {
+      "type": "object", "additionalProperties": false, "required": ["id", "type", "message"],
+      "description": "A turn that failed: why, in words the owner can act on. Never holds a secret.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "type": { "const": "error" },
+        "message": { "type": "string" }
       }
     },
     "Permission": {

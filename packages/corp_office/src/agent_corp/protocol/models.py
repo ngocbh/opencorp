@@ -313,6 +313,19 @@ class ToolPart(BaseModel):
     error: str | None = None
 
 
+class ErrorPart(BaseModel):
+    """
+    A turn that failed: why, in words the owner can act on. Never holds a secret.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    type: Literal['error']
+    message: str
+
+
 class Permission(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -742,7 +755,11 @@ class Message(BaseModel):
     id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     session_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     role: Literal['user', 'assistant']
-    parts: list[Annotated[TextPart | FilePart | ToolPart, Field(discriminator='type')]]
+    parts: list[
+        Annotated[
+            TextPart | FilePart | ToolPart | ErrorPart, Field(discriminator='type')
+        ]
+    ]
     created_at: Annotated[
         str,
         Field(
