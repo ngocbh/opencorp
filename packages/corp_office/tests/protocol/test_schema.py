@@ -44,7 +44,7 @@ def test_every_entity_has_a_fixture():
 BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "RepoIssue", "HireRequest",
           "HireResponse", "ApiError", "AnswerRequest", "SideChatRequest", "SendBackRequest",
           "ProfileWriteRequest", "VersionConflict", "ProfileManagerRequest", "FeedbackRequest",
-          "ConfirmFollowUpsRequest", "AddKeyRequest"}
+          "ConfirmFollowUpsRequest", "AddDeviceRequest"}
 
 
 def test_every_route_body_has_a_fixture():

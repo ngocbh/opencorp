@@ -7,7 +7,7 @@ export const minh: Person = {
 
 export const ceo: Person = {
   handle: "ngocbh", name: "Hong Ngoc Bui", kind: "human", title: "CEO", manager: null,
-  keys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIL8u9U7gnO1TGZaHlBA6c6qGbUAEqXq69jJaxKmEbS8k ngocbh@macbook"],
+  devices: [{ name: "macbook", token_sha256: "d07f963c2bb7a3cc74a910e51ca0075b194da412a93737881f105a55156a988f" }],
 }
 
 export const badKind: Person = {

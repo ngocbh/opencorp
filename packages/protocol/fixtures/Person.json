@@ -16,5 +16,5 @@
       "flow": "../../shared/flows/triage.yaml" }
   ],
   "provider_policy": "default",
-  "keys": []
+  "devices": []
 }

@@ -27,12 +27,19 @@ export type Ulid = string;
  */
 export type GitId = string;
 /**
- * An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment.
+ * A device's name within one person, such as 'macbook'.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
- * via the `definition` "PublicKey".
+ * via the `definition` "DeviceName".
  */
-export type PublicKey = string;
+export type DeviceName = string;
+/**
+ * The lowercase hex sha256 of a device token. Tokens are long random secrets, so the hash is safe to publish.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "TokenHash".
+ */
+export type TokenHash = string;
 /**
  * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.
  *
@@ -46,6 +53,16 @@ export type Timestamp = string;
  */
 export type Part = TextPart | FilePart | ToolPart | ErrorPart;
 
+/**
+ * A device a human uses ac from: requests carrying the token whose hash this is act as that person.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "Device".
+ */
+export interface Device {
+  name: DeviceName;
+  token_sha256: TokenHash;
+}
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "CompanyDefaults".
@@ -116,9 +133,9 @@ export interface Person {
   routines?: Routine[];
   provider_policy?: string;
   /**
-   * OpenSSH public key lines of the devices this human uses ac from; requests signed by one of them act as this person.
+   * The devices this human uses ac from, each with a unique name.
    */
-  keys?: PublicKey[];
+  devices?: Device[];
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -653,11 +670,12 @@ export interface ConfirmFollowUpsRequest {
   indices: number[];
 }
 /**
- * The body of POST /people/{handle}/keys.
+ * The body of POST /people/{handle}/devices.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
- * via the `definition` "AddKeyRequest".
+ * via the `definition` "AddDeviceRequest".
  */
-export interface AddKeyRequest {
-  key: PublicKey;
+export interface AddDeviceRequest {
+  name: DeviceName;
+  token_sha256: TokenHash;
 }
