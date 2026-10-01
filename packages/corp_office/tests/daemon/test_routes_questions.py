@@ -85,6 +85,9 @@ async def test_chat_about_a_question_then_answer_it(cards, client, fake_llm, tmp
     assert store.get_question(qid).side_session_id == side["id"]
     await until(lambda: replies(store, side["id"]) == ["Retries hide flakes."]
                 and store.get_session(side["id"]).status == "idle")
+    main_system, side_system = (r["messages"][0]["content"] for r in fake_llm.requests()[:2])
+    assert main_system.startswith("You are Minh (@minh), Engineer at test-corp.")
+    assert side_system.startswith("You are Minh (@minh), Engineer at test-corp.") and "side conversation" in side_system
     # Later messages go to the side session itself; a second /side goes to the same session.
     assert (await client.post(f"/sessions/{side['id']}/prompt", json={"text": "and?"})).status_code == 200
     await until(lambda: len(store.get_question(qid).discussion) == 4)

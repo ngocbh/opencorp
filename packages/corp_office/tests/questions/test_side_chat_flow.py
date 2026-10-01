@@ -24,3 +24,10 @@ def test_side_chat_tools_are_read_only_lookups():
     reply = yaml.safe_load(SIDE_CHAT.read_text())["defs"]["turn"]["nodes"]["reply"]
     assert reply["tools"] == ["workspace", "work_items"]
     assert "skills" not in reply
+
+
+def test_side_chat_takes_the_person_into_the_replys_system_prompt():
+    flow = yaml.safe_load(SIDE_CHAT.read_text())
+    assert "person" in flow["input"]
+    reply = flow["defs"]["turn"]["nodes"]["reply"]
+    assert reply["system_prompt"].startswith("You are ${person.name} (@${person.handle})")

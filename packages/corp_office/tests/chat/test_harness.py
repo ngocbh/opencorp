@@ -1,10 +1,16 @@
 import json
+from pathlib import Path
 
 import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
 from tests.chat.conftest import errors, status, texts, wait_for
+from tests.store.conftest import session as stored_session
+
+CHAT_WITHOUT_PERSON = (Path(__file__).parent / "fixtures" / "chat_without_person.yaml").read_text()
+MINH = {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
+        "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}
 
 
 def start(harness, workspace):
@@ -35,6 +41,36 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
     with pytest.raises(HarnessError) as err:
         harness.prompt(sid, "late")
     assert err.value.code == "not_live"
+
+
+def test_a_main_run_gets_the_persons_identity(harness, workspace):
+    session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head()))
+    assert harness.main_spec(session).inputs == {"person": MINH}
+
+
+def system_prompt(fake_llm, n):
+    """The system message of the ``n``th model request (from 1)."""
+    first = fake_llm.wait_for_requests(n)[n - 1]["messages"][0]
+    assert first["role"] == "system"
+    return first["content"]
+
+
+def test_the_reply_speaks_as_the_person(harness, fake_llm, workspace):
+    fake_llm.script({"content": "I'm Minh."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "Who are you?")
+    assert system_prompt(fake_llm, 1).startswith(
+        "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
+    wait_for(lambda: texts(harness, sid) == ["I'm Minh."], what="the reply")
+
+
+def test_a_chat_flow_that_does_not_take_the_person_still_runs(make_harness, fake_llm, workspace):
+    harness = make_harness(files={"shared/flows/chat.yaml": CHAT_WITHOUT_PERSON})
+    fake_llm.script({"content": "Hello."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
+    assert not system_prompt(fake_llm, 1).startswith("You are Minh")
 
 
 def asked(fake_llm, n):

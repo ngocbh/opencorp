@@ -15,6 +15,7 @@ from agent_composer.memory.storage.markdown import MarkdownStore
 
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
+from agent_corp.chat.identity import person_inputs
 from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds
@@ -237,7 +238,7 @@ class Harness:
         return self.store.get_session(session_id)
 
     def main_spec(self, session: Session) -> RunSpec:
-        """The run spec of a person's main chat: the chat flow, profile and session memory, and every tool group."""
+        """The run spec of a person's main chat: the chat flow, who they are, profile and session memory, and every tool group."""
         pin = self.git.pin(session.repo_commit)
         repo = load_repo(pin)
         person = repo.people[session.person]
@@ -253,7 +254,8 @@ class Harness:
             }
 
         return RunSpec(
-            flow=person_flow(person.handle, person.main), groups=groups, chat=MAIN_CHAT, learnable=True,
+            flow=person_flow(person.handle, person.main), groups=groups,
+            inputs={"person": person_inputs(repo, person)}, chat=MAIN_CHAT, learnable=True,
             memory={"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars),
                     "session": SessionMemorySpec(storage=str(self._run_dir(session.id) / "memory.sqlite"))},
             stores={"profile": GitProfileStore(self.git, person.handle)}, skills=list(person.skills),
