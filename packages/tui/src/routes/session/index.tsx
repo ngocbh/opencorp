@@ -48,6 +48,7 @@ import { OPENCODE_BASE_MODE, useBindings, useOpencodeKeymap } from "../../keymap
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
+import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { SideChat, SideHeader } from "../chat/side"
 import { cardQuestions } from "../chat/turn"
@@ -1224,7 +1225,7 @@ function Question(props: ToolProps) {
         <BlockTool title="# Question" part={props.part}>
           <box flexDirection="column">
             <text fg={theme.textMuted}>{question()}</text>
-            <text fg={theme.text}>{props.output}</text>
+            <text fg={theme.text}>{answerShown(props.output ?? "")}</text>
           </box>
         </BlockTool>
       </Match>

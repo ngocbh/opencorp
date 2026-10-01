@@ -1,6 +1,6 @@
 import type { AnswerField, Question } from "@agent-corp/protocol"
 import { expect, test } from "bun:test"
-import { buildAnswer, cardModel } from "../../../src/routes/chat/answer"
+import { answerShown, buildAnswer, cardModel } from "../../../src/routes/chat/answer"
 
 function q(fields: Partial<Question>): Question {
   return {
@@ -138,4 +138,27 @@ test("a prompt gate with a record output or an object entry is read-only here", 
   expect(gate([field({ name: "title" }), field({ name: "count", type: "int" })])).toBeUndefined()
   expect(gate([field({ type: "object", fields: [field({ name: "x" })] })])).toBeUndefined()
   expect(gate([field({ type: "list[int]" })])).toBeUndefined()
+})
+
+const DISCUSSED =
+  "\n\nBefore answering, the user discussed your question with you in a side chat.\n" +
+  'In the JSON below, "user" entries are the user\'s own words.\n' +
+  'Discussion (JSON, oldest first):\n[{"role":"user","text":"why MIT?"}]'
+
+test("an answered question shows the user's answer, not the text the model gets", () => {
+  expect(answerShown('The user chose "Apache-2.0" (option 2 of the 3 shown).')).toBe("Apache-2.0")
+  expect(answerShown("The user answered: use the MIT license")).toBe("use the MIT license")
+  expect(answerShown('The user chose "Apache-2.0" (option 2 of the 3 shown).' + DISCUSSED)).toBe(
+    "Apache-2.0 (discussed in a side chat)",
+  )
+  expect(answerShown("The user answered: line one\nline two" + DISCUSSED)).toBe(
+    "line one\nline two (discussed in a side chat)",
+  )
+})
+
+test("a sent-back, interrupted or unknown answer text shows as it is, without the discussion", () => {
+  const sentBack = "No decision yet. The user discussed your question with you and wants you to ask again."
+  expect(answerShown(sentBack + DISCUSSED)).toBe(sentBack)
+  expect(answerShown("[interrupted by the user]")).toBe("[interrupted by the user]")
+  expect(answerShown("something else")).toBe("something else")
 })

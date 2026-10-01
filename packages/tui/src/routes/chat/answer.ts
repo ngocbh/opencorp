@@ -105,3 +105,18 @@ export function buildAnswer(model: CardModel, answers: PageAnswer[]): AnswerRequ
   const answer = model.record ? Object.fromEntries(model.pages.map((p, i) => [p.header, values[i]])) : values[0]
   return { answer, answer_kind: typed ? "text" : "option" }
 }
+
+// The office's tool result for an answered question (agent_corp.questions.format): a choice
+// line, then any side-chat discussion behind this marker, written for the model.
+const DISCUSSION_MARK = "\n\nBefore answering, the user discussed your question with you in a side chat."
+const CHOSE = /^The user chose "([\s\S]*)" \(option \d+ of the \d+ shown\)\.$/
+const ANSWERED = /^The user answered: ([\s\S]*)$/
+
+/** What an answered question card shows for the asker's tool result: the answer, not the model-facing text. */
+export function answerShown(output: string): string {
+  const cut = output.indexOf(DISCUSSION_MARK)
+  const choice = cut < 0 ? output : output.slice(0, cut)
+  const answer = choice.match(CHOSE)?.[1] ?? choice.match(ANSWERED)?.[1]
+  if (answer === undefined) return choice
+  return cut < 0 ? answer : `${answer} (discussed in a side chat)`
+}
