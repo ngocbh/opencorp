@@ -18,6 +18,7 @@ MAX_MATCHES = 200
 MAX_LIST_ENTRIES = 5000
 MAX_LINE_CHARS = 300
 MAX_SEARCH_FILE_BYTES = 2_000_000
+MAX_EDIT_LINES = 10
 
 
 class OpError(Exception):
@@ -48,7 +49,11 @@ def write_file(path, content):
 
 
 def edit_file(path, old, new, replace_all=False):
-    """Replace `old` with `new`; `old` must occur exactly once unless `replace_all`."""
+    """Replace `old` with `new`; `old` must occur exactly once unless `replace_all`.
+
+    The reply names the line (1-based) each replaced occurrence starts on, the first
+    `MAX_EDIT_LINES` of them.
+    """
     if not old:
         raise OpError("old must not be empty")
     with open(path, encoding="utf-8", newline="") as f:
@@ -61,7 +66,21 @@ def edit_file(path, old, new, replace_all=False):
     with open(path, "w", encoding="utf-8", newline="") as f:
         f.write(text.replace(old, new) if replace_all else text.replace(old, new, 1))
     n = count if replace_all else 1
-    return f"replaced {n} occurrence{'s' if n > 1 else ''} in {path}"
+    lines = _starts(text, old, min(n, MAX_EDIT_LINES))
+    at = f"line {lines[0]}" if n == 1 else f"lines {', '.join(map(str, lines))}{', …' if n > len(lines) else ''}"
+    return f"replaced {n} occurrence{'s' if n > 1 else ''} in {path} at {at}"
+
+
+def _starts(text, old, limit):
+    """The 1-based lines the first `limit` non-overlapping occurrences of `old` start on."""
+    lines, line, pos = [], 1, 0
+    while len(lines) < limit:
+        found = text.find(old, pos)
+        line += text.count("\n", pos, found)
+        lines.append(line)
+        line += old.count("\n")
+        pos = found + len(old)
+    return lines
 
 
 def list_dir(path="."):

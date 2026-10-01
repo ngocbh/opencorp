@@ -28,13 +28,23 @@ def test_edit(tmp_path):
     (tmp_path / "f.py").write_text("a = 1\nb = 1\n")
     with pytest.raises(OpError, match="2 times"):
         fileops.edit_file("f.py", "= 1", "= 2")
-    assert fileops.edit_file("f.py", "a = 1", "a = 3") == "replaced 1 occurrence in f.py"
-    assert fileops.edit_file("f.py", "= ", "=", replace_all=True) == "replaced 2 occurrences in f.py"
+    assert fileops.edit_file("f.py", "a = 1", "a = 3") == "replaced 1 occurrence in f.py at line 1"
+    assert fileops.edit_file("f.py", "= ", "=", replace_all=True) == "replaced 2 occurrences in f.py at lines 1, 2"
     assert (tmp_path / "f.py").read_text() == "a =3\nb =1\n"
     with pytest.raises(OpError, match="not found"):
         fileops.edit_file("f.py", "zzz", "y")
     with pytest.raises(OpError, match="empty"):
         fileops.edit_file("f.py", "", "y")
+
+
+def test_edit_reports_the_line_each_occurrence_starts_on(tmp_path):
+    (tmp_path / "todo.md").write_text("# Plan\r\n\r\nStatus: TODO\r\nOwner: minh\r\n", newline="")
+    assert fileops.edit_file("todo.md", "TODO\r\nOwner", "DONE\r\nOwner") == "replaced 1 occurrence in todo.md at line 3"
+    (tmp_path / "x.txt").write_text("x\n\n" * 6)
+    assert fileops.edit_file("x.txt", "x", "y", replace_all=True) == "replaced 6 occurrences in x.txt at lines 1, 3, 5, 7, 9, 11"
+    (tmp_path / "x.txt").write_text("x\n" * 12)
+    assert fileops.edit_file("x.txt", "x", "y", replace_all=True) == (
+        "replaced 12 occurrences in x.txt at lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …")
 
 
 def test_list(tmp_path):
