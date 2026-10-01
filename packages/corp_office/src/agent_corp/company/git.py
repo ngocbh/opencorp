@@ -16,6 +16,7 @@ _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 # `:(glob)` makes `*` match one path segment, so only people/<handle>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"
 _BLOB_ID = re.compile(r"[0-9a-f]{40}")
+_COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 class CompanyGitError(Exception):
@@ -60,6 +61,28 @@ class CompanyGit:
         """Return the commit id at HEAD."""
         return self.resolve("HEAD")
 
+    def read_head(self) -> str:
+        """Return the commit id at HEAD read straight from the ref files, falling back to ``head``.
+
+        It costs two small file reads instead of a git process, for checks made on every request.
+        """
+        gitdir = self.root / ".git"
+        try:
+            head = (gitdir / "HEAD").read_text().strip()
+            if head.startswith("ref: "):
+                ref = head.removeprefix("ref: ")
+                loose = gitdir / ref
+                if loose.is_file():
+                    head = loose.read_text().strip()
+                else:  # `git gc` moves refs into packed-refs
+                    packed = (gitdir / "packed-refs").read_text().splitlines()
+                    head = next((line.split()[0] for line in packed if line.endswith(f" {ref}")), "")
+            if _COMMIT_ID.fullmatch(head):
+                return head
+        except OSError:
+            pass
+        return self.head()
+
     def resolve(self, commit: str) -> str:
         """Return the full sha of ``commit`` (a sha, branch, or ``HEAD``); ValueError if unknown."""
         out = self._git("rev-parse", "--verify", "--quiet", f"{commit}^{{commit}}", check=False)
@@ -71,6 +94,17 @@ class CompanyGit:
         """Return the git blob id of ``relpath`` at ``commit``, or None if it is absent."""
         out = self._git("rev-parse", "--verify", "--quiet", f"{commit}:{relpath}", check=False)
         return out.stdout.strip() or None
+
+    def files(self, folder: str, commit: str = "HEAD") -> dict[str, str]:
+        """Return the blob id of every file under ``folder`` at ``commit``, by repo path."""
+        out = self._git("ls-tree", "-r", "-z", "--full-tree", commit, "--", *_literal([folder])).stdout
+        found = {}
+        for entry in filter(None, out.split("\0")):
+            info, _, path = entry.partition("\t")
+            _, kind, blob = info.split()
+            if kind == "blob":
+                found[path] = blob
+        return found
 
     def read_blob(self, blob_id: str) -> bytes | None:
         """Return the bytes of blob ``blob_id`` (40 lowercase hex), or None if the clone has no such blob."""
