@@ -19,6 +19,7 @@ import type {
   WorkItem,
 } from "@agent-corp/protocol"
 import { createTwoFilesPatch } from "diff"
+import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
@@ -137,7 +138,15 @@ export function seed(nextId = counter()): FakeState {
   }
 }
 
-type Ctx = { params: Record<string, string>; query: URLSearchParams; body: any; path: string }
+/** `actor` is who the request acts as and `device` the device it came from, as the office's `/whoami` says. */
+type Ctx = {
+  params: Record<string, string>
+  query: URLSearchParams
+  body: any
+  path: string
+  actor: string
+  device: string | null
+}
 type Handler = (ctx: Ctx) => Response | Promise<Response>
 type Stream = { ctl: ReadableStreamDefaultController<Uint8Array>; session?: string }
 
@@ -169,7 +178,7 @@ export function createFakeOffice(
   const state = opts.seed ?? seed(nextId)
   const notImplemented = new Set(opts.notImplemented ?? [])
   const missing = new Set(opts.missing ?? [])
-  const requests: { method: string; path: string; raw: string; body: unknown }[] = []
+  const requests: { method: string; path: string; raw: string; body: unknown; authorization?: string }[] = []
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
@@ -192,6 +201,67 @@ export function createFakeOffice(
   }
   const str = (v: unknown) => typeof v === "string" && v.length > 0
   const human = () => state.people.find((p) => p.kind === "human")?.handle ?? "ngocbh"
+  const ceo = () => state.people.find((p) => p.kind === "human" && !p.manager)?.handle ?? human()
+
+  /**
+   * Who a request with `header` acts as, as the office decides: a token must be one a human lists;
+   * no token acts as the CEO until some human has a device.
+   */
+  function authenticate(header: string | null): { actor: string; device: string | null } {
+    const humans = state.people.filter((p) => p.kind === "human")
+    if (header === null) {
+      if (humans.some((p) => p.devices?.length))
+        throw fail(401, "unauthenticated", "this office needs a device token; run `ac login`")
+      return { actor: ceo(), device: null }
+    }
+    const token = /^bearer +(act_[A-Za-z0-9_-]{43})$/i.exec(header)?.[1]
+    if (!token) throw fail(401, "bad_token", "the Authorization header isn't `Bearer <device token>`")
+    const hash = createHash("sha256").update(token).digest("hex")
+    for (const p of humans)
+      for (const d of p.devices ?? []) if (d.token_sha256 === hash) return { actor: p.handle, device: d.name }
+    throw fail(401, "bad_token", "the office doesn't know this device; run `ac login`")
+  }
+
+  /** The human `handle`, if `actor` may change their devices: themselves, or the CEO. */
+  function deviceOwner(handle: string, actor: string) {
+    const person = need(
+      state.people.find((p) => p.handle === handle),
+      `person @${handle}`,
+    )
+    if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; only humans have devices`)
+    if (actor !== handle && actor !== ceo())
+      throw fail(403, "forbidden", `only @${handle} or the CEO can change @${handle}'s devices`)
+    return person
+  }
+
+  function addDevice(handle: string, body: any, actor: string) {
+    check(
+      typeof body?.name === "string" && /^[a-z0-9][a-z0-9._-]{0,62}$/.test(body.name),
+      "name must be a device name",
+    )
+    check(typeof body.token_sha256 === "string" && /^[0-9a-f]{64}$/.test(body.token_sha256), "token_sha256 must be a sha256")
+    check(Object.keys(body).length === 2, "only name and token_sha256 are allowed")
+    const person = deviceOwner(handle, actor)
+    const same = person.devices?.find((d) => d.name === body.name)
+    if (same?.token_sha256 === body.token_sha256) return person
+    if (same) throw fail(409, "device_exists", `@${handle} already has a device named ${body.name}`)
+    if (state.people.some((p) => p.devices?.some((d) => d.token_sha256 === body.token_sha256)))
+      throw fail(409, "token_in_use", "another device already lists this token")
+    person.devices = [...(person.devices ?? []), { name: body.name, token_sha256: body.token_sha256 }]
+    return person
+  }
+
+  function removeDevice(handle: string, name: string, actor: string) {
+    const person = deviceOwner(handle, actor)
+    need(
+      person.devices?.find((d) => d.name === name),
+      `device ${name} for @${handle}`,
+    )
+    person.devices = person.devices!.filter((d) => d.name !== name)
+    // An empty list drops the field, as the office writes person.yaml.
+    if (!person.devices.length) delete person.devices
+    return person
+  }
 
   function write(text: string, filter?: (s: Stream) => boolean) {
     for (const s of streams) {
@@ -524,6 +594,14 @@ export function createFakeOffice(
   }
 
   const routes: [string, string, Handler][] = [
+    ["GET", "/health", () => Response.json({ ok: true })],
+    ["GET", "/whoami", ({ actor, device }) => Response.json({ person: actor, device })],
+    ["POST", "/people/:handle/devices", ({ params, body, actor }) => Response.json(addDevice(params.handle, body, actor))],
+    [
+      "DELETE",
+      "/people/:handle/devices/:name",
+      ({ params, actor }) => Response.json(removeDevice(params.handle, params.name, actor)),
+    ],
     ["GET", "/people", () => Response.json(state.people)],
     [
       "GET",
@@ -894,7 +972,24 @@ export function createFakeOffice(
     } catch {
       return Response.json({ error: "invalid_body", message: "the body is not JSON" }, { status: 422 })
     }
-    requests.push({ method: req.method, path: decodeURIComponent(url.pathname) + url.search, raw, body })
+    const authorization = req.headers.get("authorization")
+    requests.push({
+      method: req.method,
+      path: decodeURIComponent(url.pathname) + url.search,
+      raw,
+      body,
+      ...(authorization !== null && { authorization }),
+    })
+    let who: { actor: string; device: string | null } = { actor: ceo(), device: null }
+    // Only the liveness probe is served without a token once the office enforces them.
+    if (!(url.pathname === "/health" && (req.method === "GET" || req.method === "HEAD"))) {
+      try {
+        who = authenticate(authorization)
+      } catch (e) {
+        if (!(e instanceof Fail)) throw e
+        return Response.json({ error: e.error, message: e.message }, { status: e.status })
+      }
+    }
     const segs = url.pathname.split("/")
     const found = routes.flatMap(([method, pattern, h]) => {
       const params = match(pattern, segs)
@@ -917,7 +1012,7 @@ export function createFakeOffice(
       )
     let res: Response
     try {
-      res = await route.h({ params: route.params, query: url.searchParams, body, path: url.pathname })
+      res = await route.h({ params: route.params, query: url.searchParams, body, path: url.pathname, ...who })
     } catch (e) {
       if (!(e instanceof Fail)) throw e
       res = Response.json({ error: e.error, message: e.message }, { status: e.status })

@@ -13,8 +13,8 @@ const FLUSH_MS = 16
 
 export const { use: useOffice, provider: OfficeProvider } = createSimpleContext({
   name: "Office",
-  init: (props: { socket: string; cwd: string }) => {
-    const client = createOfficeClient({ socket: props.socket })
+  init: (props: { socket: string; token?: string; cwd: string }) => {
+    const client = createOfficeClient({ socket: props.socket, token: props.token })
     const [state, setState] = createStore<OfficeState>(emptyState())
     const [status, setStatus] = createSignal<OfficeStatus>("connecting")
     const [error, setError] = createSignal<string>()

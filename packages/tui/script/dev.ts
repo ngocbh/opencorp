@@ -6,7 +6,8 @@ import { Effect } from "effect"
 import { parseArgs } from "node:util"
 import { run } from "../src/app"
 import { Global } from "../src/core/global"
-import { defaultSocket } from "../src/office/paths"
+import { readIdentity } from "../src/office/identity"
+import { defaultSocket, identityPath } from "../src/office/paths"
 import { createFakeOffice, type FakeOffice } from "./stub"
 
 const { values } = parseArgs({
@@ -77,6 +78,8 @@ try {
   await Effect.runPromise(
     run({
       socket,
+      // A real office may need this device's token; the fake takes none.
+      token: real ? readIdentity(identityPath())?.token : undefined,
       cwd,
       args: { sessionID: values.session, continue: values.continue, person: values.person },
     }).pipe(Effect.provide(Global.layer)),
