@@ -90,3 +90,40 @@ test("an unknown session goes back home with a toast", async () => {
     office.stop()
   }
 })
+
+test("an answered question shows the user's answer, not the discussion sent to the model", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const output =
+    'The user chose "Apache-2.0" (option 2 of the 3 shown).\n\n' +
+    "Before answering, the user discussed your question with you in a side chat.\n" +
+    'Discussion (JSON, oldest first):\n[{"role":"user","text":"why not MIT?"}]'
+  office.state.messages[s.id] = [
+    {
+      id: "M1",
+      session_id: s.id,
+      role: "assistant",
+      created_at: "2026-01-01T00:00:00Z",
+      parts: [
+        {
+          id: "q",
+          type: "tool",
+          call_id: "c1",
+          tool: "ask_user",
+          state: "completed",
+          input: { question: "Which license?" },
+          output,
+        },
+      ],
+    },
+  ] satisfies Message[]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Which license?") && f.includes("Apache-2.0 (discussed in a side chat)"))
+    expect(app.frame()).not.toContain("Before answering")
+    expect(app.frame()).not.toContain("why not MIT?")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
