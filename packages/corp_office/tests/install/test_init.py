@@ -13,7 +13,8 @@ from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, missing_files, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import init, redact
+from agent_corp.install.init import init
+from agent_corp.install.onboard import redact
 from agent_corp.install.launch import office_answers
 from agent_corp.install.onboard import OnboardError, onboard
 from tests.company.conftest import _isolate_git  # noqa: F401

@@ -35,7 +35,7 @@ def test_the_home_defaults_to_agent_corp_home(tmp_path, monkeypatch, capsys):
 
 def test_start_before_onboarding_is_exit_3_with_a_hint(tmp_path, capsys):
     assert main(["start", "--home", str(tmp_path / "home")]) == 3
-    assert "run `ac onboard`" in capsys.readouterr().err
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
 def test_start_with_a_company_that_has_no_first_commit_is_exit_3_with_a_hint(tmp_path, capsys):
@@ -44,7 +44,7 @@ def test_start_with_a_company_that_has_no_first_commit_is_exit_3_with_a_hint(tmp
     subprocess.run(["git", "init", "-q", "-b", "main", str(company)], check=True)
     (company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
     assert main(["start", "--home", str(tmp_path / "home")]) == 3
-    assert "run `ac onboard`" in capsys.readouterr().err
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
 def test_an_init_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, capsys):
@@ -67,6 +67,21 @@ def test_init_flags_answer_their_questions_including_the_first_teammates_handle(
     assert seen["prompter"].ask("Their handle") == "lan-dev"
     assert seen["prompter"].ask("Git remote URL (empty to skip)") == "git@example.com:acme.git"
     assert seen["device"] is False
+
+
+def test_onboard_flags_give_the_repo_to_clone_and_say_which_human_you_are(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(install_main, "onboard", lambda home, prompter, **k: seen.update(prompter=prompter, **k))
+    args = ["onboard", "--home", str(tmp_path / "home"), "--from", "git@example.com:acme.git", "--handle", "lan"]
+    assert main(args) == 0
+    assert seen["source"] == "git@example.com:acme.git"
+    assert seen["prompter"].ask("Which of them are you?", "ceo") == "lan"
+
+
+def test_onboard_without_a_company_or_a_repo_is_exit_1_with_the_ways_to_get_one(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    assert main(["onboard", "--home", str(tmp_path / "home"), "--provider-stdin"]) == 1
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("flag", ["--handle", "--agent-handle"])

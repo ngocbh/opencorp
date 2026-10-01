@@ -1,9 +1,7 @@
 """``ac init``: create the company once (its name, its CEO, its first teammates, a remote), then onboard this machine."""
 
 import os
-import re
 import shlex
-import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +13,7 @@ from agent_corp.company_template import Owner, is_new, template_files, write_com
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install.launch import REPO, Host, launch
 from agent_corp.install.onboard import (OnboardError, Prompter, ask_until, handle_problem, login_defaults,
-                                        make_device, make_home, onboard, slug)
+                                        make_device, make_home, onboard, redact, slug, user_git)
 from agent_corp.protocol.models import HireRequest
 
 STEPS = 5
@@ -35,13 +33,6 @@ REMOTE = "Git remote URL (empty to skip)"
 
 FIRST_TEAMMATE = ("Minh", "Engineer")
 """The first teammate's default name, and every teammate's default title."""
-
-_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
-
-
-def redact(text: str) -> str:
-    """``text`` with the user and password taken out of any URL in it, since a remote URL can carry a token."""
-    return _USERINFO.sub("***@", text)
 
 
 @dataclass(frozen=True)
@@ -85,29 +76,18 @@ def _ask_team(prompter: Prompter, owner: Owner) -> list[Teammate]:
             return team
 
 
-def _git(company: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    """Run git in ``company`` as the user would, so their credentials and ssh setup reach the remote."""
-    try:
-        return subprocess.run(["git", "-C", str(company), *args], capture_output=True, text=True,
-                              stdin=subprocess.DEVNULL, timeout=300)
-    except OSError as exc:
-        return subprocess.CompletedProcess(args, 127, "", str(exc))
-    except subprocess.TimeoutExpired:
-        return subprocess.CompletedProcess(args, 124, "", "git timed out")
-
-
 def push(company: Path, url: str, prompter: Prompter) -> bool:
     """Add ``url`` as ``origin`` and push ``main`` to it, tracking it; return whether that worked.
 
     A failure is only a warning: the company is made, and the warning says how to retry.
     """
     where = shlex.quote(str(company))
-    added = _git(company, "remote", "add", "origin", url)
+    added = user_git("-C", str(company), "remote", "add", "origin", url)
     if added.returncode != 0:
         prompter.say(f"Warning: couldn't add the remote: {redact(added.stderr.strip())}. Add it and push with"
                      f" `git -C {where} remote add origin URL && git -C {where} push -u origin main`.")
         return False
-    pushed = _git(company, "push", "-u", "origin", "main")
+    pushed = user_git("-C", str(company), "push", "-u", "origin", "main")
     if pushed.returncode != 0:
         prompter.say(f"Warning: couldn't push to the remote: {redact(pushed.stderr.strip())}."
                      f" Retry with `git -C {where} push -u origin main`.")

@@ -90,7 +90,7 @@ test.skipIf(!fs.existsSync(venvPython()))(
       })
       const stderr = await new Response(proc.stderr).text()
       expect(await proc.exited).toBe(3)
-      expect(stderr).toContain(`no office at ${home} yet; run \`ac onboard\``)
+      expect(stderr).toContain(`no office at ${home} yet; run \`ac init\` to create one, or \`ac onboard --from URL\``)
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }

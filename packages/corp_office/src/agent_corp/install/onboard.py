@@ -5,6 +5,8 @@ import json
 import os
 import pwd
 import re
+import shutil
+import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -14,10 +16,11 @@ from typing import Annotated, Protocol, TextIO
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import TypeAdapter, ValidationError
 
+from agent_corp.auth.devices import DeviceRefused, add_device
 from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
 from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
-from agent_corp.company.git import CompanyGitError
+from agent_corp.company.git import CompanyGit, CompanyGitError
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, is_new, missing_files, write_company
@@ -27,6 +30,11 @@ from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
 from agent_corp.protocol.models import Device, HireRequest
 from agent_corp.secrets import write_private
+
+
+SET_UP = "run `ac init` to create one, or `ac onboard --from URL` to join one"
+"""What to do when a home has no company."""
+
 
 def stop_to_top_up(count: int) -> str:
     """What to do about ``count`` missing template files while the office runs."""
@@ -269,22 +277,115 @@ def make_home(paths: OfficePaths) -> None:
         raise OnboardError(str(exc)) from None
 
 
+_USERINFO = re.compile(r"(?<=://)[^/@\s]+@")
+
+
+def redact(text: str) -> str:
+    """``text`` with the user and password taken out of any URL in it, since a remote URL can carry a token."""
+    return _USERINFO.sub("***@", text)
+
+
+def user_git(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run git as the user would, so their credentials and ssh setup reach a remote; never raises."""
+    try:
+        return subprocess.run(["git", *args], capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=300)
+    except OSError as exc:
+        return subprocess.CompletedProcess(args, 127, "", f"can't run git: {exc.strerror or exc}")
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 124, "", "git timed out")
+
+
+CLONE = ".company-clone"
+"""Where onboarding clones a company before this device is added to it; renamed to ``company`` once done, so
+a stopped onboarding leaves no company that lacks this device."""
+
+REPO_URL = "Company repo URL (empty if there's none yet)"
+WHO = "Which of them are you?"
+"""The questions, by which command-line flags preset their answers."""
+
+
+def _remove(path: Path) -> None:
+    if path.is_symlink():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _clone(url: str, dest: Path) -> None:
+    """Clone the company at ``url`` into ``dest``, replacing what an earlier, stopped clone left there.
+
+    Raises:
+        OnboardError: the clone failed, or isn't a company; nothing is left at ``dest``.
+    """
+    _remove(dest)
+    done = user_git("clone", "-q", "--", url, str(dest))
+    if done.returncode != 0:
+        _remove(dest)
+        raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}")
+    if is_new(dest):
+        _remove(dest)
+        raise OnboardError(f"{redact(url)} isn't a company repo: it has no company.yaml at its top")
+
+
+def _login_handle() -> str:
+    try:
+        return login_defaults()[1]
+    except OnboardError:
+        return ""
+
+
+def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identity:
+    """Ask which of the company's humans this device acts as, list it in their ``person.yaml`` and commit that.
+
+    The default is the human whose handle is this login's, otherwise the only human. A device name the
+    human already lists gets a ``-2`` (``-3``, ...) suffix.
+
+    Raises:
+        OnboardError: there's no human, no answer names one, or the device can't be added.
+    """
+    people = load_repo(root).people
+    humans = sorted(h for h, p in people.items() if p.kind == "human")
+    if not humans:
+        raise OnboardError("the company has no humans for this device to act as")
+    login = _login_handle()
+    default = login if login in humans else humans[0] if len(humans) == 1 else ""
+    prompter.say(f"The company's humans: {', '.join('@' + h for h in humans)}")
+    handle = ask_until(prompter, WHO, default, lambda h: None if h in humans else
+                       f"@{h} isn't one of them" if h else "say which one you are")
+    taken = {d.name for d in people[handle].devices}
+    name = base = device_name()
+    suffix = 2
+    while name in taken:
+        name, suffix = f"{base[:60]}-{suffix}", suffix + 1
+    me = Identity(handle, name, new_token())
+    try:
+        add_device(CompanyGit(root, worktrees), handle, Device(name=name, token_sha256=token_sha256(me.token)), handle)
+    except (DeviceRefused, CompanyGitError, OSError) as exc:
+        raise OnboardError(f"can't add this device to @{handle}: {exc}") from None
+    _save_identity(home, me)
+    return me
+
+
 STEPS = 4
 """Onboarding's steps: the company, this device, the model, and the office."""
 
 
 def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO | None = None,
             host: Host | None = None, repo: Path = REPO, environ: Mapping[str, str] = os.environ,
-            steps: bool = True) -> None:
+            source: str | None = None, steps: bool = True) -> None:
     """Set up this machine's office for the company at ``home``; running it again only fills in what is missing.
 
-    In order: the home and office dirs (0700); the company repo, topped up with any template
-    files it lacks (lint errors stop here; left alone while the office runs); this device;
-    ``office/provider.json``; and the daemon under ``mode``. With ``steps``, each step gets a
-    numbered header (``ac init`` turns them off, since onboarding is one of its steps).
+    In order: the home and office dirs (0700); the company repo, cloned from ``source`` (or a
+    URL asked for) when there's none here, and topped up with any template files it lacks
+    (lint errors stop here; left alone while the office runs); this device, which for a
+    cloned company is listed for the human you pick and committed in the clone before the
+    office starts; ``office/provider.json``; and the daemon under ``mode``. With ``steps``,
+    each step gets a numbered header (``ac init`` turns them off, since onboarding is one of
+    its steps).
 
     Raises:
-        OnboardError: a step failed, or there's no company here; earlier steps stay done.
+        OnboardError: a step failed, or there's no company here and no repo to clone;
+            earlier steps stay done.
     """
     host = host or Host()
     run = launch(home, repo=repo, environ=environ, user_home=host.user_home)
@@ -300,28 +401,47 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     # A running office is the only writer of its company clone (CompanyGit's lock is
     # in-process), so the template top-up waits until it is stopped.
     running = host.answers(run.socket)
-    if is_new(paths.company):
+    new = is_new(paths.company)
+    root = paths.company
+    if new:
         if running:
             raise OnboardError(f"the office is running, but {paths.company} has no company yet;"
                                " stop it and run `ac onboard` again")
-        raise OnboardError(f"there's no company at {paths.company}; run `ac init` to create one")
+        if paths.company.is_dir() and any(paths.company.iterdir()):
+            raise OnboardError(f"{paths.company} holds a company that was never finished (no first commit);"
+                               " run `ac init` to finish it, or remove it to join another")
+        url = source or prompter.ask(REPO_URL)
+        if not url:
+            raise OnboardError(f"there's no company at {paths.company}; {SET_UP}")
+        root = paths.home / CLONE
+        _clone(url, root)
+        prompter.say(f"Company repo: cloned {redact(url)}")
     try:
-        written, missing = ([], missing_files(paths.company)) if running else (
-            write_company(paths.company, paths.worktrees), [])
-    except (CompanyGitError, OSError, ValueError) as exc:
-        raise OnboardError(f"can't write the company repo at {paths.company}: {exc}") from None
-    if missing:
-        prompter.say(f"Company repo: {paths.company}. {stop_to_top_up(len(missing))}")
-    else:
-        done = f"added {len(written)} template files to" if written else "up to date at"
-        prompter.say(f"Company repo: {done} {paths.company}")
-    errors = [i for i in lint(load_repo(paths.company)) if i.severity == "error"]
-    if errors:
-        raise OnboardError("the company repo has errors; fix them and run `ac onboard` again:\n"
-                           + "\n".join(f"  {i.path}: {i.code}: {i.message}" for i in errors))
+        try:
+            written, missing = ([], missing_files(root)) if running else (write_company(root, paths.worktrees), [])
+        except (CompanyGitError, OSError, ValueError) as exc:
+            raise OnboardError(f"can't write the company repo at {paths.company}: {exc}") from None
+        if missing:
+            prompter.say(f"Company repo: {paths.company}. {stop_to_top_up(len(missing))}")
+        elif written or not new:
+            done = f"added {len(written)} template files to" if written else "up to date at"
+            prompter.say(f"Company repo: {done} {paths.company}")
+        errors = [i for i in lint(load_repo(root)) if i.severity == "error"]
+        if errors:
+            raise OnboardError("the company repo has errors; fix them and run `ac onboard` again:\n"
+                               + "\n".join(f"  {i.path}: {i.code}: {i.message}" for i in errors))
 
-    step(2, "This device", "The office takes requests only from devices its humans list, once any human lists one.")
-    me = read_identity(identity_path(paths.home))
+        step(2, "This device", "The office takes requests only from devices its humans list, once any human"
+                               " lists one.")
+        me = _join(root, paths.worktrees, paths.home, prompter) if new else read_identity(identity_path(paths.home))
+        if new:
+            if paths.company.is_dir():  # an empty dir; os.replace can't put a directory over a full one
+                paths.company.rmdir()
+            os.replace(root, paths.company)
+    except BaseException:
+        if new:
+            _remove(root)
+        raise
     if me is not None:
         prompter.say(f"This device: {me.device}, acting as @{me.handle} (its token is in {identity_path(paths.home)})")
     else:

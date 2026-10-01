@@ -15,7 +15,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, init, service
 from agent_corp.install.launch import Host, ServiceError, launch
-from agent_corp.install.onboard import OnboardError, TtyPrompter, handle_problem, onboard
+from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, handle_problem, onboard
 
 NOT_ONBOARDED = 3
 
@@ -52,7 +52,8 @@ def _init(args: argparse.Namespace) -> int:
 def _onboard(args: argparse.Namespace) -> int:
     stdin = _provider_stdin(args)
     try:
-        onboard(_home(args.home), TtyPrompter(interactive=stdin is None), mode=args.service, stdin=stdin)
+        onboard(_home(args.home), TtyPrompter({WHO: args.handle}, interactive=stdin is None), mode=args.service,
+                stdin=stdin, source=args.source)
     except OnboardError as exc:
         print(f"ac onboard: {exc}", file=sys.stderr)
         return 1
@@ -72,7 +73,7 @@ def _start(args: argparse.Namespace) -> int:
         print(f"The office is already running (pid {service.pid(run)}).")
         return 0
     if is_new(OfficePaths(run.home).company):
-        print(f"ac: no office at {run.home} yet; run `ac onboard` to set one up", file=sys.stderr)
+        print(f"ac: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
         return NOT_ONBOARDED
     try:
         started = service.start(run, host)
@@ -109,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
     init_args.add_argument("--no-device", action="store_true",
                            help="don't register this device; the office stays open to requests without a token"
                                 " until someone runs `ac login`")
+    onboard_args = commands.choices["onboard"]
+    onboard_args.add_argument("--from", dest="source", metavar="URL",
+                              help="clone the company from this git URL when there's none here yet")
+    onboard_args.add_argument("--handle", help="which of a cloned company's humans you are")
     args = parser.parse_args(argv)
     return {"init": _init, "onboard": _onboard, "doctor": _doctor, "start": _start}[args.command](args)
 

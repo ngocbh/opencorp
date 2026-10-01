@@ -17,7 +17,7 @@ from agent_corp.company_template import is_new, missing_files
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
-from agent_corp.install.onboard import OnboardError, check_provider, stop_to_top_up
+from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
 
 _START_ERROR = "agent-corp office: "
 """How the daemon prefixes the one line it prints when it can't start."""
@@ -52,7 +52,7 @@ def _home(paths: OfficePaths) -> Check:
     try:
         st = os.stat(paths.home)
     except FileNotFoundError:
-        return Check("home", "fail", f"no office home at {paths.home}; run `ac onboard`")
+        return Check("home", "fail", f"no office home at {paths.home}; {SET_UP}")
     except OSError as exc:
         return Check("home", "fail", f"can't read {paths.home}: {exc.strerror}")
     if not stat.S_ISDIR(st.st_mode):
@@ -64,7 +64,7 @@ def _home(paths: OfficePaths) -> Check:
 
 def _company(paths: OfficePaths, running: bool) -> Check:
     if not (paths.company / ".git").exists():
-        return Check("company", "fail", f"no company repo at {paths.company}; run `ac onboard`")
+        return Check("company", "fail", f"no company repo at {paths.company}; {SET_UP}")
     if is_new(paths.company):
         return Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no first commit);"
                      " run `ac init` to finish it")
