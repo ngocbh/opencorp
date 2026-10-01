@@ -2,6 +2,7 @@
 
 import os
 import signal
+import threading
 
 import pytest
 
@@ -92,3 +93,33 @@ def test_two_feedbacks_learned_at_once_both_land_in_the_profile(office, workspac
     assert len(fake.requests()) == calls + 3 and fake.pending() == []  # the loser learned again, once
     # The loser learned again on top of the winner: its second call carries the winner's rule.
     assert any(rule in asked(fake.requests()[calls + 2]) for rule in ("- Rule: brevity", "- Rule: citations"))
+
+
+def test_two_clients_answer_one_question_and_the_first_answer_wins(office, workspace):
+    fake = office.fake
+    sid = office.start_chat(office.person("minh"), workspace)
+    fake.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which database?", "options": ["Postgres", "SQLite"]}}]},
+                {"content": "Going with it."})
+    office.prompt(sid, "Pick a database with me")
+    [question] = wait_for(lambda: [q for q in office.get("/questions", session=sid, status="open")
+                                   if q["source"] == "ask_user"], "Minh's question")
+    barrier, results = threading.Barrier(2), {}
+
+    def answer(choice):
+        with office.client() as http:  # its own connection: a second TUI
+            barrier.wait()
+            response = http.post(f"/questions/{question['id']}/answer", json={"answer": choice, "answer_kind": "option"})
+            results[choice] = (response.status_code, response.json().get("error"))
+
+    threads = [threading.Thread(target=answer, args=(choice,)) for choice in ("Postgres", "SQLite")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(results.values()) == [(200, None), (409, "not_open")]
+    [winner] = [choice for choice, (code, _) in results.items() if code == 200]
+    [loser] = [choice for choice in results if choice != winner]
+    office.settled(sid, ["Going with it."])
+    assert office.get(f"/questions/{question['id']}")["answer"] == winner
+    [result] = [m["content"] for m in fake.requests()[-1]["messages"] if m["role"] == "tool"]
+    assert winner in result and loser not in result
