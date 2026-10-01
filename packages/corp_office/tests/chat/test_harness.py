@@ -727,6 +727,37 @@ def test_a_start_that_fails_otherwise_names_the_session_but_not_the_error(harnes
     assert session.id in err.value.message and "sentinel" not in err.value.message
 
 
+def test_a_turn_after_the_provider_changes_runs_on_the_new_provider(harness, fake_llm, workspace):
+    fake_llm.script({"content": "One."}, {"content": "Two."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "first")
+    wait_for(lambda: texts(harness, sid) == ["One."] and status(harness, sid) == "idle", what="the first reply")
+    jobs = []
+    spawn = harness.registry.spawn
+    harness.registry.spawn = lambda job, *args: (jobs.append(job), spawn(job, *args))[1]
+    old = harness.provider()
+    new = old.model_copy(update={"llm_config": {**old.llm_config, "api_key": "sk-new"}})
+    harness.provider = lambda: new
+
+    assert harness.prompt(sid, "second") == "turn"
+    wait_for(lambda: texts(harness, sid) == ["One.", "Two."] and status(harness, sid) == "idle",
+             what="the reply on the new provider")
+    (job,) = jobs
+    assert (job.kind, job.llm_config["api_key"]) == ("chat", "sk-new")
+    assert len(harness.store.get_session(sid).run_ids) == 2
+    assert texts(harness, sid, role="user") == ["first", "second"]
+
+
+def test_ending_while_a_new_provider_takes_over_ends_the_session(harness, fake_llm, workspace):
+    sid = start(harness, workspace)
+    old = harness.provider()
+    new = old.model_copy(update={"llm_config": {**old.llm_config, "api_key": "sk-new"}})
+    harness.provider = lambda: new
+    assert harness.prompt(sid, "hi") == "turn"
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+
+
 def test_a_failed_session_says_why_without_the_model_key(make_harness, workspace):
     harness = keyed(make_harness)
     sid = start(harness, workspace)

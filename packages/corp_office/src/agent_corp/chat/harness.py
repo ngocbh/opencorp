@@ -367,7 +367,10 @@ class Harness:
             if live.spec.chat is not None and not self._held(live):
                 if live.turn_q is not None:
                     live.transcript.user(text)
-                    self._answer_turn(live, live.turn_q, text)
+                    if self._provider_changed(live):
+                        self._restart(live, text)
+                    else:
+                        self._answer_turn(live, live.turn_q, text)
                     return "turn"
                 asked = self.store.list_questions(run_id=live.run_id, status="open", source="ask_user")
                 if asked:
@@ -712,13 +715,50 @@ class Harness:
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
             live.transcript.error(f"The reply failed ({_why(outcome, live.provider)}). Send your message again.")
             self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
-            for q in self.store.list_questions(run_id=live.run_id, status="open"):
-                self.store.set_question_status(q.id, "stale")
-            live.run_id = new_id()
-            self.store.add_session_run(live.session_id, live.run_id)
-            self._spawn(live, "chat")
+            self._new_run(live)
         else:
             self._finish(live, "failed", outcome)
+
+    def _new_run(self, live: _Live) -> None:
+        """Start a fresh chat run for ``live``; the old run's open questions go stale."""
+        for q in self.store.list_questions(run_id=live.run_id, status="open"):
+            self.store.set_question_status(q.id, "stale")
+        live.run_id = new_id()
+        self.store.add_session_run(live.session_id, live.run_id)
+        self._spawn(live, "chat")
+
+    def _provider_changed(self, live: _Live) -> bool:
+        """Whether the provider file no longer gives what ``live``'s worker got."""
+        try:
+            provider = self.provider()
+        except ProviderError:
+            return False  # a spawn would fail on it too; keep the worker that works
+        return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
+
+    def _restart(self, live: _Live, text: str) -> None:
+        """Hand ``text`` to a fresh run on the current provider instead of the worker waiting at a turn."""
+        # A worker keeps the provider it started with, so a fixed key or endpoint would
+        # otherwise reach only the run after the next one to fail.
+        worker, live.worker = live.worker, None  # its exit is no longer the session's
+        live.turn_q, live.turn_node = None, None
+        if live.timer is not None:
+            live.timer.cancel()
+            live.timer = None
+        live.pending.append(text)
+        self.store.update_session(live.session_id, status="busy")
+        self._post(self._replace, live, worker)
+
+    def _replace(self, live: _Live, worker: Worker | None) -> None:
+        if worker is not None:
+            self.registry.close(live.session_id)
+        with self._lock:
+            if not self._current(live) or self._stopping:
+                return
+        self.hooks.fire("run_finished", self.store.get_session(live.session_id), live.run_id, None)
+        try:
+            self._new_run(live)
+        except Exception:
+            pass  # _spawn logged it and failed the session
 
     def _asked_turn(self, live: _Live) -> bool:
         return any(live.spec.chat.is_turn(q.node_id)
