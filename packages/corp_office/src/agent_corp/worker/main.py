@@ -89,7 +89,8 @@ def run_job(job: Job, channel: Channel, rpc: Rpc, inbox: Inbox) -> dict[str, Any
             result = run_flow(flow, job.inputs, run_id=job.run_id, llm_config=job.llm_config,
                               learnable=job.learnable, **common)
         else:
-            result = resume_flow(flow, **common)
+            # composer never records a host key, so a resumed run (and its backward) needs it again.
+            result = resume_flow(flow, api_key=(job.llm_config or {}).get("api_key"), **common)
         backward = None
         if job.kind == "backward":
             outcome = result.backward(job.feedback)
