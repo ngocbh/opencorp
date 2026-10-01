@@ -47,6 +47,7 @@ def _start(args: argparse.Namespace) -> int:
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
     if host.answers(run.socket):
+        print(f"The office is already running (pid {service.pid(run)}).")
         return 0
     if is_new(OfficePaths(run.home).company):
         print(f"ac: no office at {run.home} yet; run `ac onboard` to set one up", file=sys.stderr)
@@ -59,6 +60,7 @@ def _start(args: argparse.Namespace) -> int:
     except (ServiceError, OfficeStartError) as exc:
         print(f"ac: {exc}", file=sys.stderr)
         return 1
+    print(f"Started the office (pid {service.pid(run)}).")
     return 0
 
 

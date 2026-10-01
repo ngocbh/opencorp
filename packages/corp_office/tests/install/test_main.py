@@ -72,10 +72,14 @@ def test_scripted_onboard_then_start_brings_a_stopped_office_back(short_dir, mon
         assert main(args) == 0, capsys.readouterr()
         assert "First agent: hired Minh (@minh)" in capsys.readouterr().out
         assert main(["start", "--home", str(short_dir)]) == 0  # already running: nothing to do
+        pid = paths.pidfile.read_text().strip()
+        assert capsys.readouterr().out == f"The office is already running (pid {pid}).\n"
         _stop(paths)
         assert not office_answers(paths.socket)
         assert main(["start", "--home", str(short_dir)]) == 0
         assert office_answers(paths.socket)
+        pid = paths.pidfile.read_text().strip()
+        assert capsys.readouterr().out == f"Started the office (pid {pid}).\n"
     finally:
         _stop(paths)
 
