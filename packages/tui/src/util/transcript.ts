@@ -71,6 +71,8 @@ export function formatPart(part: Part, options: TranscriptOptions): string {
       }
       return result + `\n`
     }
+    case "error":
+      return `**Error:** ${part.message}\n\n`
   }
   return ""
 }

@@ -14,7 +14,7 @@ import {
 } from "solid-js"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
-import type { FilePart, Message, Part, TextPart, ToolPart } from "@agent-corp/protocol"
+import type { ErrorPart, FilePart, Message, Part, TextPart, ToolPart } from "@agent-corp/protocol"
 import { createTwoFilesPatch } from "diff"
 import { useRoute, useRouteData } from "../../context/route"
 import { SplitBorder } from "../../ui/border"
@@ -738,6 +738,15 @@ function FilePartView(props: { last: boolean; part: FilePart }) {
   )
 }
 
+function ErrorPartView(props: { last: boolean; part: ErrorPart }) {
+  const { theme } = useTheme()
+  return (
+    <box paddingLeft={3} marginTop={1} flexShrink={0}>
+      <text fg={theme.error}>{props.part.message}</text>
+    </box>
+  )
+}
+
 export type ToolView = "shell" | "read" | "write" | "edit" | "list" | "search" | "question" | "generic"
 
 const pick = (input: Record<string, unknown>, map: Record<string, string>) =>
@@ -778,6 +787,7 @@ const PART_MAPPING = {
   text: TextPartView,
   file: FilePartView,
   tool: ToolPartView,
+  error: ErrorPartView,
 }
 
 function ToolPartView(props: { last: boolean; part: ToolPart }) {

@@ -23,7 +23,8 @@ def _tool(state="running", **over):
 
 
 def test_message_round_trips_with_every_part_kind(store, sid):
-    parts = [_text(), {"id": new_id(), "type": "file", "path": "a.txt", "mime": "text/plain"}, _tool()]
+    parts = [_text(), {"id": new_id(), "type": "file", "path": "a.txt", "mime": "text/plain"}, _tool(),
+             {"id": new_id(), "type": "error", "message": "The reply failed."}]
     m = message(sid, parts)
     assert store.add_message(m) == m == store.get_message(m.id)
     before = len(store.events_after())

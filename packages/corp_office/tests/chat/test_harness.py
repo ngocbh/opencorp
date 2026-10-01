@@ -4,7 +4,7 @@ import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
-from tests.chat.conftest import status, texts, wait_for
+from tests.chat.conftest import errors, status, texts, wait_for
 
 
 def start(harness, workspace):
@@ -124,12 +124,15 @@ def test_esc_answers_the_models_question_and_keeps_the_run(harness, fake_llm, wo
     assert "first-turn-text" in asked(fake_llm, 2)  # session memory kept the interrupted turn
 
 
-def test_a_failed_run_starts_a_new_run(harness, fake_llm, workspace):
+def test_a_failed_run_says_so_and_starts_a_new_run(harness, fake_llm, workspace):
     fake_llm.script({"error": 500}, {"content": "Back."})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
     wait_for(lambda: len(harness.store.get_session(sid).run_ids) == 2 and status(harness, sid) == "idle",
              what="the new run")
+    (error,) = errors(harness, sid)
+    assert error.startswith("The reply failed (") and error.endswith("Send your message again.")
+    assert texts(harness, sid) == []
     harness.prompt(sid, "again")
     wait_for(lambda: texts(harness, sid)[-1:] == ["Back."], what="the reply")
 
@@ -722,3 +725,20 @@ def test_a_start_that_fails_otherwise_names_the_session_but_not_the_error(harnes
     (session,) = harness.store.list_sessions()
     assert (err.value.status, err.value.code, session.status) == (500, "start_failed", "failed")
     assert session.id in err.value.message and "sentinel" not in err.value.message
+
+
+def test_a_failed_session_says_why_without_the_model_key(make_harness, workspace):
+    harness = keyed(make_harness)
+    sid = start(harness, workspace)
+    harness._finish(harness._live[sid], "failed", {"type": "result", "status": "failed", "output": None, "failure": {
+        "node_id": "chat#0/reply", "cause_type": "AuthError", "message": f"bad key {SENTINEL} " + "x" * 900}})
+    (error,) = errors(harness, sid)
+    assert error.startswith("The session failed (AuthError: bad key [redacted] xxx")
+    assert SENTINEL not in error and len(error) < 600
+    assert error.endswith("Start a new chat.")
+
+
+def test_a_session_whose_worker_keeps_dying_says_so(harness, workspace):
+    sid = start(harness, workspace)
+    harness._finish(harness._live[sid], "failed", None)
+    assert errors(harness, sid) == ["The session failed (its worker stopped or couldn't start; see the office log). Start a new chat."]

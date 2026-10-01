@@ -40,6 +40,7 @@ INTERRUPTED_CALL = "interrupted; outcome unknown"
 LIVE = ("starting", "idle", "busy", "ending")
 """Session statuses that have (or should have) a live run."""
 _CAP_TITLE = "Raise the cost cap"
+_WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
@@ -709,6 +710,7 @@ class Harness:
                                             or failure.get("cause_type") == "LoopMaxExceeded"):
             self._finish(live, "ended", outcome)
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
+            live.transcript.error(f"The reply failed ({_why(outcome, live.provider)}). Send your message again.")
             self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
             for q in self.store.list_questions(run_id=live.run_id, status="open"):
                 self.store.set_question_status(q.id, "stale")
@@ -726,6 +728,8 @@ class Harness:
         with self._lock:
             if self._live.get(live.session_id) is live:
                 del self._live[live.session_id]
+        if status == "failed":
+            live.transcript.error(f"The session failed ({_why(outcome, live.provider)}). Start a new chat.")
         if status == "ended":
             session = self.store.get_session(live.session_id)
             status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
@@ -849,6 +853,16 @@ def _defaults(repo: Any) -> CompanyDefaults:
 
 def _ceo(repo: Any) -> str | None:
     return repo.company.ceo if repo.company else None
+
+
+def _why(outcome: dict[str, Any] | None, provider: Provider) -> str:
+    """Why a run failed, in at most ``_WHY_CHARS`` characters and without the model key."""
+    if outcome is None:
+        return "its worker stopped or couldn't start; see the office log"
+    failure = outcome.get("failure") or {}
+    cause, message = failure.get("cause_type"), failure.get("message") or outcome.get("message") or "no reason given"
+    why = _redact(f"{cause}: {message}" if cause else str(message), provider)
+    return why if len(why) <= _WHY_CHARS else why[:_WHY_CHARS - 1] + "…"
 
 
 def _redact(value: Any, provider: Provider) -> Any:

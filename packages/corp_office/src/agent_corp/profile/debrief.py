@@ -16,14 +16,16 @@ _CUT_START = "[the start of this message left out]"
 
 
 def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX_CHARS) -> str:
-    """A session's messages as plain text: ``role: text`` blocks, with ``[called <tool>]`` for tool calls.
+    """A session's messages as plain text: ``role: text`` blocks, with ``[called <tool>]`` for tool calls
+    and ``[error: <why>]`` for failed turns.
 
     Past ``max_chars`` the oldest messages are left out, so the debrief sees how the session ended;
     a newest message longer than ``max_chars`` keeps its end.
     """
     blocks = []
     for message in messages:
-        lines = [f"[called {p.tool}]" if p.type == "tool" else p.text for p in message.parts if p.type != "file"]
+        lines = [f"[called {p.tool}]" if p.type == "tool" else f"[error: {p.message}]" if p.type == "error"
+                 else p.text for p in message.parts if p.type != "file"]
         blocks.append(f"{message.role}: " + "\n".join(lines))
     kept: list[str] = []
     size = 0
