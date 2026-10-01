@@ -5,7 +5,7 @@ import signal
 
 import pytest
 
-from .fixtures.office import asked
+from .fixtures.office import alive, asked, wait_for
 
 pytestmark = pytest.mark.timeout(180)
 
@@ -36,3 +36,25 @@ def test_a_worker_killed_mid_run_is_respawned_and_finishes_the_turn(office, work
     fake.script({"content": "Next."})
     office.prompt(sid, "second")
     office.settled(sid, ["One.", "Recovered.", "Next."])
+
+
+def test_an_office_killed_mid_turn_comes_back_with_ac_start_and_finishes_the_turn(office, workspace):
+    fake = office.fake
+    sid = first_turn(office, workspace)
+    fake.script({"content": "Lost.", "hold": True}, {"content": "Resumed."})
+    office.prompt(sid, "mid-turn")
+    fake.wait_for_requests(2, timeout=40)
+    orphan = office.worker(sid)
+    old = office.kill_office()
+    wait_for(lambda: not alive(orphan.pid), "the orphaned worker to exit when its office dies")
+    down = office.ac("end", cwd=workspace, check=False)
+    assert (down.returncode, down.stderr.strip()) == (3, "The office isn't running. Run `ac doctor`.")
+    office.ac("start", cwd=workspace)
+    assert office.pid() != old
+    office.settled(sid, ["One.", "Resumed."])
+    fake.release()  # the dead worker's call: nobody reads its reply
+    assert len(office.session(sid)["run_ids"]) == 1  # resumed, not a new run
+    assert len(fake.requests()) == 3 and "mid-turn" in asked(fake.requests()[2])
+    fake.script({"content": "Next."})
+    office.prompt(sid, "second")
+    office.settled(sid, ["One.", "Resumed.", "Next."])

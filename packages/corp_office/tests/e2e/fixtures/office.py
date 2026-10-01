@@ -43,6 +43,14 @@ def asked(request) -> str:
     return json.dumps(request["messages"])
 
 
+def alive(pid: int) -> bool:
+    """Whether ``pid`` is running; a zombie counts as gone."""
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
 class RunningOffice:
     """An office daemon on ``home`` whose provider is ``fake``, driven over its unix socket."""
 
@@ -189,6 +197,13 @@ class RunningOffice:
             return None
 
         return wait_for(find, f"session {sid}'s worker")
+
+    def kill_office(self) -> int:
+        """SIGKILL the office, as a crash would; return its pid."""
+        pid = self.pid()
+        os.kill(pid, signal.SIGKILL)
+        wait_for(lambda: not alive(pid), "the office to die")
+        return pid
 
     def stop(self) -> None:
         """Stop every office this test started, and any worker a killed office left behind."""
