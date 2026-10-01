@@ -90,6 +90,27 @@ def test_a_key_needs_a_provider(tmp_path):
     assert KEY not in str(info.value)
 
 
+def test_a_base_url_beside_the_key_is_saved(tmp_path):
+    path = tmp_path / "provider.json"
+    llm = {"provider": "openai", "model": "gpt-5.4", "base_url": "https://acme.openai.azure.com/openai/v1/",
+           "api_key": KEY}
+    assert ensure_provider(path, Script(), stdin=io.StringIO(json.dumps({"llm_config": llm}))) is True
+    assert load_provider(path).llm_config == llm and mode(path) == 0o600
+
+
+@pytest.mark.parametrize("llm, error", [
+    ({"provider": "openai", "base_url": "http://gateway.example.com/v1", "api_key": KEY}, "must use https"),
+    ({"provider": "openai", "base_url": "https://gateway.example.com/v1"}, "base_url needs llm_config.api_key"),
+    ({"provider": "azure", "base_url": "https://gateway.example.com/v1", "api_key": KEY},
+     "azure does not take llm_config.base_url"),
+])
+def test_a_base_url_composer_refuses_is_refused_without_echoing_it_or_the_key(tmp_path, llm, error):
+    with pytest.raises(OnboardError, match=error) as info:
+        ensure_provider(tmp_path / "provider.json", Script(), stdin=io.StringIO(json.dumps({"llm_config": llm})))
+    assert KEY not in str(info.value) and "gateway.example.com" not in str(info.value)
+    assert not (tmp_path / "provider.json").exists()
+
+
 def test_a_credential_in_env_is_refused_without_its_value(tmp_path):
     with pytest.raises(OnboardError, match="ANTHROPIC_API_KEY") as info:
         ensure_provider(tmp_path / "provider.json", Script(), stdin=io.StringIO(json.dumps(

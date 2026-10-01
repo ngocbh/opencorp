@@ -297,3 +297,16 @@ def test_waiting_for_an_exit_gives_up_on_a_process_it_cannot_read(monkeypatch):
 
     monkeypatch.setattr(spawn_module.psutil, "Process", denied)
     assert spawn_module._wait_exited(os.getpid(), 5)
+
+
+def test_a_key_goes_to_the_base_url_beside_it_and_stays_out_of_the_run_log(fake_llm, registry, make_job, session_dir,
+                                                                             tmp_path):
+    key = "sk-test-base-url-0123456789"
+    fake_llm.script({"content": "hello"})
+    job = make_job(llm_config={"provider": "vllm", "model": "stub", "base_url": f"{fake_llm.base_url}/v1",
+                               "api_key": key}, env={})
+    rec = run(registry, job, Recorder(), session_dir)
+    assert rec.outcome["output"] == "hello"
+    assert fake_llm.authorizations() == [f"Bearer {key}"]
+    log = (tmp_path / "runs" / "r1.jsonl").read_text()
+    assert key not in log and f"{fake_llm.base_url}/v1" in log
