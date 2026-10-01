@@ -20,6 +20,8 @@ class Transcript:
     text part, stored at its first and last chunk and streamed as ``part.delta`` in
     between; each tool call is a tool part. When the node ends, a tool part still
     running is ``interrupted``, and a node that streamed no text gets its output as text.
+    A user message that comes in while a node runs (a steer) closes the node's message at
+    its next model call, so what the model says after reading it follows it.
     ``abort`` closes what a worker that died or was stopped left open.
     Methods are called from a worker's reader thread and from request threads.
     """
@@ -32,13 +34,16 @@ class Transcript:
         self._messages: dict[str, str] = {}  # node id -> message id
         self._texts: dict[tuple[str, str], TextPart] = {}  # (node id, exchange id) -> part
         self._tools: dict[tuple[str, str], ToolPart] = {}  # (node id, tool call id) -> part
-        self._streamed: set[str] = set()  # node ids with a text part
+        self._streamed: set[str] = set()  # node ids whose message has a text part
+        self._steered: set[str] = set()  # node ids with a user message after their message
 
     def user(self, text: str) -> Message:
         """Add a user message."""
-        message = self.store.add_message(Message(id=new_id(), session_id=self.session_id, role="user",
-                                                 parts=[TextPart(id=new_id(), type="text", text=text)],
-                                                 created_at=now()))
+        with self._lock:
+            message = self.store.add_message(Message(id=new_id(), session_id=self.session_id, role="user",
+                                                     parts=[TextPart(id=new_id(), type="text", text=text)],
+                                                     created_at=now()))
+            self._steered.update(self._messages)
         self._live("message.updated", message.model_dump(mode="json"))
         return message
 
@@ -54,6 +59,8 @@ class Transcript:
         """Record a composer event (a worker ``event`` frame's ``name`` and ``data``)."""
         with self._lock:
             if name == "ModelCallStarted":
+                if data["node_id"] in self._steered:
+                    self._close(data["node_id"])
                 self._message(data["node_id"])
             elif name == "ToolCallStarted":
                 args = data.get("arguments")
@@ -121,6 +128,14 @@ class Transcript:
         self._tools[(node_id, part.call_id)] = part
         self._put(node_id, part)
 
+    def _close(self, node_id: str) -> None:
+        # Between model calls a node's text parts are stored and its tool calls finished.
+        for key in [k for k in self._tools if k[0] == node_id]:
+            del self._tools[key]
+        self._streamed.discard(node_id)
+        self._steered.discard(node_id)
+        del self._messages[node_id]
+
     def _end(self, node_id: str, output: Any) -> None:
         if node_id not in self._messages:
             return
@@ -132,8 +147,7 @@ class Transcript:
                 self._put(node_id, part.model_copy(update={"state": "interrupted"}))
         if node_id not in self._streamed and isinstance(output, str) and output:
             self._put(node_id, TextPart(id=new_id(), type="text", text=output))
-        self._streamed.discard(node_id)
-        del self._messages[node_id]
+        self._close(node_id)
 
     def _live(self, type_: str, data: dict[str, Any]) -> None:
         self._publish(LiveEvent(type=type_, session_id=self.session_id, data=data))

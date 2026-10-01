@@ -56,6 +56,9 @@ def test_a_steer_reaches_the_running_reply(harness, fake_llm, workspace):
     assert "Also mention Rome." in asked(fake_llm, 2)
     wait_for(lambda: status(harness, sid) == "idle" and texts(harness, sid)[-1:] == ["Done."], what="the reply")
     assert texts(harness, sid, "user") == ["hi", "Also mention Rome."]
+    # The steer comes after the text streamed before the model read it, and before the text after.
+    assert [(m.role, [p.text for p in m.parts if p.type == "text"]) for m in harness.store.list_messages(sid)] == [
+        ("user", ["hi"]), ("assistant", ["Working"]), ("user", ["Also mention Rome."]), ("assistant", ["Done."])]
 
 
 def test_a_steer_the_reply_never_reads_is_the_next_turn(harness, fake_llm, workspace):
