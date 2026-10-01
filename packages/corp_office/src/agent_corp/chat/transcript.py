@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from agent_corp.protocol import now
-from agent_corp.protocol.models import LiveEvent, Message, TextPart, ToolPart
+from agent_corp.protocol.models import ErrorPart, LiveEvent, Message, TextPart, ToolPart
 from agent_corp.store import Store, new_id
 
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
@@ -38,6 +38,14 @@ class Transcript:
         """Add a user message."""
         message = self.store.add_message(Message(id=new_id(), session_id=self.session_id, role="user",
                                                  parts=[TextPart(id=new_id(), type="text", text=text)],
+                                                 created_at=now()))
+        self._live("message.updated", message.model_dump(mode="json"))
+        return message
+
+    def error(self, text: str) -> Message:
+        """Add an assistant message saying why a turn or the session failed."""
+        message = self.store.add_message(Message(id=new_id(), session_id=self.session_id, role="assistant",
+                                                 parts=[ErrorPart(id=new_id(), type="error", message=text)],
                                                  created_at=now()))
         self._live("message.updated", message.model_dump(mode="json"))
         return message

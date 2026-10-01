@@ -28,6 +28,7 @@ from agent_corp.protocol import now
 from agent_corp.protocol.models import (
     Comment,
     Debrief,
+    ErrorPart,
     Event,
     Feedback,
     FilePart,
@@ -43,7 +44,7 @@ from agent_corp.store.migrate import migrate
 
 log = logging.getLogger(__name__)
 
-type Part = TextPart | FilePart | ToolPart
+type Part = TextPart | FilePart | ToolPart | ErrorPart
 type Listener = Callable[[Event], None]
 
 BUSY_TIMEOUT_S = 10.0
@@ -929,7 +930,7 @@ class Store:
     # --- messages and parts (live content: no events) -----------------------------------
 
     def _put_part(self, tx: Tx, message_id: str, part: Part) -> None:
-        if not isinstance(part, (TextPart, FilePart, ToolPart)):
+        if not isinstance(part, (TextPart, FilePart, ToolPart, ErrorPart)):
             raise TypeError(f"not a part: {type(part).__name__}")
         cur = tx.execute(
             "INSERT INTO parts (id, message_id, seq, type, data) "

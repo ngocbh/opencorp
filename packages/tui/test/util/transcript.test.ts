@@ -36,6 +36,12 @@ describe("formatPart", () => {
     expect(formatPart(tool({ output: "x" }), { toolDetails: false })).toBe("**Tool: shell**\n\n")
   })
 
+  test("an error part is its message", () => {
+    expect(formatPart({ id: "e", type: "error", message: "The reply failed." }, { toolDetails: false })).toBe(
+      "**Error:** The reply failed.\n\n",
+    )
+  })
+
   test("non-string output is JSON; errors are shown; fences in output don't break the block", () => {
     expect(formatPart(tool({ input: {}, output: { n: 1 } }), { toolDetails: true })).toContain(
       '**Output:**\n```\n{\n  "n": 1\n}\n```',

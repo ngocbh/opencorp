@@ -127,3 +127,24 @@ test("an answered question shows the user's answer, not the discussion sent to t
     office.stop()
   }
 })
+
+test("a failed turn shows why", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.state.messages[s.id] = [
+    {
+      id: "M1",
+      session_id: s.id,
+      role: "assistant",
+      created_at: "2026-01-01T00:00:00Z",
+      parts: [{ id: "e", type: "error", message: "The reply failed (AuthError: bad key). Send your message again." }],
+    },
+  ] satisfies Message[]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("The reply failed (AuthError: bad key). Send your message again."))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

@@ -6,7 +6,7 @@ from agent_corp.company.flows import load_confined
 from agent_corp.profile.debrief import (DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief,
                                         transcript_text)
 from agent_corp.protocol import now
-from agent_corp.protocol.models import Message, TextPart, ToolPart
+from agent_corp.protocol.models import ErrorPart, Message, TextPart, ToolPart
 from agent_corp.store import new_id
 from tests.store.conftest import session, store, work_item  # noqa: F401
 
@@ -43,6 +43,12 @@ def test_the_transcript_is_the_text_of_each_message_and_the_tools_called():
     tool = ToolPart(id=new_id(), type="tool", call_id="c1", tool="shell", state="completed", input={"cmd": "ls"})
     text = transcript_text([_message("user", _text("fix it")), _message("assistant", tool, _text("Done."))])
     assert text == "user: fix it\n\nassistant: [called shell]\nDone."
+
+
+def test_the_transcript_says_where_a_turn_failed():
+    error = ErrorPart(id=new_id(), type="error", message="The reply failed. Send your message again.")
+    text = transcript_text([_message("user", _text("fix it")), _message("assistant", error)])
+    assert text == "user: fix it\n\nassistant: [error: The reply failed. Send your message again.]"
 
 
 def test_a_long_transcript_keeps_its_end():

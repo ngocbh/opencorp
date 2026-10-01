@@ -98,6 +98,11 @@ def status(harness, sid):
     return harness.store.get_session(sid).status
 
 
+def errors(harness, sid):
+    """The error parts' messages of a session, in order."""
+    return [p.message for m in harness.store.list_messages(sid) for p in m.parts if p.type == "error"]
+
+
 def texts(harness, sid, role="assistant"):
     """The text parts of a session's messages with ``role``, in order."""
     return [p.text for m in harness.store.list_messages(sid) if m.role == role
