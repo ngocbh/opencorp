@@ -137,9 +137,9 @@ async def test_a_manager_chat_takes_a_later_turn_over_the_session_routes(learns,
                 and [m.role for m in store.list_messages(sid)] == ["user", "assistant"])
     r = await client.post(f"/sessions/{sid}/prompt", json={"text": "Drop the old team."})
     assert r.json() == {"ok": True}
-    await until(lambda: [m.role for m in store.list_messages(sid)] == ["user", "assistant"] * 2)
-    assert [p.text for m in store.list_messages(sid) for p in m.parts if p.type == "text"] == [
-        "Tidy my profile.", "What should change?", "Drop the old team.", "Noted."]
+    # The reply's message exists from the turn's start, before its text lands.
+    await until(lambda: [p.text for m in store.list_messages(sid) for p in m.parts if p.type == "text"] == [
+        "Tidy my profile.", "What should change?", "Drop the old team.", "Noted."])
     assert "Drop the old team." in json.dumps(fake_llm.requests()[-1]["messages"])
 
 
