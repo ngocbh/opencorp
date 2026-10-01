@@ -1,5 +1,5 @@
-"""``python -m agent_corp.install {init,onboard,doctor,start}``: what ``ac init``, ``ac onboard``, ``ac doctor``
-and ``ac start`` run.
+"""``python -m agent_corp.install {init,onboard,offboard,doctor,start}``: what ``ac init``, ``ac onboard``,
+``ac offboard``, ``ac doctor`` and ``ac start`` run.
 
 Exit codes: 0 done, 1 failed, 3 (``start``) no office yet.
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 from agent_corp.company_template import is_new
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
-from agent_corp.install import doctor, init, service
+from agent_corp.install import doctor, init, offboard, service
 from agent_corp.install.launch import Host, ServiceError, launch
 from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, handle_problem, onboard
 
@@ -60,6 +60,17 @@ def _onboard(args: argparse.Namespace) -> int:
     return 0
 
 
+def _offboard(args: argparse.Namespace) -> int:
+    # Without a terminal the confirmation takes its default, No, so only --yes removes anything.
+    prompter = TtyPrompter(interactive=sys.stdin.isatty())
+    try:
+        offboard.offboard(_home(args.home), prompter, yes=args.yes, delete_company=args.delete_company)
+    except (offboard.OffboardError, OnboardError) as exc:
+        print(f"ac offboard: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _doctor(args: argparse.Namespace) -> int:
     found = doctor.checks(_home(args.home), probe=doctor.sandbox_problem)
     print(doctor.report(found), end="")
@@ -92,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m agent_corp.install")
     commands = parser.add_subparsers(dest="command", required=True)
     for name, text in (("init", "create the company, then set up this office"),
-                       ("onboard", "set up this office for an existing company"), ("doctor", "check the office"),
+                       ("onboard", "set up this office for an existing company"),
+                       ("offboard", "remove this office from this machine"), ("doctor", "check the office"),
                        ("start", "start the office if it isn't running")):
         sub = commands.add_parser(name, help=text)
         sub.add_argument("--home", help="agent-corp home (default: $AGENT_CORP_HOME or ~/.agent-corp)")
@@ -114,8 +126,13 @@ def main(argv: list[str] | None = None) -> int:
     onboard_args.add_argument("--from", dest="source", metavar="URL",
                               help="clone the company from this git URL when there's none here yet")
     onboard_args.add_argument("--handle", help="which of a cloned company's humans you are")
+    offboard_args = commands.choices["offboard"]
+    offboard_args.add_argument("--yes", action="store_true", help="remove without asking first")
+    offboard_args.add_argument("--delete-company", action="store_true",
+                               help="delete the company repo even if some of it isn't pushed anywhere")
     args = parser.parse_args(argv)
-    return {"init": _init, "onboard": _onboard, "doctor": _doctor, "start": _start}[args.command](args)
+    return {"init": _init, "onboard": _onboard, "offboard": _offboard, "doctor": _doctor,
+            "start": _start}[args.command](args)
 
 
 if __name__ == "__main__":

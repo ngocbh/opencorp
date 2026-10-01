@@ -139,3 +139,24 @@ def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir):
         assert json.loads((paths.office / "provider.json").read_text())["llm_config"]["api_key"] == KEY
     finally:
         _stop(paths)
+
+
+def test_offboard_flags_reach_offboard(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(install_main.offboard, "offboard", lambda home, prompter, **k: seen.update(home=home, **k))
+    assert main(["offboard", "--home", str(tmp_path / "home"), "--yes", "--delete-company"]) == 0
+    assert seen == {"home": tmp_path / "home", "yes": True, "delete_company": True}
+
+
+def test_offboard_without_a_terminal_or_yes_removes_nothing(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    (home / "office").mkdir(parents=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert main(["offboard", "--home", str(home)]) == 1
+    assert "ac offboard: nothing was removed" in capsys.readouterr().err
+    assert (home / "office").is_dir()
+
+
+def test_offboard_on_an_empty_home_is_exit_0(tmp_path, capsys):
+    assert main(["offboard", "--home", str(tmp_path / "home")]) == 0
+    assert "Nothing of this office to remove at" in capsys.readouterr().out

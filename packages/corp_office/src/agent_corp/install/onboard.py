@@ -304,11 +304,12 @@ WHO = "Which of them are you?"
 """The questions, by which command-line flags preset their answers."""
 
 
-def _remove(path: Path) -> None:
-    if path.is_symlink():
-        path.unlink()
-    elif path.exists():
+def remove_path(path: Path) -> None:
+    """Remove ``path``, whether a dir, a file, or a symlink (never what it points to); nothing if it's gone."""
+    if path.is_dir() and not path.is_symlink():
         shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _clone(url: str, dest: Path) -> None:
@@ -317,13 +318,13 @@ def _clone(url: str, dest: Path) -> None:
     Raises:
         OnboardError: the clone failed, or isn't a company; nothing is left at ``dest``.
     """
-    _remove(dest)
+    remove_path(dest)
     done = user_git("clone", "-q", "--", url, str(dest))
     if done.returncode != 0:
-        _remove(dest)
+        remove_path(dest)
         raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}")
     if is_new(dest):
-        _remove(dest)
+        remove_path(dest)
         raise OnboardError(f"{redact(url)} isn't a company repo: it has no company.yaml at its top")
 
 
@@ -440,7 +441,7 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
             os.replace(root, paths.company)
     except BaseException:
         if new:
-            _remove(root)
+            remove_path(root)
         raise
     if me is not None:
         prompter.say(f"This device: {me.device}, acting as @{me.handle} (its token is in {identity_path(paths.home)})")
