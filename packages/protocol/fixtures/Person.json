@@ -15,5 +15,6 @@
     { "name": "triage_ceo_queue", "trigger": { "event": "work_item.created", "assignee": "ngocbh" },
       "flow": "../../shared/flows/triage.yaml" }
   ],
-  "provider_policy": "default"
+  "provider_policy": "default",
+  "keys": []
 }

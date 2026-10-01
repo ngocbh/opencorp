@@ -27,6 +27,13 @@ export type Ulid = string;
  */
 export type GitId = string;
 /**
+ * An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "PublicKey".
+ */
+export type PublicKey = string;
+/**
  * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -108,6 +115,10 @@ export interface Person {
   harness_policy?: HarnessPolicy | null;
   routines?: Routine[];
   provider_policy?: string;
+  /**
+   * OpenSSH public key lines of the devices this human uses ac from; requests signed by one of them act as this person.
+   */
+  keys?: PublicKey[];
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -213,6 +224,10 @@ export interface Session {
    * null means company.defaults.cost_cap_usd.
    */
   cost_cap_usd?: number | null;
+  /**
+   * The human who opened the session; null for sessions from before this field or opened by the office itself.
+   */
+  opened_by?: Handle | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -636,4 +651,13 @@ export interface FeedbackRequest {
  */
 export interface ConfirmFollowUpsRequest {
   indices: number[];
+}
+/**
+ * The body of POST /people/{handle}/keys.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "AddKeyRequest".
+ */
+export interface AddKeyRequest {
+  key: PublicKey;
 }

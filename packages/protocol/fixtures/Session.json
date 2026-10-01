@@ -12,6 +12,7 @@
   "seed": null,
   "cost": 0.12,
   "cost_cap_usd": 8,
+  "opened_by": "ngocbh",
   "created_at": "2026-09-29T10:00:00.000Z",
   "updated_at": "2026-09-29T10:30:00.000Z"
 }
