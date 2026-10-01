@@ -46,6 +46,7 @@ class FakeLLM:
         self._lock = threading.Lock()
         self._script: list[dict[str, Any]] = []
         self._requests: list[dict[str, Any]] = []
+        self._authorizations: list[str | None] = []
         self._holds: list[threading.Event] = []
         self._ids = itertools.count(1)
         self._server: uvicorn.Server | None = None
@@ -85,6 +86,11 @@ class FakeLLM:
         """Every chat request body received so far, one per HTTP request."""
         with self._lock:
             return copy.deepcopy(self._requests)
+
+    def authorizations(self) -> list[str | None]:
+        """The ``Authorization`` header of each chat request, in order; None where there was none."""
+        with self._lock:
+            return list(self._authorizations)
 
     def pending(self) -> list[dict[str, Any]]:
         """The replies still queued."""
@@ -137,6 +143,7 @@ class FakeLLM:
         body = await request.json()
         with self._lock:
             self._requests.append(body)
+            self._authorizations.append(request.headers.get("authorization"))
             reply = self._take(body)
         if reply is None:
             return JSONResponse({"error": {"message": "no scripted reply matches this request",
