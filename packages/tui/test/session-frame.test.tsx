@@ -80,6 +80,46 @@ test("a new message and a status change arrive live", async () => {
   }
 })
 
+test("an edit's diff numbers lines from where the edit landed, or not at all", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const edit = (id: string, path: string, output: string) => ({
+    id,
+    type: "tool" as const,
+    call_id: id,
+    tool: "edit_file",
+    state: "completed" as const,
+    input: { path, old: "Status: TODO\nOwner: minh", new: "Status: DONE\nOwner: minh" },
+    output,
+  })
+  office.state.messages[s.id] = [
+    {
+      id: "M2",
+      session_id: s.id,
+      role: "assistant",
+      created_at: "2026-01-01T00:00:00Z",
+      parts: [
+        edit("e1", "notes.md", "replaced 1 occurrence in notes.md at line 3"),
+        // An office from before edits reported a line: the snippet's own numbers would be wrong.
+        edit("e2", "old.md", "replaced 1 occurrence in old.md"),
+      ],
+    },
+  ] satisfies Message[]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Edit notes.md") && f.includes("Edit old.md"))
+    const frame = app.frame()
+    const after = (title: string) => frame.slice(frame.indexOf(title)).split("\n").slice(1, 5).join("\n")
+    expect(after("Edit notes.md")).toMatch(/3 - Status: TODO[\s\S]*3 \+ Status: DONE[\s\S]*4 {3}Owner: minh/)
+    // Without a line the diff has no gutter: its colors alone mark the removed and added lines.
+    expect(after("Edit old.md")).toMatch(/Status: TODO[\s\S]*Status: DONE[\s\S]*Owner: minh/)
+    expect(after("Edit old.md")).not.toMatch(/\d/)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("an unknown session goes back home with a toast", async () => {
   const office = createFakeOffice()
   const app = await bootFrame(createStub(office), { sessionID: "01NOSUCHSESSION00000000000" })

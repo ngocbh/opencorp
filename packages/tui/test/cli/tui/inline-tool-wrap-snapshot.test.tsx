@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal, For, Show } from "solid-js"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
-import { InlineToolRow, alwaysSeparate, toolView } from "../../../src/routes/session"
+import { InlineToolRow, alwaysSeparate, editStartLine, toolView } from "../../../src/routes/session"
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
 
@@ -224,6 +224,15 @@ describe("TUI inline tool wrapping", () => {
       newString: "y",
     })
     expect(toolView("search", { pattern: "p", glob: "*.py" }).input).toEqual({ pattern: "p", include: "*.py" })
+  })
+
+  test("reads the line an edit starts on from edit_file's reply", () => {
+    expect(editStartLine("replaced 1 occurrence in notes.md at line 3")).toBe(3)
+    expect(editStartLine("replaced 1 occurrence in a at line 7.md at line 12")).toBe(12)
+    // Several places, or a reply without a line, give no single line to number from.
+    expect(editStartLine("replaced 2 occurrences in a.md at lines 3, 9")).toBeUndefined()
+    expect(editStartLine("replaced 1 occurrence in a.md")).toBeUndefined()
+    expect(editStartLine(undefined)).toBeUndefined()
   })
 
   test("replaces pending copy when a tool fails before completion", async () => {

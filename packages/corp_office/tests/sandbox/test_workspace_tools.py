@@ -25,7 +25,7 @@ def test_file_tools_round_trip(tools, ws):
     assert tools.write_file("pkg/a.py", "x = 1\n").output == "wrote 6 bytes to pkg/a.py"
     assert (ws / "pkg/a.py").read_text() == "x = 1\n"
     assert tools.read_file("pkg/a.py").output == "x = 1\n"
-    assert tools.edit_file("pkg/a.py", "x = 1", "x = 2").output == "replaced 1 occurrence in pkg/a.py"
+    assert tools.edit_file("pkg/a.py", "x = 1", "x = 2").output == "replaced 1 occurrence in pkg/a.py at line 1"
     assert tools.list_dir(".").output == "pkg/"
     assert tools.search("x = 2").output == "pkg/a.py:1:x = 2"
 
