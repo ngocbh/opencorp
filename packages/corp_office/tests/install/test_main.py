@@ -153,7 +153,7 @@ def test_offboard_without_a_terminal_or_yes_removes_nothing(tmp_path, monkeypatc
     (home / "office").mkdir(parents=True)
     monkeypatch.setattr(sys, "stdin", io.StringIO(""))
     assert main(["offboard", "--home", str(home)]) == 1
-    assert "ac offboard: nothing was removed" in capsys.readouterr().err
+    assert "ac offboard: nothing was removed; there's no terminal to ask on, so pass --yes" in capsys.readouterr().err
     assert (home / "office").is_dir()
 
 

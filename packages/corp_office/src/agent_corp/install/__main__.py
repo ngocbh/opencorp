@@ -66,7 +66,9 @@ def _offboard(args: argparse.Namespace) -> int:
     try:
         offboard.offboard(_home(args.home), prompter, yes=args.yes, delete_company=args.delete_company)
     except (offboard.OffboardError, OnboardError) as exc:
-        print(f"ac offboard: {exc}", file=sys.stderr)
+        declined = isinstance(exc, offboard.Declined) and not prompter.interactive
+        hint = "; there's no terminal to ask on, so pass --yes to remove it" if declined else ""
+        print(f"ac offboard: {exc}{hint}", file=sys.stderr)
         return 1
     return 0
 

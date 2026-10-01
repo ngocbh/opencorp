@@ -26,6 +26,10 @@ class OffboardError(Exception):
     """Offboarding stopped; the message says why and what was left."""
 
 
+class Declined(OffboardError):
+    """The answer to whether to remove it all was no."""
+
+
 @dataclass
 class Plan:
     """What offboarding found at a home: what it will remove, and whether the company repo goes too."""
@@ -216,7 +220,7 @@ def offboard(home: Path, prompter: Prompter, *, yes: bool = False, delete_compan
     if keeping:
         prompter.say(keeping)
     if not yes and prompter.ask(CONFIRM).strip().lower() not in ("y", "yes"):
-        raise OffboardError("nothing was removed")
+        raise Declined("nothing was removed")
 
     me = found.me
     removed_online = False
