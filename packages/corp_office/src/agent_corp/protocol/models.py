@@ -34,6 +34,15 @@ type GitId = Annotated[
 ]
 
 
+type PublicKey = Annotated[
+    str,
+    Field(
+        description="An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment.",
+        pattern='^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}(?: [^\\r\\n]*)?$',
+    ),
+]
+
+
 class CompanyDefaults(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -112,6 +121,12 @@ class Person(BaseModel):
     harness_policy: HarnessPolicy | None = None
     routines: Annotated[list[Routine], Field(validate_default=True)] = []
     provider_policy: str = 'default'
+    keys: Annotated[
+        list[PublicKey],
+        Field(
+            description='OpenSSH public key lines of the devices this human uses ac from; requests signed by one of them act as this person.'
+        ),
+    ] = []
 
 
 class Group(BaseModel):
@@ -269,6 +284,12 @@ class Session(BaseModel):
     cost_cap_usd: Annotated[
         CostCapUsd | None,
         Field(description='null means company.defaults.cost_cap_usd.'),
+    ] = None
+    opened_by: Annotated[
+        Handle | None,
+        Field(
+            description='The human who opened the session; null for sessions from before this field or opened by the office itself.'
+        ),
     ] = None
     created_at: Annotated[
         str,
@@ -751,6 +772,23 @@ class ConfirmFollowUpsRequest(BaseModel):
         extra='forbid',
     )
     indices: list[Indice]
+
+
+class AddKeyRequest(BaseModel):
+    """
+    The body of POST /people/{handle}/keys.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    key: Annotated[
+        str,
+        Field(
+            description="An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment.",
+            pattern='^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}(?: [^\\r\\n]*)?$',
+        ),
+    ]
 
 
 class Message(BaseModel):

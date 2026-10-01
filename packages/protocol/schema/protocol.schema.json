@@ -12,6 +12,10 @@
     },
     "Ulid": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
     "GitId": { "type": "string", "pattern": "^[0-9a-f]{40,64}$", "description": "A git commit or blob id." },
+    "PublicKey": {
+      "type": "string", "pattern": "^ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}(?: [^\\r\\n]*)?$",
+      "description": "An OpenSSH ed25519 public key line, as in id_ed25519.pub: 'ssh-ed25519 <base64>' with an optional comment."
+    },
     "Timestamp": {
       "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
       "description": "UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged."
@@ -76,7 +80,11 @@
         "harnesses": { "type": "array", "items": { "enum": ["composer", "codex", "claude"] }, "default": [] },
         "harness_policy": { "anyOf": [{ "$ref": "#/$defs/HarnessPolicy" }, { "type": "null" }], "default": null },
         "routines": { "type": "array", "items": { "$ref": "#/$defs/Routine" }, "default": [] },
-        "provider_policy": { "type": "string", "default": "default" }
+        "provider_policy": { "type": "string", "default": "default" },
+        "keys": {
+          "type": "array", "items": { "$ref": "#/$defs/PublicKey" }, "default": [],
+          "description": "OpenSSH public key lines of the devices this human uses ac from; requests signed by one of them act as this person."
+        }
       }
     },
     "Group": {
@@ -170,6 +178,10 @@
         "cost_cap_usd": {
           "anyOf": [{ "type": "number", "minimum": 0 }, { "type": "null" }], "default": null,
           "description": "null means company.defaults.cost_cap_usd."
+        },
+        "opened_by": {
+          "anyOf": [{ "$ref": "#/$defs/Handle" }, { "type": "null" }], "default": null,
+          "description": "The human who opened the session; null for sessions from before this field or opened by the office itself."
         },
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "updated_at": { "$ref": "#/$defs/Timestamp" }
@@ -536,6 +548,11 @@
       "properties": {
         "indices": { "type": "array", "items": { "type": "integer", "minimum": 0 } }
       }
+    },
+    "AddKeyRequest": {
+      "type": "object", "additionalProperties": false, "required": ["key"],
+      "description": "The body of POST /people/{handle}/keys.",
+      "properties": { "key": { "$ref": "#/$defs/PublicKey" } }
     }
   }
 }

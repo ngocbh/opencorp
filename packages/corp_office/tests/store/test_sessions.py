@@ -1,8 +1,11 @@
 """Sessions, their runs, recent sessions, and worked folders."""
 
+import sqlite3
+
 import pytest
 
-from agent_corp.store import DuplicateKey, NotFound, StoreError
+from agent_corp.store import DuplicateKey, NotFound, Store, StoreError
+from agent_corp.store.migrate import MIGRATIONS, migrate
 from tests.store.conftest import debrief, feedback, message, proposal, question, session
 
 NO_SESSION = "01K6A0000000000000000000ZZ"
@@ -81,3 +84,26 @@ def test_session_owned_rows_need_their_session(store, write):
     with pytest.raises(NotFound):
         write(store)
     assert store.events_after() == []
+
+
+def test_opened_by_round_trips(store):
+    s = store.create_session(session(opened_by="ngocbh"))
+    assert store.get_session(s.id) == s and s.opened_by == "ngocbh"
+
+
+def test_a_session_stored_before_opened_by_reads_back_none(tmp_path):
+    path = tmp_path / "store.sqlite"
+    conn = sqlite3.connect(path, isolation_level=None)
+    first = tmp_path / "m"
+    first.mkdir()
+    (first / "0001_initial.sql").write_text((MIGRATIONS / "0001_initial.sql").read_text())
+    migrate(conn, first)
+    s = session()
+    conn.execute(
+        "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (s.id, s.person, s.harness, s.office, s.cwd, s.repo_commit, s.status, s.kind, s.created_at, s.updated_at),
+    )
+    conn.close()
+    with Store(path) as store:
+        assert store.get_session(s.id) == s and s.opened_by is None
