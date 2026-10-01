@@ -35,7 +35,7 @@ export type Timestamp = string;
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "Part".
  */
-export type Part = TextPart | FilePart | ToolPart;
+export type Part = TextPart | FilePart | ToolPart | ErrorPart;
 
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -257,6 +257,17 @@ export interface ToolPart {
   };
   output?: unknown;
   error?: string | null;
+}
+/**
+ * A turn that failed: why, in words the owner can act on. Never holds a secret.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "ErrorPart".
+ */
+export interface ErrorPart {
+  id: Ulid;
+  type: "error";
+  message: string;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
