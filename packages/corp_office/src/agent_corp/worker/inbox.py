@@ -18,6 +18,7 @@ class Inbox:
         self._lock = threading.Lock()
         self._queued: dict[str, list[str]] = {}
         self._stops: set[str] = set()
+        self._cut: set[str] = set()  # nodes that read their interrupt, which composer then stops
         self._finished: set[str] = set()
         self._closed = False
 
@@ -45,13 +46,22 @@ class Inbox:
     def interrupted(self, node_id: str) -> bool:
         """Whether ``node_id`` was asked to stop."""
         with self._lock:
-            return node_id in self._stops
+            if node_id in self._stops:
+                self._cut.add(node_id)
+                return True
+            return False
+
+    def cut(self, node_id: str) -> bool:
+        """Whether ``node_id`` read its interrupt, and so stopped short of its full reply."""
+        with self._lock:
+            return node_id in self._cut
 
     def finish(self, node_id: str) -> list[str]:
         """Mark ``node_id`` finished; return the steers it never read."""
         with self._lock:
             self._finished.add(node_id)
             self._stops.discard(node_id)
+            self._cut.discard(node_id)
             return self._queued.pop(node_id, [])
 
     def close(self) -> dict[str, list[str]]:
@@ -59,5 +69,6 @@ class Inbox:
         with self._lock:
             self._closed = True
             self._stops.clear()
+            self._cut.clear()
             queued, self._queued = self._queued, {}
             return queued

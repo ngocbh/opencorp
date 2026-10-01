@@ -141,7 +141,10 @@ class WorkerHandlers(Protocol):
     """
 
     def event(self, worker: Any, frame: dict[str, Any]) -> None:
-        """A composer ``on_event`` observer: ``{"name": class name, "data": fields}``."""
+        """A composer ``on_event`` observer: ``{"name": class name, "data": fields}``.
+
+        A finished node's ``data`` also has ``"interrupted": true`` if an interrupt stopped it.
+        """
 
     def stream(self, worker: Any, frame: dict[str, Any]) -> None:
         """A composer ``StreamChunk``'s fields."""
