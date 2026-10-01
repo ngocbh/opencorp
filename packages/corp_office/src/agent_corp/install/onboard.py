@@ -8,11 +8,11 @@ import re
 import sys
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import Annotated, Protocol, TextIO
 
 import httpx
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.git import CompanyGitError
@@ -23,6 +23,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError, make_office_dir
 from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
+from agent_corp.protocol.models import HireRequest
 
 FIRST_AGENT = ("Minh", "Engineer")
 """The first agent's default name, and its title."""
@@ -210,10 +211,23 @@ def _ask_company(prompter: Prompter) -> tuple[str, Owner]:
             prompter.say(f"That doesn't work: {exc}")
 
 
+_HANDLE = TypeAdapter(Annotated[str, *HireRequest.model_fields["handle"].metadata])
+
+
+def handle_problem(handle: str) -> str | None:
+    """Why ``handle`` can't be a person's handle, or None if it can."""
+    try:
+        _HANDLE.validate_python(handle)
+    except ValidationError as exc:
+        return exc.errors(include_url=False)[0]["msg"]
+    return None
+
+
 def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.BaseTransport | None = None) -> str:
     """Hire the first agent through the office (preview, then confirm), reporting to the CEO."""
     name = prompter.ask("Name your first agent", FIRST_AGENT[0])
-    handle = prompter.ask("Their handle", _slug(name) or "agent")
+    while (problem := handle_problem(handle := prompter.ask("Their handle", _slug(name) or "agent"))) is not None:
+        prompter.say(f"That doesn't work: {problem}")
     body = {"name": name, "handle": handle, "title": FIRST_AGENT[1], "manager": ceo}
     again = "run `ac onboard` again to retry"
     try:

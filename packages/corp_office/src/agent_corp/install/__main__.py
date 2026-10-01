@@ -14,7 +14,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, service
 from agent_corp.install.launch import Host, ServiceError, launch
-from agent_corp.install.onboard import OnboardError, TtyPrompter, onboard
+from agent_corp.install.onboard import OnboardError, TtyPrompter, handle_problem, onboard
 
 NOT_ONBOARDED = 3
 
@@ -26,9 +26,15 @@ def _home(value: str | None) -> Path:
 def _onboard(args: argparse.Namespace) -> int:
     # The provider is read before any question, so stdin is free of it; with it on stdin
     # nothing is asked, and questions without a flag take their defaults.
+    # A preset answer comes back unchanged each time a question is asked again, so a bad one stops here.
+    for flag, handle in (("--handle", args.handle), ("--agent-handle", args.agent_handle)):
+        if handle and (problem := handle_problem(handle)):
+            print(f"ac onboard: {flag} {handle!r}: {problem}", file=sys.stderr)
+            return 1
     stdin = io.StringIO(sys.stdin.read()) if args.provider_stdin else None
     prompter = TtyPrompter({"Company name": args.company, "Your name": args.name, "Your handle": args.handle,
-                            "Name your first agent": args.agent}, interactive=stdin is None)
+                            "Name your first agent": args.agent, "Their handle": args.agent_handle},
+                           interactive=stdin is None)
     try:
         onboard(_home(args.home), prompter, mode=args.service, stdin=stdin, hire=not args.no_hire)
     except OnboardError as exc:
@@ -80,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
                                    " ask nothing")
     for flag in ("company", "name", "handle", "agent"):
         onboard_args.add_argument(f"--{flag}", help=f"answer the {flag} question")
+    onboard_args.add_argument("--agent-handle", help="answer the first agent's handle question")
     onboard_args.add_argument("--no-hire", action="store_true", help="don't hire a first agent")
     args = parser.parse_args(argv)
     return {"onboard": _onboard, "doctor": _doctor, "start": _start}[args.command](args)
