@@ -41,8 +41,7 @@ def token_table(people: Iterable[Person]) -> dict[str, tuple[str, str]]:
     return {h: next(iter(by.items())) for h, by in owners.items() if len(by) == 1}
 
 
-def _parse[M: BaseModel](git: CompanyGit, blob: str | None, model: type[M]) -> M | None:
-    data = git.read_blob(blob) if blob else None
+def _parse[M: BaseModel](data: bytes | None, model: type[M]) -> M | None:
     try:
         return model.model_validate(yaml.safe_load(data)) if data else None
     except (ValidationError, yaml.YAMLError, UnicodeDecodeError):
@@ -51,12 +50,12 @@ def _parse[M: BaseModel](git: CompanyGit, blob: str | None, model: type[M]) -> M
 
 def load_roster(git: CompanyGit, head: str) -> Roster:
     """The roster at commit ``head``, read from git objects, so uncommitted edits don't count."""
-    company = _parse(git, git.blob_id("company.yaml", head), Company)
-    people: list[Person] = []
-    for path, blob in git.files("people", head).items():
-        parts = path.split("/")
-        if len(parts) == 3 and parts[2] == "person.yaml":
-            person = _parse(git, blob, Person)
-            if person is not None and person.handle == parts[1]:
-                people.append(person)
+    company_blob = git.blob_id("company.yaml", head)
+    person_blobs = {path.split("/")[1]: blob for path, blob in git.files("people", head).items()
+                    if path.count("/") == 2 and path.endswith("/person.yaml")}
+    # One read for every file: a git call per person would make each reload grow with the company.
+    data = git.read_blobs([b for b in (company_blob, *person_blobs.values()) if b])
+    company = _parse(data.get(company_blob or ""), Company)
+    people = [p for handle, blob in person_blobs.items()
+              if (p := _parse(data.get(blob), Person)) is not None and p.handle == handle]
     return Roster.of(head, company.ceo if company else None, people)

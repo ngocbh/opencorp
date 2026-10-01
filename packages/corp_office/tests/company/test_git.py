@@ -55,6 +55,16 @@ def test_files_lists_blobs_under_a_folder_at_a_commit(g, company):
     assert g.files("nowhere") == {}
 
 
+def test_read_blobs_reads_several_at_once_and_skips_what_it_cant(g, company):
+    profile, person = g.blob_id(PROFILE), g.blob_id("people/minh/person.yaml")
+    (company / PROFILE).write_bytes(b"# Minh\r\n\n")
+    g.commit([PROFILE], "crlf")
+    crlf = g.blob_id(PROFILE)
+    found = g.read_blobs([profile, g.head(), crlf, "0" * 40, person, "HEAD:company.yaml", profile])
+    assert found == {profile: g.read_blob(profile), crlf: b"# Minh\r\n\n", person: g.read_blob(person)}
+    assert g.read_blobs([]) == {}
+
+
 def test_commit_with_no_change_returns_head(g, company):
     head = g.head()
     (company / PROFILE).write_text("# Minh, Engineer\n")  # same text

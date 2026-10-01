@@ -115,6 +115,26 @@ class CompanyGit:
                              capture_output=True, env=_env())
         return out.stdout if out.returncode == 0 else None
 
+    def read_blobs(self, blob_ids: list[str]) -> dict[str, bytes]:
+        """Return the bytes of each blob in ``blob_ids`` that the clone has, by id, read in one git call."""
+        ids = [b for b in dict.fromkeys(blob_ids) if _BLOB_ID.fullmatch(b)]
+        if not ids:
+            return {}
+        out = subprocess.run(["git", "-C", str(self.root), "cat-file", "--batch"], input=b"".join(
+            f"{b}\n".encode() for b in ids), capture_output=True, env=_env()).stdout
+        found, at = {}, 0
+        for blob in ids:
+            end = out.index(b"\n", at)
+            header = out[at:end].split()
+            at = end + 1
+            if len(header) < 3:  # "<id> missing"
+                continue
+            size = int(header[2])
+            if header[1] == b"blob":
+                found[blob] = out[at:at + size]
+            at += size + 1
+        return found
+
     def find_commit(self, relpath: str, line: str) -> str | None:
         """Return the newest commit on HEAD that touches ``relpath`` and has ``line`` as a whole message line."""
         out = self._git("log", "--fixed-strings", f"--grep={line}", "--format=%H%x00%B%x1e", "HEAD",
