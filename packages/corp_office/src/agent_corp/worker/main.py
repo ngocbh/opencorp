@@ -65,13 +65,15 @@ def run_job(job: Job, channel: Channel, rpc: Rpc, inbox: Inbox) -> dict[str, Any
     flow = load_confined(pin, pin / job.flow)
 
     def on_event(event: Any) -> None:
-        name = type(event).__name__
+        name, data = type(event).__name__, jsonable(event)
         texts: list[str] = []
         if name in _FINISHED:
-            # Finish before the office sees the event, so a steer it sends afterwards is refused.
             node_id = event.failure.node_id if name == "NodeFailed" else event.node_id
+            if node_id and inbox.cut(node_id):
+                data["interrupted"] = True  # composer ends an interrupted node as usual
+            # Finish before the office sees the event, so a steer it sends afterwards is refused.
             texts = inbox.finish(node_id) if node_id else []
-        channel.send({"type": "event", "name": name, "data": jsonable(event)})
+        channel.send({"type": "event", "name": name, "data": data})
         if texts:
             channel.send({"type": "steer_left", "node_id": node_id, "texts": texts})
 

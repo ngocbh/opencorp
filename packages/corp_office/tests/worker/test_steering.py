@@ -41,6 +41,14 @@ def test_an_interrupt_waits_for_its_node_to_start():
     assert inbox.interrupt("later") and inbox.interrupted("later")
 
 
+def test_a_node_is_cut_once_it_reads_its_interrupt():
+    inbox = Inbox()
+    assert inbox.interrupt("reply") and not inbox.cut("reply")
+    assert inbox.interrupted("reply") and inbox.cut("reply")
+    inbox.finish("reply")
+    assert not inbox.cut("reply")
+
+
 class Steering(Recorder):
     """Runs ``shout``, and during the call steers or interrupts the running node."""
 
@@ -65,6 +73,7 @@ def test_a_steer_reaches_the_next_model_call(fake_llm, registry, make_job, sessi
     rec = run(registry, make_job("flows/steerable.yaml", groups=spec_groups()), handlers, session_dir)
     assert rec.outcome["output"] == "Done." and rec.left == []
     assert "Also mention Rome." in json.dumps(fake_llm.requests()[1]["messages"])
+    assert all("interrupted" not in f["data"] for f in rec.frames if f.get("name") == "NodeSucceeded")
 
 
 def test_an_interrupt_returns_the_text_so_far(fake_llm, registry, make_job, session_dir):
@@ -73,6 +82,8 @@ def test_an_interrupt_returns_the_text_so_far(fake_llm, registry, make_job, sess
               Steering(lambda w: w.interrupt("reply")), session_dir)
     assert (rec.outcome["status"], rec.outcome["output"]) == ("succeeded", "Working")
     assert len(fake_llm.requests()) == 1
+    [ended] = [f["data"] for f in rec.frames if f.get("name") == "NodeSucceeded" and f["data"]["node_id"] == "reply"]
+    assert ended["interrupted"] is True
 
 
 def test_a_steer_the_node_never_reads_comes_back(fake_llm, registry, make_job, session_dir):

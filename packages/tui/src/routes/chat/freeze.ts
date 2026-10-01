@@ -1,5 +1,8 @@
 import type { Message } from "@agent-corp/protocol"
 
+/** What the office ends a reply stopped short with; mirrors agent_corp.chat.transcript.INTERRUPTED_TEXT. */
+export const INTERRUPTED_TEXT = "\n\n[interrupted]"
+
 /**
  * A transcript as it was when the user pressed Esc. The office stops a reply only at its next
  * safe point, so output can arrive after Esc; the view hides it.
@@ -47,12 +50,17 @@ export function frozenView(f: Freeze | undefined, m: Message): Message | undefin
   if (f.hidden[m.id]) return undefined
   if (!f.messages[m.id]) return f.active && m.role === "assistant" ? undefined : m
   let changed = false
+  // The interrupted marker shows through: it is how the stopped reply says it was stopped.
   const parts = m.parts.flatMap((p) => {
-    if (!f.parts[p.id]) return (changed = true), []
+    if (!f.parts[p.id]) {
+      if (p.type === "text" && p.text === INTERRUPTED_TEXT.trimStart()) return [p]
+      return (changed = true), []
+    }
     const len = f.texts[p.id]
     if (p.type !== "text" || len === undefined || p.text.length <= len) return [p]
     changed = true
-    return [{ ...p, text: p.text.slice(0, len) }]
+    const marker = p.text.endsWith(INTERRUPTED_TEXT) ? INTERRUPTED_TEXT : ""
+    return [{ ...p, text: p.text.slice(0, len) + marker }]
   })
   return changed ? { ...m, parts } : m
 }

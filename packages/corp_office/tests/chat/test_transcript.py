@@ -1,6 +1,6 @@
 import pytest
 
-from agent_corp.chat.transcript import Transcript
+from agent_corp.chat.transcript import INTERRUPTED_TEXT, Transcript
 from agent_corp.store import Store
 from tests.store.conftest import session
 
@@ -95,3 +95,85 @@ def test_abort_marks_an_unfinished_text_part_and_interrupts_running_tools(setup)
     assert tool.state == "interrupted"
     t.abort()
     assert store.list_messages(s.id) == [message]
+
+
+def call(n, exchange, call_id, event="ToolCallStarted", **fields):
+    return event, {"node_id": n, "exchange_id": exchange, "call_index": 0, "tool_call_id": call_id,
+                   "name": "shell", "arguments": {"command": "ls"}, **fields}
+
+
+def test_a_user_message_mid_reply_comes_before_what_the_model_says_after_reading_it(setup):
+    store, s, t, live = setup
+    n = "chat#0/reply"
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x1", "purpose": "chat"})
+    t.stream(stream(n, "Working", exchange="x1"))
+    t.stream(stream(n, "", final=True, exchange="x1"))
+    t.event(*call(n, "x1", "c1"))
+    t.user("Also mention Rome.")
+    t.event(*call(n, "x1", "c1", "ToolCallFinished", result="a.txt"))
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x2", "purpose": "chat"})
+    t.stream(stream(n, "Rome.", exchange="x2"))
+    t.stream(stream(n, "", final=True, exchange="x2"))
+    t.event("NodeSucceeded", {"node_id": n, "output": "Rome."})
+    messages = store.list_messages(s.id)
+    assert [(m.role, [p.text if p.type == "text" else p.state for p in m.parts]) for m in messages] == [
+        ("assistant", ["Working", "completed"]), ("user", ["Also mention Rome."]), ("assistant", ["Rome."])]
+    assert messages[1].created_at <= messages[2].created_at
+
+
+def test_a_reply_that_streams_nothing_after_a_user_message_gets_its_output_after_it(setup):
+    store, s, t, live = setup
+    n = "chat#0/reply"
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x1", "purpose": "chat"})
+    t.stream(stream(n, "Working", final=True, exchange="x1"))
+    t.user("Also mention Rome.")
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x2", "purpose": "chat"})
+    t.event("NodeSucceeded", {"node_id": n, "output": "Rome."})
+    assert [(m.role, [p.text for p in m.parts]) for m in store.list_messages(s.id)] == [
+        ("assistant", ["Working"]), ("user", ["Also mention Rome."]), ("assistant", ["Rome."])]
+
+
+def test_a_user_message_the_reply_never_reads_comes_after_it(setup):
+    store, s, t, live = setup
+    n = "chat#0/reply"
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x1", "purpose": "chat"})
+    t.stream(stream(n, "Done.", exchange="x1"))
+    t.user("one more thing")
+    t.stream(stream(n, "", final=True, exchange="x1"))
+    t.event("NodeSucceeded", {"node_id": n, "output": "Done."})
+    assert [(m.role, [p.text for p in m.parts]) for m in store.list_messages(s.id)] == [
+        ("assistant", ["Done."]), ("user", ["one more thing"])]
+
+
+def test_an_interrupted_reply_ends_with_the_interrupted_marker(setup):
+    store, s, t, live = setup
+    n = "chat#0/reply"
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x1", "purpose": "chat"})
+    t.stream(stream(n, "half a sen", exchange="x1"))
+    t.stream(stream(n, "", final=True, exchange="x1"))  # composer closes a cut stream
+    t.event("NodeSucceeded", {"node_id": n, "output": "half a sen", "interrupted": True})
+    [message] = store.list_messages(s.id)
+    assert [p.text for p in message.parts] == ["half a sen" + INTERRUPTED_TEXT]
+    assert live[-1].type == "part.updated" and live[-1].data["part"]["text"] == "half a sen" + INTERRUPTED_TEXT
+
+
+def test_a_reply_interrupted_after_a_tool_call_ends_with_the_marker_after_it(setup):
+    store, s, t, live = setup
+    n = "chat#0/reply"
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x1", "purpose": "chat"})
+    t.stream(stream(n, "Working", final=True, exchange="x1"))
+    t.event(*call(n, "x1", "c1"))
+    t.event(*call(n, "x1", "c1", "ToolCallFinished", result="a.txt"))
+    t.event("NodeSucceeded", {"node_id": n, "output": "Working", "interrupted": True})
+    [message] = store.list_messages(s.id)
+    assert [p.text if p.type == "text" else p.state for p in message.parts] == [
+        "Working", "completed", INTERRUPTED_TEXT.lstrip()]
+
+
+def test_a_reply_interrupted_before_it_streamed_text_gets_its_output_and_the_marker(setup):
+    store, s, t, live = setup
+    n = "chat#0/reply"
+    t.event("ModelCallStarted", {"node_id": n, "exchange_id": "x1", "purpose": "chat"})
+    t.event("NodeSucceeded", {"node_id": n, "output": "Working", "interrupted": True})
+    [message] = store.list_messages(s.id)
+    assert [p.text for p in message.parts] == ["Working" + INTERRUPTED_TEXT]

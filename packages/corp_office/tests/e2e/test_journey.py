@@ -43,7 +43,8 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     assert "Also mention the date" in asked(fake.requests()[3])
     assert office.users(sid) == ["Mark the README done", "Add a changelog", "Also mention the date"]
 
-    # Then Esc: the held reply and its write never land, and the next prompt gets a fresh reply.
+    # Then Esc: the held reply and its write never land, the stopped reply says it was interrupted,
+    # and the next prompt gets a fresh reply.
     fake.script({"content": "Writing.", "tool_calls": [{"name": "write_file", "arguments": {"path": "never.txt", "content": "x"}}], "hold": True},
                 {"content": "Starting over."})
     office.prompt(sid, "Write never.txt")
@@ -53,7 +54,7 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     fake.release()
     wait_for(lambda: office.status(sid) == "idle", "the interrupted turn to stop")
     office.prompt(sid, "Start over")
-    office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "Starting over."])
+    office.settled(sid, ["Marked it done.", "Looking.", "Added both.", "[interrupted]", "Starting over."])
     assert not (workspace / "never.txt").exists()
     assert len(fake.requests()) == 6  # Esc made no model call of its own
     assert "Write never.txt" in asked(fake.requests()[5])  # the stopped turn stays in the history

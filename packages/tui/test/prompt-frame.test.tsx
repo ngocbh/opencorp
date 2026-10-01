@@ -1,6 +1,7 @@
 import type { Message } from "@agent-corp/protocol"
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../script/stub"
+import { INTERRUPTED_TEXT } from "../src/routes/chat/freeze"
 import { bootFrame } from "./fixture/frame"
 
 test("Enter on home creates a session for the person in the cwd, prompts it, and opens it", async () => {
@@ -66,6 +67,36 @@ test("one Esc while busy interrupts, and the reply stops showing at once", async
     app.input.pressEnter()
     await app.until((f) => f.includes("Fresh start"))
     expect(app.frame()).not.toContain("late words")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("after Esc, the stopped reply's interrupted marker shows, and nothing else it streamed", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const first: Message = {
+    id: office.nextId(),
+    session_id: id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text: "Looking" }],
+  }
+  office.onPrompt(() => office.live({ type: "message.updated", session_id: id, data: first as never }))
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    app.input.typeText("go")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Looking") && f.includes("esc interrupt"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${id}/interrupt`))
+    const part = { ...first.parts[0], text: "Looking at it" + INTERRUPTED_TEXT }
+    office.live({ type: "part.updated", session_id: id, data: { message_id: first.id, part } as never })
+    office.openTurn(id)
+    await app.until((f) => f.includes("[interrupted]") && f.includes("@minh · idle"))
+    expect(app.frame()).not.toContain("at it")
   } finally {
     await app.stop()
     office.stop()

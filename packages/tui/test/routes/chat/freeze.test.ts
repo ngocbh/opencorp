@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Message } from "@agent-corp/protocol"
-import { freeze, frozenView, unfreeze } from "../../../src/routes/chat/freeze"
+import { freeze, frozenView, INTERRUPTED_TEXT, unfreeze } from "../../../src/routes/chat/freeze"
 
 const at = "2026-09-30T00:00:00Z"
 const msg = (id: string, role: Message["role"], ...parts: Message["parts"]): Message => ({
@@ -55,4 +55,25 @@ test("a second Esc before the next send keeps hiding what arrived after the firs
   // It stays hidden after the next send too.
   const after = unfreeze(second, [reply, late, steer])
   expect(frozenView(after, late)).toBeUndefined()
+})
+
+test("the interrupted marker the office ends a stopped reply with shows through the freeze", () => {
+  const reply = msg("M", "assistant", text("a", "Looking"))
+  const f = freeze([reply])
+  // Appended to a frozen text part, it shows after the frozen text, even if more text came first.
+  expect(frozenView(f, msg("M", "assistant", text("a", "Looking" + INTERRUPTED_TEXT)))?.parts).toEqual([
+    text("a", "Looking" + INTERRUPTED_TEXT),
+  ])
+  expect(frozenView(f, msg("M", "assistant", text("a", "Looking at it" + INTERRUPTED_TEXT)))?.parts).toEqual([
+    text("a", "Looking" + INTERRUPTED_TEXT),
+  ])
+  // As its own part after Esc, it shows; any other new part stays hidden.
+  const marker = text("i", "[interrupted]")
+  expect(frozenView(f, msg("M", "assistant", text("a", "Looking"), text("b", "Done"), marker))?.parts).toEqual([
+    text("a", "Looking"),
+    marker,
+  ])
+  expect(frozenView(f, msg("M", "assistant", text("b", "Done [interrupted]")))?.parts).toEqual([])
+  // A reply that arrived after Esc stays hidden, marker and all.
+  expect(frozenView(f, msg("L", "assistant", marker))).toBeUndefined()
 })
