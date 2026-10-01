@@ -5,9 +5,20 @@ name: chat
 description: Chat with a person in the office.
 long_term_memory: profile
 
+typedefs:
+  Person:
+    name: str
+    handle: str
+    title: str
+    company: str
+    reports_to: str  # "You report to <Name> (@<handle>)." or ""
+input:
+  person: Person  # who the reply speaks as; the office passes it
+
 defs:
   turn:
     input:
+      person: Person
       exited: bool
       reply: str
     nodes:
@@ -39,10 +50,18 @@ defs:
         skills: all
         input:
           message: ${ask.output}
+          person: ${input.person}
         output: str
+        system_prompt: |-
+          You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to}
+          You work in the office alongside the people you talk with. Speak as yourself, in the first person;
+          you are a person here, not a generic assistant. Your profile, in the memory below, is what you've
+          learned about your work and the people you work with: follow it. Use your tools to gather the facts
+          you need, and ask people only through the ask_user tool.
         prompt: "${message}"
-    # A LOOP body needs a record output of two or more fields; the last reply is the second.
+    # A LOOP body maps its carried record to the next one, so the person rides along unchanged.
     output:
+      person: ${input.person}
       exited: ${exit_turn.output.exited == true}
       reply: '${reply.output:-""}'
 
@@ -51,6 +70,7 @@ nodes:
     kind: loop
     call: turn
     input:
+      person: ${input.person}
       exited: false
       reply: ""
     while: not exited
