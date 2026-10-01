@@ -107,7 +107,7 @@ test("a running office answers the probe with one request; no socket is no offic
     const office = createFakeOffice({ socket })
     try {
       expect(await officeAnswers(socket)).toBe(true)
-      expect(office.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /people"])
+      expect(office.requests.map((r) => `${r.method} ${r.path}`)).toEqual(["GET /health"])
     } finally {
       office.stop()
     }

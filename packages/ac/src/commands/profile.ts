@@ -1,15 +1,14 @@
 import type { Person, Profile } from "@agent-corp/protocol"
 import { launchEditor } from "@agent-corp/tui/editor-launch"
-import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
+import type { OfficeClient } from "@agent-corp/tui/office/client"
 import { OfficeUnavailable, VersionConflictError } from "@agent-corp/tui/office/errors"
-import { defaultSocket } from "@agent-corp/tui/office/paths"
 import { conflictText, shortVersion, withoutConflict } from "@agent-corp/tui/profile"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { officeNotRunning } from "../office"
+import { officeClient, officeNotRunning } from "../office"
 
 const USAGE = "Usage: ac profile edit PERSON"
 
@@ -50,7 +49,7 @@ export const run: CommandRun = async (argv) => {
     if (sub !== "edit" || name === undefined || rest.length > 0) throw new Usage("expected edit PERSON")
     const editor = process.env.VISUAL || process.env.EDITOR
     if (!editor) throw new Usage("set $EDITOR (or $VISUAL)")
-    const client = createOfficeClient({ socket: defaultSocket() })
+    const client = officeClient()
     const who = await person(client, name)
     let base = await client.profiles.get(who.handle)
     // mkdtemp makes the dir private (0700), so other users can't read or swap the file.
