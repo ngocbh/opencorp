@@ -10,7 +10,7 @@ from agent_corp.store import Store, new_id
 
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 INTERRUPTED_TEXT = "\n\n[interrupted]"
-"""Appended to a text part its worker stopped streaming: a text part has no state to mark."""
+"""Ends a reply that was stopped short, on its last text part: a text part has no state to mark."""
 
 
 class Transcript:
@@ -19,7 +19,8 @@ class Transcript:
     A node gets an assistant message once it calls a model. Each model exchange is a
     text part, stored at its first and last chunk and streamed as ``part.delta`` in
     between; each tool call is a tool part. When the node ends, a tool part still
-    running is ``interrupted``, and a node that streamed no text gets its output as text.
+    running is ``interrupted``, a node that streamed no text gets its output as text, and
+    a node an interrupt stopped ends with ``INTERRUPTED_TEXT``.
     A user message that comes in while a node runs (a steer) closes the node's message at
     its next model call, so what the model says after reading it follows it.
     ``abort`` closes what a worker that died or was stopped left open.
@@ -36,6 +37,7 @@ class Transcript:
         self._tools: dict[tuple[str, str], ToolPart] = {}  # (node id, tool call id) -> part
         self._streamed: set[str] = set()  # node ids whose message has a text part
         self._steered: set[str] = set()  # node ids with a user message after their message
+        self._tails: dict[str, TextPart | ToolPart] = {}  # node id -> its message's last part
 
     def user(self, text: str) -> Message:
         """Add a user message."""
@@ -77,7 +79,8 @@ class Transcript:
             elif name in _ENDED:
                 node_id = data["failure"]["node_id"] if name == "NodeFailed" else data["node_id"]
                 if node_id is not None:
-                    self._end(node_id, data.get("output") if name == "NodeSucceeded" else None)
+                    self._end(node_id, data.get("output") if name == "NodeSucceeded" else None,
+                              data.get("interrupted", False))
 
     def stream(self, frame: dict[str, Any]) -> None:
         """Record a ``StreamChunk`` (a worker ``stream`` frame); chunks without an exchange id are skipped."""
@@ -122,6 +125,7 @@ class Transcript:
     def _put(self, node_id: str, part: TextPart | ToolPart) -> None:
         message_id = self._message(node_id)
         self.store.put_part(message_id, part)
+        self._tails[node_id] = part
         self._live("part.updated", {"message_id": message_id, "part": part.model_dump(mode="json")})
 
     def _tool(self, node_id: str, part: ToolPart) -> None:
@@ -129,14 +133,15 @@ class Transcript:
         self._put(node_id, part)
 
     def _close(self, node_id: str) -> None:
-        # Between model calls a node's text parts are stored and its tool calls finished.
+        # Called between model calls or once _end stored what was open, so this drops nothing open.
         for key in [k for k in self._tools if k[0] == node_id]:
             del self._tools[key]
         self._streamed.discard(node_id)
         self._steered.discard(node_id)
+        self._tails.pop(node_id, None)
         del self._messages[node_id]
 
-    def _end(self, node_id: str, output: Any) -> None:
+    def _end(self, node_id: str, output: Any, interrupted: bool) -> None:
         if node_id not in self._messages:
             return
         for key in [k for k in self._texts if k[0] == node_id]:
@@ -147,6 +152,12 @@ class Transcript:
                 self._put(node_id, part.model_copy(update={"state": "interrupted"}))
         if node_id not in self._streamed and isinstance(output, str) and output:
             self._put(node_id, TextPart(id=new_id(), type="text", text=output))
+        if interrupted:
+            tail = self._tails.get(node_id)
+            if isinstance(tail, TextPart):
+                self._put(node_id, tail.model_copy(update={"text": tail.text + INTERRUPTED_TEXT}))
+            else:
+                self._put(node_id, TextPart(id=new_id(), type="text", text=INTERRUPTED_TEXT.lstrip()))
         self._close(node_id)
 
     def _live(self, type_: str, data: dict[str, Any]) -> None:

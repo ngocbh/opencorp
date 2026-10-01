@@ -425,6 +425,7 @@ def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace)
     from agent_corp.assets import fake
     from agent_corp.assets.registry import KindTool
     from agent_corp.chat.harness import INTERRUPTED_CALL
+    from agent_corp.chat.transcript import INTERRUPTED_TEXT
 
     entered, leave = threading.Event(), threading.Event()
 
@@ -434,7 +435,7 @@ def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace)
         return "late"
 
     harness = make_harness(kinds={"fake": {"echo": KindTool(slow, parameters=fake.TOOLS["echo"].parameters)}})
-    fake_llm.script({"tool_calls": [echo_call()]}, {"content": "Next."})
+    fake_llm.script({"content": "Working", "tool_calls": [echo_call()]}, {"content": "Next."})
     sid = start(harness, workspace)
     harness.prompt(sid, "go")
     assert entered.wait(30)
@@ -442,6 +443,9 @@ def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace)
     wait_for(lambda: status(harness, sid) == "idle", what="the next turn")
     tools = [p for m in harness.store.list_messages(sid) for p in m.parts if p.type == "tool"]
     assert [(t.tool, t.state, t.output) for t in tools] == [("fake__echo", "completed", INTERRUPTED_CALL)]
+    *_, reply = harness.store.list_messages(sid)
+    assert [p.text if p.type == "text" else p.tool for p in reply.parts] == [
+        "Working", "fake__echo", INTERRUPTED_TEXT.lstrip()]  # the stopped reply says so, after the call
     assert len(fake_llm.requests()) == 1  # the reply stopped after the call
     leave.set()
 
