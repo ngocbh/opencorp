@@ -114,12 +114,19 @@ def test_the_card_lists_pages_and_fields_and_carries_an_earlier_discussion():
         "  - SQLite\n"
         "Question 2 of 2 · features (pick any): Which features?\n"
         "  - auth\n\n"
-        "The user discussed an earlier question with you before it expired (JSON, oldest first):\n"
+        "You discussed an earlier question with them before it expired (JSON, oldest first):\n"
         '[{"role":"user","text":"why Postgres?"},{"role":"you","text":"scale"}]')
     typed = question(new_id(), source="human_input", node_id="gate", question="How many days?",
                      answer_schema=[{"name": "answer", "type": "int", "required": True}])
     assert card_text(typed).endswith("How many days?\nAnswer field answer: int")
 
 
+def test_the_framing_has_the_asker_talk_to_the_person_directly():
+    assert FRAMING == (
+        "You are now talking directly with the person you asked the question below, before they answer it. "
+        'Speak to them as "you"; never call them "the user" or "they". They want to understand your question: '
+        "explain it; do not decide for them, and do not change anything.")
+
+
 def test_the_first_message_is_the_seed_then_what_the_user_typed():
-    assert first_message("SEED", "why?") == "SEED\n\n# The user's first message\n\nwhy?"
+    assert first_message("SEED", "why?") == "SEED\n\n# Their first message to you\n\nwhy?"

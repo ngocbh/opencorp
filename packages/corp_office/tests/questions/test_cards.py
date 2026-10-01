@@ -61,6 +61,11 @@ def asked(fake_llm, n):  # noqa: F811
     return json.dumps(fake_llm.wait_for_requests(n)[n - 1]["messages"])
 
 
+def framings(fake_llm, n):  # noqa: F811
+    """How many times request ``n``'s messages carry the side chat's framing."""
+    return sum(str(m.get("content")).count(FRAMING) for m in fake_llm.wait_for_requests(n)[n - 1]["messages"])
+
+
 def last_user(fake_llm, n):  # noqa: F811
     return [m for m in fake_llm.wait_for_requests(n)[n - 1]["messages"] if m["role"] == "user"][-1]["content"]
 
@@ -104,7 +109,7 @@ def test_chat_about_this_opens_a_seeded_side_session_and_the_answer_carries_it(o
 
     chat(office, q, "and retries?", 2)
     assert last_user(fake_llm, 3) == "and retries?"
-    assert asked(fake_llm, 3).count(FRAMING) == 1  # the seed, once, from the side session's memory
+    assert framings(fake_llm, 3) == 1  # the seed, once, from the side session's memory
     assert texts(h, side.id, "user") == ["why not fail fast?", "and retries?"]
     assert [(e.role, e.text) for e in h.store.get_question(q.id).discussion] == [
         ("user", "why not fail fast?"), ("assistant", "The sandbox is rate-limited."),
@@ -343,7 +348,7 @@ def test_an_ended_side_chat_restarts_on_its_memory_without_the_seed_again(office
     again = chat(office, q, "how often?", 2)
     assert again.id == side.id and len(h.store.get_session(side.id).run_ids) == 2
     assert last_user(fake_llm, 3) == "how often?"
-    assert asked(fake_llm, 3).count(FRAMING) == 1  # from the first run's memory
+    assert framings(fake_llm, 3) == 1  # from the first run's memory
 
 
 def test_a_first_reply_that_dies_leaves_the_seed_for_the_next_turn(office, fake_llm, workspace):  # noqa: F811
@@ -427,7 +432,7 @@ def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, wor
         wait_for(lambda: side.id in h._live and h._live[side.id].turn_q, what="the restored side turn")
         assert h.store.get_question(q.id).status == "open"
         chat(second, q, "and SQLite?", 2)
-        assert last_user(fake_llm, 2) == "and SQLite?" and asked(fake_llm, 2).count(FRAMING) == 1
+        assert last_user(fake_llm, 2) == "and SQLite?" and framings(fake_llm, 2) == 1
         assert [e.text for e in h.store.get_question(q.id).discussion] == [
             "why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler."]
     finally:
@@ -444,6 +449,6 @@ def test_a_side_chat_that_idles_out_reopens_on_the_next_message(make_harness, fa
         wait_for(lambda: status(h, side.id) == "ended", what="the side session to idle out")
         assert h.store.get_question(q.id).status == "open"
         chat(office, q, "and SQLite?", 2)
-        assert last_user(fake_llm, 2) == "and SQLite?" and asked(fake_llm, 2).count(FRAMING) == 1
+        assert last_user(fake_llm, 2) == "and SQLite?" and framings(fake_llm, 2) == 1
     finally:
         stop(office)
