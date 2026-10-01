@@ -26,7 +26,7 @@ def company_tools(store: Store, repo: CompanyRepo, session: Session, run_id: str
     reaches the model as ``error: <message>``.
     """
     caller = repo.people.get(session.person)
-    names = (caller.id, caller.handle, caller.name) if caller else (session.person,)
+    names = (caller.handle, caller.name) if caller else (session.person,)
 
     def ask_manager(
         question: str,
@@ -56,7 +56,7 @@ def company_tools(store: Store, repo: CompanyRepo, session: Session, run_id: str
     def create_work_item(title: str, summary: str | None = None, assignee: str | None = None) -> str:
         """Create a work item (a task) under the one you are working on.
 
-        `assignee` is a person id; leave it out to leave the task unassigned.
+        `assignee` is a person's handle, without the @; leave it out to leave the task unassigned.
         """
         if assignee is not None and assignee not in repo.people:
             raise ValueError(f"no person {assignee!r}")

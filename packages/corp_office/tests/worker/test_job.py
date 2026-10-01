@@ -12,7 +12,7 @@ from agent_corp.worker.job import (
     tool_spec,
 )
 
-BASE = {"kind": "chat", "session_id": "s1", "run_id": "r1", "person_id": "minh", "pin": "/pins/abc",
+BASE = {"kind": "chat", "session_id": "s1", "run_id": "r1", "person": "minh", "pin": "/pins/abc",
         "flow": "people/minh/../../shared/flows/chat.yaml", "log": "/runs/r1.jsonl"}
 
 

@@ -43,16 +43,16 @@ class Monitor:
         self.secrets = secrets
         self.kinds = builtin_kinds() if kinds is None else kinds
 
-    def tools(self, person_id: str, *, run_id: str | None = None,
+    def tools(self, person: str, *, run_id: str | None = None,
               session_id: str | None = None) -> dict[str, BaseTool]:
-        """The asset tools ``person_id`` holds grants for, as ``{name: tool}``: the ``toolbox`` group.
+        """The asset tools ``person`` holds grants for, as ``{name: tool}``: the ``toolbox`` group.
 
         Pass the dict to ``group_specs`` for ``Job.groups`` and to ``BaseHandlers(tools=...)``.
         Each tool calls ``call`` with ``run_id`` and ``session_id``. Gated tools and tools
         of unknown kinds are never listed.
         """
         repo = load_repo(self.root)
-        subjects = _subjects(repo, person_id)
+        subjects = _subjects(repo, person)
         found: dict[str, BaseTool] = {}
         for aid, asset in sorted(repo.assets.items()):
             for tool, spec in asset.tools.items():
@@ -61,17 +61,17 @@ class Monitor:
                     continue
                 name = asset_tool_name(aid, tool)
                 found[name] = StructuredTool.from_function(
-                    func=self._bound(person_id, run_id, session_id, name), name=name,
+                    func=self._bound(person, run_id, session_id, name), name=name,
                     description=impl.description or name, args_schema=impl.parameters)
         return found
 
-    def _bound(self, person_id: str, run_id: str | None, session_id: str | None, name: str) -> Callable[..., Any]:
+    def _bound(self, person: str, run_id: str | None, session_id: str | None, name: str) -> Callable[..., Any]:
         def run(**args: Any) -> Any:
-            return self.call(person_id, run_id, name, args, session_id=session_id)
+            return self.call(person, run_id, name, args, session_id=session_id)
 
         return run
 
-    def call(self, person_id: str, run_id: str | None, name: str, args: Mapping[str, Any], *,
+    def call(self, person: str, run_id: str | None, name: str, args: Mapping[str, Any], *,
              session_id: str | None = None) -> Any:
         """Check, run, and audit one asset-tool call; return its result.
 
@@ -87,11 +87,11 @@ class Monitor:
         values: list[str] = []
 
         def audit(outcome: str, detail: str) -> None:
-            self.store.record_audit(person=person_id, kind="asset", tool=name, args=_audit_args(args, keys, values),
+            self.store.record_audit(person=person, kind="asset", tool=name, args=_audit_args(args, keys, values),
                                     outcome=outcome, session_id=session_id, run_id=run_id,
                                     detail=redact(detail, keys, values)[:DETAIL_CHARS])
 
-        denial = _denial(repo, person_id, asset, tool, name, args)
+        denial = _denial(repo, person, asset, tool, name, args)
         if denial:
             audit("denied", denial)
             return f"permission denied: {denial}"
@@ -119,7 +119,7 @@ class Monitor:
         except KeyError as exc:
             raise _MonitorError(exc.args[0]) from None
 
-    def workspace(self, tools: WorkspaceTools, person_id: str, run_id: str | None, *,
+    def workspace(self, tools: WorkspaceTools, person: str, run_id: str | None, *,
                   session_id: str | None = None) -> Callable[[str, dict[str, Any]], str]:
         """A ``call(name, args)`` for ``workspace_tool_functions`` that audits each workspace call.
 
@@ -132,14 +132,14 @@ class Monitor:
             try:
                 outcome = tools.call(name, args)
             except Exception as exc:
-                self.store.record_audit(person=person_id, kind="workspace", tool=name, args={}, outcome="error",
+                self.store.record_audit(person=person, kind="workspace", tool=name, args={}, outcome="error",
                                         session_id=session_id, run_id=run_id, detail=f"{type(exc).__name__}: {exc}")
                 raise
             a = outcome.audit
             detail = f"exit={a.exit} duration={a.duration:.3f}s"
             if a.exit is None:
                 detail += f": {_last_line(outcome.output)[:REASON_CHARS]}"
-            self.store.record_audit(person=person_id, kind="workspace", tool=a.tool, args={"summary": a.args_summary},
+            self.store.record_audit(person=person, kind="workspace", tool=a.tool, args={"summary": a.args_summary},
                                     outcome="ok" if a.exit == 0 else "error", session_id=session_id,
                                     run_id=run_id, detail=detail)
             return outcome.output
@@ -214,13 +214,13 @@ def _reason(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
-def _subjects(repo: CompanyRepo, person_id: str) -> set[str]:
-    """The grantee names that cover ``person_id``: the id, and ``group:<id>`` for each group
+def _subjects(repo: CompanyRepo, person: str) -> set[str]:
+    """The grantee names that cover ``person``: the handle, and ``group:<id>`` for each group
     the person is in, directly or through a child group."""
-    person = repo.people.get(person_id)
-    if person is None:
+    found = repo.people.get(person)
+    if found is None:
         return set()
-    subjects, todo = {person_id}, list(person.groups)
+    subjects, todo = {person}, list(found.groups)
     while todo:
         gid = todo.pop()
         if f"group:{gid}" in subjects:
@@ -254,10 +254,10 @@ def _same(value: Any, allowed: Any) -> bool:
     return value == allowed
 
 
-def _denial(repo: CompanyRepo, person_id: str, asset: Asset | None, tool: str | None, name: str,
+def _denial(repo: CompanyRepo, person: str, asset: Asset | None, tool: str | None, name: str,
             args: Mapping[str, Any]) -> str | None:
-    """Why ``person_id`` may not make this call, or None if a grant allows it."""
-    grants = _grants(asset, tool, _subjects(repo, person_id)) if asset and tool else []
+    """Why ``person`` may not make this call, or None if a grant allows it."""
+    grants = _grants(asset, tool, _subjects(repo, person)) if asset and tool else []
     if not grants:
         return f"no grant for {name}"
     if asset.tools[tool].risk == "gated":

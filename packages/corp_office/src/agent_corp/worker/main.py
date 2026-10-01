@@ -30,9 +30,9 @@ LINGER = 5.0  # seconds to keep answering steers after the last frame, waiting f
 _FINISHED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 
 
-def pick_skills(pin: Path, person_id: str, names: list[str]) -> dict[str, Skill]:
+def pick_skills(pin: Path, handle: str, names: list[str]) -> dict[str, Skill]:
     """The person's listed skills; a personal skill shadows a shared one of the same name."""
-    found = load_skills([pin / "people" / person_id / "skills", pin / "shared" / "skills"], skip_invalid=True)
+    found = load_skills([pin / "people" / handle / "skills", pin / "shared" / "skills"], skip_invalid=True)
     return {name: found[name] for name in names if name in found}
 
 
@@ -84,7 +84,7 @@ def run_job(job: Job, channel: Channel, rpc: Rpc, inbox: Inbox) -> dict[str, Any
         common: dict[str, Any] = {
             "log": job.log, "num_workers": job.num_workers, "on_event": on_event, "on_stream": on_stream,
             "memory": job_memory(job, rpc, stack), "tools": job_tools(job, rpc),
-            "skills": pick_skills(pin, job.person_id, job.skills), "steering": inbox,
+            "skills": pick_skills(pin, job.person, job.skills), "steering": inbox,
         }
         if job.kind == "chat":
             Path(job.log).parent.mkdir(parents=True, exist_ok=True)

@@ -25,12 +25,12 @@ async def open_manager(request: Request) -> JSONResponse:
     """Open a profile-manager session over a person's profile, with the body's text as its first message."""
     learning = _learning(request)
     body = await parse(request, ProfileManagerRequest)
-    return ok(await harness_call(learning.start_manager, request.path_params["person"], body.text))
+    return ok(await harness_call(learning.start_manager, request.path_params["handle"], body.text))
 
 
 async def list_proposals(request: Request) -> JSONResponse:
     """A person's profile proposals, oldest first."""
-    return ok(await harness_call(_learning(request).proposals, request.path_params["person"]))
+    return ok(await harness_call(_learning(request).proposals, request.path_params["handle"]))
 
 
 async def apply_proposal(request: Request) -> JSONResponse:
@@ -62,8 +62,8 @@ async def confirm_follow_ups(request: Request) -> JSONResponse:
 
 
 ROUTES = [
-    Route("/profiles/{person}/manager", open_manager, methods=["POST"]),
-    Route("/profiles/{person}/proposals", list_proposals, methods=["GET"]),
+    Route("/profiles/{handle}/manager", open_manager, methods=["POST"]),
+    Route("/profiles/{handle}/proposals", list_proposals, methods=["GET"]),
     Route("/profile-proposals/{id}/apply", apply_proposal, methods=["POST"]),
     Route("/feedback", add_feedback, methods=["POST"]),
     Route("/debriefs/{session}", get_debrief, methods=["GET"]),

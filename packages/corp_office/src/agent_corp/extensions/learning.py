@@ -152,35 +152,34 @@ class Learning:
             except LookupError as exc:
                 raise HarnessError(409, "not_ready", str(exc)) from exc
 
-    def start_manager(self, person_id: str, text: str) -> Session:
+    def start_manager(self, handle: str, text: str) -> Session:
         """Open a profile-manager session over a person's profile, with ``text`` as its first message."""
         self.git.commit_hand_edits()
         head = self.git.head()
         pin = self.git.pin(head)
-        if person_id not in load_repo(pin).people:
-            raise HarnessError(404, "not_found", f"no person {person_id}")
+        if handle not in load_repo(pin).people:
+            raise HarnessError(404, "not_found", f"no person {handle}")
         if not (pin / MANAGER_FLOW).is_file():
             raise HarnessError(422, "no_manager_flow", f"the company has no {MANAGER_FLOW}")
         t = now()
         session = self.store.create_session(Session(
-            id=new_id(), person=person_id, harness="composer", office=socket.gethostname(),
+            id=new_id(), person=handle, harness="composer", office=socket.gethostname(),
             cwd=os.path.realpath(self.git.root), repo_commit=head, status="starting", kind="profile_manager",
             created_at=t, updated_at=t))
         self.harness.start_run(session, manager_spec(self.harness, session))
         self.harness.prompt(session.id, text)  # the first turn takes it
         return self.store.get_session(session.id)
 
-    def proposals(self, person_id: str) -> list[ProfileProposal]:
+    def proposals(self, handle: str) -> list[ProfileProposal]:
         """A person's profile proposals, oldest first."""
-        if person_id not in load_repo(self.git.root).people:
-            raise HarnessError(404, "not_found", f"no person {person_id}")
-        return self.store.list_profile_proposals(person_id)
+        if handle not in load_repo(self.git.root).people:
+            raise HarnessError(404, "not_found", f"no person {handle}")
+        return self.store.list_profile_proposals(handle)
 
     def apply(self, proposal_id: str) -> Profile:
         """Apply a proposal as the owner; ``MarkdownVersionMismatch`` if the profile moved on."""
-        owner = self._owner()
         try:
-            return apply_proposal(self.store, self.git, proposal_id, owner=self.git.handle(f"people/{owner}/profile.md"),
+            return apply_proposal(self.store, self.git, proposal_id, owner=self._owner(),
                                   max_chars=self._defaults(load_repo(self.git.root)).profile_max_chars)
         except LookupError as exc:
             raise HarnessError(404, "not_found", str(exc)) from exc
@@ -363,7 +362,7 @@ class Learning:
         memory = {"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars,
                                                llm_config=provider.llm_config)}
         transcript = transcript_text(self.store.list_messages(session.id)) if kind == "chat" else ""
-        job = Job(kind=kind, session_id=session.id, run_id=run_id, person_id=session.person, pin=str(pin),
+        job = Job(kind=kind, session_id=session.id, run_id=run_id, person=session.person, pin=str(pin),
                   flow=DEBRIEF_FLOW, log=self._log(session.id, run_id), inputs={"transcript": transcript},
                   llm_config=provider.llm_config, learnable=True, memory=memory, env=provider.env, feedback=feedback)
         return job, {"profile": GitProfileStore(self.git, session.person)}
@@ -373,7 +372,7 @@ class Learning:
         record = self.store.get_debrief_record(session.id)
         exited: Callable[[dict[str, Any] | None], None] = lambda outcome: self._post(  # noqa: E731
             self._learned, feedback.id, handlers, outcome)
-        source = f"from feedback on run {feedback.run_id} ({self.git.handle(f'people/{feedback.author}/profile.md')})"
+        source = f"from feedback on run {feedback.run_id} ({feedback.author})"
         if record is not None and record.run_id == feedback.run_id:
             job, stores = self._debrief_job(session, feedback.run_id, kind="backward", feedback=feedback.text)
             handlers = FeedbackHandlers(stores=stores, source=source, exited=exited,
@@ -384,7 +383,7 @@ class Learning:
         tools = spec.groups(session, feedback.run_id, _no_questions)
         memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
                   if m.kind == "profile" and m.llm_config is None else m for name, m in spec.memory.items()}
-        job = Job(kind="backward", session_id=session.id, run_id=feedback.run_id, person_id=session.person,
+        job = Job(kind="backward", session_id=session.id, run_id=feedback.run_id, person=session.person,
                   pin=str(self.git.pin(session.repo_commit)), flow=spec.flow,
                   log=self._log(session.id, feedback.run_id), inputs=spec.inputs, llm_config=provider.llm_config,
                   learnable=spec.learnable, skills=spec.skills, groups=group_specs(tools), memory=memory,

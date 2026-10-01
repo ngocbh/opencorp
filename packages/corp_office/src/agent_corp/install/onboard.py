@@ -23,7 +23,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError, make_office_dir
 from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
-from agent_corp.protocol.models import HireRequest
+from agent_corp.protocol.models import HireRequest, HireResponse
 
 FIRST_AGENT = ("Minh", "Engineer")
 """The first agent's default name, and its title."""
@@ -203,7 +203,7 @@ def _ask_company(prompter: Prompter) -> tuple[str, Owner]:
         company = prompter.ask("Company name", "My company")
         who = prompter.ask("Your name", name)
         slug = prompter.ask("Your handle", handle)
-        owner = Owner(id=slug, handle=slug, name=who)
+        owner = Owner(handle=slug, name=who)
         try:
             template_files(company, owner)  # validates without writing
             return company, owner
@@ -236,10 +236,10 @@ def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.Bas
             preview = client.post("/people", json=body)
             if preview.status_code != 200:
                 raise OnboardError(f"the office refused the hire: {preview.status_code} {preview.text}")
-            errors = [i["message"] for i in preview.json()["issues"] if i["severity"] == "error"]
+            errors = [i.message for i in HireResponse.model_validate(preview.json()).issues if i.severity == "error"]
             if errors:
                 raise OnboardError("the hire doesn't lint: " + "; ".join(errors))
-            done = client.post("/people", json=body | {"id": preview.json()["person"]["id"], "confirm": True})
+            done = client.post("/people", json=body | {"confirm": True})
             if done.status_code != 200:
                 raise OnboardError(f"the office refused the hire: {done.status_code} {done.text}")
     except httpx.HTTPError as exc:

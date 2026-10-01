@@ -21,8 +21,8 @@ def lint(repo: CompanyRepo) -> list[RepoIssue]:
     return issues
 
 
-def _person_path(pid: str) -> str:
-    return f"people/{pid}/person.yaml"
+def _person_path(handle: str) -> str:
+    return f"people/{handle}/person.yaml"
 
 
 def _cycles(links: dict[str, str | None]) -> list[list[str]]:
@@ -44,12 +44,12 @@ def _cycles(links: dict[str, str | None]) -> list[list[str]]:
 
 
 def _check_id_case(repo: CompanyRepo) -> Iterator[RepoIssue]:
-    """Ids of one kind don't differ only by case (their directories collide on macOS).
+    """Group or asset ids don't differ only by case (their files collide on macOS).
 
     Slugs are lowercase and ULIDs uppercase, so the clash is a ULID and its lowercase spelling.
+    Handles are lowercase only, so people can't clash.
     """
-    for items, path in ((repo.people, _person_path),
-                        (repo.groups, lambda i: f"groups/{i}.yaml"),
+    for items, path in ((repo.groups, lambda i: f"groups/{i}.yaml"),
                         (repo.assets, lambda i: f"assets/{i}.yaml")):
         first: dict[str, str] = {}
         for item_id in sorted(items):
@@ -61,24 +61,12 @@ def _check_id_case(repo: CompanyRepo) -> Iterator[RepoIssue]:
                 first[key] = item_id
 
 
-def _check_handles(repo: CompanyRepo) -> Iterator[RepoIssue]:
-    """Handles are unique."""
-    owner: dict[str, str] = {}
-    for pid in sorted(repo.people):
-        handle = repo.people[pid].handle
-        if handle in owner:
-            yield RepoIssue(_person_path(pid), "person.duplicate_handle",
-                            f"@{handle} is already used by {owner[handle]}")
-        else:
-            owner[handle] = pid
-
-
 def _check_managers(repo: CompanyRepo) -> Iterator[RepoIssue]:
     """Managers exist, and reporting lines have no cycles."""
-    for pid, person in sorted(repo.people.items()):
+    for handle, person in sorted(repo.people.items()):
         if person.manager is not None and person.manager not in repo.people:
-            yield RepoIssue(_person_path(pid), "person.unknown_manager", person.manager)
-    for cycle in _cycles({pid: p.manager for pid, p in repo.people.items()}):
+            yield RepoIssue(_person_path(handle), "person.unknown_manager", person.manager)
+    for cycle in _cycles({handle: p.manager for handle, p in repo.people.items()}):
         yield RepoIssue(_person_path(cycle[0]), "person.manager_cycle", " -> ".join(cycle))
 
 
@@ -91,7 +79,7 @@ def _check_ceo(repo: CompanyRepo) -> Iterator[RepoIssue]:
         yield RepoIssue("company.yaml", "company.unknown_ceo", repo.company.ceo)
     elif ceo.manager is not None:
         yield RepoIssue("company.yaml", "company.ceo_has_manager",
-                        f"{ceo.id} reports to {ceo.manager}")
+                        f"{ceo.handle} reports to {ceo.manager}")
 
 
 def _check_groups(repo: CompanyRepo) -> Iterator[RepoIssue]:
@@ -107,10 +95,10 @@ def _check_groups(repo: CompanyRepo) -> Iterator[RepoIssue]:
 
 def _check_person_groups(repo: CompanyRepo) -> Iterator[RepoIssue]:
     """People belong only to groups that exist."""
-    for pid, person in sorted(repo.people.items()):
+    for handle, person in sorted(repo.people.items()):
         for gid in person.groups:
             if gid not in repo.groups:
-                yield RepoIssue(_person_path(pid), "person.unknown_group", gid)
+                yield RepoIssue(_person_path(handle), "person.unknown_group", gid)
 
 
 def _check_assets(repo: CompanyRepo) -> Iterator[RepoIssue]:
@@ -138,29 +126,29 @@ def _check_assets(repo: CompanyRepo) -> Iterator[RepoIssue]:
 
 def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
     """Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles."""
-    for pid, person in sorted(repo.people.items()):
+    for handle, person in sorted(repo.people.items()):
         if person.kind == "agent" and not person.main:
-            yield RepoIssue(_person_path(pid), "person.no_main", "agents need a main flow")
-        base = repo.root / "people" / pid
+            yield RepoIssue(_person_path(handle), "person.no_main", "agents need a main flow")
+        base = repo.root / "people" / handle
         refs = (([person.main] if person.main else []) + [sop.flow for sop in person.sops]
                 + [routine.flow for routine in person.routines])
         for ref in refs:
             try:
                 path = (base / ref).resolve()
             except (OSError, ValueError) as exc:  # e.g. a NUL byte in the path
-                yield RepoIssue(_person_path(pid), "person.flow_invalid", f"{ref!r}: {exc}")
+                yield RepoIssue(_person_path(handle), "person.flow_invalid", f"{ref!r}: {exc}")
                 continue
             if path.is_relative_to(repo.root) and not path.is_file():
-                yield RepoIssue(_person_path(pid), "person.flow_missing", f"{ref} does not exist")
+                yield RepoIssue(_person_path(handle), "person.flow_missing", f"{ref} does not exist")
                 continue
             try:
                 load_confined(repo.root, path)
             except FlowOutsideRepo as exc:
-                yield RepoIssue(_person_path(pid), "person.flow_outside_repo", f"{ref}: {exc}")
+                yield RepoIssue(_person_path(handle), "person.flow_outside_repo", f"{ref}: {exc}")
             except LoadError as exc:
-                yield RepoIssue(_person_path(pid), "person.flow_invalid", f"{ref}: {exc}")
+                yield RepoIssue(_person_path(handle), "person.flow_invalid", f"{ref}: {exc}")
             except Exception as exc:  # OSError/ValueError from a child file, or a surprise
-                yield RepoIssue(_person_path(pid), "person.flow_invalid",
+                yield RepoIssue(_person_path(handle), "person.flow_invalid",
                                 f"{ref}: {type(exc).__name__}: {exc}")
 
 
@@ -193,21 +181,21 @@ def _check_skills(repo: CompanyRepo) -> list[RepoIssue]:
     """Granted skills exist in the person's own skills or in shared/skills."""
     issues: list[RepoIssue] = []
     shared = _skill_root(repo.root / "shared/skills", "shared/skills", issues)
-    for pid, person in sorted(repo.people.items()):
-        own = _skill_root(repo.root / "people" / pid / "skills", f"people/{pid}/skills", issues)
+    for handle, person in sorted(repo.people.items()):
+        own = _skill_root(repo.root / "people" / handle / "skills", f"people/{handle}/skills", issues)
         for name in person.skills:
             if name not in own | shared:
-                issues.append(RepoIssue(_person_path(pid), "person.unknown_skill", name))
+                issues.append(RepoIssue(_person_path(handle), "person.unknown_skill", name))
     return issues
 
 
 def _check_profiles(repo: CompanyRepo) -> Iterator[RepoIssue]:
     """Agents should have a profile; humans may skip it."""
-    for pid, person in sorted(repo.people.items()):
-        if person.kind == "agent" and not (repo.root / "people" / pid / "profile.md").is_file():
-            yield RepoIssue(f"people/{pid}/profile.md", "person.no_profile",
+    for handle, person in sorted(repo.people.items()):
+        if person.kind == "agent" and not (repo.root / "people" / handle / "profile.md").is_file():
+            yield RepoIssue(f"people/{handle}/profile.md", "person.no_profile",
                             "agents learn into profile.md; create one", "warning")
 
 
-CHECKS = [_check_id_case, _check_handles, _check_managers, _check_ceo, _check_groups,
+CHECKS = [_check_id_case, _check_managers, _check_ceo, _check_groups,
           _check_person_groups, _check_assets, _check_flows, _check_skills, _check_profiles]

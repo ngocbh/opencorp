@@ -44,10 +44,11 @@ def test_constructor_does_no_io(tmp_path, monkeypatch):
     GitProfileStore(CompanyGit(tmp_path / "missing", tmp_path / "worktrees"), "minh")
 
 
-@pytest.mark.parametrize("pid", ["", "../minh", "minh/x", "Minh", "a_b", "a--b", "-minh", "a" * 65])
-def test_constructor_refuses_a_bad_person_id(git, pid):
-    with pytest.raises(ValueError, match="not a person id"):
-        GitProfileStore(git, pid)
+@pytest.mark.parametrize("handle", ["", "../minh", "minh/x", "Minh", "a_b", "-minh", "minh-", "a" * 33,
+                                    "01J8Z3NDEKTSV4RRFFQ69G5FAV"])
+def test_constructor_refuses_a_bad_handle(git, handle):
+    with pytest.raises(ValueError, match="not a handle"):
+        GitProfileStore(git, handle)
 
 
 def test_read_returns_text_and_blob_id(store, git):
@@ -321,13 +322,13 @@ def test_a_forged_handle_cannot_add_a_commit_id(store, company):
 
 def test_a_hand_edit_just_before_the_replace_is_kept(store, git, company, monkeypatch):
     base = store.read()[1]
-    handle = git.handle
+    target = store._target
 
-    def edit_by_hand(rel):  # runs after the first hand-edit check, before the file is replaced
+    def edit_by_hand():  # runs after the first hand-edit check, before the file is replaced
         (company / PROFILE).write_text("# Minh\nby hand\n")
-        return handle(rel)
+        return target()
 
-    monkeypatch.setattr(git, "handle", edit_by_hand)
+    monkeypatch.setattr(store, "_target", edit_by_hand)
     with pytest.raises(MarkdownVersionMismatch) as caught:
         store.write("# Minh\nby model\n", base_version=base)
     assert caught.value.current == blob_id(b"# Minh\nby hand\n")

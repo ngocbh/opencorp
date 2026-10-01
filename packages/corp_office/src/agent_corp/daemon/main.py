@@ -173,7 +173,7 @@ def build_office(paths: OfficePaths) -> Office:
     store = Store(paths.store)
     git = CompanyGit(paths.company, paths.worktrees)
     reap(store)
-    office = Office(paths=paths, store=store, git=git, bus=Bus(), profile_store=lambda pid: GitProfileStore(git, pid))
+    office = Office(paths=paths, store=store, git=git, bus=Bus(), profile_store=lambda handle: GitProfileStore(git, handle))
     monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
     harness = Harness(office, monitor, provider=lambda: load_provider(paths.office / "provider.json"))
     office.workers = harness

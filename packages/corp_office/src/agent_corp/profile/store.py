@@ -12,8 +12,7 @@ from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
 from agent_corp.company.git import CompanyGit, CompanyGitError
 
 EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
-_ID = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*")  # the protocol's Id
-_ID_MAX = 64
+_HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?")  # the protocol's Handle
 _TOKEN = re.compile(r"\S+")
 
 
@@ -46,19 +45,19 @@ def _commit_id(provenance: JsonObject | None) -> str | None:
 
 
 class GitProfileStore:
-    """``people/<person_id>/profile.md`` in the company clone, as a composer ``MarkdownStore``.
+    """``people/<handle>/profile.md`` in the company clone, as a composer ``MarkdownStore``.
 
     Versions are git blob ids, and every version handed out is committed, so it stays
     readable. Every write is a commit. The constructor does no I/O: the office builds one
     per request on its event loop.
     """
 
-    def __init__(self, git: CompanyGit, person_id: str) -> None:
-        if not (isinstance(person_id, str) and len(person_id) <= _ID_MAX and _ID.fullmatch(person_id)):
-            raise ValueError(f"not a person id: {person_id!r}")
+    def __init__(self, git: CompanyGit, handle: str) -> None:
+        if not (isinstance(handle, str) and _HANDLE.fullmatch(handle)):
+            raise ValueError(f"not a handle: {handle!r}")
         self.git = git
-        self.person_id = person_id
-        self.path = f"people/{person_id}/profile.md"
+        self.handle = handle
+        self.path = f"people/{handle}/profile.md"
 
     def read(self, version: str | None = None) -> tuple[str, str]:
         """Return ``(text, version)``. Reading the current version commits pending hand edits first.
@@ -102,7 +101,7 @@ class GitProfileStore:
                 current = self._current()
                 if current != base_version:
                     raise MarkdownVersionMismatch(base_version, current)
-                message = commit_message(self.git.handle(self.path), provenance)
+                message = commit_message(self.handle, provenance)
                 target = self._target()
                 previous = target.read_bytes() if target.exists() else None
                 if (EMPTY_BLOB if previous is None else blob_id(previous)) != current:
@@ -146,7 +145,7 @@ class GitProfileStore:
     def _target(self) -> Path:
         """The profile's path in the clone; ValueError if it leaves the person's directory."""
         target = self.git.root / self.path
-        if target.is_symlink() or target.parent.resolve() != self.git.root.resolve() / "people" / self.person_id:
+        if target.is_symlink() or target.parent.resolve() != self.git.root.resolve() / "people" / self.handle:
             raise ValueError(f"{self.path} goes through a symlink; not writing it")
         return target
 

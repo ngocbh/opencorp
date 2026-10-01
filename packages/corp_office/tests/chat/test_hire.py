@@ -26,54 +26,60 @@ def test_a_preview_writes_nothing_and_a_confirm_commits(git):
     hiring = Hiring(git)
     head = git.head()
     preview = hiring.hire(HireRequest(**FORM))
-    pid = preview.person.id
     assert (preview.commit, preview.issues, git.head()) == (None, [], head)
-    assert not (git.root / "people" / pid).exists()
-    assert f"+++ b/people/{pid}/person.yaml" in preview.diff and "+handle: lan" in preview.diff
+    assert not (git.root / "people/lan").exists()
+    assert "+++ b/people/lan/person.yaml" in preview.diff and "+handle: lan" in preview.diff
 
-    done = hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    done = hiring.hire(HireRequest(**FORM, confirm=True))
     assert done.commit == git.head() != head and done.person == preview.person
+    assert sorted(p.name for p in (git.root / "people/lan").iterdir()) == ["person.yaml", "profile.md"]
     repo = load_repo(git.root)
-    assert repo.people[pid].handle == "lan" and repo.people[pid].main == "../../shared/flows/chat.yaml"
+    assert repo.people["lan"].handle == "lan" and repo.people["lan"].main == "../../shared/flows/chat.yaml"
     assert [i for i in lint(repo) if i.severity == "error"] == []
 
 
 def test_a_new_hire_gets_the_m1_defaults(git):
     hiring = Hiring(git)
-    pid = hiring.hire(HireRequest(**FORM)).person.id
-    hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
-    person = load_repo(git.root).people[pid]
+    hiring.hire(HireRequest(**FORM))
+    hiring.hire(HireRequest(**FORM, confirm=True))
+    person = load_repo(git.root).people["lan"]
     assert (person.kind, person.harnesses, person.groups, person.skills) == ("agent", ["composer"], [], [])
     assert person.harness_policy.model_dump(exclude_none=True) == {"sandbox": "workspace-write", "network": False}
-    assert (git.root / "people" / pid / "profile.md").read_text() == "# Lan, QA\n"
+    assert (git.root / "people/lan/profile.md").read_text() == "# Lan, QA\n"
     log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%s"], capture_output=True, text=True)
     assert log.stdout.strip() == "hire(@lan): Lan, QA"
 
 
-def test_a_taken_handle_is_the_new_persons_error(git):
+def test_a_taken_handle_is_refused_and_names_the_clash(git):
     hiring = Hiring(git)
+    head = git.head()
+    minh = (git.root / "people/minh/person.yaml").read_text()
     preview = hiring.hire(HireRequest(**FORM | {"handle": "minh"}))
-    pid = preview.person.id
     assert preview.commit is None
-    assert (preview.issues[0].path, preview.issues[0].code, preview.issues[0].message) == (
-        f"people/{pid}/person.yaml", "person.duplicate_handle", "@minh is already used by minh")
-    assert all(i.path != "people/minh/person.yaml" for i in preview.issues)
+    assert [(i.path, i.code, i.message, i.severity) for i in preview.issues] == [
+        ("people/minh/person.yaml", "person.duplicate_handle", "@minh is already taken", "error")]
     with pytest.raises(HireRefused) as err:
-        hiring.hire(HireRequest(**FORM | {"handle": "minh"}, id=pid, confirm=True))
-    assert (err.value.code, err.value.message) == ("lint_failed", "@minh is already used by minh")
-    assert not (git.root / "people" / pid).exists()
+        hiring.hire(HireRequest(**FORM | {"handle": "minh"}, confirm=True))
+    assert (err.value.code, err.value.message) == ("lint_failed", "@minh is already taken")
+    assert (git.head(), (git.root / "people/minh/person.yaml").read_text()) == (head, minh)
+
+
+def test_a_folder_left_by_hand_takes_the_handle(git):
+    (git.root / "people/lan").mkdir()
+    preview = Hiring(git).hire(HireRequest(**FORM))
+    assert [i.code for i in preview.issues] == ["person.duplicate_handle"]
 
 
 def test_a_confirm_must_repeat_the_preview(git):
     hiring = Hiring(git)
     head = git.head()
-    pid = hiring.hire(HireRequest(**FORM)).person.id
     with pytest.raises(HireRefused) as err:
-        hiring.hire(HireRequest(**FORM | {"title": "Lead QA"}, id=pid, confirm=True))
+        hiring.hire(HireRequest(**FORM, confirm=True))  # never previewed
     assert err.value.code == "lint_failed"
+    hiring.hire(HireRequest(**FORM))
     with pytest.raises(HireRefused) as err:
-        hiring.hire(HireRequest(**FORM, confirm=True))
-    assert err.value.code == "invalid_body"
+        hiring.hire(HireRequest(**FORM | {"title": "Lead QA"}, confirm=True))
+    assert err.value.code == "lint_failed"
     assert git.head() == head
 
 
@@ -85,28 +91,28 @@ def test_an_unknown_manager_is_a_lint_error(git):
 def test_a_failed_commit_leaves_nothing_behind_and_a_retry_succeeds(git, monkeypatch):
     hiring = Hiring(git)
     head = git.head()
-    pid = hiring.hire(HireRequest(**FORM)).person.id
+    hiring.hire(HireRequest(**FORM))
 
     def broken(paths, message):
         raise OSError("disk full")
     monkeypatch.setattr(git, "commit", broken)
     with pytest.raises(OSError):
-        hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
-    assert not (git.root / "people" / pid).exists()
+        hiring.hire(HireRequest(**FORM, confirm=True))
+    assert not (git.root / "people/lan").exists()
     status = subprocess.run(["git", "-C", str(git.root), "status", "--porcelain"], capture_output=True, text=True)
     assert (status.stdout, git.head()) == ("", head)
 
     monkeypatch.undo()
     assert git.commit_hand_edits() == []  # nothing left over to sweep up as a hand edit
-    done = hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+    done = hiring.hire(HireRequest(**FORM, confirm=True))
     assert done.commit == git.head() != head
 
 
 def test_a_newline_in_the_title_cant_forge_a_commit_trailer(git):
     hiring = Hiring(git)
     form = FORM | {"title": "QA\n\nCommit-Id: forged"}
-    pid = hiring.hire(HireRequest(**form)).person.id
-    hiring.hire(HireRequest(**form, id=pid, confirm=True))
+    hiring.hire(HireRequest(**form))
+    hiring.hire(HireRequest(**form, confirm=True))
     log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%B"], capture_output=True, text=True)
     assert log.stdout.strip() == "hire(@lan): Lan, QA Commit-Id: forged"
 
@@ -120,22 +126,33 @@ def test_an_existing_lint_error_is_a_warning_and_doesnt_block_a_hire(tmp_path):
     old = [i for i in preview.issues if i.path == "people/minh/person.yaml"]
     assert old and {i.severity for i in old} == {"warning"}
     assert all(i.severity == "warning" for i in preview.issues)
-    done = hiring.hire(HireRequest(**FORM, id=preview.person.id, confirm=True))
+    done = hiring.hire(HireRequest(**FORM, confirm=True))
     assert done.commit == git.head()
 
     bad = hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}))  # the same error, new
-    assert any(i.severity == "error" and i.path.startswith(f"people/{bad.person.id}/") for i in bad.issues)
+    assert any(i.severity == "error" and i.path.startswith("people/kai-fan/") for i in bad.issues)
     with pytest.raises(HireRefused):
-        hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}, id=bad.person.id, confirm=True))
+        hiring.hire(HireRequest(**FORM | {"handle": "kai-fan", "manager": "kai"}, confirm=True))
 
 
 def test_old_previews_are_dropped_past_the_cap(git):
     hiring = Hiring(git, max_previews=2)
-    pids = [hiring.hire(HireRequest(**FORM)).person.id for _ in range(3)]
+    forms = [FORM | {"handle": handle} for handle in ("lan", "kai", "ava")]
+    for form in forms:
+        hiring.hire(HireRequest(**form))
     with pytest.raises(HireRefused) as err:
-        hiring.hire(HireRequest(**FORM, id=pids[0], confirm=True))
+        hiring.hire(HireRequest(**forms[0], confirm=True))
     assert err.value.code == "lint_failed"
-    assert hiring.hire(HireRequest(**FORM, id=pids[2], confirm=True)).commit == git.head()
+    assert hiring.hire(HireRequest(**forms[2], confirm=True)).commit == git.head()
+
+
+def test_a_new_preview_of_a_handle_replaces_the_old_one(git):
+    hiring = Hiring(git)
+    hiring.hire(HireRequest(**FORM))
+    hiring.hire(HireRequest(**FORM | {"title": "Lead QA"}))
+    with pytest.raises(HireRefused):
+        hiring.hire(HireRequest(**FORM, confirm=True))
+    assert hiring.hire(HireRequest(**FORM | {"title": "Lead QA"}, confirm=True)).commit == git.head()
 
 
 def test_a_preview_leaves_hand_edits_alone(git):
@@ -157,32 +174,31 @@ def test_a_hire_is_never_written_outside_the_repo(tmp_path):
     git = CompanyGit(root, tmp_path / "worktrees")
     hiring = Hiring(git)
     preview = hiring.hire(HireRequest(**FORM))
-    pid = preview.person.id
     assert [(i.code, i.severity) for i in preview.issues] == [("person.outside_repo", "error")]
     with pytest.raises(HireRefused) as err:
-        hiring.hire(HireRequest(**FORM, id=pid, confirm=True))
+        hiring.hire(HireRequest(**FORM, confirm=True))
     assert err.value.code == "lint_failed"
-    assert not (outside / pid).exists()
+    assert not (outside / "lan").exists()
 
 
 def test_concurrent_confirms_commit_a_hire_once(git):
     hiring = Hiring(git)
     head = git.head()
-    pid = hiring.hire(HireRequest(**FORM)).person.id
-    other = hiring.hire(HireRequest(**FORM | {"handle": "kai-fan"})).person.id
+    hiring.hire(HireRequest(**FORM))
+    hiring.hire(HireRequest(**FORM | {"handle": "kai-fan"}))
     start = threading.Barrier(3)
 
-    def confirm(form, id):
+    def confirm(form):
         start.wait()
         try:
-            return hiring.hire(HireRequest(**form, id=id, confirm=True)).commit
+            return hiring.hire(HireRequest(**form, confirm=True)).commit
         except HireRefused as exc:
             return exc.code
 
     with ThreadPoolExecutor(3) as pool:
-        results = list(pool.map(confirm, [FORM, FORM, FORM | {"handle": "kai-fan"}], [pid, pid, other]))
+        results = list(pool.map(confirm, [FORM, FORM, FORM | {"handle": "kai-fan"}]))
     assert results[:2].count("lint_failed") == 1 and results[2] != "lint_failed"  # one of the same two lost
     commits = subprocess.run(["git", "-C", str(git.root), "log", "--format=%s", f"{head}..HEAD"],
                              capture_output=True, text=True).stdout.split("\n")[:-1]
     assert sorted(commits) == ["hire(@kai-fan): Lan, QA", "hire(@lan): Lan, QA"]
-    assert set(load_repo(git.root).people) >= {pid, other}
+    assert set(load_repo(git.root).people) >= {"lan", "kai-fan"}

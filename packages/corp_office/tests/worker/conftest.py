@@ -162,7 +162,7 @@ def registry(store):
 def make_job(tmp_path, pin, fake_llm):
     def make(flow: str = "flows/echo.yaml", **fields: Any) -> Job:
         run_id = fields.pop("run_id", "r1")
-        values = {"kind": "chat", "session_id": "s1", "run_id": run_id, "person_id": "minh",
+        values = {"kind": "chat", "session_id": "s1", "run_id": run_id, "person": "minh",
                   "pin": str(pin), "flow": flow, "log": str(tmp_path / "runs" / f"{run_id}.jsonl"),
                   "inputs": {"message": "hi"}, "llm_config": LLM_CONFIG, "env": fake_llm.env()}
         return Job(**(values | fields))

@@ -20,11 +20,6 @@ def test_clean_repo_has_no_issues(company):
     assert lint(load_repo(company)) == []
 
 
-def test_duplicate_handle_names_the_second_person(make_company):
-    root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", handle="minh")})
-    assert ("person.duplicate_handle", "people/ngocbh/person.yaml") in issues(root)
-
-
 def test_unknown_manager(make_company):
     root = make_company(**{"people/minh/person.yaml": person("minh", manager="ghost")})
     assert ("person.unknown_manager", "people/minh/person.yaml") in issues(root)
@@ -52,15 +47,14 @@ def test_missing_company_yaml_does_not_crash_lint(make_company):
 
 def test_ids_that_differ_only_by_case(company):
     # A ULID and its lowercase spelling are both valid ids. Built in memory: their
-    # directories can't both exist on a case-insensitive disk.
+    # files can't both exist on a case-insensitive disk.
     upper = "01J8Z3NDEKTSV4RRFFQ69G5FAV"
     lower = upper.lower()
     repo = load_repo(company)
-    twins = {pid: repo.people["minh"].model_copy(update={"id": pid, "handle": f"minh-{n}"})
-             for n, pid in enumerate((upper, lower))}
-    repo = dataclasses.replace(repo, people={**repo.people, **twins})
+    twins = {gid: repo.groups["eng"].model_copy(update={"id": gid}) for gid in (upper, lower)}
+    repo = dataclasses.replace(repo, groups={**repo.groups, **twins})
     found = [i for i in lint(repo) if i.code == "repo.id_case_clash"]
-    assert [(i.path, i.message) for i in found] == [(f"people/{lower}/person.yaml",
+    assert [(i.path, i.message) for i in found] == [(f"groups/{lower}.yaml",
                                                      f"{upper} and {lower} differ only by case")]
 
 

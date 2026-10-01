@@ -50,9 +50,9 @@ def base_files() -> dict[str, object]:
     return {
         "company.yaml": {"name": "test-corp", "ceo": "ngocbh",
                          "defaults": {"cost_cap_usd": 5, "idle_end": "2h", "max_turns": 500}},
-        "people/ngocbh/person.yaml": {"id": "ngocbh", "handle": "ngocbh", "name": "Hong Ngoc Bui",
+        "people/ngocbh/person.yaml": {"handle": "ngocbh", "name": "Hong Ngoc Bui",
                                       "kind": "human", "title": "CEO", "manager": None},
-        "people/minh/person.yaml": {"id": "minh", "handle": "minh", "name": "Minh", "kind": "agent",
+        "people/minh/person.yaml": {"handle": "minh", "name": "Minh", "kind": "agent",
                                     "title": "Engineer", "manager": "ngocbh", "groups": ["eng"],
                                     "main": "../../shared/flows/chat.yaml", "skills": ["code-review"],
                                     "harnesses": ["composer"],
@@ -80,9 +80,9 @@ def write_repo(root: Path, files: dict[str, object]) -> Path:
     return root
 
 
-def person(pid: str, **changes) -> dict:
-    """The base person file for ``pid`` with ``changes`` applied."""
-    return dict(base_files()[f"people/{pid}/person.yaml"], **changes)
+def person(folder: str, **changes) -> dict:
+    """The base person file in ``people/<folder>/`` with ``changes`` applied."""
+    return dict(base_files()[f"people/{folder}/person.yaml"], **changes)
 
 
 @pytest.fixture

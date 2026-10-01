@@ -94,7 +94,7 @@ class _Live:
     """A session with a live run, as the harness tracks it."""
 
     session_id: str
-    person_id: str
+    person: str
     run_id: str
     spec: RunSpec
     defaults: CompanyDefaults
@@ -188,7 +188,7 @@ class Harness:
 
     # --- starting ---------------------------------------------------------------------
 
-    def start_session(self, person_id: str, cwd: str, harness: str = "composer") -> Session:
+    def start_session(self, handle: str, cwd: str, harness: str = "composer") -> Session:
         """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
 
         A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
@@ -198,27 +198,27 @@ class Harness:
         self.git.commit_hand_edits()
         head = self.git.head()
         repo = load_repo(self.git.pin(head))
-        person = repo.people.get(person_id)
+        person = repo.people.get(handle)
         if person is None:
-            raise HarnessError(404, "not_found", f"no person {person_id}")
+            raise HarnessError(404, "not_found", f"no person {handle}")
         if person.kind != "agent" or not person.main:
-            raise HarnessError(422, "not_an_agent", f"{person_id} has no main flow to chat with")
+            raise HarnessError(422, "not_an_agent", f"{handle} has no main flow to chat with")
         if person.harnesses and "composer" not in person.harnesses:
-            raise HarnessError(422, "unsupported_harness", f"{person_id} doesn't use the composer harness")
+            raise HarnessError(422, "unsupported_harness", f"{handle} doesn't use the composer harness")
         if not Path(cwd).is_absolute():
             raise HarnessError(422, "invalid_body", f"cwd {cwd!r} is not an absolute path")
         cwd = os.path.realpath(cwd)  # clients match folders by their resolved path (/tmp is /private/tmp on macOS)
         session_id = new_id()
-        self._policy(person_id, person.harness_policy, cwd, session_id)  # refuse a bad folder before any write
+        self._policy(handle, person.harness_policy, cwd, session_id)  # refuse a bad folder before any write
         t = now()
         item = self.store.create_work_item(WorkItem(
             id=new_id(), title=f"Chat with {person.name} in {Path(cwd).name or cwd}", kind="task",
-            status="in_progress", requester=repo.company.ceo if repo.company else person_id, assignee=person_id,
+            status="in_progress", requester=repo.company.ceo if repo.company else handle, assignee=handle,
             created_at=t, updated_at=t))
         session = self.store.create_session(Session(
-            id=session_id, person=person_id, harness="composer", office=socket.gethostname(), cwd=cwd,
+            id=session_id, person=handle, harness="composer", office=socket.gethostname(), cwd=cwd,
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, created_at=t, updated_at=t))
-        self.store.touch_worked_folder(person_id, cwd)
+        self.store.touch_worked_folder(handle, cwd)
         try:
             spec = self.main_spec(session)
             self.start_run(session, spec)
@@ -242,22 +242,22 @@ class Harness:
         repo = load_repo(pin)
         person = repo.people[session.person]
         defaults = _defaults(repo)
-        workspace = WorkspaceTools(self._policy(person.id, person.harness_policy, session.cwd, session.id))
+        workspace = WorkspaceTools(self._policy(person.handle, person.harness_policy, session.cwd, session.id))
 
         def groups(s: Session, run_id: str, on_question: OnQuestion) -> dict[str, dict[str, Any]]:
             return {
-                "toolbox": dict(self.monitor.tools(person.id, run_id=run_id, session_id=s.id)),
-                "workspace": workspace_tool_functions(self.monitor.workspace(workspace, person.id, run_id,
+                "toolbox": dict(self.monitor.tools(person.handle, run_id=run_id, session_id=s.id)),
+                "workspace": workspace_tool_functions(self.monitor.workspace(workspace, person.handle, run_id,
                                                                              session_id=s.id)),
                 "company": company_tools(self.store, repo, s, run_id, on_question, carried=self.answers.carried),
             }
 
         return RunSpec(
-            flow=person_flow(person.id, person.main), groups=groups, chat=MAIN_CHAT, learnable=True,
+            flow=person_flow(person.handle, person.main), groups=groups, chat=MAIN_CHAT, learnable=True,
             memory={"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars),
                     "session": SessionMemorySpec(storage=str(self._run_dir(session.id) / "memory.sqlite"))},
-            stores={"profile": GitProfileStore(self.git, person.id)}, skills=list(person.skills),
-            names=(person.id, person.handle, person.name), workspace=workspace)
+            stores={"profile": GitProfileStore(self.git, person.handle)}, skills=list(person.skills),
+            names=(person.handle, person.name), workspace=workspace)
 
     def start_run(self, session: Session, spec: RunSpec) -> str:
         """Start a new run of ``spec`` for ``session`` (a stored session with no live run); return its run id.
@@ -335,7 +335,7 @@ class Harness:
             memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
                       if m.kind == "profile" and m.llm_config is None else m for name, m in live.spec.memory.items()}
             run_dir = self._run_dir(live.session_id)
-            job = Job(kind=kind, session_id=live.session_id, run_id=live.run_id, person_id=live.person_id,
+            job = Job(kind=kind, session_id=live.session_id, run_id=live.run_id, person=live.person,
                       pin=str(self.git.pin(session.repo_commit)), flow=live.spec.flow,
                       log=str(run_dir / "runs" / f"{live.run_id}.jsonl"), inputs=live.spec.inputs,
                       llm_config=provider.llm_config, learnable=live.spec.learnable, skills=live.spec.skills,
@@ -663,13 +663,13 @@ class Harness:
         if self._cap_item(session) is not None:
             return  # the manager already has one to act on
         repo = load_repo(self.git.pin(session.repo_commit))
-        person = repo.people.get(live.person_id)
+        person = repo.people.get(live.person)
         manager = (person.manager if person else None) or (repo.company.ceo if repo.company else None)
         cap = cost_cap(session, live.defaults)
         t = now()
         self.store.create_work_item(WorkItem(
-            id=new_id(), title=f"{_CAP_TITLE} of @{person.handle if person else live.person_id}'s session",
-            kind="task", status="open", requester=live.person_id, assignee=manager, parent_id=session.work_item_id,
+            id=new_id(), title=f"{_CAP_TITLE} of @{live.person}'s session",
+            kind="task", status="open", requester=live.person, assignee=manager, parent_id=session.work_item_id,
             summary=f"Session {session.id} reached its ${cap:.2f} cap (cost ${session.cost:.4f}). "
                     f"Its turns wait until the cap is raised.",
             created_at=t, updated_at=t))
@@ -863,7 +863,7 @@ class Harness:
     def _run_dir(self, session_id: str) -> Path:
         return self.office.paths.run_dir(session_id)
 
-    def _policy(self, person_id: str, policy: Any, cwd: str, session_id: str) -> SandboxPolicy:
+    def _policy(self, handle: str, policy: Any, cwd: str, session_id: str) -> SandboxPolicy:
         """The sandbox for ``cwd``; a missing or unsafe folder is refused before the run's tmp is made."""
         if not Path(cwd).is_dir():
             raise HarnessError(422, "invalid_body", f"cwd {cwd!r} is not a folder")

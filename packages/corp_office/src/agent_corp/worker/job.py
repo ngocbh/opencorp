@@ -59,7 +59,7 @@ class Job(BaseModel):
     kind: Literal["chat", "resume", "backward"]
     session_id: str
     run_id: str
-    person_id: str
+    person: str
     pin: str
     flow: str
     log: str
@@ -95,9 +95,9 @@ class Job(BaseModel):
         return value
 
 
-def person_flow(person_id: str, main: str) -> str:
+def person_flow(handle: str, main: str) -> str:
     """The pin-relative path of a person's main flow (``main`` is relative to the person directory)."""
-    return f"people/{person_id}/{main}"
+    return f"people/{handle}/{main}"
 
 
 def tool_spec(name: str, tool: BaseTool | Callable[..., Any]) -> ToolSpec:

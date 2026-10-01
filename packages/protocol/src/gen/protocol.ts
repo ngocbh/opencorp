@@ -1,13 +1,15 @@
 // Generated from schema/protocol.schema.json. Do not edit.
 
 /**
- * A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.
+ * A group or asset id: a ULID or a lowercase slug (ids name files, and macOS is case-insensitive). No '_', '/', '.', or '--'.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "Id".
  */
 export type Id = string;
 /**
+ * A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.
+ *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "Handle".
  */
@@ -56,7 +58,7 @@ export interface CompanyDefaults {
  */
 export interface Company {
   name: string;
-  ceo: Id;
+  ceo: Handle;
   hq?: string | null;
   defaults?: CompanyDefaults | null;
 }
@@ -92,12 +94,11 @@ export interface Routine {
  * via the `definition` "Person".
  */
 export interface Person {
-  id: Id;
   handle: Handle;
   name: string;
   kind: "human" | "agent";
   title: string;
-  manager: Id | null;
+  manager: Handle | null;
   groups?: Id[];
   home_office?: string | null;
   main?: string | null;
@@ -116,7 +117,7 @@ export interface Group {
   id: Id;
   name: string;
   parent?: Id | null;
-  head?: Id | null;
+  head?: Handle | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -130,6 +131,9 @@ export interface AssetTool {
  * via the `definition` "Grant".
  */
 export interface Grant {
+  /**
+   * A person's handle, or group:<group id>.
+   */
   who: string;
   /**
    * @minItems 1
@@ -161,13 +165,13 @@ export interface WorkItem {
   title: string;
   kind: "task" | "question";
   status: "open" | "in_progress" | "done" | "cancelled";
-  requester: Id;
-  assignee?: Id | null;
+  requester: Handle;
+  assignee?: Handle | null;
   parent_id?: Ulid | null;
   groups?: Id[];
   gate?: boolean;
-  resolved_by?: Id | null;
-  on_behalf_of?: Id | null;
+  resolved_by?: Handle | null;
+  on_behalf_of?: Handle | null;
   summary?: string | null;
   cost?: number;
   version?: number;
@@ -181,9 +185,9 @@ export interface WorkItem {
 export interface Comment {
   id: Ulid;
   work_item_id: Ulid;
-  author: Id;
+  author: Handle;
   body: string;
-  on_behalf_of?: Id | null;
+  on_behalf_of?: Handle | null;
   created_at: Timestamp;
 }
 /**
@@ -192,7 +196,7 @@ export interface Comment {
  */
 export interface Session {
   id: Ulid;
-  person: Id;
+  person: Handle;
   harness: "composer" | "codex" | "claude";
   office: string;
   cwd: string;
@@ -281,7 +285,7 @@ export interface Permission {
     [k: string]: unknown;
   };
   status: "pending" | "allowed" | "denied";
-  answered_by?: Id | null;
+  answered_by?: Handle | null;
   created_at: Timestamp;
 }
 /**
@@ -349,7 +353,7 @@ export interface Question {
    */
   node_id: string | null;
   source: "ask_user" | "human_input" | "ask_manager";
-  asker: Id;
+  asker: Handle;
   work_item_id?: Ulid | null;
   title?: string | null;
   question: string;
@@ -364,7 +368,7 @@ export interface Question {
    */
   answer?: unknown;
   answer_kind?: ("option" | "text" | "sent_back" | "interrupted") | null;
-  answered_by?: Id | null;
+  answered_by?: Handle | null;
   side_session_id?: Ulid | null;
   carried_from?: Ulid | null;
   created_at: Timestamp;
@@ -375,7 +379,7 @@ export interface Question {
  * via the `definition` "Profile".
  */
 export interface Profile {
-  person: Id;
+  person: Handle;
   text: string;
   version: GitId;
   over_budget?: boolean;
@@ -387,7 +391,7 @@ export interface Profile {
 export interface ProfileProposal {
   id: Ulid;
   session_id: Ulid;
-  person: Id;
+  person: Handle;
   base_version: GitId;
   text: string;
   diff: string;
@@ -431,7 +435,7 @@ export interface Feedback {
   id: Ulid;
   session_id: Ulid;
   run_id: string;
-  author: Id;
+  author: Handle;
   text: string;
   status: "queued" | "learning" | "applied" | "learning_failed";
   attempts?: number;
@@ -491,7 +495,7 @@ export interface LiveEvent {
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
-  person: Id;
+  person: Handle;
   cwd: string;
   harness?: "composer" | "codex" | "claude";
 }
@@ -534,8 +538,7 @@ export interface HireRequest {
   name: string;
   handle: Handle;
   title: string;
-  manager: Id;
-  id?: Ulid | null;
+  manager: Handle;
   confirm?: boolean;
 }
 /**

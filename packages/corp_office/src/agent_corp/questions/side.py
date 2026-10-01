@@ -44,13 +44,13 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
     defaults = (repo.company.defaults if repo.company else None) or CompanyDefaults()
     run_dir = harness.office.paths.run_dir(session.id)
     # Read-only and offline whatever the person's harness_policy says: a side chat explains, it doesn't act.
-    workspace = WorkspaceTools(harness._policy(person.id, None, session.cwd, session.id))
+    workspace = WorkspaceTools(harness._policy(person.handle, None, session.cwd, session.id))
     question = harness.store.get_question(session.question_id) if session.question_id else None
 
     def groups(s: Session, run_id: str, on_question: Any) -> dict[str, dict[str, Any]]:
-        calls = workspace_tool_functions(harness.monitor.workspace(workspace, person.id, run_id, session_id=s.id))
+        calls = workspace_tool_functions(harness.monitor.workspace(workspace, person.handle, run_id, session_id=s.id))
         return {"workspace": {name: calls[name] for name in READ_TOOLS},
-                "work_items": work_item_tools(harness.store, person.id, question)}
+                "work_items": work_item_tools(harness.store, person.handle, question)}
 
     # The seed is the first turn; composer summarizes history past the budget, so leave room for it.
     budget = defaults.side_seed_max_chars + SessionMemorySpec().history_budget_chars
@@ -58,8 +58,8 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
         flow=SIDE_CHAT_FLOW, groups=groups, chat=SIDE_CHAT, learnable=False,
         memory={"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars),
                 "session": SessionMemorySpec(storage=str(run_dir / "memory.sqlite"), history_budget_chars=budget)},
-        stores={"profile": GitProfileStore(harness.git, person.id)},
-        names=(person.id, person.handle, person.name), workspace=workspace)
+        stores={"profile": GitProfileStore(harness.git, person.handle)},
+        names=(person.handle, person.name), workspace=workspace)
 
 
 def write_seed(run_dir: Path, seed: str) -> None:
@@ -99,8 +99,8 @@ def _ensure_flow(harness: Harness, pin: Path) -> None:
         path.chmod(0o444)
 
 
-def work_item_tools(store: Store, person_id: str, question: Question | None) -> dict[str, Callable[..., str]]:
-    """Read-only work item tools for a side chat of ``person_id`` about ``question``.
+def work_item_tools(store: Store, handle: str, question: Question | None) -> dict[str, Callable[..., str]]:
+    """Read-only work item tools for a side chat of ``handle`` about ``question``.
 
     The person sees the question's work item and the work item of the session that
     asked, their parents, and their children, plus items they requested or are
@@ -118,7 +118,7 @@ def work_item_tools(store: Store, person_id: str, question: Question | None) -> 
 
     def visible(item: Any) -> bool:
         return (item.id in chain or item.parent_id in chain
-                or person_id in (item.requester, item.assignee))
+                or handle in (item.requester, item.assignee))
 
     def list_work_items() -> str:
         """List the work items you can see (yours, and those around this question), newest first, as JSON."""
