@@ -111,3 +111,14 @@ def start(launch: Launch, host: Host) -> None:
     if done.returncode != 0:
         _remove(launch, host)
         raise ServiceError(f"systemctl --user start failed: {done.stderr.strip()}")
+
+
+def uninstall(launch: Launch, host: Host) -> str | None:
+    """Disable and stop the unit and remove it; say what was done, or None if there was no unit."""
+    path = unit_path(launch, host)
+    if not path.exists() and not (path.parent / "default.target.wants" / unit_name(launch)).is_symlink():
+        return None
+    host.run(["systemctl", "--user", "disable", "--now", unit_name(launch)])
+    _remove(launch, host)
+    host.run(["systemctl", "--user", "daemon-reload"])
+    return f"systemd: disabled and stopped {unit_name(launch)} and removed {path}"

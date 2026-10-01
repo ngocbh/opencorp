@@ -1,12 +1,14 @@
 import json
 import os
 import socket
+import subprocess
 import time
 
+import psutil
 import pytest
 
-from agent_corp.install import service
-from agent_corp.install.launch import Host, ServiceError, launch
+from agent_corp.install import fallback, launchd, service, systemd
+from agent_corp.install.launch import Host, ServiceError, launch, office_answers
 from tests.daemon.conftest import short_dir  # noqa: F401
 
 from .conftest import Runner, make_host
@@ -206,3 +208,106 @@ def test_a_broken_record_counts_as_no_record(tmp_path, one):
     for text in ("not json", "[]", '{"mode": "cron"}'):
         (one.office / "install.json").write_text(text)
         assert service.recorded_mode(one) is None
+
+
+def installed_as(launch, mode):
+    launch.office.mkdir(parents=True, exist_ok=True)
+    (launch.office / "install.json").write_text(json.dumps({"mode": mode, "name": launch.name}))
+
+
+def test_uninstalling_a_launchd_office_boots_it_out_and_removes_its_plist(tmp_path, one):
+    installed_as(one, "launchd")
+    host = make_host(tmp_path, run := Runner())
+    plist = launchd.plist_path(one, host)
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(launchd.plist(one))
+    done = service.uninstall(one, host)
+    assert run.calls == [["launchctl", "bootout", f"gui/501/{launchd.label(one)}"]]
+    assert not plist.exists() and not (one.office / "install.json").exists()
+    assert done == [f"launchd: booted out {launchd.label(one)} and removed {plist}"]
+
+
+def test_uninstalling_a_launchd_office_that_isnt_loaded_still_removes_its_plist(tmp_path, one):
+    installed_as(one, "launchd")
+    host = make_host(tmp_path, Runner([(["launchctl", "bootout"], 3, "Boot-out failed: 3: No such process")]))
+    plist = launchd.plist_path(one, host)
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(launchd.plist(one))
+    service.uninstall(one, host)
+    assert not plist.exists()
+
+
+def test_uninstalling_a_systemd_office_disables_and_stops_it_and_removes_its_unit(tmp_path, one):
+    installed_as(one, "systemd")
+    host = make_host(tmp_path, run := Runner(), platform="linux")
+    unit = systemd.unit_path(one, host)
+    wants = unit.parent / "default.target.wants" / systemd.unit_name(one)
+    wants.parent.mkdir(parents=True)
+    unit.write_text(systemd.unit(one))
+    wants.symlink_to(unit)
+    done = service.uninstall(one, host)
+    assert run.calls == [["systemctl", "--user", "disable", "--now", systemd.unit_name(one)],
+                         ["systemctl", "--user", "daemon-reload"]]
+    assert not unit.exists() and not wants.is_symlink()
+    assert done == [f"systemd: disabled and stopped {systemd.unit_name(one)} and removed {unit}"]
+
+
+def test_uninstalling_a_tmux_office_kills_its_session(tmp_path, one):
+    installed_as(one, "tmux")
+    host = make_host(tmp_path, run := Runner(), which=lambda name: f"/usr/bin/{name}")
+    done = service.uninstall(one, host)
+    session = fallback.session(one)
+    assert run.calls == [["tmux", "has-session", "-t", f"={session}"], ["tmux", "kill-session", "-t", f"={session}"]]
+    assert done == [f"tmux: killed the session {session}"]
+
+
+def test_a_tmux_office_whose_session_is_gone_has_nothing_to_kill(tmp_path, one):
+    installed_as(one, "tmux")
+    run = Runner([(["tmux", "has-session"], 1, "can't find session")])
+    assert service.uninstall(one, make_host(tmp_path, run, which=lambda name: f"/usr/bin/{name}")) == []
+    assert run.calls == [["tmux", "has-session", "-t", f"={fallback.session(one)}"]]
+
+
+def test_uninstalling_removes_another_managers_leftover_file_too(tmp_path, one):
+    # `ac start` records "background" when launchd won't start, but the plist stays behind.
+    installed_as(one, "background")
+    host = make_host(tmp_path, run := Runner())
+    plist = launchd.plist_path(one, host)
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(launchd.plist(one))
+    service.uninstall(one, host)
+    assert not plist.exists() and run.calls[0][:2] == ["launchctl", "bootout"]
+
+
+def test_uninstalling_nothing_runs_nothing(tmp_path, one):
+    run = Runner()
+    assert service.uninstall(one, make_host(tmp_path, run)) == []
+    assert run.calls == []
+
+
+def test_uninstalling_a_background_office_stops_its_daemon(short_dir):
+    from .test_onboard import company
+
+    home = short_dir / "home"
+    company(home)
+    run = launch(home)
+    host = make_host(short_dir, Runner(), popen=subprocess.Popen, answers=office_answers)
+    service.install(run, host, "background")
+    service.wait(run, Host())
+    pid = int((run.office / "office.pid").read_text())
+    done = service.uninstall(run, host)
+    assert done == [f"background: stopped the office (pid {pid})"]
+    assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    assert not office_answers(run.socket)
+    assert service.uninstall(run, host) == []
+
+
+def test_a_pidfile_naming_some_other_process_is_left_alone(tmp_path, one):
+    installed_as(one, "background")
+    (one.office / "office.pid").write_text(f"{os.getpid()}\n")
+    assert service.uninstall(one, make_host(tmp_path, Runner())) == []
+
+
+def test_an_office_that_still_answers_after_uninstalling_is_an_error(tmp_path, one):
+    with pytest.raises(ServiceError, match="still answers"):
+        service.uninstall(one, make_host(tmp_path, Runner(), answers=lambda socket: True))

@@ -1,9 +1,13 @@
 """Running the office without a service manager: in a detached tmux session, or as a detached process."""
 
+import contextlib
 import os
 import shlex
+import signal
 import subprocess
 import warnings
+
+import psutil
 
 from agent_corp.daemon.main import make_office_dir
 from agent_corp.install.launch import Host, Launch, ServiceError
@@ -54,3 +58,37 @@ def start_background(launch: Launch, host: Host) -> None:
                        stdout=log, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True)
         except OSError as exc:
             raise ServiceError(f"can't start {launch.argv[0]}: {exc}") from exc
+
+
+def stop_tmux(launch: Launch, host: Host) -> str | None:
+    """Kill the office's tmux session; say what was done, or None if there was no session."""
+    name = session(launch)
+    if host.run(["tmux", "has-session", "-t", f"={name}"]).returncode != 0:
+        return None
+    host.run(["tmux", "kill-session", "-t", f"={name}"])
+    return f"tmux: killed the session {name}"
+
+
+def daemon(launch: Launch) -> psutil.Process | None:
+    """The process in the office's pidfile, if it is this office's daemon (and not a reused pid)."""
+    try:
+        proc = psutil.Process(int((launch.office / "office.pid").read_text().strip()))
+        # argv[0] is left out: the venv's python can show up as the interpreter it links to.
+        return proc if proc.cmdline()[1:] == list(launch.argv[1:]) else None
+    except (OSError, ValueError, psutil.Error):
+        return None
+
+
+def stop_process(launch: Launch, timeout: float = 15.0) -> str | None:
+    """Stop the office's daemon with SIGTERM, then SIGKILL after ``timeout`` seconds; None if none runs."""
+    proc = daemon(launch)
+    if proc is None:
+        return None
+    with contextlib.suppress(psutil.Error):
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout)
+        except psutil.TimeoutExpired:
+            proc.kill()
+            proc.wait(5)
+    return f"stopped the office (pid {proc.pid})"

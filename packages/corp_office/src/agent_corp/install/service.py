@@ -138,3 +138,30 @@ def wait(launch: Launch, host: Host, timeout: float = 20.0) -> None:
         host.sleep(min(0.1, left))
     raise ServiceError(f"the office did not answer on {launch.socket} within {timeout:g}s;"
                        f" the end of {launch.log}:\n{_tail(launch.log)}")
+
+
+def uninstall(launch: Launch, host: Host, timeout: float = 15.0) -> list[str]:
+    """Stop the office and remove its service, whatever runs it; return what was done, one line each.
+
+    Every manager's file is removed, not just the recorded one's: ``start`` falls back to a
+    background process and records that, leaving the old plist or unit behind. A daemon still
+    holding the pidfile afterwards (one in the background, or started by hand) gets SIGTERM,
+    then SIGKILL after ``timeout`` seconds. The record goes too. Running it again does nothing.
+
+    Raises:
+        ServiceError: the office still answers afterwards.
+    """
+    recorded = recorded_mode(launch)
+    done = [launchd.uninstall(launch, host), systemd.uninstall(launch, host)]
+    if recorded == "tmux" or host.which("tmux"):
+        done.append(fallback.stop_tmux(launch, host))
+    if stopped := fallback.stop_process(launch, timeout):
+        done.append(f"{recorded or 'started by hand'}: {stopped}")
+    (launch.office / "install.json").unlink(missing_ok=True)
+    deadline = host.clock() + 5.0
+    while host.answers(launch.socket, timeout=1.0):
+        if host.clock() >= deadline:
+            raise ServiceError(f"the office still answers on {launch.socket} (pid {pid(launch)}); stop it and"
+                               " try again")
+        host.sleep(0.1)
+    return [line for line in done if line]

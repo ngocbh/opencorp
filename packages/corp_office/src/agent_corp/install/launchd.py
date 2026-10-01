@@ -94,3 +94,14 @@ def start(launch: Launch, host: Host) -> None:
         host.run(["launchctl", "bootout", service])
         plist_path(launch, host).unlink(missing_ok=True)
         raise ServiceError(f"launchctl kickstart failed: {done.stderr.strip()}")
+
+
+def uninstall(launch: Launch, host: Host) -> str | None:
+    """Boot the launch agent out and remove its plist; say what was done, or None if there was no plist."""
+    path = plist_path(launch, host)
+    if not path.exists():
+        return None
+    # Not loaded (exit 3) or no launchctl at all both leave only the file to remove.
+    host.run(["launchctl", "bootout", f"gui/{host.uid}/{label(launch)}"])
+    path.unlink(missing_ok=True)
+    return f"launchd: booted out {label(launch)} and removed {path}"
