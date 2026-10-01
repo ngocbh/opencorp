@@ -5,7 +5,6 @@ import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
 
 const agent = (handle: string, title: string): Person => ({
-  id: handle,
   handle,
   name: handle[0].toUpperCase() + handle.slice(1),
   kind: "agent",

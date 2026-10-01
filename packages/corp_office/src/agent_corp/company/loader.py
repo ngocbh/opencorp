@@ -12,7 +12,10 @@ from agent_corp.protocol.models import Asset, Company, Group, Person
 
 @dataclass(frozen=True)
 class CompanyRepo:
-    """One company repo checkout, parsed. Files that fail to parse are in ``errors``."""
+    """One company repo checkout, parsed: people by handle, groups and assets by id.
+
+    Files that fail to parse are in ``errors``.
+    """
 
     root: Path
     company: Company | None
@@ -42,11 +45,11 @@ def load_repo(root: Path) -> CompanyRepo:
     for rel in sorted(p.relative_to(root) for p in root.glob("people/*/person.yaml")):
         if (person := _parse(root, rel, Person, errors)) is None:
             continue
-        if person.id != rel.parent.name:
+        if person.handle != rel.parent.name:
             errors.append(RepoIssue(str(rel), "person.dir_mismatch",
-                                    f"id {person.id!r} must match its directory {rel.parent.name!r}"))
+                                    f"handle {person.handle!r} must match its directory {rel.parent.name!r}"))
         else:
-            people[person.id] = person
+            people[person.handle] = person
     groups: dict[str, Group] = {}
     assets: dict[str, Asset] = {}
     for pattern, model, into in (("groups/*.yaml", Group, groups), ("assets/*.yaml", Asset, assets)):

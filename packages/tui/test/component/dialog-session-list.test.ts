@@ -6,13 +6,13 @@ import { Locale } from "../../src/util/locale"
 const now = Date.parse("2026-09-30T12:00:00Z")
 const ago = (ms: number) => new Date(now - ms).toISOString()
 const people: Person[] = [
-  { id: "p1", handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: null },
+  { handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: null },
 ]
 
 function session(id: string, fields: Partial<Session> = {}): Session {
   return {
     id,
-    person: "p1",
+    person: "minh",
     harness: "composer",
     office: "laptop",
     cwd: "/tmp/proj",

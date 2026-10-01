@@ -4,7 +4,7 @@
   "tools": { "submit_job": {}, "read_logs": {}, "cancel_job": {}, "delete_data": { "risk": "gated" } },
   "grants": [
     { "who": "group:infra", "can": ["submit_job", "read_logs"], "where": { "partition": ["gpu-small"] } },
-    { "who": "01J9Z3K7QX8R2M4T6V0W1Y3A5C", "can": ["admin"] }
+    { "who": "minh", "can": ["admin"] }
   ],
   "secrets": ["cluster_a_ssh_key"]
 }

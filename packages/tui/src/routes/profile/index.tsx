@@ -41,7 +41,7 @@ export function useProfileCommands() {
           const data = route.data
           if (data.type === "profile") return
           const from = data.type === "session" ? data.sessionID : undefined
-          const person = from ? office.state.sessions.find((s) => s.id === from)?.person : local.person.current()?.id
+          const person = from ? office.state.sessions.find((s) => s.id === from)?.person : local.person.current()?.handle
           if (!person) return toast.show({ variant: "warning", message: "Pick a person first", duration: 3000 })
           route.navigate({ type: "profile", person, from })
         },
@@ -69,7 +69,6 @@ export function Profile() {
   const [proposalsError, setProposalsError] = createSignal<string>()
   const [chatError, setChatError] = createSignal<string>()
   const proposal = createMemo(() => openProposal(proposals(), person))
-  const handle = () => office.state.people.find((p) => p.id === person)?.handle ?? person
 
   // A re-read can answer after newer events: the profile read is dropped if a newer version
   // arrived meanwhile, and proposals seen from events while a read is out win over its list.
@@ -257,7 +256,7 @@ export function Profile() {
     <box flexGrow={1} minHeight={0} paddingLeft={2} paddingRight={2} paddingTop={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between" flexShrink={0}>
         <text fg={theme.text}>
-          <span style={{ bold: true }}>@{handle()} · profile</span>
+          <span style={{ bold: true }}>@{person} · profile</span>
           <Show when={profile()}>
             {(p) => <span style={{ fg: theme.textMuted }}> {shortVersion(p().version)}</span>}
           </Show>

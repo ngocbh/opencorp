@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test"
 import { formatMessage, formatPart, formatTranscript } from "../../src/util/transcript"
 
 const people = [
-  { id: "minh", handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: "ngocbh" },
+  { handle: "minh", name: "Minh", kind: "agent", title: "Software engineer", manager: "ngocbh" },
 ] as Person[]
 const session = {
   id: "S1",

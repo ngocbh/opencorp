@@ -8,17 +8,14 @@ import subprocess
 import threading
 from pathlib import Path
 
-import yaml
-
 _IDENTITY = ["-c", "user.name=agent-corp office", "-c", "user.email=office@agent-corp.local"]
 # Repo-local config and hooks still apply after the env is cleaned; never sign or run hooks.
 _NO_HOOKS = ["-c", "commit.gpgsign=false", "-c", f"core.hooksPath={os.devnull}"]
 _PIN_MARKER = ".agent-corp-pin"
 _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
-# `:(glob)` makes `*` match one path segment, so only people/<id>/profile.md matches.
+# `:(glob)` makes `*` match one path segment, so only people/<handle>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"
 _BLOB_ID = re.compile(r"[0-9a-f]{40}")
-_HANDLE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?")  # the protocol's Handle
 
 
 class CompanyGitError(Exception):
@@ -169,19 +166,7 @@ class CompanyGit:
                         paths.add(fields[i])
                     i += 1
             for rel in sorted(paths):
-                self.commit([rel], f"profile(@{self.handle(rel)}): hand edit")
+                # The directory is the handle; one line, so a hand-made name can't add a trailer.
+                handle = " ".join(Path(rel).parent.name.split())
+                self.commit([rel], f"profile(@{handle}): hand edit")
             return sorted(paths)
-
-    def handle(self, profile_rel: str) -> str:
-        """The handle of the person who owns ``people/<id>/profile.md``, else the id.
-
-        A value that isn't a protocol handle falls back to the id too: the handle goes into
-        commit messages, where a newline could forge a ``Commit-Id`` trailer.
-        """
-        pid = Path(profile_rel).parent.name
-        try:
-            data = yaml.safe_load((self.root / "people" / pid / "person.yaml").read_text(encoding="utf-8"))
-            handle = data["handle"]
-        except (OSError, UnicodeDecodeError, yaml.YAMLError, KeyError, TypeError):
-            return pid
-        return handle if isinstance(handle, str) and _HANDLE.fullmatch(handle) else pid

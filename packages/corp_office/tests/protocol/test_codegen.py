@@ -43,12 +43,13 @@ def test_full_dump_validates(path):
 
 def test_ids_and_enums_are_plain_str():
     person = models.Person.model_validate(json.loads((FIXTURES / "Person.json").read_text()))
-    assert type(person.id) is str and type(person.manager) is str
+    assert type(person.handle) is str and type(person.manager) is str and type(person.groups[0]) is str
     assert type(person.kind) is str and person.kind == "agent"
-    assert {person.id: 1}[person.id] == 1
+    assert {person.handle: 1}[person.handle] == 1
 
 
-@pytest.mark.parametrize("change", [{"id": "a_b"}, {"manager": "a--b"}, {"colour": "blue"}])
+@pytest.mark.parametrize("change", [{"handle": "a_b"}, {"manager": "Minh"}, {"groups": ["a--b"]},
+                                    {"id": "minh"}, {"colour": "blue"}])
 def test_generated_models_keep_constraints(change):
     data = json.loads((FIXTURES / "Person.json").read_text())
     with pytest.raises(pydantic.ValidationError):

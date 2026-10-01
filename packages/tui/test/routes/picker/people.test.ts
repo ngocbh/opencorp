@@ -3,8 +3,13 @@ import type { Person, Session } from "@agent-corp/protocol"
 import path from "node:path"
 import { HANDLE, blocks, confirmRequest, hireRequest, pickerRows } from "../../../src/routes/picker/people"
 
-const person = (id: string, kind: Person["kind"] = "agent"): Person =>
-  ({ id, handle: id, name: id.toUpperCase(), kind, title: "T", manager: null }) as Person
+const person = (handle: string, kind: Person["kind"] = "agent"): Person => ({
+  handle,
+  name: handle.toUpperCase(),
+  kind,
+  title: "T",
+  manager: null,
+})
 const main = (p: string, kind: Session["kind"] = "main") => ({ person: p, kind }) as Session
 const people = [person("zed"), person("minh"), person("lan"), person("ava"), person("ngocbh", "human")]
 
@@ -14,7 +19,7 @@ test("folder people first, then recent main sessions, then everyone else; each a
     folderPeople: [person("lan")],
     sessions: [main("minh"), main("lan"), main("zed", "side"), main("ngocbh"), main("gone")],
   })
-  expect(rows.map((r) => `${r.group}:${r.person.id}`)).toEqual([
+  expect(rows.map((r) => `${r.group}:${r.person.handle}`)).toEqual([
     "This folder:lan",
     "Recent:minh",
     "Everyone:ava",
@@ -28,7 +33,7 @@ test("an empty office offers nobody", () => {
 
 const form = { name: " Lan ", handle: "@lan", title: "QA", manager: "@ngocbh" }
 
-test("the form becomes a preview request; handles and ids both name the manager", () => {
+test("the form becomes a preview request; the manager is named by handle, with or without the @", () => {
   expect(hireRequest(form, people)).toEqual({
     request: { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh", confirm: false },
   })
@@ -49,10 +54,9 @@ test("errors block a hire, warnings don't; severity defaults to error", () => {
   expect(blocks([{ path: "p", code: "person.duplicate_handle", message: "m" }])).toBe(true)
 })
 
-test("confirm resends the previewed fields with the preview's id", () => {
+test("confirm resends the previewed fields, with no id", () => {
   const previewed = { name: "Lan", handle: "lan", title: "QA", manager: "ngocbh", confirm: false }
-  const preview = { person: { ...person("lan"), id: "01JA1H0000000000000000000A" }, diff: "", issues: [], commit: null }
-  expect(confirmRequest(previewed, preview)).toEqual({ ...previewed, id: "01JA1H0000000000000000000A", confirm: true })
+  expect(confirmRequest(previewed)).toEqual({ ...previewed, confirm: true })
 })
 
 test("HANDLE matches the protocol schema's Handle pattern", async () => {

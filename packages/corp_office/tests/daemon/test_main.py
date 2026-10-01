@@ -126,7 +126,7 @@ def test_a_symlinked_pidfile_is_refused_and_its_target_untouched(tmp_path):
 async def test_served_over_a_real_socket(office, short_dir):
     async with served(office, short_dir / "o.sock") as c:
         r = await c.get("/people")
-        assert r.status_code == 200 and [p["id"] for p in r.json()] == ["minh", "ngocbh"]
+        assert r.status_code == 200 and [p["handle"] for p in r.json()] == ["minh", "ngocbh"]
         assert stat.S_IMODE(os.stat(short_dir / "o.sock").st_mode) == 0o600
 
 

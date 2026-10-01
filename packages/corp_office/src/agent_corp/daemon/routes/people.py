@@ -24,17 +24,17 @@ async def folder_people(request: Request) -> JSONResponse:
 
     def last_worked() -> list[tuple[str, str]]:
         found = []
-        for pid in repo.people:
+        for handle in repo.people:
             # -1 is SQLite's "no limit": the folder may be far down a busy person's list.
-            for folder in office.store.worked_folders(pid, limit=-1):
+            for folder in office.store.worked_folders(handle, limit=-1):
                 if folder.cwd == cwd:
-                    found.append((folder.last_at, pid))
+                    found.append((folder.last_at, handle))
         return found
 
     found = await call(last_worked)
     found.sort(key=lambda f: f[1])
-    found.sort(key=lambda f: f[0], reverse=True)  # stable: ties stay in id order
-    return ok([repo.people[pid] for _, pid in found])
+    found.sort(key=lambda f: f[0], reverse=True)  # stable: ties stay in handle order
+    return ok([repo.people[handle] for _, handle in found])
 
 
 async def hire(request: Request) -> JSONResponse:

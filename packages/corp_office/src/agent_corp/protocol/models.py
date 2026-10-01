@@ -10,9 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field
 type Id = Annotated[
     str,
     Field(
-        description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
+        description="A group or asset id: a ULID or a lowercase slug (ids name files, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
         max_length=64,
         pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+    ),
+]
+
+
+type Handle = Annotated[
+    str,
+    Field(
+        description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+        pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
     ),
 ]
 
@@ -46,9 +55,8 @@ class Company(BaseModel):
     ceo: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     hq: str | None = None
@@ -84,19 +92,17 @@ class Person(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
     )
-    id: Annotated[
+    handle: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
-    handle: Annotated[str, Field(pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$')]
     name: Annotated[str, Field(min_length=1)]
     kind: Literal['human', 'agent']
     title: str
-    manager: Id | None
+    manager: Handle | None
     groups: list[Id] = []
     home_office: str | None = None
     main: str | None = None
@@ -115,14 +121,14 @@ class Group(BaseModel):
     id: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
+            description="A group or asset id: a ULID or a lowercase slug (ids name files, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
             pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
     ]
     name: Annotated[str, Field(min_length=1)]
     parent: Id | None = None
-    head: Id | None = None
+    head: Handle | None = None
 
 
 class AssetTool(BaseModel):
@@ -138,7 +144,10 @@ class Grant(BaseModel):
     )
     who: Annotated[
         str,
-        Field(pattern='^(group:)?(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$'),
+        Field(
+            description="A person's handle, or group:<group id>.",
+            pattern='^(?:group:(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)|[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?)$',
+        ),
     ]
     can: Annotated[list[str], Field(min_length=1)]
     where: dict[str, list[Any]] | None = None
@@ -151,7 +160,7 @@ class Asset(BaseModel):
     id: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
+            description="A group or asset id: a ULID or a lowercase slug (ids name files, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
             max_length=64,
             pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
         ),
@@ -173,17 +182,16 @@ class WorkItem(BaseModel):
     requester: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
-    assignee: Id | None = None
+    assignee: Handle | None = None
     parent_id: Ulid | None = None
     groups: list[Id] = []
     gate: bool = False
-    resolved_by: Id | None = None
-    on_behalf_of: Id | None = None
+    resolved_by: Handle | None = None
+    on_behalf_of: Handle | None = None
     summary: str | None = None
     cost: Annotated[float, Field(ge=0.0)] = 0
     version: Annotated[int, Field(ge=1)] = 1
@@ -212,13 +220,12 @@ class Comment(BaseModel):
     author: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     body: str
-    on_behalf_of: Id | None = None
+    on_behalf_of: Handle | None = None
     created_at: Annotated[
         str,
         Field(
@@ -241,9 +248,8 @@ class Session(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     harness: Literal['composer', 'codex', 'claude']
@@ -335,7 +341,7 @@ class Permission(BaseModel):
     tool: str
     input: dict[str, Any]
     status: Literal['pending', 'allowed', 'denied']
-    answered_by: Id | None = None
+    answered_by: Handle | None = None
     created_at: Annotated[
         str,
         Field(
@@ -397,9 +403,8 @@ class Question(BaseModel):
     asker: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     work_item_id: Ulid | None = None
@@ -418,7 +423,7 @@ class Question(BaseModel):
         ),
     ] = None
     answer_kind: Literal['option', 'text', 'sent_back', 'interrupted'] | None = None
-    answered_by: Id | None = None
+    answered_by: Handle | None = None
     side_session_id: Ulid | None = None
     carried_from: Ulid | None = None
     created_at: Annotated[
@@ -444,9 +449,8 @@ class Profile(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     text: str
@@ -465,9 +469,8 @@ class ProfileProposal(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     base_version: Annotated[
@@ -529,9 +532,8 @@ class Feedback(BaseModel):
     author: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     text: str
@@ -590,9 +592,8 @@ class CreateSessionRequest(BaseModel):
     person: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
     cwd: str
@@ -635,17 +636,21 @@ class HireRequest(BaseModel):
         extra='forbid',
     )
     name: Annotated[str, Field(min_length=1)]
-    handle: Annotated[str, Field(pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$')]
+    handle: Annotated[
+        str,
+        Field(
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
     title: str
     manager: Annotated[
         str,
         Field(
-            description="A person, group, or asset id: a ULID or a lowercase slug (ids name directories, and macOS is case-insensitive). No '_', '/', '.', or '--'.",
-            max_length=64,
-            pattern='^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$',
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
-    id: Ulid | None = None
     confirm: bool = False
 
 

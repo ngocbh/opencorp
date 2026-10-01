@@ -136,7 +136,7 @@ def test_a_key_in_llm_config_reaches_the_model_and_nothing_else(tmp_path):
     tools = {"toolbox": {"echo": echo}}
     with KeyedLLM() as fake, Store(tmp_path / "office" / "store.sqlite") as store:
         fake.script({"tool_calls": [{"name": "echo", "arguments": {"text": "ping"}}]}, {"content": "done"})
-        job = Job(kind="chat", session_id="s1", run_id="r1", person_id="minh", pin=str(pin),
+        job = Job(kind="chat", session_id="s1", run_id="r1", person="minh", pin=str(pin),
                   flow="flows/keyed.yaml", log=str(log), inputs={"message": "hi"},
                   llm_config={**LLM_CONFIG, "api_key": SENTINEL}, groups=group_specs(tools),
                   memory={"session": SessionMemorySpec(storage=str(session_dir / "memory.sqlite"))},

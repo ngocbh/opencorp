@@ -1,4 +1,4 @@
-import type { HireRequest, HireResponse, Person, RepoIssue, Session } from "@agent-corp/protocol"
+import type { HireRequest, Person, RepoIssue, Session } from "@agent-corp/protocol"
 
 export type PickerGroup = "This folder" | "Recent" | "Everyone"
 
@@ -11,16 +11,16 @@ export function pickerRows(input: {
   folderPeople: readonly Person[]
   sessions: readonly Session[]
 }): { person: Person; group: PickerGroup }[] {
-  const agents = new Map(input.people.filter((p) => p.kind === "agent").map((p) => [p.id, p]))
+  const agents = new Map(input.people.filter((p) => p.kind === "agent").map((p) => [p.handle, p]))
   const rows: { person: Person; group: PickerGroup }[] = []
-  const add = (id: string, group: PickerGroup) => {
-    const person = agents.get(id)
-    if (!person || rows.some((r) => r.person.id === id)) return
+  const add = (handle: string, group: PickerGroup) => {
+    const person = agents.get(handle)
+    if (!person || rows.some((r) => r.person.handle === handle)) return
     rows.push({ person, group })
   }
-  for (const p of input.folderPeople) add(p.id, "This folder")
+  for (const p of input.folderPeople) add(p.handle, "This folder")
   for (const s of input.sessions) if (s.kind === "main") add(s.person, "Recent")
-  for (const p of [...agents.values()].sort((a, b) => a.handle.localeCompare(b.handle))) add(p.id, "Everyone")
+  for (const p of [...agents.values()].sort((a, b) => a.handle.localeCompare(b.handle))) add(p.handle, "Everyone")
   return rows
 }
 
@@ -29,7 +29,7 @@ export type HireForm = { name: string; handle: string; title: string; manager: s
 // The protocol's `Handle` pattern; a test keeps it equal to the schema's.
 export const HANDLE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
 
-/** The preview request for `form`, or what to fix first. `manager` is a handle or an id, `@` optional. */
+/** The preview request for `form`, or what to fix first. `manager` is a handle, `@` optional. */
 export function hireRequest(form: HireForm, people: readonly Person[]): { request: HireRequest } | { error: string } {
   const name = form.name.trim()
   const handle = form.handle.trim().replace(/^@/, "")
@@ -39,17 +39,12 @@ export function hireRequest(form: HireForm, people: readonly Person[]): { reques
   if (!HANDLE.test(handle)) return { error: "Handle: lowercase letters, digits and dashes, up to 32" }
   if (!title) return { error: "Title is required" }
   if (!who) return { error: "Manager is required" }
-  const manager = people.find((p) => p.id === who || p.handle === who)
-  if (!manager) return { error: `No such person: @${who}` }
-  return { request: { name, handle, title, manager: manager.id, confirm: false } }
+  if (!people.some((p) => p.handle === who)) return { error: `No such person: @${who}` }
+  return { request: { name, handle, title, manager: who, confirm: false } }
 }
 
 /** Whether lint found an error that blocks the hire; warnings don't. */
 export const blocks = (issues: readonly RepoIssue[]) => issues.some((i) => (i.severity ?? "error") === "error")
 
-/** The confirm request: the previewed fields again, with the preview's person id. */
-export const confirmRequest = (previewed: HireRequest, preview: HireResponse): HireRequest => ({
-  ...previewed,
-  id: preview.person.id,
-  confirm: true,
-})
+/** The confirm request: the previewed fields again; the office finds the preview by handle. */
+export const confirmRequest = (previewed: HireRequest): HireRequest => ({ ...previewed, confirm: true })

@@ -90,7 +90,6 @@ export const run: CommandRun = async (argv) => {
     const { session, run, guessed } = await target(client, positionals[0])
     const list = turns(await client.sessions.messages(session.id))
     if (n !== undefined && n > list.length) throw new Usage(`there is no turn ${n}; the session has ${list.length}`)
-    const handle = (await client.people.list()).find((p) => p.id === session.person)?.handle ?? session.person
     const prefix = n === undefined ? "" : aboutTurn(list[n - 1])
     const draft =
       values.message === undefined
@@ -98,7 +97,7 @@ export const run: CommandRun = async (argv) => {
             [
               prefix,
               "",
-              `# Feedback for @${handle} on session ${session.id}, ${run ? `run ${run}` : "its latest run"}.`,
+              `# Feedback for @${session.person} on session ${session.id}, ${run ? `run ${run}` : "its latest run"}.`,
               "# It is learned into their profile. Lines starting with # are dropped; an empty message sends nothing.",
               "#",
               ...list.map((t) => `# Turn ${t.n}: ${t.text}`),
@@ -117,7 +116,7 @@ export const run: CommandRun = async (argv) => {
         const refused = guessed && e instanceof OfficeError && e.code === "invalid_body"
         throw refused ? new Error(`no session or run ${run}`) : e
       })
-    console.log(`Feedback ${f.id} is queued for @${handle} (session ${session.id}, run ${f.run_id})`)
+    console.log(`Feedback ${f.id} is queued for @${session.person} (session ${session.id}, run ${f.run_id})`)
     return 0
   } catch (e) {
     if (e instanceof OfficeUnavailable) return officeNotRunning()

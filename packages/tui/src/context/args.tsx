@@ -8,7 +8,7 @@ export interface Args {
   continue?: boolean
   /** Open this session. */
   sessionID?: string
-  /** The person to talk to, by id or handle. */
+  /** The person to talk to, by handle (with or without the @). */
   person?: string
 }
 

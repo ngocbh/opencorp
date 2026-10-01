@@ -16,10 +16,10 @@ const USAGE = "Usage: ac profile edit PERSON"
 /** A usage error: printed with the usage line, exit 2. */
 class Usage extends Error {}
 
-/** The person `name` names: an id or a handle, with or without the `@`. */
+/** The person `name` names: a handle, with or without the `@`. */
 async function person(client: OfficeClient, name: string): Promise<Person> {
   const bare = name.replace(/^@/, "")
-  const found = (await client.people.list()).find((p) => p.id === bare || p.handle === bare)
+  const found = (await client.people.list()).find((p) => p.handle === bare)
   if (!found) throw new Error(`no person ${name}`)
   return found
 }
@@ -52,7 +52,7 @@ export const run: CommandRun = async (argv) => {
     if (!editor) throw new Usage("set $EDITOR (or $VISUAL)")
     const client = createOfficeClient({ socket: defaultSocket() })
     const who = await person(client, name)
-    let base = await client.profiles.get(who.id)
+    let base = await client.profiles.get(who.handle)
     // mkdtemp makes the dir private (0700), so other users can't read or swap the file.
     dir = mkdtempSync(path.join(os.tmpdir(), "ac-profile-"))
     const file = path.join(dir, "profile.md")
@@ -76,12 +76,12 @@ export const run: CommandRun = async (argv) => {
       }
       unsaved = text
       try {
-        const saved = await client.profiles.put(who.id, { text, base_version: base.version })
+        const saved = await client.profiles.put(who.handle, { text, base_version: base.version })
         unsaved = undefined
         return reportSaved(who, saved)
       } catch (e) {
         if (!(e instanceof VersionConflictError)) throw e
-        base = await client.profiles.get(who.id)
+        base = await client.profiles.get(who.handle)
         // The race was with the same edit (a retry, or the same change made elsewhere): it is in.
         if (base.text === text) {
           unsaved = undefined

@@ -34,7 +34,7 @@ def test_the_owner_defaults_come_from_the_login():
 
 def test_lint_errors_stop_onboarding_before_anything_runs(tmp_path):
     paths = OfficePaths(tmp_path / "home")
-    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("me", "me", "Me"))
+    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("me", "Me"))
     (paths.company / "company.yaml").write_text("name: Acme\nceo: nobody\n")
     run = Runner()
     with pytest.raises(OnboardError, match="company.unknown_ceo"):
@@ -116,7 +116,7 @@ def test_an_existing_home_others_can_read_is_made_private(tmp_path, monkeypatch)
 
 def test_no_hire_leaves_the_company_without_an_agent(tmp_path):
     home = tmp_path / "home"
-    write_company(home / "company", home / "worktrees", company="Acme", owner=Owner("me", "me", "Me"))
+    write_company(home / "company", home / "worktrees", company="Acme", owner=Owner("me", "Me"))
     ask = Script()
     # An office that already answers (started by hand): nothing is installed, and no hire is posted.
     onboard(home, ask, stdin=io.StringIO('{"llm_config": {"provider": "openai"}}'),
@@ -141,7 +141,8 @@ def test_a_bad_agent_handle_is_asked_again(tmp_path):
 
     def office(request):
         bodies.append(json.loads(request.content))
-        return httpx.Response(200, json={"issues": [], "person": {"id": "lan"}})
+        person = {"handle": "lan-dev", "name": "Lan", "kind": "agent", "title": "Engineer", "manager": "me"}
+        return httpx.Response(200, json={"person": person, "diff": "", "issues": [], "commit": None})
 
     ask = Script("Lan", "Bad_Handle", "lan-dev")
     hired = onboard_module._hire_first(tmp_path / "no.sock", "me", ask, transport=httpx.MockTransport(office))
@@ -156,7 +157,7 @@ def _git(root, *args):
 
 def test_a_running_office_is_not_topped_up_behind_its_back(tmp_path):
     paths = OfficePaths(tmp_path / "home")
-    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("me", "me", "Me"))
+    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("me", "Me"))
     (paths.company / DEBRIEF_FLOW).unlink()
     (paths.company / MANAGER_FLOW).unlink()
     _git(paths.company, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "drop two flows")

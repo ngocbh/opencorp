@@ -2,20 +2,20 @@
 import type { AnswerRequest, HireRequest, Message, Person, Question } from "../src/index"
 
 export const minh: Person = {
-  id: "minh", handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
+  handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
 }
 
 export const ceo: Person = {
-  id: "ngocbh", handle: "ngocbh", name: "Hong Ngoc Bui", kind: "human", title: "CEO", manager: null,
+  handle: "ngocbh", name: "Hong Ngoc Bui", kind: "human", title: "CEO", manager: null,
 }
 
 export const badKind: Person = {
   // @ts-expect-error kind is "human" | "agent"
-  id: "x", handle: "x", name: "X", kind: "robot", title: "T", manager: null,
+  handle: "x", name: "X", kind: "robot", title: "T", manager: null,
 }
 
 export const extraField: Person = {
-  id: "x", handle: "x", name: "X", kind: "human", title: "T", manager: null,
+  handle: "x", name: "X", kind: "human", title: "T", manager: null,
   // @ts-expect-error unknown fields are rejected
   colour: "blue",
 }

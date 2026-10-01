@@ -12,7 +12,7 @@ from agent_corp.profile.debrief import DEBRIEF_FLOW
 from agent_corp.profile.manager import MANAGER_FLOW
 from tests.company.conftest import _isolate_git  # noqa: F401
 
-OWNER = Owner(id="ngocbh", handle="ngocbh", name="Hong Ngoc Bui")
+OWNER = Owner(handle="ngocbh", name="Hong Ngoc Bui")
 PACKAGED_FLOWS = {f"shared/flows/{p.name}" for p in files("agent_corp.company_template").joinpath("shared", "flows").iterdir()
                   if p.name.endswith(".yaml")}
 
@@ -47,16 +47,16 @@ def test_a_new_company_gets_every_packaged_flow_so_it_can_chat_debrief_and_learn
 
 
 def test_names_that_need_quoting_survive(tmp_path):
-    owner = Owner(id="an", handle="an", name='An: "the boss" #1')
+    owner = Owner(handle="an", name='An: "the boss" #1')
     write_company(tmp_path / "company", tmp_path / "worktrees", company="Acme: Inc. #2", owner=owner)
     repo = load_repo(tmp_path / "company")
     assert (repo.company.name, repo.people["an"].name) == ("Acme: Inc. #2", 'An: "the boss" #1')
 
 
 def test_a_bad_handle_is_refused_before_anything_is_written(tmp_path):
-    with pytest.raises(ValueError, match="handle"):
+    with pytest.raises(ValueError, match="Not A Handle"):
         write_company(tmp_path / "company", tmp_path / "worktrees", company="Acme",
-                      owner=Owner(id="ngocbh", handle="Not A Handle", name="N"))
+                      owner=Owner(handle="Not A Handle", name="N"))
     assert not (tmp_path / "company").exists()
 
 
@@ -122,7 +122,7 @@ def test_the_first_hire_into_a_new_company_lints_clean(tmp_path):
     form = {"name": "Minh", "handle": "minh", "title": "Engineer", "manager": "ngocbh"}
     preview = hiring.hire(HireRequest(**form))
     assert preview.issues == []
-    hiring.hire(HireRequest(**form, id=preview.person.id, confirm=True))
+    hiring.hire(HireRequest(**form, confirm=True))
     assert lint(load_repo(root)) == []
 
 
@@ -175,8 +175,8 @@ def _stopped_before_the_commit(root, company, owner):
 
 def test_a_first_write_that_stopped_is_finished_with_the_new_answers(tmp_path):
     root = tmp_path / "company"
-    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
-    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    _stopped_before_the_commit(root, "Acme", Owner(handle="an", name="An"))
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(handle="bo", name="Bo"))
     committed = yaml.safe_load(git(root, "show", "HEAD:company.yaml"))
     assert (committed["name"], committed["ceo"]) == ("Beta", "bo")
     assert "people/bo/person.yaml" in git(root, "ls-files").splitlines()
@@ -187,12 +187,12 @@ def test_a_first_write_that_stopped_is_finished_with_the_new_answers(tmp_path):
 
 def test_finishing_a_first_write_leaves_other_people_and_files_alone(tmp_path):
     root = tmp_path / "company"
-    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    _stopped_before_the_commit(root, "Acme", Owner(handle="an", name="An"))
     (root / "people" / "an" / "notes.md").write_text("mine\n")
     (root / "people" / "cy").mkdir()
     (root / "people" / "cy" / "person.yaml").write_bytes(
-        template_files("Acme", Owner(id="cy", handle="cy", name="Cy"))["people/cy/person.yaml"])
-    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+        template_files("Acme", Owner(handle="cy", name="Cy"))["people/cy/person.yaml"])
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(handle="bo", name="Bo"))
     assert not (root / "people" / "an" / "person.yaml").exists()
     assert (root / "people" / "an" / "notes.md").read_text() == "mine\n"
     assert (root / "people" / "cy" / "person.yaml").exists()
@@ -201,28 +201,28 @@ def test_finishing_a_first_write_leaves_other_people_and_files_alone(tmp_path):
 @pytest.mark.parametrize("ceo", ["../../outside", "people/an", ".", "An", ""])
 def test_an_old_ceo_that_isnt_an_id_removes_nothing(tmp_path, ceo):
     root = tmp_path / "company"
-    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    _stopped_before_the_commit(root, "Acme", Owner(handle="an", name="An"))
     (tmp_path / "outside").mkdir()
     (tmp_path / "outside" / "person.yaml").write_text("keep\n")
     (root / "company.yaml").write_text(yaml.safe_dump({"name": "Acme", "ceo": ceo}))
-    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(handle="bo", name="Bo"))
     assert (root / "people" / "an" / "person.yaml").exists()
     assert (tmp_path / "outside" / "person.yaml").read_text() == "keep\n"
 
 
 def test_an_old_ceos_directory_that_is_a_symlink_is_left_alone(tmp_path):
     root = tmp_path / "company"
-    _stopped_before_the_commit(root, "Acme", Owner(id="an", handle="an", name="An"))
+    _stopped_before_the_commit(root, "Acme", Owner(handle="an", name="An"))
     elsewhere = tmp_path / "elsewhere"
     (root / "people" / "an").rename(elsewhere)
     (root / "people" / "an").symlink_to(elsewhere)
-    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(id="bo", handle="bo", name="Bo"))
+    write_company(root, tmp_path / "worktrees", company="Beta", owner=Owner(handle="bo", name="Bo"))
     assert (elsewhere / "person.yaml").exists()
 
 
 def test_a_committed_company_keeps_its_old_ceos_directory(tmp_path):
     root = tmp_path / "company"
-    write_company(root, tmp_path / "worktrees", company="Acme", owner=Owner(id="an", handle="an", name="An"))
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=Owner(handle="an", name="An"))
     write_company(root, tmp_path / "worktrees")
     assert (root / "people" / "an" / "person.yaml").exists()
 

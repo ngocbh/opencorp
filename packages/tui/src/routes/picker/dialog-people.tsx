@@ -13,12 +13,12 @@ export function DialogPeople() {
   const office = useOffice()
   const local = useLocal()
   const dialog = useDialog()
-  // `null` is the hire row, so it can never collide with a person id.
+  // `null` is the hire row, so it can never collide with a handle.
   const options = createMemo<DialogSelectOption<string | null>[]>(() => [
     ...pickerRows(office.state).map(({ person, group }) => ({
       title: `@${person.handle}`,
       description: `${person.name} · ${person.title}`,
-      value: person.id,
+      value: person.handle,
       category: group,
     })),
     { title: "Hire new…", value: null },
@@ -28,7 +28,7 @@ export function DialogPeople() {
       title="Who do you want to talk to?"
       placeholder="Search people"
       options={options()}
-      current={local.person.current()?.id}
+      current={local.person.current()?.handle}
       onSelect={(option) => {
         if (option.value === null) return dialog.replace(() => <DialogHire />)
         local.person.set(option.value)

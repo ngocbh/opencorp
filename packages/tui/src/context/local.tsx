@@ -22,7 +22,7 @@ export type LocalTheme = {
   info: RGBA
 }
 
-/** The person to talk to: `--person` (id or handle), else the person of the newest main session in `cwd`, else the first person who works in `cwd`, else the first agent, else the first person. */
+/** The person's handle to talk to: `--person` (a handle, with or without @), else the person of the newest main session in `cwd`, else the first person who works in `cwd`, else the first agent, else the first person. */
 export function pickPerson(input: {
   arg?: string
   people: readonly Person[]
@@ -31,13 +31,13 @@ export function pickPerson(input: {
   cwd?: string
 }) {
   const { people } = input
-  const known = (id: string | undefined) => (id && people.some((p) => p.id === id) ? id : undefined)
+  const known = (handle: string | undefined) => (handle && people.some((p) => p.handle === handle) ? handle : undefined)
   return (
-    people.find((p) => p.id === input.arg || p.handle === input.arg)?.id ??
+    known(input.arg?.replace(/^@/, "")) ??
     known(input.sessions.find((s) => s.kind === "main" && s.cwd === input.cwd)?.person) ??
-    known(input.folderPeople[0]?.id) ??
-    people.find((p) => p.kind === "agent")?.id ??
-    people[0]?.id
+    known(input.folderPeople[0]?.handle) ??
+    people.find((p) => p.kind === "agent")?.handle ??
+    people[0]?.handle
   )
 }
 
@@ -72,35 +72,36 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           cwd: office.cwd,
         })
       const current = createMemo(() => {
-        const id = selected()
-        return list().find((p) => p.id === id) ?? list().find((p) => p.id === picked())
+        const handle = selected()
+        return list().find((p) => p.handle === handle) ?? list().find((p) => p.handle === picked())
       })
       // Hold the first pick once the office's state is in, so later sessions don't swap the person.
       createEffect(() => {
         if (selected() || office.status() !== "online") return
-        const id = picked()
-        if (!id) return
-        setSelected(id)
-        if (args.person && !list().some((p) => p.id === args.person || p.handle === args.person))
+        const handle = picked()
+        if (!handle) return
+        setSelected(handle)
+        const arg = args.person?.replace(/^@/, "")
+        if (arg && !list().some((p) => p.handle === arg))
           toast.show({ variant: "warning", message: `No one here matches --person ${args.person}`, duration: 10000 })
       })
       return {
         list,
         current,
-        set(id: string) {
-          if (!list().some((p) => p.id === id))
-            return toast.show({ variant: "warning", message: `No such person: ${id}`, duration: 3000 })
-          setSelected(id)
+        set(handle: string) {
+          if (!list().some((p) => p.handle === handle))
+            return toast.show({ variant: "warning", message: `No such person: @${handle}`, duration: 3000 })
+          setSelected(handle)
         },
         cycle(direction: 1 | -1) {
           // Agents only, as in the picker; from a human, go to the first or last agent.
           const people = list().filter((p) => p.kind === "agent")
           if (!people.length) return
-          const index = people.findIndex((p) => p.id === current()?.id)
-          setSelected(people.at(index < 0 ? (direction > 0 ? 0 : -1) : (index + direction) % people.length)!.id)
+          const index = people.findIndex((p) => p.handle === current()?.handle)
+          setSelected(people.at(index < 0 ? (direction > 0 ? 0 : -1) : (index + direction) % people.length)!.handle)
         },
-        color(id: string | undefined) {
-          const index = list().findIndex((p) => p.id === id)
+        color(handle: string | undefined) {
+          const index = list().findIndex((p) => p.handle === handle)
           return colors()[Math.max(0, index) % colors().length]
         },
       }

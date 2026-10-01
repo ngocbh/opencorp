@@ -85,7 +85,7 @@ def _flow(repo: CompanyRepo, asker: Session | None) -> str:
     person = repo.people.get(asker.person) if asker else None
     if asker is None or asker.kind != "main" or person is None or not person.main:
         return ""
-    rel = person_flow(person.id, person.main)
+    rel = person_flow(person.handle, person.main)
     try:
         text = (repo.root / rel).read_text()
     except OSError:

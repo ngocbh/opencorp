@@ -23,7 +23,7 @@ def onboarded(tmp_path, provider=None, mode="launchd"):
     paths = OfficePaths(tmp_path / "home")
     paths.office.mkdir(parents=True, mode=0o700)
     paths.home.chmod(0o700)
-    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("ngocbh", "ngocbh", "Ngoc"))
+    write_company(paths.company, paths.worktrees, company="Acme", owner=Owner("ngocbh", "Ngoc"))
     if provider is not None:
         write_private(paths.office / "provider.json", json.dumps(provider).encode())
     (paths.office / "install.json").write_text(json.dumps({"mode": mode, "name": "x"}))

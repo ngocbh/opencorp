@@ -33,7 +33,7 @@ export type OfficeState = {
   feedback: Record<string, Feedback>
   /** By work item id, oldest first. */
   comments: Record<string, Comment[]>
-  /** By person id. */
+  /** By handle. */
   profiles: Record<string, Profile>
   /** By session id. */
   debriefs: Record<string, Debrief>

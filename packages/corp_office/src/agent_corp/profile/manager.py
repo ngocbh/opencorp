@@ -50,14 +50,14 @@ def propose(store: Store, session: Session, profile: GitProfileStore, base_versi
     diff = "".join(difflib.unified_diff(base.splitlines(keepends=True), text.splitlines(keepends=True),
                                         f"a/{profile.path}", f"b/{profile.path}"))
     with profile.git.lock:  # waits for an apply in progress, which then isn't discarded under it
-        for older in store.list_profile_proposals(profile.person_id, status="open"):
+        for older in store.list_profile_proposals(profile.handle, status="open"):
             if older.session_id == session.id:
                 try:
                     store.set_profile_proposal_status(older.id, "discarded", commit=None)
                 except InvalidTransition:
                     pass  # applied meanwhile
         return store.add_profile_proposal(ProfileProposal(
-            id=new_id(), session_id=session.id, person=profile.person_id, base_version=base_version, text=text,
+            id=new_id(), session_id=session.id, person=profile.handle, base_version=base_version, text=text,
             diff=diff, status="open", created_at=now()))
 
 

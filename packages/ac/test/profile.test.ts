@@ -70,6 +70,17 @@ test("edit opens the profile in $EDITOR and saves it over the version it read", 
   expect(r.out).toBe(`Saved the profile of @minh (${office.state.profiles.minh!.version.slice(0, 7)})`)
 })
 
+test("PERSON is a handle, with or without the @, and the profile is read and saved by handle", async () => {
+  office.state.people.push({ handle: "lan", name: "Lan", kind: "agent", title: "QA", manager: "ngocbh" })
+  office.state.profiles.lan = { person: "lan", text: "# Lan\n", version: "v-lan", over_budget: false }
+  editor(`printf -- '- Tests first.\\n' >> "$1"\n`)
+  expect((await profile("edit", "@lan")).code).toBe(0)
+  expect((await profile("edit", "lan")).code).toBe(0)
+  const paths = office.requests.filter((r) => r.path.startsWith("/profiles/")).map((r) => `${r.method} ${r.path}`)
+  expect([...new Set(paths)]).toEqual(["GET /profiles/lan", "PUT /profiles/lan"])
+  expect(office.state.profiles.lan!.text).toBe("# Lan\n- Tests first.\n- Tests first.\n")
+})
+
 /**
  * An editor that, on its first run, signals it opened, waits for the test to change the
  * profile by hand, then appends "My line."; on later runs it keeps a copy of what it was

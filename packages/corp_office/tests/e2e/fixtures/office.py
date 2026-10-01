@@ -96,8 +96,8 @@ class RunningOffice:
         return response.json()
 
     def person(self, handle: str) -> str:
-        """The id of the person with ``handle`` (a hire's id is a ULID, not the handle)."""
-        return next(p["id"] for p in self.get("/people") if p["handle"] == handle)
+        """``handle``, once the office lists a person with it; fail otherwise."""
+        return next(p["handle"] for p in self.get("/people") if p["handle"] == handle)
 
     def folder_people(self, cwd: Path) -> list[str]:
         """The handles the picker offers first in ``cwd``: who has had a session there."""

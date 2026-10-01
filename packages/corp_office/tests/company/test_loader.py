@@ -21,7 +21,7 @@ def test_loads_people_groups_assets(company):
 
 def test_ids_are_plain_strings(company):
     repo = load_repo(company)
-    assert type(repo.people["minh"].id) is str
+    assert type(repo.people["minh"].handle) is str
     assert type(repo.people["minh"].manager) is str
     assert type(repo.people["minh"].kind) is str
 
@@ -37,9 +37,15 @@ def test_unknown_field_is_a_schema_error(make_company):
     assert "minh" not in load_repo(root).people
 
 
-def test_id_must_match_directory(make_company):
-    root = make_company(**{"people/minh/person.yaml": person("minh", id="other")})
-    assert ("people/minh/person.yaml", "person.dir_mismatch") in codes(load_repo(root))
+def test_handle_must_match_directory(make_company):
+    root = make_company(**{"people/minh/person.yaml": person("minh", handle="other")})
+    repo = load_repo(root)
+    assert ("people/minh/person.yaml", "person.dir_mismatch") in codes(repo)
+    assert "minh" not in repo.people and "other" not in repo.people
+
+
+def test_people_are_keyed_by_handle(company):
+    assert sorted(load_repo(company).people) == ["minh", "ngocbh"]
 
 
 def test_group_id_must_match_file_name(make_company):

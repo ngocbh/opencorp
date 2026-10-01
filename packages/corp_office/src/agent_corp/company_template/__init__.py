@@ -28,7 +28,6 @@ _FILLED = ("company.yaml", f"{_OWNER_DIR}/person.yaml")
 class Owner:
     """The human who onboards: the company's CEO."""
 
-    id: str
     handle: str
     name: str
     title: str = "CEO"
@@ -53,9 +52,8 @@ def template_files(company: str, owner: Owner) -> dict[str, bytes]:
         ValueError: the company name or the owner doesn't make a valid ``Company`` or ``Person``.
     """
     # JSON strings are YAML double-quoted scalars, so any name survives the substitution.
-    values = {k: json.dumps(v) for k, v in {"company": company, "ceo": owner.id, "id": owner.id,
-                                            "handle": owner.handle, "name": owner.name,
-                                            "title": owner.title}.items()}
+    values = {k: json.dumps(v) for k, v in {"company": company, "ceo": owner.handle, "handle": owner.handle,
+                                            "name": owner.name, "title": owner.title}.items()}
     out: dict[str, bytes] = {}
     for rel, data in _walk(files(__name__)).items():
         if rel in _FILLED:
@@ -66,7 +64,7 @@ def template_files(company: str, owner: Owner) -> dict[str, bytes]:
             except ValidationError as exc:
                 raise ValueError(f"{rel}: {exc}") from None
             data = text.encode()
-        out[rel.replace(_OWNER_DIR, f"people/{owner.id}", 1)] = data
+        out[rel.replace(_OWNER_DIR, f"people/{owner.handle}", 1)] = data
     return out
 
 
@@ -102,7 +100,7 @@ def _stopped_owner(root: Path) -> str | None:
     """The CEO in a new repo's ``company.yaml`` (an earlier, interrupted write's owner), or None if it doesn't say."""
     try:
         ceo = yaml.safe_load((root / "company.yaml").read_text()).get("ceo")
-        # The id pattern allows no '/' or '.', so the id names a directory directly under people/.
+        # The handle pattern allows no '/' or '.', so the handle names a directory directly under people/.
         Company.model_validate({"name": "-", "ceo": ceo})
     except (OSError, UnicodeDecodeError, yaml.YAMLError, AttributeError, ValidationError):
         return None
@@ -136,9 +134,9 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     else:
         wanted = template_files(company, owner)
         # Nothing is committed yet, so an earlier, interrupted write's filled files are stale or partial.
-        filled = {rel.replace(_OWNER_DIR, f"people/{owner.id}", 1) for rel in _FILLED}
+        filled = {rel.replace(_OWNER_DIR, f"people/{owner.handle}", 1) for rel in _FILLED}
         stale = _stopped_owner(root)
-        stale = None if stale == owner.id else stale
+        stale = None if stale == owner.handle else stale
     missing = sorted(rel for rel in wanted if rel in filled or not os.path.lexists(root / rel))
     if not (root / ".git").exists():
         root.mkdir(parents=True, exist_ok=True)
