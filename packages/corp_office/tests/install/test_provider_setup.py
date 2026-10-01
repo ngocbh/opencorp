@@ -7,7 +7,7 @@ import stat
 import pytest
 
 from agent_corp.chat.provider import load_provider
-from agent_corp.install.onboard import OnboardError, TtyPrompter, ensure_provider
+from agent_corp.install.onboard import OnboardError, TtyPrompter, ensure_provider, step_lines
 
 KEY = "sk-ant-test-0123456789"
 
@@ -30,6 +30,9 @@ class Script:
 
     def say(self, text):
         self.seen.append(text)
+
+    def step(self, number, total, title, why):
+        self.seen.extend(step_lines(number, total, title, why))
 
 
 def mode(path):
@@ -192,6 +195,17 @@ def test_the_terminal_prompter_takes_presets_and_defaults():
     prompter = TtyPrompter({"Company name": "Acme", "Your name": ""}, interactive=False)
     assert prompter.ask("Company name", "My company") == "Acme"
     assert prompter.ask("Your name", "Me") == "Me"
+
+
+def test_the_terminal_prompter_shows_a_step_as_a_header_and_why(capsys):
+    TtyPrompter().step(2, 5, "You", "You're the CEO.")
+    assert capsys.readouterr().out == "\nStep 2 of 5: You\nYou're the CEO.\n"
+
+
+def test_the_script_prompter_records_the_same_step_lines():
+    ask = Script()
+    ask.step(1, 4, "Company", "Why.")
+    assert ask.seen == step_lines(1, 4, "Company", "Why.") == ["Step 1 of 4: Company", "Why."]
 
 
 def test_a_directory_where_the_provider_goes_is_an_onboard_error(tmp_path):

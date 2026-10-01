@@ -55,6 +55,14 @@ class Prompter(Protocol):
     def say(self, text: str) -> None:
         """Tell the owner something."""
 
+    def step(self, number: int, total: int, title: str, why: str) -> None:
+        """Start step ``number`` of ``total``: show ``step_lines``."""
+
+
+def step_lines(number: int, total: int, title: str, why: str) -> list[str]:
+    """A step as shown: a header such as ``Step 2 of 5: You``, then one line on why it matters."""
+    return [f"Step {number} of {total}: {title}", why]
+
 
 class TtyPrompter:
     """Asks on the terminal; a secret is read with ``getpass``, so it is never echoed.
@@ -87,6 +95,9 @@ class TtyPrompter:
 
     def say(self, text: str) -> None:
         print(text, flush=True)
+
+    def step(self, number: int, total: int, title: str, why: str) -> None:
+        print("\n" + "\n".join(step_lines(number, total, title, why)), flush=True)
 
 
 def _llm_errors(exc: ValidationError) -> str:
