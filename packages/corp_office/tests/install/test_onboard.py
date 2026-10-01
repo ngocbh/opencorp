@@ -136,6 +136,20 @@ def test_a_hire_the_office_cant_take_is_an_onboard_error(tmp_path):
         onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""), transport=odd)
 
 
+def test_a_bad_agent_handle_is_asked_again(tmp_path):
+    bodies = []
+
+    def office(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"issues": [], "person": {"id": "lan"}})
+
+    ask = Script("Lan", "Bad_Handle", "lan-dev")
+    hired = onboard_module._hire_first(tmp_path / "no.sock", "me", ask, transport=httpx.MockTransport(office))
+    assert hired == "Lan (@lan-dev)"
+    assert any("should match pattern" in line for line in ask.seen)
+    assert [b["handle"] for b in bodies] == ["lan-dev", "lan-dev"]
+
+
 def _git(root, *args):
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, check=True).stdout
 

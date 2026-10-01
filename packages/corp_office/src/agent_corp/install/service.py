@@ -48,7 +48,8 @@ def _order(host: Host) -> list[str]:
     return native + (["tmux"] if host.which("tmux") else []) + ["background"]
 
 
-def _pid(launch: Launch) -> str:
+def pid(launch: Launch) -> str:
+    """The pid in the office's pidfile, or ``?`` if there is none."""
     try:
         return (launch.office / "office.pid").read_text().strip() or "?"
     except OSError:
@@ -69,7 +70,7 @@ def install(launch: Launch, host: Host, mode: str = "auto") -> Installed:
     recorded = recorded_mode(launch)
     if host.answers(launch.socket):
         if recorded is None:
-            return Installed(None, [f"the office is already running (pid {_pid(launch)}) but was not started by"
+            return Installed(None, [f"the office is already running (pid {pid(launch)}) but was not started by"
                                     " a service; stop it and run `ac onboard` again to install one"])
         if mode not in ("auto", recorded):
             raise ServiceError(f"the office is already running under {recorded}; stop it before moving it to {mode}")

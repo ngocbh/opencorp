@@ -4,8 +4,11 @@ import os
 import subprocess
 import sys
 
+import pytest
+
 from agent_corp.company.loader import load_repo
 from agent_corp.daemon.app import OfficePaths
+from agent_corp.install import __main__ as install_main
 from agent_corp.install import doctor
 from agent_corp.install.__main__ import main
 from agent_corp.install.launch import REPO, office_answers
@@ -52,6 +55,26 @@ def test_an_onboarding_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, ca
     assert "ac onboard: the provider on stdin is not valid JSON" in capsys.readouterr().err
 
 
+def test_onboard_flags_answer_their_questions_including_the_agents_handle(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(install_main, "onboard", lambda home, prompter, **k: seen.update(prompter=prompter))
+    args = ["onboard", "--home", str(tmp_path / "home"), "--handle", "ngocbh", "--agent", "Lan",
+            "--agent-handle", "lan-dev"]
+    assert main(args) == 0
+    assert seen["prompter"].ask("Your handle") == "ngocbh"
+    assert seen["prompter"].ask("Name your first agent") == "Lan"
+    assert seen["prompter"].ask("Their handle") == "lan-dev"
+
+
+@pytest.mark.parametrize("flag", ["--handle", "--agent-handle"])
+def test_a_bad_handle_flag_stops_onboarding_before_it_starts(tmp_path, monkeypatch, capsys, flag):
+    # A preset answer is given again on every retry, so the question's own re-asking would never end.
+    monkeypatch.setattr(install_main, "onboard", lambda *a, **k: pytest.fail("onboarding ran"))
+    assert main(["onboard", "--home", str(tmp_path / "home"), flag, "Bad_Handle"]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(f"ac onboard: {flag} 'Bad_Handle': ") and "should match pattern" in err
+
+
 def test_onboard_without_git_says_so_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
     (tmp_path / "empty").mkdir()
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
@@ -72,10 +95,14 @@ def test_scripted_onboard_then_start_brings_a_stopped_office_back(short_dir, mon
         assert main(args) == 0, capsys.readouterr()
         assert "First agent: hired Minh (@minh)" in capsys.readouterr().out
         assert main(["start", "--home", str(short_dir)]) == 0  # already running: nothing to do
+        pid = paths.pidfile.read_text().strip()
+        assert capsys.readouterr().out == f"The office is already running (pid {pid}).\n"
         _stop(paths)
         assert not office_answers(paths.socket)
         assert main(["start", "--home", str(short_dir)]) == 0
         assert office_answers(paths.socket)
+        pid = paths.pidfile.read_text().strip()
+        assert capsys.readouterr().out == f"Started the office (pid {pid}).\n"
     finally:
         _stop(paths)
 

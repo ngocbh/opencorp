@@ -10,6 +10,10 @@ from agent_corp.install.launch import Host, Launch, ServiceError
 # still tearing the old job down; a few short retries cover it.
 BOOTSTRAP_TRIES = 3
 
+# What ``launchctl bootstrap`` exits with when it keeps failing with EIO, as it does
+# for a ``gui/<uid>`` domain from a session outside the GUI login.
+EIO = 5
+
 
 def label(launch: Launch) -> str:
     return f"com.agent-corp.{launch.name}"
@@ -69,6 +73,12 @@ def install(launch: Launch, host: Host) -> None:
             return
         host.sleep(0.5 * (attempt + 1))
     path.unlink(missing_ok=True)
+    if done.returncode == EIO:
+        # launchctl suggests re-running as root, but the agent belongs in the GUI login's session.
+        reason = done.stderr.strip().splitlines()[0] if done.stderr.strip() else "Input/output error"
+        raise ServiceError(f"launchctl bootstrap {domain} failed: {reason}; this happens outside a GUI login"
+                           " (over SSH or in a detached tmux): run `ac onboard` from Terminal in your GUI login,"
+                           " or pass `--service tmux`")
     raise ServiceError(f"launchctl bootstrap {domain} failed: {done.stderr.strip()}")
 
 

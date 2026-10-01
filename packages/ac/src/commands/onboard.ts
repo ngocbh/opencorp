@@ -5,9 +5,9 @@ import { type Deps, REPO, realDeps, runInstall } from "../office"
 
 /**
  * `ac onboard [--service MODE] [--provider-stdin] [--company NAME] [--name NAME] [--handle H]
- * [--agent NAME] [--no-hire] [--home H]`: syncs the checkout's venv, then runs the Python
- * onboarding, which asks what it needs on this terminal (the model key without echo) and never
- * takes a key as a flag.
+ * [--agent NAME] [--agent-handle H] [--no-hire] [--home H]`: syncs the checkout's venv, then runs
+ * the Python onboarding, which asks what it needs on this terminal (the model key without echo)
+ * and never takes a key as a flag.
  */
 export async function onboard(argv: string[], deps: Deps = realDeps): Promise<number> {
   // The venv is what runs the onboarding, so it must exist and match the checkout first.
