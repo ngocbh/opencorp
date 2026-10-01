@@ -69,6 +69,18 @@ def test_a_bootstrap_that_keeps_failing_removes_the_plist_and_says_why(tmp_path,
     assert [c[1] for c in run.calls].count("bootstrap") == 3
 
 
+def test_a_bootstrap_outside_a_gui_login_says_to_use_terminal_or_tmux(tmp_path, owner_launch):
+    # launchctl's own hint, to re-run as root, doesn't help: the agent needs the GUI login's session.
+    run = Runner([(["launchctl", "print"], 113, ""),
+                  (["launchctl", "bootstrap"], 5, "Bootstrap failed: 5: Input/output error\n"
+                                                  "Try re-running the command as root for richer errors.\n")])
+    with pytest.raises(ServiceError) as caught:
+        launchd.install(owner_launch, make_host(tmp_path, run))
+    message = str(caught.value)
+    assert "Input/output error" in message and "root" not in message
+    assert "from Terminal in your GUI login" in message and "--service tmux" in message
+
+
 def test_a_kickstart_that_fails_boots_out_and_removes_the_plist(tmp_path, owner_launch):
     host = make_host(tmp_path, Runner())
     launchd.install(owner_launch, host)
