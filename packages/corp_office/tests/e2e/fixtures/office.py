@@ -175,6 +175,21 @@ class RunningOffice:
         return subprocess.run(["git", "-C", str(self.paths.company), "log", "--format=%s"],
                               check=True, capture_output=True, text=True).stdout.splitlines()
 
+    def worker(self, sid: str) -> psutil.Process:
+        """Session ``sid``'s worker: the office's child running in the session's run dir."""
+        run_dir = str(self.paths.run_dir(sid))
+
+        def find():
+            for child in psutil.Process(self.pid()).children():
+                try:
+                    if child.cwd() == run_dir:
+                        return child
+                except psutil.Error:
+                    pass
+            return None
+
+        return wait_for(find, f"session {sid}'s worker")
+
     def stop(self) -> None:
         """Stop every office this test started, and any worker a killed office left behind."""
         self.http.close()
