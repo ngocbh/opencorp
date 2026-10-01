@@ -3,6 +3,8 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { doctor } from "../src/commands/doctor"
+import { init } from "../src/commands/init"
+import { offboard } from "../src/commands/offboard"
 import { onboard } from "../src/commands/onboard"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
@@ -37,11 +39,52 @@ test("the repo is this checkout, and its venv's python runs the install", () => 
 
 test("onboard syncs the venv, then runs the Python onboarding with the flags it was given", async () => {
   const { deps, calls } = fake({ python: 5 })
-  expect(await onboard(["--service", "tmux", "--no-hire"], deps)).toBe(5)
+  expect(await onboard(["--service", "tmux", "--from", "git@example.com:acme.git"], deps)).toBe(5)
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
-    { argv: [venvPython(), "-m", "agent_corp.install", "onboard", "--service", "tmux", "--no-hire"], cwd: undefined },
+    {
+      argv: [venvPython(), "-m", "agent_corp.install", "onboard", "--service", "tmux", "--from", "git@example.com:acme.git"],
+      cwd: undefined,
+    },
   ])
+})
+
+test("init syncs the venv, then runs the Python init with the flags it was given", async () => {
+  const { deps, calls } = fake({ python: 4 })
+  expect(await init(["--company", "Acme", "--remote", "git@example.com:acme.git"], deps)).toBe(4)
+  expect(calls).toEqual([
+    { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
+    {
+      argv: [venvPython(), "-m", "agent_corp.install", "init", "--company", "Acme", "--remote", "git@example.com:acme.git"],
+      cwd: undefined,
+    },
+  ])
+})
+
+test("init stops when uv is missing, naming itself", async () => {
+  const noUv = fake({}, ["uv", path.join(os.homedir(), ".local", "bin", "uv")])
+  expect(await init([], noUv.deps)).toBe(1)
+  expect(noUv.calls).toEqual([])
+  expect(noUv.errors.join("\n")).toContain("ac init: uv not found")
+})
+
+test("offboard runs the Python offboarding with its flags and never syncs the venv", async () => {
+  const { deps, calls } = fake({ python: 1 })
+  expect(await offboard(["--yes", "--delete-company", "--home", "/h"], deps)).toBe(1)
+  expect(calls).toEqual([
+    { argv: [venvPython(), "-m", "agent_corp.install", "offboard", "--yes", "--delete-company", "--home", "/h"], cwd: undefined },
+  ])
+  const bare = fake({}, [venvPython()])
+  expect(await offboard([], bare.deps)).toBe(1)
+  expect(bare.calls).toEqual([])
+})
+
+test("init and offboard are commands with their own summaries", async () => {
+  const { commands } = await import("../src/main")
+  expect(commands.init.summary).toContain("Create the company")
+  expect(commands.offboard.summary).toContain("Remove this office")
+  expect((await commands.init.load()).run).toBeFunction()
+  expect((await commands.offboard.load()).run).toBeFunction()
 })
 
 test("onboard finds uv in ~/.local/bin when it isn't on PATH", async () => {
