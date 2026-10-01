@@ -36,7 +36,8 @@ def _onboard(args: argparse.Namespace) -> int:
                             "Name your first agent": args.agent, "Their handle": args.agent_handle},
                            interactive=stdin is None)
     try:
-        onboard(_home(args.home), prompter, mode=args.service, stdin=stdin, hire=not args.no_hire)
+        onboard(_home(args.home), prompter, mode=args.service, stdin=stdin, hire=not args.no_hire,
+                device=not args.no_device)
     except OnboardError as exc:
         print(f"ac onboard: {exc}", file=sys.stderr)
         return 1
@@ -88,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
         onboard_args.add_argument(f"--{flag}", help=f"answer the {flag} question")
     onboard_args.add_argument("--agent-handle", help="answer the first agent's handle question")
     onboard_args.add_argument("--no-hire", action="store_true", help="don't hire a first agent")
+    onboard_args.add_argument("--no-device", action="store_true",
+                              help="don't register this device for a new company; the office stays open to"
+                                   " requests without a token until someone runs `ac login`")
     args = parser.parse_args(argv)
     return {"onboard": _onboard, "doctor": _doctor, "start": _start}[args.command](args)
 

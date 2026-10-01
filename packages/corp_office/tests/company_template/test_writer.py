@@ -9,6 +9,7 @@ from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, template_files, write_company
 from agent_corp.profile.debrief import DEBRIEF_FLOW
+from agent_corp.protocol.models import Device
 from agent_corp.profile.manager import MANAGER_FLOW
 from tests.company.conftest import _isolate_git  # noqa: F401
 
@@ -35,6 +36,16 @@ def test_a_new_company_has_the_owner_as_ceo_and_lints_clean(tmp_path):
     assert repo.errors == [] and lint(repo) == []
     assert git(root, "status", "--porcelain") == ""
     assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
+
+
+def test_the_owners_devices_are_in_the_first_commit(tmp_path):
+    root = tmp_path / "company"
+    mac = Device(name="mac", token_sha256="ab" * 32)
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=Owner("ngocbh", "Hong Ngoc Bui", devices=(mac,)))
+    assert load_repo(root).people["ngocbh"].devices == [mac]
+    first = yaml.safe_load(git(root, "show", "HEAD:people/ngocbh/person.yaml"))
+    assert first["devices"] == [{"name": "mac", "token_sha256": "ab" * 32}]
+    assert lint(load_repo(root)) == []
 
 
 def test_a_new_company_gets_every_packaged_flow_so_it_can_chat_debrief_and_learn(tmp_path):
