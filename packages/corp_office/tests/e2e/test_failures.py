@@ -5,7 +5,9 @@ import signal
 
 import pytest
 
-from .fixtures.office import alive, asked, wait_for
+from tests.profile.conftest import LEARNER_ASK, debrief_reply, learner_reply
+
+from .fixtures.office import alive, asked, folder, wait_for
 
 pytestmark = pytest.mark.timeout(180)
 
@@ -58,3 +60,35 @@ def test_an_office_killed_mid_turn_comes_back_with_ac_start_and_finishes_the_tur
     fake.script({"content": "Next."})
     office.prompt(sid, "second")
     office.settled(sid, ["One.", "Resumed.", "Next."])
+
+
+def test_two_feedbacks_learned_at_once_both_land_in_the_profile(office, workspace, tmp_path):
+    fake = office.fake
+    minh = office.person("minh")
+    folders, runs = [workspace, folder(tmp_path / "other")], []
+    for n, cwd in enumerate(folders):
+        fake.script({"content": f"Reply {n}."}, debrief_reply())
+        sid = office.start_chat(minh, cwd)
+        office.prompt(sid, "fix the bug")
+        office.settled(sid, [f"Reply {n}."])
+        office.post(f"/sessions/{sid}/end")
+        office.debriefed(sid)
+        runs += office.session(sid)["run_ids"]
+    base = office.get(f"/profiles/{minh}")["text"]
+    # Learning runs per session, so the two learner calls are in flight together; the second to
+    # commit finds a newer profile and learns again on top of it, taking the merged reply.
+    fake.script(learner_reply(base + "\n- Rule: brevity\n", hold=True) | {"match": "Be brief."},
+                learner_reply(base + "\n- Rule: citations\n", hold=True) | {"match": "Cite files."},
+                learner_reply(base + "\n- Rule: brevity\n- Rule: citations\n"))
+    calls = len(fake.requests())
+    for cwd, text in zip(folders, ["Be brief.", "Cite files."]):
+        office.ac("feedback", "-m", text, cwd=cwd)  # queues it and returns; the learner call is held
+    wait_for(lambda: sum(LEARNER_ASK in asked(r) for r in fake.requests()[calls:]) == 2, "both learner calls")
+    fake.release()
+    subjects = {f"profile(@minh): from feedback on run {run} (ngocbh)" for run in runs}
+    wait_for(lambda: subjects <= set(office.git_log()), "both profile commits")
+    text = office.get(f"/profiles/{minh}")["text"]
+    assert "- Rule: brevity" in text and "- Rule: citations" in text
+    assert len(fake.requests()) == calls + 3 and fake.pending() == []  # the loser learned again, once
+    # The loser learned again on top of the winner: its second call carries the winner's rule.
+    assert any(rule in asked(fake.requests()[calls + 2]) for rule in ("- Rule: brevity", "- Rule: citations"))
