@@ -99,11 +99,8 @@ class Hiring:
             pass  # the caller needs the commit's error, not this one
 
     def _draft(self, request: HireRequest) -> tuple[Person, dict[str, str], list[RepoIssue]]:
-        person = Person.model_validate({**request.model_dump(include=set(_FORM)), **NEW_AGENT})
-        body = person.model_dump(mode="json", exclude_defaults=True)
+        person, files = agent_files(request)
         base = f"people/{person.handle}"
-        files = {f"{base}/person.yaml": yaml.safe_dump(body, sort_keys=False),
-                 f"{base}/profile.md": f"# {person.name}, {person.title}\n"}
         with tempfile.TemporaryDirectory() as tmp:
             scratch = Path(tmp) / "company"
             shutil.copytree(self.git.root, scratch, ignore=shutil.ignore_patterns(".git"), symlinks=True)
@@ -125,6 +122,16 @@ class Hiring:
                                                and not i.path.startswith(f"{base}/") else {}))
                       for i in lint(load_repo(scratch))]
         return person, files, issues
+
+
+def agent_files(request: HireRequest, about: str = "") -> tuple[Person, dict[str, str]]:
+    """The agent ``request`` hires and its files by repo path: ``person.yaml``, and a ``profile.md``
+    headed with its name and title, followed by ``about`` if given."""
+    person = Person.model_validate({**request.model_dump(include=set(_FORM)), **NEW_AGENT})
+    body = person.model_dump(mode="json", exclude_defaults=True)
+    base = f"people/{person.handle}"
+    profile = f"# {person.name}, {person.title}\n" + (f"\n{about.strip()}\n" if about.strip() else "")
+    return person, {f"{base}/person.yaml": yaml.safe_dump(body, sort_keys=False), f"{base}/profile.md": profile}
 
 
 def _subject(person: Person) -> str:

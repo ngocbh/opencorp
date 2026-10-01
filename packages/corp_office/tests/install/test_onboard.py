@@ -132,7 +132,7 @@ def test_a_new_company_registers_this_device_for_the_owner(tmp_path, monkeypatch
     assert stat.S_IMODE(os.stat(home / "identity.json").st_mode) == 0o600
     first = _git(home / "company", "show", "HEAD:people/me/person.yaml")
     assert yaml.safe_load(first)["devices"] == [{"name": me.device, "token_sha256": token_sha256(me.token)}]
-    assert _git(home / "company", "log", "--format=%s").splitlines() == ["onboard: create the company"]
+    assert _git(home / "company", "log", "--format=%s").splitlines() == ["init: create the company"]
     assert not [line for line in ask.seen if me.token in line]
 
 
@@ -289,7 +289,7 @@ def test_onboard_sets_up_the_office_and_a_second_run_changes_nothing(short_dir):
         assert {p.handle: p.kind for p in repo.people.values()} == {"ngocbh": "human", "minh": "agent"}
         assert repo.company.ceo == "ngocbh"
         assert _git(paths.company, "log", "--format=%s").splitlines() == [
-            "hire(@minh): Minh, Engineer", "onboard: create the company"]
+            "hire(@minh): Minh, Engineer", "init: create the company"]
         me = read_identity(short_dir / "identity.json")
         assert [d.name for d in repo.people["ngocbh"].devices] == [me.device]
         with httpx.Client(transport=httpx.HTTPTransport(uds=str(paths.socket)), base_url="http://office") as c:

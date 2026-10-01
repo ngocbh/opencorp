@@ -8,6 +8,7 @@ and the owner; the rest (the shared flows) are copied as they are.
 import json
 import os
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from importlib.resources import files
 from importlib.resources.abc import Traversable
@@ -114,7 +115,7 @@ def _stopped_owner(root: Path) -> str | None:
 
 
 def write_company(root: Path, worktrees: Path, *, company: str | None = None,
-                  owner: Owner | None = None) -> list[str]:
+                  owner: Owner | None = None, extra: Mapping[str, bytes] | None = None) -> list[str]:
     """Create or top up the company repo at ``root``; return the repo paths written, sorted.
 
     A new repo (see ``is_new``) is created (``git init``) from the template, and every
@@ -123,7 +124,8 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     the owner file of the CEO the old ``company.yaml`` names, if it is someone else, is removed.
     An existing one gets only the template files it lacks, such as flows added to the
     template after it was made: nothing is overwritten, so the owner's edits stay. Only
-    what was written is committed. ``company`` and ``owner`` are needed only for a new repo.
+    what was written is committed. ``company`` and ``owner`` are needed only for a new repo,
+    and ``extra`` (more files by repo path, such as the first teammates') is written only to one.
 
     Raises:
         ValueError: the repo is new and ``company`` or ``owner`` is not given or not
@@ -138,9 +140,9 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
     elif company is None or owner is None:
         raise ValueError(f"{root} has no company yet; a new company needs a name and an owner")
     else:
-        wanted = template_files(company, owner)
+        wanted = template_files(company, owner) | dict(extra or {})
         # Nothing is committed yet, so an earlier, interrupted write's filled files are stale or partial.
-        filled = {rel.replace(_OWNER_DIR, f"people/{owner.handle}", 1) for rel in _FILLED}
+        filled = {rel.replace(_OWNER_DIR, f"people/{owner.handle}", 1) for rel in _FILLED} | set(extra or {})
         stale = _stopped_owner(root)
         stale = None if stale == owner.handle else stale
     missing = sorted(rel for rel in wanted if rel in filled or not os.path.lexists(root / rel))
@@ -161,5 +163,5 @@ def write_company(root: Path, worktrees: Path, *, company: str | None = None,
             pass
     # A new repo commits everything present: files an earlier, interrupted write left uncommitted too.
     commit = sorted(rel for rel in wanted if os.path.lexists(root / rel)) if new else missing
-    CompanyGit(root, worktrees).commit(commit, "onboard: create the company" if new else "onboard: add template files")
+    CompanyGit(root, worktrees).commit(commit, "init: create the company" if new else "onboard: add template files")
     return missing

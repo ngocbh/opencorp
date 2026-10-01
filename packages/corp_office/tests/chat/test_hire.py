@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent_corp.chat.hire import HireRefused, Hiring
+from agent_corp.chat.hire import HireRefused, Hiring, agent_files
 from agent_corp.company.git import CompanyGit
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
@@ -48,6 +48,17 @@ def test_a_new_hire_gets_the_m1_defaults(git):
     assert (git.root / "people/lan/profile.md").read_text() == "# Lan, QA\n"
     log = subprocess.run(["git", "-C", str(git.root), "log", "-1", "--format=%s"], capture_output=True, text=True)
     assert log.stdout.strip() == "hire(@lan): Lan, QA"
+
+
+def test_agent_files_are_a_hires_files_with_an_optional_line_about_the_work(git):
+    hiring = Hiring(git)
+    hiring.hire(HireRequest(**FORM))
+    hiring.hire(HireRequest(**FORM, confirm=True))
+    person, files = agent_files(HireRequest(**FORM))
+    assert person == load_repo(git.root).people["lan"]
+    assert files == {rel: (git.root / rel).read_text() for rel in ("people/lan/person.yaml", "people/lan/profile.md")}
+    assert agent_files(HireRequest(**FORM), "Tests every release.")[1]["people/lan/profile.md"] == (
+        "# Lan, QA\n\nTests every release.\n")
 
 
 def test_a_taken_handle_is_refused_and_names_the_clash(git):
