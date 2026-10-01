@@ -43,6 +43,14 @@ def asked(request) -> str:
     return json.dumps(request["messages"])
 
 
+def alive(pid: int) -> bool:
+    """Whether ``pid`` is running; a zombie counts as gone."""
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+
 class RunningOffice:
     """An office daemon on ``home`` whose provider is ``fake``, driven over its unix socket."""
 
@@ -174,6 +182,28 @@ class RunningOffice:
         """The company repo's commit subjects, newest first."""
         return subprocess.run(["git", "-C", str(self.paths.company), "log", "--format=%s"],
                               check=True, capture_output=True, text=True).stdout.splitlines()
+
+    def worker(self, sid: str) -> psutil.Process:
+        """Session ``sid``'s worker: the office's child running in the session's run dir."""
+        run_dir = str(self.paths.run_dir(sid))
+
+        def find():
+            for child in psutil.Process(self.pid()).children():
+                try:
+                    if child.cwd() == run_dir:
+                        return child
+                except psutil.Error:
+                    pass
+            return None
+
+        return wait_for(find, f"session {sid}'s worker")
+
+    def kill_office(self) -> int:
+        """SIGKILL the office, as a crash would; return its pid."""
+        pid = self.pid()
+        os.kill(pid, signal.SIGKILL)
+        wait_for(lambda: not alive(pid), "the office to die")
+        return pid
 
     def stop(self) -> None:
         """Stop every office this test started, and any worker a killed office left behind."""
