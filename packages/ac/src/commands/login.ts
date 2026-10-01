@@ -59,16 +59,22 @@ export const run: CommandRun = async (argv) => {
   }
   const token = newToken()
   const hash = tokenSha256(token)
-  try {
-    writeIdentity(file, { handle, device, token })
-  } catch (e) {
-    console.error(`ac login: couldn't write ${file}: ${e instanceof Error ? e.message : e}`)
-    return 1
+  // The identity is written only once the office takes the device or says to vouch for it from
+  // a trusted one, so a refused `--force` keeps the identity it would have replaced.
+  const save = () => {
+    try {
+      writeIdentity(file, { handle, device, token })
+      return true
+    } catch (e) {
+      console.error(`ac login: couldn't write ${file}: ${e instanceof Error ? e.message : e}`)
+      return false
+    }
   }
   try {
     await office.devices.add(handle, { name: device, token_sha256: hash })
   } catch (e) {
     if (e instanceof OfficeError && (e.status === 401 || e.status === 403)) {
+      if (!save()) return 1
       console.error(`ac login: the office doesn't trust this device yet. On a device it trusts, run:`)
       console.error(`  ac devices add ${handle} ${device} ${hash}`)
       return 1
@@ -81,6 +87,7 @@ export const run: CommandRun = async (argv) => {
     }
     return failed(e)
   }
+  if (!save()) return 1
   console.log(`This device is ${device}, acting as @${handle}; its token is in ${file}.`)
   return 0
 }

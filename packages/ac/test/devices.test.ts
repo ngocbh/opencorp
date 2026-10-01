@@ -88,6 +88,16 @@ test("login keeps an identity unless --force, and a trusted one vouches for its 
   expect(identity(trusted).device).toBe("mac2")
 })
 
+test("a --force login the office refuses keeps the identity it would have replaced", async () => {
+  await ac(trusted, "login", "--device", "mac")
+  const first = identity(trusted)
+  const r = await ac(trusted, "login", "--device", "mac", "--force")
+  expect(r.code).toBe(1)
+  expect(r.err).toContain("already has a device named mac")
+  expect(identity(trusted)).toEqual(first)
+  expect((await ac(trusted, "whoami")).out).toContain("The office: @ngocbh, from device mac")
+})
+
 test("login from an untrusted device says what to run on a trusted one", async () => {
   await ac(trusted, "login", "--device", "mac")
   // The office won't list its people to an unknown device.
