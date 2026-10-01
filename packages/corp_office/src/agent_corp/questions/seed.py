@@ -9,11 +9,12 @@ from agent_corp.questions.format import capped_json
 from agent_corp.store import Store
 from agent_corp.worker import person_flow
 
-FRAMING = ("The user wants to understand this question before answering. Explain; do not decide for them, "
-           "and do not change anything.")
+FRAMING = ("You are now talking directly with the person you asked the question below, before they answer it. "
+           'Speak to them as "you"; never call them "the user" or "they". They want to understand your question: '
+           "explain it; do not decide for them, and do not change anything.")
 TOOL_OUTPUT_CHARS = 2000
 """Characters of one tool call's input or output the seed keeps."""
-FIRST_MESSAGE = "# The user's first message\n\n"
+FIRST_MESSAGE = "# Their first message to you\n\n"
 CUT = "… [the rest of the context is cut]"
 _VIA = {"ask_user": "with ask_user", "ask_manager": "with ask_manager, to your manager",
         "human_input": "at a human_input step of your flow"}
@@ -67,7 +68,7 @@ def card_text(question: Question, carried: Iterable[DiscussionEntry] = ()) -> st
                          f"{'' if field.required else ', optional'}")
     carried = list(carried)
     if carried:
-        lines += ["", "The user discussed an earlier question with you before it expired (JSON, oldest first):",
+        lines += ["", "You discussed an earlier question with them before it expired (JSON, oldest first):",
                   capped_json(carried)]
     return "\n".join(lines)
 
