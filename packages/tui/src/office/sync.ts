@@ -4,7 +4,7 @@
 // then replay the buffer on top.
 import type { Event, LiveEvent, Question } from "@agent-corp/protocol"
 import type { OfficeClient } from "./client"
-import { OfficeError, OfficeUnavailable } from "./errors"
+import { OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
 
@@ -103,7 +103,9 @@ export function createOfficeSync(opts: {
         generation++
         buffer = undefined
         // A reset or dropped stream reconnects at once, so it shouldn't flash "offline".
-        if (e.type === "unreachable") setStatus("offline")
+        // A refused token won't pass on a retry, so it reads as an error, not as no office.
+        if (e.type === "unreachable" && e.error instanceof UnknownDevice) setStatus("error", e.error.message)
+        else if (e.type === "unreachable") setStatus("offline")
         else if (status !== "error") setStatus("connecting")
         return
     }

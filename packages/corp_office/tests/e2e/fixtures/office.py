@@ -12,6 +12,7 @@ from urllib.parse import quote
 import httpx
 import psutil
 
+from agent_corp.auth.identity import identity_path, read_identity
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install.launch import REPO
 
@@ -66,18 +67,24 @@ class RunningOffice:
         return httpx.Client(transport=httpx.HTTPTransport(uds=str(self.paths.socket)),
                             base_url="http://office", timeout=30)
 
-    def onboard(self) -> None:
-        """Onboard Acme with Ngoc as CEO and the office as a background process, as `ac onboard` would."""
+    def onboard(self, device: bool = False) -> None:
+        """Onboard Acme with Ngoc as CEO and the office as a background process, as `ac onboard` would.
+
+        With ``device``, onboarding registers this device, so the office needs its token; the
+        client sends it.
+        """
         provider = {"llm_config": {"provider": "vllm", "model": "stub"}, "env": self.fake.env()}
         done = subprocess.run(
             [sys.executable, "-m", "agent_corp.install", "onboard", "--home", str(self.home),
              "--provider-stdin", "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh",
-             "--service", "background"],
+             "--service", "background", *([] if device else ["--no-device"])],
             input=json.dumps(provider), capture_output=True, text=True, cwd=REPO, timeout=120)
         if self.paths.pidfile.exists():
             self.pids.add(self.pid())
         assert done.returncode == 0, done.stdout + done.stderr
         assert "First agent: hired Minh (@minh)" in done.stdout
+        if device:
+            self.http.headers.update(read_identity(identity_path(self.home)).headers())
 
     def pid(self) -> int:
         """The pid in the office's pidfile."""

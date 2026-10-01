@@ -25,6 +25,46 @@ def test_blob_id_ignores_other_files(g, company):
     assert g.blob_id("people/nobody/profile.md") is None
 
 
+def test_read_head_follows_loose_and_packed_refs_and_a_detached_head(g, company):
+    assert g.read_head() == g.head()
+    (company / "groups/eng.yaml").write_text("id: eng\nname: Eng\nparent: null\nhead: null\n")
+    g.commit(["groups/eng.yaml"], "edit group")
+    assert g.read_head() == g.head()
+    _git(company, "pack-refs", "--all")
+    assert not (company / ".git/refs/heads/main").exists()
+    assert g.read_head() == g.head()
+    _git(company, "checkout", "-q", "--detach", "HEAD~1")
+    assert g.read_head() == g.head() == _git(company, "rev-parse", "HEAD")
+
+
+def test_read_head_with_no_commit_is_a_value_error(tmp_path):
+    _git(tmp_path, "init", "-q", "-b", "main")
+    with pytest.raises(ValueError):
+        CompanyGit(tmp_path, tmp_path / "wt").read_head()
+
+
+def test_files_lists_blobs_under_a_folder_at_a_commit(g, company):
+    head = g.head()
+    (company / "people/ava").mkdir()
+    (company / "people/ava/person.yaml").write_text("handle: ava\n")
+    g.commit(["people/ava/person.yaml"], "add ava")
+    at_head = g.files("people", head)
+    assert sorted(at_head) == ["people/minh/person.yaml", "people/minh/profile.md", "people/ngocbh/person.yaml"]
+    assert at_head["people/minh/profile.md"] == g.blob_id("people/minh/profile.md")
+    assert "people/ava/person.yaml" in g.files("people")
+    assert g.files("nowhere") == {}
+
+
+def test_read_blobs_reads_several_at_once_and_skips_what_it_cant(g, company):
+    profile, person = g.blob_id(PROFILE), g.blob_id("people/minh/person.yaml")
+    (company / PROFILE).write_bytes(b"# Minh\r\n\n")
+    g.commit([PROFILE], "crlf")
+    crlf = g.blob_id(PROFILE)
+    found = g.read_blobs([profile, g.head(), crlf, "0" * 40, person, "HEAD:company.yaml", profile])
+    assert found == {profile: g.read_blob(profile), crlf: b"# Minh\r\n\n", person: g.read_blob(person)}
+    assert g.read_blobs([]) == {}
+
+
 def test_commit_with_no_change_returns_head(g, company):
     head = g.head()
     (company / PROFILE).write_text("# Minh, Engineer\n")  # same text

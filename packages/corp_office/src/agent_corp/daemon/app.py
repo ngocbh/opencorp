@@ -15,6 +15,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 
 from agent_corp.company.git import CompanyGit
+from agent_corp.daemon.auth import DeviceTokens
 from agent_corp.daemon.bus import Bus
 from agent_corp.daemon.http import EXCEPTION_HANDLERS
 from agent_corp.daemon.routes import all_routes
@@ -134,6 +135,7 @@ def create_app(office: Office) -> Starlette:
             await office.stop()
 
     app = Starlette(routes=all_routes(), exception_handlers=EXCEPTION_HANDLERS,
-                    middleware=[Middleware(AbsoluteFormPaths)], lifespan=lifespan)
+                    middleware=[Middleware(AbsoluteFormPaths), Middleware(DeviceTokens, office=office)],
+                    lifespan=lifespan)
     app.state.office = office
     return app

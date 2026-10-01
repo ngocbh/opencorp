@@ -7,6 +7,7 @@ import pwd
 import re
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Annotated, Protocol, TextIO
 
@@ -14,6 +15,8 @@ import httpx
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import TypeAdapter, ValidationError
 
+from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
+from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company.lint import lint
@@ -23,7 +26,8 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError, make_office_dir
 from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
-from agent_corp.protocol.models import HireRequest, HireResponse
+from agent_corp.protocol.models import Device, HireRequest, HireResponse
+from agent_corp.secrets import write_private
 
 FIRST_AGENT = ("Minh", "Engineer")
 """The first agent's default name, and its title."""
@@ -128,22 +132,6 @@ def _ask_provider(prompter: Prompter) -> dict:
     return {"llm_config": llm}
 
 
-def write_private(path: Path, data: bytes) -> None:
-    """Replace ``path`` with ``data`` as a 0600 file, atomically; a symlink at ``path`` is replaced, not followed."""
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.unlink(missing_ok=True)  # left by a crashed run with the same pid
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
-
-
 def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None) -> bool:
     """Make sure ``path`` holds a usable provider; return whether it was written.
 
@@ -223,8 +211,9 @@ def handle_problem(handle: str) -> str | None:
     return None
 
 
-def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.BaseTransport | None = None) -> str:
-    """Hire the first agent through the office (preview, then confirm), reporting to the CEO."""
+def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.BaseTransport | None = None,
+                identity: Identity | None = None) -> str:
+    """Hire the first agent through the office (preview, then confirm), reporting to the CEO, as ``identity``."""
     name = prompter.ask("Name your first agent", FIRST_AGENT[0])
     while (problem := handle_problem(handle := prompter.ask("Their handle", _slug(name) or "agent"))) is not None:
         prompter.say(f"That doesn't work: {problem}")
@@ -232,8 +221,10 @@ def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.Bas
     again = "run `ac onboard` again to retry"
     try:
         with httpx.Client(transport=transport or httpx.HTTPTransport(uds=str(socket)), base_url="http://office",
-                          timeout=30) as client:
+                          timeout=30, headers=identity.headers() if identity else None) as client:
             preview = client.post("/people", json=body)
+            if preview.status_code == 401:
+                raise OnboardError("the office doesn't know this device; run `ac login`, then `ac onboard` again")
             if preview.status_code != 200:
                 raise OnboardError(f"the office refused the hire: {preview.status_code} {preview.text}")
             errors = [i.message for i in HireResponse.model_validate(preview.json()).issues if i.severity == "error"]
@@ -250,15 +241,33 @@ def _hire_first(socket: Path, ceo: str, prompter: Prompter, transport: httpx.Bas
     return f"{name} (@{handle})"
 
 
+def _make_device(home: Path, owner: Owner) -> Owner:
+    """Make this device's token for ``owner`` and save the identity; ``owner`` listing the device.
+
+    The identity is written before the company, so the device the first commit lists always
+    has its token here. A new company replaces an identity from an earlier one.
+
+    Raises:
+        OnboardError: the identity file can't be written.
+    """
+    me = Identity(owner.handle, device_name(), new_token())
+    try:
+        write_identity(identity_path(home), me)
+    except OSError as exc:
+        raise OnboardError(f"can't write {identity_path(home)}: {exc.strerror or exc}") from None
+    return replace(owner, devices=(Device(name=me.device, token_sha256=token_sha256(me.token)),))
+
+
 def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO | None = None,
             host: Host | None = None, repo: Path = REPO, environ: Mapping[str, str] = os.environ,
-            hire: bool = True) -> None:
+            hire: bool = True, device: bool = True) -> None:
     """Set up the office at ``home``; running it again only fills in what is missing.
 
-    In order: the home and office dirs (0700), the company repo from the template (lint
-    errors stop here; left alone while the office runs), ``office/provider.json``, the
-    daemon under ``mode``, and, once the office answers, a first agent if ``hire`` and the
-    company has none.
+    In order: the home and office dirs (0700), for a new company and if ``device`` this
+    device's identity (the owner's token in ``identity.json``, its hash in the owner's
+    first ``person.yaml``), the company repo from the template (lint errors stop here; left
+    alone while the office runs), ``office/provider.json``, the daemon under ``mode``, and,
+    once the office answers, a first agent if ``hire`` and the company has none.
 
     Raises:
         OnboardError: a step failed; earlier steps stay done.
@@ -289,6 +298,8 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
             written, missing = [], missing_files(paths.company)
         else:
             company, owner = _ask_company(prompter) if new else (None, None)
+            if owner is not None and device:
+                owner = _make_device(paths.home, owner)
             written, missing = write_company(paths.company, paths.worktrees, company=company, owner=owner), []
     except (CompanyGitError, OSError, ValueError) as exc:
         raise OnboardError(f"can't write the company repo at {paths.company}: {exc}") from None
@@ -315,6 +326,12 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
         raise OnboardError(str(exc)) from None
     prompter.say(f"Office: running under {installed.mode or 'a process started by hand'}; log at {run.log}")
 
+    me = read_identity(identity_path(paths.home))
+    if new and owner is not None and owner.devices:
+        prompter.say(f"This device: {owner.devices[0].name}, acting as @{owner.handle}"
+                     f" (its token is in {identity_path(paths.home)})")
     if hire and not any(p.kind == "agent" for p in repo_now.people.values()):
-        prompter.say(f"First agent: hired {_hire_first(run.socket, repo_now.company.ceo, prompter)}")
+        prompter.say(f"First agent: hired {_hire_first(run.socket, repo_now.company.ceo, prompter, identity=me)}")
+    if me is None and not new:
+        prompter.say("This device has no identity yet; run `ac login` to use ac from it.")
     prompter.say("Done. Run `ac` in a project folder to talk to your team.")

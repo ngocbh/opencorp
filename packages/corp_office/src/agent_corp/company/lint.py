@@ -197,5 +197,28 @@ def _check_profiles(repo: CompanyRepo) -> Iterator[RepoIssue]:
                             "agents learn into profile.md; create one", "warning")
 
 
+def _check_devices(repo: CompanyRepo) -> Iterator[RepoIssue]:
+    """Only humans list devices, each name once per person, and no token hash under two people."""
+    owners: dict[str, set[str]] = {}
+    for handle, person in sorted(repo.people.items()):
+        if person.devices and person.kind != "human":
+            yield RepoIssue(_person_path(handle), "person.agent_devices",
+                            "agents act through the office, not from devices; remove devices")
+        names = [d.name for d in person.devices]
+        for name in sorted({n for n in names if names.count(n) > 1}):
+            yield RepoIssue(_person_path(handle), "person.duplicate_device", name)
+        if person.kind == "human":
+            for device in person.devices:
+                owners.setdefault(device.token_sha256, set()).add(handle)
+    # The office ignores a hash two people list, since it can't tell who acts.
+    for handle, person in sorted(repo.people.items()):
+        if person.kind == "human":
+            for device in person.devices:
+                others = sorted(owners[device.token_sha256] - {handle})
+                if others:
+                    yield RepoIssue(_person_path(handle), "person.shared_device_token",
+                                    f"device {device.name}'s token is also listed by {', '.join(others)}")
+
+
 CHECKS = [_check_id_case, _check_managers, _check_ceo, _check_groups,
-          _check_person_groups, _check_assets, _check_flows, _check_skills, _check_profiles]
+          _check_person_groups, _check_assets, _check_flows, _check_skills, _check_profiles, _check_devices]

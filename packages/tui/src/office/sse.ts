@@ -1,5 +1,6 @@
 import type { Event, LiveEvent } from "@agent-corp/protocol"
-import { BASE } from "./http"
+import { UnknownDevice } from "./errors"
+import { authorization, BASE } from "./http"
 
 export type SseMessage = { event?: string; id?: string; data: string }
 
@@ -58,6 +59,8 @@ export type SubscribeOptions = {
   maxDelayMs?: number
   /** Silence after which the stream counts as dead. */
   idleMs?: number
+  /** This device's token, sent as `Authorization: Bearer`. */
+  token?: string
 }
 
 export type Subscription = {
@@ -136,8 +139,9 @@ export function subscribe(
       const res = await fetch(BASE + path, {
         unix: socket,
         signal: abort.signal,
-        headers: { accept: "text/event-stream" },
+        headers: { accept: "text/event-stream", ...authorization(opts.token) },
       })
+      if (res.status === 401) return { error: new UnknownDevice("unauthenticated"), reset, connected }
       if (!res.ok || !res.body) return { error: new Error(`GET ${path}: HTTP ${res.status}`), reset, connected }
       const reader = res.body.getReader()
       for (let r = await reader.read(); !r.done; r = await reader.read()) {

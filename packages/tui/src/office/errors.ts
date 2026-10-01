@@ -22,6 +22,14 @@ export class OfficeUnavailable extends OfficeError {
   }
 }
 
+/** The office refused the request's device token, or wanted one (a 401). */
+export class UnknownDevice extends OfficeError {
+  constructor(code: string) {
+    super(401, code, "the office doesn't know this device: run `ac login`")
+    this.name = "UnknownDevice"
+  }
+}
+
 /** The office didn't answer within the request's time limit. */
 export class OfficeTimeout extends OfficeError {
   constructor(

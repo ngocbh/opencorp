@@ -8,7 +8,10 @@ import subprocess
 import httpx
 import psutil
 import pytest
+import yaml
 
+from agent_corp.auth.identity import Identity, device_name, read_identity
+from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, missing_files, write_company
@@ -112,6 +115,75 @@ def test_an_existing_home_others_can_read_is_made_private(tmp_path, monkeypatch)
     with pytest.raises(OnboardError, match="stop"):
         onboard(home, Script("Acme", "Me", "me"), host=make_host(tmp_path, Runner()))
     assert stat.S_IMODE(os.stat(home).st_mode) == 0o700
+
+
+def _stop_after_the_company(monkeypatch):
+    monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
+
+
+def test_a_new_company_registers_this_device_for_the_owner(tmp_path, monkeypatch):
+    _stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
+    ask = Script("Acme", "Me", "me")
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, ask, host=make_host(tmp_path, Runner()))
+    me = read_identity(home / "identity.json")
+    assert (me.handle, me.device) == ("me", device_name())
+    assert stat.S_IMODE(os.stat(home / "identity.json").st_mode) == 0o600
+    first = _git(home / "company", "show", "HEAD:people/me/person.yaml")
+    assert yaml.safe_load(first)["devices"] == [{"name": me.device, "token_sha256": token_sha256(me.token)}]
+    assert _git(home / "company", "log", "--format=%s").splitlines() == ["onboard: create the company"]
+    assert not [line for line in ask.seen if me.token in line]
+
+
+def test_a_new_company_replaces_an_old_identity(tmp_path, monkeypatch):
+    _stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "identity.json").write_text('{"handle": "old", "device": "old", "token": "act_old"}')
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, Script("Acme", "Me", "me"), host=make_host(tmp_path, Runner()))
+    me = read_identity(home / "identity.json")
+    assert me.handle == "me" and me.token != "act_old"
+
+
+def test_no_device_leaves_the_company_open_without_tokens(tmp_path, monkeypatch):
+    _stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, Script("Acme", "Me", "me"), host=make_host(tmp_path, Runner()), device=False)
+    assert not (home / "identity.json").exists()
+    assert load_repo(home / "company").people["me"].devices == []
+
+
+def test_an_existing_company_without_an_identity_suggests_login(tmp_path):
+    home = tmp_path / "home"
+    write_company(home / "company", home / "worktrees", company="Acme", owner=Owner("me", "Me"))
+    ask = Script()
+    onboard(home, ask, stdin=io.StringIO('{"llm_config": {"provider": "openai"}}'),
+            host=make_host(tmp_path, Runner(), answers=lambda s: True), hire=False)
+    assert "This device has no identity yet; run `ac login` to use ac from it." in ask.seen
+    assert not (home / "identity.json").exists()
+
+
+def test_a_hire_the_office_refuses_for_want_of_a_token_says_to_log_in(tmp_path):
+    refuse = httpx.MockTransport(lambda request: httpx.Response(401, json={"error": "unauthenticated"}))
+    with pytest.raises(OnboardError, match="doesn't know this device; run `ac login`"):
+        onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""), transport=refuse)
+
+
+def test_the_hire_carries_the_device_token(tmp_path):
+    seen = []
+
+    def office(request):
+        seen.append(request.headers.get("authorization"))
+        person = {"handle": "minh", "name": "Minh", "kind": "agent", "title": "Engineer", "manager": "me"}
+        return httpx.Response(200, json={"person": person, "diff": "", "issues": [], "commit": None})
+
+    me = Identity("me", "mac", new_token())
+    onboard_module._hire_first(tmp_path / "no.sock", "me", Script("", ""), transport=httpx.MockTransport(office),
+                               identity=me)
+    assert seen == [f"Bearer {me.token}"] * 2
 
 
 def test_no_hire_leaves_the_company_without_an_agent(tmp_path):
@@ -218,6 +290,11 @@ def test_onboard_sets_up_the_office_and_a_second_run_changes_nothing(short_dir):
         assert repo.company.ceo == "ngocbh"
         assert _git(paths.company, "log", "--format=%s").splitlines() == [
             "hire(@minh): Minh, Engineer", "onboard: create the company"]
+        me = read_identity(short_dir / "identity.json")
+        assert [d.name for d in repo.people["ngocbh"].devices] == [me.device]
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(paths.socket)), base_url="http://office") as c:
+            assert c.get("/people").status_code == 401
+            assert c.get("/whoami", headers=me.headers()).json() == {"person": "ngocbh", "device": me.device}
         assert stat.S_IMODE(os.stat(paths.office / "provider.json").st_mode) == 0o600
         assert stat.S_IMODE(os.stat(paths.home).st_mode) == 0o700
         assert stat.S_IMODE(os.stat(paths.office).st_mode) == 0o700
@@ -248,10 +325,15 @@ def test_the_key_lands_only_in_the_provider_file(short_dir):
         leaked = [p for p in short_dir.rglob("*") if p.is_file() and not p.is_symlink()
                   and p != paths.office / "provider.json" and KEY.encode() in p.read_bytes()]
         assert leaked == []
+        token = read_identity(short_dir / "identity.json").token
+        assert not [line for line in ask.seen if token in line]
+        leaked = [p for p in short_dir.rglob("*") if p.is_file() and not p.is_symlink()
+                  and p != short_dir / "identity.json" and token.encode() in p.read_bytes()]
+        assert leaked == []
         # Git objects are compressed, so the byte search above can't see into them.
         objects = subprocess.run(["git", "-C", str(paths.company), "cat-file", "--batch-all-objects", "--batch"],
                                  capture_output=True, check=True).stdout
-        assert objects and KEY.encode() not in objects
+        assert objects and KEY.encode() not in objects and token.encode() not in objects
         assert (paths.office / "office.log").exists()
     finally:
         _stop(paths)

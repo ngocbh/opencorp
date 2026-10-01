@@ -1,15 +1,14 @@
 import type { Session } from "@agent-corp/protocol"
 import { aboutTurn, turns, written } from "@agent-corp/tui/debrief"
 import { launchEditor } from "@agent-corp/tui/editor-launch"
-import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
+import type { OfficeClient } from "@agent-corp/tui/office/client"
 import { OfficeError, OfficeUnavailable } from "@agent-corp/tui/office/errors"
-import { defaultSocket } from "@agent-corp/tui/office/paths"
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { officeNotRunning } from "../office"
+import { officeClient, officeNotRunning } from "../office"
 
 const USAGE = "Usage: ac feedback [SESSION|RUN] [-m TEXT] [--turn N]"
 
@@ -86,7 +85,7 @@ export const run: CommandRun = async (argv) => {
     if (positionals.length > 1) throw new Usage(`expected one SESSION or RUN, got ${positionals.join(" ")}`)
     const n = values.turn === undefined ? undefined : Number(values.turn)
     if (n !== undefined && !(Number.isInteger(n) && n >= 1)) throw new Usage("--turn takes a turn number")
-    const client = createOfficeClient({ socket: defaultSocket() })
+    const client = officeClient()
     const { session, run, guessed } = await target(client, positionals[0])
     const list = turns(await client.sessions.messages(session.id))
     if (n !== undefined && n > list.length) throw new Usage(`there is no turn ${n}; the session has ${list.length}`)

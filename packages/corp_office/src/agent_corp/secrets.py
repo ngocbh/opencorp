@@ -1,4 +1,4 @@
-"""The office secret store: asset credentials, one private file each."""
+"""Private files: the office secret store of asset credentials, and ``write_private`` for other secrets."""
 
 import errno
 import os
@@ -161,3 +161,19 @@ class SecretStore:
     def _check_name(name: str) -> None:
         if not isinstance(name, str) or not NAME.fullmatch(name):
             raise ValueError(f"secret name {name!r} must match {NAME.pattern}")
+
+
+def write_private(path: Path, data: bytes) -> None:
+    """Replace ``path`` with ``data`` as a 0600 file, atomically; a symlink at ``path`` is replaced, not followed."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.unlink(missing_ok=True)  # left by a crashed run with the same pid
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise

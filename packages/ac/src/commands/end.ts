@@ -1,11 +1,10 @@
 import { realpathSync } from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { officeNotRunning } from "../office"
+import { officeClient, officeNotRunning } from "../office"
 import type { Session } from "@agent-corp/protocol"
-import { createOfficeClient, type OfficeClient } from "@agent-corp/tui/office/client"
+import type { OfficeClient } from "@agent-corp/tui/office/client"
 import { OfficeUnavailable } from "@agent-corp/tui/office/errors"
-import { defaultSocket } from "@agent-corp/tui/office/paths"
 
 // An ending session is already on its way out, and a debriefing or later one is not live.
 const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy"])
@@ -35,7 +34,7 @@ export const run: CommandRun = async (argv) => {
     console.error(`ac end: ${e instanceof Error ? e.message : e}`)
     return 2
   }
-  const client = createOfficeClient({ socket: defaultSocket() })
+  const client = officeClient()
   try {
     // The office keys folders by their real path.
     const session = await endSession({ client, cwd: realpathSync(process.cwd()), id })

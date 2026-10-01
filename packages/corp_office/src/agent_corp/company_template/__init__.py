@@ -8,7 +8,7 @@ and the owner; the rest (the shared flows) are copied as they are.
 import json
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -18,7 +18,7 @@ import yaml
 from pydantic import ValidationError
 
 from agent_corp.company.git import CompanyGit, CompanyGitError
-from agent_corp.protocol.models import Company, Person
+from agent_corp.protocol.models import Company, Device, Person
 
 _OWNER_DIR = "people/{owner}"
 _FILLED = ("company.yaml", f"{_OWNER_DIR}/person.yaml")
@@ -31,6 +31,8 @@ class Owner:
     handle: str
     name: str
     title: str = "CEO"
+    devices: tuple[Device, ...] = field(default=())
+    """The devices the owner's first ``person.yaml`` lists."""
 
 
 def _walk(node: Traversable, prefix: str = "") -> dict[str, bytes]:
@@ -58,6 +60,10 @@ def template_files(company: str, owner: Owner) -> dict[str, bytes]:
     for rel, data in _walk(files(__name__)).items():
         if rel in _FILLED:
             text = Template(data.decode()).substitute(values)
+            if rel != "company.yaml" and owner.devices:
+                text += "devices:\n" + "".join(f"- name: {json.dumps(d.name)}\n"
+                                               f"  token_sha256: {json.dumps(d.token_sha256)}\n"
+                                               for d in owner.devices)
             model = Company if rel == "company.yaml" else Person
             try:
                 model.model_validate(yaml.safe_load(text))

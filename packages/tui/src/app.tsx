@@ -104,6 +104,8 @@ const appBindingCommands = [
 export type TuiInput = {
   /** The office's unix socket. */
   socket: string
+  /** This device's token, sent with every request; none while the office has no devices. */
+  token?: string
   /** The folder the TUI works in. */
   cwd: string
   args: Args
@@ -207,7 +209,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                                 <ToastProvider>
                                   <RouteProvider>
                                     <TuiConfigProvider config={input.config}>
-                                      <OfficeProvider socket={input.socket} cwd={input.cwd}>
+                                      <OfficeProvider socket={input.socket} token={input.token} cwd={input.cwd}>
                                         <ThemeProvider mode={mode}>
                                           <LocalProvider>
                                             <PromptStashProvider>

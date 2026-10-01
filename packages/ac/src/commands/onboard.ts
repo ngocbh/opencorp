@@ -5,7 +5,7 @@ import { type Deps, REPO, realDeps, runInstall } from "../office"
 
 /**
  * `ac onboard [--service MODE] [--provider-stdin] [--company NAME] [--name NAME] [--handle H]
- * [--agent NAME] [--agent-handle H] [--no-hire] [--home H]`: syncs the checkout's venv, then runs
+ * [--agent NAME] [--agent-handle H] [--no-hire] [--no-device] [--home H]`: syncs the checkout's venv, then runs
  * the Python onboarding, which asks what it needs on this terminal (the model key without echo)
  * and never takes a key as a flag.
  */
