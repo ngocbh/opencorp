@@ -67,7 +67,7 @@ def _company(paths: OfficePaths, running: bool) -> Check:
         return Check("company", "fail", f"no company repo at {paths.company}; run `ac onboard`")
     if is_new(paths.company):
         return Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no first commit);"
-                     " run `ac onboard` to finish it")
+                     " run `ac init` to finish it")
     try:
         issues = lint(load_repo(paths.company))
     except Exception as exc:  # a repo that won't even load is the finding

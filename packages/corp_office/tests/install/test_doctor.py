@@ -46,7 +46,7 @@ def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
     (paths.company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
     got = by_name(run_checks(tmp_path, paths))
     assert got["company"] == Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no"
-                                   " first commit); run `ac onboard` to finish it")
+                                   " first commit); run `ac init` to finish it")
 
 
 def test_a_fresh_machine_is_told_to_onboard(tmp_path):

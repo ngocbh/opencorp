@@ -1,4 +1,4 @@
-"""A real office on a temp home, onboarded as `ac onboard` does it, and the office calls the TUI makes."""
+"""A real office on a temp home, made as `ac init` makes it, and the office calls the TUI makes."""
 
 import json
 import os
@@ -68,21 +68,22 @@ class RunningOffice:
                             base_url="http://office", timeout=30)
 
     def onboard(self, device: bool = False) -> None:
-        """Onboard Acme with Ngoc as CEO and the office as a background process, as `ac onboard` would.
+        """Make Acme with Ngoc as CEO and Minh as its first teammate, and the office as a background process,
+        as `ac init` would.
 
-        With ``device``, onboarding registers this device, so the office needs its token; the
+        With ``device``, init registers this device, so the office needs its token; the
         client sends it.
         """
         provider = {"llm_config": {"provider": "vllm", "model": "stub"}, "env": self.fake.env()}
         done = subprocess.run(
-            [sys.executable, "-m", "agent_corp.install", "onboard", "--home", str(self.home),
+            [sys.executable, "-m", "agent_corp.install", "init", "--home", str(self.home),
              "--provider-stdin", "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh",
              "--service", "background", *([] if device else ["--no-device"])],
             input=json.dumps(provider), capture_output=True, text=True, cwd=REPO, timeout=120)
         if self.paths.pidfile.exists():
             self.pids.add(self.pid())
         assert done.returncode == 0, done.stdout + done.stderr
-        assert "First agent: hired Minh (@minh)" in done.stdout
+        assert "with you as CEO and Minh (@minh)" in done.stdout
         if device:
             self.http.headers.update(read_identity(identity_path(self.home)).headers())
 
