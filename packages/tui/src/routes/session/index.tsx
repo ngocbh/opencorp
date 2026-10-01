@@ -783,6 +783,21 @@ export function toolView(
   return { view: "generic", input }
 }
 
+/** The line edit_file's reply says a single-place edit starts on, if it says one. */
+export function editStartLine(output: string | undefined): number | undefined {
+  const match = output?.match(/^replaced 1 occurrence in .* at line (\d+)$/s)
+  return match ? Number(match[1]) : undefined
+}
+
+/** A unified diff of an edit's two sides, its hunks moved to start at `line` of the file. */
+function editPatch(file: string, oldString: string, newString: string, line = 1) {
+  const patch = createTwoFilesPatch(file, file, oldString, newString)
+  return patch.replace(
+    /^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@/gm,
+    (_, a, aLen = "", b, bLen = "") => `@@ -${+a + line - 1}${aLen} +${+b + line - 1}${bLen} @@`,
+  )
+}
+
 const PART_MAPPING = {
   text: TextPartView,
   file: FilePartView,
@@ -1187,8 +1202,10 @@ function Edit(props: ToolProps) {
   const ft = createMemo(() => filetype(file()))
   const oldString = createMemo(() => stringValue(props.input.oldString))
   const newString = createMemo(() => stringValue(props.input.newString))
-  // The edit's input carries both sides, so the diff is built here rather than sent.
-  const diffContent = createMemo(() => createTwoFilesPatch(file(), file(), oldString() ?? "", newString() ?? ""))
+  // The edit's input carries both sides, so the diff is built here rather than sent. Its lines
+  // are numbered only when the reply says where in the file the edit landed.
+  const startLine = createMemo(() => editStartLine(props.output))
+  const diffContent = createMemo(() => editPatch(file(), oldString() ?? "", newString() ?? "", startLine()))
 
   return (
     <Switch>
@@ -1200,7 +1217,7 @@ function Edit(props: ToolProps) {
               view={view()}
               filetype={ft()}
               syntaxStyle={syntax()}
-              showLineNumbers={true}
+              showLineNumbers={startLine() !== undefined}
               width="100%"
               wrapMode={ctx.diffWrapMode()}
               fg={theme.text}
