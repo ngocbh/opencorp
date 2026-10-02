@@ -1,4 +1,3 @@
-// Stands in for @opencode-ai/core/open.
 import open from "open"
 
 /** Opens an http(s) URL in the browser; rejects any other scheme. */

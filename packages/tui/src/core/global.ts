@@ -1,4 +1,4 @@
-// Stands in for @opencode-ai/core/global: the directories the TUI keeps its own state in.
+// The directories the TUI keeps its own state in.
 import os from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer } from "effect"

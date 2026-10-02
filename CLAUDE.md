@@ -10,7 +10,7 @@ packages/corp_office/src/agent_corp/  # office daemon, run worker, sandbox launc
 packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/agent_corp/
 packages/agent-composer/              # submodule; uv path dependency
 packages/protocol/                    # JSON Schema → TS types + pydantic
-packages/tui/                         # forked OpenCode TUI
+packages/tui/                         # the TUI (forked from OpenCode)
 packages/ac/                          # `ac` CLI entry
 docs/plans/                           # design docs and plans (local only, gitignored)
 ```

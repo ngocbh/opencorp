@@ -11,7 +11,7 @@ import { personLabel } from "../../util/transcript"
 import { useToast } from "../../ui/toast"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
-import { useBindings, useOpencodeModeStack } from "../../keymap"
+import { useBindings, useAgentCorpModeStack } from "../../keymap"
 import { buildAnswer, cardModel, type PageAnswer } from "./answer"
 import { leaveBindings } from "./leave"
 
@@ -29,7 +29,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   const { theme } = useTheme()
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
-  const modeStack = useOpencodeModeStack()
+  const modeStack = useAgentCorpModeStack()
 
   // The card stays mounted while its question is replaced by a newer copy (a reconnect re-reads
   // it); keep the last copy for the moment the question goes before the card does.
