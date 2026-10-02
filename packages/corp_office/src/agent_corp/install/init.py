@@ -22,17 +22,11 @@ from agent_corp.protocol.models import HireRequest
 STEPS = 5
 """The steps: the model, the company, your password, the remote, and this machine."""
 
-COMPANY = "Company name"
-YOUR_NAME = "Your name"
-YOUR_HANDLE = "Your handle"
-YOUR_TITLE = "Your title"
 YOUR_PASSWORD = ("Your password, to log in new devices with"
                  " (at least 12 characters, one you use nowhere else; not shown)")
 PASSWORD_AGAIN = "Your password again"
-THEIR_NAME = "Their name"
-THEIR_HANDLE = "Their handle"
 REMOTE = "Git remote URL (empty to skip)"
-"""The questions, by which command-line flags preset their answers."""
+"""The questions init asks itself; the interview asks the rest."""
 
 
 def _ask_password(prompter: Prompter) -> str | None:

@@ -11,6 +11,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import __main__ as install_main
 from agent_corp.install import doctor
 from agent_corp.install.__main__ import main
+from agent_corp.install.interview import Known
 from agent_corp.install.launch import REPO, office_answers
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
@@ -60,18 +61,30 @@ def test_an_init_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, capsys):
     assert "ac init: the provider on stdin is not valid JSON" in capsys.readouterr().err
 
 
-def test_init_flags_answer_their_questions_including_the_first_teammates_handle(tmp_path, monkeypatch):
+def test_init_flags_are_known_answers_for_the_interview(tmp_path, monkeypatch):
     seen = {}
     monkeypatch.setattr(install_main.init, "init", lambda home, prompter, **k: seen.update(prompter=prompter, **k))
-    args = ["init", "--home", str(tmp_path / "home"), "--handle", "ngocbh", "--title", "Founder", "--agent", "Lan",
-            "--agent-handle", "lan-dev", "--remote", "git@example.com:acme.git", "--no-device"]
+    args = ["init", "--home", str(tmp_path / "home"), "--company", "Acme", "--name", "Me", "--handle", "me",
+            "--agent", "Bo", "--agent-handle", "bo", "--title", "CTO", "--remote", "u", "--no-device"]
     assert main(args) == 0
-    assert seen["prompter"].ask("Your handle") == "ngocbh"
-    assert seen["prompter"].ask("Your title", "CEO") == "Founder"
-    assert seen["prompter"].ask("Their name") == "Lan"
-    assert seen["prompter"].ask("Their handle") == "lan-dev"
-    assert seen["prompter"].ask("Git remote URL (empty to skip)") == "git@example.com:acme.git"
+    assert seen["known"] == Known("Acme", "Me", "me", "CTO", "Bo", "bo", remote="u")
+    assert seen["prompter"].preset == {} and seen["prompter"].interactive is True
     assert seen["device"] is False
+
+
+def test_ctrl_c_during_init_is_exit_130_with_only_a_newline(tmp_path, monkeypatch, capsys):
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(install_main.init, "init", interrupted)
+    assert main(["init", "--home", str(tmp_path / "home")]) == 130
+    assert capsys.readouterr().err == "\n"
+
+
+def test_the_same_handle_for_you_and_the_first_teammate_stops_init_before_it_starts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(install_main.init, "init", lambda *a, **k: pytest.fail("init ran"))
+    assert main(["init", "--home", str(tmp_path / "home"), "--handle", "x", "--agent-handle", "x"]) == 1
+    assert capsys.readouterr().err == "ac init: --agent-handle 'x' is the same as --handle\n"
 
 
 def test_onboard_flags_give_the_repo_to_clone_and_say_which_human_you_are(tmp_path, monkeypatch):
@@ -91,7 +104,7 @@ def test_onboard_without_a_company_or_a_repo_is_exit_1_with_the_ways_to_get_one(
 
 @pytest.mark.parametrize("flag", ["--handle", "--agent-handle"])
 def test_a_bad_handle_flag_stops_init_before_it_starts(tmp_path, monkeypatch, capsys, flag):
-    # A preset answer is given again on every retry, so the question's own re-asking would never end.
+    # Checked before anything is asked, so a bad flag costs the owner no questions.
     monkeypatch.setattr(install_main.init, "init", lambda *a, **k: pytest.fail("init ran"))
     assert main(["init", "--home", str(tmp_path / "home"), flag, "Bad_Handle"]) == 1
     err = capsys.readouterr().err
