@@ -14,9 +14,9 @@ from agent_corp.daemon.http import HTTPError, error
 if TYPE_CHECKING:
     from agent_corp.daemon.app import Office
 
-OPEN = frozenset({("GET", "/health"), ("HEAD", "/health")})
+OPEN = frozenset({("GET", "/health"), ("HEAD", "/health"), ("POST", "/login")})
 """Requests served without a token even once tokens are enforced: the "is the office up" probe of
-``ac``, ``ac start``, ``ac doctor`` and onboarding."""
+``ac``, ``ac start``, ``ac doctor`` and onboarding, and logging in with a password."""
 
 
 def acting_person(request: Request) -> str:
