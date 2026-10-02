@@ -1,7 +1,7 @@
-"""``python -m agent_corp.install {init,onboard,offboard,doctor,start}``: what ``ac init``, ``ac onboard``,
-``ac offboard``, ``ac doctor`` and ``ac start`` run.
+"""``python -m agent_corp.install {init,onboard,offboard,doctor,start,restart}``: what ``ac init``,
+``ac onboard``, ``ac offboard``, ``ac doctor``, ``ac start`` and ``ac restart`` run.
 
-Exit codes: 0 done, 1 failed, 3 (``start``) no office yet.
+Exit codes: 0 done, 1 failed, 3 (``start``, ``restart``) no office yet.
 """
 
 import argparse
@@ -14,7 +14,7 @@ from agent_corp.company_template import is_new
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, init, offboard, service
-from agent_corp.install.launch import Host, ServiceError, launch
+from agent_corp.install.launch import Host, Launch, ServiceError, launch
 from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, handle_problem, onboard
 
 NOT_ONBOARDED = 3
@@ -79,6 +79,19 @@ def _doctor(args: argparse.Namespace) -> int:
     return doctor.exit_code(found)
 
 
+def _came_up(run: Launch, host: Host, how) -> bool:
+    """Start the office with ``how`` (``service.start`` or ``service.restart``) and wait for it to answer."""
+    try:
+        started = how(run, host)
+        for note in started.notes:
+            print(f"ac: {note}; started the office in the background instead", file=sys.stderr)
+        service.wait(run, host)
+    except (ServiceError, OfficeStartError) as exc:
+        print(f"ac: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def _start(args: argparse.Namespace) -> int:
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
@@ -88,15 +101,25 @@ def _start(args: argparse.Namespace) -> int:
     if is_new(OfficePaths(run.home).company):
         print(f"ac: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
         return NOT_ONBOARDED
-    try:
-        started = service.start(run, host)
-        for note in started.notes:
-            print(f"ac: {note}; started the office in the background instead", file=sys.stderr)
-        service.wait(run, host)
-    except (ServiceError, OfficeStartError) as exc:
-        print(f"ac: {exc}", file=sys.stderr)
+    if not _came_up(run, host, service.start):
         return 1
     print(f"Started the office (pid {service.pid(run)}).")
+    return 0
+
+
+def _restart(args: argparse.Namespace) -> int:
+    host = Host()
+    run = launch(_home(args.home), user_home=host.user_home)
+    if is_new(OfficePaths(run.home).company):
+        print(f"ac: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
+        return NOT_ONBOARDED
+    was = service.pid(run) if host.answers(run.socket) else None
+    if not _came_up(run, host, service.restart):
+        return 1
+    if was is None:
+        print(f"The office wasn't running; started it (pid {service.pid(run)}).")
+    else:
+        print(f"Restarted the office (pid {service.pid(run)}; was {was}).")
     return 0
 
 
@@ -107,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, text in (("init", "create the company, then set up this office"),
                        ("onboard", "set up this office for an existing company"),
                        ("offboard", "remove this office from this machine"), ("doctor", "check the office"),
-                       ("start", "start the office if it isn't running")):
+                       ("start", "start the office if it isn't running"),
+                       ("restart", "stop the office and start it again")):
         sub = commands.add_parser(name, help=text)
         sub.add_argument("--home", help="agent-corp home (default: $AGENT_CORP_HOME or ~/.agent-corp)")
     for name in ("init", "onboard"):
@@ -134,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
                                help="delete the company repo even if some of it isn't pushed anywhere")
     args = parser.parse_args(argv)
     return {"init": _init, "onboard": _onboard, "offboard": _offboard, "doctor": _doctor,
-            "start": _start}[args.command](args)
+            "start": _start, "restart": _restart}[args.command](args)
 
 
 if __name__ == "__main__":

@@ -159,10 +159,32 @@ def uninstall(launch: Launch, host: Host, timeout: float = 15.0) -> list[str]:
     if stopped := fallback.stop_process(launch, timeout):
         done.append(f"{recorded or 'started by hand'}: {stopped}")
     (launch.office / "install.json").unlink(missing_ok=True)
-    deadline = host.clock() + 5.0
+    _wait_stopped(launch, host)
+    return [line for line in done if line]
+
+
+def _wait_stopped(launch: Launch, host: Host, timeout: float = 5.0) -> None:
+    """Wait up to ``timeout`` seconds for the office to stop answering; ``ServiceError`` if it still does."""
+    deadline = host.clock() + timeout
     while host.answers(launch.socket, timeout=1.0):
         if host.clock() >= deadline:
             raise ServiceError(f"the office still answers on {launch.socket} (pid {pid(launch)}); stop it and"
                                " try again")
         host.sleep(0.1)
-    return [line for line in done if line]
+
+
+def restart(launch: Launch, host: Host, timeout: float = 15.0) -> Installed:
+    """Stop the office's daemon and start it again the way ``start`` would; a stopped office is just started.
+
+    The daemon gets SIGTERM, then SIGKILL after ``timeout`` seconds. It exits 0 on SIGTERM, so
+    neither launchd nor systemd restarts it on its own. A leftover tmux session is killed too,
+    since ``start_tmux`` would take it for the running office.
+
+    Raises:
+        ServiceError: the office still answers after it was stopped, or it can't be started.
+    """
+    fallback.stop_process(launch, timeout)
+    if recorded_mode(launch) == "tmux":
+        fallback.stop_tmux(launch, host)
+    _wait_stopped(launch, host)
+    return start(launch, host)

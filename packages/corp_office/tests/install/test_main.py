@@ -38,6 +38,11 @@ def test_start_before_onboarding_is_exit_3_with_a_hint(tmp_path, capsys):
     assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
+def test_restart_before_onboarding_is_exit_3_with_a_hint(tmp_path, capsys):
+    assert main(["restart", "--home", str(tmp_path / "home")]) == 3
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
+
+
 def test_start_with_a_company_that_has_no_first_commit_is_exit_3_with_a_hint(tmp_path, capsys):
     company = tmp_path / "home" / "company"
     company.mkdir(parents=True)
@@ -121,6 +126,28 @@ def test_scripted_init_then_start_brings_a_stopped_office_back(short_dir, monkey
         assert office_answers(paths.socket)
         pid = paths.pidfile.read_text().strip()
         assert capsys.readouterr().out == f"Started the office (pid {pid}).\n"
+    finally:
+        _stop(paths)
+
+
+def test_restart_replaces_a_running_office_and_starts_a_stopped_one(short_dir, monkeypatch, capsys):
+    paths = OfficePaths(short_dir)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))
+    args = ["init", "--home", str(short_dir), "--provider-stdin", "--company", "Acme",
+            "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--service", "background"]
+    try:
+        assert main(args) == 0, capsys.readouterr()
+        old = paths.pidfile.read_text().strip()
+        capsys.readouterr()
+        assert main(["restart", "--home", str(short_dir)]) == 0
+        new = paths.pidfile.read_text().strip()
+        assert new != old and office_answers(paths.socket)
+        assert capsys.readouterr().out == f"Restarted the office (pid {new}; was {old}).\n"
+        _stop(paths)
+        assert main(["restart", "--home", str(short_dir)]) == 0
+        assert office_answers(paths.socket)
+        pid = paths.pidfile.read_text().strip()
+        assert capsys.readouterr().out == f"The office wasn't running; started it (pid {pid}).\n"
     finally:
         _stop(paths)
 
