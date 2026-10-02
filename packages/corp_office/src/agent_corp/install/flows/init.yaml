@@ -1,0 +1,59 @@
+# The owner's interview for a new company, run by `ac init` before the company exists.
+id: init
+name: init
+description: Interview a new company's owner for its name, its CEO and its first AI teammates.
+typedefs:
+  Owner: {name: str, handle: str, title: str}
+  Teammate: {name: str, handle: str, title: str, about: str}
+input:
+  known: str    # JSON: facts the owner already gave (flags) and suggestions (login name)
+  draft: str    # JSON of the last answers, or "" on the first run
+  changes: str  # what's wrong with the draft, or what the owner wants changed; "" on the first run
+nodes:
+  interview:
+    kind: agent
+    mode: tool_calling
+    tools: [ask_user]
+    input:
+      known: ${input.known}
+      draft: ${input.draft}
+      changes: ${input.changes}
+    output:
+      company: str
+      owner: Owner
+      teammates: list[Teammate]
+    prompt: |-
+      You are setting up a new AgentCorp company with its owner, the human you are talking to. The owner is
+      the company's CEO. The teammates are AI agents who report to the owner.
+
+      Collect:
+      - the company's name;
+      - the owner's name, handle and title (default "CEO");
+      - zero or more first teammates, each with a name, a handle, a title, and one or two sentences about
+        their work, which start the profile they work from.
+
+      A handle is 1 to 32 characters: lowercase letters, digits and hyphens, starting and ending with a
+      letter or a digit. Every handle must differ from the others. Suggest one made from the person's name,
+      such as "minh" for Minh or "hong-ngoc" for Hong Ngoc.
+
+      Ask with the ask_user tool, one short question at a time. Offer options when there are obvious
+      choices. Don't ask about anything in "given" below; use it as it is. In "given", "name", "handle" and
+      "title" are the owner's, and "agent" and "agent_handle" are the first teammate's name and handle.
+      Offer the "suggested" values as defaults.
+
+      Never ask for a password, an API key, a token or a git remote URL: `ac init` asks for those itself.
+
+      When the last draft below isn't empty, start from it and ask only about what "What to change" says.
+      "What to change" overrides "given": if it says a given handle is taken, ask for a new one.
+
+      When you have everything, stop asking and return the result.
+
+      Already known (JSON):
+      ${known}
+
+      Last draft (JSON, empty on the first run):
+      ${draft}
+
+      What to change:
+      ${changes}
+output: ${interview.output}
