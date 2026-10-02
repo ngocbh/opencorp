@@ -2,23 +2,42 @@ import { expect, test } from "bun:test"
 import { mkdir, writeFile } from "node:fs/promises"
 import path from "node:path"
 import type { TerminalColors } from "@opentui/core"
-import { DEFAULT_THEMES, allThemes, hasTheme, resolveTheme, setCustomThemes, terminalMode } from "../src/theme"
+import {
+  DEFAULT_THEME,
+  DEFAULT_THEMES,
+  RENAMED_THEMES,
+  allThemes,
+  hasTheme,
+  resolveTheme,
+  setCustomThemes,
+  terminalMode,
+  themeName,
+} from "../src/theme"
 import { discoverThemes } from "../src/context/theme"
 import { tmpdir } from "./fixture/fixture"
 
 test("hasTheme checks built-in and custom themes", () => {
   const name = `custom-theme-has-${Date.now()}`
-  expect(hasTheme("opencode")).toBe(true)
+  expect(hasTheme(DEFAULT_THEME)).toBe(true)
   expect(hasTheme(name)).toBe(false)
-  setCustomThemes({ [name]: DEFAULT_THEMES.opencode })
+  setCustomThemes({ [name]: DEFAULT_THEMES[DEFAULT_THEME] })
   expect(hasTheme(name)).toBe(true)
   expect(allThemes()[name]).toBeDefined()
   setCustomThemes({})
   expect(hasTheme(name)).toBe(false)
 })
 
+test("a theme chosen under an old name loads as the theme it became", () => {
+  for (const [old, now] of Object.entries(RENAMED_THEMES)) {
+    expect(hasTheme(old)).toBe(false)
+    expect(themeName(old)).toBe(now)
+    expect(hasTheme(now)).toBe(true)
+  }
+  expect(themeName("nord")).toBe("nord")
+})
+
 test("resolveTheme rejects circular color refs", () => {
-  const item = structuredClone(DEFAULT_THEMES.opencode)
+  const item = structuredClone(DEFAULT_THEMES[DEFAULT_THEME])
   item.defs = { ...item.defs, one: "two", two: "one" }
   item.theme.primary = "one"
   expect(() => resolveTheme(item, "dark")).toThrow("Circular color reference")
