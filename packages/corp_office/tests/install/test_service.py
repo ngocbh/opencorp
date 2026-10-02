@@ -317,3 +317,67 @@ def test_a_pidfile_naming_some_other_process_is_left_alone(tmp_path, one):
 def test_an_office_that_still_answers_after_uninstalling_is_an_error(tmp_path, one):
     with pytest.raises(ServiceError, match="still answers"):
         service.uninstall(one, make_host(tmp_path, Runner(), answers=lambda socket: True))
+
+
+def test_restarting_a_background_office_runs_a_new_daemon(short_dir):
+    from .test_onboard import company
+
+    home = short_dir / "home"
+    company(home)
+    run = launch(home)
+    host = make_host(short_dir, Runner(), popen=subprocess.Popen, answers=office_answers)
+    service.install(run, host, "background")
+    service.wait(run, Host())
+    old = int((run.office / "office.pid").read_text())
+    try:
+        assert service.restart(run, Host(popen=subprocess.Popen)).mode == "background"
+        service.wait(run, Host())
+        new = int((run.office / "office.pid").read_text())
+        assert new != old and office_answers(run.socket)
+        assert not psutil.pid_exists(old) or psutil.Process(old).status() == psutil.STATUS_ZOMBIE
+    finally:
+        service.uninstall(run, host)
+
+
+def answers_once_started(run: Runner):
+    """An office that answers only after a start command ran, so its old daemon counts as stopped."""
+    starts = (["launchctl", "kickstart"], ["systemctl", "--user"], ["tmux", "new-session"])
+    return lambda socket: any(argv[:2] in starts for argv in run.calls)
+
+
+def test_restarting_a_launchd_office_kickstarts_its_agent(tmp_path, one):
+    installed_as(one, "launchd")
+    run = Runner()
+    assert service.restart(one, make_host(tmp_path, run, answers=answers_once_started(run))).mode == "launchd"
+    assert run.calls == [["launchctl", "kickstart", f"gui/501/{launchd.label(one)}"]]
+
+
+def test_restarting_a_systemd_office_starts_its_unit(tmp_path, one):
+    installed_as(one, "systemd")
+    run = Runner()
+    host = make_host(tmp_path, run, platform="linux", answers=answers_once_started(run))
+    assert service.restart(one, host).mode == "systemd"
+    assert run.calls == [["systemctl", "--user", "start", systemd.unit_name(one)]]
+
+
+def test_restarting_a_tmux_office_kills_a_lingering_session_before_starting_a_new_one(tmp_path, one):
+    installed_as(one, "tmux")
+    run = Runner([(["tmux", "has-session"], 0, "")])
+
+    def runner(argv):
+        if argv[:2] == ["tmux", "kill-session"]:
+            run.answers[:] = [(["tmux", "has-session"], 1, "can't find session")]
+        return run(argv)
+
+    host = make_host(tmp_path, runner, which=lambda name: f"/usr/bin/{name}", answers=answers_once_started(run))
+    assert service.restart(one, host).mode == "tmux"
+    assert [argv[:2] for argv in run.calls] == [["tmux", "has-session"], ["tmux", "kill-session"],
+                                                 ["tmux", "has-session"], ["tmux", "new-session"]]
+
+
+def test_restarting_an_office_that_wont_stop_is_an_error_and_starts_nothing(tmp_path, one):
+    installed_as(one, "launchd")
+    run = Runner()
+    with pytest.raises(ServiceError, match="still answers"):
+        service.restart(one, make_host(tmp_path, run, answers=lambda socket: True))
+    assert run.calls == []
