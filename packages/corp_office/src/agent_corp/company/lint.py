@@ -198,12 +198,16 @@ def _check_profiles(repo: CompanyRepo) -> Iterator[RepoIssue]:
 
 
 def _check_devices(repo: CompanyRepo) -> Iterator[RepoIssue]:
-    """Only humans list devices, each name once per person, and no token hash under two people."""
+    """Only humans list devices or have a password, each device name once per person, and no token hash under
+    two people."""
     owners: dict[str, set[str]] = {}
     for handle, person in sorted(repo.people.items()):
         if person.devices and person.kind != "human":
             yield RepoIssue(_person_path(handle), "person.agent_devices",
                             "agents act through the office, not from devices; remove devices")
+        if person.password_hash and person.kind != "human":
+            yield RepoIssue(_person_path(handle), "person.agent_password",
+                            "agents act through the office and never log in; remove password_hash")
         names = [d.name for d in person.devices]
         for name in sorted({n for n in names if names.count(n) > 1}):
             yield RepoIssue(_person_path(handle), "person.duplicate_device", name)

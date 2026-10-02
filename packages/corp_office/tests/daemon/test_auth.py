@@ -185,6 +185,14 @@ async def test_bootstrap_an_unauthenticated_request_adds_the_first_device(client
     assert (await client.get("/people", headers=bearer(token))).status_code == 200
 
 
+async def test_a_device_change_answers_without_the_password_hash(client, company):
+    path = company / "people/ngocbh/person.yaml"
+    path.write_text(path.read_text() + 'password_hash: "$scrypt$ln=15,r=8,p=1$c2FsdA$aGFzaA"\n')
+    r = await client.post("/people/ngocbh/devices", json=device("mac", new_token()))
+    assert r.status_code == 200 and "scrypt" not in r.text
+    assert "scrypt" in path.read_text()  # kept in the file
+
+
 async def test_a_human_adds_and_removes_their_own_devices(client, company):
     add_human(company, "ava")
     pc, laptop = new_token(), new_token()

@@ -103,3 +103,11 @@ async def test_folder_people_most_recent_first(client, office):
 
 async def test_folder_with_nobody_is_empty(client):
     assert (await client.get(_folder("/w/none"))).json() == []
+
+
+async def test_people_are_served_without_their_password_hash(client, company):
+    path = company / "people/ngocbh/person.yaml"
+    path.write_text(path.read_text() + 'password_hash: "$scrypt$ln=15,r=8,p=1$c2FsdA$aGFzaA"\n')
+    r = await client.get("/people")
+    assert r.status_code == 200 and "scrypt" not in r.text
+    assert {p["handle"]: p["password_hash"] for p in r.json()}["ngocbh"] is None

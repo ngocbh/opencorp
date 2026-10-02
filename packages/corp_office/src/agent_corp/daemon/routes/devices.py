@@ -7,6 +7,7 @@ from starlette.routing import Route
 from agent_corp.auth.devices import DeviceRefused, add_device, remove_device
 from agent_corp.daemon.auth import acting_device, acting_person
 from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
+from agent_corp.daemon.routes.people import served
 from agent_corp.protocol.models import AddDeviceRequest, Device, Person
 
 
@@ -22,8 +23,8 @@ async def whoami(request: Request) -> JSONResponse:
 
 async def _change(request: Request, change, arg) -> Person:
     try:
-        return await call(change, get_office(request).git, request.path_params["handle"], arg,
-                          acting_person(request))
+        return served(await call(change, get_office(request).git, request.path_params["handle"], arg,
+                                 acting_person(request)))
     except DeviceRefused as exc:
         raise HTTPError(exc.status, exc.code, exc.message) from exc
 
