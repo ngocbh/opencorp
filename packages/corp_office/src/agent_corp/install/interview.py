@@ -128,7 +128,8 @@ def fallback_answers(known: Known) -> Answers:
     return answers
 
 
-_CONTROL = dict.fromkeys([*range(0x20), 0x7F]) | dict.fromkeys(map(ord, "\n\r\t"), " ")
+# C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
+_CONTROL = dict.fromkeys([*range(0x20), *range(0x7F, 0xA0)]) | dict.fromkeys(map(ord, "\n\r\t"), " ")
 
 
 def clean(text: str) -> str:

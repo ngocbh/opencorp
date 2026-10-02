@@ -105,6 +105,10 @@ def test_clean_turns_line_breaks_and_tabs_into_spaces_and_drops_other_control_ch
     assert clean("a\nb\rc\td\x00e\x1bf\x7fg") == "a b c defg"
 
 
+def test_clean_drops_c1_control_characters_which_some_terminals_read_as_escapes():
+    assert clean("a\x80b\x9b2Jc\x9fd\xa0e") == "ab2Jcd\xa0e"
+
+
 def test_the_fallback_needs_an_account_even_with_every_flag(monkeypatch):
     def unknown(uid):
         raise KeyError(f"getpwuid(): uid not found: {uid}")
