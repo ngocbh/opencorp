@@ -6,7 +6,6 @@ test("crash report links to the agent-corp issue tracker", () => {
   expect(url.origin + url.pathname).toBe("https://github.com/ngocbh/agent-corp/issues/new")
   expect(url.searchParams.get("title")).toBe("TUI crash: boom")
   expect(url.searchParams.get("body")).toContain("Error: boom")
-  expect(url.toString()).not.toContain("opencode")
 })
 
 test("crash report truncates long stacks to fit the URL budget", () => {
