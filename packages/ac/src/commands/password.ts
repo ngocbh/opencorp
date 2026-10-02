@@ -6,7 +6,7 @@ import { localIdentity, officeClient, officeNotRunning } from "../office"
 import { prompter } from "../prompt"
 
 /** The shortest password the office takes. */
-const MIN_LENGTH = 8
+const MIN_LENGTH = 12
 
 /** How many times it asks before it stops. */
 const TRIES = 3
@@ -33,7 +33,9 @@ export const run: CommandRun = async (argv) => {
   try {
     const handle = values.handle ?? me?.handle ?? (await office.whoami()).person
     for (let tries = 0; tries < TRIES; tries++) {
-      const password = await ask.secret(`New password for @${handle} (at least ${MIN_LENGTH} characters; not shown)`)
+      const password = await ask.secret(
+        `New password for @${handle} (at least ${MIN_LENGTH} characters, one you use nowhere else; not shown)`,
+      )
       if (password.length < MIN_LENGTH) {
         console.error(`That doesn't work: use at least ${MIN_LENGTH} characters`)
         continue

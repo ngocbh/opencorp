@@ -264,7 +264,7 @@ export function createFakeOffice(
   }
 
   function setPassword(handle: string, body: any, actor: string) {
-    check(typeof body?.password === "string" && body.password.length >= 8, "password must be at least 8 characters")
+    check(typeof body?.password === "string" && body.password.length >= 12, "use at least 12 characters")
     deviceOwner(handle, actor, "password")
     passwords.set(handle, body.password)
     return state.people.find((p) => p.handle === handle)!

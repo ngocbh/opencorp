@@ -92,10 +92,12 @@ def test_init_keeps_only_the_hash_of_the_ceos_password_in_the_first_commit(tmp_p
 def test_a_short_or_mistyped_password_is_asked_again(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
     home = tmp_path / "home"
-    ask = Script("Acme", "Me", "me", "", "short", PASSWORD, "typo-typo", PASSWORD, PASSWORD, *answers()[6:])
+    ask = Script("Acme", "Me", "me", "", "eleven-char", PASSWORD, "typo-typo", PASSWORD, PASSWORD, *answers()[6:])
     with pytest.raises(OnboardError, match="stop"):
         init(home, ask, host=make_host(tmp_path, Runner()))
-    assert "That doesn't work: use at least 8 characters" in ask.seen
+    assert "Your password, to log in new devices with (at least 12 characters, one you use nowhere else;" \
+        " not shown)" in ask.seen
+    assert "That doesn't work: use at least 12 characters" in ask.seen
     assert "That doesn't work: the two passwords differ" in ask.seen
     assert check_password(PASSWORD, load_repo(home / "company").people["me"].password_hash)
 

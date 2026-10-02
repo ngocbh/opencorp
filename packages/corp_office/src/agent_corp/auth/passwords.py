@@ -1,4 +1,4 @@
-"""Passwords, kept only as salted scrypt hashes in PHC form: ``$scrypt$ln=15,r=8,p=1$<salt>$<hash>``."""
+"""Passwords, kept only as salted scrypt hashes in PHC form: ``$scrypt$ln=16,r=8,p=1$<salt>$<hash>``."""
 
 import base64
 import binascii
@@ -7,8 +7,10 @@ import hmac
 import os
 import re
 
-MIN_LENGTH = 8
-_LN, _R, _P = 15, 8, 1
+MIN_LENGTH = 12
+# The hashes sit in the company repo, where anyone who reads it can guess offline: each guess
+# costs 64 MiB and about a tenth of a second. Older hashes carry their own cost and still check.
+_LN, _R, _P = 16, 8, 1
 _PHC = re.compile(r"\$scrypt\$ln=(\d+),r=(\d+),p=(\d+)\$([A-Za-z0-9+/]+)\$([A-Za-z0-9+/]+)")
 _MAX_LN, _MAX_P, _MAX_MEMORY = 17, 4, 256 * 1024 * 1024
 """The most work a check does: a hash comes from the company repo, so it can't ask for unbounded time or memory."""

@@ -373,7 +373,9 @@ async def test_bootstrap_an_unauthenticated_request_sets_the_ceos_password(clien
 
 
 async def test_a_short_password_or_an_agents_is_refused(client, company):
-    r = await client.put("/people/ngocbh/password", json={"password": "short"})
-    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    for short in ["short", "eleven-char"]:  # under the schema's 8, then under the office's 12
+        r = await client.put("/people/ngocbh/password", json={"password": short})
+        assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    assert r.json()["message"] == "use at least 12 characters"
     r = await client.put("/people/minh/password", json={"password": PASSWORD})
     assert (r.status_code, r.json()["error"]) == (422, "not_a_human")
