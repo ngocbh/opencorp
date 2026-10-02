@@ -3,7 +3,6 @@
 import os
 import shlex
 from collections.abc import Mapping
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
@@ -12,6 +11,7 @@ from agent_corp.chat.hire import agent_files
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company_template import Owner, is_new, template_files, write_company
 from agent_corp.daemon.app import OfficePaths
+from agent_corp.install.interview import Teammate
 from agent_corp.install.launch import REPO, Host, launch
 from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ask_until, handle_problem,
                                         login_defaults, make_device, make_home, onboard, redact, slug, user_git)
@@ -37,16 +37,6 @@ REMOTE = "Git remote URL (empty to skip)"
 
 FIRST_TEAMMATE = ("Minh", "Engineer")
 """The first teammate's default name, and every teammate's default title."""
-
-
-@dataclass(frozen=True)
-class Teammate:
-    """A first teammate: an agent reporting to the CEO, with a sentence that seeds their profile."""
-
-    name: str
-    handle: str
-    title: str
-    about: str = ""
 
 
 def _ask_owner(prompter: Prompter, company: str) -> Owner:
