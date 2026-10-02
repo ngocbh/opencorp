@@ -15,8 +15,9 @@ KEY = "sk-ant-test-0123456789"
 class Script:
     """A prompter that answers from a list and records everything it was asked or told."""
 
-    def __init__(self, *answers):
+    def __init__(self, *answers, interactive=True):
         self.answers = list(answers)
+        self.interactive = interactive
         self.seen: list[str] = []
 
     def ask(self, question, default=""):
@@ -37,6 +38,11 @@ class Script:
 
 def mode(path):
     return stat.S_IMODE(os.lstat(path).st_mode)
+
+
+def test_a_script_is_interactive_unless_told_otherwise():
+    assert Script("x").interactive is True
+    assert Script(interactive=False).interactive is False
 
 
 def test_the_key_is_asked_without_echo_and_written_private(tmp_path):

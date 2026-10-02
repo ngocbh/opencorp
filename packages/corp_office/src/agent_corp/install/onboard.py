@@ -54,6 +54,10 @@ class NoTerminal(OnboardError):
 class Prompter(Protocol):
     """How onboarding talks to the owner."""
 
+    interactive: bool
+    """Whether there's someone at a terminal to ask; without one, questions take their defaults and secrets raise
+    ``NoTerminal``."""
+
     def ask(self, question: str, default: str = "") -> str:
         """An answer, or ``default`` for an empty one."""
 

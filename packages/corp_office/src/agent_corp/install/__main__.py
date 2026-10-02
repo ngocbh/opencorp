@@ -14,6 +14,7 @@ from agent_corp.company_template import is_new
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, init, offboard, service
+from agent_corp.install.interview import Known
 from agent_corp.install.launch import Host, Launch, ServiceError, launch
 from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, handle_problem, onboard
 
@@ -31,21 +32,28 @@ def _provider_stdin(args: argparse.Namespace) -> io.StringIO | None:
 
 
 def _init(args: argparse.Namespace) -> int:
-    # A preset answer comes back unchanged each time a question is asked again, so a bad one stops here.
+    # Handles from flags are checked before anything is asked, so a bad one doesn't cost the owner an interview.
     for flag, handle in (("--handle", args.handle), ("--agent-handle", args.agent_handle)):
         if handle and (problem := handle_problem(handle)):
             print(f"ac init: {flag} {handle!r}: {problem}", file=sys.stderr)
             return 1
+    if args.handle and args.agent_handle == args.handle:
+        print(f"ac init: --agent-handle {args.agent_handle!r} is the same as --handle", file=sys.stderr)
+        return 1
+    known = Known(company=args.company or "", name=args.name or "", handle=args.handle or "",
+                  title=args.title or "", agent=args.agent or "", agent_handle=args.agent_handle or "",
+                  remote=args.remote or "")
     stdin = _provider_stdin(args)
-    prompter = TtyPrompter({init.COMPANY: args.company, init.YOUR_NAME: args.name, init.YOUR_HANDLE: args.handle,
-                            init.YOUR_TITLE: args.title, init.THEIR_NAME: args.agent,
-                            init.THEIR_HANDLE: args.agent_handle, init.REMOTE: args.remote},
-                           interactive=stdin is None)
     try:
-        init.init(_home(args.home), prompter, mode=args.service, stdin=stdin, device=not args.no_device)
+        init.init(_home(args.home), TtyPrompter(interactive=stdin is None), known=known, mode=args.service,
+                  stdin=stdin, device=not args.no_device)
     except OnboardError as exc:
         print(f"ac init: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        # Ctrl-C at a question leaves the cursor mid-line; end the line instead of showing a traceback.
+        print(file=sys.stderr)
+        return 130
     return 0
 
 
@@ -141,10 +149,12 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--provider-stdin", action="store_true",
                          help="read office/provider.json's content from stdin, replacing the file; ask nothing")
     init_args = commands.choices["init"]
-    for flag, question in (("company", "the company's name"), ("name", "your name"), ("handle", "your handle"),
-                           ("title", "your title"), ("agent", "the first teammate's name"),
-                           ("agent-handle", "the first teammate's handle"), ("remote", "the git remote URL")):
-        init_args.add_argument(f"--{flag}", help=f"answer the question for {question}")
+    for flag, what in (("company", "the company's name"), ("name", "your name"), ("handle", "your handle"),
+                       ("title", "your title"), ("agent", "the first teammate's name"),
+                       ("agent-handle", "the first teammate's handle")):
+        init_args.add_argument(f"--{flag}", help=f"use {what} without asking")
+    init_args.add_argument("--remote", metavar="URL",
+                           help="push the company to this git remote without asking; the model never sees it")
     init_args.add_argument("--no-device", action="store_true",
                            help="don't register this device; the office stays open to requests without a token"
                                 " until someone runs `ac login`")
