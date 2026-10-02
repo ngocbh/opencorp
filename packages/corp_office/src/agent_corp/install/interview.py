@@ -10,14 +10,18 @@ from pathlib import Path
 from agent_composer import load_flow, run_flow
 from pydantic import ValidationError
 
-from agent_corp.chat.provider import Provider
+from agent_corp.chat.provider import Provider, load_provider
 from agent_corp.company_template import Owner, template_files
-from agent_corp.install.onboard import OnboardError, Prompter, handle_problem, login_defaults, redact, slug
+from agent_corp.install.onboard import (TRIES, OnboardError, Prompter, handle_problem, login_defaults, redact,
+                                        slug)
 from agent_corp.protocol.models import HireRequest
 from agent_corp.worker.spawn import worker_env
 
 FLOW = Path(__file__).parent / "flows" / "init.yaml"
 """The interview flow."""
+
+CONFIRM = "Create this company? (Y/n, or say what to change)"
+"""What the owner is asked after the summary."""
 
 
 @dataclass(frozen=True)
@@ -221,3 +225,44 @@ def run_interview(provider: Provider, prompter: Prompter, known: Known, *, draft
         raise OnboardError(f"the model couldn't run the interview: {redact(message)}; check or remove "
                            f"{provider_path} and run `ac init` again")
     return result.output
+
+
+def interview(provider_path: Path, prompter: Prompter, known: Known) -> Answers:
+    """The new company: from an interview with the model in ``provider_path``, checked and confirmed by the owner;
+    or, with no one at a terminal, ``fallback_answers(known)``.
+
+    Results with problems run the interview again to fix them, at most ``TRIES`` times in all; changes the owner asks
+    for run it again without counting.
+
+    Raises:
+        OnboardError: the interview didn't settle on a company, or ``run_interview`` or ``fallback_answers`` raised.
+        ProviderError: the provider file can't be used.
+    """
+    if not prompter.interactive:
+        return fallback_answers(known)
+    provider = load_provider(provider_path)
+    draft = changes = ""
+    failed = 0
+    while True:
+        output = run_interview(provider, prompter, known, draft=draft, changes=changes, provider_path=provider_path)
+        draft = json.dumps(output)
+        try:
+            answers = Answers.from_output(output)
+            problems = answer_problems(answers)
+        except KeyError as exc:
+            problems = [f"the result was missing {exc.args[0]}"]
+        except TypeError:
+            problems = ["the result had the wrong shape"]
+        if problems:
+            failed += 1
+            if failed == TRIES:
+                raise OnboardError(f"the interview didn't settle on a company: {clean('; '.join(problems))}")
+            changes = "\n".join(problems)
+            continue
+        for line in summary(answers):
+            prompter.say(line)
+        reply = prompter.ask(CONFIRM).strip()
+        if reply.lower() in ("", "y", "yes"):
+            return answers
+        changes = ("The owner wants changes; ask what to change" if reply.lower() in ("n", "no")
+                   else f"The owner wants changes: {reply}")

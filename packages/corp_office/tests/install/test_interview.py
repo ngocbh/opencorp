@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,11 +8,11 @@ from agent_composer import load_flow
 
 from agent_corp.chat.provider import Provider
 from agent_corp.company_template import Owner
-from agent_corp.install import interview
+from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.interview import (FLOW, Answers, Known, Teammate, answer_problems, clean, fallback_answers,
-                                          run_interview, summary)
-from agent_corp.install.onboard import OnboardError
+from agent_corp.install.interview import (CONFIRM, FLOW, Answers, Known, Teammate, answer_problems, clean,
+                                          fallback_answers, interview, run_interview, summary)
+from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 
 from .test_provider_setup import Script
@@ -26,7 +27,7 @@ KEY = "sk-SENTINEL-not-a-real-key"
 
 @pytest.fixture
 def login(monkeypatch):
-    monkeypatch.setattr(interview, "login_defaults", lambda: ("Me", "me"))
+    monkeypatch.setattr(interview_module, "login_defaults", lambda: ("Me", "me"))
 
 
 @pytest.fixture
@@ -198,7 +199,7 @@ def test_the_run_sees_only_the_office_workers_env_and_the_providers(login, monke
         seen.update(os.environ)
         return SimpleNamespace(status="succeeded", output=OUT, failure=None)
 
-    monkeypatch.setattr(interview, "run_flow", recorder)
+    monkeypatch.setattr(interview_module, "run_flow", recorder)
     assert run(Provider(env={"VLLM_BASE_URL": "http://fake/v1"}), Script()) == OUT
     assert seen["VLLM_BASE_URL"] == "http://fake/v1" and seen["PATH"] == before["PATH"]
     assert "SHELL_ONLY_SENTINEL" not in seen
@@ -213,7 +214,7 @@ def test_the_env_is_restored_when_the_run_raises(login, monkeypatch, error, rais
     def raising(*args, **kwargs):
         raise error
 
-    monkeypatch.setattr(interview, "run_flow", raising)
+    monkeypatch.setattr(interview_module, "run_flow", raising)
     with pytest.raises(raised):
         run(Provider(env={"VLLM_BASE_URL": "http://fake/v1"}), Script())
     assert dict(os.environ) == before
@@ -236,7 +237,7 @@ def test_a_failure_message_never_shows_the_key_or_url_credentials(login, monkeyp
             raise RuntimeError(message)
         return SimpleNamespace(status="failed", output=None, failure=SimpleNamespace(message=message))
 
-    monkeypatch.setattr(interview, "run_flow", run_flow)
+    monkeypatch.setattr(interview_module, "run_flow", run_flow)
     with pytest.raises(OnboardError) as caught:
         run(Provider(llm_config={**LLM_CONFIG, "api_key": KEY}), Script())
     assert "bad key *** for https://***@example.com/v1" in str(caught.value)
@@ -267,3 +268,89 @@ def test_the_model_is_told_what_is_known_the_draft_and_the_changes(login, fake_l
     text = "\n".join(contents(fake_llm.requests()[0]))
     assert '"given": {"company": "Acme"}' in text
     assert "Draft Co" in text and "@minh is taken" in text
+
+
+def bad_output(handle="Minh"):
+    return {**OUT, "teammates": [{**OUT["teammates"][0], "handle": handle}]}
+
+
+@pytest.fixture
+def interviews(monkeypatch):
+    """Stands in for ``run_interview``: returns the queued outputs and records each call's draft and changes."""
+    fake = SimpleNamespace(outputs=[], calls=[])
+
+    def run_interview(provider, prompter, known, *, draft, changes, provider_path):
+        fake.calls.append({"draft": draft, "changes": changes})
+        return fake.outputs.pop(0)
+
+    monkeypatch.setattr(interview_module, "run_interview", run_interview)
+    return fake
+
+
+def test_a_clean_result_is_summarized_and_confirmed(login, interviews, tmp_path):
+    interviews.outputs = [OUT]
+    prompter = Script("")
+    answers = interview(tmp_path / "provider.json", prompter, Known())
+    assert answers == Answers.from_output(OUT)
+    assert prompter.seen == [*summary(answers), CONFIRM]
+    assert interviews.calls == [{"draft": "", "changes": ""}]
+
+
+def test_a_result_with_problems_runs_again_with_the_draft_and_the_problems(login, interviews, tmp_path):
+    interviews.outputs = [bad_output(), OUT]
+    prompter = Script("")
+    interview(tmp_path / "provider.json", prompter, Known())
+    assert interviews.calls[1] == {"draft": json.dumps(bad_output()),
+                                   "changes": "\n".join(answer_problems(Answers.from_output(bad_output())))}
+    assert "@Minh can't be a handle" in interviews.calls[1]["changes"]
+    assert prompter.seen.count(CONFIRM) == 1
+
+
+def test_a_result_missing_a_field_is_a_problem(login, interviews, tmp_path):
+    interviews.outputs = [{"company": "Acme", "teammates": []}, OUT]
+    interview(tmp_path / "provider.json", Script(""), Known())
+    assert interviews.calls[1]["changes"] == "the result was missing owner"
+
+
+@pytest.mark.parametrize(("reply", "changes"), [("rename Minh to Bo", "The owner wants changes: rename Minh to Bo"),
+                                                ("n", "The owner wants changes; ask what to change"),
+                                                (" No ", "The owner wants changes; ask what to change")])
+def test_the_owner_can_ask_for_changes(login, interviews, tmp_path, reply, changes):
+    interviews.outputs = [OUT, OUT]
+    interview(tmp_path / "provider.json", Script(reply, "y"), Known())
+    assert interviews.calls[1] == {"draft": json.dumps(OUT), "changes": changes}
+
+
+def test_the_interview_gives_up_after_tries_results_with_problems(login, interviews, tmp_path):
+    interviews.outputs = [bad_output()] * (TRIES - 1) + [bad_output("Mi\x1bnh")]
+    prompter = Script()
+    with pytest.raises(OnboardError, match="didn't settle") as caught:
+        interview(tmp_path / "provider.json", prompter, Known())
+    assert "@Minh can't be a handle" in str(caught.value) and "\x1b" not in str(caught.value)
+    assert len(interviews.calls) == TRIES
+    assert CONFIRM not in prompter.seen
+
+
+def test_the_owners_change_rounds_dont_count_against_tries(login, interviews, tmp_path):
+    rounds = TRIES + 1
+    interviews.outputs = [OUT] * (rounds + 1)
+    assert interview(tmp_path / "provider.json", Script(*["change it"] * rounds, "Y"), Known()) == \
+        Answers.from_output(OUT)
+    assert len(interviews.calls) == rounds + 1
+
+
+def test_without_a_terminal_the_fallback_is_used_without_a_model_or_confirmation(login, interviews, monkeypatch,
+                                                                                tmp_path):
+    def no_provider(path):
+        raise AssertionError("the provider was loaded")
+
+    monkeypatch.setattr(interview_module, "load_provider", no_provider)
+    prompter = Script(interactive=False)
+    assert interview(tmp_path / "provider.json", prompter, Known(company="Acme")) == \
+        fallback_answers(Known(company="Acme"))
+    assert interviews.calls == [] and prompter.seen == []
+
+
+def test_without_a_terminal_problems_name_the_flag_to_pass(login, interviews, tmp_path):
+    with pytest.raises(OnboardError, match="@minh is taken; pass --agent-handle"):
+        interview(tmp_path / "provider.json", Script(interactive=False), Known(handle="minh"))
