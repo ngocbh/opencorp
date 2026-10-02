@@ -1,5 +1,5 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { registerOpencodeSpinner } from "./component/register-spinner"
+import { registerAgentCorpSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { Global } from "./core/global"
@@ -52,18 +52,18 @@ import { TuiConfigProvider, useTuiConfig, resolve as resolveConfig, type TuiConf
 import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
-  OPENCODE_BASE_MODE,
-  OpencodeKeymapProvider,
-  registerOpencodeKeymap,
+  AGENT_CORP_BASE_MODE,
+  AgentCorpKeymapProvider,
+  registerAgentCorpKeymap,
   useBindings,
-  useOpencodeKeymap,
+  useAgentCorpKeymap,
 } from "./keymap"
 
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { errorFormat } from "./util/error"
 
-registerOpencodeSpinner()
+registerAgentCorpSpinner()
 
 const appGlobalBindingCommands = [
   "session.list",
@@ -84,7 +84,7 @@ const appBindingCommands = [
   "person.list",
   "agent.cycle",
   "agent.cycle.reverse",
-  "opencode.debug",
+  "agentcorp.debug",
   "theme.switch",
   "theme.switch_mode",
   "theme.mode.lock",
@@ -134,7 +134,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
               useKittyKeyboard: {},
               autoFocus: false,
               openConsoleOnError: false,
-              useMouse: !Flag.OPENCODE_DISABLE_MOUSE && input.config.mouse,
+              useMouse: !Flag.AGENT_CORP_DISABLE_MOUSE && input.config.mouse,
               consoleOptions: {
                 keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
               },
@@ -149,7 +149,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
       win32DisableProcessedInput()
       const keymap = createDefaultOpenTuiKeymap(renderer)
       yield* Effect.acquireRelease(
-        Effect.sync(() => registerOpencodeKeymap(keymap, renderer, input.config)),
+        Effect.sync(() => registerAgentCorpKeymap(keymap, renderer, input.config)),
         (unregister) => Effect.sync(unregister),
       )
       const shutdown = yield* Deferred.make<unknown>()
@@ -198,12 +198,12 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                     >
                       <TuiStartupProvider
                         value={{
-                          initialRoute: process.env.OPENCODE_ROUTE ? JSON.parse(process.env.OPENCODE_ROUTE) : undefined,
-                          skipInitialLoading: Boolean(process.env.OPENCODE_FAST_BOOT),
+                          initialRoute: process.env.AGENT_CORP_ROUTE ? JSON.parse(process.env.AGENT_CORP_ROUTE) : undefined,
+                          skipInitialLoading: Boolean(process.env.AGENT_CORP_FAST_BOOT),
                         }}
                       >
                         <ClipboardProvider>
-                          <OpencodeKeymapProvider keymap={keymap}>
+                          <AgentCorpKeymapProvider keymap={keymap}>
                             <ArgsProvider {...input.args}>
                               <KVProvider>
                                 <ToastProvider>
@@ -233,7 +233,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                                 </ToastProvider>
                               </KVProvider>
                             </ArgsProvider>
-                          </OpencodeKeymapProvider>
+                          </AgentCorpKeymapProvider>
                         </ClipboardProvider>
                       </TuiStartupProvider>
                     </TuiTerminalEnvironmentProvider>
@@ -266,7 +266,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const dialog = useDialog()
   const local = useLocal()
   const kv = useKV()
-  const keymap = useOpencodeKeymap()
+  const keymap = useAgentCorpKeymap()
   const toast = useToast()
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
@@ -283,7 +283,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const offSelectionKeys = keymap.intercept(
     "key",
     ({ event }) => {
-      if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
+      if (!Flag.AGENT_CORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
       Selection.handleSelectionKey(renderer, toast, event, clipboard)
     },
     { priority: 1 },
@@ -308,7 +308,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   // Update terminal window title based on current route and session
   createEffect(() => {
-    if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
+    if (!terminalTitleEnabled() || Flag.AGENT_CORP_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "session") {
       const sessionID = route.data.sessionID
@@ -412,7 +412,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         },
       },
       {
-        name: "opencode.debug",
+        name: "agentcorp.debug",
         title: "View debug info",
         slashName: "debug",
         run: () => {
@@ -604,7 +604,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }))
 
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: AGENT_CORP_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("app", appBindingCommands),
   }))
 
@@ -613,7 +613,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }))
 
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: AGENT_CORP_BASE_MODE,
     enabled: () => {
       const current = promptRef.current
       if (!current?.focused) return true
@@ -629,7 +629,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       flexDirection="column"
       backgroundColor={theme.background}
       onMouseDown={(evt) => {
-        if (!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
+        if (!Flag.AGENT_CORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
         if (evt.button !== MouseButton.RIGHT) return
 
         if (!Selection.copy(renderer, toast, clipboard)) return
@@ -637,12 +637,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         evt.stopPropagation()
       }}
       onMouseUp={
-        !Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT
+        !Flag.AGENT_CORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT
           ? () => Selection.copy(renderer, toast, clipboard)
           : undefined
       }
     >
-      <Show when={Flag.OPENCODE_SHOW_TTFD}>
+      <Show when={Flag.AGENT_CORP_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
       <box flexGrow={1} minHeight={0} flexDirection="column">

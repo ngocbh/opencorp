@@ -1,4 +1,4 @@
-// Stands in for @opencode-ai/core/installation/version. A release build defines AGENT_CORP_VERSION.
+// The TUI's version: a release build defines AGENT_CORP_VERSION.
 declare global {
   const AGENT_CORP_VERSION: string
 }

@@ -5,7 +5,7 @@ import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
-import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
+import { AGENT_CORP_BASE_MODE, useBindings } from "../../keymap"
 import { OfficeError, OfficeUnavailable } from "../../office/errors"
 import { useDialog } from "../../ui/dialog"
 import { DialogSelect } from "../../ui/dialog-select"
@@ -200,7 +200,7 @@ export function Debrief() {
   }
 
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: AGENT_CORP_BASE_MODE,
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
       { key: "r", group: "Debrief", cmd: refresh },
@@ -214,7 +214,7 @@ export function Debrief() {
     ],
   }))
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: AGENT_CORP_BASE_MODE,
     enabled: () => !!input && renderer.currentFocusedEditor === input,
     bindings: [{ key: "escape", group: "Debrief", cmd: () => input?.blur() }],
   }))

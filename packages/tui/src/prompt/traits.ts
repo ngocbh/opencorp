@@ -5,7 +5,7 @@ export interface PromptTraitsInput {
 }
 
 export type PromptTraits = EditorTraits & {
-  owner: "opencode"
+  owner: "agentcorp"
   role: "prompt"
 }
 
@@ -13,7 +13,7 @@ export type PromptTraits = EditorTraits & {
 export function computePromptTraits(input: PromptTraitsInput): PromptTraits {
   return {
     capture: input.autocompleteVisible ? ["escape", "navigate", "submit", "tab"] : ["tab"],
-    owner: "opencode",
+    owner: "agentcorp",
     role: "prompt",
   }
 }

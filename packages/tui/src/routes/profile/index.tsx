@@ -7,7 +7,7 @@ import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
 import { openEditor } from "../../editor"
-import { OPENCODE_BASE_MODE, useBindings } from "../../keymap"
+import { AGENT_CORP_BASE_MODE, useBindings } from "../../keymap"
 import { OfficeError, OfficeUnavailable, VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
@@ -231,7 +231,7 @@ export function Profile() {
   const back = () => route.navigate(data.from ? { type: "session", sessionID: data.from } : { type: "home" })
 
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: AGENT_CORP_BASE_MODE,
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
       { key: "e", group: "Profile", cmd: () => void edit() },
@@ -241,7 +241,7 @@ export function Profile() {
     ],
   }))
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: AGENT_CORP_BASE_MODE,
     enabled: () => !!input && renderer.currentFocusedEditor === input,
     bindings: [{ key: "escape", group: "Profile", cmd: () => input?.blur() }],
   }))
