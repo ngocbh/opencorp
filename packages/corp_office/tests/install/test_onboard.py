@@ -3,17 +3,21 @@ import os
 import signal
 import subprocess
 
+import json
+
 import httpx
 import psutil
 import pytest
+import yaml
 
-from agent_corp.auth.identity import device_name, read_identity
-from agent_corp.auth.tokens import token_sha256
+from agent_corp.auth.identity import Identity, device_name, read_identity, write_identity
+from agent_corp.auth.passwords import hash_password
+from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.onboard import OnboardError, TtyPrompter, onboard, owner_defaults
+from agent_corp.install.onboard import TRIES, WHO, OnboardError, TtyPrompter, onboard, owner_defaults
 from agent_corp.protocol.models import Device
 from agent_corp.profile.debrief import DEBRIEF_FLOW
 from agent_corp.profile.manager import MANAGER_FLOW
@@ -24,6 +28,7 @@ from .conftest import Runner, make_host
 from .test_provider_setup import Script
 
 PROVIDER = '{"llm_config": {"provider": "openai"}}'
+PASSWORD = "pw-sentinel-77ab"
 
 
 def _git(root, *args):
@@ -124,14 +129,23 @@ def stop_after_the_device(monkeypatch):
     monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
 
 
-def published(tmp_path, humans=("ceo", "lan")):
-    """A company whose humans are ``humans`` (the first is CEO), pushed to a bare repo; the bare repo's path."""
+def published(tmp_path, humans=("ceo", "lan"), passwords=None, devices=None):
+    """A company whose humans are ``humans`` (the first is CEO), pushed to a bare repo; the bare repo's path.
+
+    ``passwords`` and ``devices`` give humans, by handle, a password's hash and a device list.
+    """
     src = company(tmp_path / "src", humans[0])
     for handle in humans[1:]:
         (src / "people" / handle).mkdir()
         (src / "people" / handle / "person.yaml").write_text(
             f"handle: {handle}\nname: {handle.title()}\nkind: human\ntitle: Engineer\nmanager: {humans[0]}\n")
-    if humans[1:]:
+    for handle, password in (passwords or {}).items():
+        with (src / "people" / handle / "person.yaml").open("a") as f:
+            f.write(f"password_hash: {json.dumps(hash_password(password))}\n")
+    for handle, listed in (devices or {}).items():
+        with (src / "people" / handle / "person.yaml").open("a") as f:
+            f.write(yaml.safe_dump({"devices": [d.model_dump() for d in listed]}))
+    if humans[1:] or passwords or devices:
         _git(src, "add", "-A")
         _git(src, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "hire the humans")
     remote = tmp_path / "acme.git"
@@ -156,6 +170,61 @@ def test_onboard_clones_the_company_and_commits_this_device_for_the_human_you_pi
     assert sorted(os.listdir(home)) == ["company", "identity.json", "office"]
     assert "The company's humans: @ceo, @lan" in ask.seen
     assert not [line for line in ask.seen if me.token in line]
+
+
+def test_joining_as_a_human_with_a_password_needs_it(tmp_path, monkeypatch):
+    stop_after_the_device(monkeypatch)
+    home = tmp_path / "home"
+    ask = Script("lan", "wrong-password", PASSWORD)
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, ask, source=str(published(tmp_path, passwords={"lan": PASSWORD})), host=make_host(tmp_path, Runner()))
+    me = read_identity(home / "identity.json")
+    assert me.handle == "lan" and [d.name for d in load_repo(home / "company").people["lan"].devices] == [me.device]
+    assert ask.seen.count("@lan's password (not shown)") == 2 and "That doesn't work: wrong password" in ask.seen
+    assert not [line for line in ask.seen if PASSWORD in line]
+
+
+def test_a_password_that_never_matches_stops_and_leaves_no_company(tmp_path):
+    remote = published(tmp_path, passwords={"lan": PASSWORD})
+    with pytest.raises(OnboardError, match="wrong password for @lan"):
+        onboard(tmp_path / "home", Script("lan", *["nope-nope"] * TRIES), source=str(remote),
+                host=make_host(tmp_path, Runner()))
+    assert sorted(os.listdir(tmp_path / "home")) == ["office"]
+
+
+def test_without_a_terminal_for_the_password_the_company_joins_without_this_device(tmp_path, monkeypatch):
+    stop_after_the_device(monkeypatch)
+    home = tmp_path / "home"
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, TtyPrompter({WHO: "lan"}, interactive=False), source=str(published(tmp_path, passwords={"lan": PASSWORD})),
+                host=make_host(tmp_path, Runner()))
+    assert not (home / "identity.json").exists() and load_repo(home / "company").people["lan"].devices == []
+    assert _git(home / "company", "log", "-1", "--format=%s").strip() == "hire the humans"
+
+
+def test_a_human_without_a_password_joins_and_is_told_to_set_one(tmp_path, monkeypatch):
+    stop_after_the_device(monkeypatch)
+    ask = Script("lan")
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(tmp_path / "home", ask, source=str(published(tmp_path)), host=make_host(tmp_path, Runner()))
+    assert read_identity(tmp_path / "home" / "identity.json").handle == "lan"
+    assert "@lan has no password yet; set one with `ac password` so a new device has to give it" in ask.seen
+
+
+def test_an_identity_the_company_already_lists_is_kept_and_nothing_is_asked(tmp_path, monkeypatch):
+    stop_after_the_device(monkeypatch)
+    home = tmp_path / "home"
+    home.mkdir()
+    me = Identity("lan", "old-mac", new_token())
+    write_identity(home / "identity.json", me)
+    remote = published(tmp_path, passwords={"lan": PASSWORD},
+                       devices={"lan": [Device(name="old-mac", token_sha256=token_sha256(me.token))]})
+    ask = Script()  # no answers: nothing may be asked
+    with pytest.raises(OnboardError, match="stop"):
+        onboard(home, ask, source=str(remote), host=make_host(tmp_path, Runner()))
+    assert read_identity(home / "identity.json") == me
+    assert _git(home / "company", "log", "-1", "--format=%s").strip() == "hire the humans"
+    assert f"This device: old-mac, acting as @lan (its token is in {home / 'identity.json'})" in ask.seen
 
 
 def test_onboard_asks_for_the_repo_when_not_given_one(tmp_path, monkeypatch):

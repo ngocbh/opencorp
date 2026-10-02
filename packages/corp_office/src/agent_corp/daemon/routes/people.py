@@ -7,13 +7,18 @@ from starlette.routing import Route
 from agent_corp.chat.hire import HireRefused, Hiring
 from agent_corp.company.loader import load_repo
 from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
-from agent_corp.protocol.models import HireRequest
+from agent_corp.protocol.models import HireRequest, Person
+
+
+def served(person: Person) -> Person:
+    """``person`` as the API shows them: without their password hash, which only the company repo holds."""
+    return person.model_copy(update={"password_hash": None})
 
 
 async def list_people(request: Request) -> JSONResponse:
     """Everyone in the company repo."""
     repo = await call(load_repo, get_office(request).git.root)
-    return ok(list(repo.people.values()))
+    return ok([served(p) for p in repo.people.values()])
 
 
 async def folder_people(request: Request) -> JSONResponse:
@@ -34,7 +39,7 @@ async def folder_people(request: Request) -> JSONResponse:
     found = await call(last_worked)
     found.sort(key=lambda f: f[1])
     found.sort(key=lambda f: f[0], reverse=True)  # stable: ties stay in handle order
-    return ok([repo.people[handle] for _, handle in found])
+    return ok([served(repo.people[handle]) for _, handle in found])
 
 
 async def hire(request: Request) -> JSONResponse:

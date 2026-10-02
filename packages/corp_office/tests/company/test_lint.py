@@ -268,3 +268,11 @@ def test_devices_with_distinct_names_and_hashes_are_clean(make_company):
     root = make_company(**{"people/ngocbh/person.yaml": person("ngocbh", devices=[_device("mac"),
                                                                                  _device("pc", "b")])})
     assert lint(load_repo(root)) == []
+
+
+def test_an_agent_with_a_password(make_company):
+    phc = "$scrypt$ln=15,r=8,p=1$c2FsdA$aGFzaA"
+    root = make_company(**{"people/minh/person.yaml": person("minh", password_hash=phc),
+                           "people/ngocbh/person.yaml": person("ngocbh", password_hash=phc)})
+    found = [(i.code, i.path) for i in lint(load_repo(root)) if i.code == "person.agent_password"]
+    assert found == [("person.agent_password", "people/minh/person.yaml")]

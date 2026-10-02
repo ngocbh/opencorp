@@ -34,6 +34,8 @@ class Owner:
     title: str = "CEO"
     devices: tuple[Device, ...] = field(default=())
     """The devices the owner's first ``person.yaml`` lists."""
+    password_hash: str | None = None
+    """The hash of the password the owner logs in new devices with."""
 
 
 def _walk(node: Traversable, prefix: str = "") -> dict[str, bytes]:
@@ -65,6 +67,8 @@ def template_files(company: str, owner: Owner) -> dict[str, bytes]:
                 text += "devices:\n" + "".join(f"- name: {json.dumps(d.name)}\n"
                                                f"  token_sha256: {json.dumps(d.token_sha256)}\n"
                                                for d in owner.devices)
+            if rel != "company.yaml" and owner.password_hash:
+                text += f"password_hash: {json.dumps(owner.password_hash)}\n"
             model = Company if rel == "company.yaml" else Person
             try:
                 model.model_validate(yaml.safe_load(text))

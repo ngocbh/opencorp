@@ -18,6 +18,7 @@ from pydantic import TypeAdapter, ValidationError
 
 from agent_corp.auth.devices import DeviceRefused, add_device
 from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
+from agent_corp.auth.passwords import check_password
 from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.git import CompanyGit, CompanyGitError
@@ -44,6 +45,10 @@ def stop_to_top_up(count: int) -> str:
 
 class OnboardError(Exception):
     """Onboarding stopped; the message says why and what to do. It never contains a key."""
+
+
+class NoTerminal(OnboardError):
+    """A secret was asked for, but there's no terminal to read it from without echo."""
 
 
 class Prompter(Protocol):
@@ -92,8 +97,7 @@ class TtyPrompter:
     def secret(self, question: str) -> str:
         if not self.interactive or not sys.stdin.isatty():
             # getpass falls back to reading stdin with echo when there is no terminal.
-            raise OnboardError("there is no terminal to read the key without echo;"
-                               " pass the provider with --provider-stdin instead")
+            raise NoTerminal(f"there is no terminal to read {question!r} without echo")
         return getpass.getpass(f"{question}: ").strip()
 
     def say(self, text: str) -> None:
@@ -139,7 +143,12 @@ def _ask_provider(prompter: Prompter) -> dict:
     llm = {"provider": name}
     if model := prompter.ask("Model (empty for the provider's default)"):
         llm["model"] = model
-    if key := prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)"):
+    try:
+        key = prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)")
+    except NoTerminal:
+        raise OnboardError("there is no terminal to read the key without echo;"
+                           " pass the provider with --provider-stdin instead") from None
+    if key:
         llm["api_key"] = key
     else:
         prompter.say(f"No key saved; runs will use composer's own login (`composer auth {name}`).")
@@ -335,16 +344,23 @@ def _login_handle() -> str:
         return ""
 
 
-def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identity:
-    """Ask which of the company's humans this device acts as, list it in their ``person.yaml`` and commit that.
+def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identity | None:
+    """This device's identity in the company at ``root``: kept if the company lists it, else made and committed.
 
-    The default is the human whose handle is this login's, otherwise the only human. A device name the
-    human already lists gets a ``-2`` (``-3``, ...) suffix.
+    A new identity is for the human you pick: the default is the human whose handle is this
+    login's, otherwise the only human. A human with a password must give it; without a
+    terminal to ask on, the device is left out (None) for ``ac login`` to add. A device name
+    the human already lists gets a ``-2`` (``-3``, ...) suffix.
 
     Raises:
-        OnboardError: there's no human, no answer names one, or the device can't be added.
+        OnboardError: there's no human, no answer names one, the password never matched, or the
+            device can't be added.
     """
     people = load_repo(root).people
+    known = read_identity(identity_path(home))
+    if known is not None and known.handle in people and token_sha256(known.token) in {
+            d.token_sha256 for d in people[known.handle].devices}:
+        return known
     humans = sorted(h for h, p in people.items() if p.kind == "human")
     if not humans:
         raise OnboardError("the company has no humans for this device to act as")
@@ -353,6 +369,13 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
     prompter.say(f"The company's humans: {', '.join('@' + h for h in humans)}")
     handle = ask_until(prompter, WHO, default, lambda h: None if h in humans else
                        f"@{h} isn't one of them" if h else "say which one you are")
+    password_hash = people[handle].password_hash
+    if password_hash is not None:
+        try:
+            _ask_password(prompter, handle, password_hash)
+        except NoTerminal:
+            prompter.say(f"There's no terminal to ask for @{handle}'s password on, so this device isn't added.")
+            return None
     taken = {d.name for d in people[handle].devices}
     name = base = device_name()
     suffix = 2
@@ -364,7 +387,23 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
     except (DeviceRefused, CompanyGitError, OSError) as exc:
         raise OnboardError(f"can't add this device to @{handle}: {exc}") from None
     _save_identity(home, me)
+    if password_hash is None:
+        prompter.say(f"@{handle} has no password yet; set one with `ac password` so a new device has to give it")
     return me
+
+
+def _ask_password(prompter: Prompter, handle: str, password_hash: str) -> None:
+    """Ask for ``handle``'s password until it matches ``password_hash``, at most ``TRIES`` times.
+
+    Raises:
+        NoTerminal: there's no terminal to ask on.
+        OnboardError: no answer matched.
+    """
+    for _ in range(TRIES):
+        if check_password(prompter.secret(f"@{handle}'s password (not shown)"), password_hash):
+            return
+        prompter.say("That doesn't work: wrong password")
+    raise OnboardError(f"wrong password for @{handle}")
 
 
 STEPS = 4
@@ -379,8 +418,9 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     In order: the home and office dirs (0700); the company repo, cloned from ``source`` (or a
     URL asked for) when there's none here, and topped up with any template files it lacks
     (lint errors stop here; left alone while the office runs); this device, which for a
-    cloned company is listed for the human you pick and committed in the clone before the
-    office starts; ``office/provider.json``; and the daemon under ``mode``. With ``steps``,
+    cloned company is listed for the human you pick (after their password, if they have
+    one) and committed in the clone before the office starts, unless the company already
+    lists this device's identity; ``office/provider.json``; and the daemon under ``mode``. With ``steps``,
     each step gets a numbered header (``ac init`` turns them off, since onboarding is one of
     its steps).
 
