@@ -28,6 +28,10 @@
         "token_sha256": { "$ref": "#/$defs/TokenHash" }
       }
     },
+    "PasswordHash": {
+      "type": "string", "pattern": "^\\$[a-z0-9-]+\\$",
+      "description": "A password's salted hash as a PHC string, such as $scrypt$ln=15,r=8,p=1$<salt>$<hash>; never the password itself."
+    },
     "Timestamp": {
       "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
       "description": "UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged."
@@ -96,6 +100,10 @@
         "devices": {
           "type": "array", "items": { "$ref": "#/$defs/Device" }, "default": [],
           "description": "The devices this human uses ac from, each with a unique name."
+        },
+        "password_hash": {
+          "anyOf": [{ "$ref": "#/$defs/PasswordHash" }, { "type": "null" }], "default": null,
+          "description": "The hash of the password this human logs in a new device with; null for none."
         }
       }
     },
@@ -567,6 +575,23 @@
       "properties": {
         "name": { "$ref": "#/$defs/DeviceName" },
         "token_sha256": { "$ref": "#/$defs/TokenHash" }
+      }
+    },
+    "LoginRequest": {
+      "type": "object", "additionalProperties": false, "required": ["handle", "password", "device", "token_sha256"],
+      "description": "The body of POST /login: a human's handle and password, and the device to add to their devices once they check out.",
+      "properties": {
+        "handle": { "$ref": "#/$defs/Handle" },
+        "password": { "type": "string", "minLength": 1 },
+        "device": { "$ref": "#/$defs/DeviceName" },
+        "token_sha256": { "$ref": "#/$defs/TokenHash" }
+      }
+    },
+    "SetPasswordRequest": {
+      "type": "object", "additionalProperties": false, "required": ["password"],
+      "description": "The body of PUT /people/{handle}/password: the new password, which the office stores only as a hash.",
+      "properties": {
+        "password": { "type": "string", "minLength": 8 }
       }
     }
   }

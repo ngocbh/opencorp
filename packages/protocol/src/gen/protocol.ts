@@ -41,6 +41,13 @@ export type DeviceName = string;
  */
 export type TokenHash = string;
 /**
+ * A password's salted hash as a PHC string, such as $scrypt$ln=15,r=8,p=1$<salt>$<hash>; never the password itself.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "PasswordHash".
+ */
+export type PasswordHash = string;
+/**
  * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -136,6 +143,10 @@ export interface Person {
    * The devices this human uses ac from, each with a unique name.
    */
   devices?: Device[];
+  /**
+   * The hash of the password this human logs in a new device with; null for none.
+   */
+  password_hash?: PasswordHash | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -678,4 +689,25 @@ export interface ConfirmFollowUpsRequest {
 export interface AddDeviceRequest {
   name: DeviceName;
   token_sha256: TokenHash;
+}
+/**
+ * The body of POST /login: a human's handle and password, and the device to add to their devices once they check out.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "LoginRequest".
+ */
+export interface LoginRequest {
+  handle: Handle;
+  password: string;
+  device: DeviceName;
+  token_sha256: TokenHash;
+}
+/**
+ * The body of PUT /people/{handle}/password: the new password, which the office stores only as a hash.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetPasswordRequest".
+ */
+export interface SetPasswordRequest {
+  password: string;
 }
