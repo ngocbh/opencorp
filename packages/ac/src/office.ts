@@ -1,11 +1,12 @@
 // Running the Python side of `ac`, and checking that the office is up. Onboarding, the doctor,
 // and starting the office live in `python -m agent_corp.install`, run with this checkout's venv;
 // it reads the home from $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed
-// through. `ac` never starts the office on its own: the service `ac onboard` installed does.
+// through. `ac` never starts the office on its own: the service `ac init` or `ac onboard` installed does.
 import { createOfficeClient } from "@agent-corp/tui/office/client"
 import { readIdentity, type Identity } from "@agent-corp/tui/office/identity"
 import { defaultSocket, identityPath } from "@agent-corp/tui/office/paths"
 import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 
 /** The checkout `ac` runs from; the office runs from the same one. */
@@ -47,6 +48,21 @@ export async function runInstall(command: string, args: string[], deps: Deps = r
     return 1
   }
   return deps.spawn([python, "-m", "agent_corp.install", command, ...args])
+}
+
+/**
+ * Syncs the checkout's venv with uv (on PATH or in ~/.local/bin), then runs `runInstall(command, args)`;
+ * the venv is what runs it, so it must exist and match the checkout first.
+ */
+export async function syncThenInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
+  const uv = deps.which("uv") ?? [path.join(os.homedir(), ".local", "bin", "uv")].find((p) => deps.exists(p))
+  if (!uv) {
+    deps.error(`ac ${command}: uv not found; install it (https://docs.astral.sh/uv/) and run \`ac ${command}\` again`)
+    return 1
+  }
+  const synced = await deps.spawn([uv, "sync", "--frozen"], REPO)
+  if (synced !== 0) return synced
+  return runInstall(command, args, deps)
 }
 
 /** Exit code when no office answers, as `python -m agent_corp.install start` exits with no office yet. */

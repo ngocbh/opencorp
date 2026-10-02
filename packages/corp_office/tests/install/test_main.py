@@ -35,7 +35,7 @@ def test_the_home_defaults_to_agent_corp_home(tmp_path, monkeypatch, capsys):
 
 def test_start_before_onboarding_is_exit_3_with_a_hint(tmp_path, capsys):
     assert main(["start", "--home", str(tmp_path / "home")]) == 3
-    assert "run `ac onboard`" in capsys.readouterr().err
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
 def test_start_with_a_company_that_has_no_first_commit_is_exit_3_with_a_hint(tmp_path, capsys):
@@ -44,56 +44,74 @@ def test_start_with_a_company_that_has_no_first_commit_is_exit_3_with_a_hint(tmp
     subprocess.run(["git", "init", "-q", "-b", "main", str(company)], check=True)
     (company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
     assert main(["start", "--home", str(tmp_path / "home")]) == 3
-    assert "run `ac onboard`" in capsys.readouterr().err
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
-def test_an_onboarding_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, capsys):
+def test_an_init_error_is_exit_1_with_the_reason(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
-    args = ["onboard", "--home", str(tmp_path / "home"), "--provider-stdin", "--company", "Acme",
+    args = ["init", "--home", str(tmp_path / "home"), "--provider-stdin", "--company", "Acme",
             "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     assert main(args) == 1
-    assert "ac onboard: the provider on stdin is not valid JSON" in capsys.readouterr().err
+    assert "ac init: the provider on stdin is not valid JSON" in capsys.readouterr().err
 
 
-def test_onboard_flags_answer_their_questions_including_the_agents_handle(tmp_path, monkeypatch):
+def test_init_flags_answer_their_questions_including_the_first_teammates_handle(tmp_path, monkeypatch):
     seen = {}
-    monkeypatch.setattr(install_main, "onboard", lambda home, prompter, **k: seen.update(prompter=prompter))
-    args = ["onboard", "--home", str(tmp_path / "home"), "--handle", "ngocbh", "--agent", "Lan",
-            "--agent-handle", "lan-dev"]
+    monkeypatch.setattr(install_main.init, "init", lambda home, prompter, **k: seen.update(prompter=prompter, **k))
+    args = ["init", "--home", str(tmp_path / "home"), "--handle", "ngocbh", "--title", "Founder", "--agent", "Lan",
+            "--agent-handle", "lan-dev", "--remote", "git@example.com:acme.git", "--no-device"]
     assert main(args) == 0
     assert seen["prompter"].ask("Your handle") == "ngocbh"
-    assert seen["prompter"].ask("Name your first agent") == "Lan"
+    assert seen["prompter"].ask("Your title", "CEO") == "Founder"
+    assert seen["prompter"].ask("Their name") == "Lan"
     assert seen["prompter"].ask("Their handle") == "lan-dev"
+    assert seen["prompter"].ask("Git remote URL (empty to skip)") == "git@example.com:acme.git"
+    assert seen["device"] is False
+
+
+def test_onboard_flags_give_the_repo_to_clone_and_say_which_human_you_are(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(install_main, "onboard", lambda home, prompter, **k: seen.update(prompter=prompter, **k))
+    args = ["onboard", "--home", str(tmp_path / "home"), "--from", "git@example.com:acme.git", "--handle", "lan"]
+    assert main(args) == 0
+    assert seen["source"] == "git@example.com:acme.git"
+    assert seen["prompter"].ask("Which of them are you?", "ceo") == "lan"
+
+
+def test_onboard_without_a_company_or_a_repo_is_exit_1_with_the_ways_to_get_one(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{}"))
+    assert main(["onboard", "--home", str(tmp_path / "home"), "--provider-stdin"]) == 1
+    assert "run `ac init` to create one, or `ac onboard --from URL` to join one" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("flag", ["--handle", "--agent-handle"])
-def test_a_bad_handle_flag_stops_onboarding_before_it_starts(tmp_path, monkeypatch, capsys, flag):
+def test_a_bad_handle_flag_stops_init_before_it_starts(tmp_path, monkeypatch, capsys, flag):
     # A preset answer is given again on every retry, so the question's own re-asking would never end.
-    monkeypatch.setattr(install_main, "onboard", lambda *a, **k: pytest.fail("onboarding ran"))
-    assert main(["onboard", "--home", str(tmp_path / "home"), flag, "Bad_Handle"]) == 1
+    monkeypatch.setattr(install_main.init, "init", lambda *a, **k: pytest.fail("init ran"))
+    assert main(["init", "--home", str(tmp_path / "home"), flag, "Bad_Handle"]) == 1
     err = capsys.readouterr().err
-    assert err.startswith(f"ac onboard: {flag} 'Bad_Handle': ") and "should match pattern" in err
+    assert err.startswith(f"ac init: {flag} 'Bad_Handle': ") and "should match pattern" in err
 
 
-def test_onboard_without_git_says_so_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
+def test_init_without_git_says_so_instead_of_a_traceback(tmp_path, monkeypatch, capsys):
     (tmp_path / "empty").mkdir()
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))
-    args = ["onboard", "--home", str(tmp_path / "home"), "--provider-stdin", "--company", "Acme",
+    args = ["init", "--home", str(tmp_path / "home"), "--provider-stdin", "--company", "Acme",
             "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     assert main(args) == 1
     err = capsys.readouterr().err
-    assert err.startswith("ac onboard: ") and "git" in err and "Traceback" not in err
+    assert err.startswith("ac init: ") and "git" in err and "Traceback" not in err
 
 
-def test_scripted_onboard_then_start_brings_a_stopped_office_back(short_dir, monkeypatch, capsys):
+def test_scripted_init_then_start_brings_a_stopped_office_back(short_dir, monkeypatch, capsys):
     paths = OfficePaths(short_dir)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))
-    args = ["onboard", "--home", str(short_dir), "--provider-stdin", "--company", "Acme",
+    args = ["init", "--home", str(short_dir), "--provider-stdin", "--company", "Acme",
             "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--service", "background"]
     try:
         assert main(args) == 0, capsys.readouterr()
-        assert "First agent: hired Minh (@minh)" in capsys.readouterr().out
+        assert "with you as CEO and Minh (@minh)" in capsys.readouterr().out
         assert main(["start", "--home", str(short_dir)]) == 0  # already running: nothing to do
         pid = paths.pidfile.read_text().strip()
         assert capsys.readouterr().out == f"The office is already running (pid {pid}).\n"
@@ -107,17 +125,38 @@ def test_scripted_onboard_then_start_brings_a_stopped_office_back(short_dir, mon
         _stop(paths)
 
 
-def test_onboard_in_a_real_process_keeps_the_key_off_the_terminal(short_dir):
+def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir):
     paths = OfficePaths(short_dir)
-    args = [sys.executable, "-m", "agent_corp.install", "onboard", "--home", str(short_dir), "--provider-stdin",
-            "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background", "--no-hire"]
+    args = [sys.executable, "-m", "agent_corp.install", "init", "--home", str(short_dir), "--provider-stdin",
+            "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     try:
         done = subprocess.run(args, input=json.dumps({"llm_config": {"provider": "anthropic", "api_key": KEY}}),
                               capture_output=True, text=True, timeout=60, cwd=REPO)
         assert done.returncode == 0, done.stderr
         assert KEY not in done.stdout and KEY not in done.stderr
         assert "Done." in done.stdout
-        assert [p.kind for p in load_repo(paths.company).people.values()] == ["human"]
+        assert sorted(p.kind for p in load_repo(paths.company).people.values()) == ["agent", "human"]
         assert json.loads((paths.office / "provider.json").read_text())["llm_config"]["api_key"] == KEY
     finally:
         _stop(paths)
+
+
+def test_offboard_flags_reach_offboard(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(install_main.offboard, "offboard", lambda home, prompter, **k: seen.update(home=home, **k))
+    assert main(["offboard", "--home", str(tmp_path / "home"), "--yes", "--delete-company"]) == 0
+    assert seen == {"home": tmp_path / "home", "yes": True, "delete_company": True}
+
+
+def test_offboard_without_a_terminal_or_yes_removes_nothing(tmp_path, monkeypatch, capsys):
+    home = tmp_path / "home"
+    (home / "office").mkdir(parents=True)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert main(["offboard", "--home", str(home)]) == 1
+    assert "ac offboard: nothing was removed; there's no terminal to ask on, so pass --yes" in capsys.readouterr().err
+    assert (home / "office").is_dir()
+
+
+def test_offboard_on_an_empty_home_is_exit_0(tmp_path, capsys):
+    assert main(["offboard", "--home", str(tmp_path / "home")]) == 0
+    assert "Nothing of this office to remove at" in capsys.readouterr().out

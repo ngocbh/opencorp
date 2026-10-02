@@ -10,7 +10,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import doctor, launchd, systemd
 from agent_corp.install.doctor import Check
 from agent_corp.install.launch import Launch, launch
-from agent_corp.install.onboard import write_private
+from agent_corp.install.onboard import SET_UP, write_private
 from agent_corp.profile.debrief import DEBRIEF_FLOW
 from tests.company.conftest import _isolate_git  # noqa: F401
 
@@ -46,13 +46,13 @@ def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
     (paths.company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
     got = by_name(run_checks(tmp_path, paths))
     assert got["company"] == Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no"
-                                   " first commit); run `ac onboard` to finish it")
+                                   " first commit); run `ac init` to finish it")
 
 
 def test_a_fresh_machine_is_told_to_onboard(tmp_path):
     got = by_name(run_checks(tmp_path, OfficePaths(tmp_path / "home")))
-    assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / 'home'}; run `ac onboard`")
-    assert got["company"] == Check("company", "fail", f"no company repo at {tmp_path / 'home' / 'company'}; run `ac onboard`")
+    assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / 'home'}; {SET_UP}")
+    assert got["company"] == Check("company", "fail", f"no company repo at {tmp_path / 'home' / 'company'}; {SET_UP}")
     assert doctor.exit_code(got.values()) == 1
 
 

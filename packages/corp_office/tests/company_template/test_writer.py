@@ -35,7 +35,7 @@ def test_a_new_company_has_the_owner_as_ceo_and_lints_clean(tmp_path):
     assert (repo.people["ngocbh"].kind, repo.people["ngocbh"].title, repo.people["ngocbh"].manager) == ("human", "CEO", None)
     assert repo.errors == [] and lint(repo) == []
     assert git(root, "status", "--porcelain") == ""
-    assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
+    assert git(root, "log", "--format=%s").splitlines() == ["init: create the company"]
 
 
 def test_the_owners_devices_are_in_the_first_commit(tmp_path):
@@ -46,6 +46,16 @@ def test_the_owners_devices_are_in_the_first_commit(tmp_path):
     first = yaml.safe_load(git(root, "show", "HEAD:people/ngocbh/person.yaml"))
     assert first["devices"] == [{"name": "mac", "token_sha256": "ab" * 32}]
     assert lint(load_repo(root)) == []
+
+
+def test_extra_files_go_in_a_new_companys_first_commit_only(tmp_path):
+    root = tmp_path / "company"
+    extra = {"people/lan/profile.md": b"# Lan, QA\n"}
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER, extra=extra)
+    assert git(root, "show", "HEAD:people/lan/profile.md") == "# Lan, QA\n"
+    assert git(root, "log", "--format=%s").splitlines() == ["init: create the company"]
+    assert write_company(root, tmp_path / "worktrees", extra={"people/mai/profile.md": b"x"}) == []
+    assert not (root / "people" / "mai").exists()
 
 
 def test_a_new_company_gets_every_packaged_flow_so_it_can_chat_debrief_and_learn(tmp_path):
@@ -77,7 +87,7 @@ def test_writing_again_adds_only_missing_template_files(tmp_path):
     (root / "company.yaml").write_text((root / "company.yaml").read_text().replace("Acme", "Acme Two"))
     commit_all(root, "rename")
     assert write_company(root, tmp_path / "worktrees") == []  # no owner needed once company.yaml exists
-    assert git(root, "log", "--format=%s").splitlines() == ["rename", "onboard: create the company"]
+    assert git(root, "log", "--format=%s").splitlines() == ["rename", "init: create the company"]
 
     (root / "shared/flows/chat.yaml").unlink()
     commit_all(root, "drop chat")
@@ -157,7 +167,7 @@ def test_a_first_write_that_stopped_before_the_owners_file_is_finished(tmp_path)
     assert {"company.yaml", "people/ngocbh/person.yaml"} <= set(written)
     assert lint(load_repo(root)) == []
     assert git(root, "status", "--porcelain") == ""
-    assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
+    assert git(root, "log", "--format=%s").splitlines() == ["init: create the company"]
 
 
 def test_a_first_write_that_stopped_before_its_commit_is_committed(tmp_path):
@@ -172,7 +182,7 @@ def test_a_first_write_that_stopped_before_its_commit_is_committed(tmp_path):
     written = write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
     assert written == ["company.yaml", "people/ngocbh/person.yaml"]  # the filled files are rewritten
     assert git(root, "status", "--porcelain") == ""
-    assert git(root, "log", "--format=%s").splitlines() == ["onboard: create the company"]
+    assert git(root, "log", "--format=%s").splitlines() == ["init: create the company"]
     assert set(git(root, "ls-files").splitlines()) == set(template_files("Acme", OWNER))
 
 
