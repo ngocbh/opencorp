@@ -39,7 +39,9 @@ nodes:
       Ask with the ask_user tool, one short question at a time. Offer options when there are obvious
       choices. Don't ask about anything in "given" below; use it as it is. In "given", "name", "handle" and
       "title" are the owner's, and "agent" and "agent_handle" are the first teammate's name and handle.
-      Offer the "suggested" values as defaults.
+      Ask about each owner field that isn't in "given", offering its "suggested" value as an option. Unless
+      "given" has "agent", ask who the first teammates should be; most owners start with one, such as an
+      engineer, and may also choose none.
 
       Never ask for a password, an API key, a token or a git remote URL: `ac init` asks for those itself.
 
