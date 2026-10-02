@@ -1,6 +1,7 @@
 """Device tokens at the office: enforcement, the acting person, the open probe, and device routes."""
 
 import asyncio
+import json
 import time
 from urllib.parse import quote
 
@@ -10,6 +11,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from agent_corp.auth.passwords import check_password, hash_password
 from agent_corp.auth.tokens import new_token, token_sha256
 from agent_corp.daemon.app import create_app
 from agent_corp.daemon.auth import acting_person
@@ -283,3 +285,95 @@ async def test_the_liveness_probe_works_once_tokens_are_needed(office, company, 
     give_device(company, "ngocbh", "mac", new_token())
     async with served(office, short_dir / "o.sock"):
         assert await asyncio.to_thread(office_answers, short_dir / "o.sock")
+
+
+# Logging in with a password, and setting one.
+
+PASSWORD = "pw-sentinel-c41e"
+
+
+def give_password(company, handle: str, password: str = PASSWORD) -> None:
+    """Commit a password's hash for ``handle``, as ``ac init`` would have."""
+    path = company / "people" / handle / "person.yaml"
+    path.write_text(path.read_text() + f"password_hash: {json.dumps(hash_password(password))}\n")
+    _git(company, "commit", "-qam", f"password for {handle}")
+
+
+def login(handle: str, password: str, name: str, token: str) -> dict:
+    return {"handle": handle, "password": password, "device": name, "token_sha256": token_sha256(token)}
+
+
+async def test_a_password_logs_a_new_device_in_without_a_token(client, company):
+    give_password(company, "ngocbh")
+    give_device(company, "ngocbh", "mac", new_token())  # tokens are enforced
+    laptop = new_token()
+    r = await client.post("/login", json=login("ngocbh", PASSWORD, "laptop", laptop))
+    assert r.status_code == 200 and r.json()["handle"] == "ngocbh" and "scrypt" not in r.text
+    assert [d["name"] for d in r.json()["devices"]] == ["mac", "laptop"]
+    assert subjects(company)[0] == "devices(@ngocbh): add laptop"
+    assert (await client.get("/whoami", headers=bearer(laptop))).json() == {"person": "ngocbh", "device": "laptop"}
+
+
+async def test_a_wrong_password_an_unknown_handle_or_an_agent_is_a_bad_login(client, company):
+    give_password(company, "ngocbh")
+    head = subjects(company)
+    for handle, password in [("ngocbh", "not-the-password"), ("ghost", PASSWORD), ("minh", PASSWORD)]:
+        r = await client.post("/login", json=login(handle, password, "laptop", new_token()))
+        assert (r.status_code, r.json()["error"]) == (401, "bad_login")
+        assert r.json()["message"] == "wrong handle or password"
+    assert subjects(company) == head
+
+
+async def test_a_human_without_a_password_cannot_log_in_with_one(client, company):
+    r = await client.post("/login", json=login("ngocbh", PASSWORD, "laptop", new_token()))
+    assert (r.status_code, r.json()["error"]) == (409, "no_password")
+
+
+async def test_a_login_follows_the_device_rules(client, company):
+    give_password(company, "ngocbh")
+    token = new_token()
+    give_device(company, "ngocbh", "mac", token)
+    head = subjects(company)
+    r = await client.post("/login", json=login("ngocbh", PASSWORD, "mac", token))
+    assert r.status_code == 200 and subjects(company) == head
+    r = await client.post("/login", json=login("ngocbh", PASSWORD, "mac", new_token()))
+    assert (r.status_code, r.json()["error"]) == (409, "device_exists")
+
+
+async def test_a_human_sets_their_password_and_only_its_hash_is_committed(client, company):
+    add_human(company, "ava")
+    ava = new_token()
+    give_device(company, "ava", "pc", ava)
+    r = await client.put("/people/ava/password", json={"password": PASSWORD}, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["handle"] == "ava" and "scrypt" not in r.text
+    assert subjects(company)[0] == "password(@ava): set"
+    stored = yaml.safe_load((company / "people/ava/person.yaml").read_text())["password_hash"]
+    assert check_password(PASSWORD, stored)
+    assert PASSWORD not in _git(company, "log", "-p")
+    r = await client.post("/login", json=login("ava", PASSWORD, "laptop", new_token()))
+    assert r.status_code == 200
+
+
+async def test_the_ceo_sets_anyones_password_and_others_cannot(client, company):
+    add_human(company, "ava")
+    add_human(company, "bo")
+    ceo, bo = new_token(), new_token()
+    give_device(company, "ngocbh", "mac", ceo)
+    give_device(company, "bo", "pc", bo)
+    r = await client.put("/people/ava/password", json={"password": PASSWORD}, headers=bearer(ceo))
+    assert r.status_code == 200
+    r = await client.put("/people/ava/password", json={"password": PASSWORD}, headers=bearer(bo))
+    assert (r.status_code, r.json()["error"]) == (403, "forbidden")
+    assert "password" in r.json()["message"]
+
+
+async def test_bootstrap_an_unauthenticated_request_sets_the_ceos_password(client, company):
+    r = await client.put("/people/ngocbh/password", json={"password": PASSWORD})
+    assert r.status_code == 200 and subjects(company)[0] == "password(@ngocbh): set"
+
+
+async def test_a_short_password_or_an_agents_is_refused(client, company):
+    r = await client.put("/people/ngocbh/password", json={"password": "short"})
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    r = await client.put("/people/minh/password", json={"password": PASSWORD})
+    assert (r.status_code, r.json()["error"]) == (422, "not_a_human")
