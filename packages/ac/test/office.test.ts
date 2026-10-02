@@ -6,6 +6,7 @@ import { doctor } from "../src/commands/doctor"
 import { init } from "../src/commands/init"
 import { offboard } from "../src/commands/offboard"
 import { onboard } from "../src/commands/onboard"
+import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
 import { type Deps, REPO, officeAnswers, venvPython } from "../src/office"
@@ -117,6 +118,17 @@ test("start runs the Python start with its flags", async () => {
   const { deps, calls } = fake({ python: 3 })
   expect(await start(["--home", "/h"], deps)).toBe(3)
   expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "start", "--home", "/h"], cwd: undefined }])
+})
+
+test("restart syncs the venv, then runs the Python restart with its flags", async () => {
+  const { deps, calls } = fake({ python: 1 })
+  expect(await restart(["--home", "/h"], deps)).toBe(1)
+  expect(calls).toEqual([
+    { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
+    { argv: [venvPython(), "-m", "agent_corp.install", "restart", "--home", "/h"], cwd: undefined },
+  ])
+  const { commands } = await import("../src/main")
+  expect(commands.restart.summary).toBe("Stop the office and start it again")
 })
 
 // CI's ts job has no venv; the office job tests `start` itself.
