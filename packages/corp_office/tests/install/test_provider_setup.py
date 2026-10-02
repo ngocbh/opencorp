@@ -7,7 +7,7 @@ import stat
 import pytest
 
 from agent_corp.chat.provider import load_provider
-from agent_corp.install.onboard import OnboardError, TtyPrompter, ensure_provider, step_lines
+from agent_corp.install.onboard import NoTerminal, OnboardError, TtyPrompter, ensure_provider, step_lines
 
 KEY = "sk-ant-test-0123456789"
 
@@ -186,9 +186,16 @@ def test_the_terminal_prompter_wont_read_a_key_without_a_terminal(monkeypatch):
     monkeypatch.setattr("sys.stdin", io.StringIO(KEY + "\n"))
     monkeypatch.setattr(getpass, "getpass", lambda *a, **k: pytest.fail("getpass would echo without a tty"))
     for prompter in (TtyPrompter(), TtyPrompter(interactive=False)):
-        with pytest.raises(OnboardError, match="--provider-stdin") as info:
+        with pytest.raises(NoTerminal) as info:
             prompter.secret("anthropic API key")
         assert KEY not in str(info.value)
+
+
+def test_a_key_asked_for_without_a_terminal_says_to_pass_the_provider_on_stdin(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO(KEY + "\n"))
+    with pytest.raises(OnboardError, match="--provider-stdin") as info:
+        ensure_provider(tmp_path / "provider.json", TtyPrompter({"Model provider": "anthropic"}, interactive=False))
+    assert KEY not in str(info.value) and not isinstance(info.value, NoTerminal)
 
 
 def test_the_terminal_prompter_takes_presets_and_defaults():

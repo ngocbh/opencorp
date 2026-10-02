@@ -46,6 +46,10 @@ class OnboardError(Exception):
     """Onboarding stopped; the message says why and what to do. It never contains a key."""
 
 
+class NoTerminal(OnboardError):
+    """A secret was asked for, but there's no terminal to read it from without echo."""
+
+
 class Prompter(Protocol):
     """How onboarding talks to the owner."""
 
@@ -92,8 +96,7 @@ class TtyPrompter:
     def secret(self, question: str) -> str:
         if not self.interactive or not sys.stdin.isatty():
             # getpass falls back to reading stdin with echo when there is no terminal.
-            raise OnboardError("there is no terminal to read the key without echo;"
-                               " pass the provider with --provider-stdin instead")
+            raise NoTerminal(f"there is no terminal to read {question!r} without echo")
         return getpass.getpass(f"{question}: ").strip()
 
     def say(self, text: str) -> None:
@@ -139,7 +142,12 @@ def _ask_provider(prompter: Prompter) -> dict:
     llm = {"provider": name}
     if model := prompter.ask("Model (empty for the provider's default)"):
         llm["model"] = model
-    if key := prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)"):
+    try:
+        key = prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)")
+    except NoTerminal:
+        raise OnboardError("there is no terminal to read the key without echo;"
+                           " pass the provider with --provider-stdin instead") from None
+    if key:
         llm["api_key"] = key
     else:
         prompter.say(f"No key saved; runs will use composer's own login (`composer auth {name}`).")

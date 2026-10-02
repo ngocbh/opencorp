@@ -7,6 +7,7 @@ import pytest
 import yaml
 
 from agent_corp.auth.identity import device_name, read_identity
+from agent_corp.auth.passwords import check_password
 from agent_corp.auth.tokens import token_sha256
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
@@ -16,7 +17,7 @@ from agent_corp.install import onboard as onboard_module
 from agent_corp.install.init import init
 from agent_corp.install.onboard import redact
 from agent_corp.install.launch import office_answers
-from agent_corp.install.onboard import OnboardError, onboard
+from agent_corp.install.onboard import NoTerminal, OnboardError, onboard
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
@@ -25,11 +26,12 @@ from .test_onboard import _git, _stop
 from .test_provider_setup import Script
 
 KEY = "sk-ant-sentinel-1c9e04b7a2d6"
+PASSWORD = "pw-sentinel-5d1f"
 
 
 def answers(company="Acme", name="Me", handle="me", remote=""):
-    """Init's answers: the company and its CEO, one default teammate (Minh), and ``remote``."""
-    return (company, name, handle, "", "", "", "", "", "", remote)
+    """Init's answers: the company and its CEO with ``PASSWORD``, one default teammate (Minh), and ``remote``."""
+    return (company, name, handle, "", PASSWORD, PASSWORD, "", "", "", "", "", remote)
 
 
 def stop_after_the_company(monkeypatch):
@@ -39,7 +41,7 @@ def stop_after_the_company(monkeypatch):
 def test_init_makes_the_company_its_ceo_and_seeded_teammates_in_one_commit(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
     home = tmp_path / "home"
-    ask = Script("Acme", "Hong Ngoc Bui", "ngocbh", "",
+    ask = Script("Acme", "Hong Ngoc Bui", "ngocbh", "", PASSWORD, PASSWORD,
                  "Lan", "", "QA", "Tests every release.", "y",
                  "Minh", "minh-dev", "", "", "",
                  "")
@@ -74,6 +76,46 @@ def test_init_registers_this_device_for_the_ceo_in_the_first_commit(tmp_path, mo
     assert f"This device: {me.device}, acting as @me (its token is in {home / 'identity.json'})" in ask.seen
 
 
+def test_init_keeps_only_the_hash_of_the_ceos_password_in_the_first_commit(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
+    ask = Script(*answers())
+    with pytest.raises(OnboardError, match="stop"):
+        init(home, ask, host=make_host(tmp_path, Runner()))
+    first = yaml.safe_load(_git(home / "company", "show", "HEAD:people/me/person.yaml"))
+    assert check_password(PASSWORD, first["password_hash"])
+    assert not [line for line in ask.seen if PASSWORD in line]
+    assert PASSWORD not in _git(home / "company", "log", "-p", "--all")
+    assert lint(load_repo(home / "company")) == []
+
+
+def test_a_short_or_mistyped_password_is_asked_again(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
+    ask = Script("Acme", "Me", "me", "", "short", PASSWORD, "typo-typo", PASSWORD, PASSWORD, *answers()[6:])
+    with pytest.raises(OnboardError, match="stop"):
+        init(home, ask, host=make_host(tmp_path, Runner()))
+    assert "That doesn't work: use at least 8 characters" in ask.seen
+    assert "That doesn't work: the two passwords differ" in ask.seen
+    assert check_password(PASSWORD, load_repo(home / "company").people["me"].password_hash)
+
+
+class NoTerminalScript(Script):
+    def secret(self, question):
+        self.seen.append(question)
+        raise NoTerminal("no terminal")
+
+
+def test_without_a_terminal_the_ceo_gets_no_password_and_is_told_how_to_set_one(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
+    ask = NoTerminalScript("Acme", "Me", "me", "", *answers()[6:])
+    with pytest.raises(OnboardError, match="stop"):
+        init(home, ask, host=make_host(tmp_path, Runner()))
+    assert load_repo(home / "company").people["me"].password_hash is None
+    assert "Password: none, since there's no terminal to ask on; set one later with `ac password`" in ask.seen
+
+
 def test_init_replaces_an_old_identity(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
     home = tmp_path / "home"
@@ -105,7 +147,7 @@ def test_init_refuses_a_company_that_exists_and_suggests_onboard(tmp_path):
 
 def test_a_bad_or_taken_handle_is_asked_again(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
-    ask = Script("Acme", "Me", "Bad_Handle", "me", "", "Me Too", "me", "me-too", "", "", "", "")
+    ask = Script("Acme", "Me", "Bad_Handle", "me", "", PASSWORD, PASSWORD, "Me Too", "me", "me-too", "", "", "", "")
     with pytest.raises(OnboardError, match="stop"):
         init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
     assert any("should match pattern" in line for line in ask.seen)

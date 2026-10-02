@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
 
+from agent_corp.auth.passwords import hash_password, password_problem
 from agent_corp.chat.hire import agent_files
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company_template import Owner, is_new, template_files, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install.launch import REPO, Host, launch
-from agent_corp.install.onboard import (OnboardError, Prompter, ask_until, handle_problem, login_defaults,
-                                        make_device, make_home, onboard, redact, slug, user_git)
+from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ask_until, handle_problem,
+                                        login_defaults, make_device, make_home, onboard, redact, slug, user_git)
 from agent_corp.protocol.models import HireRequest
 
 STEPS = 5
@@ -23,6 +24,8 @@ COMPANY = "Company name"
 YOUR_NAME = "Your name"
 YOUR_HANDLE = "Your handle"
 YOUR_TITLE = "Your title"
+YOUR_PASSWORD = "Your password, to log in new devices with (at least 8 characters; not shown)"
+PASSWORD_AGAIN = "Your password again"
 THEIR_NAME = "Their name"
 THEIR_HANDLE = "Their handle"
 THEIR_TITLE = "Their title"
@@ -49,12 +52,33 @@ def _ask_owner(prompter: Prompter, company: str) -> Owner:
     name, handle = login_defaults()
     who = prompter.ask(YOUR_NAME, name)
     me = ask_until(prompter, YOUR_HANDLE, handle, handle_problem)
-    owner = Owner(handle=me, name=who, title=prompter.ask(YOUR_TITLE, "CEO"))
+    owner = Owner(handle=me, name=who, title=prompter.ask(YOUR_TITLE, "CEO"), password_hash=_ask_password(prompter))
     try:
         template_files(company, owner)  # validates without writing
     except ValueError as exc:
         raise OnboardError(f"that company doesn't work: {exc}") from None
     return owner
+
+
+def _ask_password(prompter: Prompter) -> str | None:
+    """The hash of a new password, asked twice without echo; None when there's no terminal to ask on.
+
+    Raises:
+        OnboardError: no password worked.
+    """
+    for _ in range(TRIES):
+        try:
+            password = prompter.secret(YOUR_PASSWORD)
+        except NoTerminal:
+            prompter.say("Password: none, since there's no terminal to ask on; set one later with `ac password`")
+            return None
+        if why := password_problem(password):
+            prompter.say(f"That doesn't work: {why}")
+        elif prompter.secret(PASSWORD_AGAIN) != password:
+            prompter.say("That doesn't work: the two passwords differ")
+        else:
+            return hash_password(password)
+    raise OnboardError("no usable password")
 
 
 def _ask_team(prompter: Prompter, owner: Owner) -> list[Teammate]:
@@ -103,8 +127,9 @@ def init(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO | 
     """Create the company at ``home``, then set up this machine's office with ``onboard``.
 
     The company, its CEO (you), and its first teammates, each with a seeded ``profile.md``, are
-    one commit; with ``device``, the CEO lists this device, whose token goes in
-    ``identity.json``. A remote, if given, is added and pushed to.
+    one commit. The CEO's ``person.yaml`` holds only the hash of their password, which is asked
+    without echo (and skipped without a terminal); with ``device``, it lists this device, whose
+    token goes in ``identity.json``. A remote, if given, is added and pushed to.
 
     Raises:
         OnboardError: a company already exists here, or a step failed.
