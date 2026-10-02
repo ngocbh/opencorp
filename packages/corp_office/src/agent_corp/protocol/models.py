@@ -58,6 +58,15 @@ class Device(BaseModel):
     ]
 
 
+type PasswordHash = Annotated[
+    str,
+    Field(
+        description="A password's salted hash as a PHC string, such as $scrypt$ln=15,r=8,p=1$<salt>$<hash>; never the password itself.",
+        pattern='^\\$[a-z0-9-]+\\$',
+    ),
+]
+
+
 class CompanyDefaults(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -143,6 +152,12 @@ class Person(BaseModel):
             validate_default=True,
         ),
     ] = []
+    password_hash: Annotated[
+        PasswordHash | None,
+        Field(
+            description='The hash of the password this human logs in a new device with; null for none.'
+        ),
+    ] = None
 
 
 class Group(BaseModel):
@@ -812,6 +827,49 @@ class AddDeviceRequest(BaseModel):
             pattern='^[0-9a-f]{64}$',
         ),
     ]
+
+
+class LoginRequest(BaseModel):
+    """
+    The body of POST /login: a human's handle and password, and the device to add to their devices once they check out.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    handle: Annotated[
+        str,
+        Field(
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    password: Annotated[str, Field(min_length=1)]
+    device: Annotated[
+        str,
+        Field(
+            description="A device's name within one person, such as 'macbook'.",
+            pattern='^[a-z0-9][a-z0-9._-]{0,62}$',
+        ),
+    ]
+    token_sha256: Annotated[
+        str,
+        Field(
+            description='The lowercase hex sha256 of a device token. Tokens are long random secrets, so the hash is safe to publish.',
+            pattern='^[0-9a-f]{64}$',
+        ),
+    ]
+
+
+class SetPasswordRequest(BaseModel):
+    """
+    The body of PUT /people/{handle}/password: the new password, which the office stores only as a hash.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    password: Annotated[str, Field(min_length=8)]
 
 
 class Message(BaseModel):

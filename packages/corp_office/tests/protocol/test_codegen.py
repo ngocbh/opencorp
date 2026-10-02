@@ -17,6 +17,7 @@ SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
 
 
 HASH = "d07f963c2bb7a3cc74a910e51ca0075b194da412a93737881f105a55156a988f"
+PASSWORD_HASH = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$Z2lHqGqVnSkfU3gS2tlFp2Yzqm7AAw0EC5lyE4X4bMI"
 
 
 def _validator(name):
@@ -56,11 +57,25 @@ def test_ids_and_enums_are_plain_str():
                                     {"devices": [{"name": "macbook", "token_sha256": HASH[:-1]}]},
                                     {"devices": [{"name": "macbook", "token_sha256": HASH.upper()}]},
                                     {"devices": [{"name": "Mac Book", "token_sha256": HASH}]},
-                                    {"devices": [{"name": "macbook", "token_sha256": HASH, "token": "x"}]}])
+                                    {"devices": [{"name": "macbook", "token_sha256": HASH, "token": "x"}]},
+                                    {"password_hash": "hunter22"}, {"password_hash": ""}])
 def test_generated_models_keep_constraints(change):
     data = json.loads((FIXTURES / "Person.json").read_text())
     with pytest.raises(pydantic.ValidationError):
         models.Person.model_validate({**data, **change})
+
+
+def test_a_person_may_carry_a_password_hash_as_a_phc_string():
+    data = {**json.loads((FIXTURES / "Person.json").read_text()), "password_hash": PASSWORD_HASH}
+    assert models.Person.model_validate(data).password_hash == PASSWORD_HASH
+    _validator("Person").validate(data)
+    assert models.Person.model_validate(json.loads((FIXTURES / "Person.json").read_text())).password_hash is None
+
+
+def test_a_new_password_has_at_least_8_characters():
+    with pytest.raises(pydantic.ValidationError):
+        models.SetPasswordRequest(password="short")
+    assert models.SetPasswordRequest(password="12345678").password == "12345678"
 
 
 def test_a_device_holds_only_its_token_hash():

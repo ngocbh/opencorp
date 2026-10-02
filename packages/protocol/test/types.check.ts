@@ -8,6 +8,7 @@ export const minh: Person = {
 export const ceo: Person = {
   handle: "ngocbh", name: "Hong Ngoc Bui", kind: "human", title: "CEO", manager: null,
   devices: [{ name: "macbook", token_sha256: "d07f963c2bb7a3cc74a910e51ca0075b194da412a93737881f105a55156a988f" }],
+  password_hash: "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$Z2lHqGqVnSkfU3gS2tlFp2Yzqm7AAw0EC5lyE4X4bMI",
 }
 
 export const badKind: Person = {
