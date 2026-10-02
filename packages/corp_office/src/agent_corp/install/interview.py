@@ -1,13 +1,20 @@
 """The owner's interview for a new company: a flow that asks on the terminal, and the checks on what it returns."""
 
+import json
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from agent_composer import load_flow, run_flow
 from pydantic import ValidationError
 
+from agent_corp.chat.provider import Provider
 from agent_corp.company_template import Owner, template_files
-from agent_corp.install.onboard import OnboardError, handle_problem, login_defaults, slug
+from agent_corp.install.onboard import OnboardError, Prompter, handle_problem, login_defaults, redact, slug
 from agent_corp.protocol.models import HireRequest
+from agent_corp.worker.spawn import worker_env
 
 FLOW = Path(__file__).parent / "flows" / "init.yaml"
 """The interview flow."""
@@ -153,3 +160,64 @@ def summary(answers: Answers) -> list[str]:
         about = clean(t.about).strip()
         lines.append(f"  {_who(t.name, t.handle, t.title)}" + (f": {about}" if about else ""))
     return lines
+
+
+@contextmanager
+def _office_env(extra: dict[str, str]) -> Iterator[None]:
+    """``os.environ`` as an office worker's plus ``extra`` inside the block, and exactly as it was after."""
+    saved, env = dict(os.environ), worker_env() | extra
+    try:
+        os.environ.clear()
+        os.environ.update(env)
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(saved)
+
+
+def run_interview(provider: Provider, prompter: Prompter, known: Known, *, draft: str, changes: str,
+                  provider_path: Path) -> dict:
+    """Run the interview flow once with ``provider``'s model, asking its questions with ``prompter``; return its output.
+
+    ``draft`` is the JSON of the last output and ``changes`` what to change in it; both are empty on a first run.
+
+    Raises:
+        OnboardError: the owner's input ended (the prompter's own error), the run failed, or the user id has no
+            account.
+    """
+    flow = load_flow(FLOW.read_text(), source_label=str(FLOW))
+    inputs = {"known": json.dumps(known.facts()), "draft": draft, "changes": changes}
+    stopped: OnboardError | None = None
+
+    def ask_user(**request):
+        nonlocal stopped
+        options = request.get("options") or []
+        for number, option in enumerate(options, 1):
+            prompter.say(f"  {number}. {clean(option)}")
+        try:
+            answer = prompter.ask(clean(request["question"]))
+        except OnboardError as exc:
+            stopped = exc
+            raise
+        if answer.strip().isdecimal() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1]
+        return answer
+
+    # The run gets the environment office runs get, so the interview authenticates the way they will: a shell
+    # variable the office never sees can't make it work.
+    try:
+        with _office_env(provider.env):
+            # No workers: the handler, and so the terminal, stays on the main thread.
+            result = run_flow(flow, inputs, llm_config=provider.llm_config, tools={"ask_user": ask_user},
+                              num_workers=0)
+        message = result.failure.message if result.status == "failed" else None
+    except Exception as exc:
+        message = str(exc)
+    if stopped:
+        raise stopped
+    if message is not None:
+        if key := (provider.llm_config or {}).get("api_key"):
+            message = message.replace(str(key), "***")
+        raise OnboardError(f"the model couldn't run the interview: {redact(message)}; check or remove "
+                           f"{provider_path} and run `ac init` again")
+    return result.output
