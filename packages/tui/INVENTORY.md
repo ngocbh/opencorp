@@ -81,7 +81,7 @@ change that rewires a kept file.
 | Session view | `routes/session/{index,sidebar,dialog-message}.tsx` | keep | Renders protocol messages and live parts. |
 | Question view | `routes/session/question.tsx` | keep | Shows a session's open office question and answers it. |
 | Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
-| Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-stash,dialog-theme-list,dialog-debug,error-component,spinner,register-spinner,bg-pulse,bg-pulse-render}.ts(x)` | keep | Used by every later screen. The session list reads office sessions. |
+| Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-stash,dialog-theme-list,dialog-debug,error-component,spinner,register-spinner}.ts(x)` | keep | Used by every later screen. The session list reads office sessions. |
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
 | Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` holds the person to talk to and session pins. |
@@ -115,10 +115,6 @@ Removed rather than ported, because the office has no counterpart:
 | Shell mode, slash server commands, MCP and agent `@` mentions, image and PDF attachments (`component/prompt/*`) | The office takes plain-text prompts. |
 | `--fork`, the `tui.*` and `session.deleted`/`session.error` event handlers (`app.tsx`) | No such office routes or events. |
 
-## Still to rebrand
+## Rebranded
 
-OpenCode branding kept for now:
-
-- The logo (`component/logo.tsx`, `logo.ts`).
-- Custom themes are looked up in `.opencode/themes` (`context/theme.tsx`).
-- The OpenCode Go upsell art in `component/bg-pulse*.tsx`.
+The logo spells AgentCorp; the default theme is `agentcorp` (a saved `opencode` choice loads it); custom themes come from `.agent-corp/themes`; environment switches are `AGENT_CORP_*`. The OpenCode Go upsell art (`component/bg-pulse*.tsx`) was dropped.
