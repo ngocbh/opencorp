@@ -179,6 +179,8 @@ export function createFakeOffice(
   const notImplemented = new Set(opts.notImplemented ?? [])
   const missing = new Set(opts.missing ?? [])
   const requests: { method: string; path: string; raw: string; body: unknown; authorization?: string }[] = []
+  // Humans' passwords by handle, kept as given: the office keeps only a hash, and never serves it.
+  const passwords = new Map<string, string>()
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
@@ -222,15 +224,15 @@ export function createFakeOffice(
     throw fail(401, "bad_token", "the office doesn't know this device; run `ac login`")
   }
 
-  /** The human `handle`, if `actor` may change their devices: themselves, or the CEO. */
-  function deviceOwner(handle: string, actor: string) {
+  /** The human `handle`, if `actor` may change their `what`: themselves, or the CEO. */
+  function deviceOwner(handle: string, actor: string, what = "devices") {
     const person = need(
       state.people.find((p) => p.handle === handle),
       `person @${handle}`,
     )
-    if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; only humans have devices`)
+    if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; agents have no ${what}`)
     if (actor !== handle && actor !== ceo())
-      throw fail(403, "forbidden", `only @${handle} or the CEO can change @${handle}'s devices`)
+      throw fail(403, "forbidden", `only @${handle} or the CEO can change @${handle}'s ${what}`)
     return person
   }
 
@@ -249,6 +251,23 @@ export function createFakeOffice(
       throw fail(409, "token_in_use", "another device already lists this token")
     person.devices = [...(person.devices ?? []), { name: body.name, token_sha256: body.token_sha256 }]
     return person
+  }
+
+  function login(body: any) {
+    check(str(body?.handle) && str(body.password), "handle and password are required")
+    const person = state.people.find((p) => p.handle === body.handle && p.kind === "human")
+    if (person && !passwords.has(person.handle))
+      throw fail(409, "no_password", `@${person.handle} has no password; set one with \`ac password\``)
+    if (!person || passwords.get(person.handle) !== body.password)
+      throw fail(401, "bad_login", "wrong handle or password")
+    return addDevice(body.handle, { name: body.device, token_sha256: body.token_sha256 }, body.handle)
+  }
+
+  function setPassword(handle: string, body: any, actor: string) {
+    check(typeof body?.password === "string" && body.password.length >= 8, "password must be at least 8 characters")
+    deviceOwner(handle, actor, "password")
+    passwords.set(handle, body.password)
+    return state.people.find((p) => p.handle === handle)!
   }
 
   function removeDevice(handle: string, name: string, actor: string) {
@@ -597,6 +616,12 @@ export function createFakeOffice(
     ["GET", "/health", () => Response.json({ ok: true })],
     ["GET", "/whoami", ({ actor, device }) => Response.json({ person: actor, device })],
     ["POST", "/people/:handle/devices", ({ params, body, actor }) => Response.json(addDevice(params.handle, body, actor))],
+    ["POST", "/login", ({ body }) => Response.json(login(body))],
+    [
+      "PUT",
+      "/people/:handle/password",
+      ({ params, body, actor }) => Response.json(setPassword(params.handle, body, actor)),
+    ],
     [
       "DELETE",
       "/people/:handle/devices/:name",
@@ -981,8 +1006,12 @@ export function createFakeOffice(
       ...(authorization !== null && { authorization }),
     })
     let who: { actor: string; device: string | null } = { actor: ceo(), device: null }
-    // Only the liveness probe is served without a token once the office enforces them.
-    if (!(url.pathname === "/health" && (req.method === "GET" || req.method === "HEAD"))) {
+    // Only the liveness probe and logging in are served without a token once the office enforces them.
+    const open =
+      url.pathname === "/health"
+        ? req.method === "GET" || req.method === "HEAD"
+        : url.pathname === "/login" && req.method === "POST"
+    if (!open) {
       try {
         who = authenticate(authorization)
       } catch (e) {
@@ -1029,6 +1058,8 @@ export function createFakeOffice(
     state,
     /** Every request received, in order: `path` is decoded and keeps the query string, `raw` is as sent. */
     requests,
+    /** Humans' passwords by handle; set one to give a human a password. */
+    passwords,
     /** Route keys (`"POST /sessions/:id/prompt"`) or exact paths (`"GET /sessions/S2/messages"`) answered with 501. */
     notImplemented,
     nextId,

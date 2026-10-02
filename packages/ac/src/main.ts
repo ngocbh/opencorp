@@ -11,7 +11,11 @@ export const commands: Record<string, { summary: string; load: () => Promise<{ r
   end: { summary: "End a session and start its debrief", load: () => import("./commands/end") },
   feedback: { summary: "Give feedback on a person's work", load: () => import("./commands/feedback") },
   profile: { summary: "Edit a person's profile in $EDITOR", load: () => import("./commands/profile") },
-  login: { summary: "Give this device a token and register it", load: () => import("./commands/login") },
+  login: { summary: "Log this device in, with your password if you have one", load: () => import("./commands/login") },
+  password: {
+    summary: "Set your password, which logging in a new device asks for",
+    load: () => import("./commands/password"),
+  },
   logout: { summary: "Remove this device from the office and forget it", load: () => import("./commands/logout") },
   devices: { summary: "List, add or remove a person's devices", load: () => import("./commands/devices") },
   whoami: { summary: "Show who this device acts as", load: () => import("./commands/whoami") },

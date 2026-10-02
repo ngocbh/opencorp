@@ -23,7 +23,7 @@ def _person(repo: CompanyRepo, handle: str, actor: str, what: str = "devices") -
     if person is None:
         raise DeviceRefused(404, "not_found", f"no person @{handle}")
     if person.kind != "human":
-        raise DeviceRefused(422, "not_a_human", f"@{handle} is an agent; only humans have {what}")
+        raise DeviceRefused(422, "not_a_human", f"@{handle} is an agent; agents have no {what}")
     ceo = repo.company.ceo if repo.company else None
     if actor not in (handle, ceo):
         raise DeviceRefused(403, "forbidden", f"only @{handle} or the CEO can change @{handle}'s {what}")

@@ -11,6 +11,7 @@ import type {
   FeedbackRequest,
   HireRequest,
   HireResponse,
+  LoginRequest,
   Message,
   Person,
   Profile,
@@ -21,6 +22,7 @@ import type {
   Question,
   SendBackRequest,
   Session,
+  SetPasswordRequest,
   SideChatRequest,
   WorkItem,
 } from "@agent-corp/protocol"
@@ -51,10 +53,14 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number; t
   return {
     socket,
     whoami: () => get<WhoAmI>("/whoami"),
+    /** Adds a device for a human who gives their password; served without a token. */
+    login: (req: LoginRequest) => post<Person>("/login", req),
     people: {
       list: () => get<Person[]>("/people"),
       inFolder: (cwd: string) => get<Person[]>(`/folders/${seg(cwd)}/people`),
       hire: (req: HireRequest) => post<HireResponse>("/people", req),
+      setPassword: (person: string, req: SetPasswordRequest) =>
+        call<Person>("PUT", `/people/${seg(person)}/password`, req),
     },
     devices: {
       add: (person: string, req: AddDeviceRequest) => post<Person>(`/people/${seg(person)}/devices`, req),
