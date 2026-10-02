@@ -3,7 +3,7 @@
 import yaml
 from pydantic import ValidationError
 
-from agent_corp.auth.passwords import check_password, hash_password
+from agent_corp.auth.passwords import check_password, hash_password, password_problem
 from agent_corp.company.git import CompanyGit
 from agent_corp.company.loader import CompanyRepo, load_repo
 from agent_corp.protocol.models import Device, LoginRequest, Person
@@ -109,7 +109,14 @@ def login(git: CompanyGit, request: LoginRequest) -> Person:
 
 
 def set_password(git: CompanyGit, handle: str, password: str, actor: str) -> Person:
-    """Set ``handle``'s password as ``actor``, keeping only its hash."""
+    """Set ``handle``'s password as ``actor``, keeping only its hash.
+
+    Raises:
+        DeviceRefused: 422 ``invalid_body`` for a password too short to be one; or what changing a
+            person refuses.
+    """
+    if (problem := password_problem(password)) is not None:
+        raise DeviceRefused(422, "invalid_body", problem)
     password_hash = hash_password(password)  # slow on purpose, so outside the lock
     with git.lock:
         git.commit_hand_edits()

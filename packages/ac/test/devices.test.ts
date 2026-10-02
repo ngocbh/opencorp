@@ -277,14 +277,14 @@ test("login for a human without a password falls back to vouching from a trusted
 
 test("password sets your password, asking twice and again on a short or mistyped one", async () => {
   await ac(trusted, "login", "--device", "mac")
-  const asked = answering("short", PASSWORD, PASSWORD + "x", PASSWORD, PASSWORD)
+  const asked = answering("eleven-char", PASSWORD, PASSWORD + "x", PASSWORD, PASSWORD)
   const r = await ac(trusted, "password")
   expect(r).toEqual({
     code: 0,
     out: "Set @ngocbh's password.",
-    err: "That doesn't work: use at least 8 characters\nThat doesn't work: the two passwords differ",
+    err: "That doesn't work: use at least 12 characters\nThat doesn't work: the two passwords differ",
   })
-  const question = "New password for @ngocbh (at least 8 characters; not shown)"
+  const question = "New password for @ngocbh (at least 12 characters, one you use nowhere else; not shown)"
   expect(asked.asked).toEqual([question, question, "Again", question, "Again"])
   expect(office.passwords.get("ngocbh")).toBe(PASSWORD)
   expect(office.requests.at(-1)?.authorization).toBe(`Bearer ${identity(trusted).token}`)
