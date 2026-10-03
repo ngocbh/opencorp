@@ -214,13 +214,20 @@ def check_provider(data: object) -> Provider:
     return provider
 
 
+PROVIDER_DEFAULT = "The provider's default"
+TYPE_MODEL = "Another model (type its name)"
+"""The choices for the model."""
+
+
 def _ask_provider(prompter: Prompter) -> dict:
     choices = ", ".join(SUPPORTED_LLM_PROVIDERS)
-    while (name := prompter.ask("Model provider", "anthropic")) not in SUPPORTED_LLM_PROVIDERS:
-        prompter.say(f"Choose one of: {choices}")
+    name = ask_until(prompter, "Model provider", "anthropic",
+                     lambda n: None if n in SUPPORTED_LLM_PROVIDERS else f"choose one of: {choices}",
+                     options=SUPPORTED_LLM_PROVIDERS)
     llm = {"provider": name}
-    if model := prompter.ask("Model (empty for the provider's default)"):
-        llm["model"] = model
+    if prompter.choose("Model", [PROVIDER_DEFAULT, TYPE_MODEL], PROVIDER_DEFAULT) == TYPE_MODEL:
+        if model := prompter.ask("Model name"):
+            llm["model"] = model
     try:
         key = prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)")
     except NoTerminal:
@@ -300,14 +307,16 @@ TRIES = 5
 """How many answers a question takes before giving up: a preset or a default comes back the same each time."""
 
 
-def ask_until(prompter: Prompter, question: str, default: str, problem: Callable[[str], str | None]) -> str:
-    """Ask ``question`` until ``problem`` finds nothing wrong with the answer, at most ``TRIES`` times.
+def ask_until(prompter: Prompter, question: str, default: str, problem: Callable[[str], str | None],
+              options: Sequence[str] = ()) -> str:
+    """Ask ``question`` until ``problem`` finds nothing wrong with the answer, at most ``TRIES`` times; with
+    ``options``, the owner picks the answer from them.
 
     Raises:
         OnboardError: no answer worked.
     """
     for _ in range(TRIES):
-        answer = prompter.ask(question, default)
+        answer = prompter.choose(question, options, default) if options else prompter.ask(question, default)
         if (why := problem(answer)) is None:
             return answer
         prompter.say(f"That doesn't work: {why}")

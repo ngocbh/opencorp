@@ -12,8 +12,11 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 
+from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
+
 from agent_corp.chat.provider import load_provider
-from agent_corp.install.onboard import TRIES, NoTerminal, OnboardError, TtyPrompter, ensure_provider, step_lines
+from agent_corp.install.onboard import (PROVIDER_DEFAULT, TRIES, TYPE_MODEL, NoTerminal, OnboardError, TtyPrompter,
+                                        ensure_provider, step_lines)
 
 KEY = "sk-ant-test-0123456789"
 
@@ -68,7 +71,7 @@ def test_a_script_is_interactive_unless_told_otherwise():
 
 def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     path = tmp_path / "provider.json"
-    ask = Script("", "claude-sonnet-4-5", KEY)
+    ask = Script("", "2", "claude-sonnet-4-5", KEY)
     assert ensure_provider(path, ask) is True
     assert mode(path) == 0o600
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "anthropic", "model": "claude-sonnet-4-5",
@@ -76,6 +79,14 @@ def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     assert load_provider(path).llm_config["api_key"] == KEY
     assert all(KEY not in line for line in ask.seen)
     assert os.listdir(tmp_path) == ["provider.json"]  # no temp file left behind
+    assert ask.seen[:3] == ["Model provider", "Model", "Model name"]
+    assert ask.offered == [list(SUPPORTED_LLM_PROVIDERS), [PROVIDER_DEFAULT, TYPE_MODEL]]
+
+
+def test_no_model_name_means_the_providers_default(tmp_path):
+    path = tmp_path / "provider.json"
+    ensure_provider(path, Script("openai", "2", "", ""))
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
 def test_no_key_means_composers_own_login(tmp_path):
@@ -93,10 +104,11 @@ def test_a_key_in_the_environment_is_never_read(tmp_path, monkeypatch):
     assert KEY not in path.read_text() and "api_key" not in json.loads(path.read_text())["llm_config"]
 
 
-def test_an_unknown_provider_is_asked_again(tmp_path):
-    ask = Script("antrhopic", "anthropic", "", "")
-    ensure_provider(tmp_path / "provider.json", ask)
-    assert any("one of" in line and "anthropic" in line for line in ask.seen)
+def test_an_unknown_provider_preset_gives_up(tmp_path, capsys):
+    with pytest.raises(OnboardError, match="no usable answer to 'Model provider'"):
+        ensure_provider(tmp_path / "provider.json", TtyPrompter({"Model provider": "antrhopic"}))
+    assert f"That doesn't work: choose one of: {', '.join(SUPPORTED_LLM_PROVIDERS)}\n" in capsys.readouterr().out
+    assert not (tmp_path / "provider.json").exists()
 
 
 def test_a_misspelled_setting_is_refused_without_echoing_the_key(tmp_path):
