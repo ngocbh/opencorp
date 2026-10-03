@@ -293,7 +293,7 @@ export function QuestionView(
               <For each={shown()}>
                 {(opt, at) => {
                   const i = () => first() + at()
-                  const active = () => i() === store.selected
+                  const current = () => i() === store.selected
                   return (
                     <box
                       onMouseOver={() => setStore("selected", i())}
@@ -305,13 +305,13 @@ export function QuestionView(
                       }}
                     >
                       <box flexDirection="row">
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined} paddingRight={1}>
-                          <text fg={active() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
+                        <box backgroundColor={current() ? theme.backgroundElement : undefined} paddingRight={1}>
+                          <text fg={current() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
                             {marker(i())}
                           </text>
                         </box>
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined} flexShrink={1}>
-                          <text fg={active() ? theme.secondary : theme.text} wrapMode="word">
+                        <box backgroundColor={current() ? theme.backgroundElement : undefined} flexShrink={1}>
+                          <text fg={current() ? theme.secondary : theme.text} wrapMode="word">
                             {opt.label}
                           </text>
                         </box>
@@ -339,6 +339,8 @@ export function QuestionView(
                     setBox(el)
                   }
                   return (
+                    // No onMouseOver, unlike the options: the cursor on this row focuses the box, so a pointer
+                    // passing over it would take the keys from wherever they were.
                     <box flexDirection="row" onMouseDown={() => setStore("selected", options().length)}>
                       <box backgroundColor={onTyped() ? theme.backgroundElement : undefined} paddingRight={1}>
                         <text fg={onTyped() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
@@ -381,7 +383,7 @@ export function QuestionView(
                 <box paddingTop={1}>
                   <For each={actions()}>
                     {(action, i) => {
-                      const active = () => store.selected === answerRows() + i()
+                      const current = () => store.selected === answerRows() + i()
                       return (
                         <box
                           flexDirection="row"
@@ -389,8 +391,8 @@ export function QuestionView(
                           onMouseOver={() => setStore("selected", answerRows() + i())}
                           onMouseUp={() => action.run()}
                         >
-                          <box backgroundColor={active() ? theme.backgroundElement : undefined}>
-                            <text fg={active() ? theme.secondary : theme.text}>{`[${action.label}]`}</text>
+                          <box backgroundColor={current() ? theme.backgroundElement : undefined}>
+                            <text fg={current() ? theme.secondary : theme.text}>{`[${action.label}]`}</text>
                           </box>
                           <text fg={theme.textMuted}>{action.key}</text>
                         </box>

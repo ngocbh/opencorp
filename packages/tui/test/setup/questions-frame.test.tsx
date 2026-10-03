@@ -242,7 +242,8 @@ test("a long list shows a window that follows the cursor", async () => {
 test("a typed default that isn't an option starts in the box, so Enter sends it", async () => {
   const { child, app } = await boot()
   try {
-    child.push({ type: "choose", question: "Model", options: ["sonnet (the default)"], default: "my-model", typed: true })
+    const options = ["sonnet (the default)"]
+    child.push({ type: "choose", question: "Model", options, default: "my-model", typed: true })
     await app.until((f) => f.includes("2. my-model"))
     app.input.pressEnter()
     await until(() => child.answers.length === 1)
