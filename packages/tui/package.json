@@ -9,7 +9,8 @@
     "./office/*": "./src/office/*.ts",
     "./debrief": "./src/routes/debrief/debrief.ts",
     "./editor-launch": "./src/editor-launch.ts",
-    "./profile": "./src/routes/profile/profile.ts"
+    "./profile": "./src/routes/profile/profile.ts",
+    "./setup": "./src/setup/run.tsx"
   },
   "scripts": {
     "dev": "bun run script/dev.ts",
