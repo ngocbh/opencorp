@@ -28,7 +28,7 @@ from agent_corp.questions.ask import Answers, OnQuestion, make_ask_user
 from agent_corp.questions.format import INTERRUPTED
 from agent_corp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from agent_corp.store import InvalidTransition, new_id
-from agent_corp.tools.company import company_tools
+from agent_corp.tools.company.work import company_tools
 from agent_corp.tools.workspace import WorkspaceTools, workspace_tool_functions
 from agent_corp.worker import (BaseHandlers, Job, ProfileMemorySpec, SessionMemorySpec, Worker, WorkerRegistry,
                                group_specs, person_flow)
