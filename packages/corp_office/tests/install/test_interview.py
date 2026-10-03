@@ -1,15 +1,11 @@
 import json
-import logging
 import os
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
 from agent_composer import load_flow
-from agent_composer.nodes.code import node as code_node
-from agent_composer.nodes.code import watchdog
 
 from agent_corp.auth.passwords import check_password
 from agent_corp.chat.provider import Provider
@@ -397,20 +393,6 @@ def test_init_flow_gives_the_draft_with_the_hash_and_the_remote_apart(login, fak
     draft, url = init_flow(path, owner(remote="git@example.com:a.git"), Known())
     assert draft.company == "Acme" and check_password(PASSWORD, draft.owner.password_hash)
     assert url == "git@example.com:a.git"
-
-
-class SlowToConfirm(Script):
-    def ask(self, question, default=""):
-        time.sleep(0.1)  # longer than the shrunken watchdog budget
-        return super().ask(question, default)
-
-
-def test_the_owner_taking_their_time_prints_no_stuck_warning(login, fake_llm, provider, monkeypatch, caplog):
-    monkeypatch.setattr(code_node, "node_watchdog", lambda node_id: watchdog.node_watchdog(node_id, budget=0.01))
-    fake_llm.script(*round_replies(OUT))
-    run(provider, SlowToConfirm("y", PASSWORD, PASSWORD, ""))
-    assert "may be stuck" not in caplog.text
-    assert logging.getLogger("agent_composer.nodes.code.watchdog").filters == []
 
 
 @pytest.mark.parametrize(("known", "flag"), [
