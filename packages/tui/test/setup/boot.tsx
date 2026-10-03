@@ -46,6 +46,8 @@ export class FakeChild implements SetupChild {
 export async function bootSetup(child: FakeChild) {
   // As the real renderer: opentui's default destroys the renderer on the first Ctrl-C.
   const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, exitOnCtrlC: false })
+  // The test renderer never answers the theme query, so the screen would wait out its 1 s timeout.
+  setup.renderer.waitForThemeMode = async () => "dark"
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const { runSetupWith } = await import("../../src/setup/run")

@@ -63,9 +63,8 @@ function parse(line: string): SetupPrompt {
   return { type: "say", text: plain(line) }
 }
 
-/** Calls `onText` with the text `stream` carries, chunk by chunk, until it ends. */
-async function readText(stream: ReadableStream<Uint8Array>, onText: (text: string) => void) {
-  const reader = stream.getReader()
+/** Calls `onText` with the text `reader` reads, chunk by chunk, until its stream ends or is cancelled. */
+async function readText(reader: ReadableStreamDefaultReader<Uint8Array>, onText: (text: string) => void) {
   const decoder = new TextDecoder()
   for (let r = await reader.read(); !r.done; r = await reader.read()) onText(decoder.decode(r.value, { stream: true }))
   onText(decoder.decode())
@@ -84,6 +83,8 @@ export function spawnSetup(argv: string[], cwd: string): SetupChild {
     env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
   })
 
+  const stdout = proc.stdout.getReader()
+  const stderrReader = proc.stderr.getReader()
   const queued: SetupPrompt[] = []
   let listener: ((prompt: SetupPrompt) => void) | undefined
   let buffer = ""
@@ -92,7 +93,7 @@ export function spawnSetup(argv: string[], cwd: string): SetupChild {
     if (listener) listener(prompt)
     else queued.push(prompt)
   }
-  const stdoutEnded = readText(proc.stdout, (text) => {
+  const stdoutEnded = readText(stdout, (text) => {
     const lines = (buffer + text).split("\n")
     buffer = lines.pop()!
     for (const line of lines) emit(line)
@@ -104,7 +105,7 @@ export function spawnSetup(argv: string[], cwd: string): SetupChild {
     })
 
   let stderr = ""
-  const stderrEnded = readText(proc.stderr, (text) => (stderr = (stderr + text).slice(-STDERR_MAX))).catch(() => {})
+  const stderrEnded = readText(stderrReader, (text) => (stderr = (stderr + text).slice(-STDERR_MAX))).catch(() => {})
 
   // The child leads its own process group, so a signal to the group reaches the git or ssh it started too.
   const signal = (sig: NodeJS.Signals) => {
@@ -139,6 +140,11 @@ export function spawnSetup(argv: string[], cwd: string): SetupChild {
     // that kept a pipe open must not hang the screen, so the wait for them is bounded.
     done: proc.exited.then(async (code) => {
       await Promise.race([Promise.all([stdoutEnded, stderrEnded]), Bun.sleep(2000)])
+      // A grandchild still holding a pipe would otherwise keep its reader waiting for the rest of the process.
+      for (const reader of [stdout, stderrReader])
+        try {
+          void reader.cancel().catch(() => {})
+        } catch {}
       return code
     }),
     stderr: () => stderr,

@@ -36,6 +36,22 @@ test("Ctrl-C interrupts the child, and again on a second press", async () => {
   }
 })
 
+test("Ctrl-C with a question open hides it and says the child is stopping", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child)
+  try {
+    child.push({ type: "ask", question: "Company", default: "" })
+    await app.until((f) => f.includes("Company:"))
+    app.input.pressCtrlC()
+    const f = await app.until((f) => f.includes("Stopping…"))
+    expect(f).not.toContain("Company:")
+    expect(child.interrupts).toBe(1)
+    expect(child.answers).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
 test("when the child ends the screen goes, then the transcript and stderr are printed", async () => {
   const child = new FakeChild()
   child.stderrText = "a warning\n"
@@ -64,7 +80,7 @@ test("the screen destroyed from outside closes the child and waits for it", asyn
   try {
     await app.until((f) => f.includes("Working…"))
     child.push({ type: "ask", question: "Company", default: "" })
-    await app.until((f) => !f.includes("Working…"))
+    await app.until((f) => f.includes("Company:"))
     // As opentui's signal handler does on SIGTERM or the terminal closing.
     app.setup.renderer.destroy()
     expect(await app.task).toBe(130)
@@ -74,19 +90,27 @@ test("the screen destroyed from outside closes the child and waits for it", asyn
   }
 })
 
-test("a child that ends after the screen is gone still ends the run, destroying nothing twice", async () => {
+test("a child that ends after the screen is gone still ends the run, touching the renderer no more", async () => {
   const child = new FakeChild()
   child.endOnClose = false
   const app = await bootSetup(child)
-  let destroys = 0
-  app.setup.renderer.on("destroy", () => destroys++)
+  const renderer = app.setup.renderer
+  // Calls made once the renderer is gone: a second destroy, or a title written to a terminal it released.
+  const late: string[] = []
+  for (const name of ["destroy", "setTerminalTitle"] as const) {
+    const original = renderer[name].bind(renderer) as (...args: any[]) => any
+    renderer[name] = ((...args: any[]) => {
+      if (renderer.isDestroyed) late.push(name)
+      return original(...args)
+    }) as any
+  }
   try {
     await app.until((f) => f.includes("Working…"))
-    app.setup.renderer.destroy()
+    renderer.destroy()
     await until(() => child.closed === 1)
     child.end(3)
     expect(await app.task).toBe(3)
-    expect(destroys).toBe(1)
+    expect(late).toEqual([])
   } finally {
     await app.stop()
   }

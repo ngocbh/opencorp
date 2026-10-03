@@ -100,6 +100,19 @@ await Bun.sleep(10000)
   expect(await child.done).toBe(130)
 })
 
+test("a second interrupt kills a child that ignores SIGINT", async () => {
+  const child = fake(`
+process.on("SIGINT", () => {})
+say({ type: "say", text: "ready" })
+await Bun.sleep(10000)
+`)
+  const prompts = collect(child)
+  await until(() => prompts.length === 1, 5000)
+  child.interrupt()
+  child.interrupt()
+  expect(await child.done).toBe(137)
+})
+
 test("close ends the child's stdin and interrupts it; again after it exited does nothing", async () => {
   // One stops only on the end of stdin, one only on SIGINT: each shows close did its part.
   const ready = 'say({ type: "say", text: "ready" })'
@@ -130,6 +143,16 @@ test("the child runs in its own session with git prompts off", async () => {
   const [pid, pgid, prompt] = said.split(" ")
   expect(pid).toBe(pgid)
   expect(prompt).toBe("0")
+})
+
+test("a grandchild holding the pipes doesn't hold up done", async () => {
+  const child = spawnSetup(["/bin/sh", "-c", "sleep 30 & echo hi"], dir)
+  const start = Date.now()
+  expect(await child.done).toBe(0)
+  expect(Date.now() - start).toBeLessThan(5000)
+  expect(says(collect(child))).toEqual(["hi"])
+  // The sleep is still in the child's process group.
+  child.interrupt()
 })
 
 test("stderr keeps only the last 64 KB", async () => {

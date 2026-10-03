@@ -66,15 +66,16 @@ export async function runSetupWith(
         renderer,
       )
     const code = await child.done
-    destroyRenderer(renderer)
+    if (!renderer.isDestroyed) destroyRenderer(renderer)
     await destroyed
     for (const line of lines) out.write(line + "\n")
     const stderr = child.stderr()
     if (stderr) err.write(stderr)
     return code
   } finally {
-    // Gives the terminal back even when something above threw; nothing once it is already destroyed.
-    destroyRenderer(renderer)
+    // Gives the terminal back even when something above threw. Not once destroyed: destroyRenderer sets the
+    // title first, which would write to a terminal the renderer has released.
+    if (!renderer.isDestroyed) destroyRenderer(renderer)
   }
 }
 
