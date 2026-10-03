@@ -10,6 +10,7 @@ import yaml
 from agent_corp.auth.identity import device_name, read_identity
 from agent_corp.auth.passwords import check_password
 from agent_corp.auth.tokens import token_sha256
+from agent_corp.company.draft import Answers, Teammate
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, is_new, missing_files, write_company
@@ -17,7 +18,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import init as init_module
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.init import REMOTE, init
-from agent_corp.install.interview import CONFIRM, Answers, Known, Teammate
+from agent_corp.install.interview import CONFIRM, Known
 from agent_corp.install.launch import office_answers
 from agent_corp.install.onboard import NoTerminal, OnboardError, onboard, redact
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
