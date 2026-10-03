@@ -887,7 +887,7 @@ class SetupAsk(BaseModel):
 
 class SetupChoose(BaseModel):
     """
-    Pick one of `options`.
+    Pick one of `options`, or with `typed` type an answer.
     """
 
     model_config = ConfigDict(
@@ -897,6 +897,12 @@ class SetupChoose(BaseModel):
     question: str
     options: Annotated[list[str], Field(min_length=1)]
     default: str = ''
+    typed: Annotated[
+        bool,
+        Field(
+            description='Whether the owner may type an answer of their own instead of picking one of `options`.'
+        ),
+    ] = False
 
 
 class SetupSecret(BaseModel):

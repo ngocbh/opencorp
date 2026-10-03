@@ -1,1 +1,1 @@
-{"type": "choose", "question": "Model provider", "options": ["anthropic", "openai", "azure"], "default": "anthropic"}
+{"type": "choose", "question": "Model provider", "options": ["anthropic", "openai", "azure"], "default": "anthropic", "typed": true}

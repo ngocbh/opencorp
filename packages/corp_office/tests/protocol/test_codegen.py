@@ -99,3 +99,10 @@ def test_setup_prompts_are_a_discriminated_union():
     with pytest.raises(pydantic.ValidationError) as caught:
         prompts.validate_python({"type": "shout", "text": "hi"})
     assert [e["type"] for e in caught.value.errors()] == ["union_tag_invalid"]
+
+
+def test_a_choice_takes_no_typed_answer_unless_it_says_so():
+    choose = models.SetupChoose(type="choose", question="Model provider", options=["anthropic"])
+    assert choose.typed is False
+    assert json.loads(choose.model_dump_json())["typed"] is False
+    assert models.SetupChoose.model_validate_json((FIXTURES / "SetupChoose.json").read_text()).typed is True

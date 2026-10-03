@@ -730,7 +730,7 @@ export interface SetupAsk {
   default?: string;
 }
 /**
- * Pick one of `options`.
+ * Pick one of `options`, or with `typed` type an answer.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupChoose".
@@ -743,6 +743,10 @@ export interface SetupChoose {
    */
   options: string[];
   default?: string;
+  /**
+   * Whether the owner may type an answer of their own instead of picking one of `options`.
+   */
+  typed?: boolean;
 }
 /**
  * An answer typed without being shown.
