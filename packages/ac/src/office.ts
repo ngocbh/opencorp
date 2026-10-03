@@ -51,17 +51,25 @@ export async function runInstall(command: string, args: string[], deps: Deps = r
 }
 
 /**
- * Syncs the checkout's venv with uv (on PATH or in ~/.local/bin), then runs `runInstall(command, args)`;
- * the venv is what runs it, so it must exist and match the checkout first.
+ * Syncs the checkout's venv with uv (on PATH or in ~/.local/bin) and resolves to uv's exit code; without uv, says
+ * so for `ac <command>` and resolves to 1.
  */
-export async function syncThenInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
+export async function syncVenv(command: string, deps: Deps = realDeps): Promise<number> {
   const uv = deps.which("uv") ?? [path.join(os.homedir(), ".local", "bin", "uv")].find((p) => deps.exists(p))
   if (!uv) {
     deps.error(`ac ${command}: uv not found; install it (https://docs.astral.sh/uv/) and run \`ac ${command}\` again`)
     return 1
   }
   // Quiet keeps uv's progress lines out of the install's prompts; its errors still show.
-  const synced = await deps.spawn([uv, "sync", "--frozen", "--quiet"], REPO)
+  return deps.spawn([uv, "sync", "--frozen", "--quiet"], REPO)
+}
+
+/**
+ * Syncs the checkout's venv, then runs `runInstall(command, args)`; the venv is what runs it, so it must exist and
+ * match the checkout first.
+ */
+export async function syncThenInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
+  const synced = await syncVenv(command, deps)
   if (synced !== 0) return synced
   return runInstall(command, args, deps)
 }
