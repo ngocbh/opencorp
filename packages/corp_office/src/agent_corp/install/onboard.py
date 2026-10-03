@@ -12,7 +12,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
+from urllib.parse import urlsplit
 
+import httpx
 from agent_composer._settings import PROVIDER_DEFAULT_MODELS
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
@@ -248,6 +250,53 @@ def _azure_base_url(answer: str) -> str:
     return f"{url}/openai/v1/"
 
 
+AZURE_DEPLOYMENTS_API = "2022-12-01"
+"""The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key."""
+
+TYPE_DEPLOYMENT = "Another deployment (type its name)"
+"""The last choice when a resource's deployments are offered."""
+
+
+def azure_deployments(base_url: str, key: str) -> list[str]:
+    """The deployments at the Azure OpenAI resource whose v1 endpoint is ``base_url`` that are ready and not
+    embedding models, in Azure's order.
+
+    Raises:
+        OnboardError: they couldn't be listed; the message never contains the key.
+    """
+    root = base_url.rstrip("/").removesuffix("/openai/v1")
+    try:
+        reply = httpx.get(f"{root}/openai/deployments", params={"api-version": AZURE_DEPLOYMENTS_API},
+                          headers={"api-key": key}, timeout=15)
+    except httpx.HTTPError:
+        raise OnboardError(f"can't reach {urlsplit(root).hostname}") from None
+    if reply.status_code != 200:
+        raise OnboardError(f"HTTP {reply.status_code}")
+    try:
+        data = reply.json()["data"]
+        # Entries say no more about what a model can do than its name.
+        return [d["id"] for d in data if d.get("status") == "succeeded" and "embedding" not in d.get("model", "")]
+    except (ValueError, LookupError, TypeError, AttributeError):
+        raise OnboardError("the reply isn't a deployment list") from None
+
+
+def _ask_deployment(prompter: Prompter, base_url: str, key: str, last: str) -> str:
+    """The deployment to use at the resource whose v1 endpoint is ``base_url``, picked from its list when it can be
+    listed, ``last`` for an empty answer."""
+    try:
+        deployments = azure_deployments(base_url, key)
+    except OnboardError as exc:
+        prompter.say(f"Couldn't list the deployments ({exc}); type the name instead.")
+        deployments = []
+    if deployments:
+        default = last if last in deployments else TYPE_DEPLOYMENT if last else deployments[0]
+        picked = prompter.choose("Deployment", [*deployments, TYPE_DEPLOYMENT], default)
+        if picked != TYPE_DEPLOYMENT:
+            return picked
+    return ask_until(prompter, "Deployment name", last,
+                     lambda m: None if m.strip() else "type the deployment's name").strip()
+
+
 def _azure_problem(answer: str) -> str | None:
     """Why ``answer`` doesn't name an Azure OpenAI endpoint, or None when it does."""
     try:
@@ -305,10 +354,10 @@ def _ask_provider(prompter: Prompter, last: dict[str, str]) -> dict:
         last["endpoint"] = ask_until(prompter, "Azure OpenAI endpoint or resource name", last.get("endpoint", ""),
                                      _azure_problem)
         last["key"] = _ask_key(prompter, name, required=True, last=last.get("key", ""))
-        last["model"] = ask_until(prompter, "Deployment name", last.get("model", ""),
-                                  lambda m: None if m.strip() else "type the deployment's name").strip()
-        return {"llm_config": {"provider": "openai", "base_url": _azure_base_url(last["endpoint"]),
-                               "api_key": last["key"], "model": last["model"]}}
+        base_url = _azure_base_url(last["endpoint"])
+        last["model"] = _ask_deployment(prompter, base_url, last["key"], last.get("model", ""))
+        return {"llm_config": {"provider": "openai", "base_url": base_url, "api_key": last["key"],
+                               "model": last["model"]}}
     llm = {"provider": name}
     last["key"] = _ask_key(prompter, name, required=False, last=last.get("key", ""))
     if last["key"]:

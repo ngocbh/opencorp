@@ -2,10 +2,12 @@ import getpass
 import io
 import json
 import os
+import re
 import stat
 
 import sys
 
+import httpx
 import pytest
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
@@ -15,8 +17,9 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
 from agent_corp.chat.provider import load_provider
-from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_MODEL, NoTerminal, OnboardError,
-                                        TtyPrompter, ensure_provider, step_lines)
+from agent_corp.install import onboard as onboard_module
+from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_DEPLOYMENT, TYPE_MODEL, NoTerminal,
+                                        OnboardError, TtyPrompter, azure_deployments, ensure_provider, step_lines)
 
 KEY = "sk-ant-test-0123456789"
 
@@ -118,6 +121,84 @@ def test_azure_is_saved_as_openai_on_the_resources_v1_endpoint(tmp_path, endpoin
         "model": "gpt-5-4-prod"}}
     assert ask.seen == ["Model provider", "Azure OpenAI endpoint or resource name", "azure API key (not shown)",
                         "Deployment name"]
+
+
+def test_azure_offers_the_resources_deployments(tmp_path, monkeypatch):
+    path = tmp_path / "provider.json"
+    seen = []
+    monkeypatch.setattr(onboard_module, "azure_deployments",
+                        lambda base_url, key: seen.append((base_url, key)) or ["gpt-5.4", "o3"])
+    ask = Script("azure", "acme", KEY, "2")
+    ensure_provider(path, ask)
+    assert load_provider(path).llm_config["model"] == "o3"
+    assert seen == [("https://acme.openai.azure.com/openai/v1/", KEY)]
+    assert ["gpt-5.4", "o3", TYPE_DEPLOYMENT] in ask.offered
+
+
+def test_azure_takes_a_typed_deployment_too(tmp_path, monkeypatch):
+    path = tmp_path / "provider.json"
+    monkeypatch.setattr(onboard_module, "azure_deployments", lambda base_url, key: ["gpt-5.4"])
+    ensure_provider(path, Script("azure", "acme", KEY, "2", "my-deployment"))
+    assert load_provider(path).llm_config["model"] == "my-deployment"
+
+
+def test_azure_asks_for_the_name_when_it_cant_list_the_deployments(tmp_path, monkeypatch):
+    path = tmp_path / "provider.json"
+
+    def refused(base_url, key):
+        raise OnboardError("HTTP 401")
+
+    monkeypatch.setattr(onboard_module, "azure_deployments", refused)
+    ask = Script("azure", "acme", KEY, "gpt-5-4-prod")
+    ensure_provider(path, ask)
+    assert load_provider(path).llm_config["model"] == "gpt-5-4-prod"
+    assert ask.seen[-2:] == ["Couldn't list the deployments (HTTP 401); type the name instead.", "Deployment name"]
+
+
+def test_setting_azure_up_again_defaults_to_the_last_deployment(tmp_path, monkeypatch):
+    path = tmp_path / "provider.json"
+    monkeypatch.setattr(onboard_module, "azure_deployments", lambda base_url, key: ["gpt-5.4", "o3"])
+    ensure_provider(path, Script("azure", "acme", KEY, "2", "2", "", "", "", ""),
+                    check_model=answers("Error code: 429", None))
+    assert load_provider(path).llm_config["model"] == "o3"
+
+
+def reply(monkeypatch, response):
+    """Make ``httpx.get`` return ``response`` (or raise it), recording each call."""
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        if isinstance(response, Exception):
+            raise response
+        return httpx.Response(**response, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", get)
+    return calls
+
+
+def test_azure_deployments_lists_the_ones_that_can_chat(monkeypatch):
+    data = [{"id": "gpt-5.4", "model": "gpt-5.4", "status": "succeeded"},
+            {"id": "embed", "model": "text-embedding-3-small", "status": "succeeded"},
+            {"id": "new", "model": "gpt-5.6", "status": "creating"},
+            {"id": "o3", "model": "o3", "status": "succeeded"}]
+    calls = reply(monkeypatch, {"status_code": 200, "json": {"data": data, "object": "list"}})
+    assert azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY) == ["gpt-5.4", "o3"]
+    [(url, kwargs)] = calls
+    assert url == "https://acme.openai.azure.com/openai/deployments"
+    assert kwargs["params"] == {"api-version": "2022-12-01"} and kwargs["headers"] == {"api-key": KEY}
+
+
+@pytest.mark.parametrize(("response", "problem"), [
+    ({"status_code": 401, "json": {"error": {"message": KEY}}}, "HTTP 401"),
+    ({"status_code": 200, "text": "<html>"}, "the reply isn't a deployment list"),
+    ({"status_code": 200, "json": {"data": "x"}}, "the reply isn't a deployment list"),
+    (httpx.ConnectError("boom"), "can't reach acme.openai.azure.com"),
+])
+def test_azure_deployments_says_why_it_cant_list_them(monkeypatch, response, problem):
+    reply(monkeypatch, response)
+    with pytest.raises(OnboardError, match=f"^{re.escape(problem)}$"):
+        azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY)
 
 
 def test_azure_needs_a_key_and_a_usable_endpoint(tmp_path):
