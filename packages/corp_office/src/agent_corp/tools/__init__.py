@@ -1,4 +1,5 @@
-"""Host tools that the office hands to composer runs, built by group from what the run can offer."""
+"""Host tools for composer runs: the office's tool groups, built from what the run can offer, and the tools in their
+modules."""
 
 from collections.abc import Callable, Iterable
 from typing import Any
