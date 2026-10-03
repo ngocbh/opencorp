@@ -91,7 +91,7 @@ STYLE = [("qmark", "fg:ansicyan bold"), ("question", "bold"), ("answer", "fg:ans
 """How questions on a terminal look: ANSI colour names only, so they follow the terminal's theme."""
 
 
-def _closed(question: str) -> OnboardError:
+def closed_input(question: str) -> OnboardError:
     """The error for stdin ending before ``question`` was answered."""
     return OnboardError(f"no answer to {question!r} (stdin closed)")
 
@@ -151,7 +151,7 @@ class TtyPrompter:
             shown = f"{question} [{default}]: " if default else f"{question}: "
             return input(shown).strip() or default
         except EOFError:
-            raise _closed(question) from None
+            raise closed_input(question) from None
 
     def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
         if question in self.preset:
@@ -167,7 +167,7 @@ class TtyPrompter:
                                           default=default if default in options else None,
                                           instruction="(↑/↓, Enter)", **self._questionary_kwargs(terminal)).unsafe_ask()
             except EOFError:
-                raise _closed(question) from None
+                raise closed_input(question) from None
         for number, option in enumerate(options, 1):
             self.say(f"  {number}. {option}")
         shown = f"{question} [{default}]: " if default else f"{question}: "
@@ -175,7 +175,7 @@ class TtyPrompter:
             try:
                 line = input(shown).strip()
             except EOFError:
-                raise _closed(question) from None
+                raise closed_input(question) from None
             # An option is taken before a number, so an option that is a number picks itself.
             if line in options:
                 return line
@@ -573,6 +573,11 @@ def user_git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, 124, "", "git timed out")
 
 
+GIT_ACCESS = ("if git needs a login or a new host key, set that up in a terminal first"
+              " (`gh auth login`, or `ssh -T git@HOST` once)")
+"""What to do when a clone or push fails: under ``ac``'s setup screen git has no terminal to ask on."""
+
+
 CLONE = ".company-clone"
 """Where onboarding clones a company before this device is added to it; renamed to ``company`` once done, so
 a stopped onboarding leaves no company that lacks this device."""
@@ -600,7 +605,8 @@ def _clone(url: str, dest: Path) -> None:
     done = user_git("clone", "-q", "--", url, str(dest))
     if done.returncode != 0:
         remove_path(dest)
-        raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}")
+        raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}; {GIT_ACCESS},"
+                           " then run `ac onboard` again")
     if is_new(dest):
         remove_path(dest)
         raise OnboardError(f"{redact(url)} isn't a company repo: it has no company.yaml at its top")

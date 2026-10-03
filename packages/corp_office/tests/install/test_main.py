@@ -3,8 +3,10 @@ import json
 import os
 import subprocess
 import sys
+import threading
 
 import pytest
+from pydantic import TypeAdapter
 
 from agent_corp.company.loader import load_repo
 from agent_corp.daemon.app import OfficePaths
@@ -13,6 +15,7 @@ from agent_corp.install import doctor
 from agent_corp.install.__main__ import main
 from agent_corp.install.interview import Known
 from agent_corp.install.launch import REPO, office_answers
+from agent_corp.protocol import models
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
@@ -203,6 +206,99 @@ def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir, fake):
         assert KEY not in done.stdout and KEY not in done.stderr
         assert "Done." in done.stdout
         assert sorted(p.kind for p in load_repo(paths.company).people.values()) == ["agent", "human"]
+        assert json.loads((paths.office / "provider.json").read_text())["llm_config"]["api_key"] == KEY
+    finally:
+        _stop(paths)
+
+
+@pytest.mark.parametrize("command", ["init", "onboard"])
+def test_json_prompts_and_provider_stdin_together_are_refused(tmp_path, capsys, command):
+    with pytest.raises(SystemExit) as stopped:
+        main([command, "--home", str(tmp_path), "--json-prompts", "--provider-stdin"])
+    assert stopped.value.code == 2
+    assert "not allowed with argument --json-prompts" in capsys.readouterr().err
+
+
+def test_json_prompts_is_not_in_the_help(capsys):
+    with pytest.raises(SystemExit):
+        main(["init", "--help"])
+    assert "--json-prompts" not in capsys.readouterr().out
+
+
+DRIVER = '''
+import sys
+
+import agent_corp.install.interview as interview
+from agent_corp.install.__main__ import main
+
+
+def check(provider):
+    """No model call; the print runs after the fd swap, so it must land on stderr, not between prompts."""
+    print("a stray print")
+    return None
+
+
+interview.model_problem = check  # onboard imports it from here when it runs
+sys.exit(main(sys.argv[1:]))
+'''
+
+
+def _answer(prompt) -> str | None:
+    """What the test answers ``prompt`` with, as the setup screen would; None when it needs no answer."""
+    if isinstance(prompt, models.SetupChoose):
+        return "anthropic" if prompt.question == "Model provider" else prompt.default
+    if isinstance(prompt, models.SetupSecret):
+        return KEY
+    if isinstance(prompt, models.SetupAsk):
+        return ""
+    return None
+
+
+def test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean(short_dir, fake, tmp_path):
+    paths = OfficePaths(short_dir)
+    args = [sys.executable, "-m", "agent_corp.install", "init", "--home", str(short_dir), "--provider-stdin",
+            "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
+    provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
+    fake.script({"content": "OK"})
+    driver = tmp_path / "driver.py"
+    driver.write_text(DRIVER)
+    try:
+        done = subprocess.run(args, input=json.dumps(provider), capture_output=True, text=True, timeout=60, cwd=REPO)
+        assert done.returncode == 0, done.stderr
+        _stop(paths)
+        (paths.office / "provider.json").unlink()  # so onboard asks for the provider
+        proc = subprocess.Popen([sys.executable, str(driver), "onboard", "--home", str(short_dir), "--json-prompts",
+                                 "--service", "background"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, cwd=REPO)
+        # Read on a thread: a full stderr pipe would stop the child mid-onboard.
+        err: list[str] = []
+        reader = threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)
+        reader.start()
+        # The kill bounds the exchange: a hung child closes stdout, so the loop below ends.
+        timer = threading.Timer(60, proc.kill)
+        timer.start()
+        lines, kinds, prompts = [], set(), TypeAdapter(models.SetupPrompt)
+        try:
+            for line in proc.stdout:
+                lines.append(line)
+                prompt = prompts.validate_json(line)
+                kinds.add(prompt.type)
+                if (answer := _answer(prompt)) is not None:
+                    proc.stdin.write(json.dumps({"answer": answer}) + "\n")
+                    proc.stdin.flush()
+            code = proc.wait()
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        reader.join(10)
+        assert not reader.is_alive()
+        out, stderr = "".join(lines), "".join(err)
+        assert code == 0, stderr
+        assert "a stray print" in stderr and "a stray print" not in out
+        assert KEY not in out and KEY not in stderr
+        assert {"step", "say"} <= kinds
         assert json.loads((paths.office / "provider.json").read_text())["llm_config"]["api_key"] == KEY
     finally:
         _stop(paths)

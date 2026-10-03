@@ -15,8 +15,9 @@ from agent_corp.company_template import is_new, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install.interview import Known, ModelError, fallback_draft, init_flow, model_problem, owner_prompter
 from agent_corp.install.launch import REPO, Host, launch
-from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ask_provider, ensure_provider,
-                                        make_device, make_home, model_failed, onboard, redact, user_git)
+from agent_corp.install.onboard import (GIT_ACCESS, TRIES, NoTerminal, OnboardError, Prompter, ask_provider,
+                                        ensure_provider, make_device, make_home, model_failed, onboard, redact,
+                                        user_git)
 from agent_corp.protocol.models import HireRequest
 
 STEPS = 5
@@ -92,8 +93,8 @@ def push(company: Path, url: str, prompter: Prompter) -> bool:
         return False
     pushed = user_git("-C", str(company), "push", "-u", "origin", "main")
     if pushed.returncode != 0:
-        prompter.say(f"Warning: couldn't push to the remote: {redact(pushed.stderr.strip())}."
-                     f" Retry with `git -C {where} push -u origin main`.")
+        prompter.say(f"Warning: couldn't push to the remote: {redact(pushed.stderr.strip())}; {GIT_ACCESS},"
+                     f" then retry with `git -C {where} push -u origin main`.")
         return False
     prompter.say(f"Remote: pushed the company to {redact(url)}; other machines join it with"
                  f" `ac onboard --from {shlex.quote(redact(url))}`.")

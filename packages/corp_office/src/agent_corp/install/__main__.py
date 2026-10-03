@@ -1,6 +1,9 @@
 """``python -m agent_corp.install {init,onboard,offboard,doctor,start,restart}``: what ``ac init``,
 ``ac onboard``, ``ac offboard``, ``ac doctor``, ``ac start`` and ``ac restart`` run.
 
+``ac``'s setup screen runs init and onboard with ``--json-prompts``: each question is a JSON line on stdout,
+each answer a JSON line on stdin.
+
 Exit codes: 0 done, 1 failed, 3 (``start``, ``restart``) no office yet.
 """
 
@@ -16,8 +19,9 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, init, offboard, service
 from agent_corp.install.interview import Known
+from agent_corp.install.json_prompts import JsonPrompter
 from agent_corp.install.launch import Host, Launch, ServiceError, launch
-from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, onboard
+from agent_corp.install.onboard import SET_UP, WHO, OnboardError, Prompter, TtyPrompter, onboard
 
 NOT_ONBOARDED = 3
 
@@ -30,6 +34,22 @@ def _provider_stdin(args: argparse.Namespace) -> io.StringIO | None:
     # The provider is read before any question, so stdin is free of it; with it on stdin
     # nothing is asked, and questions without a flag take their defaults.
     return io.StringIO(sys.stdin.read()) if args.provider_stdin else None
+
+
+def _prompter(args: argparse.Namespace, stdin: io.StringIO | None, preset: dict[str, str] | None = None) -> Prompter:
+    """The prompter for init and onboard: the setup screen's with --json-prompts, else the terminal's."""
+    if not args.json_prompts:
+        return TtyPrompter(preset, interactive=stdin is None)
+    # Prompts keep the stdout ac reads; everything else printed, by us, git or uv, goes to stderr,
+    # so it can't land inside a prompt line.
+    sys.stdout.flush()
+    out = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
+    os.dup2(2, 1)
+    # fd 1 began as a pipe, so sys.stdout is block-buffered; a stray print should reach stderr when it's made.
+    sys.stdout.reconfigure(line_buffering=True)
+    # ac writes UTF-8 whatever the locale says, and names can be non-ASCII.
+    sys.stdin.reconfigure(encoding="utf-8")
+    return JsonPrompter(out, sys.stdin, preset)
 
 
 def _init(args: argparse.Namespace) -> int:
@@ -46,7 +66,7 @@ def _init(args: argparse.Namespace) -> int:
                   remote=args.remote or "")
     stdin = _provider_stdin(args)
     try:
-        init.init(_home(args.home), TtyPrompter(interactive=stdin is None), known=known, mode=args.service,
+        init.init(_home(args.home), _prompter(args, stdin), known=known, mode=args.service,
                   stdin=stdin, device=not args.no_device)
     except OnboardError as exc:
         print(f"ac init: {exc}", file=sys.stderr)
@@ -61,7 +81,7 @@ def _init(args: argparse.Namespace) -> int:
 def _onboard(args: argparse.Namespace) -> int:
     stdin = _provider_stdin(args)
     try:
-        onboard(_home(args.home), TtyPrompter({WHO: args.handle}, interactive=stdin is None), mode=args.service,
+        onboard(_home(args.home), _prompter(args, stdin, {WHO: args.handle}), mode=args.service,
                 stdin=stdin, source=args.source)
     except OnboardError as exc:
         print(f"ac onboard: {exc}", file=sys.stderr)
@@ -153,8 +173,11 @@ def main(argv: list[str] | None = None) -> int:
         sub = commands.choices[name]
         sub.add_argument("--service", choices=("auto", *service.MODES), default="auto",
                          help="how to run the office (default: the first that works)")
-        sub.add_argument("--provider-stdin", action="store_true",
-                         help="read office/provider.json's content from stdin, replacing the file; ask nothing")
+        given = sub.add_mutually_exclusive_group()
+        given.add_argument("--provider-stdin", action="store_true",
+                           help="read office/provider.json's content from stdin, replacing the file; ask nothing")
+        # Only for ac's setup screen, which reads the prompts; not something to type.
+        given.add_argument("--json-prompts", action="store_true", help=argparse.SUPPRESS)
     init_args = commands.choices["init"]
     for flag, what in (("company", "the company's name"), ("name", "your name"), ("handle", "your handle"),
                        ("title", "your title"), ("agent", "the first teammate's name"),
