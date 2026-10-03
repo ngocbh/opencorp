@@ -1,0 +1,96 @@
+import { createCliRenderer } from "@opentui/core"
+import { render } from "@opentui/solid"
+import type { JSX } from "solid-js"
+import { resolve as resolveConfig, TuiConfigProvider } from "../config"
+import { KVProvider } from "../context/kv"
+import { TuiPathsProvider } from "../context/runtime"
+import { ThemeProvider } from "../context/theme"
+import { Global } from "../core/global"
+import { destroyRenderer } from "../util/renderer"
+import { spawnSetup, type SetupChild } from "./child"
+import { SetupScreen } from "./screen"
+
+/** Somewhere to print the transcript and stderr once the screen is gone. */
+export interface Writer {
+  write(text: string): unknown
+}
+
+/** Runs the install `argv` in `cwd` behind the setup screen; resolves to its exit code once the screen is gone and its transcript and stderr are printed. */
+export async function runSetup(argv: string[], cwd: string): Promise<number> {
+  const child = spawnSetup(argv, cwd)
+  try {
+    return await runSetupWith(child)
+  } catch (e) {
+    // A renderer that fails to start must not leave the install waiting on stdin.
+    child.close()
+    await child.done
+    throw e
+  }
+}
+
+/** The same, for a child already running (tests pass a fake). */
+export async function runSetupWith(
+  child: SetupChild,
+  out: Writer = process.stdout,
+  err: Writer = process.stderr,
+): Promise<number> {
+  const renderer = await createCliRenderer({
+    externalOutputMode: "passthrough",
+    targetFps: 60,
+    gatherStats: false,
+    exitOnCtrlC: false,
+    useKittyKeyboard: {},
+    autoFocus: false,
+    openConsoleOnError: false,
+    useMouse: false,
+  })
+  try {
+    // Emitted at the end of finalizeDestroy, which then releases stdin and stdout synchronously, so code awaiting
+    // this runs once another renderer (the office's) can take them.
+    const destroyed = new Promise<void>((resolve) => renderer.once("destroy", () => resolve()))
+    // A signal (the terminal closing, SIGTERM) destroys the renderer without ending the child; without this it
+    // would wait on stdin forever.
+    renderer.once("destroy", () => child.close())
+    const mode = (await renderer.waitForThemeMode(1000)) ?? "dark"
+    const lines: string[] = []
+    if (!renderer.isDestroyed)
+      await render(
+        () => (
+          <Providers mode={mode}>
+            <SetupScreen child={child} lines={lines} />
+          </Providers>
+        ),
+        renderer,
+      )
+    const code = await child.done
+    destroyRenderer(renderer)
+    await destroyed
+    for (const line of lines) out.write(line + "\n")
+    const stderr = child.stderr()
+    if (stderr) err.write(stderr)
+    return code
+  } finally {
+    // Gives the terminal back even when something above threw; nothing once it is already destroyed.
+    destroyRenderer(renderer)
+  }
+}
+
+/** What the theme, the spinner and the inputs need, with the same values the app gives them. */
+function Providers(props: { mode: "dark" | "light"; children: JSX.Element }) {
+  return (
+    <TuiPathsProvider
+      value={{
+        cwd: process.cwd(),
+        home: Global.Path.home,
+        state: Global.Path.state,
+        worktree: Global.Path.data + "/worktree",
+      }}
+    >
+      <KVProvider>
+        <TuiConfigProvider config={resolveConfig({}, { terminalSuspend: false })}>
+          <ThemeProvider mode={props.mode}>{props.children}</ThemeProvider>
+        </TuiConfigProvider>
+      </KVProvider>
+    </TuiPathsProvider>
+  )
+}
