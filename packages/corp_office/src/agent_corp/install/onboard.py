@@ -68,8 +68,9 @@ class Prompter(Protocol):
     def ask(self, question: str, default: str = "") -> str:
         """An answer, or ``default`` for an empty one."""
 
-    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
-        """One of ``options``, picked by the owner; ``default`` when there's no one to ask."""
+    def choose(self, question: str, options: Sequence[str], default: str = "", typed: bool = False) -> str:
+        """One of ``options``, picked by the owner, or with ``typed`` an answer they type instead; ``default`` (an
+        option, or with ``typed`` any text) for an empty answer or when there's no one to ask."""
 
     def secret(self, question: str) -> str:
         """An answer read without echo."""
@@ -96,13 +97,18 @@ def closed_input(question: str) -> OnboardError:
     return OnboardError(f"no answer to {question!r} (stdin closed)")
 
 
+TYPE_OWN = "Type my own answer"
+"""The last choice of a typed list on the terminal; picking it asks for the answer."""
+
+
 class TtyPrompter:
     """Asks on the terminal; a secret is read with ``getpass``, so it is never echoed.
 
     ``preset`` answers questions by their text without asking (from command-line flags);
     with ``interactive`` False, every other question takes its default. When stdin and stdout
     are both terminals (or ``terminal`` gives one), a list is picked with the arrow keys;
-    otherwise it is numbered, and a line picks from it.
+    otherwise it is numbered, and a line picks from it. A typed list ends with ``TYPE_OWN``,
+    which asks for the answer; an empty one is ``default``.
     """
 
     def __init__(self, preset: Mapping[str, str] | None = None, interactive: bool = True, *,
@@ -153,11 +159,23 @@ class TtyPrompter:
         except EOFError:
             raise closed_input(question) from None
 
-    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+    def choose(self, question: str, options: Sequence[str], default: str = "", typed: bool = False) -> str:
         if question in self.preset:
             return self.preset[question]
         if not self.interactive:
             return default
+        if not typed:
+            return self._pick(question, options, default)
+        # A list on the terminal can't take text, so a last choice asks for it.
+        own = default if default not in options else ""
+        picked = self._pick(question, [*options, TYPE_OWN], TYPE_OWN if own else default)
+        if picked != TYPE_OWN:
+            return picked
+        # An empty typed answer is the default, as on the JSON path, so a deployment is never saved empty.
+        return self.ask(question, own) or default
+
+    def _pick(self, question: str, options: Sequence[str], default: str) -> str:
+        """One of ``options`` picked from a list, ``default`` for an empty answer."""
         if (terminal := self._terminal()) is not None:
             import questionary
 
@@ -238,10 +256,6 @@ def check_provider(data: object) -> Provider:
     return provider
 
 
-TYPE_MODEL = "Another model (type its name)"
-"""The choice for a model other than the provider's default."""
-
-
 def _azure_base_url(answer: str) -> str:
     """The v1 endpoint of an Azure OpenAI resource given by its name or its endpoint URL."""
     url = answer.strip().rstrip("/").removesuffix("/openai/v1")
@@ -252,10 +266,6 @@ def _azure_base_url(answer: str) -> str:
 
 AZURE_DEPLOYMENTS_API = "2022-12-01"
 """The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key."""
-
-TYPE_DEPLOYMENT = "Another deployment (type its name)"
-"""The last choice when a resource's deployments are offered."""
-
 
 def azure_deployments(base_url: str, key: str) -> list[str]:
     """The deployments at the Azure OpenAI resource whose v1 endpoint is ``base_url`` that are ready and not
@@ -289,10 +299,7 @@ def _ask_deployment(prompter: Prompter, base_url: str, key: str, last: str) -> s
         prompter.say(f"Couldn't list the deployments ({exc}); type the name instead.")
         deployments = []
     if deployments:
-        default = last if last in deployments else TYPE_DEPLOYMENT if last else deployments[0]
-        picked = prompter.choose("Deployment", [*deployments, TYPE_DEPLOYMENT], default)
-        if picked != TYPE_DEPLOYMENT:
-            return picked
+        return prompter.choose("Deployment", deployments, last or deployments[0], typed=True).strip()
     return ask_until(prompter, "Deployment name", last,
                      lambda m: None if m.strip() else "type the deployment's name").strip()
 
@@ -331,9 +338,9 @@ def _ask_model(prompter: Prompter, name: str, last: str = "") -> str:
     """The model for provider ``name``, ``last`` for an empty answer; empty for composer's default."""
     if default := PROVIDER_DEFAULT_MODELS.get(name):
         first = f"{default} (the default)"
-        if prompter.choose("Model", [first, TYPE_MODEL], TYPE_MODEL if last else first) == TYPE_MODEL:
-            return prompter.ask("Model name", last)
-        return ""
+        # Typing a name picks another model; the one typed last time is the answer for nothing.
+        picked = prompter.choose("Model", [first], last or first, typed=True)
+        return "" if picked == first else picked
     return ask_until(prompter, f"Model name ({name} has no default model)", last,
                      lambda m: None if m.strip() else "type the model's name")
 

@@ -18,7 +18,7 @@ from agent_corp.company_template import Owner, is_new, missing_files, write_comp
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import init as init_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import ADD_REMOTE, NO_REMOTE, REMOTE, REMOTE_URL, init, password_step, remote_step
+from agent_corp.install.init import NO_REMOTE, REMOTE, init, password_step, remote_step
 from agent_corp.install.interview import CONFIRM, Asking, Known, ModelError, asking
 from agent_corp.install.launch import office_answers
 from agent_corp.install.onboard import (GIT_ACCESS, SET_UP_AGAIN, TRY_AGAIN, NoTerminal, OnboardError, TtyPrompter,
@@ -44,8 +44,8 @@ def provider_stdin():
 
 def scripted(remote=""):
     """A prompter with no one at the terminal, so the company comes from the flags; it gives ``PASSWORD`` twice
-    and then ``remote`` (none when empty)."""
-    return Script(PASSWORD, PASSWORD, *(("2", remote) if remote else ("1",)), interactive=False)
+    and then ``remote`` typed (none when empty)."""
+    return Script(PASSWORD, PASSWORD, *((remote,) if remote else ("1",)), interactive=False)
 
 
 def run_init(tmp_path, ask, known=FLAGS, **kwargs):
@@ -125,7 +125,7 @@ def test_the_flow_with_a_model_makes_the_company_and_never_sends_a_secret(tmp_pa
            "teammates": [{"name": "Lan", "handle": "lan", "title": "QA", "about": "Tests every release."}]}
     with FakeLLM() as fake:
         fake.script(*flow_replies("Tell me about the company.", out))
-        ask = Script("Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, "2", str(remote))
+        ask = Script("Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, str(remote))
         provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
         with pytest.raises(OnboardError, match="stop"):
             init(home, ask, stdin=io.StringIO(json.dumps(provider)), host=make_host(tmp_path, Runner()))
@@ -200,7 +200,7 @@ def test_setting_the_model_up_again_starts_from_step_ones_answers(tmp_path, monk
     stop_after_the_company(monkeypatch)
     interviewed(monkeypatch, ACME)
     failing_interview(monkeypatch, ACME)
-    ask = Script("openai", KEY, "2", "gpt-x", "2", "", "", "2", "", PASSWORD, PASSWORD, "1")
+    ask = Script("openai", KEY, "gpt-x", "2", "", "", "", PASSWORD, PASSWORD, "1")
     with pytest.raises(OnboardError, match="stop"):
         init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
     provider = tmp_path / "home" / "office" / "provider.json"
@@ -436,15 +436,15 @@ def test_the_password_node_shows_step_3_and_returns_the_hash():
 
 
 def test_the_remote_node_uses_the_flag_or_asks():
-    flagged, none, typed = Script(), Script("1"), Script("2", "git@example.com:a.git")
+    flagged, none, typed = Script(), Script("1"), Script("git@example.com:a.git")
     with asking(Asking(flagged)):
         assert init_module.remote({"given": "u"}) == "u"
     with asking(Asking(none)):
         assert init_module.remote({"given": ""}) == ""
     with asking(Asking(typed)):
         assert init_module.remote({"given": ""}) == "git@example.com:a.git"
-    assert REMOTE not in flagged.seen and none.seen[-1] == REMOTE and typed.seen[-2:] == [REMOTE, REMOTE_URL]
-    assert typed.offered == [[NO_REMOTE, ADD_REMOTE]]
+    assert REMOTE not in flagged.seen and none.seen[-1] == REMOTE and typed.seen[-1] == REMOTE
+    assert typed.offered == [[NO_REMOTE]] and typed.typed == [True]
 
 
 def test_without_anyone_to_ask_there_is_no_remote(monkeypatch):
@@ -462,10 +462,10 @@ def test_the_remote_is_asked_before_the_company_is_written(tmp_path, monkeypatch
 
 
 class InterruptedAtRemote(Script):
-    def choose(self, question, options, default=""):
+    def choose(self, question, options, default="", typed=False):
         if question == REMOTE:
             raise KeyboardInterrupt
-        return super().choose(question, options, default)
+        return super().choose(question, options, default, typed)
 
 
 def test_ctrl_c_at_the_remote_leaves_no_company(tmp_path):

@@ -46,6 +46,30 @@ def test_choose_refuses_an_answer_that_isnt_an_option():
         prompter.choose("Model provider", ["anthropic", "openai"])
 
 
+FIRST = "claude-sonnet-4-5 (the default)"
+
+
+def test_a_typed_choice_says_so_and_takes_typed_text():
+    prompter, out = _prompter(" claude-opus-4-1 ")
+    assert prompter.choose("Model", [FIRST], FIRST, typed=True) == "claude-opus-4-1"
+    assert _sent(out) == [{"type": "choose", "question": "Model", "options": [FIRST], "default": FIRST,
+                           "typed": True}]
+
+
+def test_a_typed_choice_still_returns_an_option_and_takes_the_default_for_nothing():
+    prompter, _ = _prompter("None for now", "  ")
+    assert prompter.choose("Remote", ["None for now"], "None for now", typed=True) == "None for now"
+    assert prompter.choose("Remote", ["None for now"], "my-model", typed=True) == "my-model"
+
+
+def test_a_long_option_is_sent_and_returned_whole():
+    label = " ".join(["Keep the CI pipeline we have and add a nightly run"] * 4)
+    assert len(label) > 200
+    prompter, out = _prompter(label)
+    assert prompter.choose("Plan", [label, "b"], typed=True) == label
+    assert _sent(out)[0]["options"][0] == label
+
+
 def test_secret_is_asked_without_a_default_and_stripped():
     prompter, out = _prompter(" sk-ant-sentinel-a7d93c10e5b2\n")
     assert prompter.secret("API key") == "sk-ant-sentinel-a7d93c10e5b2"

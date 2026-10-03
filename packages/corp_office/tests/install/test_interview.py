@@ -13,9 +13,9 @@ from agent_corp.company.draft import Draft, Teammate, draft_problems
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import REMOTE, REMOTE_URL
-from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, TYPE_OWN, WHAT_TO_CHANGE, Asking, Known,
-                                          ModelError, asking, clean, confirm, fallback_draft, init_flow, model_problem,
+from agent_corp.install.init import REMOTE
+from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, WHAT_TO_CHANGE, Asking, Known, ModelError,
+                                          ask_user, asking, clean, confirm, fallback_draft, init_flow, model_problem,
                                           run_init_flow, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
@@ -63,8 +63,8 @@ def round_replies(output):
 
 def owner(*answers, remote=""):
     """The owner for one accepted run: ``answers`` to the model's questions, "1" (create) to confirm, ``PASSWORD``
-    twice, and ``remote`` (none when empty)."""
-    return Script(*answers, "1", PASSWORD, PASSWORD, *(("2", remote) if remote else ("1",)))
+    twice, and ``remote`` typed (none when empty)."""
+    return Script(*answers, "1", PASSWORD, PASSWORD, *((remote,) if remote else ("1",)))
 
 
 def run(provider, prompter, known=Known()):
@@ -161,15 +161,15 @@ def test_a_question_with_options_is_a_list_with_a_way_to_type_an_answer(login, f
     fake_llm.script(*flow_replies("Your title?", OUT, options=["CEO", "Founder"]))
     prompter = owner(answer)
     run(provider, prompter)
-    assert prompter.seen[0] == "Your title?" and prompter.offered[0] == ["CEO", "Founder", TYPE_OWN]
+    assert prompter.seen[0] == "Your title?" and prompter.offered[0] == ["CEO", "Founder"] and prompter.typed[0] is True
     assert contents(fake_llm.requests()[1])[-1] == "Founder"
 
 
 def test_a_typed_answer_to_a_question_with_options_goes_back_as_typed(login, fake_llm, provider):
     fake_llm.script(*flow_replies("Your title?", OUT, options=["CEO", "Founder"]))
-    prompter = owner("3", "Chair")
+    prompter = owner("Chair")
     run(provider, prompter)
-    assert prompter.seen[:2] == ["Your title?", "Your title?"]
+    assert prompter.seen.count("Your title?") == 1
     assert contents(fake_llm.requests()[1])[-1] == "Chair"
 
 
@@ -177,7 +177,7 @@ def test_questions_and_options_are_asked_without_control_characters(login, fake_
     fake_llm.script(*flow_replies("Clear\x1b[2J?", OUT, options=["a\x9bb", "c"]))
     prompter = owner("2")
     run(provider, prompter)
-    assert prompter.seen[0] == "Clear[2J?" and prompter.offered[0] == ["ab", "c", TYPE_OWN]
+    assert prompter.seen[0] == "Clear[2J?" and prompter.offered[0] == ["ab", "c"]
 
 
 def test_an_option_goes_back_to_the_model_as_it_wrote_it(login, fake_llm, provider):
@@ -186,10 +186,18 @@ def test_an_option_goes_back_to_the_model_as_it_wrote_it(login, fake_llm, provid
     assert contents(fake_llm.requests()[1])[-1] == "a\x9bb"
 
 
+def test_a_long_option_is_offered_and_goes_back_whole():
+    label = " ".join(["Keep the CI pipeline we have and add a nightly run"] * 4)
+    prompter = Script("1")
+    with asking(Asking(prompter)):
+        assert ask_user(question="Which plan?", options=[label, "b"]) == label
+    assert prompter.offered == [[label, "b"]] and prompter.typed == [True]
+
+
 class Blank(Script):
     """A prompter whose lists give an empty answer, as an empty line does when there's no default."""
 
-    def choose(self, question, options, default=""):
+    def choose(self, question, options, default="", typed=False):
         self.seen.append(question)
         return ""
 
@@ -295,7 +303,7 @@ class Closed(Script):
         self.seen.append(question)
         raise self.error
 
-    def choose(self, question, options, default=""):
+    def choose(self, question, options, default="", typed=False):
         self.seen.append(question)
         raise self.error
 
@@ -451,7 +459,7 @@ def test_the_remote_flag_is_used_without_asking_and_never_sent(login, fake_llm, 
     fake_llm.script(*round_replies(OUT))
     prompter = Script("1", PASSWORD, PASSWORD)
     assert run(provider, prompter, Known(remote=url))["remote"] == url
-    assert REMOTE not in prompter.seen and REMOTE_URL not in prompter.seen
+    assert REMOTE not in prompter.seen
     assert "tok-sentinel-77" not in json.dumps(fake_llm.requests())
 
 

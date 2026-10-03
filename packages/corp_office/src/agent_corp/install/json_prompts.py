@@ -42,16 +42,18 @@ class JsonPrompter:
         self._send(SetupAsk(type="ask", question=question, default=default))
         return self._answer(question).strip() or default
 
-    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+    def choose(self, question: str, options: Sequence[str], default: str = "", typed: bool = False) -> str:
         if question in self.preset:
             return self.preset[question]
-        self._send(SetupChoose(type="choose", question=question, options=list(options), default=default))
+        self._send(SetupChoose(type="choose", question=question, options=list(options), default=default, typed=typed))
         answer = self._answer(question)
+        if answer in options:
+            return answer
+        if typed:
+            return answer.strip() or default
         if not answer:
             return default
-        if answer not in options:
-            raise OnboardError(f"the answer to {question!r} isn't one of its options")
-        return answer
+        raise OnboardError(f"the answer to {question!r} isn't one of its options")
 
     def secret(self, question: str) -> str:
         self._send(SetupSecret(type="secret", question=question))
