@@ -1,0 +1,74 @@
+import io
+import json
+
+import pytest
+
+from agent_corp.install.json_prompts import JsonPrompter
+from agent_corp.install.onboard import OnboardError
+
+
+def _prompter(*answers: str, preset=None) -> tuple[JsonPrompter, io.StringIO]:
+    out = io.StringIO()
+    stdin = io.StringIO("".join(json.dumps({"answer": a}) + "\n" for a in answers))
+    return JsonPrompter(out, stdin, preset), out
+
+
+def _sent(out: io.StringIO) -> list[dict]:
+    return [json.loads(line) for line in out.getvalue().splitlines()]
+
+
+def test_ask_sends_the_question_and_returns_the_answer():
+    prompter, out = _prompter("Acme")
+    assert prompter.ask("Company", "Default Co") == "Acme"
+    assert _sent(out) == [{"type": "ask", "question": "Company", "default": "Default Co"}]
+
+
+def test_an_empty_answer_is_the_default():
+    prompter, _ = _prompter("  ")
+    assert prompter.ask("Company", "Default Co") == "Default Co"
+
+
+def test_choose_returns_one_of_the_options():
+    prompter, out = _prompter("openai")
+    assert prompter.choose("Model provider", ["anthropic", "openai"], "anthropic") == "openai"
+    assert _sent(out) == [{"type": "choose", "question": "Model provider", "options": ["anthropic", "openai"],
+                           "default": "anthropic"}]
+
+
+def test_choose_refuses_an_answer_that_isnt_an_option():
+    prompter, _ = _prompter("gemini")
+    with pytest.raises(OnboardError, match="isn't one of"):
+        prompter.choose("Model provider", ["anthropic", "openai"])
+
+
+def test_secret_is_asked_without_a_default_and_stripped():
+    prompter, out = _prompter(" sk-ant-sentinel-a7d93c10e5b2\n")
+    assert prompter.secret("API key") == "sk-ant-sentinel-a7d93c10e5b2"
+    assert _sent(out) == [{"type": "secret", "question": "API key"}]
+
+
+def test_say_and_step_need_no_answer():
+    prompter, out = _prompter()
+    prompter.step(1, 5, "Model", "Why it matters")
+    prompter.say("Saved")
+    assert _sent(out) == [{"type": "step", "number": 1, "total": 5, "title": "Model", "why": "Why it matters"},
+                          {"type": "say", "text": "Saved"}]
+
+
+def test_a_preset_answer_asks_nothing():
+    prompter, out = _prompter(preset={"Which human are you?": "ngocbh"})
+    assert prompter.ask("Which human are you?") == "ngocbh"
+    assert out.getvalue() == ""
+
+
+def test_stdin_closing_before_an_answer_is_an_onboard_error():
+    prompter, _ = _prompter()
+    with pytest.raises(OnboardError, match="stdin closed"):
+        prompter.ask("Company")
+
+
+def test_a_line_that_isnt_an_answer_is_an_onboard_error_without_its_text():
+    prompter = JsonPrompter(io.StringIO(), io.StringIO("sk-ant-sentinel-a7d93c10e5b2\n"))
+    with pytest.raises(OnboardError) as caught:
+        prompter.secret("API key")
+    assert "sentinel" not in str(caught.value)
