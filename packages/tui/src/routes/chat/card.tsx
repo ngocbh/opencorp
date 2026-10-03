@@ -156,7 +156,11 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
         key,
         desc: "Keep the question",
         group: "Question",
-        cmd: () => setConfirming(false),
+        // Returns nothing: the keymap takes a false return as unhandled and passes the key on, into the box that
+        // the closing confirm just gave focus back to.
+        cmd: () => {
+          setConfirming(false)
+        },
       })),
       ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
     ],

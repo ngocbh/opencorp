@@ -391,6 +391,36 @@ test("Down onto the typed row types straight in; Up leaves it and a number picks
   }
 })
 
+test("Esc in the typed box asks to stop; n keeps the text and typing goes on into the box", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    app.input.pressArrow("down")
+    app.input.pressArrow("down")
+    await app.input.typeText("rel")
+    await app.until((f) => f.includes("3. rel"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("n")
+    await app.until((f) => !f.includes("Stop @minh? y/N") && f.includes("3. rel"))
+    await app.input.typeText("ease")
+    await app.until((f) => f.includes("3. release"))
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: "release",
+      answer_kind: "text",
+    })
+    expect(stops(office, q.id)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("each typed page keeps its own text when paging, across a page with no typed answer", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
