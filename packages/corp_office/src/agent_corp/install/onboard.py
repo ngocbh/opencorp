@@ -8,10 +8,10 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
@@ -31,6 +31,10 @@ from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
 from agent_corp.protocol.models import Device
 from agent_corp.secrets import write_private
+
+if TYPE_CHECKING:
+    from prompt_toolkit.input import Input
+    from prompt_toolkit.output import Output
 
 
 SET_UP = "run `ac init` to create one, or `ac onboard --from URL` to join one"
@@ -61,6 +65,9 @@ class Prompter(Protocol):
     def ask(self, question: str, default: str = "") -> str:
         """An answer, or ``default`` for an empty one."""
 
+    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+        """One of ``options``, picked by the owner; ``default`` when there's no one to ask."""
+
     def secret(self, question: str) -> str:
         """An answer read without echo."""
 
@@ -76,27 +83,94 @@ def step_lines(number: int, total: int, title: str, why: str) -> list[str]:
     return [f"Step {number} of {total}: {title}", why]
 
 
+STYLE = [("qmark", "fg:ansicyan bold"), ("question", "bold"), ("answer", "fg:ansicyan"),
+         ("pointer", "fg:ansicyan bold"), ("highlighted", "fg:ansicyan bold"), ("instruction", "fg:ansibrightblack")]
+"""How questions on a terminal look: ANSI colour names only, so they follow the terminal's theme."""
+
+
 class TtyPrompter:
     """Asks on the terminal; a secret is read with ``getpass``, so it is never echoed.
 
     ``preset`` answers questions by their text without asking (from command-line flags);
-    with ``interactive`` False, every other question takes its default.
+    with ``interactive`` False, every other question takes its default. When stdin and stdout
+    are both terminals (or ``terminal`` gives one), a list is picked with the arrow keys;
+    otherwise it is numbered, and a line picks from it.
     """
 
-    def __init__(self, preset: Mapping[str, str] | None = None, interactive: bool = True) -> None:
+    def __init__(self, preset: Mapping[str, str] | None = None, interactive: bool = True, *,
+                 terminal: "tuple[Input, Output] | None" = None) -> None:
         self.preset = {k: v for k, v in (preset or {}).items() if v}
         self.interactive = interactive
+        self.terminal = terminal
+        # Read now: the init flow runs its questions in an environment without these.
+        self.color = "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+
+    def _terminal(self) -> "tuple[Input | None, Output | None] | None":
+        """The input and output to draw questions on (None for the process's own), or None to ask line by line."""
+        if not self.interactive:
+            return None
+        if self.terminal is not None:
+            return self.terminal
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            return None, None
+        return None
+
+    def _drawn(self, terminal: "tuple[Input | None, Output | None]") -> dict[str, Any]:
+        """What every questionary question gets: the style, the terminal, and no colour if the owner turned it off."""
+        import questionary  # not loaded until a question is drawn
+        from prompt_toolkit.output import ColorDepth
+
+        extra = {} if self.color else {"color_depth": ColorDepth.DEPTH_1_BIT}
+        return {"style": questionary.Style(STYLE), "qmark": "?", "input": terminal[0], "output": terminal[1], **extra}
 
     def ask(self, question: str, default: str = "") -> str:
         if question in self.preset:
             return self.preset[question]
         if not self.interactive:
             return default
-        shown = f"{question} [{default}]: " if default else f"{question}: "
         try:
+            if (terminal := self._terminal()) is not None:
+                import questionary
+
+                answer = questionary.text(question, default=default, **self._drawn(terminal)).unsafe_ask()
+                return answer.strip() or default
+            shown = f"{question} [{default}]: " if default else f"{question}: "
             return input(shown).strip() or default
         except EOFError:
             raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+
+    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+        if question in self.preset:
+            return self.preset[question]
+        if not self.interactive:
+            return default
+        if (terminal := self._terminal()) is not None:
+            import questionary
+
+            try:
+                # select refuses a default that isn't one of its choices.
+                return questionary.select(question, choices=list(options),
+                                          default=default if default in options else None,
+                                          instruction="(↑/↓, Enter)", **self._drawn(terminal)).unsafe_ask()
+            except EOFError:
+                raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+        for number, option in enumerate(options, 1):
+            self.say(f"  {number}. {option}")
+        shown = f"{question} [{default}]: " if default else f"{question}: "
+        for _ in range(TRIES):
+            try:
+                line = input(shown).strip()
+            except EOFError:
+                raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+            # An option is taken before a number, so an option that is a number picks itself.
+            if line in options:
+                return line
+            if line.isdecimal() and 1 <= int(line) <= len(options):
+                return options[int(line) - 1]
+            if not line:
+                return default
+            self.say(f"That doesn't work: choose 1 to {len(options)}")
+        raise OnboardError(f"no usable answer to {question!r}")
 
     def secret(self, question: str) -> str:
         if not self.interactive or not sys.stdin.isatty():

@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn>=0.54",
     "httpx>=0.28",
     "psutil>=7",
+    "questionary>=2.1",
 ]
 
 [dependency-groups]
