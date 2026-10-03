@@ -142,3 +142,12 @@ def test_a_reply_still_running_is_not_in_the_discussion(store):  # noqa: F811
     # The next turn is stored before the session turns idle: the reply is final by then.
     store.add_question(question(side.id, source="human_input", node_id="chat#2/ask", question="You:"))
     assert [e.role for e in discussion(store, side.id)] == ["user", "assistant"]
+
+
+def test_a_side_run_offers_read_tools_then_work_items(make_harness, workspace):  # noqa: F811
+    h = make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW})
+    side = side_of(h, workspace)
+    groups = side_spec(h, side).groups(side, "run-1", None)
+    assert [(g, list(t)) for g, t in groups.items()] == [
+        ("workspace", ["read_file", "list", "search"]),
+        ("work_items", ["list_work_items", "read_work_item"])]

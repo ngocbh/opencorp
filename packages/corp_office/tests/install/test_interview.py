@@ -354,3 +354,11 @@ def test_without_a_terminal_the_fallback_is_used_without_a_model_or_confirmation
 def test_without_a_terminal_problems_name_the_flag_to_pass(login, interviews, tmp_path):
     with pytest.raises(OnboardError, match="@minh is taken; pass --agent-handle"):
         interview(tmp_path / "provider.json", Script(interactive=False), Known(handle="minh"))
+
+
+@pytest.mark.parametrize(("known", "flag"), [
+    (Known(company=" "), "--company"), (Known(name=" "), "--name"), (Known(handle="Me"), "--handle"),
+    (Known(agent=" "), "--agent"), (Known(agent_handle="Bad_Handle"), "--agent-handle")])
+def test_each_fallback_problem_names_the_flag_that_sets_its_field(login, known, flag):
+    with pytest.raises(OnboardError, match=f"; pass {flag}$"):
+        fallback_answers(known)
