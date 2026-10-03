@@ -18,9 +18,8 @@ from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
 from agent_corp.chat.provider import load_provider
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_DEPLOYMENT, TYPE_MODEL, TYPE_OWN,
-                                        NoTerminal, OnboardError, TtyPrompter, azure_deployments, ensure_provider,
-                                        step_lines)
+from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_OWN, NoTerminal, OnboardError,
+                                        TtyPrompter, azure_deployments, ensure_provider, step_lines)
 
 KEY = "sk-ant-test-0123456789"
 
@@ -81,7 +80,7 @@ def test_a_script_is_interactive_unless_told_otherwise():
 
 def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     path = tmp_path / "provider.json"
-    ask = Script("", KEY, "2", "claude-opus-4-1")
+    ask = Script("", KEY, "claude-opus-4-1")
     assert ensure_provider(path, ask) is True
     assert mode(path) == 0o600
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "anthropic", "api_key": KEY,
@@ -90,13 +89,14 @@ def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     assert all(KEY not in line for line in ask.seen)
     assert os.listdir(tmp_path) == ["provider.json"]  # no temp file left behind
     assert ask.seen == ["Model provider", "anthropic API key (empty to use `composer auth anthropic`; not shown)",
-                        "Model", "Model name"]
-    assert ask.offered == [list(SUPPORTED_LLM_PROVIDERS), ["claude-sonnet-4-5 (the default)", TYPE_MODEL]]
+                        "Model"]
+    assert ask.offered == [list(SUPPORTED_LLM_PROVIDERS), ["claude-sonnet-4-5 (the default)"]]
+    assert ask.typed == [False, True]
 
 
 def test_no_model_name_means_the_providers_default(tmp_path):
     path = tmp_path / "provider.json"
-    ensure_provider(path, Script("openai", "", "2", ""))
+    ensure_provider(path, Script("openai", "", "  "))
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
@@ -139,14 +139,35 @@ def test_azure_offers_the_resources_deployments(tmp_path, monkeypatch):
     ensure_provider(path, ask)
     assert load_provider(path).llm_config["model"] == "o3"
     assert seen == [("https://acme.openai.azure.com/openai/v1/", KEY)]
-    assert ["gpt-5.4", "o3", TYPE_DEPLOYMENT] in ask.offered
+    assert ["gpt-5.4", "o3"] in ask.offered and True in ask.typed
 
 
 def test_azure_takes_a_typed_deployment_too(tmp_path, monkeypatch):
     path = tmp_path / "provider.json"
     monkeypatch.setattr(onboard_module, "azure_deployments", lambda base_url, key: ["gpt-5.4"])
-    ensure_provider(path, Script("azure", "acme", KEY, "2", "my-deployment"))
+    ensure_provider(path, Script("azure", "acme", KEY, "my-deployment"))
     assert load_provider(path).llm_config["model"] == "my-deployment"
+
+
+def test_a_model_typed_before_is_the_answer_for_nothing():
+    ask = Script("")
+    assert onboard_module._ask_model(ask, "anthropic", "claude-opus-4-1") == "claude-opus-4-1"
+    assert ask.offered == [["claude-sonnet-4-5 (the default)"]] and ask.typed == [True]
+
+
+def test_a_deployment_typed_before_is_the_answer_for_nothing(monkeypatch):
+    monkeypatch.setattr(onboard_module, "azure_deployments", lambda base_url, key: ["gpt-5.4"])
+    ask = Script("")
+    assert onboard_module._ask_deployment(ask, "https://acme.openai.azure.com/openai/v1/", KEY, "mine") == "mine"
+    assert ask.offered == [["gpt-5.4"]] and ask.typed == [True]
+
+
+def test_an_empty_typed_deployment_on_the_terminal_is_never_saved_empty(monkeypatch):
+    monkeypatch.setattr(onboard_module, "azure_deployments", lambda base_url, key: ["gpt-5.4", "o3"])
+    # Pick "Type my own answer" (3), then type nothing.
+    plain_stdin(monkeypatch, "3\n\n")
+    url = "https://acme.openai.azure.com/openai/v1/"
+    assert onboard_module._ask_deployment(TtyPrompter(), url, KEY, "") == "gpt-5.4"
 
 
 def test_azure_asks_for_the_name_when_it_cant_list_the_deployments(tmp_path, monkeypatch):
@@ -692,7 +713,7 @@ def test_setting_up_again_starts_from_the_last_answers_and_keeps_the_key(tmp_pat
 def test_picking_the_default_when_setting_up_again_drops_the_typed_model(tmp_path):
     path = tmp_path / "provider.json"
     # Typed, then the default; the third round's empty answers keep the default.
-    ask = Script("openai", "", "2", "gpt-x", "2", "", "", "1", "2", "", "", "")
+    ask = Script("openai", "", "gpt-x", "2", "", "", "1", "2", "", "", "")
     ensure_provider(path, ask, check_model=answers("Error code: 404", "Error code: 404", None))
     assert load_provider(path).llm_config == {"provider": "openai"}
 

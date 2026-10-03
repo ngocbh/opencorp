@@ -256,10 +256,6 @@ def check_provider(data: object) -> Provider:
     return provider
 
 
-TYPE_MODEL = "Another model (type its name)"
-"""The choice for a model other than the provider's default."""
-
-
 def _azure_base_url(answer: str) -> str:
     """The v1 endpoint of an Azure OpenAI resource given by its name or its endpoint URL."""
     url = answer.strip().rstrip("/").removesuffix("/openai/v1")
@@ -270,10 +266,6 @@ def _azure_base_url(answer: str) -> str:
 
 AZURE_DEPLOYMENTS_API = "2022-12-01"
 """The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key."""
-
-TYPE_DEPLOYMENT = "Another deployment (type its name)"
-"""The last choice when a resource's deployments are offered."""
-
 
 def azure_deployments(base_url: str, key: str) -> list[str]:
     """The deployments at the Azure OpenAI resource whose v1 endpoint is ``base_url`` that are ready and not
@@ -307,10 +299,7 @@ def _ask_deployment(prompter: Prompter, base_url: str, key: str, last: str) -> s
         prompter.say(f"Couldn't list the deployments ({exc}); type the name instead.")
         deployments = []
     if deployments:
-        default = last if last in deployments else TYPE_DEPLOYMENT if last else deployments[0]
-        picked = prompter.choose("Deployment", [*deployments, TYPE_DEPLOYMENT], default)
-        if picked != TYPE_DEPLOYMENT:
-            return picked
+        return prompter.choose("Deployment", deployments, last or deployments[0], typed=True).strip()
     return ask_until(prompter, "Deployment name", last,
                      lambda m: None if m.strip() else "type the deployment's name").strip()
 
@@ -349,9 +338,9 @@ def _ask_model(prompter: Prompter, name: str, last: str = "") -> str:
     """The model for provider ``name``, ``last`` for an empty answer; empty for composer's default."""
     if default := PROVIDER_DEFAULT_MODELS.get(name):
         first = f"{default} (the default)"
-        if prompter.choose("Model", [first, TYPE_MODEL], TYPE_MODEL if last else first) == TYPE_MODEL:
-            return prompter.ask("Model name", last)
-        return ""
+        # Typing a name picks another model; the one typed last time is the answer for nothing.
+        picked = prompter.choose("Model", [first], last or first, typed=True)
+        return "" if picked == first else picked
     return ask_until(prompter, f"Model name ({name} has no default model)", last,
                      lambda m: None if m.strip() else "type the model's name")
 

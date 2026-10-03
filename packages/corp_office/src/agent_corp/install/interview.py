@@ -32,9 +32,6 @@ CHANGE = "No, change something"
 WHAT_TO_CHANGE = "What should change? (empty to talk it over)"
 """What the owner is asked after the summary, the two answers, and what is asked after the second."""
 
-TYPE_OWN = "Type my own answer"
-"""The last choice for a question the model gives options for."""
-
 FLAGS = {"company": "--company", "owner.name": "--name", "owner.handle": "--handle",
          "teammate.name": "--agent", "teammate.handle": "--agent-handle"}
 """The ``ac init`` flag that sets each draft field a problem can be about."""
@@ -197,10 +194,8 @@ def ask_user(**request) -> str:
         if not options:
             return prompter.ask(question)
         shown = [clean(o) for o in options]
-        picked = prompter.choose(question, [*shown, TYPE_OWN])
-        if picked == TYPE_OWN:
-            return prompter.ask(question)
-    # Anything else, such as an empty line with no option picked, goes back as it is.
+        picked = prompter.choose(question, shown, typed=True)
+    # A typed answer, or an empty one with no option picked, goes back as it is.
     return options[shown.index(picked)] if picked in shown else picked
 
 
