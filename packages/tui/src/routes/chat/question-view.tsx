@@ -127,6 +127,8 @@ export function QuestionView(
 
   function goTo(index: number) {
     sync()
+    // The window belongs to the page left; the new page's list starts at its top.
+    top = 0
     setStore({ page: index, selected: 0 })
   }
 
