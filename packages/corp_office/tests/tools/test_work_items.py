@@ -9,7 +9,7 @@ from agent_corp.tools.work_items import work_item_tools
 from tests.store.conftest import question, session, work_item
 
 
-def test_work_item_tools_show_only_what_the_asker_can_see(store):  # noqa: F811
+def test_work_item_tools_show_only_what_the_asker_can_see(store):
     top = store.create_work_item(work_item(title="Ship v2"))
     chat = store.create_work_item(work_item(title="Chat", parent_id=top.id))
     sibling = store.create_work_item(work_item(title="Docs", parent_id=top.id))

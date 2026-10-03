@@ -12,6 +12,7 @@ from agent_corp.questions.ask import Carried, OnQuestion
 from agent_corp.questions.format import format_answer
 from agent_corp.questions.normalize import normalize_options
 from agent_corp.store import Store, new_id
+from agent_corp.tools.context import ToolContext
 
 TITLE_CHARS = 80
 
@@ -78,3 +79,10 @@ def company_tools(store: Store, repo: CompanyRepo, session: Session, run_id: str
 def _work_item(**fields: Any) -> WorkItem:
     t = now()
     return WorkItem.model_validate({"id": new_id(), "status": "open", "created_at": t, "updated_at": t, **fields})
+
+
+def tools(ctx: ToolContext) -> dict[str, Callable[..., str]]:
+    """``company_tools`` for ``ctx``'s run; none without its store, repo, session and run id."""
+    if any(v is None for v in (ctx.store, ctx.repo, ctx.session, ctx.run_id)):
+        return {}
+    return company_tools(ctx.store, ctx.repo, ctx.session, ctx.run_id, ctx.on_question, carried=ctx.carried)

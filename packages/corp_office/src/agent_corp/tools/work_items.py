@@ -6,6 +6,7 @@ from typing import Any
 
 from agent_corp.protocol.models import Question
 from agent_corp.store import Store
+from agent_corp.tools.context import ToolContext
 
 
 def work_item_tools(store: Store, handle: str, question: Question | None) -> dict[str, Callable[..., str]]:
@@ -48,3 +49,10 @@ def work_item_tools(store: Store, handle: str, question: Question | None) -> dic
                              "children": children}, ensure_ascii=False)
 
     return {"list_work_items": list_work_items, "read_work_item": read_work_item}
+
+
+def tools(ctx: ToolContext) -> dict[str, Callable[..., str]]:
+    """The ``work_items`` group: ``work_item_tools`` for ``ctx.session``'s person about ``ctx.question``; none without a store and session."""
+    if ctx.store is None or ctx.session is None:
+        return {}
+    return work_item_tools(ctx.store, ctx.session.person, ctx.question)
