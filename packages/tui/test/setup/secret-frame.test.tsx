@@ -19,12 +19,15 @@ test("a secret shows as dots, never as typed, and Enter hands over the full text
   }
   try {
     await app.mockInput.typeText(SECRET)
+    // Tab and Ctrl-J are control characters, not part of a key.
+    app.mockInput.pressTab()
+    app.mockInput.pressKey("\n")
     expect(await frame()).toContain(dots(28))
     expect(await frame()).not.toContain(dots(29))
     app.mockInput.pressBackspace()
     expect(await frame()).not.toContain(dots(28))
     expect(await frame()).toContain(dots(27))
-    await app.mockInput.pasteBracketedText("ab\nc")
+    await app.mockInput.pasteBracketedText("a\tb\r\nc\x1b")
     expect(await frame()).toContain(dots(30))
     expect(await frame()).not.toContain(dots(31))
     app.mockInput.pressEnter()

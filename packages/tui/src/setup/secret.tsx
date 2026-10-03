@@ -1,6 +1,8 @@
 import { useKeyboard, usePaste } from "@opentui/solid"
 import { createSignal } from "solid-js"
-import { plain } from "./child"
+
+// Control characters: Tab, Ctrl-J and escape sequences are keys, not part of a secret.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
 
 /** A masked input: `question: ` then a dot for each character typed; Enter hands the text to `onSubmit`. */
 export function SecretInput(props: { question: string; onSubmit: (value: string) => void }) {
@@ -19,10 +21,10 @@ export function SecretInput(props: { question: string; onSubmit: (value: string)
       return set("")
     }
     if (key.name === "backspace") return set(value.slice(0, -1))
-    if (key.ctrl || key.meta || !key.sequence || plain(key.sequence) !== key.sequence) return
+    if (key.ctrl || key.meta || !key.sequence || key.sequence.search(CONTROL) !== -1) return
     set(value + key.sequence)
   })
-  usePaste((event) => set(value + plain(new TextDecoder().decode(event.bytes).replace(/[\r\n]/g, ""))))
+  usePaste((event) => set(value + new TextDecoder().decode(event.bytes).replace(CONTROL, "")))
 
   return (
     <text>
