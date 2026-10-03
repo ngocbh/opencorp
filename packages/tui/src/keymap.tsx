@@ -211,11 +211,26 @@ export function formatKeyBindings(bindings: Parameters<typeof formatCommandBindi
   return formatCommandBindingsExtra(bindings, formatOptions(config))
 }
 
-export function registerAgentCorpKeymap(keymap: OpenTuiKeymap, renderer: CliRenderer, config: ResolvedKeymapConfig) {
+/**
+ * The keymap parts every screen needs: the mode stack, comma lists, key aliases and the base layout fallback.
+ * The setup screen takes only these; it has no leader chords, and its boxes are inputs, which the managed
+ * textarea layer skips.
+ */
+export function registerAgentCorpBaseKeymap(keymap: OpenTuiKeymap) {
   const modeStack = createAgentCorpModeStack(keymap)
   const offCommaBindings = registerCommaBindings(keymap)
   const offAliasExpander = registerKeyAliases(keymap)
   const offBaseLayout = registerBaseLayoutFallback(keymap)
+  return () => {
+    offAliasExpander()
+    offBaseLayout()
+    offCommaBindings()
+    modeStack.dispose()
+  }
+}
+
+export function registerAgentCorpKeymap(keymap: OpenTuiKeymap, renderer: CliRenderer, config: ResolvedKeymapConfig) {
+  const offBase = registerAgentCorpBaseKeymap(keymap)
   const leader = leaderKey(config)
   const offLeader = leader
     ? registerTimedLeader(keymap, {
@@ -236,10 +251,7 @@ export function registerAgentCorpKeymap(keymap: OpenTuiKeymap, renderer: CliRend
     offBackspace()
     offEscape()
     offLeader()
-    offAliasExpander()
-    offBaseLayout()
-    offCommaBindings()
-    modeStack.dispose()
+    offBase()
   }
 }
 

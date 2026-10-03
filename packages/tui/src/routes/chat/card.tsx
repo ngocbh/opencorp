@@ -1,47 +1,34 @@
-import { createStore, produce } from "solid-js/store"
-import { createMemo, createResource, For, onCleanup, onMount, Show } from "solid-js"
-import { useRenderer } from "@opentui/solid"
-import type { TextareaRenderable } from "@opentui/core"
-import { tint, useTheme } from "../../context/theme"
+import { createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
+import { useTheme } from "../../context/theme"
 import type { AnswerRequest, Question } from "@agent-corp/protocol"
 import { useOffice } from "../../context/office"
 import { OfficeError, isMissingRoute, isNotImplemented } from "../../office/errors"
 import { errorMessage } from "../../util/error"
 import { personLabel } from "../../util/transcript"
 import { useToast } from "../../ui/toast"
-import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
-import { useBindings, useAgentCorpModeStack } from "../../keymap"
-import { buildAnswer, cardModel, type PageAnswer } from "./answer"
+import { useBindings } from "../../keymap"
+import { buildAnswer, cardModel } from "./answer"
 import { leaveBindings } from "./leave"
-
-const QUESTION_MODE = "question"
+import { QUESTION_MODE, QuestionView, type QuestionViewHandle } from "./question-view"
 
 /**
- * The open question card: a page per question to pick or type on, "Chat about this", and "Send
- * discussion back"; Esc then `y` stops the asker. A question carried from an expired one shows
- * that discussion, which can be dismissed. It stays mounted, `hidden`, while its side chat shows,
+ * The open question card for an office question, with options and a box to type an answer: `QuestionView` with who
+ * asks, "Chat about this", "Send discussion back", and Esc then `y` to stop the asker. A question carried from an
+ * expired one shows that discussion, which can be dismissed. It stays mounted, `hidden`, while its side chat shows,
  * so page answers survive the chat.
  */
 export function QuestionCard(props: { question: Question | undefined; hidden?: boolean; onChat: () => void }) {
   const office = useOffice()
   const toast = useToast()
   const { theme } = useTheme()
-  const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
-  const modeStack = useAgentCorpModeStack()
 
   // The card stays mounted while its question is replaced by a newer copy (a reconnect re-reads
   // it); keep the last copy for the moment the question goes before the card does.
   const question = createMemo<Question>((prev) => props.question ?? prev, props.question!)
   const model = createMemo(() => cardModel(question()))
-  const [store, setStore] = createStore({
-    page: 0,
-    selected: 0,
-    editing: false,
-    confirming: false,
-    answers: [] as PageAnswer[],
-  })
+  const [confirming, setConfirming] = createSignal(false)
 
   // The context header: who asks, and for which work item. The store has a work item only once
   // an event carried it, so fetch it when it isn't there.
@@ -71,10 +58,6 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
     return item ? `${asker()} asks · work item "${item.title}"` : `${asker()} asks`
   })
 
-  const pages = createMemo(() => model()?.pages ?? [])
-  const page = createMemo(() => pages()[store.page])
-  const answer = createMemo<PageAnswer>(() => store.answers[store.page] ?? { picked: [], text: "" })
-  const options = createMemo(() => page()?.options ?? [])
   // The office's own actions come after the answer rows and never count as options.
   const actions = createMemo(() => [
     { label: "Chat about this", key: "ctrl+o", run: () => props.onChat() },
@@ -83,11 +66,8 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       : []),
     ...(question().carried_from ? [{ label: "Dismiss earlier discussion", key: "", run: () => dismiss() }] : []),
   ])
-  const answerRows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
-  const rows = createMemo(() => answerRows() + actions().length)
-  const other = createMemo(() => page()?.typed === true && store.selected === options().length)
 
-  let textarea: TextareaRenderable | undefined
+  let view: QuestionViewHandle | undefined
 
   // One office call at a time: a second pick, stop, send back, or dismiss while one is in flight
   // would race it.
@@ -134,7 +114,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
       office.client.questions
         .dismissCarried(question().id)
         .then((q) => {
-          setStore("selected", 0)
+          view?.select(0)
           office.putQuestion(q)
         })
         .catch((error) => {
@@ -147,7 +127,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
   }
 
   function stop() {
-    setStore("confirming", false)
+    setConfirming(false)
     call(() =>
       office.client.questions
         .stop(question().id)
@@ -160,52 +140,6 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
     )
   }
 
-  function setAnswer(change: (a: PageAnswer) => PageAnswer) {
-    setStore(
-      produce((s) => {
-        s.answers[s.page] = change(s.answers[s.page] ?? { picked: [], text: "" })
-      }),
-    )
-  }
-
-  function goTo(index: number) {
-    setStore({ page: index, selected: 0, editing: false })
-  }
-
-  /** Moves to the next page, or sends the answer from the last one. */
-  function next() {
-    const m = model()
-    if (!m) return
-    if (store.page < m.pages.length - 1) return goTo(store.page + 1)
-    const req = buildAnswer(m, store.answers)
-    if (req) return send(req)
-    // A page left without an answer: go back to it.
-    goTo(m.pages.findIndex((p, i) => !p.multi && !store.answers[i]?.picked.length && !store.answers[i]?.text.trim()))
-  }
-
-  function toggle(index: number) {
-    setAnswer((a) => {
-      const picked = a.picked.includes(index) ? a.picked.filter((n) => n !== index) : [...a.picked, index]
-      return { ...a, picked: picked.sort((x, y) => x - y) }
-    })
-  }
-
-  /** Enter on the selected row: run an action, open the typed answer, confirm a multi-select page, or pick. */
-  function selectRow() {
-    const action = actions()[store.selected - answerRows()]
-    if (action) return action.run()
-    if (other()) return setStore("editing", true)
-    if (page()?.multi) return next()
-    if (!options()[store.selected]) return
-    setAnswer(() => ({ picked: [store.selected], text: "" }))
-    next()
-  }
-
-  onMount(() => {
-    const popMode = modeStack.push(QUESTION_MODE)
-    onCleanup(popMode)
-  })
-
   onCleanup(() => {
     // The card closes when its question does; say so when that was the run restarting.
     const q = office.state.questions[question().id]
@@ -215,314 +149,68 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
 
   useBindings(() => ({
     mode: QUESTION_MODE,
-    enabled: store.confirming && !props.hidden,
+    enabled: confirming() && !props.hidden,
     bindings: [
       { key: "y", desc: "Stop the asker", group: "Question", cmd: () => stop() },
       ...["n", "escape", "return"].map((key) => ({
         key,
         desc: "Keep the question",
         group: "Question",
-        cmd: () => setStore("confirming", false),
+        // Returns nothing: the keymap takes a false return as unhandled and passes the key on, into the box that
+        // the closing confirm just gave focus back to.
+        cmd: () => {
+          setConfirming(false)
+        },
       })),
       ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
     ],
   }))
 
-  useBindings(() => ({
-    mode: QUESTION_MODE,
-    enabled: store.editing && !props.hidden,
-    commands: [
-      {
-        name: "prompt.clear",
-        title: "Clear answer edit",
-        category: "Question",
-        run() {
-          const text = textarea?.plainText ?? ""
-          if (!text) {
-            setStore("editing", false)
-            return
-          }
-          textarea?.setText("")
-        },
-      },
-    ],
-    bindings: [
-      {
-        key: "escape",
-        desc: "Cancel answer edit",
-        group: "Question",
-        cmd: () => {
-          setStore("editing", false)
-        },
-      },
-      ...tuiConfig.keybinds.get("prompt.clear"),
-      {
-        key: "return",
-        desc: "Submit answer edit",
-        group: "Question",
-        cmd: () => {
-          const text = textarea?.plainText?.trim() ?? ""
-          const multi = page()?.multi
-          // A typed answer replaces the pick on a single-choice page; an empty one leaves it.
-          setAnswer((a) => ({ picked: multi || !text ? a.picked : [], text }))
-          setStore("editing", false)
-          if (text) next()
-        },
-      },
-    ],
-  }))
-
-  useBindings(() => {
-    const total = rows()
-    const move = (by: number) => total && setStore("selected", (store.selected + by + total) % total)
-    const keys = [
-      ...(stoppable()
-        ? [{ key: "escape", desc: "Stop the asker", group: "Question", cmd: () => setStore("confirming", true) }]
-        : []),
-      { key: "ctrl+o", desc: "Chat about this", group: "Question", cmd: () => props.onChat() },
-      // Ctrl+C leaves the view as it does in the chat; it never stops the question.
-      ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
-    ]
-    const paging =
-      pages().length > 1
-        ? [
-            { key: "left", desc: "Previous question", group: "Question", cmd: () => goTo(Math.max(store.page - 1, 0)) },
-            {
-              key: "right",
-              desc: "Next question",
-              group: "Question",
-              cmd: () => goTo(Math.min(store.page + 1, pages().length - 1)),
-            },
-          ]
-        : []
-    return {
-      mode: QUESTION_MODE,
-      enabled: !store.editing && !store.confirming && !props.hidden,
-      bindings: !model()
-        ? keys
-        : [
-            ...Array.from({ length: Math.min(answerRows(), 9) }, (_, index) => ({
-              key: String(index + 1),
-              desc: `Select answer ${index + 1}`,
-              group: "Question",
-              cmd: () => {
-                setStore("selected", index)
-                if (page()?.multi && index < options().length) return toggle(index)
-                selectRow()
-              },
-            })),
-            { key: "up", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
-            { key: "k", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
-            { key: "down", desc: "Next answer", group: "Question", cmd: () => move(1) },
-            { key: "j", desc: "Next answer", group: "Question", cmd: () => move(1) },
-            {
-              key: "space",
-              desc: "Toggle answer",
-              group: "Question",
-              cmd: () => {
-                if (page()?.multi && store.selected < options().length) toggle(store.selected)
-              },
-            },
-            { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
-            ...paging,
-            ...keys,
-          ],
-    }
-  })
-
-  const marker = (i: number) => {
-    if (!page()?.multi) return `${i + 1}.`
-    return answer().picked.includes(i) ? `${i + 1}. [x]` : `${i + 1}. [ ]`
-  }
-
   return (
-    <box
-      visible={!props.hidden}
-      backgroundColor={theme.backgroundPanel}
-      border={["left"]}
-      borderColor={theme.accent}
-      customBorderChars={SplitBorder.customBorderChars}
+    <QuestionView
+      pages={model()?.pages ?? []}
+      header={context()}
+      actions={actions()}
+      bindings={[
+        ...(stoppable()
+          ? [{ key: "escape", desc: "Stop the asker", group: "Question", cmd: () => setConfirming(true) }]
+          : []),
+        { key: "ctrl+o", desc: "Chat about this", group: "Question", cmd: () => props.onChat() },
+        // Ctrl+C leaves the view as it does in the chat; it never stops the question.
+        ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
+      ]}
+      hints={stoppable() ? [{ key: "esc", label: `stop ${asker()}` }] : []}
+      notice={confirming() ? `Stop ${asker()}? y/N` : undefined}
+      enabled={!confirming()}
+      hidden={props.hidden}
+      ref={(v) => (view = v)}
+      onSubmit={(answers) => {
+        const m = model()
+        const req = m && buildAnswer(m, answers)
+        if (req) send(req)
+      }}
     >
-      <box gap={1} paddingLeft={1} paddingRight={3} paddingTop={1} paddingBottom={1}>
-        <box paddingLeft={1}>
-          <text fg={theme.textMuted}>{context()}</text>
-        </box>
-        <Show when={earlier()}>
-          {(q) => (
-            <box paddingLeft={1}>
-              <text fg={theme.warning}>{`From an earlier, expired question: ${q().question}`}</text>
-              <For each={q().discussion ?? []}>
-                {(entry) => (
-                  <text fg={theme.textMuted}>{`${entry.role === "user" ? "you" : asker()}: ${entry.text}`}</text>
-                )}
-              </For>
-            </box>
-          )}
-        </Show>
-        <Show
-          when={model()}
-          fallback={
-            <box paddingLeft={1} gap={1}>
-              <text fg={theme.text}>{question().title ?? question().question}</text>
-              <Show when={question().title}>
-                <text fg={theme.text}>{question().question}</text>
-              </Show>
-              <text fg={theme.warning}>This question can't be answered here yet.</text>
-            </box>
-          }
-        >
-          <box paddingLeft={1} gap={1}>
-            <box>
-              <Show when={pages().length > 1}>
-                <text fg={theme.textMuted}>
-                  {`Question ${store.page + 1} of ${pages().length} · ${page()?.header}`}
-                </text>
-              </Show>
-              <text fg={theme.text}>{page()?.question}</text>
-            </box>
-            <box>
-              <For each={options()}>
-                {(opt, i) => {
-                  const active = () => i() === store.selected
-                  return (
-                    <box
-                      onMouseOver={() => setStore("selected", i())}
-                      onMouseDown={() => setStore("selected", i())}
-                      onMouseUp={() => {
-                        if (renderer.getSelection()?.getSelectedText()) return
-                        if (page()?.multi) return toggle(i())
-                        selectRow()
-                      }}
-                    >
-                      <box flexDirection="row">
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined} paddingRight={1}>
-                          <text fg={active() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
-                            {marker(i())}
-                          </text>
-                        </box>
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined}>
-                          <text fg={active() ? theme.secondary : theme.text}>{opt.label}</text>
-                        </box>
-                      </box>
-
-                      <box paddingLeft={3}>
-                        <text fg={theme.textMuted}>{opt.description}</text>
-                      </box>
-                    </box>
-                  )
-                }}
-              </For>
-              <Show when={page()?.typed}>
-                <box
-                  onMouseOver={() => setStore("selected", options().length)}
-                  onMouseDown={() => setStore("selected", options().length)}
-                  onMouseUp={() => {
-                    if (renderer.getSelection()?.getSelectedText()) return
-                    selectRow()
-                  }}
-                >
-                  <box flexDirection="row">
-                    <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
-                      <text fg={other() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
-                        {`${options().length + 1}.`}
-                      </text>
-                    </box>
-                    <box backgroundColor={other() ? theme.backgroundElement : undefined}>
-                      <text fg={other() ? theme.secondary : theme.text}>Type your own answer</text>
-                    </box>
-                  </box>
-                  <Show when={store.editing}>
-                    <box paddingLeft={3}>
-                      <textarea
-                        ref={(val: TextareaRenderable) => {
-                          textarea = val
-                          val.traits = { status: "ANSWER" }
-                          queueMicrotask(() => {
-                            val.focus()
-                            val.gotoLineEnd()
-                          })
-                        }}
-                        initialValue={answer().text}
-                        placeholder="Type your own answer"
-                        placeholderColor={theme.textMuted}
-                        minHeight={1}
-                        maxHeight={6}
-                        textColor={theme.text}
-                        focusedTextColor={theme.text}
-                        cursorColor={theme.primary}
-                        cursorStyle={tuiConfig.cursor}
-                      />
-                    </box>
-                  </Show>
-                  <Show when={!store.editing && answer().text}>
-                    <box paddingLeft={3}>
-                      <text fg={theme.textMuted}>{answer().text}</text>
-                    </box>
-                  </Show>
-                </box>
-              </Show>
-              <box paddingTop={1}>
-                <For each={actions()}>
-                  {(action, i) => {
-                    const active = () => store.selected === answerRows() + i()
-                    return (
-                      <box
-                        flexDirection="row"
-                        gap={1}
-                        onMouseOver={() => setStore("selected", answerRows() + i())}
-                        onMouseUp={() => action.run()}
-                      >
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined}>
-                          <text fg={active() ? theme.secondary : theme.text}>{`[${action.label}]`}</text>
-                        </box>
-                        <text fg={theme.textMuted}>{action.key}</text>
-                      </box>
-                    )
-                  }}
-                </For>
-              </box>
-            </box>
+      <Show when={earlier()}>
+        {(q) => (
+          <box paddingLeft={1}>
+            <text fg={theme.warning}>{`From an earlier, expired question: ${q().question}`}</text>
+            <For each={q().discussion ?? []}>
+              {(entry) => (
+                <text fg={theme.textMuted}>{`${entry.role === "user" ? "you" : asker()}: ${entry.text}`}</text>
+              )}
+            </For>
           </box>
-        </Show>
-      </box>
-      <box
-        flexDirection="row"
-        flexShrink={0}
-        gap={1}
-        paddingLeft={2}
-        paddingRight={3}
-        paddingBottom={1}
-        justifyContent="space-between"
-      >
-        <Show when={store.confirming}>
-          <text fg={theme.warning}>{`Stop ${asker()}? y/N`}</text>
-        </Show>
-        <box flexDirection="row" gap={2} visible={!store.confirming}>
-          <Show when={model()}>
-            <text fg={theme.text}>
-              {"↑↓"} <span style={{ fg: theme.textMuted }}>select</span>
-            </text>
-            <Show when={page()?.multi}>
-              <text fg={theme.text}>
-                space <span style={{ fg: theme.textMuted }}>toggle</span>
-              </text>
-            </Show>
-            <Show when={pages().length > 1}>
-              <text fg={theme.text}>
-                {"←→"} <span style={{ fg: theme.textMuted }}>question</span>
-              </text>
-            </Show>
-            <text fg={theme.text}>
-              enter <span style={{ fg: theme.textMuted }}>{store.page < pages().length - 1 ? "next" : "submit"}</span>
-            </text>
+        )}
+      </Show>
+      <Show when={!model()}>
+        <box paddingLeft={1} gap={1}>
+          <text fg={theme.text}>{question().title ?? question().question}</text>
+          <Show when={question().title}>
+            <text fg={theme.text}>{question().question}</text>
           </Show>
-          <Show when={stoppable()}>
-            <text fg={theme.text}>
-              esc <span style={{ fg: theme.textMuted }}>stop {asker()}</span>
-            </text>
-          </Show>
+          <text fg={theme.warning}>This question can't be answered here yet.</text>
         </box>
-      </box>
-    </box>
+      </Show>
+    </QuestionView>
   )
 }

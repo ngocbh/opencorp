@@ -351,3 +351,31 @@ test("Esc interrupts a starting side session; /Back returns in any case", async 
     office.stop()
   }
 })
+
+test("the typed box lets go of the keys while the side chat shows and keeps its text after /back", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    app.input.pressKey("3")
+    await app.input.typeText("later")
+    await app.until((f) => f.includes("3. later"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh"))
+    await app.input.typeText("why?")
+    app.input.pressEnter()
+    await app.until(() => posts(office).length === 1)
+    expect(posts(office)).toEqual([[`/questions/${q.id}/side`, { text: "why?" }]])
+    app.input.typeText("/back")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Deploy now?") && f.includes("3. later") && !f.includes("Side chat with"))
+    // The box has the keys again.
+    await app.input.typeText("!")
+    await app.until((f) => f.includes("3. later!"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

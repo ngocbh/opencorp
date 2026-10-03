@@ -52,6 +52,25 @@ test("prompts arrive in order as parsed objects, and an answer reaches the child
   expect(await child.done).toBe(4)
 })
 
+test("a choice keeps whether it takes a typed answer", async () => {
+  const child = fake(`
+say({ type: "choose", question: "Model", options: ["a"], default: "a", typed: true })
+say({ type: "choose", question: "Provider", options: ["b"] })
+await Bun.sleep(10000)
+`)
+  const prompts = collect(child)
+  try {
+    await until(() => prompts.length === 2, 5000)
+    expect(prompts).toEqual([
+      { type: "choose", question: "Model", options: ["a"], default: "a", typed: true },
+      { type: "choose", question: "Provider", options: ["b"], default: "", typed: false },
+    ])
+  } finally {
+    child.close()
+    await child.done
+  }
+})
+
 test("done resolves only once the last stdout and stderr lines are in", async () => {
   for (let i = 0; i < 10; i++) {
     const child = fake(conversation)

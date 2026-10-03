@@ -1,4 +1,5 @@
 import { createCliRenderer } from "@opentui/core"
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { render } from "@opentui/solid"
 import type { JSX } from "solid-js"
 import { resolve as resolveConfig, TuiConfigProvider } from "../config"
@@ -6,6 +7,7 @@ import { KVProvider } from "../context/kv"
 import { TuiPathsProvider } from "../context/runtime"
 import { ThemeProvider } from "../context/theme"
 import { Global } from "../core/global"
+import { AgentCorpKeymapProvider, registerAgentCorpBaseKeymap, type OpenTuiKeymap } from "../keymap"
 import { destroyRenderer } from "../util/renderer"
 import { spawnSetup, type SetupChild } from "./child"
 import { SetupScreen } from "./screen"
@@ -21,8 +23,9 @@ export interface Writer {
  */
 export async function runSetup(argv: string[], cwd: string): Promise<number> {
   const child = spawnSetup(argv, cwd)
+  const name = argv[argv.indexOf("agent_corp.install") + 1]
   try {
-    return await runSetupWith(child)
+    return await runSetupWith(child, process.stdout, process.stderr, name ? `ac ${name}` : "")
   } catch (e) {
     // A renderer that fails to start must not leave the install waiting on stdin.
     child.close()
@@ -31,11 +34,12 @@ export async function runSetup(argv: string[], cwd: string): Promise<number> {
   }
 }
 
-/** The same, for a child already running (tests pass a fake). */
+/** The same, for a child already running (tests pass a fake); the header names `command`, such as `ac init`. */
 export async function runSetupWith(
   child: SetupChild,
   out: Writer = process.stdout,
   err: Writer = process.stderr,
+  command = "",
 ): Promise<number> {
   const renderer = await createCliRenderer({
     externalOutputMode: "passthrough",
@@ -47,7 +51,18 @@ export async function runSetupWith(
     openConsoleOnError: false,
     useMouse: false,
   })
+  let unregister: (() => void) | undefined
+  /** Takes the keymap off, then gives the terminal back: the reverse of the order they were set up. Runs once. */
+  const release = () => {
+    unregister?.()
+    unregister = undefined
+    // Not once destroyed: destroyRenderer sets the title first, which would write to a terminal the renderer
+    // has released.
+    if (!renderer.isDestroyed) destroyRenderer(renderer)
+  }
   try {
+    const keymap = createDefaultOpenTuiKeymap(renderer)
+    unregister = registerAgentCorpBaseKeymap(keymap)
     // Emitted at the end of finalizeDestroy, which then releases stdin and stdout synchronously, so code awaiting
     // this runs once another renderer (the office's) can take them.
     const destroyed = new Promise<void>((resolve) => renderer.once("destroy", () => resolve()))
@@ -59,28 +74,27 @@ export async function runSetupWith(
     if (!renderer.isDestroyed)
       await render(
         () => (
-          <Providers mode={mode}>
-            <SetupScreen child={child} lines={lines} />
+          <Providers mode={mode} keymap={keymap}>
+            <SetupScreen child={child} lines={lines} command={command} />
           </Providers>
         ),
         renderer,
       )
     const code = await child.done
-    if (!renderer.isDestroyed) destroyRenderer(renderer)
+    release()
     await destroyed
     for (const line of lines) out.write(line + "\n")
     const stderr = child.stderr()
     if (stderr) err.write(stderr)
     return code
   } finally {
-    // Gives the terminal back even when something above threw. Not once destroyed: destroyRenderer sets the
-    // title first, which would write to a terminal the renderer has released.
-    if (!renderer.isDestroyed) destroyRenderer(renderer)
+    // Gives the terminal back even when something above threw.
+    release()
   }
 }
 
-/** What the theme, the spinner and the inputs need, with the same values the app gives them. */
-function Providers(props: { mode: "dark" | "light"; children: JSX.Element }) {
+/** What the theme, the spinner, the inputs and the question card need, with the same values the app gives them. */
+function Providers(props: { mode: "dark" | "light"; keymap: OpenTuiKeymap; children: JSX.Element }) {
   return (
     <TuiPathsProvider
       value={{
@@ -91,9 +105,11 @@ function Providers(props: { mode: "dark" | "light"; children: JSX.Element }) {
       }}
     >
       <KVProvider>
-        <TuiConfigProvider config={resolveConfig({}, { terminalSuspend: false })}>
-          <ThemeProvider mode={props.mode}>{props.children}</ThemeProvider>
-        </TuiConfigProvider>
+        <AgentCorpKeymapProvider keymap={props.keymap}>
+          <TuiConfigProvider config={resolveConfig({}, { terminalSuspend: false })}>
+            <ThemeProvider mode={props.mode}>{props.children}</ThemeProvider>
+          </TuiConfigProvider>
+        </AgentCorpKeymapProvider>
       </KVProvider>
     </TuiPathsProvider>
   )
