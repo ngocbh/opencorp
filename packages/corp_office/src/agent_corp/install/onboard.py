@@ -105,6 +105,10 @@ class TtyPrompter:
         # Read now: the init flow runs its questions in an environment without these.
         self.color = "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
 
+    def _styled(self) -> bool:
+        """Whether to colour what is printed: colour is on and it goes to a terminal."""
+        return self.color and (self.terminal is not None or sys.stdout.isatty())
+
     def _terminal(self) -> "tuple[Input | None, Output | None] | None":
         """The input and output to draw questions on (None for the process's own), or None to ask line by line."""
         if not self.interactive:
@@ -176,13 +180,19 @@ class TtyPrompter:
         if not self.interactive or not sys.stdin.isatty():
             # getpass falls back to reading stdin with echo when there is no terminal.
             raise NoTerminal(f"there is no terminal to read {question!r} without echo")
-        return getpass.getpass(f"{question}: ").strip()
+        # The same mark as a question drawn by questionary.
+        mark = "\x1b[1;36m?\x1b[0m " if self._styled() else ""
+        return getpass.getpass(f"{mark}{question}: ").strip()
 
     def say(self, text: str) -> None:
         print(text, flush=True)
 
     def step(self, number: int, total: int, title: str, why: str) -> None:
-        print("\n" + "\n".join(step_lines(number, total, title, why)), flush=True)
+        header, line = step_lines(number, total, title, why)
+        if self._styled():
+            # Raw codes, not questionary.print: prompt_toolkit keeps the first stdout it prints to.
+            header, line = f"\x1b[1;36m{header}\x1b[0m", f"\x1b[90m{line}\x1b[0m"
+        print(f"\n{header}\n{line}", flush=True)
 
 
 def _llm_errors(exc: ValidationError) -> str:

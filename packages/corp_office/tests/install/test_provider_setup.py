@@ -380,6 +380,42 @@ def test_the_terminal_prompter_shows_a_step_as_a_header_and_why(capsys):
     assert capsys.readouterr().out == "\nStep 2 of 5: You\nYou're the CEO.\n"
 
 
+def a_colour_terminal(monkeypatch):
+    """Make stdout and stdin look like a terminal, with colour on."""
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+def test_on_a_terminal_a_step_is_a_bold_cyan_header_and_a_grey_why(monkeypatch, capsys):
+    a_colour_terminal(monkeypatch)
+    TtyPrompter().step(2, 5, "You", "You're the CEO.")
+    assert capsys.readouterr().out == "\n\x1b[1;36mStep 2 of 5: You\x1b[0m\n\x1b[90mYou're the CEO.\x1b[0m\n"
+
+
+@pytest.mark.parametrize("name, value", [("NO_COLOR", "1"), ("TERM", "dumb")])
+def test_without_colour_a_step_on_a_terminal_is_plain(monkeypatch, capsys, name, value):
+    a_colour_terminal(monkeypatch)
+    monkeypatch.setenv(name, value)
+    prompter = TtyPrompter()
+    monkeypatch.delenv(name)  # the init flow's environment drops it after the prompter is made
+    prompter.step(2, 5, "You", "You're the CEO.")
+    assert capsys.readouterr().out == "\nStep 2 of 5: You\nYou're the CEO.\n"
+
+
+@pytest.mark.parametrize("no_color, prompt", [(False, "\x1b[1;36m?\x1b[0m anthropic API key: "),
+                                              (True, "anthropic API key: ")])
+def test_on_a_terminal_a_secret_is_marked_like_the_other_questions(monkeypatch, no_color, prompt):
+    a_colour_terminal(monkeypatch)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    shown = []
+    monkeypatch.setattr(getpass, "getpass", lambda text: shown.append(text) or KEY)
+    assert TtyPrompter().secret("anthropic API key") == KEY
+    assert shown == [prompt]
+
+
 def test_the_script_prompter_records_the_same_step_lines():
     ask = Script()
     ask.step(1, 4, "Company", "Why.")
