@@ -13,7 +13,7 @@ from agent_corp.company.draft import Draft, Teammate, draft_problems
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import REMOTE
+from agent_corp.install.init import REMOTE, REMOTE_URL
 from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, TYPE_OWN, WHAT_TO_CHANGE, Asking, Known,
                                           asking, clean, confirm, fallback_draft, init_flow, run_init_flow, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
@@ -63,8 +63,8 @@ def round_replies(output):
 
 def owner(*answers, remote=""):
     """The owner for one accepted run: ``answers`` to the model's questions, "1" (create) to confirm, ``PASSWORD``
-    twice, and ``remote``."""
-    return Script(*answers, "1", PASSWORD, PASSWORD, remote)
+    twice, and ``remote`` (none when empty)."""
+    return Script(*answers, "1", PASSWORD, PASSWORD, *(("2", remote) if remote else ("1",)))
 
 
 def run(provider, prompter, known=Known()):
@@ -381,7 +381,7 @@ def test_a_result_with_problems_goes_back_to_the_interview_without_asking_the_ow
 def test_the_owners_changes_start_the_next_round_from_the_draft(login, fake_llm, provider):
     renamed = {**OUT, "teammates": [{**OUT["teammates"][0], "name": "Bo", "handle": "bo"}]}
     fake_llm.script(*flow_replies("Company?", OUT), *round_replies(renamed))
-    out = run(provider, Script("Acme", "2", "rename Minh to Bo", "1", PASSWORD, PASSWORD, ""))
+    out = run(provider, Script("Acme", "2", "rename Minh to Bo", "1", PASSWORD, PASSWORD, "1"))
     assert out["teammates"] == renamed["teammates"]
     second = "\n".join(contents(fake_llm.requests()[4]))
     assert '"name": "Minh"' in second and "The owner wants changes: rename Minh to Bo" in second
@@ -427,7 +427,8 @@ def test_the_remote_flag_is_used_without_asking_and_never_sent(login, fake_llm, 
     fake_llm.script(*round_replies(OUT))
     prompter = Script("1", PASSWORD, PASSWORD)
     assert run(provider, prompter, Known(remote=url))["remote"] == url
-    assert REMOTE not in prompter.seen and "tok-sentinel-77" not in json.dumps(fake_llm.requests())
+    assert REMOTE not in prompter.seen and REMOTE_URL not in prompter.seen
+    assert "tok-sentinel-77" not in json.dumps(fake_llm.requests())
 
 
 def test_init_flow_gives_the_draft_with_the_hash_and_the_remote_apart(login, fake_llm, provider, tmp_path):

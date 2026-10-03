@@ -25,8 +25,13 @@ STEPS = 5
 YOUR_PASSWORD = ("Your password, to log in new devices with"
                  " (at least 12 characters, one you use nowhere else; not shown)")
 PASSWORD_AGAIN = "Your password again"
-REMOTE = "Git remote URL (empty to skip)"
+REMOTE = "Remote"
+REMOTE_URL = "Git remote URL"
 """The questions init asks itself; the interview asks the rest."""
+
+NO_REMOTE = "None for now"
+ADD_REMOTE = "Add a git remote URL"
+"""The choices for ``REMOTE``."""
 
 
 def password_step(prompter: Prompter) -> str | None:
@@ -53,11 +58,12 @@ def password_step(prompter: Prompter) -> str | None:
 
 
 def remote_step(prompter: Prompter, given: str) -> str:
-    """Show the remote step and return the git remote URL: ``given`` (from ``--remote``), or asked for; empty for
-    none."""
+    """Show the remote step and return the git remote URL: ``given`` (from ``--remote``), or asked for if the owner
+    chooses to add one; empty for none."""
     prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
                                       " company with `ac onboard --from URL`.")
-    return given or prompter.ask(REMOTE)
+    return given or ("" if prompter.choose(REMOTE, [NO_REMOTE, ADD_REMOTE], NO_REMOTE) == NO_REMOTE
+                     else prompter.ask(REMOTE_URL))
 
 
 def password(inputs: dict) -> str | None:
