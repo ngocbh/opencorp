@@ -4,6 +4,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -113,6 +114,64 @@ def _office_env(extra: dict[str, str]) -> Iterator[None]:
     finally:
         os.environ.clear()
         os.environ.update(saved)
+
+
+@dataclass
+class Asking:
+    """The owner's terminal for one init flow run, and the ``OnboardError`` that stopped it, if one did."""
+
+    prompter: Prompter
+    stopped: OnboardError | None = None
+
+
+# Code nodes are named by module:function, so they reach the terminal through this rather than a closure.
+_ASKING: ContextVar[Asking] = ContextVar("asking")
+
+
+@contextmanager
+def asking(state: Asking) -> Iterator[None]:
+    """Make ``state`` the terminal that ``owner_prompter`` gives inside the block."""
+    token = _ASKING.set(state)
+    try:
+        yield
+    finally:
+        _ASKING.reset(token)
+
+
+@contextmanager
+def owner_prompter() -> Iterator[Prompter]:
+    """The running init flow's prompter, for its tools and code nodes.
+
+    An ``OnboardError`` raised inside is kept, so the run's caller raises it rather than the run's failure.
+    """
+    state = _ASKING.get()
+    try:
+        yield state.prompter
+    except OnboardError as exc:
+        state.stopped = exc
+        raise
+
+
+def confirm(inputs: dict) -> dict:
+    """The init flow's ``confirm`` node: check the draft in ``inputs["answers"]`` and, if it has no problems, show it
+    and ask the owner to create the company.
+
+    Returns the round's ``draft`` (as JSON), its ``changes`` (the problems, or what the owner wants changed) and
+    whether the owner ``accepted``.
+    """
+    text = json.dumps(inputs["answers"])
+    draft = Draft.from_output(inputs["answers"])
+    if problems := draft_problems(draft):
+        return {"draft": text, "changes": "\n".join(problems), "accepted": False}
+    with owner_prompter() as prompter:
+        for line in summary(draft):
+            prompter.say(line)
+        reply = prompter.ask(CONFIRM).strip()
+    if reply.lower() in ("", "y", "yes"):
+        return {"draft": text, "changes": "", "accepted": True}
+    changes = ("The owner wants changes; ask what to change" if reply.lower() in ("n", "no")
+               else f"The owner wants changes: {reply}")
+    return {"draft": text, "changes": changes, "accepted": False}
 
 
 def run_interview(provider: Provider, prompter: Prompter, known: Known, *, draft: str, changes: str,

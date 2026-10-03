@@ -11,8 +11,8 @@ from agent_corp.company.draft import Draft, Teammate, draft_problems
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.interview import (CONFIRM, FLOW, Known, clean, fallback_draft, interview, run_interview,
-                                          summary)
+from agent_corp.install.interview import (CONFIRM, FLOW, Asking, Known, asking, clean, confirm, fallback_draft,
+                                          interview, run_interview, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 
@@ -24,6 +24,7 @@ OUT = {"company": "Acme", "owner": {"name": "Hong Ngoc Bui", "handle": "ngocbh",
        "teammates": [{"name": "Minh", "handle": "minh", "title": "Engineer", "about": "Writes the backend."}]}
 PROVIDER_PATH = Path("/office/provider.json")
 KEY = "sk-SENTINEL-not-a-real-key"
+PASSWORD = "pw-sentinel-5d1f"
 
 
 @pytest.fixture
@@ -235,8 +236,45 @@ def test_the_model_is_told_what_is_known_the_draft_and_the_changes(login, fake_l
     assert "Draft Co" in text and "@minh is taken" in text
 
 
+def confirming(*replies):
+    state = Asking(Script(*replies))
+    return state, asking(state)
+
+
+def test_confirm_shows_the_clean_draft_and_accepts_on_yes():
+    state, ctx = confirming("")
+    with ctx:
+        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "changes": "", "accepted": True}
+    assert state.prompter.seen == [*summary(Draft.from_output(OUT)), CONFIRM]
+
+
 def bad_output(handle="Minh"):
     return {**OUT, "teammates": [{**OUT["teammates"][0], "handle": handle}]}
+
+
+def test_confirm_sends_problems_back_without_asking_the_owner():
+    state, ctx = confirming()
+    with ctx:
+        result = confirm({"answers": bad_output()})
+    assert result == {"draft": json.dumps(bad_output()),
+                      "changes": "\n".join(draft_problems(Draft.from_output(bad_output()))), "accepted": False}
+    assert state.prompter.seen == []
+
+
+@pytest.mark.parametrize(("reply", "changes"), [("rename Minh to Bo", "The owner wants changes: rename Minh to Bo"),
+                                                ("n", "The owner wants changes; ask what to change"),
+                                                (" No ", "The owner wants changes; ask what to change")])
+def test_confirm_turns_the_owners_reply_into_changes(reply, changes):
+    _, ctx = confirming(reply)
+    with ctx:
+        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "changes": changes, "accepted": False}
+
+
+def test_an_onboard_error_inside_owner_prompter_is_kept_for_the_caller():
+    state = Asking(Closed())
+    with asking(state), pytest.raises(OnboardError):
+        confirm({"answers": OUT})
+    assert state.stopped is Closed.error
 
 
 @pytest.fixture

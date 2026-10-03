@@ -13,7 +13,7 @@ from agent_corp.chat.hire import agent_files
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company_template import is_new, write_company
 from agent_corp.daemon.app import OfficePaths
-from agent_corp.install.interview import Known, interview
+from agent_corp.install.interview import Known, interview, owner_prompter
 from agent_corp.install.launch import REPO, Host, launch
 from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ensure_provider, make_device,
                                         make_home, onboard, redact, user_git)
@@ -58,6 +58,19 @@ def remote_step(prompter: Prompter, given: str) -> str:
     prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
                                       " company with `ac onboard --from URL`.")
     return given or prompter.ask(REMOTE)
+
+
+def password(inputs: dict) -> str | None:
+    """The init flow's ``password`` node: ``password_step`` on the owner's terminal."""
+    with owner_prompter() as prompter:
+        return password_step(prompter)
+
+
+def remote(inputs: dict) -> str:
+    """The init flow's ``remote`` node: ``remote_step`` on the owner's terminal, given ``inputs["given"]`` from
+    ``--remote``."""
+    with owner_prompter() as prompter:
+        return remote_step(prompter, inputs["given"])
 
 
 def push(company: Path, url: str, prompter: Prompter) -> bool:

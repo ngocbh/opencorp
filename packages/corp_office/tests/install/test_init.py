@@ -18,7 +18,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import init as init_module
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.init import REMOTE, init
-from agent_corp.install.interview import CONFIRM, Known
+from agent_corp.install.interview import CONFIRM, Asking, Known, asking
 from agent_corp.install.launch import office_answers
 from agent_corp.install.onboard import NoTerminal, OnboardError, onboard, redact
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
@@ -360,6 +360,22 @@ def test_a_token_in_the_remote_url_is_never_shown(tmp_path, monkeypatch):
     assert any(line.startswith("Warning: couldn't push") for line in ask.seen)
     assert not [line for line in ask.seen if "ghp_sentinel42" in line]
     assert redact(url) == "http://***@127.0.0.1:9/acme.git"
+
+
+def test_the_password_node_shows_step_3_and_returns_the_hash():
+    prompter = Script(PASSWORD, PASSWORD)
+    with asking(Asking(prompter)):
+        assert check_password(PASSWORD, init_module.password({}))
+    assert prompter.seen[0] == "Step 3 of 5: Password"
+
+
+def test_the_remote_node_uses_the_flag_or_asks():
+    flagged, typed = Script(), Script("git@example.com:a.git")
+    with asking(Asking(flagged)):
+        assert init_module.remote({"given": "u"}) == "u"
+    with asking(Asking(typed)):
+        assert init_module.remote({"given": ""}) == "git@example.com:a.git"
+    assert REMOTE not in flagged.seen and typed.seen[-1] == REMOTE
 
 
 def test_the_remote_is_asked_before_the_company_is_written(tmp_path, monkeypatch):
