@@ -8,10 +8,10 @@ import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import Protocol, TextIO
+from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
@@ -31,6 +31,10 @@ from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
 from agent_corp.protocol.models import Device
 from agent_corp.secrets import write_private
+
+if TYPE_CHECKING:
+    from prompt_toolkit.input import Input
+    from prompt_toolkit.output import Output
 
 
 SET_UP = "run `ac init` to create one, or `ac onboard --from URL` to join one"
@@ -61,6 +65,9 @@ class Prompter(Protocol):
     def ask(self, question: str, default: str = "") -> str:
         """An answer, or ``default`` for an empty one."""
 
+    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+        """One of ``options``, picked by the owner; ``default`` when there's no one to ask."""
+
     def secret(self, question: str) -> str:
         """An answer read without echo."""
 
@@ -76,39 +83,123 @@ def step_lines(number: int, total: int, title: str, why: str) -> list[str]:
     return [f"Step {number} of {total}: {title}", why]
 
 
+STYLE = [("qmark", "fg:ansicyan bold"), ("question", "bold"), ("answer", "fg:ansicyan"),
+         ("pointer", "fg:ansicyan bold"), ("highlighted", "fg:ansicyan bold"), ("instruction", "fg:ansibrightblack")]
+"""How questions on a terminal look: ANSI colour names only, so they follow the terminal's theme."""
+
+
+def _closed(question: str) -> OnboardError:
+    """The error for stdin ending before ``question`` was answered."""
+    return OnboardError(f"no answer to {question!r} (stdin closed)")
+
+
 class TtyPrompter:
     """Asks on the terminal; a secret is read with ``getpass``, so it is never echoed.
 
     ``preset`` answers questions by their text without asking (from command-line flags);
-    with ``interactive`` False, every other question takes its default.
+    with ``interactive`` False, every other question takes its default. When stdin and stdout
+    are both terminals (or ``terminal`` gives one), a list is picked with the arrow keys;
+    otherwise it is numbered, and a line picks from it.
     """
 
-    def __init__(self, preset: Mapping[str, str] | None = None, interactive: bool = True) -> None:
+    def __init__(self, preset: Mapping[str, str] | None = None, interactive: bool = True, *,
+                 terminal: "tuple[Input, Output] | None" = None) -> None:
         self.preset = {k: v for k, v in (preset or {}).items() if v}
         self.interactive = interactive
+        self.terminal = terminal
+        # Read now: the init flow runs its questions in an environment without these.
+        self.dumb = os.environ.get("TERM") == "dumb"
+        self.color = not os.environ.get("NO_COLOR") and not self.dumb
+
+    def _styled(self) -> bool:
+        """Whether to colour what is printed: colour is on and it goes to a terminal."""
+        return self.color and (self.terminal is not None or sys.stdout.isatty())
+
+    def _terminal(self) -> "tuple[Input | None, Output | None] | None":
+        """The input and output to draw questions on (None for the process's own), or None to ask line by line."""
+        if not self.interactive:
+            return None
+        if self.terminal is not None:
+            return self.terminal
+        # A dumb terminal can't move the cursor to redraw a list.
+        if sys.stdin.isatty() and sys.stdout.isatty() and not self.dumb:
+            return None, None
+        return None
+
+    def _questionary_kwargs(self, terminal: "tuple[Input | None, Output | None]") -> dict[str, Any]:
+        """What every questionary question gets: the style, the terminal, and no colour if the owner turned it off."""
+        import questionary  # not loaded until a question is drawn
+        from prompt_toolkit.output import ColorDepth
+
+        extra = {} if self.color else {"color_depth": ColorDepth.DEPTH_1_BIT}
+        return {"style": questionary.Style(STYLE), "qmark": "?", "input": terminal[0], "output": terminal[1], **extra}
 
     def ask(self, question: str, default: str = "") -> str:
         if question in self.preset:
             return self.preset[question]
         if not self.interactive:
             return default
-        shown = f"{question} [{default}]: " if default else f"{question}: "
         try:
+            if (terminal := self._terminal()) is not None:
+                import questionary
+
+                answer = questionary.text(question, default=default, **self._questionary_kwargs(terminal)).unsafe_ask()
+                return answer.strip() or default
+            shown = f"{question} [{default}]: " if default else f"{question}: "
             return input(shown).strip() or default
         except EOFError:
-            raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+            raise _closed(question) from None
+
+    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+        if question in self.preset:
+            return self.preset[question]
+        if not self.interactive:
+            return default
+        if (terminal := self._terminal()) is not None:
+            import questionary
+
+            try:
+                # select refuses a default that isn't one of its choices.
+                return questionary.select(question, choices=list(options),
+                                          default=default if default in options else None,
+                                          instruction="(↑/↓, Enter)", **self._questionary_kwargs(terminal)).unsafe_ask()
+            except EOFError:
+                raise _closed(question) from None
+        for number, option in enumerate(options, 1):
+            self.say(f"  {number}. {option}")
+        shown = f"{question} [{default}]: " if default else f"{question}: "
+        for _ in range(TRIES):
+            try:
+                line = input(shown).strip()
+            except EOFError:
+                raise _closed(question) from None
+            # An option is taken before a number, so an option that is a number picks itself.
+            if line in options:
+                return line
+            if line.isdecimal() and 1 <= int(line) <= len(options):
+                return options[int(line) - 1]
+            if not line:
+                return default
+            self.say(f"That doesn't work: choose 1 to {len(options)}")
+        raise OnboardError(f"no usable answer to {question!r}")
 
     def secret(self, question: str) -> str:
         if not self.interactive or not sys.stdin.isatty():
             # getpass falls back to reading stdin with echo when there is no terminal.
             raise NoTerminal(f"there is no terminal to read {question!r} without echo")
-        return getpass.getpass(f"{question}: ").strip()
+        # The same mark as a question drawn by questionary.
+        mark = "\x1b[1;36m?\x1b[0m " if self._styled() else ""
+        return getpass.getpass(f"{mark}{question}: ").strip()
 
     def say(self, text: str) -> None:
         print(text, flush=True)
 
     def step(self, number: int, total: int, title: str, why: str) -> None:
-        print("\n" + "\n".join(step_lines(number, total, title, why)), flush=True)
+        header, line = step_lines(number, total, title, why)
+        if self._styled():
+            # Raw codes, not questionary.print: prompt_toolkit keeps the first stdout it prints to.
+            header, line = f"\x1b[1;36m{header}\x1b[0m", f"\x1b[90m{line}\x1b[0m"
+        print(f"\n{header}\n{line}", flush=True)
 
 
 def _llm_errors(exc: ValidationError) -> str:
@@ -140,13 +231,20 @@ def check_provider(data: object) -> Provider:
     return provider
 
 
+PROVIDER_DEFAULT = "The provider's default"
+TYPE_MODEL = "Another model (type its name)"
+"""The choices for the model."""
+
+
 def _ask_provider(prompter: Prompter) -> dict:
     choices = ", ".join(SUPPORTED_LLM_PROVIDERS)
-    while (name := prompter.ask("Model provider", "anthropic")) not in SUPPORTED_LLM_PROVIDERS:
-        prompter.say(f"Choose one of: {choices}")
+    name = ask_until(prompter, "Model provider", "anthropic",
+                     lambda n: None if n in SUPPORTED_LLM_PROVIDERS else f"choose one of: {choices}",
+                     options=SUPPORTED_LLM_PROVIDERS)
     llm = {"provider": name}
-    if model := prompter.ask("Model (empty for the provider's default)"):
-        llm["model"] = model
+    if prompter.choose("Model", [PROVIDER_DEFAULT, TYPE_MODEL], PROVIDER_DEFAULT) == TYPE_MODEL:
+        if model := prompter.ask("Model name"):
+            llm["model"] = model
     try:
         key = prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)")
     except NoTerminal:
@@ -226,14 +324,16 @@ TRIES = 5
 """How many answers a question takes before giving up: a preset or a default comes back the same each time."""
 
 
-def ask_until(prompter: Prompter, question: str, default: str, problem: Callable[[str], str | None]) -> str:
-    """Ask ``question`` until ``problem`` finds nothing wrong with the answer, at most ``TRIES`` times.
+def ask_until(prompter: Prompter, question: str, default: str, problem: Callable[[str], str | None],
+              options: Sequence[str] = ()) -> str:
+    """Ask ``question`` until ``problem`` finds nothing wrong with the answer, at most ``TRIES`` times; with
+    ``options``, the owner picks the answer from them.
 
     Raises:
         OnboardError: no answer worked.
     """
     for _ in range(TRIES):
-        answer = prompter.ask(question, default)
+        answer = prompter.choose(question, options, default) if options else prompter.ask(question, default)
         if (why := problem(answer)) is None:
             return answer
         prompter.say(f"That doesn't work: {why}")
@@ -358,9 +458,10 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
         raise OnboardError("the company has no humans for this device to act as")
     login = _login_handle()
     default = login if login in humans else humans[0] if len(humans) == 1 else ""
-    prompter.say(f"The company's humans: {', '.join('@' + h for h in humans)}")
+    # With no one to ask, nothing is listed, so the problem names the humans and the flag.
+    pick = f"say which one you are ({', '.join('@' + h for h in humans)}), or pass --handle"
     handle = ask_until(prompter, WHO, default, lambda h: None if h in humans else
-                       f"@{h} isn't one of them" if h else "say which one you are")
+                       f"@{h} isn't one of them" if h else pick, options=humans)
     password_hash = people[handle].password_hash
     if password_hash is not None:
         try:

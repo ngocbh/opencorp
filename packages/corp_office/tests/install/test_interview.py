@@ -13,9 +13,9 @@ from agent_corp.company.draft import Draft, Teammate, draft_problems
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import REMOTE
-from agent_corp.install.interview import (CONFIRM, FLOW, Asking, Known, asking, clean, confirm, fallback_draft,
-                                          init_flow, run_init_flow, summary)
+from agent_corp.install.init import REMOTE, REMOTE_URL
+from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, TYPE_OWN, WHAT_TO_CHANGE, Asking, Known,
+                                          asking, clean, confirm, fallback_draft, init_flow, run_init_flow, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 
@@ -62,9 +62,9 @@ def round_replies(output):
 
 
 def owner(*answers, remote=""):
-    """The owner for one accepted run: ``answers`` to the model's questions, "y" to confirm, ``PASSWORD`` twice, and
-    ``remote``."""
-    return Script(*answers, "y", PASSWORD, PASSWORD, remote)
+    """The owner for one accepted run: ``answers`` to the model's questions, "1" (create) to confirm, ``PASSWORD``
+    twice, and ``remote`` (none when empty)."""
+    return Script(*answers, "1", PASSWORD, PASSWORD, *(("2", remote) if remote else ("1",)))
 
 
 def run(provider, prompter, known=Known()):
@@ -156,20 +156,48 @@ def test_the_interview_asks_on_the_terminal_and_returns_the_flows_output(login, 
     assert [line for line in after if line.startswith("Step ")] == ["Step 3 of 5: Password", "Step 4 of 5: Remote"]
 
 
-@pytest.mark.parametrize(("answer", "result"), [("2", "Founder"), ("3", "3"), ("Chair", "Chair")])
-def test_a_numbered_answer_picks_an_option_and_any_other_is_sent_as_typed(login, fake_llm, provider, answer, result):
+@pytest.mark.parametrize("answer", ["2", "Founder"])
+def test_a_question_with_options_is_a_list_with_a_way_to_type_an_answer(login, fake_llm, provider, answer):
     fake_llm.script(*flow_replies("Your title?", OUT, options=["CEO", "Founder"]))
     prompter = owner(answer)
     run(provider, prompter)
-    assert prompter.seen[:3] == ["  1. CEO", "  2. Founder", "Your title?"]
-    assert contents(fake_llm.requests()[1])[-1] == result
+    assert prompter.seen[0] == "Your title?" and prompter.offered[0] == ["CEO", "Founder", TYPE_OWN]
+    assert contents(fake_llm.requests()[1])[-1] == "Founder"
+
+
+def test_a_typed_answer_to_a_question_with_options_goes_back_as_typed(login, fake_llm, provider):
+    fake_llm.script(*flow_replies("Your title?", OUT, options=["CEO", "Founder"]))
+    prompter = owner("3", "Chair")
+    run(provider, prompter)
+    assert prompter.seen[:2] == ["Your title?", "Your title?"]
+    assert contents(fake_llm.requests()[1])[-1] == "Chair"
 
 
 def test_questions_and_options_are_asked_without_control_characters(login, fake_llm, provider):
     fake_llm.script(*flow_replies("Clear\x1b[2J?", OUT, options=["a\x9bb", "c"]))
-    prompter = owner("x")
+    prompter = owner("2")
     run(provider, prompter)
-    assert prompter.seen[:3] == ["  1. ab", "  2. c", "Clear[2J?"]
+    assert prompter.seen[0] == "Clear[2J?" and prompter.offered[0] == ["ab", "c", TYPE_OWN]
+
+
+def test_an_option_goes_back_to_the_model_as_it_wrote_it(login, fake_llm, provider):
+    fake_llm.script(*flow_replies("Pick?", OUT, options=["a\x9bb", "c"]))
+    run(provider, owner("1"))
+    assert contents(fake_llm.requests()[1])[-1] == "a\x9bb"
+
+
+class Blank(Script):
+    """A prompter whose lists give an empty answer, as an empty line does when there's no default."""
+
+    def choose(self, question, options, default=""):
+        self.seen.append(question)
+        return ""
+
+
+def test_an_answer_that_isnt_an_option_goes_back_as_typed(login, fake_llm, provider):
+    fake_llm.script(*flow_replies("Pick?", OUT, options=["a", "b"]))
+    run(provider, Blank(PASSWORD, PASSWORD, ""))
+    assert contents(fake_llm.requests()[1])[-1] == ""
 
 
 def test_the_providers_env_is_set_only_during_the_run(login, fake_llm, provider, monkeypatch):
@@ -243,6 +271,10 @@ class Closed(Script):
         self.seen.append(question)
         raise self.error
 
+    def choose(self, question, options, default=""):
+        self.seen.append(question)
+        raise self.error
+
 
 def test_when_the_owners_input_ends_its_error_stops_the_interview(login, fake_llm, provider):
     fake_llm.script(*flow_replies("Company?", OUT))
@@ -254,7 +286,7 @@ def test_when_the_owners_input_ends_its_error_stops_the_interview(login, fake_ll
 
 def test_the_model_is_told_what_is_known(login, fake_llm, provider):
     fake_llm.script(*flow_replies("Company?", OUT))
-    run(provider, owner("x"), Known(company="Acme"))
+    run(provider, owner("Acme"), Known(company="Acme"))
     text = "\n".join(contents(fake_llm.requests()[0]))
     assert '"given": {"company": "Acme"}' in text
 
@@ -269,6 +301,7 @@ def test_confirm_shows_the_clean_draft_and_accepts_on_yes():
     with ctx:
         assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "changes": "", "accepted": True}
     assert state.prompter.seen == [*summary(Draft.from_output(OUT)), CONFIRM]
+    assert state.prompter.offered == [[CREATE, CHANGE]]
 
 
 def bad_output(handle="Minh"):
@@ -284,13 +317,20 @@ def test_confirm_sends_problems_back_without_asking_the_owner():
     assert state.prompter.seen == []
 
 
-@pytest.mark.parametrize(("reply", "changes"), [("rename Minh to Bo", "The owner wants changes: rename Minh to Bo"),
-                                                ("n", "The owner wants changes; ask what to change"),
-                                                (" No ", "The owner wants changes; ask what to change")])
-def test_confirm_turns_the_owners_reply_into_changes(reply, changes):
-    _, ctx = confirming(reply)
+@pytest.mark.parametrize("pick", ["2", CHANGE])
+def test_confirm_turns_the_owners_change_into_changes(pick):
+    state, ctx = confirming(pick, "rename Minh to Bo")
     with ctx:
-        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "changes": changes, "accepted": False}
+        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "accepted": False,
+                                             "changes": "The owner wants changes: rename Minh to Bo"}
+    assert state.prompter.seen[-2:] == [CONFIRM, WHAT_TO_CHANGE]
+
+
+def test_no_change_given_asks_the_model_to_ask():
+    _, ctx = confirming("2", "")
+    with ctx:
+        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "accepted": False,
+                                             "changes": "The owner wants changes; ask what to change"}
 
 
 def test_an_onboard_error_inside_owner_prompter_is_kept_for_the_caller():
@@ -298,6 +338,11 @@ def test_an_onboard_error_inside_owner_prompter_is_kept_for_the_caller():
     with asking(state), pytest.raises(OnboardError):
         confirm({"answers": OUT})
     assert state.stopped is Closed.error
+
+
+def test_the_interview_offers_a_handle_made_from_the_name_as_an_option():
+    prompt = yaml.safe_load(FLOW.read_text())["nodes"]["rounds"]["nodes"]["interview"]["prompt"]
+    assert "Offer one made from the person's name as an option, such as" in " ".join(prompt.split())
 
 
 def test_no_agent_node_reads_the_password_or_the_remote():
@@ -336,7 +381,7 @@ def test_a_result_with_problems_goes_back_to_the_interview_without_asking_the_ow
 def test_the_owners_changes_start_the_next_round_from_the_draft(login, fake_llm, provider):
     renamed = {**OUT, "teammates": [{**OUT["teammates"][0], "name": "Bo", "handle": "bo"}]}
     fake_llm.script(*flow_replies("Company?", OUT), *round_replies(renamed))
-    out = run(provider, Script("Acme", "rename Minh to Bo", "y", PASSWORD, PASSWORD, ""))
+    out = run(provider, Script("Acme", "2", "rename Minh to Bo", "1", PASSWORD, PASSWORD, "1"))
     assert out["teammates"] == renamed["teammates"]
     second = "\n".join(contents(fake_llm.requests()[4]))
     assert '"name": "Minh"' in second and "The owner wants changes: rename Minh to Bo" in second
@@ -360,7 +405,7 @@ def test_when_the_input_ends_at_the_confirmation_its_error_stops_the_flow(login,
 def test_no_usable_password_stops_the_flow_with_that_error(login, fake_llm, provider):
     fake_llm.script(*round_replies(OUT))
     with pytest.raises(OnboardError, match="^no usable password$"):
-        run(provider, Script("y", *["short"] * TRIES))
+        run(provider, Script("1", *["short"] * TRIES))
 
 
 class InterruptedAtPassword(Script):
@@ -372,7 +417,7 @@ def test_ctrl_c_at_the_password_stops_the_flow_and_restores_the_env(login, fake_
     before = dict(os.environ)
     fake_llm.script(*round_replies(OUT))
     with pytest.raises(KeyboardInterrupt):
-        run(provider, InterruptedAtPassword("y"))
+        run(provider, InterruptedAtPassword("1"))
     assert dict(os.environ) == before
     assert interview_module._ASKING.get(None) is None
 
@@ -380,9 +425,10 @@ def test_ctrl_c_at_the_password_stops_the_flow_and_restores_the_env(login, fake_
 def test_the_remote_flag_is_used_without_asking_and_never_sent(login, fake_llm, provider):
     url = "https://user:tok-sentinel-77@example.com/acme.git"
     fake_llm.script(*round_replies(OUT))
-    prompter = Script("y", PASSWORD, PASSWORD)
+    prompter = Script("1", PASSWORD, PASSWORD)
     assert run(provider, prompter, Known(remote=url))["remote"] == url
-    assert REMOTE not in prompter.seen and "tok-sentinel-77" not in json.dumps(fake_llm.requests())
+    assert REMOTE not in prompter.seen and REMOTE_URL not in prompter.seen
+    assert "tok-sentinel-77" not in json.dumps(fake_llm.requests())
 
 
 def test_init_flow_gives_the_draft_with_the_hash_and_the_remote_apart(login, fake_llm, provider, tmp_path):

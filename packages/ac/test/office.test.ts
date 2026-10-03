@@ -42,7 +42,7 @@ test("onboard syncs the venv, then runs the Python onboarding with the flags it 
   const { deps, calls } = fake({ python: 5 })
   expect(await onboard(["--service", "tmux", "--from", "git@example.com:acme.git"], deps)).toBe(5)
   expect(calls).toEqual([
-    { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
+    { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     {
       argv: [venvPython(), "-m", "agent_corp.install", "onboard", "--service", "tmux", "--from", "git@example.com:acme.git"],
       cwd: undefined,
@@ -54,7 +54,7 @@ test("init syncs the venv, then runs the Python init with the flags it was given
   const { deps, calls } = fake({ python: 4 })
   expect(await init(["--company", "Acme", "--remote", "git@example.com:acme.git"], deps)).toBe(4)
   expect(calls).toEqual([
-    { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
+    { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     {
       argv: [venvPython(), "-m", "agent_corp.install", "init", "--company", "Acme", "--remote", "git@example.com:acme.git"],
       cwd: undefined,
@@ -91,7 +91,7 @@ test("init and offboard are commands with their own summaries", async () => {
 test("onboard finds uv in ~/.local/bin when it isn't on PATH", async () => {
   const { deps, calls } = fake({}, ["uv"])
   expect(await onboard([], deps)).toBe(0)
-  expect(calls[0].argv).toEqual([path.join(os.homedir(), ".local", "bin", "uv"), "sync", "--frozen"])
+  expect(calls[0].argv).toEqual([path.join(os.homedir(), ".local", "bin", "uv"), "sync", "--frozen", "--quiet"])
 })
 
 test("onboard stops when uv is missing or the sync fails", async () => {
@@ -124,7 +124,7 @@ test("restart syncs the venv, then runs the Python restart with its flags", asyn
   const { deps, calls } = fake({ python: 1 })
   expect(await restart(["--home", "/h"], deps)).toBe(1)
   expect(calls).toEqual([
-    { argv: ["/bin/uv", "sync", "--frozen"], cwd: REPO },
+    { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     { argv: [venvPython(), "-m", "agent_corp.install", "restart", "--home", "/h"], cwd: undefined },
   ])
   const { commands } = await import("../src/main")

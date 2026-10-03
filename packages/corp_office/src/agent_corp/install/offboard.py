@@ -16,7 +16,10 @@ from agent_corp.install import fallback, launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, ServiceError, launch
 from agent_corp.install.onboard import CLONE, Prompter, remove_path, user_git
 
-CONFIRM = "Remove all this? (y/N)"
+CONFIRM = "Remove all this?"
+KEEP = "No, keep it all"
+REMOVE = "Yes, remove it"
+"""What the owner is asked before anything is removed, and the two answers."""
 
 LAUNCHER = Path("packages") / "ac" / "src" / "main.ts"
 """What an ``ac`` launcher runs, relative to the checkout."""
@@ -219,7 +222,7 @@ def offboard(home: Path, prompter: Prompter, *, yes: bool = False, delete_compan
         prompter.say(f"  - {line}")
     if keeping:
         prompter.say(keeping)
-    if not yes and prompter.ask(CONFIRM).strip().lower() not in ("y", "yes"):
+    if not yes and prompter.choose(CONFIRM, [KEEP, REMOVE], KEEP) != REMOVE:
         raise Declined("nothing was removed")
 
     me = found.me

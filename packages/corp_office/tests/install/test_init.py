@@ -18,10 +18,10 @@ from agent_corp.company_template import Owner, is_new, missing_files, write_comp
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import init as init_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import REMOTE, init, password_step, remote_step
+from agent_corp.install.init import ADD_REMOTE, NO_REMOTE, REMOTE, REMOTE_URL, init, password_step, remote_step
 from agent_corp.install.interview import CONFIRM, Asking, Known, asking
 from agent_corp.install.launch import office_answers
-from agent_corp.install.onboard import NoTerminal, OnboardError, onboard, redact
+from agent_corp.install.onboard import NoTerminal, OnboardError, TtyPrompter, onboard, redact
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
@@ -43,8 +43,8 @@ def provider_stdin():
 
 def scripted(remote=""):
     """A prompter with no one at the terminal, so the company comes from the flags; it gives ``PASSWORD`` twice
-    and then ``remote``."""
-    return Script(PASSWORD, PASSWORD, remote, interactive=False)
+    and then ``remote`` (none when empty)."""
+    return Script(PASSWORD, PASSWORD, *(("2", remote) if remote else ("1",)), interactive=False)
 
 
 def run_init(tmp_path, ask, known=FLAGS, **kwargs):
@@ -73,7 +73,7 @@ def test_init_makes_the_company_its_ceo_and_seeded_teammates_in_one_commit(tmp_p
     stop_after_the_company(monkeypatch)
     interviewed(monkeypatch, ACME)
     home = tmp_path / "home"
-    ask = Script(PASSWORD, PASSWORD, "")
+    ask = Script(PASSWORD, PASSWORD, "1")
     with pytest.raises(OnboardError, match="stop"):
         run_init(tmp_path, ask)
     repo = load_repo(home / "company")
@@ -94,7 +94,7 @@ def test_init_makes_the_company_its_ceo_and_seeded_teammates_in_one_commit(tmp_p
 def test_the_model_is_asked_first(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
     interviewed(monkeypatch, ACME)
-    ask = Script("openai", "", "", PASSWORD, PASSWORD, "")
+    ask = Script("openai", "", "", PASSWORD, PASSWORD, "1")
     with pytest.raises(OnboardError, match="stop"):
         init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
     assert ask.seen[:3] == ["Step 1 of 5: Model", "Your agents think with this model; its key stays in this office,"
@@ -106,7 +106,7 @@ def test_the_model_is_asked_first(tmp_path, monkeypatch):
 
 def test_the_provider_from_the_first_step_is_kept_by_the_last(tmp_path, monkeypatch):
     interviewed(monkeypatch, ACME)
-    ask = Script("openai", "", "", PASSWORD, PASSWORD, "")
+    ask = Script("openai", "", "", PASSWORD, PASSWORD, "1")
     with pytest.raises(OnboardError, match="did not answer"):  # the stand-in office never starts
         init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
     provider = tmp_path / "home" / "office" / "provider.json"
@@ -124,7 +124,7 @@ def test_the_flow_with_a_model_makes_the_company_and_never_sends_a_secret(tmp_pa
            "teammates": [{"name": "Lan", "handle": "lan", "title": "QA", "about": "Tests every release."}]}
     with FakeLLM() as fake:
         fake.script(*flow_replies("Tell me about the company.", out))
-        ask = Script("Acme; I'm ngocbh; hire Lan for QA", "y", PASSWORD, PASSWORD, str(remote))
+        ask = Script("Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, "2", str(remote))
         provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
         with pytest.raises(OnboardError, match="stop"):
             init(home, ask, stdin=io.StringIO(json.dumps(provider)), host=make_host(tmp_path, Runner()))
@@ -203,7 +203,7 @@ def test_init_keeps_only_the_hash_of_the_ceos_password_in_the_first_commit(tmp_p
 
 def test_a_short_or_mistyped_password_is_asked_again(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
-    ask = Script("eleven-char", PASSWORD, "typo-typo", PASSWORD, PASSWORD, "", interactive=False)
+    ask = Script("eleven-char", PASSWORD, "typo-typo", PASSWORD, PASSWORD, "1", interactive=False)
     with pytest.raises(OnboardError, match="stop"):
         run_init(tmp_path, ask)
     assert "Your password, to log in new devices with (at least 12 characters, one you use nowhere else;" \
@@ -383,12 +383,20 @@ def test_the_password_node_shows_step_3_and_returns_the_hash():
 
 
 def test_the_remote_node_uses_the_flag_or_asks():
-    flagged, typed = Script(), Script("git@example.com:a.git")
+    flagged, none, typed = Script(), Script("1"), Script("2", "git@example.com:a.git")
     with asking(Asking(flagged)):
         assert init_module.remote({"given": "u"}) == "u"
+    with asking(Asking(none)):
+        assert init_module.remote({"given": ""}) == ""
     with asking(Asking(typed)):
         assert init_module.remote({"given": ""}) == "git@example.com:a.git"
-    assert REMOTE not in flagged.seen and typed.seen[-1] == REMOTE
+    assert REMOTE not in flagged.seen and none.seen[-1] == REMOTE and typed.seen[-2:] == [REMOTE, REMOTE_URL]
+    assert typed.offered == [[NO_REMOTE, ADD_REMOTE]]
+
+
+def test_without_anyone_to_ask_there_is_no_remote(monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO("2\ngit@example.com:a.git\n"))
+    assert remote_step(TtyPrompter(interactive=False), "") == ""
 
 
 def test_the_remote_is_asked_before_the_company_is_written(tmp_path, monkeypatch):
@@ -401,10 +409,10 @@ def test_the_remote_is_asked_before_the_company_is_written(tmp_path, monkeypatch
 
 
 class InterruptedAtRemote(Script):
-    def ask(self, question, default=""):
+    def choose(self, question, options, default=""):
         if question == REMOTE:
             raise KeyboardInterrupt
-        return super().ask(question, default)
+        return super().choose(question, options, default)
 
 
 def test_ctrl_c_at_the_remote_leaves_no_company(tmp_path):
@@ -420,7 +428,7 @@ CEO = Known(company="Acme", name="Hong Ngoc Bui", handle="ngocbh")
 
 def test_init_sets_up_the_office_and_a_second_onboard_changes_nothing(short_dir):
     paths = OfficePaths(short_dir)
-    first = Script("openai", "", "", PASSWORD, PASSWORD, "", interactive=False)
+    first = Script("openai", "", "", PASSWORD, PASSWORD, "1", interactive=False)
     try:
         init(short_dir, first, known=CEO, mode="background")
         assert office_answers(paths.socket)
@@ -447,7 +455,7 @@ def test_init_sets_up_the_office_and_a_second_onboard_changes_nothing(short_dir)
 
 def test_the_key_lands_only_in_the_provider_file(short_dir):
     paths = OfficePaths(short_dir)
-    ask = Script("anthropic", "", KEY, PASSWORD, PASSWORD, "", interactive=False)
+    ask = Script("anthropic", "", KEY, PASSWORD, PASSWORD, "1", interactive=False)
     try:
         init(short_dir, ask, known=CEO, mode="background")
         assert json.loads((paths.office / "provider.json").read_text())["llm_config"]["api_key"] == KEY

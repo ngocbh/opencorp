@@ -44,8 +44,8 @@ nodes:
             their work, which start the profile they work from.
 
           A handle is 1 to 32 characters: lowercase letters, digits and hyphens, starting and ending with a
-          letter or a digit. Every handle must differ from the others. Suggest one made from the person's name,
-          such as "minh" for Minh or "hong-ngoc" for Hong Ngoc.
+          letter or a digit. Every handle must differ from the others. Offer one made from the person's name as an
+          option, such as "minh" for Minh or "hong-ngoc" for Hong Ngoc.
 
           Ask with the ask_user tool, one short question at a time. Offer options when there are obvious
           choices. Don't ask about anything in "given" below; use it as it is. In "given", "name", "handle" and

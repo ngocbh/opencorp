@@ -4,10 +4,19 @@ import json
 import os
 import stat
 
+import sys
+
 import pytest
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
+
+from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
 from agent_corp.chat.provider import load_provider
-from agent_corp.install.onboard import NoTerminal, OnboardError, TtyPrompter, ensure_provider, step_lines
+from agent_corp.install.onboard import (PROVIDER_DEFAULT, TRIES, TYPE_MODEL, NoTerminal, OnboardError, TtyPrompter,
+                                        ensure_provider, step_lines)
 
 KEY = "sk-ant-test-0123456789"
 
@@ -19,11 +28,26 @@ class Script:
         self.answers = list(answers)
         self.interactive = interactive
         self.seen: list[str] = []
+        self.offered: list[list[str]] = []
+        """The options of each ``choose``, in order."""
 
     def ask(self, question, default=""):
         self.seen.append(question)
         answer = self.answers.pop(0)
         return answer or default
+
+    def choose(self, question, options, default=""):
+        """The default for an empty answer, an option given exactly, or the option a number picks (from 1)."""
+        self.seen.append(question)
+        self.offered.append(list(options))
+        answer = self.answers.pop(0)
+        if not answer:
+            return default
+        if answer in options:
+            return answer
+        if answer.isdecimal() and 1 <= int(answer) <= len(options):
+            return options[int(answer) - 1]
+        raise AssertionError(f"{answer!r} isn't an answer to {question!r}; the options are {list(options)}")
 
     def secret(self, question):
         self.seen.append(question)
@@ -47,7 +71,7 @@ def test_a_script_is_interactive_unless_told_otherwise():
 
 def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     path = tmp_path / "provider.json"
-    ask = Script("", "claude-sonnet-4-5", KEY)
+    ask = Script("", "2", "claude-sonnet-4-5", KEY)
     assert ensure_provider(path, ask) is True
     assert mode(path) == 0o600
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "anthropic", "model": "claude-sonnet-4-5",
@@ -55,6 +79,14 @@ def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     assert load_provider(path).llm_config["api_key"] == KEY
     assert all(KEY not in line for line in ask.seen)
     assert os.listdir(tmp_path) == ["provider.json"]  # no temp file left behind
+    assert ask.seen[:3] == ["Model provider", "Model", "Model name"]
+    assert ask.offered == [list(SUPPORTED_LLM_PROVIDERS), [PROVIDER_DEFAULT, TYPE_MODEL]]
+
+
+def test_no_model_name_means_the_providers_default(tmp_path):
+    path = tmp_path / "provider.json"
+    ensure_provider(path, Script("openai", "2", "", ""))
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
 def test_no_key_means_composers_own_login(tmp_path):
@@ -72,10 +104,11 @@ def test_a_key_in_the_environment_is_never_read(tmp_path, monkeypatch):
     assert KEY not in path.read_text() and "api_key" not in json.loads(path.read_text())["llm_config"]
 
 
-def test_an_unknown_provider_is_asked_again(tmp_path):
-    ask = Script("antrhopic", "anthropic", "", "")
-    ensure_provider(tmp_path / "provider.json", ask)
-    assert any("one of" in line and "anthropic" in line for line in ask.seen)
+def test_an_unknown_provider_preset_gives_up(tmp_path, capsys):
+    with pytest.raises(OnboardError, match="no usable answer to 'Model provider'"):
+        ensure_provider(tmp_path / "provider.json", TtyPrompter({"Model provider": "antrhopic"}))
+    assert f"That doesn't work: choose one of: {', '.join(SUPPORTED_LLM_PROVIDERS)}\n" in capsys.readouterr().out
+    assert not (tmp_path / "provider.json").exists()
 
 
 def test_a_misspelled_setting_is_refused_without_echoing_the_key(tmp_path):
@@ -210,9 +243,192 @@ def test_the_terminal_prompter_takes_presets_and_defaults():
     assert prompter.ask("Your name", "Me") == "Me"
 
 
+@pytest.fixture
+def terminal():
+    """A terminal for questionary: keys sent to its input are read as typed, and what it draws is thrown away."""
+    with create_pipe_input() as keys:
+        yield keys, DummyOutput()
+
+
+DOWN, ENTER, CTRL_C = "\x1b[B", "\r", "\x03"
+
+
+def test_a_list_on_a_terminal_is_picked_with_the_arrow_keys(terminal):
+    terminal[0].send_text(DOWN + ENTER)
+    assert TtyPrompter(terminal=terminal).choose("Q", ["a", "b", "c"]) == "b"
+
+
+def test_a_list_on_a_terminal_starts_at_its_default(terminal):
+    terminal[0].send_text(ENTER)
+    assert TtyPrompter(terminal=terminal).choose("Q", ["a", "b", "c"], "c") == "c"
+
+
+def test_a_default_that_isnt_an_option_starts_the_list_at_the_top(terminal):
+    terminal[0].send_text(ENTER)
+    assert TtyPrompter(terminal=terminal).choose("Q", ["a", "b"], "zzz") == "a"
+
+
+@pytest.mark.parametrize("typed, default, answer", [("Acme" + ENTER, "", "Acme"), (ENTER, "Mine", "Mine")])
+def test_a_question_on_a_terminal_takes_typed_text_or_its_default(terminal, typed, default, answer):
+    terminal[0].send_text(typed)
+    assert TtyPrompter(terminal=terminal).ask("Q", default) == answer
+
+
+@pytest.mark.parametrize("call", [lambda p: p.choose("Q", ["a"]), lambda p: p.ask("Q")])
+def test_ctrl_c_on_a_terminal_is_a_keyboard_interrupt(terminal, call):
+    terminal[0].send_text(CTRL_C)
+    with pytest.raises(KeyboardInterrupt):
+        call(TtyPrompter(terminal=terminal))
+
+
+@pytest.mark.parametrize("call", [lambda p: p.choose("Q", ["a"]), lambda p: p.ask("Q")])
+def test_closed_input_on_a_terminal_is_an_onboard_error(terminal, call):
+    terminal[0].close()
+    with pytest.raises(OnboardError, match=r"no answer to 'Q' \(stdin closed\)"):
+        call(TtyPrompter(terminal=terminal))
+
+
+def test_a_preset_picks_from_a_list_without_asking():
+    assert TtyPrompter({"Q": "b"}).choose("Q", ["a", "b"], "a") == "b"
+
+
+@pytest.mark.parametrize("default", ["", "b"])
+def test_without_anyone_to_ask_a_list_gives_its_default_even_on_a_terminal(terminal, default):
+    terminal[0].send_text(DOWN + ENTER)
+    assert TtyPrompter(interactive=False, terminal=terminal).choose("Q", ["a", "b"], default) == default
+
+
+def colours(monkeypatch, no_color):
+    """What a list draws on a real terminal, with ``NO_COLOR`` set or not when the prompter is made."""
+    monkeypatch.delenv("TERM", raising=False)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    else:
+        monkeypatch.delenv("NO_COLOR", raising=False)
+    drawn = io.StringIO()
+    with create_pipe_input() as keys:
+        prompter = TtyPrompter(terminal=(keys, Vt100_Output(drawn, lambda: Size(24, 80), term="xterm")))
+        monkeypatch.delenv("NO_COLOR", raising=False)  # the init flow's environment drops it after this
+        keys.send_text(ENTER)
+        prompter.choose("Q", ["a", "b"])
+    return drawn.getvalue()
+
+
+def test_a_list_is_coloured_unless_no_color_was_set(monkeypatch):
+    assert "\x1b[0;36;1m?" in colours(monkeypatch, no_color=False)
+    plain = colours(monkeypatch, no_color=True)
+    assert "?" in plain and ";36" not in plain
+
+
+def plain_stdin(monkeypatch, text):
+    """Make stdin ``text``, read line by line as from a pipe."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO(text))
+
+
+@pytest.mark.parametrize("line, answer", [("2", "b"), ("b", "b"), ("", "a")])
+def test_without_a_terminal_a_list_is_numbered_and_takes_a_number_an_option_or_nothing(monkeypatch, capsys, line,
+                                                                                         answer):
+    plain_stdin(monkeypatch, line + "\n")
+    assert TtyPrompter().choose("Q", ["a", "b"], "a") == answer
+    out = capsys.readouterr().out
+    assert "  1. a\n" in out and "  2. b\n" in out
+
+
+def test_without_a_terminal_an_option_is_taken_before_a_number(monkeypatch):
+    plain_stdin(monkeypatch, "1\n")
+    assert TtyPrompter().choose("Q", ["3", "2", "1"]) == "1"
+
+
+def test_without_a_terminal_nothing_with_no_default_is_empty(monkeypatch):
+    plain_stdin(monkeypatch, "\n")
+    assert TtyPrompter().choose("Q", ["a", "b"]) == ""
+
+
+def test_without_a_terminal_a_bad_answer_is_asked_again(monkeypatch, capsys):
+    plain_stdin(monkeypatch, "x\n3\n2\n")
+    assert TtyPrompter().choose("Q", ["a", "b"]) == "b"
+    assert capsys.readouterr().out.count("That doesn't work: choose 1 to 2") == 2
+
+
+def test_without_a_terminal_bad_answers_give_up(monkeypatch):
+    plain_stdin(monkeypatch, "x\n" * TRIES + "2\n")
+    with pytest.raises(OnboardError, match="no usable answer to 'Q'"):
+        TtyPrompter().choose("Q", ["a", "b"])
+
+
+def test_without_a_terminal_closed_input_is_an_onboard_error(monkeypatch):
+    plain_stdin(monkeypatch, "")
+    with pytest.raises(OnboardError, match=r"no answer to 'Q' \(stdin closed\)"):
+        TtyPrompter().choose("Q", ["a", "b"])
+
+
+def test_the_script_prompter_picks_by_option_number_or_default():
+    ask = Script("", "b", "1", "2")
+    assert [ask.choose("Q", ("a", "b"), "x") for _ in range(4)] == ["x", "b", "a", "b"]
+    assert ask.seen == ["Q"] * 4 and ask.offered == [["a", "b"]] * 4
+
+
+def test_the_script_prompter_fails_on_an_answer_that_isnt_an_option():
+    with pytest.raises(AssertionError, match=r"'c' isn't an answer to 'Q'; the options are \['a', 'b'\]"):
+        Script("c").choose("Q", ["a", "b"])
+    with pytest.raises(AssertionError, match="'3' isn't"):
+        Script("3").choose("Q", ["a", "b"])
+
+
 def test_the_terminal_prompter_shows_a_step_as_a_header_and_why(capsys):
     TtyPrompter().step(2, 5, "You", "You're the CEO.")
     assert capsys.readouterr().out == "\nStep 2 of 5: You\nYou're the CEO.\n"
+
+
+def a_colour_terminal(monkeypatch):
+    """Make stdout and stdin look like a terminal, with colour on."""
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+def test_on_a_terminal_a_step_is_a_bold_cyan_header_and_a_grey_why(monkeypatch, capsys):
+    a_colour_terminal(monkeypatch)
+    TtyPrompter().step(2, 5, "You", "You're the CEO.")
+    assert capsys.readouterr().out == "\n\x1b[1;36mStep 2 of 5: You\x1b[0m\n\x1b[90mYou're the CEO.\x1b[0m\n"
+
+
+@pytest.mark.parametrize("name, value", [("NO_COLOR", "1"), ("TERM", "dumb")])
+def test_without_colour_a_step_on_a_terminal_is_plain(monkeypatch, capsys, name, value):
+    a_colour_terminal(monkeypatch)
+    monkeypatch.setenv(name, value)
+    prompter = TtyPrompter()
+    monkeypatch.delenv(name)  # the init flow's environment drops it after the prompter is made
+    prompter.step(2, 5, "You", "You're the CEO.")
+    assert capsys.readouterr().out == "\nStep 2 of 5: You\nYou're the CEO.\n"
+
+
+@pytest.mark.parametrize("no_color, prompt", [(False, "\x1b[1;36m?\x1b[0m anthropic API key: "),
+                                              (True, "anthropic API key: ")])
+def test_on_a_terminal_a_secret_is_marked_like_the_other_questions(monkeypatch, no_color, prompt):
+    a_colour_terminal(monkeypatch)
+    if no_color:
+        monkeypatch.setenv("NO_COLOR", "1")
+    shown = []
+    monkeypatch.setattr(getpass, "getpass", lambda text: shown.append(text) or KEY)
+    assert TtyPrompter().secret("anthropic API key") == KEY
+    assert shown == [prompt]
+
+
+def test_a_dumb_terminal_gets_a_numbered_list(monkeypatch, capsys):
+    a_colour_terminal(monkeypatch)
+    monkeypatch.setenv("TERM", "dumb")
+    plain_stdin(monkeypatch, "2\n")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    assert TtyPrompter().choose("Q", ["a", "b"]) == "b"
+    assert "  2. b" in capsys.readouterr().out
+
+
+def test_an_empty_no_color_leaves_colour_on(monkeypatch):
+    a_colour_terminal(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "")
+    assert TtyPrompter().color is True
 
 
 def test_the_script_prompter_records_the_same_step_lines():
