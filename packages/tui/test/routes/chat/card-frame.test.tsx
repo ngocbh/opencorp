@@ -343,9 +343,15 @@ test("an empty typed answer keeps the option picked on that page", async () => {
     app.input.pressArrow("left")
     await app.until((f) => f.includes("Question 1 of 2 · Channel"))
     app.input.pressKey("3")
-    await app.until((f) => f.split("Type your own answer").length > 2)
+    await app.input.typeText("x")
+    await app.until((f) => f.includes("3. x") && f.includes("Question 1 of 2 · Channel"))
+    app.input.pressBackspace()
+    await app.until((f) => f.includes("3. Type your answer here") && f.includes("Question 1 of 2 · Channel"))
+    // An empty box keeps "stable" picked and stays on the page.
     app.input.pressEnter()
-    await app.until((f) => f.split("Type your own answer").length === 2)
+    await Bun.sleep(100)
+    expect(app.frame()).toContain("Question 1 of 2 · Channel")
+    app.input.pressArrow("up")
     app.input.pressArrow("right")
     await app.until((f) => f.includes("Question 2 of 2 · Region"))
     app.input.pressKey("1")
@@ -353,6 +359,142 @@ test("an empty typed answer keeps the option picked on that page", async () => {
     expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
       answer: { Channel: "stable", Region: "eu" },
       answer_kind: "option",
+    })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Down onto the typed row types straight in; Up leaves it and a number picks again", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  const answers = () => office.requests.filter((r) => r.path === `/questions/${q.id}/answer`)
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    expect(app.frame()).not.toContain("Type your own answer")
+    app.input.pressArrow("down")
+    app.input.pressArrow("down")
+    // j and digits are text in the box, not moves or picks.
+    await app.input.typeText("j1")
+    await app.until((f) => f.includes("3. j1"))
+    expect(answers()).toEqual([])
+    app.input.pressArrow("up")
+    app.input.pressKey("2")
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(answers().map((r) => r.body)).toEqual([{ answer: "dev", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("each typed page keeps its own text when paging, across a page with no typed answer", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.addQuestion({
+    session_id: s.id,
+    source: "human_input",
+    node_id: "release",
+    question: "Set up the release",
+    questions: [
+      { question: "Which channel?", header: "Channel", options: [{ label: "beta" }] },
+      { question: "Which size?", header: "Size", options: [{ label: "s" }, { label: "m" }] },
+      { question: "Which region?", header: "Region", options: [{ label: "eu" }] },
+    ],
+    // An enum for Size makes that page pick-only.
+    answer_schema: [{ name: "Size", type: "str", required: true, enum: ["s", "m"] }],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Question 1 of 3 · Channel") && f.includes("2. Type your answer here"))
+    app.input.pressKey("2")
+    // Leaving right after typing keeps every character.
+    await app.input.typeText("nightly")
+    app.input.pressArrow("up")
+    app.input.pressArrow("right")
+    let f = await app.until((f) => f.includes("Question 2 of 3 · Size"))
+    expect(f).not.toContain("Type your answer here")
+    app.input.pressArrow("right")
+    await app.until((f) => f.includes("Question 3 of 3 · Region") && f.includes("2. Type your answer here"))
+    app.input.pressKey("2")
+    await app.input.typeText("eu-west")
+    app.input.pressArrow("up")
+    app.input.pressArrow("left")
+    app.input.pressArrow("left")
+    await app.until((f) => f.includes("Question 1 of 3 · Channel") && f.includes("2. nightly"))
+    app.input.pressArrow("right")
+    app.input.pressArrow("right")
+    f = await app.until((f) => f.includes("Question 3 of 3 · Region") && f.includes("2. eu-west"))
+    expect(f).not.toContain("nightly")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("on a multi-select page, Enter on the empty box confirms the ticked options", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    source: "human_input",
+    node_id: "tags",
+    question: "Tag it",
+    questions: [
+      { question: "Which tags?", header: "Tags", options: [{ label: "infra" }, { label: "docs" }], multi_select: true },
+    ],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    app.input.pressKey("1")
+    await app.until((f) => f.includes("1. [x]"))
+    app.input.pressArrow("down")
+    app.input.pressArrow("down")
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: { Tags: ["infra"] },
+      answer_kind: "option",
+    })
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("text typed on a multi-select page stays in its box while options are ticked, and is sent with them", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({
+    session_id: s.id,
+    source: "human_input",
+    node_id: "tags",
+    question: "Tag it",
+    questions: [
+      { question: "Which tags?", header: "Tags", options: [{ label: "infra" }, { label: "docs" }], multi_select: true },
+    ],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    app.input.pressKey("3")
+    await app.input.typeText("abc")
+    await app.until((f) => f.includes("3. abc"))
+    // Up leaves the box with no Enter; ticking an option must not rebuild the box and lose the text.
+    app.input.pressArrow("up")
+    app.input.pressKey(" ")
+    // The tick and any rebuild happen in the same key handler, so the first frame with the tick shows the box.
+    const f = await app.until((f) => f.includes("2. [x] docs"))
+    expect(f).toContain("3. abc")
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status === "answered")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: { Tags: ["docs", "abc"] },
+      answer_kind: "text",
     })
   } finally {
     await app.stop()

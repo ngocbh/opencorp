@@ -13,8 +13,8 @@ import { leaveBindings } from "./leave"
 import { QUESTION_MODE, QuestionView, type QuestionViewHandle } from "./question-view"
 
 /**
- * The open question card for an office question: `QuestionView` with who asks, "Chat about this", "Send
- * discussion back", and Esc then `y` to stop the asker. A question carried from an expired one shows
+ * The open question card for an office question, with options and a box to type an answer: `QuestionView`
+ * with who asks, "Chat about this", "Send discussion back", and Esc then `y` to stop the asker. A question carried from an expired one shows
  * that discussion, which can be dismissed. It stays mounted, `hidden`, while its side chat shows,
  * so page answers survive the chat.
  */

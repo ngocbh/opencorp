@@ -33,11 +33,9 @@ test("a question open before the session loads shows, and a typed answer is sent
   const q = office.addQuestion({ session_id: s.id, question: "Which branch?" })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    await app.until((f) => f.includes("Which branch?") && f.includes("Type your own answer"))
-    app.input.pressKey("1")
-    // The answer box opens with the same text as its placeholder.
-    await app.until((f) => f.split("Type your own answer").length > 2)
-    app.input.typeText("main")
+    await app.until((f) => f.includes("Which branch?") && f.includes("1. Type your answer here"))
+    // A page with only a typed answer starts in its box; Enter right after typing sends all of it.
+    await app.input.typeText("main")
     app.input.pressEnter()
     await app.until(() => office.state.questions[q.id].status === "answered")
     expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
@@ -114,19 +112,20 @@ test("a reconnect that re-reads the question keeps the typed draft and the answe
     await app.until((f) => f.includes("@minh · idle") && f.includes("Which branch?"))
   }
   try {
-    await app.until((f) => f.includes("Which branch?") && f.includes("Type your own answer"))
+    await app.until((f) => f.includes("Which branch?") && f.includes("3. Type your answer here"))
     app.input.pressKey("3")
-    await app.until((f) => f.split("Type your own answer").length > 2)
-    app.input.typeText("rel")
-    await app.until((f) => f.includes("rel"))
+    await app.input.typeText("rel")
+    await app.until((f) => f.includes("3. rel"))
     await reconnect()
-    app.input.typeText("ease")
-    await app.until((f) => f.includes("release"))
+    await app.input.typeText("ease")
+    await app.until((f) => f.includes("3. release"))
     const release = office.hold("POST /questions/:id/answer")
     const answers = () => office.requests.filter((r) => r.path === `/questions/${q.id}/answer`)
     app.input.pressEnter()
     await app.until(() => answers().length === 1)
     await reconnect()
+    // On the box, "1" would be typed instead of picking.
+    app.input.pressArrow("up")
     app.input.pressKey("1")
     await Bun.sleep(100)
     release()
@@ -264,9 +263,9 @@ test("the chat's own turn question is the prompt, not a card", async () => {
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     await app.until((f) => f.includes("@minh · idle") && f.includes("@minh · Software engineer"))
-    expect(app.frame()).not.toContain("Type your own answer")
+    expect(app.frame()).not.toContain("Type your answer here")
     office.addQuestion({ session_id: s.id, source: "human_input", node_id: "chat#1/review", question: "Ship it?" })
-    await app.until((f) => f.includes("Ship it?") && f.includes("Type your own answer"))
+    await app.until((f) => f.includes("Ship it?") && f.includes("Type your answer here"))
   } finally {
     await app.stop()
     office.stop()

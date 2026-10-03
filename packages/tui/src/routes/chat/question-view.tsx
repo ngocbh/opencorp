@@ -1,5 +1,15 @@
 import { createStore, produce } from "solid-js/store"
-import { createMemo, For, onCleanup, onMount, Show, type ParentProps } from "solid-js"
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+  untrack,
+  type ParentProps,
+} from "solid-js"
 import { useRenderer } from "@opentui/solid"
 import type { KeyEvent, Renderable, TextareaRenderable } from "@opentui/core"
 import type { Binding } from "@opentui/keymap"
@@ -33,9 +43,10 @@ export interface QuestionViewHandle {
 }
 
 /**
- * A question card: a page per question with options to pick (several when `multi`) and, when `typed`, a way to
- * type the answer. Enter on the last page hands every page's answer to `onSubmit` once each single-pick page has
- * one. It takes no office: callers supply the header, actions, extra key bindings, hints and a notice.
+ * A question card: a page per question with options to pick (several when `multi`) and, when `typed`, a last row
+ * that is a box to type the answer in. Enter on the last page hands every page's answer to `onSubmit` once each
+ * single-pick page has one. It takes no office: callers supply the header, actions, extra key bindings, hints and
+ * a notice.
  */
 export function QuestionView(
   props: ParentProps<{
@@ -63,7 +74,6 @@ export function QuestionView(
   const [store, setStore] = createStore({
     page: 0,
     selected: 0,
-    editing: false,
     answers: [] as PageAnswer[],
   })
 
@@ -75,9 +85,9 @@ export function QuestionView(
   // The caller's actions come after the answer rows and never count as options.
   const answerRows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
   const rows = createMemo(() => answerRows() + actions().length)
-  const other = createMemo(() => page()?.typed === true && store.selected === options().length)
-
-  let textarea: TextareaRenderable | undefined
+  const onTyped = createMemo(() => page()?.typed === true && store.selected === options().length)
+  // A signal, so the effects below see a box that mounts later.
+  const [box, setBox] = createSignal<TextareaRenderable>()
 
   props.ref?.({ select: (row) => setStore("selected", row) })
 
@@ -89,12 +99,20 @@ export function QuestionView(
     )
   }
 
+  /** Copies the box's text into this page's answer; its change event comes late, so read it now. */
+  function sync() {
+    const el = box()
+    if (el && !el.isDestroyed && page()?.typed) setAnswer((a) => ({ ...a, text: el.plainText }))
+  }
+
   function goTo(index: number) {
-    setStore({ page: index, selected: 0, editing: false })
+    sync()
+    setStore({ page: index, selected: 0 })
   }
 
   /** Moves to the next page, or hands over every page's answer from the last one. */
   function next() {
+    sync()
     const pages = props.pages
     if (store.page < pages.length - 1) return goTo(store.page + 1)
     const missing = pages.findIndex(
@@ -105,20 +123,40 @@ export function QuestionView(
     goTo(missing)
   }
 
+  /** Moves the cursor `by` rows, wrapping around. */
+  function move(by: number) {
+    const total = rows()
+    if (!total) return
+    sync()
+    setStore("selected", (store.selected + by + total) % total)
+  }
+
   function toggle(index: number) {
+    sync()
     setAnswer((a) => {
       const picked = a.picked.includes(index) ? a.picked.filter((n) => n !== index) : [...a.picked, index]
       return { ...a, picked: picked.sort((x, y) => x - y) }
     })
   }
 
-  /** Enter on the selected row: run an action, open the typed answer, confirm a multi-select page, or pick. */
+  /** Enter on the selected row: run an action, take the typed answer, confirm a multi-select page, or pick. */
   function selectRow() {
+    sync()
     const action = actions()[store.selected - answerRows()]
     if (action) return action.run()
-    if (other()) return setStore("editing", true)
+    if (onTyped()) {
+      if (page()?.multi) return next()
+      // An empty box keeps any pick and stays on the page.
+      const text = answer().text
+      if (!text.trim()) return
+      setAnswer(() => ({ picked: [], text }))
+      return next()
+    }
     if (page()?.multi) return next()
     if (!options()[store.selected]) return
+    // Typed text wins over a pick, so picking clears the box.
+    const el = box()
+    if (el && !el.isDestroyed) el.setText("")
     setAnswer(() => ({ picked: [store.selected], text: "" }))
     next()
   }
@@ -128,56 +166,23 @@ export function QuestionView(
     onCleanup(popMode)
   })
 
-  useBindings(() => ({
-    mode: QUESTION_MODE,
-    enabled: store.editing && !props.hidden,
-    commands: [
-      {
-        name: "prompt.clear",
-        title: "Clear answer edit",
-        category: "Question",
-        run() {
-          const text = textarea?.plainText ?? ""
-          if (!text) {
-            setStore("editing", false)
-            return
-          }
-          textarea?.setText("")
-        },
-      },
-    ],
-    bindings: [
-      {
-        key: "escape",
-        desc: "Cancel answer edit",
-        group: "Question",
-        cmd: () => {
-          setStore("editing", false)
-        },
-      },
-      ...tuiConfig.keybinds.get("prompt.clear"),
-      {
-        key: "return",
-        desc: "Submit answer edit",
-        group: "Question",
-        cmd: () => {
-          const text = textarea?.plainText?.trim() ?? ""
-          const multi = page()?.multi
-          // A typed answer replaces the pick on a single-choice page; an empty one leaves it.
-          setAnswer((a) => ({ picked: multi || !text ? a.picked : [], text }))
-          setStore("editing", false)
-          if (text) next()
-        },
-      },
-    ],
-  }))
+  // Follows the cursor: the box has the keys while the cursor is on it and the view's keys work.
+  createEffect(() => {
+    const el = box()
+    if (!el || el.isDestroyed) return
+    if (onTyped() && active()) {
+      el.focus()
+      el.gotoLineEnd()
+      // Only a focused box: an edit buffer's blur always resets the cursor, which would hide the cursor of
+      // whatever has focus instead, such as the side chat's prompt.
+    } else if (el.focused) el.blur()
+  })
 
+  // Comes before the box, so Up, Down and Enter work on the typed row too.
   useBindings(() => {
-    const total = rows()
-    const move = (by: number) => total && setStore("selected", (store.selected + by + total) % total)
     const keys = props.bindings ?? []
     const paging =
-      props.pages.length > 1
+      props.pages.length > 1 && !onTyped()
         ? [
             { key: "left", desc: "Previous question", group: "Question", cmd: () => goTo(Math.max(store.page - 1, 0)) },
             {
@@ -190,38 +195,47 @@ export function QuestionView(
         : []
     return {
       mode: QUESTION_MODE,
-      enabled: !store.editing && active(),
+      enabled: active(),
       bindings: !props.pages.length
         ? keys
         : [
-            ...Array.from({ length: Math.min(answerRows(), 9) }, (_, index) => ({
-              key: String(index + 1),
-              desc: `Select answer ${index + 1}`,
-              group: "Question",
-              cmd: () => {
-                setStore("selected", index)
-                if (page()?.multi && index < options().length) return toggle(index)
-                selectRow()
-              },
-            })),
             { key: "up", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
-            { key: "k", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
             { key: "down", desc: "Next answer", group: "Question", cmd: () => move(1) },
-            { key: "j", desc: "Next answer", group: "Question", cmd: () => move(1) },
-            {
-              key: "space",
-              desc: "Toggle answer",
-              group: "Question",
-              cmd: () => {
-                if (page()?.multi && store.selected < options().length) toggle(store.selected)
-              },
-            },
             { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
             ...paging,
             ...keys,
           ],
     }
   })
+
+  // Off on the typed row, where these keys are text for the box.
+  useBindings(() => ({
+    mode: QUESTION_MODE,
+    enabled: active() && props.pages.length > 0 && !onTyped(),
+    bindings: [
+      ...Array.from({ length: Math.min(answerRows(), 9) }, (_, index) => ({
+        key: String(index + 1),
+        desc: `Select answer ${index + 1}`,
+        group: "Question",
+        cmd: () => {
+          setStore("selected", index)
+          if (index === options().length) return
+          if (page()?.multi) return toggle(index)
+          selectRow()
+        },
+      })),
+      { key: "k", desc: "Previous answer", group: "Question", cmd: () => move(-1) },
+      { key: "j", desc: "Next answer", group: "Question", cmd: () => move(1) },
+      {
+        key: "space",
+        desc: "Toggle answer",
+        group: "Question",
+        cmd: () => {
+          if (page()?.multi && store.selected < options().length) toggle(store.selected)
+        },
+      },
+    ],
+  }))
 
   const marker = (i: number) => {
     if (!page()?.multi) return `${i + 1}.`
@@ -285,38 +299,29 @@ export function QuestionView(
                   )
                 }}
               </For>
-              <Show when={page()?.typed}>
-                <box
-                  onMouseOver={() => setStore("selected", options().length)}
-                  onMouseDown={() => setStore("selected", options().length)}
-                  onMouseUp={() => {
-                    if (renderer.getSelection()?.getSelectedText()) return
-                    selectRow()
-                  }}
-                >
-                  <box flexDirection="row">
-                    <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
-                      <text fg={other() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
-                        {`${options().length + 1}.`}
-                      </text>
-                    </box>
-                    <box backgroundColor={other() ? theme.backgroundElement : undefined}>
-                      <text fg={other() ? theme.secondary : theme.text}>Type your own answer</text>
-                    </box>
-                  </box>
-                  <Show when={store.editing}>
-                    <box paddingLeft={3}>
+              <Show when={page()?.typed ? store.page + 1 : undefined} keyed>
+                {(_) => {
+                  // Taking an argument makes Show key and untrack this child; untrack keeps the read out of any
+                  // tracking anyway. Read once, as this page's box mounts; the box holds the text from then on.
+                  const start = untrack(() => answer().text)
+                  let mounted: TextareaRenderable | undefined
+                  onCleanup(() => box() === mounted && setBox(undefined))
+                  return (
+                    <box flexDirection="row" onMouseDown={() => setStore("selected", options().length)}>
+                      <box backgroundColor={onTyped() ? theme.backgroundElement : undefined} paddingRight={1}>
+                        <text fg={onTyped() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
+                          {`${options().length + 1}.`}
+                        </text>
+                      </box>
                       <textarea
-                        ref={(val: TextareaRenderable) => {
-                          textarea = val
-                          val.traits = { status: "ANSWER" }
-                          queueMicrotask(() => {
-                            val.focus()
-                            val.gotoLineEnd()
-                          })
+                        flexGrow={1}
+                        ref={(el: TextareaRenderable) => {
+                          el.traits = { status: "ANSWER" }
+                          mounted = el
+                          setBox(el)
                         }}
-                        initialValue={answer().text}
-                        placeholder="Type your own answer"
+                        initialValue={start}
+                        placeholder="Type your answer here"
                         placeholderColor={theme.textMuted}
                         minHeight={1}
                         maxHeight={6}
@@ -326,13 +331,8 @@ export function QuestionView(
                         cursorStyle={tuiConfig.cursor}
                       />
                     </box>
-                  </Show>
-                  <Show when={!store.editing && answer().text}>
-                    <box paddingLeft={3}>
-                      <text fg={theme.textMuted}>{answer().text}</text>
-                    </box>
-                  </Show>
-                </box>
+                  )
+                }}
               </Show>
               <Show when={actions().length > 0}>
                 <box paddingTop={1}>
