@@ -11,9 +11,9 @@ from agent_composer import load_flow, run_flow
 from pydantic import ValidationError
 
 from agent_corp.chat.provider import Provider, load_provider
+from agent_corp.company.naming import handle_problem
 from agent_corp.company_template import Owner, template_files
-from agent_corp.install.onboard import (TRIES, OnboardError, Prompter, handle_problem, login_defaults, redact,
-                                        slug)
+from agent_corp.install.onboard import TRIES, OnboardError, Prompter, login_defaults, redact, slug
 from agent_corp.protocol.models import HireRequest
 from agent_corp.worker.spawn import worker_env
 

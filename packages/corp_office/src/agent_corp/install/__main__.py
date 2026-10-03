@@ -10,13 +10,14 @@ import os
 import sys
 from pathlib import Path
 
+from agent_corp.company.naming import handle_problem
 from agent_corp.company_template import is_new
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError
 from agent_corp.install import doctor, init, offboard, service
 from agent_corp.install.interview import Known
 from agent_corp.install.launch import Host, Launch, ServiceError, launch
-from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, handle_problem, onboard
+from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, onboard
 
 NOT_ONBOARDED = 3
 

@@ -11,10 +11,10 @@ import sys
 from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
-from typing import Annotated, Protocol, TextIO
+from typing import Protocol, TextIO
 
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from agent_corp.auth.devices import DeviceRefused, add_device
 from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
@@ -29,7 +29,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.daemon.main import OfficeStartError, make_office_dir
 from agent_corp.install import service
 from agent_corp.install.launch import REPO, Host, ServiceError, launch
-from agent_corp.protocol.models import Device, HireRequest
+from agent_corp.protocol.models import Device
 from agent_corp.secrets import write_private
 
 
@@ -220,18 +220,6 @@ def login_defaults() -> tuple[str, str]:
     except KeyError:
         raise OnboardError(f"user id {os.getuid()} has no account in the password database") from None
     return owner_defaults(login.pw_name, login.pw_gecos)
-
-
-_HANDLE = TypeAdapter(Annotated[str, *HireRequest.model_fields["handle"].metadata])
-
-
-def handle_problem(handle: str) -> str | None:
-    """Why ``handle`` can't be a person's handle, or None if it can."""
-    try:
-        _HANDLE.validate_python(handle)
-    except ValidationError as exc:
-        return exc.errors(include_url=False)[0]["msg"]
-    return None
 
 
 TRIES = 5
