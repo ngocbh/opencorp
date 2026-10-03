@@ -8,15 +8,15 @@ import { main } from "../src/main"
 
 const home = mkdtempSync("/tmp/ace-")
 const socket = path.join(home, "office", "office.sock")
-const saved = process.env.AC_HOME
+const saved = process.env.AGENT_CORP_HOME
 afterEach(() => {
-  process.env.AC_HOME = saved
+  process.env.AGENT_CORP_HOME = saved
 })
 afterAll(() => rmSync(home, { recursive: true, force: true }))
 
 /** Runs `main(argv)` against the office under `home`, capturing stdout and stderr. */
 async function capture(argv: string[]) {
-  process.env.AC_HOME = home
+  process.env.AGENT_CORP_HOME = home
   const out: string[] = []
   const err: string[] = []
   const log = console.log

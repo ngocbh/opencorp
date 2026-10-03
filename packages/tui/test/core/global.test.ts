@@ -4,18 +4,18 @@ import path from "node:path"
 import { Global } from "../../src/core/global"
 
 test("tests keep TUI state out of the real home directory", () => {
-  const home = process.env.AC_HOME
+  const home = process.env.AGENT_CORP_HOME
   expect(home).toBeString()
   expect(home!.startsWith(path.join(os.homedir(), ".agent-corp"))).toBe(false)
   expect(Global.Path.state).toBe(path.join(home!, "tui", "state"))
 })
 
-test("TUI state follows a ~/ AC_HOME the way the office paths do", () => {
-  const saved = process.env.AC_HOME
-  process.env.AC_HOME = "~/offices/acme"
+test("TUI state follows a ~/ AGENT_CORP_HOME the way the office paths do", () => {
+  const saved = process.env.AGENT_CORP_HOME
+  process.env.AGENT_CORP_HOME = "~/offices/acme"
   try {
     expect(Global.Path.state).toBe(path.join(os.homedir(), "offices", "acme", "tui", "state"))
   } finally {
-    process.env.AC_HOME = saved
+    process.env.AGENT_CORP_HOME = saved
   }
 })

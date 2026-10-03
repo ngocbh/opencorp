@@ -176,7 +176,7 @@ class RunningOffice:
         return wait_for(ready, f"session {sid}'s debrief")
 
     def _ac_env(self) -> dict[str, str]:
-        return dict(os.environ, AC_HOME=str(self.home))
+        return dict(os.environ, AGENT_CORP_HOME=str(self.home))
 
     def ac(self, *args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run `ac <args>` in ``cwd`` against this office and wait for it."""
