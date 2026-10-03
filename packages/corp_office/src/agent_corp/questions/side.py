@@ -1,8 +1,6 @@
 """Side chats: the person who asked a question, in a session of its own, talking it through with the human."""
 
-import json
 import os
-from collections.abc import Callable
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -12,16 +10,16 @@ from agent_corp.chat.identity import person_inputs
 from agent_corp.chat.turns import MAIN_CHAT
 from agent_corp.company.loader import load_repo
 from agent_corp.profile import GitProfileStore
-from agent_corp.protocol.models import CompanyDefaults, DiscussionEntry, Question, Session
+from agent_corp.protocol.models import CompanyDefaults, DiscussionEntry, Session
 from agent_corp.store import Store
-from agent_corp.tools.workspace import WorkspaceTools, workspace_tool_functions
+from agent_corp.tools import ToolContext, build
+from agent_corp.tools.workspace import WorkspaceTools
 from agent_corp.worker import ProfileMemorySpec, SessionMemorySpec
 
 SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
 PACKAGED_FLOW = files("agent_corp.company_template").joinpath(SIDE_CHAT_FLOW)
 SIDE_CHAT = MAIN_CHAT
 """The side chat flow has the main chat's shape: turn ``chat/ask``, reply ``chat/reply``, exit ``/exit``."""
-READ_TOOLS = ("read_file", "list", "search")
 EXIT_WORDS = frozenset({"/exit", "/quit", "/end"})
 BACK_HINT = "use /back to return to the question"
 SEED_FILE = "seed.md"
@@ -49,9 +47,9 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
     question = harness.store.get_question(session.question_id) if session.question_id else None
 
     def groups(s: Session, run_id: str, on_question: Any) -> dict[str, dict[str, Any]]:
-        calls = workspace_tool_functions(harness.monitor.workspace(workspace, person.handle, run_id, session_id=s.id))
-        return {"workspace": {name: calls[name] for name in READ_TOOLS},
-                "work_items": work_item_tools(harness.store, person.handle, question)}
+        return build(("workspace", "work_items"), ToolContext(
+            store=harness.store, session=s, run_id=run_id, monitor=harness.monitor, workspace=workspace,
+            read_only=True, question=question))
 
     # The seed is the first turn; composer summarizes history past the budget, so leave room for it.
     budget = defaults.side_seed_max_chars + SessionMemorySpec().history_budget_chars
@@ -99,48 +97,6 @@ def _ensure_flow(harness: Harness, pin: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(PACKAGED_FLOW.read_text())
         path.chmod(0o444)
-
-
-def work_item_tools(store: Store, handle: str, question: Question | None) -> dict[str, Callable[..., str]]:
-    """Read-only work item tools for a side chat of ``handle`` about ``question``.
-
-    The person sees the question's work item and the work item of the session that
-    asked, their parents, and their children, plus items they requested or are
-    assigned. Anything else is "no work item".
-    """
-    roots = [question.work_item_id] if question and question.work_item_id else []
-    asker = store.get_session(question.session_id) if question else None
-    if asker and asker.work_item_id:
-        roots.append(asker.work_item_id)
-    chain: set[str] = set()
-    for item_id in roots:
-        while item_id and item_id not in chain and (item := store.get_work_item(item_id)) is not None:
-            chain.add(item.id)
-            item_id = item.parent_id
-
-    def visible(item: Any) -> bool:
-        return (item.id in chain or item.parent_id in chain
-                or handle in (item.requester, item.assignee))
-
-    def list_work_items() -> str:
-        """List the work items you can see (yours, and those around this question), newest first, as JSON."""
-        items = [i for i in store.list_work_items(limit=None) if visible(i)]
-        return json.dumps([{"id": i.id, "title": i.title, "status": i.status, "assignee": i.assignee,
-                            "parent_id": i.parent_id} for i in items], ensure_ascii=False)
-
-    def read_work_item(work_item_id: str) -> str:
-        """Read one work item with its comments and children, as JSON."""
-        item = store.get_work_item(work_item_id)
-        if item is None or not visible(item):
-            raise ValueError(f"no work item {work_item_id}")
-        children = [{"id": c.id, "title": c.title, "status": c.status}
-                    for c in store.list_work_items(limit=None) if c.parent_id == item.id]
-        return json.dumps(item.model_dump(mode="json", exclude={"version"})
-                          | {"comments": [{"author": c.author, "body": c.body, "created_at": c.created_at}
-                                          for c in store.list_comments(item.id)],
-                             "children": children}, ensure_ascii=False)
-
-    return {"list_work_items": list_work_items, "read_work_item": read_work_item}
 
 
 def discussion(store: Store, side_session_id: str) -> list[DiscussionEntry]:

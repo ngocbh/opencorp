@@ -15,8 +15,11 @@ from typing import Any
 from agent_corp.sandbox import fileops
 from agent_corp.sandbox.policy import SandboxPolicy
 from agent_corp.sandbox.run import Result, run
+from agent_corp.tools.context import ToolContext
 
 TOOL_NAMES = ("read_file", "write_file", "edit_file", "list", "search", "shell")
+READ_TOOLS = ("read_file", "list", "search")
+"""The workspace tools that only read: all a read-only run is offered."""
 MAX_SHELL_TIMEOUT = 600.0
 # Capture cap for a file tool's reply, above the largest reply the helper can produce
 # (every op's output is bounded: 200k read characters, 200 search matches, 5000 names,
@@ -280,3 +283,15 @@ def workspace_tool_functions(call: Callable[[str, dict[str, Any]], str]) -> dict
         "search": search,
         "shell": shell,
     }
+
+
+def tools(ctx: ToolContext) -> dict[str, Callable[..., str]]:
+    """The ``workspace`` group, each call audited by ``ctx.monitor``: every tool, or ``READ_TOOLS`` when ``ctx.read_only``.
+
+    None without a monitor, workspace and session.
+    """
+    if ctx.monitor is None or ctx.workspace is None or ctx.session is None:
+        return {}
+    calls = workspace_tool_functions(ctx.monitor.workspace(ctx.workspace, ctx.session.person, ctx.run_id,
+                                                           session_id=ctx.session.id))
+    return {name: calls[name] for name in READ_TOOLS} if ctx.read_only else calls

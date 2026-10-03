@@ -1,6 +1,24 @@
-"""Names the model sees for asset tools."""
+"""Naming rules: person handles, and the names the model sees for asset tools."""
 
 import re
+from typing import Annotated
+
+from pydantic import TypeAdapter, ValidationError
+
+from agent_corp.protocol.models import HireRequest
+
+
+_HANDLE = TypeAdapter(Annotated[str, *HireRequest.model_fields["handle"].metadata])
+
+
+def handle_problem(handle: str) -> str | None:
+    """Why ``handle`` can't be a person's handle, or None if it can."""
+    try:
+        _HANDLE.validate_python(handle)
+    except ValidationError as exc:
+        return exc.errors(include_url=False)[0]["msg"]
+    return None
+
 
 TOOL_NAME = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 

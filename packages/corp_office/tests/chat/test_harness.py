@@ -816,3 +816,12 @@ def test_a_session_whose_worker_keeps_dying_says_so(harness, workspace):
     sid = start(harness, workspace)
     harness._finish(harness._live[sid], "failed", None)
     assert errors(harness, sid) == ["The session failed (its worker stopped or couldn't start; see the office log). Start a new chat."]
+
+
+def test_a_main_run_offers_toolbox_workspace_and_company_in_that_order(harness, workspace):
+    session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head()))
+    groups = harness.main_spec(session).groups(session, "run-1", None)
+    assert [(g, list(t)) for g, t in groups.items()] == [
+        ("toolbox", ["fake__echo"]),
+        ("workspace", ["read_file", "write_file", "edit_file", "list", "search", "shell"]),
+        ("company", ["ask_manager", "create_work_item", "comment"])]
