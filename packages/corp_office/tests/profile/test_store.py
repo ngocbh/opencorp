@@ -6,7 +6,7 @@ import threading
 
 import agent_composer.memory.profile as composer_profile
 import pytest
-from agent_composer.memory import LearnContext, MemoryFrameRef, MemoryFrameSpec, MemoryOwner
+from agent_composer.memory import LearnContext
 from agent_composer.memory.profile import ProfileMemory
 from agent_composer.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
 from langchain_core.messages import AIMessage
@@ -211,9 +211,6 @@ def test_writes_leave_pinned_worktrees_alone(store, git):
     assert (pin / PROFILE).read_text() == MINH
 
 
-ROOT = MemoryFrameRef("chat", ("chat",), MemoryOwner.FLOW)
-
-
 def test_profile_memory_restores_a_snapshot_after_a_later_write(store):
     assert isinstance(store, MarkdownStore)
     memory = ProfileMemory(store, llm_config={"provider": "ollama", "model": "stub"})
@@ -222,7 +219,7 @@ def test_profile_memory_restores_a_snapshot_after_a_later_write(store):
     store.write("# Minh\nlater\n", base_version=store.read()[1])
     with memory.open_run(snapshot=recorded) as restored:
         assert restored.snapshot == recorded
-        assert restored.open_frame(MemoryFrameSpec(ROOT, "profile", {})).recall() == MINH
+        assert restored.recall() == MINH
 
 
 def test_write_keeps_the_file_mode(store, company):
@@ -269,8 +266,7 @@ def test_profile_memory_commit_is_a_git_commit_with_run_and_commit_id(store, com
     monkeypatch.setattr(composer_profile, "model_from_config", lambda config: Learner())
     memory = ProfileMemory(store, llm_config={"provider": "ollama", "model": "stub"})
     with memory.open_run() as session:
-        root = session.open_frame(MemoryFrameSpec(ROOT, "profile", {}))
-        session.commit("ac-memory-v1:abc", tuple(root.learn(LearnContext("run-1", ROOT, (), FEEDBACK))))
+        session.commit("ac-memory-v1:abc", tuple(session.learn(LearnContext("run-1", "profile", (), FEEDBACK))))
     assert store.read()[0] == "# Minh\nTerse.\n"
     assert _git(company, "log", "-1", "--format=%B") == (
         "profile(@minh): from feedback on run run-1\n\nCommit-Id: ac-memory-v1:abc")
