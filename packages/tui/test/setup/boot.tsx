@@ -56,6 +56,7 @@ export async function bootSetup(child: FakeChild) {
     { write: (s) => void outText.push(s) },
     { write: (s) => void errText.push(s) },
   )
+  const frames: string[] = []
   const frame = () => setup.captureCharFrame()
   return {
     setup,
@@ -66,11 +67,14 @@ export async function bootSetup(child: FakeChild) {
     out: () => outText.join(""),
     /** What it printed on stderr. */
     err: () => errText.join(""),
+    /** Every frame `until` rendered. */
+    frames,
     /** Renders until `pred(frame)` holds; returns the frame, or throws with the last one. */
     async until(pred: (f: string) => boolean, ms = 3000) {
       for (const end = Date.now() + ms; ; await Bun.sleep(20)) {
         if (!setup.renderer.isDestroyed) await setup.renderOnce()
-        if (pred(frame())) return frame()
+        frames.push(frame())
+        if (pred(frames.at(-1)!)) return frames.at(-1)!
         if (Date.now() > end) throw new Error("frame never matched:\n" + frame())
       }
     },

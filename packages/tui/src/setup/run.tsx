@@ -15,7 +15,10 @@ export interface Writer {
   write(text: string): unknown
 }
 
-/** Runs the install `argv` in `cwd` behind the setup screen; resolves to its exit code once the screen is gone and its transcript and stderr are printed. */
+/**
+ * Runs the install `argv` in `cwd` behind the setup screen; resolves to its exit code once the screen is gone and
+ * its transcript and stderr are printed.
+ */
 export async function runSetup(argv: string[], cwd: string): Promise<number> {
   const child = spawnSetup(argv, cwd)
   try {
