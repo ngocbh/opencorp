@@ -68,8 +68,9 @@ class Prompter(Protocol):
     def ask(self, question: str, default: str = "") -> str:
         """An answer, or ``default`` for an empty one."""
 
-    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
-        """One of ``options``, picked by the owner; ``default`` when there's no one to ask."""
+    def choose(self, question: str, options: Sequence[str], default: str = "", typed: bool = False) -> str:
+        """One of ``options``, picked by the owner, or with ``typed`` an answer they type instead; ``default`` (an
+        option, or with ``typed`` any text) for an empty answer or when there's no one to ask."""
 
     def secret(self, question: str) -> str:
         """An answer read without echo."""
@@ -96,13 +97,18 @@ def closed_input(question: str) -> OnboardError:
     return OnboardError(f"no answer to {question!r} (stdin closed)")
 
 
+TYPE_OWN = "Type my own answer"
+"""The last choice of a typed list on the terminal; picking it asks for the answer."""
+
+
 class TtyPrompter:
     """Asks on the terminal; a secret is read with ``getpass``, so it is never echoed.
 
     ``preset`` answers questions by their text without asking (from command-line flags);
     with ``interactive`` False, every other question takes its default. When stdin and stdout
     are both terminals (or ``terminal`` gives one), a list is picked with the arrow keys;
-    otherwise it is numbered, and a line picks from it.
+    otherwise it is numbered, and a line picks from it. A typed list ends with ``TYPE_OWN``,
+    which asks for the answer; an empty one is ``default``.
     """
 
     def __init__(self, preset: Mapping[str, str] | None = None, interactive: bool = True, *,
@@ -153,11 +159,23 @@ class TtyPrompter:
         except EOFError:
             raise closed_input(question) from None
 
-    def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
+    def choose(self, question: str, options: Sequence[str], default: str = "", typed: bool = False) -> str:
         if question in self.preset:
             return self.preset[question]
         if not self.interactive:
             return default
+        if not typed:
+            return self._pick(question, options, default)
+        # A list on the terminal can't take text, so a last choice asks for it.
+        own = default if default not in options else ""
+        picked = self._pick(question, [*options, TYPE_OWN], TYPE_OWN if own else default)
+        if picked != TYPE_OWN:
+            return picked
+        # An empty typed answer is the default, as on the JSON path, so a deployment is never saved empty.
+        return self.ask(question, own) or default
+
+    def _pick(self, question: str, options: Sequence[str], default: str) -> str:
+        """One of ``options`` picked from a list, ``default`` for an empty answer."""
         if (terminal := self._terminal()) is not None:
             import questionary
 

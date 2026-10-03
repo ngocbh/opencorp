@@ -18,8 +18,9 @@ from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
 from agent_corp.chat.provider import load_provider
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_DEPLOYMENT, TYPE_MODEL, NoTerminal,
-                                        OnboardError, TtyPrompter, azure_deployments, ensure_provider, step_lines)
+from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_DEPLOYMENT, TYPE_MODEL, TYPE_OWN,
+                                        NoTerminal, OnboardError, TtyPrompter, azure_deployments, ensure_provider,
+                                        step_lines)
 
 KEY = "sk-ant-test-0123456789"
 
@@ -33,16 +34,20 @@ class Script:
         self.seen: list[str] = []
         self.offered: list[list[str]] = []
         """The options of each ``choose``, in order."""
+        self.typed: list[bool] = []
+        """Whether each ``choose`` took a typed answer, in order."""
 
     def ask(self, question, default=""):
         self.seen.append(question)
         answer = self.answers.pop(0)
         return answer or default
 
-    def choose(self, question, options, default=""):
-        """The default for an empty answer, an option given exactly, or the option a number picks (from 1)."""
+    def choose(self, question, options, default="", typed=False):
+        """The default for an empty answer, an option given exactly, the option a number picks (from 1), or with
+        ``typed`` any other text."""
         self.seen.append(question)
         self.offered.append(list(options))
+        self.typed.append(typed)
         answer = self.answers.pop(0)
         if not answer:
             return default
@@ -50,6 +55,8 @@ class Script:
             return answer
         if answer.isdecimal() and 1 <= int(answer) <= len(options):
             return options[int(answer) - 1]
+        if typed:
+            return answer
         raise AssertionError(f"{answer!r} isn't an answer to {question!r}; the options are {list(options)}")
 
     def secret(self, question):
@@ -512,6 +519,39 @@ def test_without_a_terminal_closed_input_is_an_onboard_error(monkeypatch):
     plain_stdin(monkeypatch, "")
     with pytest.raises(OnboardError, match=r"no answer to 'Q' \(stdin closed\)"):
         TtyPrompter().choose("Q", ["a", "b"])
+
+
+def test_without_a_terminal_a_typed_list_ends_with_typing_your_own(monkeypatch, capsys):
+    plain_stdin(monkeypatch, "2\nmy-model\n")
+    assert TtyPrompter().choose("Model", ["sonnet (the default)"], "sonnet (the default)", typed=True) == "my-model"
+    assert f"  2. {TYPE_OWN}\n" in capsys.readouterr().out
+
+
+def test_without_a_terminal_a_typed_list_still_picks_an_option(monkeypatch):
+    plain_stdin(monkeypatch, "1\n")
+    assert TtyPrompter().choose("Model", ["sonnet (the default)"], typed=True) == "sonnet (the default)"
+
+
+def test_a_typed_default_that_isnt_an_option_is_the_typed_answers_default(monkeypatch):
+    plain_stdin(monkeypatch, "\n\n")
+    assert TtyPrompter().choose("Model", ["sonnet (the default)"], "my-model", typed=True) == "my-model"
+
+
+def test_an_empty_typed_answer_on_the_terminal_is_the_default(monkeypatch):
+    plain_stdin(monkeypatch, "2\n\n")
+    assert TtyPrompter().choose("Deployment", ["gpt-5.4"], "gpt-5.4", typed=True) == "gpt-5.4"
+
+
+def test_a_typed_list_with_no_one_to_ask_takes_its_default():
+    assert TtyPrompter(interactive=False).choose("Model", ["a"], "typed-before", typed=True) == "typed-before"
+
+
+def test_the_script_prompter_takes_typed_text_only_for_a_typed_list():
+    ask = Script("my-model")
+    assert ask.choose("Model", ["a"], typed=True) == "my-model"
+    assert ask.typed == [True]
+    with pytest.raises(AssertionError, match="'my-model' isn't an answer"):
+        Script("my-model").choose("Model", ["a"])
 
 
 def test_the_script_prompter_picks_by_option_number_or_default():
