@@ -3,11 +3,13 @@ and the draft without a terminal."""
 
 import json
 import os
+import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from agent_composer import load_flow, run_flow
 
@@ -20,6 +22,9 @@ from agent_corp.worker.spawn import worker_env
 
 FLOW = Path(__file__).parent / "flows" / "init.yaml"
 """The init flow."""
+
+CHECK = Path(__file__).parent / "flows" / "check_model.yaml"
+"""The flow that checks the model answers."""
 
 CONFIRM = "Create this company?"
 CREATE = "Yes, create it"
@@ -199,37 +204,58 @@ def ask_user(**request) -> str:
     return options[shown.index(picked)] if picked in shown else picked
 
 
-def run_init_flow(provider: Provider, prompter: Prompter, known: Known, *, provider_path: Path) -> dict:
+class ModelError(OnboardError):
+    """The model couldn't run the init flow."""
+
+
+def _run(flow, inputs: dict, provider: Provider, tools: dict) -> tuple[Any, str | None]:
+    """Run ``flow`` with ``provider``'s model as an office run would: its result, and why it failed (None if it
+    didn't), without the key or URL credentials."""
+    result = message = None
+    # The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
+    # office never sees can't make it work.
+    try:
+        with _office_env(provider.env), warnings.catch_warnings():
+            # An Azure deployment or a gateway's model is never in composer's list; the owner chose it on purpose.
+            warnings.filterwarnings("ignore", r"Model .* is not in the known model list", RuntimeWarning)
+            # No workers: the handler and the code nodes, and so the terminal, stay on the main thread.
+            result = run_flow(flow, inputs, llm_config=provider.llm_config, tools=tools, num_workers=0)
+        if result.status == "failed":
+            message = result.failure.message
+    except Exception as exc:
+        message = str(exc)
+    if message is not None:
+        if key := (provider.llm_config or {}).get("api_key"):
+            message = message.replace(str(key), "***")
+        message = redact(message).rstrip(".")
+    return result, message
+
+
+def model_problem(provider: Provider) -> str | None:
+    """Why ``provider``'s model doesn't answer a one-word request made as an office run makes it, or None when it
+    answers."""
+    return _run(load_flow(CHECK.read_text(), source_label=str(CHECK)), {}, provider, {})[1]
+
+
+def run_init_flow(provider: Provider, prompter: Prompter, known: Known) -> dict:
     """Run the init flow with ``provider``'s model, asking the owner with ``prompter``; return its output.
 
     Raises:
+        ModelError: the run failed.
         OnboardError: the owner's input ended or no password worked (the error raised), the interview didn't settle
-            on a company, the run failed, or the user id has no account.
+            on a company, or the user id has no account.
     """
     flow = load_flow(FLOW.read_text(), source_label=str(FLOW))
     inputs = {"known": json.dumps(known.facts()), "remote": known.remote}
     state = Asking(prompter)
-    failure = message = None
-    # The run gets the environment office runs get, so the interview authenticates the way they will: a shell
-    # variable the office never sees can't make it work.
-    try:
-        with asking(state), _office_env(provider.env):
-            # No workers: the handler and the code nodes, and so the terminal, stay on the main thread.
-            result = run_flow(flow, inputs, llm_config=provider.llm_config,
-                              tools={"ask_user": ask_user, "check_company": check_company}, num_workers=0)
-        if result.status == "failed":
-            failure, message = result.failure, result.failure.message
-    except Exception as exc:
-        message = str(exc)
+    with asking(state):
+        result, message = _run(flow, inputs, provider, {"ask_user": ask_user, "check_company": check_company})
     if state.stopped:
         raise state.stopped
-    if failure is not None and failure.cause_type == "LoopMaxExceeded":
+    if result is not None and result.status == "failed" and result.failure.cause_type == "LoopMaxExceeded":
         raise OnboardError("the interview didn't settle on a company; run `ac init` again")
     if message is not None:
-        if key := (provider.llm_config or {}).get("api_key"):
-            message = message.replace(str(key), "***")
-        raise OnboardError(f"the model couldn't run the interview: {redact(message)}; check or remove "
-                           f"{provider_path} and run `ac init` again")
+        raise ModelError(f"the model couldn't run the interview: {message}")
     return result.output
 
 
@@ -241,5 +267,5 @@ def init_flow(provider_path: Path, prompter: Prompter, known: Known) -> tuple[Dr
         OnboardError: ``run_init_flow`` raised.
         ProviderError: the provider file can't be used.
     """
-    output = run_init_flow(load_provider(provider_path), prompter, known, provider_path=provider_path)
+    output = run_init_flow(load_provider(provider_path), prompter, known)
     return Draft.from_output(output), output["remote"]

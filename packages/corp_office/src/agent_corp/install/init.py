@@ -13,10 +13,10 @@ from agent_corp.chat.hire import agent_files
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company_template import is_new, write_company
 from agent_corp.daemon.app import OfficePaths
-from agent_corp.install.interview import Known, fallback_draft, init_flow, owner_prompter
+from agent_corp.install.interview import Known, ModelError, fallback_draft, init_flow, model_problem, owner_prompter
 from agent_corp.install.launch import REPO, Host, launch
-from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ensure_provider, make_device,
-                                        make_home, onboard, redact, user_git)
+from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ask_provider, ensure_provider,
+                                        make_device, make_home, model_failed, onboard, redact, user_git)
 from agent_corp.protocol.models import HireRequest
 
 STEPS = 5
@@ -131,13 +131,20 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
     prompter.step(1, STEPS, "Model", "Your agents think with this model; its key stays in this office, readable"
                                      " only by you.")
     provider = paths.office / "provider.json"
-    wrote = ensure_provider(provider, prompter, stdin)
+    answers: dict[str, str] = {}  # so setting the model up again in step 2 starts from step 1's answers
+    wrote = ensure_provider(provider, prompter, stdin, check_model=model_problem, last=answers)
     prompter.say(f"Model provider: {'saved to' if wrote else 'up to date at'} {provider}")
 
     prompter.step(2, STEPS, "Company", "Tell the model about you, the company and your first AI teammates; it asks"
                                        " until it has what it needs.")
     if prompter.interactive:
-        draft, url = init_flow(provider, prompter, known)
+        while True:
+            try:
+                draft, url = init_flow(provider, prompter, known)
+                break
+            except ModelError as exc:
+                if model_failed(prompter, str(exc)):
+                    ask_provider(provider, prompter, model_problem, last=answers)
     else:
         # Without a terminal there's nothing for a model to ask, so no flow runs: the flags and defaults make the
         # company, and the password and remote steps run as they would in the flow.

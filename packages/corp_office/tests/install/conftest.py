@@ -28,6 +28,9 @@ def no_real_services(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("HOME", str(root / "user"))
     monkeypatch.setenv("AGENT_CORP_HOME", str(root / "user" / ".agent-corp"))
     (root / "user").mkdir()
+    # A model check would reach the provider; tests of the check itself call it directly.
+    monkeypatch.setattr("agent_corp.install.init.model_problem", lambda provider: None)
+    monkeypatch.setattr("agent_corp.install.interview.model_problem", lambda provider: None)
     yield
     assert not calls.exists(), f"a test ran a real service tool:\n{calls.read_text()}"
 

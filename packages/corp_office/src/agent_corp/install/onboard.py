@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
+from agent_composer._settings import PROVIDER_DEFAULT_MODELS
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
 
@@ -228,64 +229,142 @@ def check_provider(data: object) -> Provider:
     if "api_key" in llm and not llm.get("provider"):
         # Composer refuses a key without a provider at run time; say so now.
         raise OnboardError("llm_config.api_key needs llm_config.provider, so the key goes only to that provider")
+    name = llm.get("provider")
+    if name and not llm.get("model") and name not in PROVIDER_DEFAULT_MODELS:
+        # Composer finds this out only when a run starts; say so before the provider is saved.
+        raise OnboardError(f"llm_config.model is missing, and {name} has no default model")
     return provider
 
 
-PROVIDER_DEFAULT = "The provider's default"
 TYPE_MODEL = "Another model (type its name)"
-"""The choices for the model."""
+"""The choice for a model other than the provider's default."""
 
 
-def _ask_provider(prompter: Prompter) -> dict:
+def _azure_base_url(answer: str) -> str:
+    """The v1 endpoint of an Azure OpenAI resource given by its name or its endpoint URL."""
+    url = answer.strip().rstrip("/").removesuffix("/openai/v1")
+    if "://" not in url:
+        url = f"https://{url}" if "." in url else f"https://{url}.openai.azure.com"
+    return f"{url}/openai/v1/"
+
+
+def _azure_problem(answer: str) -> str | None:
+    """Why ``answer`` doesn't name an Azure OpenAI endpoint, or None when it does."""
+    try:
+        LLMConfig(provider="openai", base_url=_azure_base_url(answer), api_key="-")
+    except ValidationError:
+        return "give the resource name, or its endpoint like https://<resource>.openai.azure.com"
+    return None
+
+
+def _ask_key(prompter: Prompter, name: str, *, required: bool, last: str = "") -> str:
+    """The key for provider ``name``, read without echo; empty only when not ``required``, and ``last`` for an empty
+    answer when there is one."""
+    if last:
+        question = f"{name} API key (empty keeps the one you just typed; not shown)"
+    elif required:
+        question = f"{name} API key (not shown)"
+    else:
+        question = f"{name} API key (empty to use `composer auth {name}`; not shown)"
+    for _ in range(TRIES):
+        try:
+            key = prompter.secret(question) or last
+        except NoTerminal:
+            raise OnboardError("there is no terminal to read the key without echo;"
+                               " pass the provider with --provider-stdin instead") from None
+        if key or not required:
+            return key
+        prompter.say(f"That doesn't work: {name} needs a key")
+    raise OnboardError(f"no usable answer to {question!r}")
+
+
+def _ask_model(prompter: Prompter, name: str, last: str = "") -> str:
+    """The model for provider ``name``, ``last`` for an empty answer; empty for composer's default."""
+    if default := PROVIDER_DEFAULT_MODELS.get(name):
+        first = f"{default} (the default)"
+        if prompter.choose("Model", [first, TYPE_MODEL], TYPE_MODEL if last else first) == TYPE_MODEL:
+            return prompter.ask("Model name", last)
+        return ""
+    return ask_until(prompter, f"Model name ({name} has no default model)", last,
+                     lambda m: None if m.strip() else "type the model's name")
+
+
+def _ask_provider(prompter: Prompter, last: dict[str, str]) -> dict:
+    """The provider the owner gives, each question defaulting to its answer in ``last``, which gets these answers."""
     choices = ", ".join(SUPPORTED_LLM_PROVIDERS)
-    name = ask_until(prompter, "Model provider", "anthropic",
+    name = ask_until(prompter, "Model provider", last.get("provider", "anthropic"),
                      lambda n: None if n in SUPPORTED_LLM_PROVIDERS else f"choose one of: {choices}",
                      options=SUPPORTED_LLM_PROVIDERS)
+    if name != last.get("provider"):
+        # A key goes only to the provider it was typed for.
+        last.clear()
+        last["provider"] = name
+    if name == "azure":
+        # Composer's azure client reads its endpoint from variables the office doesn't have; a resource's v1
+        # endpoint takes the openai client with the key and the deployment as the model.
+        last["endpoint"] = ask_until(prompter, "Azure OpenAI endpoint or resource name", last.get("endpoint", ""),
+                                     _azure_problem)
+        last["key"] = _ask_key(prompter, name, required=True, last=last.get("key", ""))
+        last["model"] = ask_until(prompter, "Deployment name", last.get("model", ""),
+                                  lambda m: None if m.strip() else "type the deployment's name").strip()
+        return {"llm_config": {"provider": "openai", "base_url": _azure_base_url(last["endpoint"]),
+                               "api_key": last["key"], "model": last["model"]}}
     llm = {"provider": name}
-    if prompter.choose("Model", [PROVIDER_DEFAULT, TYPE_MODEL], PROVIDER_DEFAULT) == TYPE_MODEL:
-        if model := prompter.ask("Model name"):
-            llm["model"] = model
-    try:
-        key = prompter.secret(f"{name} API key (empty to use `composer auth {name}`; not shown)")
-    except NoTerminal:
-        raise OnboardError("there is no terminal to read the key without echo;"
-                           " pass the provider with --provider-stdin instead") from None
-    if key:
-        llm["api_key"] = key
+    last["key"] = _ask_key(prompter, name, required=False, last=last.get("key", ""))
+    if last["key"]:
+        llm["api_key"] = last["key"]
     else:
         prompter.say(f"No key saved; runs will use composer's own login (`composer auth {name}`).")
+    last["model"] = _ask_model(prompter, name, last.get("model", "")).strip()
+    if last["model"]:
+        llm["model"] = last["model"]
     return {"llm_config": llm}
 
 
-def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None) -> bool:
-    """Make sure ``path`` holds a usable provider; return whether it was written.
+TRY_AGAIN = "Try again"
+SET_UP_AGAIN = "Set up the model again"
+"""What to do when the model doesn't answer."""
 
-    A provider on ``stdin`` (JSON) is checked and replaces the file, so a key can be
-    rotated. Without one, an existing file is checked and kept, and a missing one is asked
-    of the owner, the key read without echo. The key never goes through argv or the
-    environment.
+ModelCheck = Callable[[Provider], str | None]
+"""Why a provider's model doesn't answer, or None when it does."""
 
-    Raises:
-        OnboardError: the provider isn't usable; the message never contains the key. An
-            existing file is left as it was.
-    """
-    if stdin is not None:
+
+def model_failed(prompter: Prompter, problem: str) -> bool:
+    """Tell the owner why the model failed and ask what to do; return whether they want to set it up again."""
+    prompter.say(problem[:1].upper() + problem[1:])
+    return prompter.choose("What now?", [TRY_AGAIN, SET_UP_AGAIN], TRY_AGAIN) == SET_UP_AGAIN
+
+
+def _answers(prompter: Prompter, provider: Provider, check_model: ModelCheck) -> bool:
+    """Whether ``provider``'s model answers, checking again for as long as the owner chooses to try again."""
+    while True:
+        prompter.say("Checking that the model answers...")
+        if (problem := check_model(provider)) is None:
+            return True
+        if not prompter.interactive:
+            raise OnboardError(f"the model didn't answer: {problem}")
+        if model_failed(prompter, f"the model didn't answer: {problem}"):
+            return False
+
+
+def _working_provider(prompter: Prompter, check_model: ModelCheck | None, last: dict[str, str]) -> Provider:
+    """Ask for a provider until composer takes it and its model answers ``check_model``, starting from the answers
+    in ``last``; only Ctrl-C or the input ending stops it."""
+    while True:
+        data = _ask_provider(prompter, last)
         try:
-            data = json.loads(stdin.read())
-        except ValueError:
-            raise OnboardError("the provider on stdin is not valid JSON") from None
-    elif os.path.lexists(path):
-        again = "fix it or remove it and run `ac onboard` again"
-        try:
-            check_provider(load_provider(path).model_dump(exclude_defaults=True))
-        except ProviderError as exc:  # its message names the file
-            raise OnboardError(f"{exc}; {again}") from None
+            provider = check_provider(data)
         except OnboardError as exc:
-            raise OnboardError(f"{path}: {exc}; {again}") from None
-        return False
-    else:
-        data = _ask_provider(prompter)
-    provider = check_provider(data)
+            if not prompter.interactive:
+                raise
+            prompter.say(f"That doesn't work: {exc}")
+            continue
+        if check_model is None or _answers(prompter, provider, check_model):
+            return provider
+
+
+def _save_provider(path: Path, provider: Provider) -> None:
+    """Write ``provider`` to ``path``, readable only by the owner, and check it loads back."""
     try:
         write_private(path, (json.dumps(provider.model_dump(exclude_defaults=True), indent=2) + "\n").encode())
     except OSError as exc:
@@ -294,6 +373,55 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None)
         load_provider(path)
     except ProviderError as exc:
         raise OnboardError(str(exc)) from None
+
+
+def ask_provider(path: Path, prompter: Prompter, check_model: ModelCheck | None = None, *,
+                 last: dict[str, str] | None = None) -> None:
+    """Ask the owner for a provider until its model answers ``check_model``, then save it at ``path``. Each question
+    defaults to its answer in ``last``, which gets the new answers, so asking again starts where the owner left off.
+
+    Raises:
+        OnboardError: there's no one to ask, or the file can't be written; the message never contains the key.
+    """
+    _save_provider(path, _working_provider(prompter, check_model, {} if last is None else last))
+
+
+def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None, *,
+                    check_model: ModelCheck | None = None, last: dict[str, str] | None = None) -> bool:
+    """Make sure ``path`` holds a usable provider; return whether it was written.
+
+    A provider on ``stdin`` (JSON) is checked and replaces the file, so a key can be rotated. Without one, an
+    existing file is checked and kept (on a terminal, one composer can't use is asked for again), and a missing one
+    is asked of the owner, the key read without echo, until its model answers ``check_model``. Nothing is written
+    before the model answers. The key never goes through argv or the environment. ``last`` is as for
+    :func:`ask_provider`.
+
+    Raises:
+        OnboardError: the provider isn't usable; the message never contains the key. An
+            existing file is left as it was.
+    """
+    if stdin is None:
+        if os.path.lexists(path):
+            again = "fix it or remove it and run `ac onboard` again"
+            try:
+                check_provider(load_provider(path).model_dump(exclude_defaults=True))
+                return False
+            except ProviderError as exc:  # its message names the file
+                raise OnboardError(f"{exc}; {again}") from None
+            except OnboardError as exc:
+                if not prompter.interactive:
+                    raise OnboardError(f"{path}: {exc}; {again}") from None
+                prompter.say(f"{path}: {exc}; set up the model again.")
+        ask_provider(path, prompter, check_model, last=last)
+        return True
+    try:
+        data = json.loads(stdin.read())
+    except ValueError:
+        raise OnboardError("the provider on stdin is not valid JSON") from None
+    provider = check_provider(data)
+    if check_model is not None and (problem := check_model(provider)) is not None:
+        raise OnboardError(f"the model didn't answer: {problem}")
+    _save_provider(path, provider)
     return True
 
 
@@ -582,7 +710,9 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
         prompter.say("This device has no identity yet; run `ac login` to use ac from it.")
 
     step(3, "Model", "Your agents think with this model; its key stays in this office, readable only by you.")
-    wrote = ensure_provider(paths.office / "provider.json", prompter, stdin)
+    from agent_corp.install.interview import model_problem  # interview imports this module
+
+    wrote = ensure_provider(paths.office / "provider.json", prompter, stdin, check_model=model_problem)
     prompter.say(f"Model provider: {'saved to' if wrote else 'up to date at'} {paths.office / 'provider.json'}")
 
     step(4, "Office", "The office runs as a service, so your agents keep working after this terminal closes.")
