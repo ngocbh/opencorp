@@ -23,9 +23,9 @@ export interface Writer {
  */
 export async function runSetup(argv: string[], cwd: string): Promise<number> {
   const child = spawnSetup(argv, cwd)
-  const at = argv.indexOf("agent_corp.install")
+  const name = argv[argv.indexOf("agent_corp.install") + 1]
   try {
-    return await runSetupWith(child, process.stdout, process.stderr, at >= 0 ? `ac ${argv[at + 1]}` : "")
+    return await runSetupWith(child, process.stdout, process.stderr, name ? `ac ${name}` : "")
   } catch (e) {
     // A renderer that fails to start must not leave the install waiting on stdin.
     child.close()
