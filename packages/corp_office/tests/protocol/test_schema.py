@@ -51,6 +51,13 @@ def test_every_route_body_has_a_fixture():
     assert BODIES <= {p.stem for p in FIXTURES.glob("*.json")}
 
 
+SETUP = {"SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep", "SetupAnswer"}
+
+
+def test_every_setup_message_has_a_fixture():
+    assert SETUP <= {p.stem for p in FIXTURES.glob("*.json")}
+
+
 def test_optional_fields_default():
     # Every optional field has a default (null when nothing else fits), so a plain
     # model_dump() of a generated model is always schema-valid.

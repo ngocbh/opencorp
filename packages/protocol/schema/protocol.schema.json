@@ -593,6 +593,73 @@
       "properties": {
         "password": { "type": "string", "minLength": 8 }
       }
+    },
+    "SetupPrompt": {
+      "description": "One line `python -m agent_corp.install init|onboard --json-prompts` writes on stdout: a question for `ac`'s setup screen, or something to show.",
+      "oneOf": [
+        { "$ref": "#/$defs/SetupAsk" }, { "$ref": "#/$defs/SetupChoose" }, { "$ref": "#/$defs/SetupSecret" },
+        { "$ref": "#/$defs/SetupSay" }, { "$ref": "#/$defs/SetupStep" }
+      ],
+      "discriminator": {
+        "propertyName": "type",
+        "mapping": {
+          "ask": "#/$defs/SetupAsk", "choose": "#/$defs/SetupChoose", "secret": "#/$defs/SetupSecret",
+          "say": "#/$defs/SetupSay", "step": "#/$defs/SetupStep"
+        }
+      }
+    },
+    "SetupAsk": {
+      "type": "object", "additionalProperties": false, "required": ["type", "question"],
+      "description": "A typed answer; an empty one means `default`.",
+      "properties": {
+        "type": { "const": "ask" },
+        "question": { "type": "string" },
+        "default": { "type": "string", "default": "" }
+      }
+    },
+    "SetupChoose": {
+      "type": "object", "additionalProperties": false, "required": ["type", "question", "options"],
+      "description": "Pick one of `options`.",
+      "properties": {
+        "type": { "const": "choose" },
+        "question": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "default": { "type": "string", "default": "" }
+      }
+    },
+    "SetupSecret": {
+      "type": "object", "additionalProperties": false, "required": ["type", "question"],
+      "description": "An answer typed without being shown.",
+      "properties": {
+        "type": { "const": "secret" },
+        "question": { "type": "string" }
+      }
+    },
+    "SetupSay": {
+      "type": "object", "additionalProperties": false, "required": ["type", "text"],
+      "description": "A line to show.",
+      "properties": {
+        "type": { "const": "say" },
+        "text": { "type": "string" }
+      }
+    },
+    "SetupStep": {
+      "type": "object", "additionalProperties": false, "required": ["type", "number", "total", "title", "why"],
+      "description": "The start of step `number` of `total`.",
+      "properties": {
+        "type": { "const": "step" },
+        "number": { "type": "integer", "minimum": 1 },
+        "total": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string" },
+        "why": { "type": "string" }
+      }
+    },
+    "SetupAnswer": {
+      "type": "object", "additionalProperties": false, "required": ["answer"],
+      "description": "One line `ac`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.",
+      "properties": {
+        "answer": { "type": "string" }
+      }
     }
   }
 }
