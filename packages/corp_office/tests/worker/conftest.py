@@ -31,7 +31,7 @@ ASK = agent_flow("ask", node="    mode: tool_calling\n    tools: [ask_user]\n")
 TOOLS = agent_flow("tools", node="    mode: tool_calling\n    tools: [toolbox]\n")
 STEERABLE = agent_flow("steerable", node="    mode: tool_calling\n    tools: [toolbox]\n    steerable: true\n")
 PROFILED = agent_flow("profiled", top="long_term_memory: profile\n")
-SESSION = agent_flow("session", top="long_term_memory: session\n")
+SESSION = agent_flow("session", node="    long_term_memory: session\n")
 SKILLED = agent_flow("skilled", node="    mode: tool_calling\n    skills: all\n")
 
 
