@@ -226,6 +226,7 @@ test("a prompt gate with a record output can't be answered here", async () => {
     const f = await app.until((f) => f.includes("can't be answered here yet"))
     expect(f).toContain("Describe the bug")
     expect(f).toContain("@minh asks")
+    expect(f).not.toContain("Chat about this")
     app.input.pressKey("1")
     app.input.pressEnter()
     await Bun.sleep(50)
