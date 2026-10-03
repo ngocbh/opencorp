@@ -2,6 +2,7 @@
 and the draft without a terminal."""
 
 import json
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -188,9 +189,21 @@ def ask_user(**request) -> str:
     return answer
 
 
+def _drop(record: logging.LogRecord) -> bool:
+    return False
+
+
 @contextmanager
 def _quiet_watchdog() -> Iterator[None]:
-    yield
+    """No "code node may be stuck" warnings inside the block."""
+    # The confirm, password and remote nodes wait on the owner, for as long as the owner takes. A filter, because
+    # logging.config.dictConfig (which uvicorn calls) re-enables a disabled logger.
+    log = logging.getLogger("agent_composer.nodes.code.watchdog")
+    log.addFilter(_drop)
+    try:
+        yield
+    finally:
+        log.removeFilter(_drop)
 
 
 def run_init_flow(provider: Provider, prompter: Prompter, known: Known, *, provider_path: Path) -> dict:
