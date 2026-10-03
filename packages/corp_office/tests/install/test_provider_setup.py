@@ -308,7 +308,7 @@ def colours(monkeypatch, no_color):
     drawn = io.StringIO()
     with create_pipe_input() as keys:
         prompter = TtyPrompter(terminal=(keys, Vt100_Output(drawn, lambda: Size(24, 80), term="xterm")))
-        monkeypatch.setenv("NO_COLOR", "1")  # the init flow's environment changes after the prompter is made
+        monkeypatch.delenv("NO_COLOR", raising=False)  # the init flow's environment drops it after this
         keys.send_text(ENTER)
         prompter.choose("Q", ["a", "b"])
     return drawn.getvalue()
@@ -414,6 +414,21 @@ def test_on_a_terminal_a_secret_is_marked_like_the_other_questions(monkeypatch, 
     monkeypatch.setattr(getpass, "getpass", lambda text: shown.append(text) or KEY)
     assert TtyPrompter().secret("anthropic API key") == KEY
     assert shown == [prompt]
+
+
+def test_a_dumb_terminal_gets_a_numbered_list(monkeypatch, capsys):
+    a_colour_terminal(monkeypatch)
+    monkeypatch.setenv("TERM", "dumb")
+    plain_stdin(monkeypatch, "2\n")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    assert TtyPrompter().choose("Q", ["a", "b"]) == "b"
+    assert "  2. b" in capsys.readouterr().out
+
+
+def test_an_empty_no_color_leaves_colour_on(monkeypatch):
+    a_colour_terminal(monkeypatch)
+    monkeypatch.setenv("NO_COLOR", "")
+    assert TtyPrompter().color is True
 
 
 def test_the_script_prompter_records_the_same_step_lines():

@@ -156,7 +156,7 @@ def test_a_second_offboard_finds_nothing_and_asks_nothing(tmp_path):
     offboard(paths.home, ask, host=make_host(tmp_path, Runner()), environ=no_launchers())
     assert f"Nothing of this office to remove at {paths.home}." in ask.seen
     assert any(line.startswith(f"Keeping the company repo at {paths.company}") for line in ask.seen)
-    assert not any(q.endswith("(y/N)") for q in ask.seen)
+    assert CONFIRM not in ask.seen and ask.offered == []
     assert subjects(paths.company)[0] == f"devices(@me): remove {device_name()}"
     ask = Script()
     offboard(tmp_path / "nowhere", ask, host=make_host(tmp_path, Runner()), environ=no_launchers())

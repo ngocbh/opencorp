@@ -88,6 +88,11 @@ STYLE = [("qmark", "fg:ansicyan bold"), ("question", "bold"), ("answer", "fg:ans
 """How questions on a terminal look: ANSI colour names only, so they follow the terminal's theme."""
 
 
+def _closed(question: str) -> OnboardError:
+    """The error for stdin ending before ``question`` was answered."""
+    return OnboardError(f"no answer to {question!r} (stdin closed)")
+
+
 class TtyPrompter:
     """Asks on the terminal; a secret is read with ``getpass``, so it is never echoed.
 
@@ -103,7 +108,8 @@ class TtyPrompter:
         self.interactive = interactive
         self.terminal = terminal
         # Read now: the init flow runs its questions in an environment without these.
-        self.color = "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb"
+        self.dumb = os.environ.get("TERM") == "dumb"
+        self.color = not os.environ.get("NO_COLOR") and not self.dumb
 
     def _styled(self) -> bool:
         """Whether to colour what is printed: colour is on and it goes to a terminal."""
@@ -115,11 +121,12 @@ class TtyPrompter:
             return None
         if self.terminal is not None:
             return self.terminal
-        if sys.stdin.isatty() and sys.stdout.isatty():
+        # A dumb terminal can't move the cursor to redraw a list.
+        if sys.stdin.isatty() and sys.stdout.isatty() and not self.dumb:
             return None, None
         return None
 
-    def _drawn(self, terminal: "tuple[Input | None, Output | None]") -> dict[str, Any]:
+    def _questionary_kwargs(self, terminal: "tuple[Input | None, Output | None]") -> dict[str, Any]:
         """What every questionary question gets: the style, the terminal, and no colour if the owner turned it off."""
         import questionary  # not loaded until a question is drawn
         from prompt_toolkit.output import ColorDepth
@@ -136,12 +143,12 @@ class TtyPrompter:
             if (terminal := self._terminal()) is not None:
                 import questionary
 
-                answer = questionary.text(question, default=default, **self._drawn(terminal)).unsafe_ask()
+                answer = questionary.text(question, default=default, **self._questionary_kwargs(terminal)).unsafe_ask()
                 return answer.strip() or default
             shown = f"{question} [{default}]: " if default else f"{question}: "
             return input(shown).strip() or default
         except EOFError:
-            raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+            raise _closed(question) from None
 
     def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
         if question in self.preset:
@@ -155,9 +162,9 @@ class TtyPrompter:
                 # select refuses a default that isn't one of its choices.
                 return questionary.select(question, choices=list(options),
                                           default=default if default in options else None,
-                                          instruction="(↑/↓, Enter)", **self._drawn(terminal)).unsafe_ask()
+                                          instruction="(↑/↓, Enter)", **self._questionary_kwargs(terminal)).unsafe_ask()
             except EOFError:
-                raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+                raise _closed(question) from None
         for number, option in enumerate(options, 1):
             self.say(f"  {number}. {option}")
         shown = f"{question} [{default}]: " if default else f"{question}: "
@@ -165,7 +172,7 @@ class TtyPrompter:
             try:
                 line = input(shown).strip()
             except EOFError:
-                raise OnboardError(f"no answer to {question!r} (stdin closed)") from None
+                raise _closed(question) from None
             # An option is taken before a number, so an option that is a number picks itself.
             if line in options:
                 return line
@@ -451,7 +458,7 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
         raise OnboardError("the company has no humans for this device to act as")
     login = _login_handle()
     default = login if login in humans else humans[0] if len(humans) == 1 else ""
-    # Without a terminal there's no list on screen, so the problem names the humans.
+    # With no one to ask, nothing is listed, so the problem names the humans and the flag.
     pick = f"say which one you are ({', '.join('@' + h for h in humans)}), or pass --handle"
     handle = ask_until(prompter, WHO, default, lambda h: None if h in humans else
                        f"@{h} isn't one of them" if h else pick, options=humans)
