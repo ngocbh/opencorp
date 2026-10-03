@@ -70,6 +70,8 @@ export function QuestionView(
     maxOptions?: number
     /** Whether the box is one line, which never holds a line break. */
     singleLine?: boolean
+    /** The text the first page's box starts with. */
+    draft?: string
   }>,
 ) {
   const { theme } = useTheme()
@@ -80,7 +82,7 @@ export function QuestionView(
   const [store, setStore] = createStore({
     page: 0,
     selected: props.selected ?? 0,
-    answers: [] as PageAnswer[],
+    answers: (props.draft ? [{ picked: [], text: props.draft }] : []) as PageAnswer[],
   })
 
   const active = () => props.enabled !== false && !props.hidden
@@ -306,8 +308,10 @@ export function QuestionView(
                             {marker(i())}
                           </text>
                         </box>
-                        <box backgroundColor={active() ? theme.backgroundElement : undefined}>
-                          <text fg={active() ? theme.secondary : theme.text}>{opt.label}</text>
+                        <box backgroundColor={active() ? theme.backgroundElement : undefined} flexShrink={1}>
+                          <text fg={active() ? theme.secondary : theme.text} wrapMode="word">
+                            {opt.label}
+                          </text>
                         </box>
                       </box>
 

@@ -137,7 +137,11 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
               <Match when={question.type === "choose" && question}>
                 {(choose) => {
                   const options = choose().options
-                  const at = options.indexOf(choose().default ?? "")
+                  const fallback = choose().default ?? ""
+                  const typed = choose().typed === true
+                  const at = options.indexOf(fallback)
+                  // A typed default that isn't an option starts in the box, so Enter alone still takes it.
+                  const draft = typed && at < 0 ? fallback : ""
                   return (
                     <QuestionView
                       pages={[
@@ -146,10 +150,11 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
                           question: choose().question,
                           options: options.map((o) => ({ label: o, value: o })),
                           multi: false,
-                          typed: choose().typed === true,
+                          typed,
                         },
                       ]}
-                      selected={Math.max(at, 0)}
+                      selected={at >= 0 ? at : draft ? options.length : 0}
+                      draft={draft}
                       singleLine
                       // Leaves the transcript about half the screen.
                       maxOptions={Math.max(3, Math.floor(dimensions().height / 2) - 4)}

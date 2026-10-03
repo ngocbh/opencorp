@@ -222,6 +222,33 @@ test("a long list shows a window that follows the cursor", async () => {
   }
 })
 
+test("a typed default that isn't an option starts in the box, so Enter sends it", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Model", options: ["sonnet (the default)"], default: "my-model", typed: true })
+    await app.until((f) => f.includes("2. my-model"))
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["my-model"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a long option wraps instead of being cut", async () => {
+  const { child, app } = await boot()
+  const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ")
+  try {
+    child.push({ type: "choose", question: "Plan", options: [long, "short"] })
+    const f = await app.until((f) => f.includes("word29") && f.includes("2. short"))
+    expect(f).toContain("1. word0")
+    // Only the option's own lines: other text on screen may hold an ellipsis.
+    expect(f.split("\n").filter((l) => /word\d/.test(l)).some((l) => l.includes("…"))).toBe(false)
+  } finally {
+    await app.stop()
+  }
+})
+
 test("a secret shows only as dots and is never shown or printed", async () => {
   const { child, app } = await boot()
   try {

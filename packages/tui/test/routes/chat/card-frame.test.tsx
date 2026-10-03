@@ -525,3 +525,19 @@ test("an office without the carried/dismiss route warns 'not available yet' too"
     office.stop()
   }
 })
+
+test("a long option wraps instead of being cut", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ")
+  office.addQuestion({ session_id: s.id, question: "Which plan?", options: [long, "short"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    const f = await app.until((f) => f.includes("word29") && f.includes("2. short"))
+    expect(f).toContain("1. word0")
+    expect(f.split("\n").filter((l) => /word\d/.test(l)).some((l) => l.includes("…"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
