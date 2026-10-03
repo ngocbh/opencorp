@@ -1,6 +1,5 @@
 """A side session's run spec, its read-only lookups, and its discussion."""
 
-import json
 import os
 import shutil
 from importlib.resources import files
@@ -9,11 +8,12 @@ import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.company.flows import load_confined
-from agent_corp.questions.side import READ_TOOLS, SIDE_CHAT_FLOW, discussion, side_spec, work_item_tools
+from agent_corp.questions.side import SIDE_CHAT_FLOW, discussion, side_spec
 from agent_corp.store import new_id
+from agent_corp.tools.workspace import READ_TOOLS
 from tests.chat.conftest import fake_llm, make_harness, workspace  # noqa: F401
 from tests.company.conftest import _isolate_git  # noqa: F401
-from tests.store.conftest import message, question, session, work_item
+from tests.store.conftest import message, question, session
 from tests.store.conftest import store  # noqa: F401
 
 SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
@@ -93,26 +93,6 @@ def test_a_side_run_in_the_office_files_is_refused(make_harness):  # noqa: F811
     with pytest.raises(HarnessError) as err:
         side_spec(h, side_of(h, h.office.paths.company))
     assert (err.value.status, err.value.code) == (422, "unsafe_workspace")
-
-
-def test_work_item_tools_show_only_what_the_asker_can_see(store):  # noqa: F811
-    top = store.create_work_item(work_item(title="Ship v2"))
-    chat = store.create_work_item(work_item(title="Chat", parent_id=top.id))
-    sibling = store.create_work_item(work_item(title="Docs", parent_id=top.id))
-    mine = store.create_work_item(work_item(title="Mine", requester="ngocbh", assignee="minh"))
-    other = store.create_work_item(work_item(title="Someone else's", assignee="lan"))
-    asker = store.create_session(session(work_item_id=chat.id))
-    q = store.add_question(question(asker.id))
-    tools = work_item_tools(store, "minh", q)
-    listed = {i["title"] for i in json.loads(tools["list_work_items"]())}
-    assert listed == {"Ship v2", "Chat", "Docs", "Mine"}
-    read = json.loads(tools["read_work_item"](top.id))
-    assert read["title"] == "Ship v2" and {c["title"] for c in read["children"]} == {"Chat", "Docs"}
-    assert json.loads(tools["read_work_item"](sibling.id))["parent_id"] == top.id
-    assert json.loads(tools["read_work_item"](mine.id))["title"] == "Mine"
-    for hidden in (other.id, new_id()):
-        with pytest.raises(ValueError, match="no work item"):
-            tools["read_work_item"](hidden)
 
 
 def text(t):
