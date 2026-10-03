@@ -421,6 +421,28 @@ test("Esc in the typed box asks to stop; n keeps the text and typing goes on int
   }
 })
 
+test("Ctrl+C in the typed box leaves the view on the second press and never stops the question", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    app.input.pressArrow("down")
+    app.input.pressArrow("down")
+    await app.input.typeText("rel")
+    await app.until((f) => f.includes("3. rel"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("Press again to leave"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+    expect(stops(office, q.id)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("each typed page keeps its own text when paging, across a page with no typed answer", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
