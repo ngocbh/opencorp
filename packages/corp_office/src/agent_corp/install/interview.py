@@ -1,22 +1,26 @@
-"""The owner's interview for a new company: a flow that asks on the terminal, and defaults without one."""
+"""`ac init`'s flow (an interview that asks on the terminal, the owner's confirmation, a password and a remote),
+and the draft without a terminal."""
 
 import json
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from agent_composer import load_flow, run_flow
 
 from agent_corp.chat.provider import Provider, load_provider
-from agent_corp.company.draft import Answers, Teammate, answer_problems, field_problems
+from agent_corp.company.draft import Draft, Teammate, draft_problems, field_problems
 from agent_corp.company_template import Owner
-from agent_corp.install.onboard import TRIES, OnboardError, Prompter, login_defaults, redact, slug
+from agent_corp.install.onboard import OnboardError, Prompter, login_defaults, redact, slug
+from agent_corp.tools.company.draft import check_company
 from agent_corp.worker.spawn import worker_env
 
 FLOW = Path(__file__).parent / "flows" / "init.yaml"
-"""The interview flow."""
+"""The init flow."""
 
 CONFIRM = "Create this company? (Y/n, or say what to change)"
 """What the owner is asked after the summary."""
@@ -56,23 +60,23 @@ class Known:
         return {"given": given, "suggested": {"name": name, "handle": handle, "title": "CEO"}}
 
 
-def fallback_answers(known: Known) -> Answers:
-    """The answers without an interview: ``known``, with defaults for the rest and one teammate.
+def fallback_draft(known: Known) -> Draft:
+    """The draft without an interview: ``known``, with defaults for the rest and one teammate.
 
     Raises:
-        OnboardError: the answers have problems, and the message names the flag to pass for each;
+        OnboardError: the draft has problems, and the message names the flag to pass for each;
             or the user id has no account.
     """
     name, handle = login_defaults()
     agent = known.agent or "Minh"
-    answers = Answers(known.company or "My company",
-                      Owner(handle=known.handle or handle, name=known.name or name, title=known.title or "CEO"),
-                      (Teammate(agent, known.agent_handle or slug(agent) or "agent", "Engineer"),))
-    if problems := field_problems(answers):
+    draft = Draft(known.company or "My company",
+                  Owner(handle=known.handle or handle, name=known.name or name, title=known.title or "CEO"),
+                  (Teammate(agent, known.agent_handle or slug(agent) or "agent", "Engineer"),))
+    if problems := field_problems(draft):
         raise OnboardError("can't set up the company without a terminal: "
                            + "; ".join(f"{why}; pass {FLAGS[field]}" if field in FLAGS else why
                                        for field, why in problems))
-    return answers
+    return draft
 
 
 # C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
@@ -89,14 +93,14 @@ def _who(name: str, handle: str, title: str) -> str:
     return clean(f"{name} (@{handle})" + (f", {title}" if title else ""))
 
 
-def summary(answers: Answers) -> list[str]:
-    """``answers`` as shown to the owner to confirm: the company, the owner, and a line for each teammate."""
-    owner = answers.owner
-    lines = [f"Company: {clean(answers.company)}", f"You: {_who(owner.name, owner.handle, owner.title)}"]
-    if not answers.team:
+def summary(draft: Draft) -> list[str]:
+    """``draft`` as shown to the owner to confirm: the company, the owner, and a line for each teammate."""
+    owner = draft.owner
+    lines = [f"Company: {clean(draft.company)}", f"You: {_who(owner.name, owner.handle, owner.title)}"]
+    if not draft.team:
         return [*lines, "Teammates: none yet"]
     lines.append("Teammates:")
-    for t in answers.team:
+    for t in draft.team:
         about = clean(t.about).strip()
         lines.append(f"  {_who(t.name, t.handle, t.title)}" + (f": {about}" if about else ""))
     return lines
@@ -115,46 +119,119 @@ def _office_env(extra: dict[str, str]) -> Iterator[None]:
         os.environ.update(saved)
 
 
-def run_interview(provider: Provider, prompter: Prompter, known: Known, *, draft: str, changes: str,
-                  provider_path: Path) -> dict:
-    """Run the interview flow once with ``provider``'s model, asking its questions with ``prompter``; return its output.
+@dataclass
+class Asking:
+    """The owner's terminal for one init flow run, and the ``OnboardError`` that stopped it, if one did."""
 
-    ``draft`` is the JSON of the last output and ``changes`` what to change in it; both are empty on a first run.
-
-    Raises:
-        OnboardError: the owner's input ended (the prompter's own error), the run failed, or the user id has no
-            account.
-    """
-    flow = load_flow(FLOW.read_text(), source_label=str(FLOW))
-    inputs = {"known": json.dumps(known.facts()), "draft": draft, "changes": changes}
+    prompter: Prompter
     stopped: OnboardError | None = None
 
-    def ask_user(**request):
-        nonlocal stopped
-        options = request.get("options") or []
+
+# Code nodes are named by module:function, so they reach the terminal through this rather than a closure.
+_ASKING: ContextVar[Asking] = ContextVar("asking")
+
+
+@contextmanager
+def asking(state: Asking) -> Iterator[None]:
+    """Make ``state`` the terminal that ``owner_prompter`` gives inside the block."""
+    token = _ASKING.set(state)
+    try:
+        yield
+    finally:
+        _ASKING.reset(token)
+
+
+@contextmanager
+def owner_prompter() -> Iterator[Prompter]:
+    """The running init flow's prompter, for its tools and code nodes.
+
+    An ``OnboardError`` raised inside is kept, so the run's caller raises it rather than the run's failure.
+    """
+    state = _ASKING.get()
+    try:
+        yield state.prompter
+    except OnboardError as exc:
+        state.stopped = exc
+        raise
+
+
+def confirm(inputs: dict) -> dict:
+    """The init flow's ``confirm`` node: check the draft in ``inputs["answers"]`` and, if it has no problems, show it
+    and ask the owner to create the company.
+
+    Returns the round's ``draft`` (as JSON), its ``changes`` (the problems, or what the owner wants changed) and
+    whether the owner ``accepted``.
+    """
+    text = json.dumps(inputs["answers"])
+    draft = Draft.from_output(inputs["answers"])
+    if problems := draft_problems(draft):
+        return {"draft": text, "changes": "\n".join(problems), "accepted": False}
+    with owner_prompter() as prompter:
+        for line in summary(draft):
+            prompter.say(line)
+        reply = prompter.ask(CONFIRM).strip()
+    if reply.lower() in ("", "y", "yes"):
+        return {"draft": text, "changes": "", "accepted": True}
+    changes = ("The owner wants changes; ask what to change" if reply.lower() in ("n", "no")
+               else f"The owner wants changes: {reply}")
+    return {"draft": text, "changes": changes, "accepted": False}
+
+
+def ask_user(**request) -> str:
+    """Ask the owner ``request["question"]``, listing ``request["options"]`` numbered; a number picks that option."""
+    options = request.get("options") or []
+    with owner_prompter() as prompter:
         for number, option in enumerate(options, 1):
             prompter.say(f"  {number}. {clean(option)}")
-        try:
-            answer = prompter.ask(clean(request["question"]))
-        except OnboardError as exc:
-            stopped = exc
-            raise
-        if answer.strip().isdecimal() and 1 <= int(answer) <= len(options):
-            return options[int(answer) - 1]
-        return answer
+        answer = prompter.ask(clean(request["question"]))
+    if answer.strip().isdecimal() and 1 <= int(answer) <= len(options):
+        return options[int(answer) - 1]
+    return answer
 
+
+def _drop(record: logging.LogRecord) -> bool:
+    return False
+
+
+@contextmanager
+def _quiet_watchdog() -> Iterator[None]:
+    """No "code node may be stuck" warnings inside the block."""
+    # The confirm, password and remote nodes wait on the owner, for as long as the owner takes. A filter, because
+    # logging.config.dictConfig (which uvicorn calls) re-enables a disabled logger.
+    log = logging.getLogger("agent_composer.nodes.code.watchdog")
+    log.addFilter(_drop)
+    try:
+        yield
+    finally:
+        log.removeFilter(_drop)
+
+
+def run_init_flow(provider: Provider, prompter: Prompter, known: Known, *, provider_path: Path) -> dict:
+    """Run the init flow with ``provider``'s model, asking the owner with ``prompter``; return its output.
+
+    Raises:
+        OnboardError: the owner's input ended or no password worked (the error raised), the interview didn't settle
+            on a company, the run failed, or the user id has no account.
+    """
+    flow = load_flow(FLOW.read_text(), source_label=str(FLOW))
+    inputs = {"known": json.dumps(known.facts()), "remote": known.remote}
+    state = Asking(prompter)
+    failure = message = None
     # The run gets the environment office runs get, so the interview authenticates the way they will: a shell
     # variable the office never sees can't make it work.
     try:
-        with _office_env(provider.env):
-            # No workers: the handler, and so the terminal, stays on the main thread.
-            result = run_flow(flow, inputs, llm_config=provider.llm_config, tools={"ask_user": ask_user},
-                              num_workers=0)
-        message = result.failure.message if result.status == "failed" else None
+        with asking(state), _office_env(provider.env), _quiet_watchdog():
+            # No workers: the handler and the code nodes, and so the terminal, stay on the main thread.
+            result = run_flow(flow, inputs, llm_config=provider.llm_config,
+                              tools={"ask_user": ask_user, "check_company": check_company}, num_workers=0)
+        if result.status == "failed":
+            failure, message = result.failure, result.failure.message
     except Exception as exc:
         message = str(exc)
-    if stopped:
-        raise stopped
+    if state.stopped:
+        raise state.stopped
+    if failure is not None and failure.cause_type == "LoopMaxExceeded":
+        raise OnboardError("the interview didn't settle on a company; run `ac init` again")
     if message is not None:
         if key := (provider.llm_config or {}).get("api_key"):
             message = message.replace(str(key), "***")
@@ -163,42 +240,13 @@ def run_interview(provider: Provider, prompter: Prompter, known: Known, *, draft
     return result.output
 
 
-def interview(provider_path: Path, prompter: Prompter, known: Known) -> Answers:
-    """The new company: from an interview with the model in ``provider_path``, checked and confirmed by the owner;
-    or, with no one at a terminal, ``fallback_answers(known)``.
-
-    Results with problems run the interview again to fix them, at most ``TRIES`` times in all; changes the owner asks
-    for run it again without counting.
+def init_flow(provider_path: Path, prompter: Prompter, known: Known) -> tuple[Draft, str]:
+    """The new company with its CEO's password hash, and the git remote URL (empty for none), from the init flow run
+    with the model in ``provider_path``, starting from ``known``.
 
     Raises:
-        OnboardError: the interview didn't settle on a company, or ``run_interview`` or ``fallback_answers`` raised.
+        OnboardError: ``run_init_flow`` raised.
         ProviderError: the provider file can't be used.
     """
-    if not prompter.interactive:
-        return fallback_answers(known)
-    provider = load_provider(provider_path)
-    draft = changes = ""
-    failed = 0
-    while True:
-        output = run_interview(provider, prompter, known, draft=draft, changes=changes, provider_path=provider_path)
-        draft = json.dumps(output)
-        try:
-            answers = Answers.from_output(output)
-            problems = answer_problems(answers)
-        except KeyError as exc:
-            problems = [f"the result was missing {exc.args[0]}"]
-        except TypeError:
-            problems = ["the result had the wrong shape"]
-        if problems:
-            failed += 1
-            if failed == TRIES:
-                raise OnboardError(f"the interview didn't settle on a company: {clean('; '.join(problems))}")
-            changes = "\n".join(problems)
-            continue
-        for line in summary(answers):
-            prompter.say(line)
-        reply = prompter.ask(CONFIRM).strip()
-        if reply.lower() in ("", "y", "yes"):
-            return answers
-        changes = ("The owner wants changes; ask what to change" if reply.lower() in ("n", "no")
-                   else f"The owner wants changes: {reply}")
+    output = run_init_flow(load_provider(provider_path), prompter, known, provider_path=provider_path)
+    return Draft.from_output(output), output["remote"]

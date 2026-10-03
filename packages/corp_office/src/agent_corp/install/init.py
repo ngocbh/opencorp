@@ -1,5 +1,5 @@
-"""``ac init``: ask for the model, create the company from an interview with it (its name, its CEO, its first
-teammates), add a password and a remote, then onboard this machine."""
+"""``ac init``: ask for the model; run the init flow with it, which interviews the owner for the company, its CEO and
+its first teammates, then asks for a password and a remote; write the company, push it, and onboard this machine."""
 
 import os
 import shlex
@@ -13,7 +13,7 @@ from agent_corp.chat.hire import agent_files
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company_template import is_new, write_company
 from agent_corp.daemon.app import OfficePaths
-from agent_corp.install.interview import Known, interview
+from agent_corp.install.interview import Known, fallback_draft, init_flow, owner_prompter
 from agent_corp.install.launch import REPO, Host, launch
 from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ensure_provider, make_device,
                                         make_home, onboard, redact, user_git)
@@ -29,12 +29,14 @@ REMOTE = "Git remote URL (empty to skip)"
 """The questions init asks itself; the interview asks the rest."""
 
 
-def _ask_password(prompter: Prompter) -> str | None:
-    """The hash of a new password, asked twice without echo; None when there's no terminal to ask on.
+def password_step(prompter: Prompter) -> str | None:
+    """Show the password step and return the hash of a new password, asked twice without echo; None when there's no
+    terminal to ask on.
 
     Raises:
         OnboardError: no password worked.
     """
+    prompter.step(3, STEPS, "Password", "Your password logs in your new devices; only its hash is kept.")
     for _ in range(TRIES):
         try:
             password = prompter.secret(YOUR_PASSWORD)
@@ -48,6 +50,27 @@ def _ask_password(prompter: Prompter) -> str | None:
         else:
             return hash_password(password)
     raise OnboardError("no usable password")
+
+
+def remote_step(prompter: Prompter, given: str) -> str:
+    """Show the remote step and return the git remote URL: ``given`` (from ``--remote``), or asked for; empty for
+    none."""
+    prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
+                                      " company with `ac onboard --from URL`.")
+    return given or prompter.ask(REMOTE)
+
+
+def password(inputs: dict) -> str | None:
+    """The init flow's ``password`` node: ``password_step`` on the owner's terminal."""
+    with owner_prompter() as prompter:
+        return password_step(prompter)
+
+
+def remote(inputs: dict) -> str:
+    """The init flow's ``remote`` node: ``remote_step`` on the owner's terminal, given ``inputs["given"]`` from
+    ``--remote``."""
+    with owner_prompter() as prompter:
+        return remote_step(prompter, inputs["given"])
 
 
 def push(company: Path, url: str, prompter: Prompter) -> bool:
@@ -77,11 +100,12 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
     """Create the company at ``home``, then set up this machine's office with ``onboard``.
 
     The model comes first: ``office/provider.json`` from ``stdin`` or asked for. The company,
-    its CEO (you), and its first teammates come from an interview with that model, which starts
-    from ``known`` (or from ``known`` and defaults alone, without a terminal). They are one
-    commit, each teammate with a seeded ``profile.md``. The CEO's ``person.yaml`` holds only
-    the hash of their password, which is asked without echo (and skipped without a terminal);
-    with ``device``, it lists this device, whose token goes in ``identity.json``. A remote,
+    its CEO (you), its first teammates, the CEO's password hash and the remote come from the
+    init flow with that model, which starts from ``known``. Without a terminal, they come from
+    ``known`` and defaults, with the password and the remote asked in Python. The company is one
+    commit, each teammate with a seeded ``profile.md``. The CEO's ``person.yaml`` holds only the
+    hash of their password, which is asked without echo (and skipped without a terminal); with
+    ``device``, it lists this device, whose token goes in ``identity.json``. The remote,
     ``known.remote`` or asked for, is added and pushed to.
 
     Raises:
@@ -106,26 +130,27 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
 
     prompter.step(2, STEPS, "Company", "Tell the model about you, the company and your first AI teammates; it asks"
                                        " until it has what it needs.")
-    answers = interview(provider, prompter, known)
+    if prompter.interactive:
+        draft, url = init_flow(provider, prompter, known)
+    else:
+        # Without a terminal there's nothing for a model to ask, so no flow runs: the flags and defaults make the
+        # company, and the password and remote steps run as they would in the flow.
+        draft = fallback_draft(known)
+        draft = replace(draft, owner=replace(draft.owner, password_hash=password_step(prompter)))
+        url = remote_step(prompter, known.remote)
+    owner = make_device(paths.home, draft.owner) if device else draft.owner
 
-    prompter.step(3, STEPS, "Password", "Your password logs in your new devices; only its hash is kept.")
-    owner = replace(answers.owner, password_hash=_ask_password(prompter))
-    if device:
-        owner = make_device(paths.home, owner)
     extra: dict[str, bytes] = {}
-    for t in answers.team:
+    for t in draft.team:
         extra |= {rel: text.encode() for rel, text in agent_files(
             HireRequest(name=t.name, handle=t.handle, title=t.title, manager=owner.handle), t.about)[1].items()}
     try:
-        write_company(paths.company, paths.worktrees, company=answers.company, owner=owner, extra=extra)
+        write_company(paths.company, paths.worktrees, company=draft.company, owner=owner, extra=extra)
     except (CompanyGitError, OSError, ValueError) as exc:
         raise OnboardError(f"can't write the company repo at {paths.company}: {exc}") from None
-    hired = ", ".join(f"{t.name} (@{t.handle})" for t in answers.team) or "no one yet"
+    hired = ", ".join(f"{t.name} (@{t.handle})" for t in draft.team) or "no one yet"
     prompter.say(f"Company repo: created at {paths.company}, with you as CEO and {hired}")
-
-    prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
-                                      " company with `ac onboard --from URL`.")
-    if url := known.remote or prompter.ask(REMOTE):
+    if url:
         push(paths.company, url, prompter)
     else:
         prompter.say("Remote: none; the company lives only on this machine for now.")

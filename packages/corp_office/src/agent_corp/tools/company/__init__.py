@@ -1,4 +1,5 @@
-"""The company tool group: tools every person has."""
+"""Tools for working with the company. Its ``tools(ctx)`` is the office's ``company`` group, which every person has;
+``draft`` holds tools for drafting a new company, which no group has."""
 
 from collections.abc import Callable
 

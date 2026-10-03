@@ -1,29 +1,37 @@
 import json
+import logging
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 from agent_composer import load_flow
+from agent_composer.nodes.code import node as code_node
+from agent_composer.nodes.code import watchdog
 
+from agent_corp.auth.passwords import check_password
 from agent_corp.chat.provider import Provider
-from agent_corp.company.draft import Answers, Teammate, answer_problems
+from agent_corp.company.draft import Draft, Teammate, draft_problems
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.interview import (CONFIRM, FLOW, Known, clean, fallback_answers, interview, run_interview,
-                                          summary)
+from agent_corp.install.init import REMOTE
+from agent_corp.install.interview import (CONFIRM, FLOW, Asking, Known, asking, clean, confirm, fallback_draft,
+                                          init_flow, run_init_flow, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 
 from .test_provider_setup import Script
 
 ME = Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO")
-GOOD = Answers("Acme", ME, (Teammate("Minh", "minh", "Engineer", "Writes the backend."), Teammate("Lan", "lan", "QA")))
+GOOD = Draft("Acme", ME, (Teammate("Minh", "minh", "Engineer", "Writes the backend."), Teammate("Lan", "lan", "QA")))
 OUT = {"company": "Acme", "owner": {"name": "Hong Ngoc Bui", "handle": "ngocbh", "title": "CEO"},
        "teammates": [{"name": "Minh", "handle": "minh", "title": "Engineer", "about": "Writes the backend."}]}
 PROVIDER_PATH = Path("/office/provider.json")
 KEY = "sk-SENTINEL-not-a-real-key"
+PASSWORD = "pw-sentinel-5d1f"
 
 
 @pytest.fixture
@@ -42,15 +50,32 @@ def provider(fake_llm):
     return Provider(llm_config=LLM_CONFIG, env=fake_llm.env())
 
 
-def interview_replies(question, output, options=None):
+def flow_replies(question, output, options=None):
+    """One interview round from the model: ask ``question``, check ``output``, then return it."""
     args = {"question": question, **({"options": options} if options else {})}
+    check = {k: output[k] for k in ("company", "owner", "teammates")}
     return ({"tool_calls": [{"name": "ask_user", "arguments": args}]},
+            {"tool_calls": [{"name": "check_company", "arguments": check}]},
             {"content": "That's everything."},  # ends the tool loop
             {"tool_calls": [{"name": "Record", "arguments": output}]})  # forced structured output
 
 
-def run(provider, prompter, known=Known(), draft="", changes=""):
-    return run_interview(provider, prompter, known, draft=draft, changes=changes, provider_path=PROVIDER_PATH)
+def round_replies(output):
+    """An interview round that returns ``output`` without asking or checking."""
+    return ({"content": "Done."}, {"tool_calls": [{"name": "Record", "arguments": output}]})
+
+
+def owner(*answers, remote=""):
+    """The owner for one accepted run: ``answers`` to the model's questions, "y" to confirm, ``PASSWORD`` twice, and
+    ``remote``."""
+    return Script(*answers, "y", PASSWORD, PASSWORD, remote)
+
+
+def run(provider, prompter, known=Known()):
+    return run_init_flow(provider, prompter, known, provider_path=PROVIDER_PATH)
+
+
+MAX = yaml.safe_load(FLOW.read_text())["nodes"]["rounds"]["max"]
 
 
 def contents(request):
@@ -58,10 +83,9 @@ def contents(request):
     return [m["content"] if isinstance(m["content"], str) else str(m["content"]) for m in request["messages"]]
 
 
-def test_the_flow_loads_and_takes_what_init_knows_a_draft_and_changes():
+def test_the_flow_takes_what_init_knows_and_the_remote_flag():
     flow = load_flow(FLOW.read_text(), source_label=str(FLOW))
-    assert {p.name: p.contract.type.kind.value for p in flow.input} == {"known": "str", "draft": "str",
-                                                                         "changes": "str"}
+    assert {p.name: p.contract.type.kind.value for p in flow.input} == {"known": "str", "remote": "str"}
 
 
 def test_known_facts_are_the_given_flags_and_suggestions_but_never_the_remote(login):
@@ -71,37 +95,37 @@ def test_known_facts_are_the_given_flags_and_suggestions_but_never_the_remote(lo
 
 
 def test_without_flags_the_fallback_is_a_default_company(login):
-    assert fallback_answers(Known()) == Answers("My company", Owner(handle="me", name="Me", title="CEO"),
-                                                (Teammate("Minh", "minh", "Engineer"),))
+    assert fallback_draft(Known()) == Draft("My company", Owner(handle="me", name="Me", title="CEO"),
+                                            (Teammate("Minh", "minh", "Engineer"),))
 
 
 def test_the_fallback_uses_every_flag(login):
     known = Known(company="Acme", name="Lan", handle="lan", title="CTO", agent="Bo", agent_handle="bo-1")
-    assert fallback_answers(known) == Answers("Acme", Owner(handle="lan", name="Lan", title="CTO"),
-                                              (Teammate("Bo", "bo-1", "Engineer"),))
+    assert fallback_draft(known) == Draft("Acme", Owner(handle="lan", name="Lan", title="CTO"),
+                                          (Teammate("Bo", "bo-1", "Engineer"),))
 
 
 def test_the_fallback_slugs_the_agents_name_for_a_handle(login):
-    assert fallback_answers(Known(agent="Minh Anh")).team[0].handle == "minh-anh"
-    assert fallback_answers(Known(agent="Đ")).team[0].handle == "agent"
+    assert fallback_draft(Known(agent="Minh Anh")).team[0].handle == "minh-anh"
+    assert fallback_draft(Known(agent="Đ")).team[0].handle == "agent"
 
 
 def test_a_fallback_with_problems_names_the_flag_to_pass(login):
     with pytest.raises(OnboardError, match="@minh is taken; pass --agent-handle"):
-        fallback_answers(Known(handle="minh"))
+        fallback_draft(Known(handle="minh"))
     with pytest.raises(OnboardError, match="@Me .*; pass --handle"):
-        fallback_answers(Known(handle="Me"))
+        fallback_draft(Known(handle="Me"))
 
 
 def test_the_summary_lists_the_company_you_and_each_teammate():
     assert summary(GOOD) == ["Company: Acme", "You: Hong Ngoc Bui (@ngocbh), CEO", "Teammates:",
                              "  Minh (@minh), Engineer: Writes the backend.", "  Lan (@lan), QA"]
-    assert summary(Answers("Acme", ME, ()))[-1] == "Teammates: none yet"
+    assert summary(Draft("Acme", ME, ()))[-1] == "Teammates: none yet"
 
 
 def test_the_summary_strips_control_characters_from_model_text():
-    answers = Answers("Ac\x1b[2Jme", Owner(handle="ngocbh", name="Hong\nNgoc\x07 Bui"),
-                      (Teammate("Mi\rnh", "minh", "Eng\tineer", "Writes\x7f the backend."),))
+    answers = Draft("Ac\x1b[2Jme", Owner(handle="ngocbh", name="Hong\nNgoc\x07 Bui"),
+                    (Teammate("Mi\rnh", "minh", "Eng\tineer", "Writes\x7f the backend."),))
     assert summary(answers) == ["Company: Ac[2Jme", "You: Hong Ngoc Bui (@ngocbh), CEO", "Teammates:",
                                 "  Mi nh (@minh), Eng ineer: Writes the backend."]
 
@@ -120,39 +144,44 @@ def test_the_fallback_needs_an_account_even_with_every_flag(monkeypatch):
 
     monkeypatch.setattr(onboard_module.pwd, "getpwuid", unknown)
     with pytest.raises(OnboardError, match="no account"):
-        fallback_answers(Known(company="Acme", name="Lan", handle="lan", title="CTO", agent="Bo", agent_handle="bo"))
+        fallback_draft(Known(company="Acme", name="Lan", handle="lan", title="CTO", agent="Bo", agent_handle="bo"))
 
 
 def test_the_interview_asks_on_the_terminal_and_returns_the_flows_output(login, fake_llm, provider):
-    fake_llm.script(*interview_replies("What's the company called?", OUT))
-    prompter = Script("Acme")
-    assert run(provider, prompter) == OUT
+    fake_llm.script(*flow_replies("What's the company called?", OUT))
+    prompter = owner("Acme")
+    out = run(provider, prompter)
+    assert {k: out[k] for k in OUT} == OUT
+    assert check_password(PASSWORD, out["password_hash"])
+    assert out["remote"] == ""
     assert "What's the company called?" in prompter.seen
     assert "Acme" in contents(fake_llm.requests()[1])[-1]
+    after = prompter.seen[prompter.seen.index(CONFIRM):]
+    assert [line for line in after if line.startswith("Step ")] == ["Step 3 of 5: Password", "Step 4 of 5: Remote"]
 
 
 @pytest.mark.parametrize(("answer", "result"), [("2", "Founder"), ("3", "3"), ("Chair", "Chair")])
 def test_a_numbered_answer_picks_an_option_and_any_other_is_sent_as_typed(login, fake_llm, provider, answer, result):
-    fake_llm.script(*interview_replies("Your title?", OUT, options=["CEO", "Founder"]))
-    prompter = Script(answer)
+    fake_llm.script(*flow_replies("Your title?", OUT, options=["CEO", "Founder"]))
+    prompter = owner(answer)
     run(provider, prompter)
-    assert prompter.seen == ["  1. CEO", "  2. Founder", "Your title?"]
+    assert prompter.seen[:3] == ["  1. CEO", "  2. Founder", "Your title?"]
     assert contents(fake_llm.requests()[1])[-1] == result
 
 
 def test_questions_and_options_are_asked_without_control_characters(login, fake_llm, provider):
-    fake_llm.script(*interview_replies("Clear\x1b[2J?", OUT, options=["a\x9bb", "c"]))
-    prompter = Script("x")
+    fake_llm.script(*flow_replies("Clear\x1b[2J?", OUT, options=["a\x9bb", "c"]))
+    prompter = owner("x")
     run(provider, prompter)
-    assert prompter.seen == ["  1. ab", "  2. c", "Clear[2J?"]
+    assert prompter.seen[:3] == ["  1. ab", "  2. c", "Clear[2J?"]
 
 
 def test_the_providers_env_is_set_only_during_the_run(login, fake_llm, provider, monkeypatch):
     monkeypatch.delenv("VLLM_BASE_URL", raising=False)
-    fake_llm.script(*interview_replies("Company?", OUT))
-    run(provider, Script("Acme"))
+    fake_llm.script(*flow_replies("Company?", OUT))
+    run(provider, owner("Acme"))
     assert "VLLM_BASE_URL" not in os.environ
-    assert len(fake_llm.requests()) == 3
+    assert len(fake_llm.requests()) == 4
 
 
 def test_the_run_sees_only_the_office_workers_env_and_the_providers(login, monkeypatch):
@@ -200,7 +229,7 @@ def test_a_failure_message_never_shows_the_key_or_url_credentials(login, monkeyp
     def run_flow(*args, **kwargs):
         if outcome == "exception":
             raise RuntimeError(message)
-        return SimpleNamespace(status="failed", output=None, failure=SimpleNamespace(message=message))
+        return SimpleNamespace(status="failed", output=None, failure=SimpleNamespace(message=message, cause_type=None))
 
     monkeypatch.setattr(interview_module, "run_flow", run_flow)
     with pytest.raises(OnboardError) as caught:
@@ -220,105 +249,168 @@ class Closed(Script):
 
 
 def test_when_the_owners_input_ends_its_error_stops_the_interview(login, fake_llm, provider):
-    fake_llm.script(*interview_replies("Company?", OUT))
+    fake_llm.script(*flow_replies("Company?", OUT))
     with pytest.raises(OnboardError) as caught:
         run(provider, Closed())
     assert caught.value is Closed.error
     assert len(fake_llm.requests()) == 1
 
 
-def test_the_model_is_told_what_is_known_the_draft_and_the_changes(login, fake_llm, provider):
-    fake_llm.script(*interview_replies("Company?", OUT))
-    run(provider, Script("x"), Known(company="Acme"), draft='{"company": "Draft Co"}', changes="@minh is taken")
+def test_the_model_is_told_what_is_known(login, fake_llm, provider):
+    fake_llm.script(*flow_replies("Company?", OUT))
+    run(provider, owner("x"), Known(company="Acme"))
     text = "\n".join(contents(fake_llm.requests()[0]))
     assert '"given": {"company": "Acme"}' in text
-    assert "Draft Co" in text and "@minh is taken" in text
+
+
+def confirming(*replies):
+    state = Asking(Script(*replies))
+    return state, asking(state)
+
+
+def test_confirm_shows_the_clean_draft_and_accepts_on_yes():
+    state, ctx = confirming("")
+    with ctx:
+        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "changes": "", "accepted": True}
+    assert state.prompter.seen == [*summary(Draft.from_output(OUT)), CONFIRM]
 
 
 def bad_output(handle="Minh"):
     return {**OUT, "teammates": [{**OUT["teammates"][0], "handle": handle}]}
 
 
-@pytest.fixture
-def interviews(monkeypatch):
-    """Stands in for ``run_interview``: returns the queued outputs and records each call's draft and changes."""
-    fake = SimpleNamespace(outputs=[], calls=[])
-
-    def run_interview(provider, prompter, known, *, draft, changes, provider_path):
-        fake.calls.append({"draft": draft, "changes": changes})
-        return fake.outputs.pop(0)
-
-    monkeypatch.setattr(interview_module, "run_interview", run_interview)
-    return fake
-
-
-def test_a_clean_result_is_summarized_and_confirmed(login, interviews, tmp_path):
-    interviews.outputs = [OUT]
-    prompter = Script("")
-    answers = interview(tmp_path / "provider.json", prompter, Known())
-    assert answers == Answers.from_output(OUT)
-    assert prompter.seen == [*summary(answers), CONFIRM]
-    assert interviews.calls == [{"draft": "", "changes": ""}]
-
-
-def test_a_result_with_problems_runs_again_with_the_draft_and_the_problems(login, interviews, tmp_path):
-    interviews.outputs = [bad_output(), OUT]
-    prompter = Script("")
-    interview(tmp_path / "provider.json", prompter, Known())
-    assert interviews.calls[1] == {"draft": json.dumps(bad_output()),
-                                   "changes": "\n".join(answer_problems(Answers.from_output(bad_output())))}
-    assert "@Minh can't be a handle" in interviews.calls[1]["changes"]
-    assert prompter.seen.count(CONFIRM) == 1
-
-
-def test_a_result_missing_a_field_is_a_problem(login, interviews, tmp_path):
-    interviews.outputs = [{"company": "Acme", "teammates": []}, OUT]
-    interview(tmp_path / "provider.json", Script(""), Known())
-    assert interviews.calls[1]["changes"] == "the result was missing owner"
+def test_confirm_sends_problems_back_without_asking_the_owner():
+    state, ctx = confirming()
+    with ctx:
+        result = confirm({"answers": bad_output()})
+    assert result == {"draft": json.dumps(bad_output()),
+                      "changes": "\n".join(draft_problems(Draft.from_output(bad_output()))), "accepted": False}
+    assert state.prompter.seen == []
 
 
 @pytest.mark.parametrize(("reply", "changes"), [("rename Minh to Bo", "The owner wants changes: rename Minh to Bo"),
                                                 ("n", "The owner wants changes; ask what to change"),
                                                 (" No ", "The owner wants changes; ask what to change")])
-def test_the_owner_can_ask_for_changes(login, interviews, tmp_path, reply, changes):
-    interviews.outputs = [OUT, OUT]
-    interview(tmp_path / "provider.json", Script(reply, "y"), Known())
-    assert interviews.calls[1] == {"draft": json.dumps(OUT), "changes": changes}
+def test_confirm_turns_the_owners_reply_into_changes(reply, changes):
+    _, ctx = confirming(reply)
+    with ctx:
+        assert confirm({"answers": OUT}) == {"draft": json.dumps(OUT), "changes": changes, "accepted": False}
 
 
-def test_the_interview_gives_up_after_tries_results_with_problems(login, interviews, tmp_path):
-    interviews.outputs = [bad_output()] * (TRIES - 1) + [bad_output("Mi\x1bnh")]
+def test_an_onboard_error_inside_owner_prompter_is_kept_for_the_caller():
+    state = Asking(Closed())
+    with asking(state), pytest.raises(OnboardError):
+        confirm({"answers": OUT})
+    assert state.stopped is Closed.error
+
+
+def test_no_agent_node_reads_the_password_or_the_remote():
+    def agents(nodes):
+        for node in nodes.values():
+            if node["kind"] == "agent":
+                yield node
+            yield from agents(node.get("nodes", {}))
+
+    for node in agents(yaml.safe_load(FLOW.read_text())["nodes"]):
+        inputs = json.dumps(node["input"])
+        assert "password" not in inputs and "remote" not in inputs
+
+
+def test_the_tools_problems_go_back_to_the_model(login, fake_llm, provider):
+    bad = bad_output()
+    partial = {"company": "Acme", "owner": OUT["owner"], "teammates": [{"name": "Lan", "handle": "lan"}]}
+    fake_llm.script({"tool_calls": [{"name": "check_company", "arguments": bad}]},  # its "about"s are ignored
+                    {"tool_calls": [{"name": "check_company", "arguments": partial}]},  # no title yet
+                    *round_replies(OUT))
+    run(provider, owner())
+    reply = contents(fake_llm.requests()[1])[-1]
+    assert reply.startswith("Problems; ask the owner") and "@Minh can't be a handle" in reply
+    assert "the teammate @lan needs a title" in contents(fake_llm.requests()[2])[-1]
+
+
+def test_a_result_with_problems_goes_back_to_the_interview_without_asking_the_owner(login, fake_llm, provider):
+    fake_llm.script(*round_replies(bad_output()), *round_replies(OUT))
+    prompter = owner()
+    assert run(provider, prompter)["teammates"] == OUT["teammates"]
+    assert prompter.seen.count(CONFIRM) == 1
+    second = "\n".join(contents(fake_llm.requests()[2]))
+    assert "@Minh can't be a handle" in second and '"handle": "Minh"' in second
+
+
+def test_the_owners_changes_start_the_next_round_from_the_draft(login, fake_llm, provider):
+    renamed = {**OUT, "teammates": [{**OUT["teammates"][0], "name": "Bo", "handle": "bo"}]}
+    fake_llm.script(*flow_replies("Company?", OUT), *round_replies(renamed))
+    out = run(provider, Script("Acme", "rename Minh to Bo", "y", PASSWORD, PASSWORD, ""))
+    assert out["teammates"] == renamed["teammates"]
+    second = "\n".join(contents(fake_llm.requests()[4]))
+    assert '"name": "Minh"' in second and "The owner wants changes: rename Minh to Bo" in second
+
+
+def test_the_flow_gives_up_after_max_rounds(login, fake_llm, provider):
+    fake_llm.script(*[r for _ in range(MAX) for r in round_replies(bad_output())])
     prompter = Script()
-    with pytest.raises(OnboardError, match="didn't settle") as caught:
-        interview(tmp_path / "provider.json", prompter, Known())
-    assert "@Minh can't be a handle" in str(caught.value) and "\x1b" not in str(caught.value)
-    assert len(interviews.calls) == TRIES
-    assert CONFIRM not in prompter.seen
+    with pytest.raises(OnboardError, match="didn't settle on a company; run `ac init` again"):
+        run(provider, prompter)
+    assert len(fake_llm.requests()) == 2 * MAX and prompter.seen == []
 
 
-def test_the_owners_change_rounds_dont_count_against_tries(login, interviews, tmp_path):
-    rounds = TRIES + 1
-    interviews.outputs = [OUT] * (rounds + 1)
-    assert interview(tmp_path / "provider.json", Script(*["change it"] * rounds, "Y"), Known()) == \
-        Answers.from_output(OUT)
-    assert len(interviews.calls) == rounds + 1
+def test_when_the_input_ends_at_the_confirmation_its_error_stops_the_flow(login, fake_llm, provider):
+    fake_llm.script(*round_replies(OUT))
+    with pytest.raises(OnboardError) as caught:
+        run(provider, Closed())
+    assert caught.value is Closed.error
 
 
-def test_without_a_terminal_the_fallback_is_used_without_a_model_or_confirmation(login, interviews, monkeypatch,
-                                                                                tmp_path):
-    def no_provider(path):
-        raise AssertionError("the provider was loaded")
-
-    monkeypatch.setattr(interview_module, "load_provider", no_provider)
-    prompter = Script(interactive=False)
-    assert interview(tmp_path / "provider.json", prompter, Known(company="Acme")) == \
-        fallback_answers(Known(company="Acme"))
-    assert interviews.calls == [] and prompter.seen == []
+def test_no_usable_password_stops_the_flow_with_that_error(login, fake_llm, provider):
+    fake_llm.script(*round_replies(OUT))
+    with pytest.raises(OnboardError, match="^no usable password$"):
+        run(provider, Script("y", *["short"] * TRIES))
 
 
-def test_without_a_terminal_problems_name_the_flag_to_pass(login, interviews, tmp_path):
-    with pytest.raises(OnboardError, match="@minh is taken; pass --agent-handle"):
-        interview(tmp_path / "provider.json", Script(interactive=False), Known(handle="minh"))
+class InterruptedAtPassword(Script):
+    def secret(self, question):
+        raise KeyboardInterrupt
+
+
+def test_ctrl_c_at_the_password_stops_the_flow_and_restores_the_env(login, fake_llm, provider):
+    before = dict(os.environ)
+    fake_llm.script(*round_replies(OUT))
+    with pytest.raises(KeyboardInterrupt):
+        run(provider, InterruptedAtPassword("y"))
+    assert dict(os.environ) == before
+    assert interview_module._ASKING.get(None) is None
+
+
+def test_the_remote_flag_is_used_without_asking_and_never_sent(login, fake_llm, provider):
+    url = "https://user:tok-sentinel-77@example.com/acme.git"
+    fake_llm.script(*round_replies(OUT))
+    prompter = Script("y", PASSWORD, PASSWORD)
+    assert run(provider, prompter, Known(remote=url))["remote"] == url
+    assert REMOTE not in prompter.seen and "tok-sentinel-77" not in json.dumps(fake_llm.requests())
+
+
+def test_init_flow_gives_the_draft_with_the_hash_and_the_remote_apart(login, fake_llm, provider, tmp_path):
+    path = tmp_path / "provider.json"
+    path.write_text(json.dumps({"llm_config": provider.llm_config, "env": provider.env}))
+    path.chmod(0o600)
+    fake_llm.script(*round_replies(OUT))
+    draft, url = init_flow(path, owner(remote="git@example.com:a.git"), Known())
+    assert draft.company == "Acme" and check_password(PASSWORD, draft.owner.password_hash)
+    assert url == "git@example.com:a.git"
+
+
+class SlowToConfirm(Script):
+    def ask(self, question, default=""):
+        time.sleep(0.1)  # longer than the shrunken watchdog budget
+        return super().ask(question, default)
+
+
+def test_the_owner_taking_their_time_prints_no_stuck_warning(login, fake_llm, provider, monkeypatch, caplog):
+    monkeypatch.setattr(code_node, "node_watchdog", lambda node_id: watchdog.node_watchdog(node_id, budget=0.01))
+    fake_llm.script(*round_replies(OUT))
+    run(provider, SlowToConfirm("y", PASSWORD, PASSWORD, ""))
+    assert "may be stuck" not in caplog.text
+    assert logging.getLogger("agent_composer.nodes.code.watchdog").filters == []
 
 
 @pytest.mark.parametrize(("known", "flag"), [
@@ -326,4 +418,4 @@ def test_without_a_terminal_problems_name_the_flag_to_pass(login, interviews, tm
     (Known(agent=" "), "--agent"), (Known(agent_handle="Bad_Handle"), "--agent-handle")])
 def test_each_fallback_problem_names_the_flag_that_sets_its_field(login, known, flag):
     with pytest.raises(OnboardError, match=f"; pass {flag}$"):
-        fallback_answers(known)
+        fallback_draft(known)
