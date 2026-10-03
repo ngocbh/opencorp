@@ -60,7 +60,8 @@ export async function syncThenInstall(command: string, args: string[], deps: Dep
     deps.error(`ac ${command}: uv not found; install it (https://docs.astral.sh/uv/) and run \`ac ${command}\` again`)
     return 1
   }
-  const synced = await deps.spawn([uv, "sync", "--frozen"], REPO)
+  // Quiet keeps uv's progress lines out of the install's prompts; its errors still show.
+  const synced = await deps.spawn([uv, "sync", "--frozen", "--quiet"], REPO)
   if (synced !== 0) return synced
   return runInstall(command, args, deps)
 }
