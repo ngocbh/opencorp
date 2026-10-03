@@ -43,3 +43,10 @@ def test_answers_come_from_the_flows_output():
               "teammates": [{"name": "Minh", "handle": "minh", "title": "Engineer", "about": "Writes the backend."},
                             {"name": "Lan", "handle": "lan", "title": "QA", "about": ""}]}
     assert Draft.from_output(output) == GOOD
+
+
+def test_a_draft_takes_the_password_hash_from_the_flows_output_when_it_has_one():
+    out = {"company": "Acme", "owner": {"name": "Hong Ngoc Bui", "handle": "ngocbh", "title": "CEO"},
+           "teammates": []}
+    assert Draft.from_output(out).owner.password_hash is None
+    assert Draft.from_output({**out, "password_hash": "scrypt$x"}).owner.password_hash == "scrypt$x"

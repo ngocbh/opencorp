@@ -29,9 +29,11 @@ class Draft:
 
     @classmethod
     def from_output(cls, output: dict) -> "Draft":
-        """The draft in the init flow's output, with its ``company``, ``owner`` and ``teammates``."""
+        """The draft in the init flow's output, with its ``company``, ``owner`` and ``teammates``, and the CEO's
+        ``password_hash`` when it has one."""
         owner = output["owner"]
-        return cls(output["company"], Owner(handle=owner["handle"], name=owner["name"], title=owner["title"]),
+        return cls(output["company"], Owner(handle=owner["handle"], name=owner["name"], title=owner["title"],
+                                            password_hash=output.get("password_hash")),
                    tuple(Teammate(t["name"], t["handle"], t["title"], t["about"]) for t in output["teammates"]))
 
 
