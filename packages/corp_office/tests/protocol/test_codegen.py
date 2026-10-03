@@ -91,3 +91,11 @@ def test_parts_are_a_discriminated_union():
     with pytest.raises(pydantic.ValidationError) as caught:
         models.Message.model_validate(data)
     assert [e["type"] for e in caught.value.errors()] == ["union_tag_invalid"]
+
+
+def test_setup_prompts_are_a_discriminated_union():
+    prompts = pydantic.TypeAdapter(models.SetupPrompt)
+    assert isinstance(prompts.validate_json((FIXTURES / "SetupChoose.json").read_text()), models.SetupChoose)
+    with pytest.raises(pydantic.ValidationError) as caught:
+        prompts.validate_python({"type": "shout", "text": "hi"})
+    assert [e["type"] for e in caught.value.errors()] == ["union_tag_invalid"]

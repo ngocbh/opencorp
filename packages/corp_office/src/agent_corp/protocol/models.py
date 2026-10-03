@@ -872,6 +872,92 @@ class SetPasswordRequest(BaseModel):
     password: Annotated[str, Field(min_length=8)]
 
 
+class SetupAsk(BaseModel):
+    """
+    A typed answer; an empty one means `default`.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['ask']
+    question: str
+    default: str = ''
+
+
+class SetupChoose(BaseModel):
+    """
+    Pick one of `options`.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['choose']
+    question: str
+    options: Annotated[list[str], Field(min_length=1)]
+    default: str = ''
+
+
+class SetupSecret(BaseModel):
+    """
+    An answer typed without being shown.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['secret']
+    question: str
+
+
+class SetupSay(BaseModel):
+    """
+    A line to show.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['say']
+    text: str
+
+
+class SetupStep(BaseModel):
+    """
+    The start of step `number` of `total`.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    type: Literal['step']
+    number: Annotated[int, Field(ge=1)]
+    total: Annotated[int, Field(ge=1)]
+    title: str
+    why: str
+
+
+class SetupAnswer(BaseModel):
+    """
+    One line `ac`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    answer: str
+
+
+type SetupPrompt = Annotated[
+    SetupAsk | SetupChoose | SetupSecret | SetupSay | SetupStep,
+    Field(
+        description="One line `python -m agent_corp.install init|onboard --json-prompts` writes on stdout: a question for `ac`'s setup screen, or something to show.",
+        discriminator='type',
+    ),
+]
+
+
 class Message(BaseModel):
     model_config = ConfigDict(
         extra='forbid',

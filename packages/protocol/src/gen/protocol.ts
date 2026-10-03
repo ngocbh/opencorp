@@ -59,6 +59,13 @@ export type Timestamp = string;
  * via the `definition` "Part".
  */
 export type Part = TextPart | FilePart | ToolPart | ErrorPart;
+/**
+ * One line `python -m agent_corp.install init|onboard --json-prompts` writes on stdout: a question for `ac`'s setup screen, or something to show.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupPrompt".
+ */
+export type SetupPrompt = SetupAsk | SetupChoose | SetupSecret | SetupSay | SetupStep;
 
 /**
  * A device a human uses ac from: requests carrying the token whose hash this is act as that person.
@@ -710,4 +717,72 @@ export interface LoginRequest {
  */
 export interface SetPasswordRequest {
   password: string;
+}
+/**
+ * A typed answer; an empty one means `default`.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupAsk".
+ */
+export interface SetupAsk {
+  type: "ask";
+  question: string;
+  default?: string;
+}
+/**
+ * Pick one of `options`.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupChoose".
+ */
+export interface SetupChoose {
+  type: "choose";
+  question: string;
+  /**
+   * @minItems 1
+   */
+  options: string[];
+  default?: string;
+}
+/**
+ * An answer typed without being shown.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupSecret".
+ */
+export interface SetupSecret {
+  type: "secret";
+  question: string;
+}
+/**
+ * A line to show.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupSay".
+ */
+export interface SetupSay {
+  type: "say";
+  text: string;
+}
+/**
+ * The start of step `number` of `total`.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupStep".
+ */
+export interface SetupStep {
+  type: "step";
+  number: number;
+  total: number;
+  title: string;
+  why: string;
+}
+/**
+ * One line `ac`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetupAnswer".
+ */
+export interface SetupAnswer {
+  answer: string;
 }
