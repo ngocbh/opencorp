@@ -143,17 +143,18 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
                   const at = options.indexOf(fallback)
                   // A typed default that isn't an option starts in the box, so Enter alone still takes it.
                   const draft = typed && at < 0 ? fallback : ""
+                  const pages = [
+                    {
+                      header: choose().question,
+                      question: choose().question,
+                      options: options.map((o) => ({ label: o, value: o })),
+                      multi: false,
+                      typed,
+                    },
+                  ]
                   return (
                     <QuestionView
-                      pages={[
-                        {
-                          header: choose().question,
-                          question: choose().question,
-                          options: options.map((o) => ({ label: o, value: o })),
-                          multi: false,
-                          typed,
-                        },
-                      ]}
+                      pages={pages}
                       selected={at >= 0 ? at : draft ? options.length : 0}
                       draft={draft}
                       singleLine
