@@ -168,7 +168,7 @@ def test_onboard_clones_the_company_and_commits_this_device_for_the_human_you_pi
     assert _git(home / "company", "rev-parse", "--abbrev-ref", "main@{upstream}").strip() == "origin/main"
     assert _git(home / "company", "status", "--porcelain") == ""
     assert sorted(os.listdir(home)) == ["company", "identity.json", "office"]
-    assert "The company's humans: @ceo, @lan" in ask.seen
+    assert ask.offered == [["ceo", "lan"]] and not [line for line in ask.seen if line.startswith("The company's")]
     assert not [line for line in ask.seen if me.token in line]
 
 
@@ -250,6 +250,14 @@ def test_no_human_to_default_to_and_no_answer_stops_without_a_company(tmp_path, 
         onboard(tmp_path / "home", TtyPrompter(interactive=False), source=str(published(tmp_path)),
                 host=make_host(tmp_path, Runner()))
     assert sorted(os.listdir(tmp_path / "home")) == ["office"]
+
+
+def test_no_pick_with_no_default_says_who_to_pick_and_names_the_flag(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_module, "login_defaults", lambda: ("X", "someone-else"))
+    ask = Script(*[""] * TRIES)
+    with pytest.raises(OnboardError, match="no usable answer"):
+        onboard(tmp_path / "home", ask, source=str(published(tmp_path)), host=make_host(tmp_path, Runner()))
+    assert ask.seen.count("That doesn't work: say which one you are (@ceo, @lan), or pass --handle") == TRIES
 
 
 def test_a_device_name_the_human_already_uses_gets_a_suffix(tmp_path, monkeypatch):

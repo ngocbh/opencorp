@@ -12,7 +12,7 @@ from agent_corp.company_template import Owner, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import launchd, service
 from agent_corp.install.launch import Host, launch, office_answers
-from agent_corp.install.offboard import OffboardError, launchers, offboard
+from agent_corp.install.offboard import CONFIRM, KEEP, REMOVE, OffboardError, launchers, offboard
 from agent_corp.install.onboard import make_device, make_home
 from agent_corp.protocol.models import Device
 from tests.company.conftest import _isolate_git  # noqa: F401
@@ -71,14 +71,14 @@ def test_offboard_says_what_it_will_remove_and_no_keeps_everything(tmp_path):
     assert f"{paths.office} (the office's store, provider.json, logs, and worktrees)" in said
     assert str(paths.home / "identity.json") in said and str(paths.home / "tui") in said
     assert f"Keeping the company repo at {paths.company}: it has no remote, so this is its only copy" in said
-    assert ask.seen[-1] == "Remove all this? (y/N)"
+    assert ask.seen[-1] == CONFIRM and ask.offered == [[KEEP, REMOVE]]
     assert devices(paths) == [device_name()] and (paths.office / "provider.json").exists()
     assert (paths.home / "identity.json").exists() and (paths.home / "tui").exists()
 
 
 def test_offboard_removes_the_device_and_the_office_but_keeps_a_company_with_no_remote(tmp_path):
     paths = office(tmp_path / "home")
-    ask = Script("y")
+    ask = Script("2")
     offboard(paths.home, ask, host=make_host(tmp_path, Runner()), environ=no_launchers())
     assert devices(paths) == []
     assert subjects(paths.company)[0] == f"devices(@me): remove {device_name()}"

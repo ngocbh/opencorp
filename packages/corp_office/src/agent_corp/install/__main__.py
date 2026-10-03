@@ -66,6 +66,9 @@ def _onboard(args: argparse.Namespace) -> int:
     except OnboardError as exc:
         print(f"ac onboard: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return 130
     return 0
 
 
@@ -79,6 +82,9 @@ def _offboard(args: argparse.Namespace) -> int:
         hint = "; there's no terminal to ask on, so pass --yes to remove it" if declined else ""
         print(f"ac offboard: {exc}{hint}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print(file=sys.stderr)
+        return 130
     return 0
 
 

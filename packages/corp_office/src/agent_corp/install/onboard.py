@@ -441,9 +441,10 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
         raise OnboardError("the company has no humans for this device to act as")
     login = _login_handle()
     default = login if login in humans else humans[0] if len(humans) == 1 else ""
-    prompter.say(f"The company's humans: {', '.join('@' + h for h in humans)}")
+    # Without a terminal there's no list on screen, so the problem names the humans.
+    pick = f"say which one you are ({', '.join('@' + h for h in humans)}), or pass --handle"
     handle = ask_until(prompter, WHO, default, lambda h: None if h in humans else
-                       f"@{h} isn't one of them" if h else "say which one you are")
+                       f"@{h} isn't one of them" if h else pick, options=humans)
     password_hash = people[handle].password_hash
     if password_hash is not None:
         try:

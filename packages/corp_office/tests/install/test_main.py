@@ -81,6 +81,17 @@ def test_ctrl_c_during_init_is_exit_130_with_only_a_newline(tmp_path, monkeypatc
     assert capsys.readouterr().err == "\n"
 
 
+@pytest.mark.parametrize("command", ["onboard", "offboard"])
+def test_ctrl_c_during_onboard_or_offboard_is_exit_130_with_only_a_newline(tmp_path, monkeypatch, capsys, command):
+    def interrupted(*a, **k):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(install_main, "onboard", interrupted)
+    monkeypatch.setattr(install_main.offboard, "offboard", interrupted)
+    assert main([command, "--home", str(tmp_path / "home")]) == 130
+    assert capsys.readouterr().err == "\n"
+
+
 def test_the_same_handle_for_you_and_the_first_teammate_stops_init_before_it_starts(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(install_main.init, "init", lambda *a, **k: pytest.fail("init ran"))
     assert main(["init", "--home", str(tmp_path / "home"), "--handle", "x", "--agent-handle", "x"]) == 1
@@ -93,7 +104,7 @@ def test_onboard_flags_give_the_repo_to_clone_and_say_which_human_you_are(tmp_pa
     args = ["onboard", "--home", str(tmp_path / "home"), "--from", "git@example.com:acme.git", "--handle", "lan"]
     assert main(args) == 0
     assert seen["source"] == "git@example.com:acme.git"
-    assert seen["prompter"].ask("Which of them are you?", "ceo") == "lan"
+    assert seen["prompter"].choose("Which of them are you?", ["ceo", "lan"], "ceo") == "lan"
 
 
 def test_onboard_without_a_company_or_a_repo_is_exit_1_with_the_ways_to_get_one(tmp_path, monkeypatch, capsys):
