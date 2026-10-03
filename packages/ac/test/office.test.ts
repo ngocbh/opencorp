@@ -3,13 +3,11 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { doctor } from "../src/commands/doctor"
-import { init } from "../src/commands/init"
 import { offboard } from "../src/commands/offboard"
-import { onboard } from "../src/commands/onboard"
 import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
-import { type Deps, REPO, officeAnswers, venvPython } from "../src/office"
+import { type Deps, REPO, officeAnswers, syncThenInstall, venvPython } from "../src/office"
 import { createFakeOffice } from "../../tui/script/stub"
 
 const saved = { ...process.env }
@@ -38,9 +36,9 @@ test("the repo is this checkout, and its venv's python runs the install", () => 
   expect(venvPython()).toBe(path.join(REPO, ".venv", "bin", "python"))
 })
 
-test("onboard syncs the venv, then runs the Python onboarding with the flags it was given", async () => {
+test("syncThenInstall syncs the venv, then runs the Python onboarding with the flags it was given", async () => {
   const { deps, calls } = fake({ python: 5 })
-  expect(await onboard(["--service", "tmux", "--from", "git@example.com:acme.git"], deps)).toBe(5)
+  expect(await syncThenInstall("onboard", ["--service", "tmux", "--from", "git@example.com:acme.git"], deps)).toBe(5)
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     {
@@ -50,9 +48,9 @@ test("onboard syncs the venv, then runs the Python onboarding with the flags it 
   ])
 })
 
-test("init syncs the venv, then runs the Python init with the flags it was given", async () => {
+test("syncThenInstall syncs the venv, then runs the Python init with the flags it was given", async () => {
   const { deps, calls } = fake({ python: 4 })
-  expect(await init(["--company", "Acme", "--remote", "git@example.com:acme.git"], deps)).toBe(4)
+  expect(await syncThenInstall("init", ["--company", "Acme", "--remote", "git@example.com:acme.git"], deps)).toBe(4)
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     {
@@ -62,9 +60,9 @@ test("init syncs the venv, then runs the Python init with the flags it was given
   ])
 })
 
-test("init stops when uv is missing, naming itself", async () => {
+test("syncThenInstall stops when uv is missing, naming the command", async () => {
   const noUv = fake({}, ["uv", path.join(os.homedir(), ".local", "bin", "uv")])
-  expect(await init([], noUv.deps)).toBe(1)
+  expect(await syncThenInstall("init", [], noUv.deps)).toBe(1)
   expect(noUv.calls).toEqual([])
   expect(noUv.errors.join("\n")).toContain("ac init: uv not found")
 })
@@ -88,19 +86,19 @@ test("init and offboard are commands with their own summaries", async () => {
   expect((await commands.offboard.load()).run).toBeFunction()
 })
 
-test("onboard finds uv in ~/.local/bin when it isn't on PATH", async () => {
+test("syncThenInstall finds uv in ~/.local/bin when it isn't on PATH", async () => {
   const { deps, calls } = fake({}, ["uv"])
-  expect(await onboard([], deps)).toBe(0)
+  expect(await syncThenInstall("onboard", [], deps)).toBe(0)
   expect(calls[0].argv).toEqual([path.join(os.homedir(), ".local", "bin", "uv"), "sync", "--frozen", "--quiet"])
 })
 
-test("onboard stops when uv is missing or the sync fails", async () => {
+test("syncThenInstall stops when uv is missing or the sync fails", async () => {
   const noUv = fake({}, ["uv", path.join(os.homedir(), ".local", "bin", "uv")])
-  expect(await onboard([], noUv.deps)).toBe(1)
+  expect(await syncThenInstall("onboard", [], noUv.deps)).toBe(1)
   expect(noUv.calls).toEqual([])
   expect(noUv.errors.join("\n")).toContain("uv not found")
   const failing = fake({ uv: 2 })
-  expect(await onboard([], failing.deps)).toBe(2)
+  expect(await syncThenInstall("onboard", [], failing.deps)).toBe(2)
   expect(failing.calls).toHaveLength(1)
 })
 
