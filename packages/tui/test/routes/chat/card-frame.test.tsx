@@ -541,3 +541,34 @@ test("a long option wraps instead of being cut", async () => {
     office.stop()
   }
 })
+
+test("options sit on consecutive rows; a description takes the row under its option", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.addQuestion({
+    session_id: s.id,
+    source: "human_input",
+    node_id: "setup",
+    question: "Which database?",
+    questions: [
+      {
+        question: "Which database?",
+        header: "Database",
+        options: [{ label: "Postgres", description: "the default" }, { label: "SQLite" }, { label: "Oracle" }],
+      },
+    ],
+  })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    const f = await app.until((f) => f.includes("4. Type your answer here"))
+    const lines = f.split("\n")
+    const row = (text: string) => lines.findIndex((l) => l.includes(text))
+    expect(row("the default")).toBe(row("1. Postgres") + 1)
+    expect(row("2. SQLite")).toBe(row("the default") + 1)
+    expect(row("3. Oracle")).toBe(row("2. SQLite") + 1)
+    expect(row("4. Type your answer here")).toBe(row("3. Oracle") + 1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

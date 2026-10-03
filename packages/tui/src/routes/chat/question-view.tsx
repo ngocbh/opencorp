@@ -315,9 +315,11 @@ export function QuestionView(
                         </box>
                       </box>
 
-                      <box paddingLeft={3}>
-                        <text fg={theme.textMuted}>{opt.description}</text>
-                      </box>
+                      <Show when={opt.description}>
+                        <box paddingLeft={3}>
+                          <text fg={theme.textMuted}>{opt.description}</text>
+                        </box>
+                      </Show>
                     </box>
                   )
                 }}
