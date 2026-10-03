@@ -21,8 +21,14 @@ from agent_corp.worker.spawn import worker_env
 FLOW = Path(__file__).parent / "flows" / "init.yaml"
 """The init flow."""
 
-CONFIRM = "Create this company? (Y/n, or say what to change)"
-"""What the owner is asked after the summary."""
+CONFIRM = "Create this company?"
+CREATE = "Yes, create it"
+CHANGE = "No, change something"
+WHAT_TO_CHANGE = "What should change? (empty to talk it over)"
+"""What the owner is asked after the summary, the two answers, and what is asked after the second."""
+
+TYPE_OWN = "Type my own answer"
+"""The last choice for a question the model gives options for."""
 
 FLAGS = {"company": "--company", "owner.name": "--name", "owner.handle": "--handle",
          "teammate.name": "--agent", "teammate.handle": "--agent-handle"}
@@ -168,24 +174,29 @@ def confirm(inputs: dict) -> dict:
     with owner_prompter() as prompter:
         for line in summary(draft):
             prompter.say(line)
-        reply = prompter.ask(CONFIRM).strip()
-    if reply.lower() in ("", "y", "yes"):
-        return {"draft": text, "changes": "", "accepted": True}
-    changes = ("The owner wants changes; ask what to change" if reply.lower() in ("n", "no")
-               else f"The owner wants changes: {reply}")
+        if prompter.choose(CONFIRM, [CREATE, CHANGE], CREATE) != CHANGE:
+            return {"draft": text, "changes": "", "accepted": True}
+        reply = prompter.ask(WHAT_TO_CHANGE).strip()
+    changes = f"The owner wants changes: {reply}" if reply else "The owner wants changes; ask what to change"
     return {"draft": text, "changes": changes, "accepted": False}
 
 
 def ask_user(**request) -> str:
-    """Ask the owner ``request["question"]``, listing ``request["options"]`` numbered; a number picks that option."""
+    """Ask the owner ``request["question"]``; with ``request["options"]``, they pick one or type their own answer.
+
+    A picked option goes back as the model wrote it, not as it was shown.
+    """
     options = request.get("options") or []
+    question = clean(request["question"])
     with owner_prompter() as prompter:
-        for number, option in enumerate(options, 1):
-            prompter.say(f"  {number}. {clean(option)}")
-        answer = prompter.ask(clean(request["question"]))
-    if answer.strip().isdecimal() and 1 <= int(answer) <= len(options):
-        return options[int(answer) - 1]
-    return answer
+        if not options:
+            return prompter.ask(question)
+        shown = [clean(o) for o in options]
+        picked = prompter.choose(question, [*shown, TYPE_OWN])
+        if picked == TYPE_OWN:
+            return prompter.ask(question)
+    # Anything else, such as an empty line with no option picked, goes back as it is.
+    return options[shown.index(picked)] if picked in shown else picked
 
 
 def run_init_flow(provider: Provider, prompter: Prompter, known: Known, *, provider_path: Path) -> dict:

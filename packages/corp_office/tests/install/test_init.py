@@ -124,7 +124,7 @@ def test_the_flow_with_a_model_makes_the_company_and_never_sends_a_secret(tmp_pa
            "teammates": [{"name": "Lan", "handle": "lan", "title": "QA", "about": "Tests every release."}]}
     with FakeLLM() as fake:
         fake.script(*flow_replies("Tell me about the company.", out))
-        ask = Script("Acme; I'm ngocbh; hire Lan for QA", "y", PASSWORD, PASSWORD, str(remote))
+        ask = Script("Acme; I'm ngocbh; hire Lan for QA", "1", PASSWORD, PASSWORD, str(remote))
         provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
         with pytest.raises(OnboardError, match="stop"):
             init(home, ask, stdin=io.StringIO(json.dumps(provider)), host=make_host(tmp_path, Runner()))
