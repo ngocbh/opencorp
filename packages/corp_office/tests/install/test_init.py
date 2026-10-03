@@ -21,7 +21,8 @@ from agent_corp.install import onboard as onboard_module
 from agent_corp.install.init import ADD_REMOTE, NO_REMOTE, REMOTE, REMOTE_URL, init, password_step, remote_step
 from agent_corp.install.interview import CONFIRM, Asking, Known, ModelError, asking
 from agent_corp.install.launch import office_answers
-from agent_corp.install.onboard import SET_UP_AGAIN, TRY_AGAIN, NoTerminal, OnboardError, TtyPrompter, onboard, redact
+from agent_corp.install.onboard import (GIT_ACCESS, SET_UP_AGAIN, TRY_AGAIN, NoTerminal, OnboardError, TtyPrompter,
+                                        onboard, redact)
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
@@ -410,7 +411,8 @@ def test_a_push_that_fails_is_a_warning_with_the_retry_and_init_goes_on(tmp_path
         run_init(tmp_path, ask)
     company = tmp_path / "home" / "company"
     warning = next(line for line in ask.seen if line.startswith("Warning: couldn't push"))
-    assert f"Retry with `git -C {company} push -u origin main`." in warning
+    assert GIT_ACCESS in warning
+    assert f"then retry with `git -C {company} push -u origin main`." in warning
     assert _git(company, "remote", "get-url", "origin").strip() == str(tmp_path / "nowhere.git")
     assert "Step 5 of 5: This machine" in ask.seen
 

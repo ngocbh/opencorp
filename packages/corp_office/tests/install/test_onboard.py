@@ -293,7 +293,8 @@ def test_no_company_and_no_repo_suggests_init(tmp_path, prompter):
 
 
 def test_a_repo_that_cant_be_cloned_leaves_nothing_behind(tmp_path):
-    with pytest.raises(OnboardError, match="can't clone"):
+    with pytest.raises(OnboardError, match=r"can't clone .*; if git needs a login or a new host key, set that up in"
+                                           r" a terminal first .*then run `ac onboard` again"):
         onboard(tmp_path / "home", Script(), source=str(tmp_path / "nowhere.git"), host=make_host(tmp_path, Runner()))
     assert sorted(os.listdir(tmp_path / "home")) == ["office"]
 

@@ -573,6 +573,11 @@ def user_git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(args, 124, "", "git timed out")
 
 
+GIT_ACCESS = ("if git needs a login or a new host key, set that up in a terminal first"
+              " (`gh auth login`, or `ssh -T git@HOST` once)")
+"""What to do when a clone or push fails: under ``ac``'s setup screen git has no terminal to ask on."""
+
+
 CLONE = ".company-clone"
 """Where onboarding clones a company before this device is added to it; renamed to ``company`` once done, so
 a stopped onboarding leaves no company that lacks this device."""
@@ -600,7 +605,8 @@ def _clone(url: str, dest: Path) -> None:
     done = user_git("clone", "-q", "--", url, str(dest))
     if done.returncode != 0:
         remove_path(dest)
-        raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}")
+        raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}; {GIT_ACCESS},"
+                           " then run `ac onboard` again")
     if is_new(dest):
         remove_path(dest)
         raise OnboardError(f"{redact(url)} isn't a company repo: it has no company.yaml at its top")
