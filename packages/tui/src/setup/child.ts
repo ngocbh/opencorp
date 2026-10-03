@@ -58,6 +58,7 @@ function parse(line: string): SetupPrompt {
         question: plain(value.question),
         options: value.options.map(plain),
         default: plain(value.default ?? ""),
+        typed: value.typed === true,
       }
   }
   return { type: "say", text: plain(line) }
