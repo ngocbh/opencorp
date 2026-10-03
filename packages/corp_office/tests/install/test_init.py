@@ -362,6 +362,28 @@ def test_a_token_in_the_remote_url_is_never_shown(tmp_path, monkeypatch):
     assert redact(url) == "http://***@127.0.0.1:9/acme.git"
 
 
+def test_the_remote_is_asked_before_the_company_is_written(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    ask = scripted()
+    with pytest.raises(OnboardError, match="stop"):
+        run_init(tmp_path, ask)
+    created = next(i for i, line in enumerate(ask.seen) if line.startswith("Company repo: created at"))
+    assert ask.seen.index("Step 3 of 5: Password") < ask.seen.index(REMOTE) < created
+
+
+class InterruptedAtRemote(Script):
+    def ask(self, question, default=""):
+        if question == REMOTE:
+            raise KeyboardInterrupt
+        return super().ask(question, default)
+
+
+def test_ctrl_c_at_the_remote_leaves_no_company(tmp_path):
+    with pytest.raises(KeyboardInterrupt):
+        run_init(tmp_path, InterruptedAtRemote(PASSWORD, PASSWORD, interactive=False))
+    assert is_new(OfficePaths(tmp_path / "home").company)
+
+
 # Not interactive, so the company comes from the flags and no real model is asked; the CLI never runs init this
 # way (it is interactive whenever the provider isn't on stdin).
 CEO = Known(company="Acme", name="Hong Ngoc Bui", handle="ngocbh")
