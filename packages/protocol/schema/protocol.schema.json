@@ -619,12 +619,16 @@
     },
     "SetupChoose": {
       "type": "object", "additionalProperties": false, "required": ["type", "question", "options"],
-      "description": "Pick one of `options`.",
+      "description": "Pick one of `options`, or with `typed` type an answer.",
       "properties": {
         "type": { "const": "choose" },
         "question": { "type": "string" },
         "options": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-        "default": { "type": "string", "default": "" }
+        "default": { "type": "string", "default": "" },
+        "typed": {
+          "type": "boolean", "default": false,
+          "description": "Whether the owner may type an answer of their own instead of picking one of `options`."
+        }
       }
     },
     "SetupSecret": {

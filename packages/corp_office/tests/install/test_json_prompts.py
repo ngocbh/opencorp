@@ -32,7 +32,7 @@ def test_choose_returns_one_of_the_options():
     prompter, out = _prompter("openai")
     assert prompter.choose("Model provider", ["anthropic", "openai"], "anthropic") == "openai"
     assert _sent(out) == [{"type": "choose", "question": "Model provider", "options": ["anthropic", "openai"],
-                           "default": "anthropic"}]
+                           "default": "anthropic", "typed": False}]
 
 
 def test_an_empty_choice_is_the_default():
