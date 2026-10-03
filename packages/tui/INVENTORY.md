@@ -54,7 +54,7 @@ Classification:
 
 | Module and symbols | Importing files | Class | Replacement |
 | --- | --- | --- | --- |
-| `@opencode-ai/core/global` `Global` | `app.tsx`, `context/{kv,theme}.tsx`; test `app-lifecycle.test.tsx` | stand-in | `src/core/global.ts`: the same `Global.Path` getters and `Global.Service`/`layer`, rooted at `$AGENT_CORP_HOME` or `~/.agent-corp`, then `tui/`. |
+| `@opencode-ai/core/global` `Global` | `app.tsx`, `context/{kv,theme}.tsx`; test `app-lifecycle.test.tsx` | stand-in | `src/core/global.ts`: the same `Global.Path` getters and `Global.Service`/`layer`, rooted at `$AC_HOME` or `~/.agent-corp`, then `tui/`. |
 | `@opencode-ai/core/flag/flag` `Flag` | `app.tsx`, `ui/dialog.tsx`, `context/sdk.tsx`, `component/prompt/index.tsx` | stand-in | `src/core/flag.ts`: only the flags the TUI reads, same env names and parsing. |
 | `@opencode-ai/core/installation/version` `InstallationVersion`, `InstallationChannel` | `app.tsx`, `component/{dialog-debug,error-component}.tsx`, `routes/session/sidebar.tsx` | stand-in | `src/core/version.ts`: a build-time `AGENT_CORP_VERSION`, else `local`. |
 | `@opencode-ai/core/open` `openUrl` | `app.tsx`, `ui/link.tsx`, `component/dialog-retry-action.tsx` | stand-in | `src/core/open.ts`: the same function (http and https only) on the `open` package. |
