@@ -21,8 +21,9 @@ export interface Writer {
  */
 export async function runSetup(argv: string[], cwd: string): Promise<number> {
   const child = spawnSetup(argv, cwd)
+  const at = argv.indexOf("agent_corp.install")
   try {
-    return await runSetupWith(child)
+    return await runSetupWith(child, process.stdout, process.stderr, at >= 0 ? `ac ${argv[at + 1]}` : "")
   } catch (e) {
     // A renderer that fails to start must not leave the install waiting on stdin.
     child.close()
@@ -31,11 +32,12 @@ export async function runSetup(argv: string[], cwd: string): Promise<number> {
   }
 }
 
-/** The same, for a child already running (tests pass a fake). */
+/** The same, for a child already running (tests pass a fake); the header names `command`, such as `ac init`. */
 export async function runSetupWith(
   child: SetupChild,
   out: Writer = process.stdout,
   err: Writer = process.stderr,
+  command = "",
 ): Promise<number> {
   const renderer = await createCliRenderer({
     externalOutputMode: "passthrough",
@@ -60,7 +62,7 @@ export async function runSetupWith(
       await render(
         () => (
           <Providers mode={mode}>
-            <SetupScreen child={child} lines={lines} />
+            <SetupScreen child={child} lines={lines} command={command} />
           </Providers>
         ),
         renderer,

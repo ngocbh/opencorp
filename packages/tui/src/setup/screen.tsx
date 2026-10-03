@@ -1,49 +1,54 @@
 import { TextAttributes, type InputRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, Match, Show, Switch } from "solid-js"
+import { createMemo, createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
 import type { SetupAsk, SetupChoose, SetupSecret } from "@agent-corp/protocol"
 import { Spinner } from "../component/spinner"
 import { useTheme } from "../context/theme"
+import { SplitBorder } from "../ui/border"
 import type { SetupChild } from "./child"
 import { SecretInput } from "./secret"
 
-type Line = { kind: "step" | "why" | "say"; text: string }
+type Entry =
+  | { kind: "step"; counter: string; title: string; why: string }
+  | { kind: "say"; text: string }
+  | { kind: "answer"; question: string; shown: string }
 
 /** `text` with the user and password taken out of any URL in it, as the install's `redact` does. */
 function redact(text: string) {
   return text.replace(/(?<=:\/\/)[^/@\s]+@/g, "***@")
 }
 
-/** The install's transcript, its pending question, and a spinner while it works; Ctrl-C asks it to stop. */
-export function SetupScreen(props: { child: SetupChild; lines: string[] }) {
+/**
+ * The install's steps and answers, its pending question in a panel, and a spinner while it works; Ctrl-C asks it
+ * to stop.
+ */
+export function SetupScreen(props: { child: SetupChild; lines: string[]; command?: string }) {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
-  const [lines, setLines] = createSignal<Line[]>([])
+  const [entries, setEntries] = createSignal<Entry[]>([])
   const [pending, setPending] = createSignal<SetupAsk | SetupChoose | SetupSecret>()
   const [stopping, setStopping] = createSignal(false)
 
-  /** Adds a line to the transcript shown now and to the one printed once the screen is gone. */
-  const add = (kind: Line["kind"], text: string) => {
-    props.lines.push(text)
-    setLines((all) => [...all, { kind, text }])
+  /** Shows `entry` now; `printed` are its lines in the transcript printed once the screen is gone. */
+  const add = (entry: Entry, ...printed: string[]) => {
+    props.lines.push(...printed)
+    setEntries((all) => [...all, entry])
   }
 
   props.child.onPrompt((prompt) => {
     if (prompt.type === "step") {
-      add("step", `Step ${prompt.number} of ${prompt.total}: ${prompt.title}`)
-      add("why", prompt.why)
-    } else if (prompt.type === "say") add("say", prompt.text)
+      const counter = `Step ${prompt.number} of ${prompt.total}`
+      add({ kind: "step", counter, title: prompt.title, why: prompt.why }, `${counter}: ${prompt.title}`, prompt.why)
+    } else if (prompt.type === "say") add({ kind: "say", text: prompt.text }, prompt.text)
     else setPending(prompt)
   })
 
   /** Sends `text` as the answer, shows the question answered with `shown`, and waits for the next prompt. */
   const answer = (question: string, text: string, shown: string) => {
     props.child.answer(text)
-    add("say", `${question}: ${shown}`)
+    add({ kind: "answer", question, shown }, `${question}: ${shown}`)
     setPending(undefined)
   }
-  // The question line and the gap above it take two rows; a choice gets the rest under the transcript.
-  const rows = () => Math.max(3, dimensions().height - lines().length - 2)
 
   useKeyboard((key) => {
     if (!key.ctrl || key.name !== "c") return
@@ -57,22 +62,60 @@ export function SetupScreen(props: { child: SetupChild; lines: string[] }) {
       height={dimensions().height}
       flexDirection="column"
       backgroundColor={theme.background}
-      paddingLeft={1}
-      paddingRight={1}
+      paddingLeft={2}
+      paddingRight={2}
+      paddingBottom={1}
+      gap={1}
     >
+      <box flexShrink={0} paddingTop={1}>
+        <text fg={theme.text} wrapMode="none">
+          <b>Setting up AgentCorp</b>
+          <span style={{ fg: theme.textMuted }}>{props.command ? ` · ${props.command}` : ""}</span>
+        </text>
+      </box>
       <scrollbox stickyScroll={true} stickyStart="bottom" flexGrow={1}>
-        <For each={lines()}>
-          {(line) => (
-            <text
-              fg={line.kind === "step" ? theme.accent : line.kind === "why" ? theme.textMuted : theme.text}
-              attributes={line.kind === "step" ? TextAttributes.BOLD : undefined}
-            >
-              {line.text}
-            </text>
+        <For each={entries()}>
+          {(entry, i) => (
+            <Switch>
+              <Match when={entry.kind === "step" && entry}>
+                {(step) => (
+                  <box marginTop={i() === 0 ? 0 : 1}>
+                    <box flexDirection="row">
+                      <text fg={theme.textMuted}>{`${step().counter} · `}</text>
+                      <text fg={theme.accent} attributes={TextAttributes.BOLD}>
+                        {step().title}
+                      </text>
+                    </box>
+                    <text fg={theme.textMuted} wrapMode="word">
+                      {step().why}
+                    </text>
+                  </box>
+                )}
+              </Match>
+              <Match when={entry.kind === "say" && entry}>
+                {(say) => (
+                  <box paddingLeft={2}>
+                    <text fg={theme.text} wrapMode="word">
+                      {say().text}
+                    </text>
+                  </box>
+                )}
+              </Match>
+              <Match when={entry.kind === "answer" && entry}>
+                {(done) => (
+                  <box paddingLeft={2} flexDirection="row">
+                    <text fg={theme.textMuted}>{`${done().question} → `}</text>
+                    <text fg={theme.secondary} wrapMode="word" flexShrink={1}>
+                      {done().shown}
+                    </text>
+                  </box>
+                )}
+              </Match>
+            </Switch>
           )}
         </For>
       </scrollbox>
-      <box flexShrink={0} paddingTop={1}>
+      <box flexShrink={0}>
         <Show
           when={!stopping() && pending()}
           keyed
@@ -96,17 +139,22 @@ export function SetupScreen(props: { child: SetupChild; lines: string[] }) {
                     question={choose().question}
                     options={choose().options}
                     default={choose().default}
-                    rows={rows()}
+                    rows={Math.max(3, Math.floor(dimensions().height / 2) - 4)}
                     onSubmit={(option) => answer(choose().question, option, option)}
                   />
                 )}
               </Match>
               <Match when={question.type === "secret" && question}>
                 {(secret) => (
-                  <SecretInput
-                    question={secret().question}
-                    onSubmit={(text) => answer(secret().question, text, "(hidden)")}
-                  />
+                  <Panel>
+                    <text fg={theme.text}>{secret().question}</text>
+                    <SecretInput
+                      placeholder="Paste or type it here; it isn't shown"
+                      fg={theme.text}
+                      placeholderFg={theme.textMuted}
+                      onSubmit={(text) => answer(secret().question, text, "(hidden)")}
+                    />
+                  </Panel>
                 )}
               </Match>
             </Switch>
@@ -117,23 +165,47 @@ export function SetupScreen(props: { child: SetupChild; lines: string[] }) {
   )
 }
 
-/** `question: ` and a line to type the answer on, starting at `default`; Enter hands the text to `onSubmit`. */
+/** The question card's look: a panel with an accent bar on its left. */
+function Panel(props: ParentProps) {
+  const { theme } = useTheme()
+  return (
+    <box
+      backgroundColor={theme.backgroundPanel}
+      border={["left"]}
+      borderColor={theme.accent}
+      customBorderChars={SplitBorder.customBorderChars}
+    >
+      <box paddingLeft={2} paddingRight={3} paddingTop={1} paddingBottom={1} gap={1}>
+        {props.children}
+      </box>
+    </box>
+  )
+}
+
+/** `question` in a panel above a line to type the answer on; Enter hands the text to `onSubmit`. */
 function Ask(props: { question: string; default: string; onSubmit: (text: string) => void }) {
   const { theme } = useTheme()
   let input: InputRenderable | undefined
   return (
-    <box flexDirection="row">
-      <text fg={theme.text}>{`${props.question}: `}</text>
+    <Panel>
+      <text fg={theme.text} wrapMode="word">
+        {props.question}
+      </text>
       <input
-        flexGrow={1}
         focused
         ref={(r) => (input = r)}
-        value={props.default}
-        cursorColor={theme.primary}
+        placeholder={
+          props.default ? `Type your answer here (Enter for ${redact(props.default)})` : "Type your answer here"
+        }
+        placeholderColor={theme.textMuted}
+        textColor={theme.text}
+        focusedTextColor={theme.text}
+        backgroundColor={theme.backgroundPanel}
         focusedBackgroundColor={theme.backgroundPanel}
+        cursorColor={theme.primary}
         onSubmit={() => props.onSubmit(input?.value ?? "")}
       />
-    </box>
+    </Panel>
   )
 }
 

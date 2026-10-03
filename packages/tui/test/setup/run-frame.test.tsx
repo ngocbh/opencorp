@@ -12,10 +12,21 @@ test("steps and lines show in the transcript; with no question the spinner says 
     child.push({ type: "step", number: 1, total: 5, title: "Model", why: "The model your people think with." })
     child.push({ type: "say", text: "Checking the key…" })
     const f = await app.until((f) => f.includes("Checking the key…"))
-    expect(f).toContain("Step 1 of 5: Model")
+    expect(f).toContain("Setting up AgentCorp")
+    expect(f).toContain("Step 1 of 5 · Model")
     expect(f).toContain("The model your people think with.")
     expect(f).toContain("Working…")
     expect(spinning(f)).toBe(true)
+  } finally {
+    await app.stop()
+  }
+})
+
+test("the header names the command", async () => {
+  const child = new FakeChild()
+  const app = await bootSetup(child, "ac init")
+  try {
+    await app.until((f) => f.includes("Setting up AgentCorp · ac init"))
   } finally {
     await app.stop()
   }
@@ -41,10 +52,10 @@ test("Ctrl-C with a question open hides it and says the child is stopping", asyn
   const app = await bootSetup(child)
   try {
     child.push({ type: "ask", question: "Company", default: "" })
-    await app.until((f) => f.includes("Company:"))
+    await app.until((f) => f.includes("Company") && f.includes("Type your answer here"))
     app.input.pressCtrlC()
     const f = await app.until((f) => f.includes("Stopping…"))
-    expect(f).not.toContain("Company:")
+    expect(f).not.toContain("Type your answer here")
     expect(child.interrupts).toBe(1)
     expect(child.answers).toEqual([])
   } finally {
@@ -80,7 +91,7 @@ test("the screen destroyed from outside closes the child and waits for it", asyn
   try {
     await app.until((f) => f.includes("Working…"))
     child.push({ type: "ask", question: "Company", default: "" })
-    await app.until((f) => f.includes("Company:"))
+    await app.until((f) => f.includes("Company") && f.includes("Type your answer here"))
     // As opentui's signal handler does on SIGTERM or the terminal closing.
     app.setup.renderer.destroy()
     expect(await app.task).toBe(130)

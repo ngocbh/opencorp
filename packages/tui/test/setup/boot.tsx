@@ -42,8 +42,11 @@ export class FakeChild implements SetupChild {
   }
 }
 
-/** Runs the setup screen for `child` in a 100x30 test renderer; returns frame helpers and what it printed. */
-export async function bootSetup(child: FakeChild) {
+/**
+ * Runs the setup screen for `child`, its header naming `command`, in a 100x30 test renderer; returns frame helpers
+ * and what it printed.
+ */
+export async function bootSetup(child: FakeChild, command = "") {
   // As the real renderer: opentui's default destroys the renderer on the first Ctrl-C.
   const setup = await createTestRenderer({ width: 100, height: 30, useThread: false, exitOnCtrlC: false })
   // The test renderer never answers the theme query, so the screen would wait out its 1 s timeout.
@@ -57,6 +60,7 @@ export async function bootSetup(child: FakeChild) {
     child,
     { write: (s) => void outText.push(s) },
     { write: (s) => void errText.push(s) },
+    command,
   )
   const frames: string[] = []
   const frame = () => setup.captureCharFrame()

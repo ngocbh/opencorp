@@ -1,11 +1,17 @@
+import type { ColorInput } from "@opentui/core"
 import { useKeyboard, usePaste } from "@opentui/solid"
 import { createSignal } from "solid-js"
 
 // Control characters: Tab, Ctrl-J and escape sequences are keys, not part of a secret.
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
 
-/** A masked input: `question: ` then a dot for each character typed; Enter hands the text to `onSubmit`. */
-export function SecretInput(props: { question: string; onSubmit: (value: string) => void }) {
+/** A masked input: a dot for each character typed, or `placeholder` before any; Enter hands the text to `onSubmit`. */
+export function SecretInput(props: {
+  placeholder?: string
+  fg?: ColorInput
+  placeholderFg?: ColorInput
+  onSubmit: (value: string) => void
+}) {
   // Only this closure holds the text, so it can't leak into a store, the history or a frame; the screen
   // only needs its length.
   let value = ""
@@ -27,8 +33,8 @@ export function SecretInput(props: { question: string; onSubmit: (value: string)
   usePaste((event) => set(value + new TextDecoder().decode(event.bytes).replace(CONTROL, "")))
 
   return (
-    <text>
-      {props.question}: {"•".repeat(length())}
+    <text fg={length() ? props.fg : props.placeholderFg}>
+      {length() ? "•".repeat(length()) : (props.placeholder ?? "")}
     </text>
   )
 }
