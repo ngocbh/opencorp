@@ -5,7 +5,7 @@ from typing import TextIO
 
 from pydantic import BaseModel, ValidationError
 
-from agent_corp.install.onboard import OnboardError, _closed
+from agent_corp.install.onboard import OnboardError, closed_input
 from agent_corp.protocol.models import SetupAnswer, SetupAsk, SetupChoose, SetupSay, SetupSecret, SetupStep
 
 
@@ -29,7 +29,7 @@ class JsonPrompter:
     def _answer(self, question: str) -> str:
         line = self.answers.readline()
         if not line:
-            raise _closed(question)
+            raise closed_input(question)
         try:
             return SetupAnswer.model_validate_json(line).answer
         except ValidationError:
@@ -47,6 +47,8 @@ class JsonPrompter:
             return self.preset[question]
         self._send(SetupChoose(type="choose", question=question, options=list(options), default=default))
         answer = self._answer(question)
+        if not answer:
+            return default
         if answer not in options:
             raise OnboardError(f"the answer to {question!r} isn't one of its options")
         return answer

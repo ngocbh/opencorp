@@ -277,11 +277,11 @@ def test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean(sho
         # The kill bounds the exchange: a hung child closes stdout, so the loop below ends.
         timer = threading.Timer(60, proc.kill)
         timer.start()
-        lines, kinds = [], set()
+        lines, kinds, prompts = [], set(), TypeAdapter(models.SetupPrompt)
         try:
             for line in proc.stdout:
                 lines.append(line)
-                prompt = TypeAdapter(models.SetupPrompt).validate_json(line)
+                prompt = prompts.validate_json(line)
                 kinds.add(prompt.type)
                 if (answer := _answer(prompt)) is not None:
                     proc.stdin.write(json.dumps({"answer": answer}) + "\n")
@@ -289,7 +289,11 @@ def test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean(sho
             code = proc.wait()
         finally:
             timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
         reader.join(10)
+        assert not reader.is_alive()
         out, stderr = "".join(lines), "".join(err)
         assert code == 0, stderr
         assert "a stray print" in stderr and "a stray print" not in out

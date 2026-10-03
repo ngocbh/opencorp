@@ -91,7 +91,7 @@ STYLE = [("qmark", "fg:ansicyan bold"), ("question", "bold"), ("answer", "fg:ans
 """How questions on a terminal look: ANSI colour names only, so they follow the terminal's theme."""
 
 
-def _closed(question: str) -> OnboardError:
+def closed_input(question: str) -> OnboardError:
     """The error for stdin ending before ``question`` was answered."""
     return OnboardError(f"no answer to {question!r} (stdin closed)")
 
@@ -151,7 +151,7 @@ class TtyPrompter:
             shown = f"{question} [{default}]: " if default else f"{question}: "
             return input(shown).strip() or default
         except EOFError:
-            raise _closed(question) from None
+            raise closed_input(question) from None
 
     def choose(self, question: str, options: Sequence[str], default: str = "") -> str:
         if question in self.preset:
@@ -167,7 +167,7 @@ class TtyPrompter:
                                           default=default if default in options else None,
                                           instruction="(↑/↓, Enter)", **self._questionary_kwargs(terminal)).unsafe_ask()
             except EOFError:
-                raise _closed(question) from None
+                raise closed_input(question) from None
         for number, option in enumerate(options, 1):
             self.say(f"  {number}. {option}")
         shown = f"{question} [{default}]: " if default else f"{question}: "
@@ -175,7 +175,7 @@ class TtyPrompter:
             try:
                 line = input(shown).strip()
             except EOFError:
-                raise _closed(question) from None
+                raise closed_input(question) from None
             # An option is taken before a number, so an option that is a number picks itself.
             if line in options:
                 return line

@@ -35,6 +35,11 @@ def test_choose_returns_one_of_the_options():
                            "default": "anthropic"}]
 
 
+def test_an_empty_choice_is_the_default():
+    prompter, _ = _prompter("")
+    assert prompter.choose("Model provider", ["anthropic", "openai"], "openai") == "openai"
+
+
 def test_choose_refuses_an_answer_that_isnt_an_option():
     prompter, _ = _prompter("gemini")
     with pytest.raises(OnboardError, match="isn't one of"):

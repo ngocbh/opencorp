@@ -21,7 +21,7 @@ from agent_corp.install import doctor, init, offboard, service
 from agent_corp.install.interview import Known
 from agent_corp.install.json_prompts import JsonPrompter
 from agent_corp.install.launch import Host, Launch, ServiceError, launch
-from agent_corp.install.onboard import SET_UP, WHO, OnboardError, TtyPrompter, onboard
+from agent_corp.install.onboard import SET_UP, WHO, OnboardError, Prompter, TtyPrompter, onboard
 
 NOT_ONBOARDED = 3
 
@@ -36,7 +36,7 @@ def _provider_stdin(args: argparse.Namespace) -> io.StringIO | None:
     return io.StringIO(sys.stdin.read()) if args.provider_stdin else None
 
 
-def _prompter(args: argparse.Namespace, stdin: io.StringIO | None, preset: dict[str, str] | None = None):
+def _prompter(args: argparse.Namespace, stdin: io.StringIO | None, preset: dict[str, str] | None = None) -> Prompter:
     """The prompter for init and onboard: the setup screen's with --json-prompts, else the terminal's."""
     if not args.json_prompts:
         return TtyPrompter(preset, interactive=stdin is None)
