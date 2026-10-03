@@ -1,6 +1,6 @@
 // Running the Python side of `ac`, and checking that the office is up. Onboarding, the doctor,
 // and starting the office live in `python -m agent_corp.install`, run with this checkout's venv;
-// it reads the home from $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed
+// it reads the home from $AC_HOME, which it inherits, or from a `--home` flag passed
 // through. `ac` never starts the office on its own: the service `ac init` or `ac onboard` installed does.
 import { createOfficeClient } from "@agent-corp/tui/office/client"
 import { readIdentity, type Identity } from "@agent-corp/tui/office/identity"
@@ -39,7 +39,7 @@ export function venvPython(repo = REPO) {
 /**
  * Runs `python -m agent_corp.install <command> ...args` from the venv and resolves to its exit
  * code; without a venv, says to run `ac onboard` and resolves to 1. It runs in the caller's
- * folder, so a relative `--home` or $AGENT_CORP_HOME means the same as it does to the TUI.
+ * folder, so a relative `--home` or $AC_HOME means the same as it does to the TUI.
  */
 export async function runInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
   const python = venvPython()

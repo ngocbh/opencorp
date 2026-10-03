@@ -27,11 +27,19 @@ def test_doctor_on_a_fresh_machine_fails_and_says_to_onboard(tmp_path, monkeypat
     assert "fail  company   no company repo" in capsys.readouterr().out
 
 
-def test_the_home_defaults_to_agent_corp_home(tmp_path, monkeypatch, capsys):
+def test_the_home_defaults_to_ac_home(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
-    monkeypatch.setenv("AGENT_CORP_HOME", str(tmp_path / "elsewhere"))
+    monkeypatch.setenv("AC_HOME", str(tmp_path / "elsewhere"))
     main(["doctor"])
     assert f"no company repo at {os.path.realpath(tmp_path / 'elsewhere')}/company" in capsys.readouterr().out
+
+
+def test_an_empty_ac_home_means_the_default(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("AC_HOME", "")
+    main(["doctor"])
+    assert f"no company repo at {os.path.realpath(tmp_path / '.agent-corp')}/company" in capsys.readouterr().out
 
 
 def test_start_before_onboarding_is_exit_3_with_a_hint(tmp_path, capsys):

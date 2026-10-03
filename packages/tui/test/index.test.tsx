@@ -4,5 +4,5 @@ import { defaultSocket, Global, run } from "../src"
 test("exports the application lifecycle, its layer, and the default office socket", () => {
   expect(typeof run).toBe("function")
   expect(Global.layer).toBeDefined()
-  expect(defaultSocket()).toBe(`${process.env.AGENT_CORP_HOME}/office/office.sock`)
+  expect(defaultSocket()).toBe(`${process.env.AC_HOME}/office/office.sock`)
 })
