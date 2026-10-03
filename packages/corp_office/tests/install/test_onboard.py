@@ -74,6 +74,15 @@ def test_an_existing_company_without_an_identity_suggests_login(tmp_path):
         "Step 1 of 4: Company", "Step 2 of 4: This device", "Step 3 of 4: Model", "Step 4 of 4: Office"]
 
 
+def test_onboard_saves_no_provider_whose_model_doesnt_answer(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    company(home)
+    monkeypatch.setattr("agent_corp.install.interview.model_problem", lambda provider: "Connection error")
+    with pytest.raises(OnboardError, match="^the model didn't answer: Connection error$"):
+        onboard(home, Script(), stdin=io.StringIO(PROVIDER), host=make_host(tmp_path, Runner(), answers=lambda s: True))
+    assert not (home / "office" / "provider.json").exists()
+
+
 def test_an_office_started_by_hand_is_left_alone(tmp_path):
     home = tmp_path / "home"
     company(home)

@@ -1,6 +1,6 @@
 import json
 import os
-from pathlib import Path
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +15,8 @@ from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.init import REMOTE, REMOTE_URL
 from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, TYPE_OWN, WHAT_TO_CHANGE, Asking, Known,
-                                          asking, clean, confirm, fallback_draft, init_flow, run_init_flow, summary)
+                                          ModelError, asking, clean, confirm, fallback_draft, init_flow, model_problem,
+                                          run_init_flow, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 
@@ -25,7 +26,6 @@ ME = Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO")
 GOOD = Draft("Acme", ME, (Teammate("Minh", "minh", "Engineer", "Writes the backend."), Teammate("Lan", "lan", "QA")))
 OUT = {"company": "Acme", "owner": {"name": "Hong Ngoc Bui", "handle": "ngocbh", "title": "CEO"},
        "teammates": [{"name": "Minh", "handle": "minh", "title": "Engineer", "about": "Writes the backend."}]}
-PROVIDER_PATH = Path("/office/provider.json")
 KEY = "sk-SENTINEL-not-a-real-key"
 PASSWORD = "pw-sentinel-5d1f"
 
@@ -68,7 +68,7 @@ def owner(*answers, remote=""):
 
 
 def run(provider, prompter, known=Known()):
-    return run_init_flow(provider, prompter, known, provider_path=PROVIDER_PATH)
+    return run_init_flow(provider, prompter, known)
 
 
 MAX = yaml.safe_load(FLOW.read_text())["nodes"]["rounds"]["max"]
@@ -240,10 +240,34 @@ def test_the_env_is_restored_when_the_run_raises(login, monkeypatch, error, rais
 
 def test_a_failed_run_says_the_model_couldnt_run_the_interview(login, fake_llm, provider):
     fake_llm.script({"error": 500})
-    with pytest.raises(OnboardError, match="couldn't run the interview") as caught:
+    with pytest.raises(ModelError, match="couldn't run the interview"):
         run(provider, Script())
-    assert str(PROVIDER_PATH) in str(caught.value)
     assert len(fake_llm.requests()) == 1
+
+
+def test_a_model_that_answers_has_no_problem(fake_llm, provider):
+    fake_llm.script({"content": "OK"})
+    assert model_problem(provider) is None
+    assert len(fake_llm.requests()) == 1
+
+
+def test_a_model_that_fails_says_why_without_the_key(fake_llm):
+    fake_llm.script({"error": 401})
+    problem = model_problem(Provider(llm_config={**LLM_CONFIG, "api_key": KEY}, env=fake_llm.env()))
+    assert problem and KEY not in problem
+
+
+def test_composers_unknown_model_warning_stays_off_the_terminal(login, monkeypatch, recwarn):
+    def run_flow(*args, **kwargs):
+        warnings.warn("Model 'gpt-prod' is not in the known model list for provider 'openai'. Continuing anyway.",
+                      RuntimeWarning)
+        raise RuntimeError("Connection error.")
+
+    monkeypatch.setattr(interview_module, "run_flow", run_flow)
+    with pytest.raises(ModelError) as caught:
+        run(Provider(llm_config=LLM_CONFIG), Script())
+    assert str(caught.value) == "the model couldn't run the interview: Connection error"
+    assert len(recwarn) == 0
 
 
 @pytest.mark.parametrize("outcome", ["result", "exception"])

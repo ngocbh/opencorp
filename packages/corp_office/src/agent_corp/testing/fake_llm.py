@@ -92,6 +92,12 @@ class FakeLLM:
         with self._lock:
             return list(self._authorizations)
 
+    def forget(self) -> None:
+        """Drop the requests received so far, so the next one is ``requests()[0]``."""
+        with self._lock:
+            self._requests.clear()
+            self._authorizations.clear()
+
     def pending(self) -> list[dict[str, Any]]:
         """The replies still queued."""
         with self._lock:

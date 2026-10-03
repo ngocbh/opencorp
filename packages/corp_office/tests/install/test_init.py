@@ -19,9 +19,9 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import init as init_module
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.init import ADD_REMOTE, NO_REMOTE, REMOTE, REMOTE_URL, init, password_step, remote_step
-from agent_corp.install.interview import CONFIRM, Asking, Known, asking
+from agent_corp.install.interview import CONFIRM, Asking, Known, ModelError, asking
 from agent_corp.install.launch import office_answers
-from agent_corp.install.onboard import NoTerminal, OnboardError, TtyPrompter, onboard, redact
+from agent_corp.install.onboard import SET_UP_AGAIN, TRY_AGAIN, NoTerminal, OnboardError, TtyPrompter, onboard, redact
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
@@ -155,16 +155,67 @@ def test_without_a_terminal_the_flags_make_the_company_without_asking_to_confirm
     assert CONFIRM not in ask.seen
 
 
-def test_a_failed_interview_leaves_no_company(tmp_path):
-    with FakeLLM() as fake:
-        fake.script({"error": 500})
-        with pytest.raises(OnboardError, match="couldn't run the interview"):
-            init(tmp_path / "home", Script(), stdin=io.StringIO(json.dumps({"llm_config": LLM_CONFIG,
-                                                                            "env": fake.env()})),
-                 host=make_host(tmp_path, Runner()))
-    paths = OfficePaths(tmp_path / "home")
-    assert is_new(paths.company)
-    assert (paths.office / "provider.json").exists()
+def failing_interview(monkeypatch, draft, failures=1):
+    """Make init's flow fail with a ``ModelError`` ``failures`` times, then return ``draft`` as ``interviewed`` does."""
+    real = init_module.init_flow
+    calls = []
+
+    def init_flow(*args):
+        calls.append(args)
+        if len(calls) <= failures:
+            raise ModelError("the model couldn't run the interview: Connection error")
+        return real(*args)
+
+    monkeypatch.setattr(init_module, "init_flow", init_flow)
+    return calls
+
+
+def test_a_failed_interview_can_be_tried_again_with_the_same_model(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    interviewed(monkeypatch, ACME)
+    calls = failing_interview(monkeypatch, ACME)
+    ask = Script("openai", "", "", "1", PASSWORD, PASSWORD, "1")
+    with pytest.raises(OnboardError, match="stop"):
+        init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
+    assert len(calls) == 2
+    assert "The model couldn't run the interview: Connection error" in ask.seen
+    assert [TRY_AGAIN, SET_UP_AGAIN] in ask.offered
+    assert load_repo(tmp_path / "home" / "company").company.name == "Acme"
+
+
+def test_a_failed_interview_can_set_up_the_model_again(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    interviewed(monkeypatch, ACME)
+    failing_interview(monkeypatch, ACME)
+    ask = Script("openai", "", "", "2", "anthropic", KEY, "", PASSWORD, PASSWORD, "1")
+    with pytest.raises(OnboardError, match="stop"):
+        init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
+    provider = tmp_path / "home" / "office" / "provider.json"
+    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "anthropic", "api_key": KEY}}
+    assert all(KEY not in line for line in ask.seen)
+
+
+def test_setting_the_model_up_again_starts_from_step_ones_answers(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    interviewed(monkeypatch, ACME)
+    failing_interview(monkeypatch, ACME)
+    ask = Script("openai", KEY, "2", "gpt-x", "2", "", "", "2", "", PASSWORD, PASSWORD, "1")
+    with pytest.raises(OnboardError, match="stop"):
+        init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
+    provider = tmp_path / "home" / "office" / "provider.json"
+    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "openai", "api_key": KEY, "model": "gpt-x"}}
+    assert "openai API key (empty keeps the one you just typed; not shown)" in ask.seen
+
+
+def test_the_model_is_checked_before_it_is_saved(tmp_path, monkeypatch):
+    stop_after_the_company(monkeypatch)
+    interviewed(monkeypatch, ACME)
+    problems = ["Connection error", None]
+    monkeypatch.setattr(init_module, "model_problem", lambda provider: problems.pop(0))
+    ask = Script("openai", "", "", "1", PASSWORD, PASSWORD, "1")
+    with pytest.raises(OnboardError, match="stop"):
+        init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
+    assert "The model didn't answer: Connection error" in ask.seen and problems == []
 
 
 def test_flags_that_clash_without_a_terminal_stop_before_the_company_is_made(tmp_path):
@@ -455,7 +506,7 @@ def test_init_sets_up_the_office_and_a_second_onboard_changes_nothing(short_dir)
 
 def test_the_key_lands_only_in_the_provider_file(short_dir):
     paths = OfficePaths(short_dir)
-    ask = Script("anthropic", "", KEY, PASSWORD, PASSWORD, "1", interactive=False)
+    ask = Script("anthropic", KEY, "", PASSWORD, PASSWORD, "1", interactive=False)
     try:
         init(short_dir, ask, known=CEO, mode="background")
         assert json.loads((paths.office / "provider.json").read_text())["llm_config"]["api_key"] == KEY

@@ -1,0 +1,7 @@
+# `ac init`'s model check: one short reply, made before the provider is saved, so one that can't answer never is.
+id: check_model
+name: check_model
+description: Ask the model for a one-word reply.
+output: str
+kind: agent
+prompt: Reply with the single word OK.

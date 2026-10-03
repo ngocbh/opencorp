@@ -75,6 +75,7 @@ class RunningOffice:
         client sends it.
         """
         provider = {"llm_config": {"provider": "vllm", "model": "stub"}, "env": self.fake.env()}
+        self.fake.script({"content": "OK", "match": "Reply with the single word OK."})  # init's model check
         done = subprocess.run(
             [sys.executable, "-m", "agent_corp.install", "init", "--home", str(self.home),
              "--provider-stdin", "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh",
@@ -84,6 +85,7 @@ class RunningOffice:
             self.pids.add(self.pid())
         assert done.returncode == 0, done.stdout + done.stderr
         assert "with you as CEO and Minh (@minh)" in done.stdout
+        self.fake.forget()  # tests count the office's model calls from the first
         if device:
             self.http.headers.update(read_identity(identity_path(self.home)).headers())
 

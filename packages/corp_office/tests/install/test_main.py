@@ -13,6 +13,7 @@ from agent_corp.install import doctor
 from agent_corp.install.__main__ import main
 from agent_corp.install.interview import Known
 from agent_corp.install.launch import REPO, office_answers
+from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
@@ -184,13 +185,20 @@ def test_restart_replaces_a_running_office_and_starts_a_stopped_one(short_dir, m
         _stop(paths)
 
 
-def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir):
+@pytest.fixture
+def fake():
+    with FakeLLM() as server:
+        yield server
+
+
+def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir, fake):
     paths = OfficePaths(short_dir)
     args = [sys.executable, "-m", "agent_corp.install", "init", "--home", str(short_dir), "--provider-stdin",
             "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
+    provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
+    fake.script({"content": "OK"})
     try:
-        done = subprocess.run(args, input=json.dumps({"llm_config": {"provider": "anthropic", "api_key": KEY}}),
-                              capture_output=True, text=True, timeout=60, cwd=REPO)
+        done = subprocess.run(args, input=json.dumps(provider), capture_output=True, text=True, timeout=60, cwd=REPO)
         assert done.returncode == 0, done.stderr
         assert KEY not in done.stdout and KEY not in done.stderr
         assert "Done." in done.stdout
