@@ -45,6 +45,23 @@ test("an ask names its default in the gray placeholder; typed text replaces it, 
   }
 })
 
+test("a long question's answer wraps with it, right after the arrow", async () => {
+  const { child, app } = await boot()
+  const question =
+    "What should the owner's handle be? It must use lowercase letters, digits, or hyphens, and start and end with " +
+    "a letter or digit."
+  try {
+    child.push({ type: "ask", question, default: "" })
+    await app.until((f) => f.includes("Type your answer here"))
+    await app.input.typeText("test-owner")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Working…"))
+    expect(f).toContain("a letter or digit. → test-owner")
+  } finally {
+    await app.stop()
+  }
+})
+
 test("a URL answer is sent whole but shown without its user and password", async () => {
   const { child, app } = await boot()
   const url = "https://x-access-token:ghp_sentinel42@github.com/a/b.git"

@@ -104,10 +104,11 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
               </Match>
               <Match when={entry.kind === "answer" && entry}>
                 {(done) => (
-                  <box paddingLeft={2} flexDirection="row">
-                    <text fg={theme.textMuted}>{`${done().question} → `}</text>
-                    <text fg={theme.secondary} wrapMode="word" flexShrink={1}>
-                      {done().shown}
+                  <box paddingLeft={2}>
+                    {/* One text, so a long question and its answer wrap as one paragraph. */}
+                    <text fg={theme.textMuted} wrapMode="word">
+                      {`${done().question} → `}
+                      <span style={{ fg: theme.secondary }}>{done().shown}</span>
                     </text>
                   </box>
                 )}
