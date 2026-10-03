@@ -64,6 +64,12 @@ export function QuestionView(
     hidden?: boolean
     /** Gets the view's handle once, as it mounts. */
     ref?: (view: QuestionViewHandle) => void
+    /** The row the cursor starts on (default 0). */
+    selected?: number
+    /** At most this many options show at once, around the cursor; every option when unset. */
+    maxOptions?: number
+    /** Whether the box is one line, which never holds a line break. */
+    singleLine?: boolean
   }>,
 ) {
   const { theme } = useTheme()
@@ -73,7 +79,7 @@ export function QuestionView(
 
   const [store, setStore] = createStore({
     page: 0,
-    selected: 0,
+    selected: props.selected ?? 0,
     answers: [] as PageAnswer[],
   })
 
@@ -86,6 +92,18 @@ export function QuestionView(
   const answerRows = createMemo(() => options().length + (page()?.typed ? 1 : 0))
   const rows = createMemo(() => answerRows() + actions().length)
   const onTyped = createMemo(() => page()?.typed === true && store.selected === options().length)
+  // The first option shown: moved only as far as keeps the cursor in view, so the list doesn't jump. The cursor
+  // counts as the last option when it is below them, so the typed row shows the last window.
+  let top = 0
+  const first = createMemo(() => {
+    const max = props.maxOptions
+    const count = options().length
+    if (!max || count <= max) return (top = 0)
+    const cursor = Math.min(store.selected, count - 1)
+    return (top = Math.min(Math.max(top, cursor - max + 1), cursor))
+  })
+  // Numbers and the cursor stay absolute, so a digit picks the same option however far the list has scrolled.
+  const shown = createMemo(() => options().slice(first(), props.maxOptions ? first() + props.maxOptions : undefined))
   // A signal, so the effects below see a box that mounts later.
   const [box, setBox] = createSignal<TextareaRenderable>()
 
@@ -268,8 +286,9 @@ export function QuestionView(
               <text fg={theme.text}>{page()?.question}</text>
             </box>
             <box>
-              <For each={options()}>
-                {(opt, i) => {
+              <For each={shown()}>
+                {(opt, at) => {
+                  const i = () => first() + at()
                   const active = () => i() === store.selected
                   return (
                     <box
@@ -306,6 +325,11 @@ export function QuestionView(
                   const start = untrack(() => answer().text)
                   let mounted: TextareaRenderable | undefined
                   onCleanup(() => box() === mounted && setBox(undefined))
+                  const ref = (el: TextareaRenderable) => {
+                    el.traits = { status: "ANSWER" }
+                    mounted = el
+                    setBox(el)
+                  }
                   return (
                     <box flexDirection="row" onMouseDown={() => setStore("selected", options().length)}>
                       <box backgroundColor={onTyped() ? theme.backgroundElement : undefined} paddingRight={1}>
@@ -313,23 +337,34 @@ export function QuestionView(
                           {`${options().length + 1}.`}
                         </text>
                       </box>
-                      <textarea
-                        flexGrow={1}
-                        ref={(el: TextareaRenderable) => {
-                          el.traits = { status: "ANSWER" }
-                          mounted = el
-                          setBox(el)
-                        }}
-                        initialValue={start}
-                        placeholder="Type your answer here"
-                        placeholderColor={theme.textMuted}
-                        minHeight={1}
-                        maxHeight={6}
-                        textColor={theme.text}
-                        focusedTextColor={theme.text}
-                        cursorColor={theme.primary}
-                        cursorStyle={tuiConfig.cursor}
-                      />
+                      {props.singleLine ? (
+                        // An input drops line breaks typed or pasted; Enter reaches the view's keys first.
+                        <input
+                          flexGrow={1}
+                          ref={ref}
+                          value={start}
+                          placeholder="Type your answer here"
+                          placeholderColor={theme.textMuted}
+                          textColor={theme.text}
+                          focusedTextColor={theme.text}
+                          cursorColor={theme.primary}
+                          cursorStyle={tuiConfig.cursor}
+                        />
+                      ) : (
+                        <textarea
+                          flexGrow={1}
+                          ref={ref}
+                          initialValue={start}
+                          placeholder="Type your answer here"
+                          placeholderColor={theme.textMuted}
+                          minHeight={1}
+                          maxHeight={6}
+                          textColor={theme.text}
+                          focusedTextColor={theme.text}
+                          cursorColor={theme.primary}
+                          cursorStyle={tuiConfig.cursor}
+                        />
+                      )}
                     </box>
                   )
                 }}

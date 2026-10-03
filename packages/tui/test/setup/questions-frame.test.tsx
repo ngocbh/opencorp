@@ -66,20 +66,23 @@ test("a URL answer is sent whole but shown without its user and password", async
   }
 })
 
-test("a choice starts on its default; Down and Enter pick the next one", async () => {
+test("a choice is the question card, starting on its default; Down and Enter pick the next", async () => {
   const { child, app } = await boot()
   try {
     const options = ["azure", "anthropic", "openai"]
     child.push({ type: "choose", question: "Model provider", options, default: "anthropic" })
-    await app.until((f) => f.includes("Model provider") && f.includes("> anthropic") && f.includes("  azure"))
+    const f = await app.until((f) => f.includes("Model provider") && f.includes("3. openai"))
+    expect(f).toContain("1. azure")
+    expect(f).toContain("enter submit")
+    // Not typed: no box to type in.
+    expect(f).not.toContain("Type your answer here")
     app.input.pressArrow("down")
-    await app.until((f) => f.includes("> openai"))
     app.input.pressEnter()
     await until(() => child.answers.length === 1)
     expect(child.answers).toEqual(["openai"])
-    const f = await app.until((f) => f.includes("Working…"))
-    expect(f).toContain("Model provider → openai")
-    expect(f).not.toContain("azure")
+    const after = await app.until((f) => f.includes("Working…"))
+    expect(after).toContain("Model provider → openai")
+    expect(after).not.toContain("azure")
     child.end(0)
     await app.task
     expect(app.out()).toBe("Model provider: openai\n")
@@ -88,15 +91,127 @@ test("a choice starts on its default; Down and Enter pick the next one", async (
   }
 })
 
-test("a long choice scrolls to keep the cursor in view", async () => {
+test("Ctrl+X is no leader in setup: the next key still picks", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Model provider", options: ["azure", "anthropic", "openai"] })
+    await app.until((f) => f.includes("3. openai"))
+    app.input.pressKey("x", { ctrl: true })
+    app.input.pressKey("2")
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["anthropic"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a typed choice ends with the inline box; text typed and Enter at once are sent whole", async () => {
+  const { child, app } = await boot()
+  const first = "claude-sonnet-4-5 (the default)"
+  try {
+    child.push({ type: "choose", question: "Model", options: [first], default: first, typed: true })
+    await app.until((f) => f.includes("1. " + first) && f.includes("2. Type your answer here"))
+    app.input.pressArrow("down")
+    // Digits go into the box too; Enter comes with no frame in between.
+    await app.input.typeText("claude-opus-4-1")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["claude-opus-4-1"])
+    await app.until((f) => f.includes("Model → claude-opus-4-1"))
+    child.end(0)
+    await app.task
+    expect(app.out()).toBe("Model: claude-opus-4-1\n")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("the box is one line: a pasted line break adds nothing", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressArrow("down")
+    await app.input.pasteBracketedText("git@example.com:\na.git")
+    await app.until((f) => f.includes("2. git@example.com:a.git"))
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["git@example.com:a.git"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("an empty box sends nothing; Up leaves it for the options", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressArrow("down")
+    app.input.pressEnter()
+    await Bun.sleep(100)
+    expect(child.answers).toEqual([])
+    app.input.pressArrow("up")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["None for now"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a typed URL is sent whole but shown without its user and password", async () => {
+  const { child, app } = await boot()
+  const url = "https://x-access-token:ghp_sentinel42@github.com/a/b.git"
+  try {
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressArrow("down")
+    await app.input.typeText(url)
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual([url])
+    const f = await app.until((f) => f.includes("Working…"))
+    expect(f).toContain("Remote → https://***@github.com/a/b.git")
+    expect(f).not.toContain("ghp_sentinel42")
+    child.end(0)
+    await app.task
+    expect(app.out()).toBe("Remote: https://***@github.com/a/b.git\n")
+  } finally {
+    await app.stop()
+  }
+})
+
+test("Esc does nothing on the card; Ctrl-C stops the install even from the box", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressEscape()
+    await Bun.sleep(100)
+    expect(app.frame()).toContain("2. Type your answer here")
+    app.input.pressArrow("down")
+    await app.input.typeText("abc")
+    await app.until((f) => f.includes("2. abc"))
+    app.input.pressCtrlC()
+    const f = await app.until((f) => f.includes("Stopping…"))
+    expect(f).not.toContain("2. abc")
+    expect(child.interrupts).toBe(1)
+    expect(child.answers).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("a long list shows a window that follows the cursor", async () => {
   const { child, app } = await boot()
   const options = Array.from({ length: 40 }, (_, i) => `opt-${String(i + 1).padStart(2, "0")}`)
   try {
     child.push({ type: "say", text: "Pick one." })
     child.push({ type: "choose", question: "Deployment", options })
-    await app.until((f) => f.includes("> opt-01"))
+    await app.until((f) => f.includes("1. opt-01"))
     for (let i = 0; i < 39; i++) app.input.pressArrow("down")
-    const f = await app.until((f) => f.includes("> opt-40"))
+    const f = await app.until((f) => f.includes("40. opt-40"))
     expect(f).not.toContain("opt-01")
     expect(f).toContain("Pick one.")
     app.input.pressEnter()

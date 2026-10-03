@@ -1,9 +1,10 @@
 import { TextAttributes, type InputRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
-import { createMemo, createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
+import { createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
 import type { SetupAsk, SetupChoose, SetupSecret } from "@agent-corp/protocol"
 import { Spinner } from "../component/spinner"
 import { useTheme } from "../context/theme"
+import { QuestionView } from "../routes/chat/question-view"
 import { SplitBorder } from "../ui/border"
 import type { SetupChild } from "./child"
 import { SecretInput } from "./secret"
@@ -19,8 +20,8 @@ function redact(text: string) {
 }
 
 /**
- * The install's steps and answers, its pending question in a panel, and a spinner while it works; Ctrl-C asks it
- * to stop.
+ * The install's steps and answers, its pending question in a panel (choices on the question card), and a spinner
+ * while it works; Ctrl-C asks it to stop.
  */
 export function SetupScreen(props: { child: SetupChild; lines: string[]; command?: string }) {
   const { theme } = useTheme()
@@ -134,15 +135,31 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
                 )}
               </Match>
               <Match when={question.type === "choose" && question}>
-                {(choose) => (
-                  <Choice
-                    question={choose().question}
-                    options={choose().options}
-                    default={choose().default}
-                    rows={Math.max(3, Math.floor(dimensions().height / 2) - 4)}
-                    onSubmit={(option) => answer(choose().question, option, option)}
-                  />
-                )}
+                {(choose) => {
+                  const options = choose().options
+                  const at = options.indexOf(choose().default ?? "")
+                  return (
+                    <QuestionView
+                      pages={[
+                        {
+                          header: choose().question,
+                          question: choose().question,
+                          options: options.map((o) => ({ label: o, value: o })),
+                          multi: false,
+                          typed: choose().typed === true,
+                        },
+                      ]}
+                      selected={Math.max(at, 0)}
+                      singleLine
+                      // Leaves the transcript about half the screen.
+                      maxOptions={Math.max(3, Math.floor(dimensions().height / 2) - 4)}
+                      onSubmit={([a]) => {
+                        const text = a.text.trim() || options[a.picked[0]]
+                        answer(choose().question, text, redact(text))
+                      }}
+                    />
+                  )
+                }}
               </Match>
               <Match when={question.type === "secret" && question}>
                 {(secret) => (
@@ -206,42 +223,5 @@ function Ask(props: { question: string; default: string; onSubmit: (text: string
         onSubmit={() => props.onSubmit(input?.value ?? "")}
       />
     </Panel>
-  )
-}
-
-/** `options` under `question`, at most `rows` at a time, picked with Up, Down and Enter. */
-function Choice(props: {
-  question: string
-  options: string[]
-  default?: string
-  rows: number
-  onSubmit: (option: string) => void
-}) {
-  const { theme } = useTheme()
-  const [cursor, setCursor] = createSignal(Math.max(0, props.options.indexOf(props.default ?? "")))
-  // The first option shown: moved only as far as keeps the cursor in view, so the list doesn't jump.
-  let top = 0
-  const shown = createMemo(() => {
-    top = Math.min(Math.max(top, cursor() - props.rows + 1), cursor())
-    return props.options.slice(top, top + props.rows).map((option, i) => ({ option, index: top + i }))
-  })
-
-  useKeyboard((key) => {
-    if (key.name === "up") setCursor((i) => Math.max(0, i - 1))
-    else if (key.name === "down") setCursor((i) => Math.min(props.options.length - 1, i + 1))
-    else if (key.name === "return" || key.name === "enter") props.onSubmit(props.options[cursor()])
-  })
-
-  return (
-    <box>
-      <text fg={theme.text}>{props.question}</text>
-      <For each={shown()}>
-        {(item) => (
-          <text fg={item.index === cursor() ? theme.accent : theme.text}>
-            {(item.index === cursor() ? "> " : "  ") + item.option}
-          </text>
-        )}
-      </For>
-    </box>
   )
 }

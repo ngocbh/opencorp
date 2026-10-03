@@ -90,8 +90,8 @@ test("the screen destroyed from outside closes the child and waits for it", asyn
   const app = await bootSetup(child)
   try {
     await app.until((f) => f.includes("Working…"))
-    child.push({ type: "ask", question: "Company", default: "" })
-    await app.until((f) => f.includes("Company") && f.includes("Type your answer here"))
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
     // As opentui's signal handler does on SIGTERM or the terminal closing.
     app.setup.renderer.destroy()
     expect(await app.task).toBe(130)
