@@ -1,5 +1,5 @@
-"""``ac init``: ask for the model, create the company from an interview with it (its name, its CEO, its first
-teammates), add a password and a remote, then onboard this machine."""
+"""``ac init``: ask for the model; run the init flow with it, which interviews the owner for the company, its CEO and
+its first teammates, then asks for a password and a remote; write the company, push it, and onboard this machine."""
 
 import os
 import shlex
@@ -13,7 +13,7 @@ from agent_corp.chat.hire import agent_files
 from agent_corp.company.git import CompanyGitError
 from agent_corp.company_template import is_new, write_company
 from agent_corp.daemon.app import OfficePaths
-from agent_corp.install.interview import Known, interview, owner_prompter
+from agent_corp.install.interview import Known, fallback_draft, init_flow, owner_prompter
 from agent_corp.install.launch import REPO, Host, launch
 from agent_corp.install.onboard import (TRIES, NoTerminal, OnboardError, Prompter, ensure_provider, make_device,
                                         make_home, onboard, redact, user_git)
@@ -100,11 +100,12 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
     """Create the company at ``home``, then set up this machine's office with ``onboard``.
 
     The model comes first: ``office/provider.json`` from ``stdin`` or asked for. The company,
-    its CEO (you), and its first teammates come from an interview with that model, which starts
-    from ``known`` (or from ``known`` and defaults alone, without a terminal). They are one
-    commit, each teammate with a seeded ``profile.md``. The CEO's ``person.yaml`` holds only
-    the hash of their password, which is asked without echo (and skipped without a terminal);
-    with ``device``, it lists this device, whose token goes in ``identity.json``. A remote,
+    its CEO (you), its first teammates, the CEO's password hash and the remote come from the
+    init flow with that model, which starts from ``known``. Without a terminal, they come from
+    ``known`` and defaults, with the password and the remote asked in Python. The company is one
+    commit, each teammate with a seeded ``profile.md``. The CEO's ``person.yaml`` holds only the
+    hash of their password, which is asked without echo (and skipped without a terminal); with
+    ``device``, it lists this device, whose token goes in ``identity.json``. The remote,
     ``known.remote`` or asked for, is added and pushed to.
 
     Raises:
@@ -129,12 +130,16 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
 
     prompter.step(2, STEPS, "Company", "Tell the model about you, the company and your first AI teammates; it asks"
                                        " until it has what it needs.")
-    draft = interview(provider, prompter, known)
-    owner = replace(draft.owner, password_hash=password_step(prompter))
-    url = remote_step(prompter, known.remote)
+    if prompter.interactive:
+        draft, url = init_flow(provider, prompter, known)
+    else:
+        # Without a terminal there's nothing for a model to ask, so no flow runs: the flags and defaults make the
+        # company, and the password and remote steps run as they would in the flow.
+        draft = fallback_draft(known)
+        draft = replace(draft, owner=replace(draft.owner, password_hash=password_step(prompter)))
+        url = remote_step(prompter, known.remote)
+    owner = make_device(paths.home, draft.owner) if device else draft.owner
 
-    if device:
-        owner = make_device(paths.home, owner)
     extra: dict[str, bytes] = {}
     for t in draft.team:
         extra |= {rel: text.encode() for rel, text in agent_files(

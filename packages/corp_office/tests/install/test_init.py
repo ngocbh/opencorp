@@ -3,6 +3,7 @@ import json
 import os
 import stat
 import subprocess
+from dataclasses import replace
 
 import pytest
 import yaml
@@ -17,7 +18,7 @@ from agent_corp.company_template import Owner, is_new, missing_files, write_comp
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import init as init_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import REMOTE, init
+from agent_corp.install.init import REMOTE, init, password_step, remote_step
 from agent_corp.install.interview import CONFIRM, Asking, Known, asking
 from agent_corp.install.launch import office_answers
 from agent_corp.install.onboard import NoTerminal, OnboardError, onboard, redact
@@ -26,7 +27,7 @@ from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
 from .conftest import Runner, make_host
-from .test_interview import interview_replies
+from .test_interview import flow_replies
 from .test_onboard import _git, _stop
 from .test_provider_setup import Script
 
@@ -55,9 +56,13 @@ def stop_after_the_company(monkeypatch):
     monkeypatch.setattr(onboard_module, "ensure_provider", lambda *a, **k: (_ for _ in ()).throw(OnboardError("stop")))
 
 
-def interviewed(monkeypatch, answers):
-    """Make init's interview return ``answers`` without a model."""
-    monkeypatch.setattr(init_module, "interview", lambda provider_path, prompter, known: answers)
+def interviewed(monkeypatch, draft):
+    """Make init's flow return ``draft`` without a model, asking for the password and the remote as its nodes do."""
+    def init_flow(provider_path, prompter, known):
+        return (replace(draft, owner=replace(draft.owner, password_hash=password_step(prompter))),
+                remote_step(prompter, known.remote))
+
+    monkeypatch.setattr(init_module, "init_flow", init_flow)
 
 
 ACME = Draft("Acme", Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO"),
@@ -111,29 +116,37 @@ def test_the_provider_from_the_first_step_is_kept_by_the_last(tmp_path, monkeypa
     assert json.loads(provider.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
-def test_the_interview_with_a_model_makes_the_company_and_never_sees_the_password_or_remote(tmp_path, monkeypatch):
+def test_the_flow_with_a_model_makes_the_company_and_never_sends_a_secret(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
+    home = tmp_path / "home"
     remote = bare(tmp_path / "remote-sentinel-3b8e.git")
     out = {"company": "Acme", "owner": {"name": "Hong Ngoc Bui", "handle": "ngocbh", "title": "CEO"},
            "teammates": [{"name": "Lan", "handle": "lan", "title": "QA", "about": "Tests every release."}]}
     with FakeLLM() as fake:
-        fake.script(*interview_replies("Tell me about the company.", out))
+        fake.script(*flow_replies("Tell me about the company.", out))
         ask = Script("Acme; I'm ngocbh; hire Lan for QA", "y", PASSWORD, PASSWORD, str(remote))
+        provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
         with pytest.raises(OnboardError, match="stop"):
-            init(tmp_path / "home", ask, stdin=io.StringIO(json.dumps({"llm_config": LLM_CONFIG, "env": fake.env()})),
-                 host=make_host(tmp_path, Runner()))
+            init(home, ask, stdin=io.StringIO(json.dumps(provider)), host=make_host(tmp_path, Runner()))
         sent = json.dumps(fake.requests())
-    repo = load_repo(tmp_path / "home" / "company")
+    repo = load_repo(home / "company")
     assert repo.company.name == "Acme" and repo.company.ceo == "ngocbh"
     assert {h: (p.kind, p.title) for h, p in repo.people.items()} == {"ngocbh": ("human", "CEO"), "lan": ("agent", "QA")}
-    assert (tmp_path / "home/company/people/lan/profile.md").read_text() == "# Lan, QA\n\nTests every release.\n"
+    assert (home / "company/people/lan/profile.md").read_text() == "# Lan, QA\n\nTests every release.\n"
     assert "Tell me about the company." in ask.seen and CONFIRM in ask.seen
     assert "Acme; I'm ngocbh; hire Lan for QA" in sent
-    assert PASSWORD not in sent and "remote-sentinel-3b8e" not in sent
+    hashed = yaml.safe_load(_git(home / "company", "show", "HEAD:people/ngocbh/person.yaml"))["password_hash"]
+    for secret in (PASSWORD, KEY, "remote-sentinel-3b8e", hashed):
+        assert secret not in sent
+    assert _git(remote, "rev-parse", "main") == _git(home / "company", "rev-parse", "HEAD")
+    assert [line for line in ask.seen if line.startswith("Step ")] == [
+        "Step 1 of 5: Model", "Step 2 of 5: Company", "Step 3 of 5: Password", "Step 4 of 5: Remote",
+        "Step 5 of 5: This machine"]
 
 
 def test_without_a_terminal_the_flags_make_the_company_without_asking_to_confirm(tmp_path, monkeypatch):
     stop_after_the_company(monkeypatch)
+    monkeypatch.setattr(init_module, "init_flow", lambda *a: pytest.fail("the flow ran"))
     ask = scripted()
     with pytest.raises(OnboardError, match="stop"):
         run_init(tmp_path, ask, known=Known(company="Acme", name="Bo", handle="bo", agent="Lan", agent_handle="lan"))
