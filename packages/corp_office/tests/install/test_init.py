@@ -10,7 +10,7 @@ import yaml
 from agent_corp.auth.identity import device_name, read_identity
 from agent_corp.auth.passwords import check_password
 from agent_corp.auth.tokens import token_sha256
-from agent_corp.company.draft import Answers, Teammate
+from agent_corp.company.draft import Draft, Teammate
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import Owner, is_new, missing_files, write_company
@@ -60,8 +60,8 @@ def interviewed(monkeypatch, answers):
     monkeypatch.setattr(init_module, "interview", lambda provider_path, prompter, known: answers)
 
 
-ACME = Answers("Acme", Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO"),
-               (Teammate("Lan", "lan", "QA", "Tests every release."), Teammate("Minh", "minh-dev", "Engineer")))
+ACME = Draft("Acme", Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO"),
+             (Teammate("Lan", "lan", "QA", "Tests every release."), Teammate("Minh", "minh-dev", "Engineer")))
 
 
 def test_init_makes_the_company_its_ceo_and_seeded_teammates_in_one_commit(tmp_path, monkeypatch):

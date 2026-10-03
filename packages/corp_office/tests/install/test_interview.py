@@ -7,11 +7,11 @@ import pytest
 from agent_composer import load_flow
 
 from agent_corp.chat.provider import Provider
-from agent_corp.company.draft import Answers, Teammate, answer_problems
+from agent_corp.company.draft import Draft, Teammate, draft_problems
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
-from agent_corp.install.interview import (CONFIRM, FLOW, Known, clean, fallback_answers, interview, run_interview,
+from agent_corp.install.interview import (CONFIRM, FLOW, Known, clean, fallback_draft, interview, run_interview,
                                           summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
@@ -19,7 +19,7 @@ from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from .test_provider_setup import Script
 
 ME = Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO")
-GOOD = Answers("Acme", ME, (Teammate("Minh", "minh", "Engineer", "Writes the backend."), Teammate("Lan", "lan", "QA")))
+GOOD = Draft("Acme", ME, (Teammate("Minh", "minh", "Engineer", "Writes the backend."), Teammate("Lan", "lan", "QA")))
 OUT = {"company": "Acme", "owner": {"name": "Hong Ngoc Bui", "handle": "ngocbh", "title": "CEO"},
        "teammates": [{"name": "Minh", "handle": "minh", "title": "Engineer", "about": "Writes the backend."}]}
 PROVIDER_PATH = Path("/office/provider.json")
@@ -71,37 +71,37 @@ def test_known_facts_are_the_given_flags_and_suggestions_but_never_the_remote(lo
 
 
 def test_without_flags_the_fallback_is_a_default_company(login):
-    assert fallback_answers(Known()) == Answers("My company", Owner(handle="me", name="Me", title="CEO"),
-                                                (Teammate("Minh", "minh", "Engineer"),))
+    assert fallback_draft(Known()) == Draft("My company", Owner(handle="me", name="Me", title="CEO"),
+                                            (Teammate("Minh", "minh", "Engineer"),))
 
 
 def test_the_fallback_uses_every_flag(login):
     known = Known(company="Acme", name="Lan", handle="lan", title="CTO", agent="Bo", agent_handle="bo-1")
-    assert fallback_answers(known) == Answers("Acme", Owner(handle="lan", name="Lan", title="CTO"),
-                                              (Teammate("Bo", "bo-1", "Engineer"),))
+    assert fallback_draft(known) == Draft("Acme", Owner(handle="lan", name="Lan", title="CTO"),
+                                          (Teammate("Bo", "bo-1", "Engineer"),))
 
 
 def test_the_fallback_slugs_the_agents_name_for_a_handle(login):
-    assert fallback_answers(Known(agent="Minh Anh")).team[0].handle == "minh-anh"
-    assert fallback_answers(Known(agent="Đ")).team[0].handle == "agent"
+    assert fallback_draft(Known(agent="Minh Anh")).team[0].handle == "minh-anh"
+    assert fallback_draft(Known(agent="Đ")).team[0].handle == "agent"
 
 
 def test_a_fallback_with_problems_names_the_flag_to_pass(login):
     with pytest.raises(OnboardError, match="@minh is taken; pass --agent-handle"):
-        fallback_answers(Known(handle="minh"))
+        fallback_draft(Known(handle="minh"))
     with pytest.raises(OnboardError, match="@Me .*; pass --handle"):
-        fallback_answers(Known(handle="Me"))
+        fallback_draft(Known(handle="Me"))
 
 
 def test_the_summary_lists_the_company_you_and_each_teammate():
     assert summary(GOOD) == ["Company: Acme", "You: Hong Ngoc Bui (@ngocbh), CEO", "Teammates:",
                              "  Minh (@minh), Engineer: Writes the backend.", "  Lan (@lan), QA"]
-    assert summary(Answers("Acme", ME, ()))[-1] == "Teammates: none yet"
+    assert summary(Draft("Acme", ME, ()))[-1] == "Teammates: none yet"
 
 
 def test_the_summary_strips_control_characters_from_model_text():
-    answers = Answers("Ac\x1b[2Jme", Owner(handle="ngocbh", name="Hong\nNgoc\x07 Bui"),
-                      (Teammate("Mi\rnh", "minh", "Eng\tineer", "Writes\x7f the backend."),))
+    answers = Draft("Ac\x1b[2Jme", Owner(handle="ngocbh", name="Hong\nNgoc\x07 Bui"),
+                    (Teammate("Mi\rnh", "minh", "Eng\tineer", "Writes\x7f the backend."),))
     assert summary(answers) == ["Company: Ac[2Jme", "You: Hong Ngoc Bui (@ngocbh), CEO", "Teammates:",
                                 "  Mi nh (@minh), Eng ineer: Writes the backend."]
 
@@ -120,7 +120,7 @@ def test_the_fallback_needs_an_account_even_with_every_flag(monkeypatch):
 
     monkeypatch.setattr(onboard_module.pwd, "getpwuid", unknown)
     with pytest.raises(OnboardError, match="no account"):
-        fallback_answers(Known(company="Acme", name="Lan", handle="lan", title="CTO", agent="Bo", agent_handle="bo"))
+        fallback_draft(Known(company="Acme", name="Lan", handle="lan", title="CTO", agent="Bo", agent_handle="bo"))
 
 
 def test_the_interview_asks_on_the_terminal_and_returns_the_flows_output(login, fake_llm, provider):
@@ -256,7 +256,7 @@ def test_a_clean_result_is_summarized_and_confirmed(login, interviews, tmp_path)
     interviews.outputs = [OUT]
     prompter = Script("")
     answers = interview(tmp_path / "provider.json", prompter, Known())
-    assert answers == Answers.from_output(OUT)
+    assert answers == Draft.from_output(OUT)
     assert prompter.seen == [*summary(answers), CONFIRM]
     assert interviews.calls == [{"draft": "", "changes": ""}]
 
@@ -266,7 +266,7 @@ def test_a_result_with_problems_runs_again_with_the_draft_and_the_problems(login
     prompter = Script("")
     interview(tmp_path / "provider.json", prompter, Known())
     assert interviews.calls[1] == {"draft": json.dumps(bad_output()),
-                                   "changes": "\n".join(answer_problems(Answers.from_output(bad_output())))}
+                                   "changes": "\n".join(draft_problems(Draft.from_output(bad_output())))}
     assert "@Minh can't be a handle" in interviews.calls[1]["changes"]
     assert prompter.seen.count(CONFIRM) == 1
 
@@ -300,7 +300,7 @@ def test_the_owners_change_rounds_dont_count_against_tries(login, interviews, tm
     rounds = TRIES + 1
     interviews.outputs = [OUT] * (rounds + 1)
     assert interview(tmp_path / "provider.json", Script(*["change it"] * rounds, "Y"), Known()) == \
-        Answers.from_output(OUT)
+        Draft.from_output(OUT)
     assert len(interviews.calls) == rounds + 1
 
 
@@ -312,7 +312,7 @@ def test_without_a_terminal_the_fallback_is_used_without_a_model_or_confirmation
     monkeypatch.setattr(interview_module, "load_provider", no_provider)
     prompter = Script(interactive=False)
     assert interview(tmp_path / "provider.json", prompter, Known(company="Acme")) == \
-        fallback_answers(Known(company="Acme"))
+        fallback_draft(Known(company="Acme"))
     assert interviews.calls == [] and prompter.seen == []
 
 
@@ -326,4 +326,4 @@ def test_without_a_terminal_problems_name_the_flag_to_pass(login, interviews, tm
     (Known(agent=" "), "--agent"), (Known(agent_handle="Bad_Handle"), "--agent-handle")])
 def test_each_fallback_problem_names_the_flag_that_sets_its_field(login, known, flag):
     with pytest.raises(OnboardError, match=f"; pass {flag}$"):
-        fallback_answers(known)
+        fallback_draft(known)

@@ -20,27 +20,27 @@ class Teammate:
 
 
 @dataclass(frozen=True)
-class Answers:
-    """A new company: its name, its CEO and its first teammates."""
+class Draft:
+    """A proposed company: its name, its CEO and its first teammates."""
 
     company: str
     owner: Owner
     team: tuple[Teammate, ...]
 
     @classmethod
-    def from_output(cls, output: dict) -> "Answers":
-        """The answers in the interview flow's output, with its ``company``, ``owner`` and ``teammates``."""
+    def from_output(cls, output: dict) -> "Draft":
+        """The draft in the init flow's output, with its ``company``, ``owner`` and ``teammates``."""
         owner = output["owner"]
         return cls(output["company"], Owner(handle=owner["handle"], name=owner["name"], title=owner["title"]),
                    tuple(Teammate(t["name"], t["handle"], t["title"], t["about"]) for t in output["teammates"]))
 
 
-def field_problems(answers: Answers) -> list[tuple[str | None, str]]:
-    """Each problem with answers, after the field it is about (company, owner.name, owner.handle, teammate.name,
+def field_problems(draft: Draft) -> list[tuple[str | None, str]]:
+    """Each problem with ``draft``, after the field it is about (company, owner.name, owner.handle, teammate.name,
     teammate.title or teammate.handle), or None when it is about the whole."""
-    owner = answers.owner
+    owner = draft.owner
     found: list[tuple[str | None, str]] = []
-    if not answers.company.strip():
+    if not draft.company.strip():
         found.append(("company", "the company needs a name"))
     if not owner.name.strip():
         found.append(("owner.name", "the owner needs a name"))
@@ -48,11 +48,11 @@ def field_problems(answers: Answers) -> list[tuple[str | None, str]]:
         found.append(("owner.handle", f"@{owner.handle} can't be a handle: {why}"))
     if not found:
         try:
-            template_files(answers.company, owner)  # validates without writing
+            template_files(draft.company, owner)  # validates without writing
         except ValueError as exc:
             found.append((None, f"that company doesn't work: {exc}"))
     taken = {owner.handle}
-    for t in answers.team:
+    for t in draft.team:
         mine: list[tuple[str | None, str]] = []
         if not t.name.strip():
             mine.append(("teammate.name", f"the teammate @{t.handle} needs a name"))
@@ -72,6 +72,6 @@ def field_problems(answers: Answers) -> list[tuple[str | None, str]]:
     return found
 
 
-def answer_problems(answers: Answers) -> list[str]:
-    """What's wrong with ``answers``, one problem each; empty when the company can be made from them."""
-    return [why for _, why in field_problems(answers)]
+def draft_problems(draft: Draft) -> list[str]:
+    """What's wrong with ``draft``, one problem each; empty when the company can be made from it."""
+    return [why for _, why in field_problems(draft)]

@@ -10,7 +10,7 @@ from pathlib import Path
 from agent_composer import load_flow, run_flow
 
 from agent_corp.chat.provider import Provider, load_provider
-from agent_corp.company.draft import Answers, Teammate, answer_problems, field_problems
+from agent_corp.company.draft import Draft, Teammate, draft_problems, field_problems
 from agent_corp.company_template import Owner
 from agent_corp.install.onboard import TRIES, OnboardError, Prompter, login_defaults, redact, slug
 from agent_corp.worker.spawn import worker_env
@@ -56,23 +56,23 @@ class Known:
         return {"given": given, "suggested": {"name": name, "handle": handle, "title": "CEO"}}
 
 
-def fallback_answers(known: Known) -> Answers:
-    """The answers without an interview: ``known``, with defaults for the rest and one teammate.
+def fallback_draft(known: Known) -> Draft:
+    """The draft without an interview: ``known``, with defaults for the rest and one teammate.
 
     Raises:
-        OnboardError: the answers have problems, and the message names the flag to pass for each;
+        OnboardError: the draft has problems, and the message names the flag to pass for each;
             or the user id has no account.
     """
     name, handle = login_defaults()
     agent = known.agent or "Minh"
-    answers = Answers(known.company or "My company",
-                      Owner(handle=known.handle or handle, name=known.name or name, title=known.title or "CEO"),
-                      (Teammate(agent, known.agent_handle or slug(agent) or "agent", "Engineer"),))
-    if problems := field_problems(answers):
+    draft = Draft(known.company or "My company",
+                  Owner(handle=known.handle or handle, name=known.name or name, title=known.title or "CEO"),
+                  (Teammate(agent, known.agent_handle or slug(agent) or "agent", "Engineer"),))
+    if problems := field_problems(draft):
         raise OnboardError("can't set up the company without a terminal: "
                            + "; ".join(f"{why}; pass {FLAGS[field]}" if field in FLAGS else why
                                        for field, why in problems))
-    return answers
+    return draft
 
 
 # C1 controls (0x80-0x9f) go too: some terminals read 0x9b as the start of an escape sequence.
@@ -89,14 +89,14 @@ def _who(name: str, handle: str, title: str) -> str:
     return clean(f"{name} (@{handle})" + (f", {title}" if title else ""))
 
 
-def summary(answers: Answers) -> list[str]:
-    """``answers`` as shown to the owner to confirm: the company, the owner, and a line for each teammate."""
-    owner = answers.owner
-    lines = [f"Company: {clean(answers.company)}", f"You: {_who(owner.name, owner.handle, owner.title)}"]
-    if not answers.team:
+def summary(draft: Draft) -> list[str]:
+    """``draft`` as shown to the owner to confirm: the company, the owner, and a line for each teammate."""
+    owner = draft.owner
+    lines = [f"Company: {clean(draft.company)}", f"You: {_who(owner.name, owner.handle, owner.title)}"]
+    if not draft.team:
         return [*lines, "Teammates: none yet"]
     lines.append("Teammates:")
-    for t in answers.team:
+    for t in draft.team:
         about = clean(t.about).strip()
         lines.append(f"  {_who(t.name, t.handle, t.title)}" + (f": {about}" if about else ""))
     return lines
@@ -163,19 +163,19 @@ def run_interview(provider: Provider, prompter: Prompter, known: Known, *, draft
     return result.output
 
 
-def interview(provider_path: Path, prompter: Prompter, known: Known) -> Answers:
+def interview(provider_path: Path, prompter: Prompter, known: Known) -> Draft:
     """The new company: from an interview with the model in ``provider_path``, checked and confirmed by the owner;
-    or, with no one at a terminal, ``fallback_answers(known)``.
+    or, with no one at a terminal, ``fallback_draft(known)``.
 
     Results with problems run the interview again to fix them, at most ``TRIES`` times in all; changes the owner asks
     for run it again without counting.
 
     Raises:
-        OnboardError: the interview didn't settle on a company, or ``run_interview`` or ``fallback_answers`` raised.
+        OnboardError: the interview didn't settle on a company, or ``run_interview`` or ``fallback_draft`` raised.
         ProviderError: the provider file can't be used.
     """
     if not prompter.interactive:
-        return fallback_answers(known)
+        return fallback_draft(known)
     provider = load_provider(provider_path)
     draft = changes = ""
     failed = 0
@@ -183,8 +183,8 @@ def interview(provider_path: Path, prompter: Prompter, known: Known) -> Answers:
         output = run_interview(provider, prompter, known, draft=draft, changes=changes, provider_path=provider_path)
         draft = json.dumps(output)
         try:
-            answers = Answers.from_output(output)
-            problems = answer_problems(answers)
+            answers = Draft.from_output(output)
+            problems = draft_problems(answers)
         except KeyError as exc:
             problems = [f"the result was missing {exc.args[0]}"]
         except TypeError:
