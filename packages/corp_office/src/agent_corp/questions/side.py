@@ -12,8 +12,8 @@ from agent_corp.company.loader import load_repo
 from agent_corp.profile import GitProfileStore
 from agent_corp.protocol.models import CompanyDefaults, DiscussionEntry, Session
 from agent_corp.store import Store
-from agent_corp.tools.work_items import work_item_tools
-from agent_corp.tools.workspace import READ_TOOLS, WorkspaceTools, workspace_tool_functions
+from agent_corp.tools import ToolContext, build
+from agent_corp.tools.workspace import WorkspaceTools
 from agent_corp.worker import ProfileMemorySpec, SessionMemorySpec
 
 SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"
@@ -47,9 +47,9 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
     question = harness.store.get_question(session.question_id) if session.question_id else None
 
     def groups(s: Session, run_id: str, on_question: Any) -> dict[str, dict[str, Any]]:
-        calls = workspace_tool_functions(harness.monitor.workspace(workspace, person.handle, run_id, session_id=s.id))
-        return {"workspace": {name: calls[name] for name in READ_TOOLS},
-                "work_items": work_item_tools(harness.store, person.handle, question)}
+        return build(("workspace", "work_items"), ToolContext(
+            store=harness.store, session=s, run_id=run_id, monitor=harness.monitor, workspace=workspace,
+            read_only=True, question=question))
 
     # The seed is the first turn; composer summarizes history past the budget, so leave room for it.
     budget = defaults.side_seed_max_chars + SessionMemorySpec().history_budget_chars

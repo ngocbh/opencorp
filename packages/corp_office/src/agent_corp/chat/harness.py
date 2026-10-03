@@ -28,8 +28,8 @@ from agent_corp.questions.ask import Answers, OnQuestion, make_ask_user
 from agent_corp.questions.format import INTERRUPTED
 from agent_corp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from agent_corp.store import InvalidTransition, new_id
-from agent_corp.tools.company.work import company_tools
-from agent_corp.tools.workspace import WorkspaceTools, workspace_tool_functions
+from agent_corp.tools import ToolContext, build
+from agent_corp.tools.workspace import WorkspaceTools
 from agent_corp.worker import (BaseHandlers, Job, ProfileMemorySpec, SessionMemorySpec, Worker, WorkerRegistry,
                                group_specs, person_flow)
 from agent_corp.worker.job import MemorySpec
@@ -246,12 +246,9 @@ class Harness:
         workspace = WorkspaceTools(self._policy(person.handle, person.harness_policy, session.cwd, session.id))
 
         def groups(s: Session, run_id: str, on_question: OnQuestion) -> dict[str, dict[str, Any]]:
-            return {
-                "toolbox": dict(self.monitor.tools(person.handle, run_id=run_id, session_id=s.id)),
-                "workspace": workspace_tool_functions(self.monitor.workspace(workspace, person.handle, run_id,
-                                                                             session_id=s.id)),
-                "company": company_tools(self.store, repo, s, run_id, on_question, carried=self.answers.carried),
-            }
+            return build(("toolbox", "workspace", "company"), ToolContext(
+                store=self.store, repo=repo, session=s, run_id=run_id, on_question=on_question,
+                carried=self.answers.carried, monitor=self.monitor, workspace=workspace))
 
         return RunSpec(
             flow=person_flow(person.handle, person.main), groups=groups,
