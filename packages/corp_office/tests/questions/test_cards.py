@@ -22,6 +22,8 @@ SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_c
 SIDE_WITHOUT_TALKING_TO = (Path(__file__).parent / "fixtures" / "side_chat_without_talking_to.yaml").read_text()
 ASK = {"tool_calls": [{"name": "ask_user", "arguments": {"question": "Retry or back off?",
                                                          "options": ["Retry", "Back off"]}}]}
+LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
+                                  "manager": "ngocbh"}}
 GATE = """\
 id: gate
 name: gate
@@ -161,12 +163,12 @@ def test_a_side_turn_stored_during_send_back_keeps_the_note(office, fake_llm, wo
     turn = h.store.list_questions(session_id=side.id, status="open", source="human_input")[0]
     answer, late = h.answer, []
 
-    def answer_after_a_side_turn(question_id, value, kind):
+    def answer_after_a_side_turn(question_id, value, kind, **kw):
         # A side turn is stored after the note is added and before the answer lands.
         late.append(threading.Thread(target=cards.stored, args=(turn,)))
         late[0].start()
         late[0].join(0.3)
-        return answer(question_id, value, kind)
+        return answer(question_id, value, kind, **kw)
 
     monkeypatch.setattr(h, "answer", answer_after_a_side_turn)
     cards.send_back(q.id, "list the quotas as options")
@@ -199,6 +201,63 @@ def test_a_manager_question_is_stopped_by_answering_it(office, fake_llm, workspa
     cards.stop(q.id)
     assert INTERRUPTED in asked(fake_llm, 2)
     wait_for(lambda: texts(h, session.id)[-1:] == ["Carrying on."], what="the asker to carry on")
+
+
+@pytest.mark.parametrize("decide", [
+    lambda cards, q: cards.answer(q.id, "Back off", "option", by="lan"),
+    lambda cards, q: cards.send_back(q.id, "", by="lan"),
+], ids=["answer", "send_back"])
+def test_a_side_chat_and_the_decision_are_credited_to_who_acted(make_harness, fake_llm, workspace, decide):  # noqa: F811
+    office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW} | LAN))
+    try:
+        fake_llm.script(ASK, {"content": "Rate limits."}, {"content": "OK."})
+        h, cards = office.extras["harness"], office.extras["cards"]
+        _, q = ask(office, fake_llm, workspace)
+        side = cards.open_side(q.id, "why?", by="lan")
+        assert side.opened_by == "lan"
+        wait_for(lambda: texts(h, side.id) == ["Rate limits."] and status(h, side.id) == "idle", what="the side reply")
+        assert "You're talking with Lan (@lan), your peer." in fake_llm.wait_for_requests(2)[1]["messages"][0]["content"]
+        assert [t.answered_by for t in h.store.list_questions(session_id=side.id) if t.status != "open"] == ["lan"]
+        assert decide(cards, q).answered_by == "lan"
+    finally:
+        stop(office)
+
+
+def test_stopping_a_manager_question_is_credited_to_who_clicked(make_harness, fake_llm, workspace):  # noqa: F811
+    office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW} | LAN))
+    try:
+        fake_llm.script({"tool_calls": [{"name": "ask_manager", "arguments": {"question": "Budget?"}}]},
+                        {"content": "Carrying on."})
+        h, cards = office.extras["harness"], office.extras["cards"]
+        session = h.start_session("minh", str(workspace), opened_by="lan")
+        wait_for(lambda: status(h, session.id) == "idle", what="the first turn")
+        h.prompt(session.id, "plan it", by="lan")
+        q = wait_for(lambda: h.store.list_questions(session_id=session.id, status="open", source="ask_manager"),
+                     what="the manager question")[0]
+        # Minh's manager clicks Stop on a chat Lan opened: the manager is credited, not the opener.
+        assert cards.stop(q.id, by="ngocbh").answered_by == "ngocbh"
+        wait_for(lambda: h.store.get_work_item(q.work_item_id).resolved_by == "ngocbh", what="the item to close")
+    finally:
+        stop(office)
+
+
+def test_a_side_chat_reopened_by_someone_else_is_theirs(make_harness, fake_llm, workspace):  # noqa: F811
+    office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW} | LAN))
+    try:
+        fake_llm.script(ASK, {"content": "Quota."}, {"content": "Per hour."})
+        h, cards = office.extras["harness"], office.extras["cards"]
+        _, q = ask(office, fake_llm, workspace)
+        side = cards.open_side(q.id, "why?", by="ngocbh")
+        wait_for(lambda: texts(h, side.id) == ["Quota."] and status(h, side.id) == "idle", what="the side reply")
+        h.end(side.id)
+        wait_for(lambda: status(h, side.id) == "ended", what="the side session to end")
+        again = cards.open_side(q.id, "how often?", by="lan")
+        assert (again.id, again.opened_by) == (side.id, "lan")
+        wait_for(lambda: texts(h, side.id)[-1:] == ["Per hour."] and status(h, side.id) == "idle", what="the reply")
+        assert "You're talking with Lan (@lan), your peer." in fake_llm.wait_for_requests(3)[2]["messages"][0]["content"]
+        assert [t.answered_by for t in h.store.list_questions(session_id=side.id) if t.answer == "how often?"] == ["lan"]
+    finally:
+        stop(office)
 
 
 def test_a_gate_takes_a_record_keyed_by_header_and_offers_no_send_back_or_stop(make_harness, workspace):  # noqa: F811
