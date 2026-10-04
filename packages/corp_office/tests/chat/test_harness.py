@@ -353,16 +353,18 @@ def test_messages_and_answers_are_credited_to_who_sent_them(harness, fake_llm, w
     assert (by_answer["pick one"], by_answer["A"], by_answer["thanks"]) == ("lan", "lan", "kai")
 
 
+@pytest.mark.parametrize("send", ["steer", "prompt"])
 @pytest.mark.parametrize("refuse_steer", [True, False], ids=["queued", "steer_never_read"])
 def test_a_message_that_waits_for_the_next_turn_is_credited_to_who_sent_it(harness, fake_llm, workspace,
-                                                                           refuse_steer):
+                                                                           refuse_steer, send):
     fake_llm.script({"content": "Done.", "hold": 30}, {"content": "Second."})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
     fake_llm.wait_for_requests(1)
     if refuse_steer:  # the reply can't take it: it waits for the next turn
         harness._live[sid].worker.steer = lambda node, text: False
-    assert harness.steer(sid, "one more thing", by="lan") == ("queued" if refuse_steer else "steer")
+    sent = getattr(harness, send)(sid, "one more thing", by="lan")
+    assert sent == ("queued" if refuse_steer else "steer")
     fake_llm.release()
     wait_for(lambda: texts(harness, sid) == ["Done.", "Second."], what="the second reply")
     turns = {q.answer: q.answered_by for q in harness.store.list_questions(session_id=sid, source="human_input")}
@@ -865,9 +867,11 @@ def test_a_turn_after_the_provider_changes_runs_on_the_new_provider(harness, fak
     new = old.model_copy(update={"llm_config": {**old.llm_config, "api_key": "sk-new"}})
     harness.provider = lambda: new
 
-    assert harness.prompt(sid, "second") == "turn"
+    assert harness.prompt(sid, "second", by="lan") == "turn"
     wait_for(lambda: texts(harness, sid) == ["One.", "Two."] and status(harness, sid) == "idle",
              what="the reply on the new provider")
+    turns = {q.answer: q.answered_by for q in harness.store.list_questions(session_id=sid, source="human_input")}
+    assert (turns["first"], turns["second"]) == ("ngocbh", "lan")
     (job,) = jobs
     assert (job.kind, job.llm_config["api_key"]) == ("chat", "sk-new")
     assert len(harness.store.get_session(sid).run_ids) == 2
