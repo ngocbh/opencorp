@@ -323,8 +323,9 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
     from agent_corp.daemon.main import build_office
     from agent_corp.profile import GitProfileStore
 
-    warmed = []
-    monkeypatch.setattr(ModelCache, "warm", lambda self: warmed.append(self))
+    started = []
+    monkeypatch.setattr(Harness, "restore", lambda self: started.append("restore"))
+    monkeypatch.setattr(ModelCache, "warm", lambda self: started.append(("warm", self)))
     paths = OfficePaths(home)
     office = build_office(paths)
     try:
@@ -334,9 +335,9 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
         conns, cache = office.extras["connections"], office.extras["models"]
         assert isinstance(conns, Connections) and conns.office == paths.office
         assert isinstance(cache, ModelCache) and cache.connections is conns
-        assert warmed == []
-        await office.start()  # restores live sessions (none here) and lists each connection's models
-        assert warmed == [cache]
+        assert started == []
+        await office.start()  # restores live sessions, then lists each connection's models
+        assert started == ["restore", ("warm", cache)]
         await office.stop()
     finally:
         office.store.close()

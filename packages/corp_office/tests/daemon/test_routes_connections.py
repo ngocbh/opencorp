@@ -13,6 +13,7 @@ from agent_corp.auth.tokens import new_token
 from agent_corp.chat import check, models
 from agent_corp.chat.connections import ConnectionFile, Connections, provider_label
 from agent_corp.chat.models import Listing, ModelCache, own_models
+from agent_corp.chat.provider import ProviderError
 from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import write_private
 from tests.company.conftest import _git
@@ -227,6 +228,27 @@ async def test_a_removed_name_comes_back_as_a_new_name(client, office, as_owner)
     names = [c["name"] for c in (await client.get("/connections", headers=as_owner)).json()["connections"]]
     assert names == ["office", "azure-2"]
     assert (await client.delete("/connections/azure", headers=as_owner)).status_code == 404
+
+
+async def test_a_remove_that_cant_get_the_sign_in_lock_is_409(client, conns, as_owner, monkeypatch):
+    conns.put("azure", azure_file())
+
+    def remove(name):
+        raise ProviderError("the sign-in of connection 'azure' is busy; try again")
+
+    monkeypatch.setattr(conns, "remove", remove)
+    r = await client.delete("/connections/azure", headers=as_owner)
+    assert (r.status_code, r.json()["error"]) == (409, "connection_unusable")
+
+
+async def test_a_default_whose_file_cant_be_read_is_still_the_default(client, office, conns, as_owner):
+    conns.put("azure", azure_file())
+    conns.set_default("azure")
+    write_private(office.paths.office / "connections" / "azure.json", b"{not json")
+    r = await client.get("/connections", headers=as_owner)
+    assert r.status_code == 200
+    assert (r.json()["default"], [(c["name"], c["default"]) for c in r.json()["connections"]]) == (
+        "azure", [("office", False)])
 
 
 async def test_unknown_names_are_404(client, as_owner):
