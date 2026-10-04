@@ -391,7 +391,7 @@ test("Down onto the typed row types straight in; Up leaves it and a number picks
   }
 })
 
-test("Esc in the typed box asks to stop; n keeps the text and typing goes on into the box", async () => {
+test("Esc in the typed box clears its text first; on the empty box it asks to stop, and n gives the box back", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
@@ -403,10 +403,15 @@ test("Esc in the typed box asks to stop; n keeps the text and typing goes on int
     await app.input.typeText("rel")
     await app.until((f) => f.includes("3. rel"))
     app.input.pressEscape()
+    await app.until((f) => f.includes("3. Type your answer here"))
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.frame()).not.toContain("Stop @minh? y/N")
+    app.input.pressEscape()
     await app.until((f) => f.includes("Stop @minh? y/N"))
     app.input.pressKey("n")
-    await app.until((f) => !f.includes("Stop @minh? y/N") && f.includes("3. rel"))
-    await app.input.typeText("ease")
+    await app.until((f) => !f.includes("Stop @minh? y/N"))
+    await app.input.typeText("release")
     await app.until((f) => f.includes("3. release"))
     app.input.pressEnter()
     await app.until(() => office.state.questions[q.id].status === "answered")
@@ -421,7 +426,33 @@ test("Esc in the typed box asks to stop; n keeps the text and typing goes on int
   }
 })
 
-test("Ctrl+C in the typed box leaves the view on the second press and never stops the question", async () => {
+test("Esc off the typed box asks to stop even with text in it; n keeps the text", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("3. Type your answer here"))
+    app.input.pressArrow("down")
+    app.input.pressArrow("down")
+    await app.input.typeText("rel")
+    await app.until((f) => f.includes("3. rel"))
+    app.input.pressArrow("up")
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Stop @minh? y/N"))
+    app.input.pressKey("n")
+    await app.until((f) => !f.includes("Stop @minh? y/N") && f.includes("3. rel"))
+    app.input.pressArrow("down")
+    await app.input.typeText("ease")
+    await app.until((f) => f.includes("3. release"))
+    expect(stops(office, q.id)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Ctrl+C in the typed box clears its text first; on the empty box it leaves on the second press", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const q = office.addQuestion({ session_id: s.id, question: "Which branch?", options: ["main", "dev"] })
@@ -433,7 +464,13 @@ test("Ctrl+C in the typed box leaves the view on the second press and never stop
     await app.input.typeText("rel")
     await app.until((f) => f.includes("3. rel"))
     app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("3. Type your answer here"))
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.frame()).not.toContain("Press again to leave")
+    app.input.pressKey("c", { ctrl: true })
     await app.until((f) => f.includes("Press again to leave"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
     app.input.pressKey("c", { ctrl: true })
     await app.until(() => app.setup.renderer.isDestroyed)
     expect(stops(office, q.id)).toEqual([])

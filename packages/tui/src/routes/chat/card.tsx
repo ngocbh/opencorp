@@ -176,7 +176,7 @@ export function QuestionCard(props: { question: Question | undefined; hidden?: b
           ? [{ key: "escape", desc: "Stop the asker", group: "Question", cmd: () => setConfirming(true) }]
           : []),
         { key: "ctrl+o", desc: "Chat about this", group: "Question", cmd: () => props.onChat() },
-        // Ctrl+C leaves the view as it does in the chat; it never stops the question.
+        // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat; it never stops the question.
         ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
       ]}
       hints={stoppable() ? [{ key: "esc", label: `stop ${asker()}` }] : []}

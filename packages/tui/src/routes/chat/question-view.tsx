@@ -16,7 +16,7 @@ import type { Binding } from "@opentui/keymap"
 import { tint, useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
-import { useBindings, useAgentCorpModeStack } from "../../keymap"
+import { clearFirst, useBindings, useAgentCorpModeStack } from "../../keymap"
 import type { CardPage, PageAnswer } from "./answer"
 
 export const QUESTION_MODE = "question"
@@ -45,8 +45,8 @@ export interface QuestionViewHandle {
 /**
  * A question card: a page per question with options to pick (several when `multi`) and, when `typed`, a last row
  * that is a box to type the answer in. Enter on the last page hands every page's answer to `onSubmit` once each
- * single-pick page has one. It takes no office: callers supply the header, actions, extra key bindings, hints and
- * a notice.
+ * single-pick page has one. Ctrl+C or Esc in the box with text clears it. It takes no office: callers supply the
+ * header, actions, extra key bindings, hints and a notice.
  */
 export function QuestionView(
   props: ParentProps<{
@@ -123,6 +123,15 @@ export function QuestionView(
   function sync() {
     const el = box()
     if (el && !el.isDestroyed && page()?.typed) setAnswer((a) => ({ ...a, text: el.plainText }))
+  }
+
+  /** Empties the box while the cursor is on it; false when the cursor is elsewhere or the box is empty. */
+  function clearBox() {
+    const el = box()
+    if (!onTyped() || !el || el.isDestroyed || !el.plainText) return false
+    el.setText("")
+    sync()
+    return true
   }
 
   function goTo(index: number) {
@@ -225,6 +234,9 @@ export function QuestionView(
             { key: "down", desc: "Next answer", group: "Question", cmd: () => move(1) },
             { key: "return", desc: "Select answer", group: "Question", cmd: () => selectRow() },
             ...paging,
+            // Before the caller's keys: in a box with text, Ctrl+C and Esc only clear it. On an empty box they go
+            // on to the caller's keys, such as the card's stop and leave.
+            ...clearFirst(tuiConfig.keybinds.get("prompt.clear"), clearBox),
             ...keys,
           ],
     }

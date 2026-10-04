@@ -228,6 +228,32 @@ test("Esc does nothing on the card or its empty box; there Ctrl-C asks for a sec
   }
 })
 
+test("on the card's box, Ctrl-C and Esc clear the text and stop nothing; typing goes on in the box", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressArrow("down")
+    await app.input.typeText("abc")
+    await app.until((f) => f.includes("2. abc"))
+    app.input.pressCtrlC()
+    await app.until((f) => f.includes("2. Type your answer here"))
+    await app.input.typeText("xyz")
+    await app.until((f) => f.includes("2. xyz"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("2. Type your answer here"))
+    await Bun.sleep(100)
+    expect(app.frame()).not.toContain("Press Ctrl+C again to stop")
+    expect(child.interrupts).toBe(0)
+    await app.input.typeText("git@h:a.git")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["git@h:a.git"])
+  } finally {
+    await app.stop()
+  }
+})
+
 test("a long list shows a window that follows the cursor", async () => {
   const { child, app } = await boot()
   const options = Array.from({ length: 40 }, (_, i) => `opt-${String(i + 1).padStart(2, "0")}`)
@@ -256,6 +282,26 @@ test("a typed default that isn't an option starts in the box, so Enter sends it"
     app.input.pressEnter()
     await until(() => child.answers.length === 1)
     expect(child.answers).toEqual(["my-model"])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("clearing a typed default empties the box; Enter then sends nothing until something is typed", async () => {
+  const { child, app } = await boot()
+  try {
+    const options = ["sonnet (the default)"]
+    child.push({ type: "choose", question: "Model", options, default: "my-model", typed: true })
+    await app.until((f) => f.includes("2. my-model"))
+    app.input.pressCtrlC()
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressEnter()
+    await Bun.sleep(100)
+    expect(child.answers).toEqual([])
+    await app.input.typeText("other-model")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["other-model"])
   } finally {
     await app.stop()
   }
