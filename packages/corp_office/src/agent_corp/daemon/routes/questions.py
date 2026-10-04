@@ -4,6 +4,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from agent_corp.daemon.auth import acting_person
 from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
 from agent_corp.daemon.routes.sessions import harness_call
 from agent_corp.protocol.models import AnswerRequest, SendBackRequest, SideChatRequest
@@ -42,17 +43,19 @@ async def get_question(request: Request) -> JSONResponse:
 
 
 async def answer_question(request: Request) -> JSONResponse:
-    """Answer an open question; the first answer wins."""
+    """Answer an open question as the request's person; the first answer wins."""
     body = await parse(request, AnswerRequest)
     office = get_office(request)
+    by = acting_person(request)
     if "cards" in office.extras:  # checks the answer against its card and keeps the side chat's discussion
         return ok(await harness_call(office.extras["cards"].answer, request.path_params["id"], body.answer,
-                                     body.answer_kind))
-    if "harness" in office.extras:  # a chat turn, answer checks, and who answered
+                                     body.answer_kind, by=by))
+    if "harness" in office.extras:  # a chat turn and answer checks
         return ok(await harness_call(office.extras["harness"].answer, request.path_params["id"], body.answer,
-                                     body.answer_kind))
+                                     body.answer_kind, by=by))
     try:
-        question = await call(office.store.answer_question, request.path_params["id"], body.answer, body.answer_kind)
+        question = await call(office.store.answer_question, request.path_params["id"], body.answer, body.answer_kind,
+                              answered_by=by)
     except InvalidTransition as exc:
         raise HTTPError(409, "not_open", str(exc)) from exc
     return ok(question)
@@ -61,18 +64,20 @@ async def answer_question(request: Request) -> JSONResponse:
 async def side_chat(request: Request) -> JSONResponse:
     """"Chat about this": send the first (or next) message to the question's side session; return the session."""
     body = await parse(request, SideChatRequest)
-    return ok(await harness_call(cards(request).open_side, request.path_params["id"], body.text))
+    return ok(await harness_call(cards(request).open_side, request.path_params["id"], body.text,
+                                 by=acting_person(request)))
 
 
 async def send_back(request: Request) -> JSONResponse:
     """Answer the question with its discussion and no decision; ``note`` is the human's last word in it."""
     body = await parse(request, SendBackRequest)
-    return ok(await harness_call(cards(request).send_back, request.path_params["id"], body.note))
+    return ok(await harness_call(cards(request).send_back, request.path_params["id"], body.note,
+                                 by=acting_person(request)))
 
 
 async def stop(request: Request) -> JSONResponse:
     """Stop the asker from its card: it gets ``[interrupted by the user]`` with the discussion."""
-    return ok(await harness_call(cards(request).stop, request.path_params["id"]))
+    return ok(await harness_call(cards(request).stop, request.path_params["id"], by=acting_person(request)))
 
 
 async def dismiss_carried(request: Request) -> JSONResponse:
