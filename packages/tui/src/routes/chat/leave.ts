@@ -1,6 +1,3 @@
-/** How long a first Ctrl+C waits for the second that leaves a chat or stops the setup. */
-export const PRESS_TWICE_MS = 5000
-
 /** Returns a press counter that is true when a press comes within `ms` of an uncounted earlier one. */
 export function pressTwice(ms: number, now: () => number = Date.now) {
   let first: number | undefined
@@ -16,8 +13,8 @@ export function pressTwice(ms: number, now: () => number = Date.now) {
 }
 
 /**
- * The `app_exit` bindings with each key sent to `app.leave`, which takes a second press
- * everywhere but home. A `<leader>` chord is already deliberate, so it keeps `app.exit` and leaves at once.
+ * The `app_exit` bindings with each key sent to `app.leave`, which takes a second press in a
+ * chat. A `<leader>` chord is already deliberate, so it keeps `app.exit` and leaves at once.
  */
 export function leaveBindings<B extends { key: unknown; cmd?: unknown }>(bindings: readonly B[]): B[] {
   return bindings.flatMap((b) => {

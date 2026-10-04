@@ -59,7 +59,6 @@ test("in the ask box, Ctrl-C and Esc clear the text and stop nothing", async () 
     app.input.pressEscape()
     await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
     await Bun.sleep(100)
-    expect(app.frame()).not.toContain("Press Ctrl+C again to stop")
     expect(child.interrupts).toBe(0)
     app.input.pressEnter()
     await until(() => child.answers.length === 1)
@@ -224,7 +223,7 @@ test("a typed URL is sent whole but shown without its user and password", async 
   }
 })
 
-test("Esc does nothing on the card or its empty box; there Ctrl-C asks for a second press, then stops", async () => {
+test("Esc does nothing on the card or its empty box; there Ctrl-C stops the install", async () => {
   const { child, app } = await boot()
   try {
     child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
@@ -237,15 +236,10 @@ test("Esc does nothing on the card or its empty box; there Ctrl-C asks for a sec
     app.input.pressEscape()
     await Bun.sleep(100)
     expect(app.frame()).toContain("2. Type your answer here")
-    expect(app.frame()).not.toContain("Press Ctrl+C again to stop")
     expect(child.interrupts).toBe(0)
     app.input.pressCtrlC()
-    let f = await app.until((f) => f.includes("Press Ctrl+C again to stop"))
-    expect(f).toContain("2. Type your answer here")
-    expect(child.interrupts).toBe(0)
-    app.input.pressCtrlC()
-    f = await app.until((f) => f.includes("Stopping…"))
-    expect(f).not.toContain("Press Ctrl+C again to stop")
+    const f = await app.until((f) => f.includes("Stopping…"))
+    expect(f).not.toContain("2. Type your answer here")
     expect(child.interrupts).toBe(1)
     expect(child.answers).toEqual([])
   } finally {
@@ -268,7 +262,6 @@ test("on the card's box, Ctrl-C and Esc clear the text and stop nothing; typing 
     app.input.pressEscape()
     await app.until((f) => f.includes("2. Type your answer here"))
     await Bun.sleep(100)
-    expect(app.frame()).not.toContain("Press Ctrl+C again to stop")
     expect(child.interrupts).toBe(0)
     await app.input.typeText("git@h:a.git")
     app.input.pressEnter()
@@ -386,18 +379,12 @@ test("in the secret box, Ctrl-C and Esc clear what was typed without showing it;
     app.input.pressEscape()
     f = await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
     expect(f).not.toContain("•")
-    expect(f).not.toContain("Press Ctrl+C again to stop")
     expect(child.interrupts).toBe(0)
-    // The empty box lets Ctrl-C through: the first press asks for a second, so the password prompt can still stop.
+    // The empty box lets Ctrl-C through, so the password prompt can still stop.
     app.input.pressCtrlC()
-    f = await app.until((f) => f.includes("Press Ctrl+C again to stop"))
-    expect(f).toContain("Paste or type it here; it isn't shown")
-    expect(child.interrupts).toBe(0)
-    await app.input.typeText("abc")
-    app.input.pressEnter()
-    await until(() => child.answers.length === 1)
-    expect(child.answers).toEqual(["abc"])
-    expect(child.interrupts).toBe(0)
+    await until(() => child.interrupts === 1)
+    await app.until((f) => f.includes("Stopping…"))
+    expect(child.answers).toEqual([])
     expect(app.frames.filter((f) => f.includes("sentinel"))).toEqual([])
   } finally {
     await app.stop()

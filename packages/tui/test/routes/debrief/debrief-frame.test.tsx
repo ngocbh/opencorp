@@ -326,7 +326,7 @@ test("a reconnect re-reads the debrief, since events missed while offline are no
   })
 })
 
-test("Ctrl+C in the feedback box clears a draft and stays; on the empty box it asks for a second press, which exits", async () => {
+test("Ctrl+C in the feedback box clears a draft and stays; on the empty box it exits", async () => {
   const office = createFakeOffice()
   withTurns(office)
   await run(office, async (app) => {
@@ -339,12 +339,8 @@ test("Ctrl+C in the feedback box clears a draft and stays; on the empty box it a
     await Bun.sleep(100)
     await app.setup.renderOnce()
     expect(app.setup.renderer.isDestroyed).toBe(false)
-    expect(app.frame()).not.toContain("Press again to exit")
     expect(app.frame()).toContain("Debrief · @minh")
     expect(app.setup.renderer.currentFocusedEditor).not.toBeNull()
-    app.input.pressKey("c", { ctrl: true })
-    await app.until((f) => f.includes("Press again to exit"))
-    expect(app.setup.renderer.isDestroyed).toBe(false)
     app.input.pressKey("c", { ctrl: true })
     await app.until(() => app.setup.renderer.isDestroyed)
     expect(office.requests.some((r) => r.path === "/feedback")).toBe(false)

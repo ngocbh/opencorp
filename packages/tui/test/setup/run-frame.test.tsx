@@ -32,18 +32,13 @@ test("the header names the command", async () => {
   }
 })
 
-test("one Ctrl-C shows a hint and stops nothing; a second interrupts the child, and a third again", async () => {
+test("Ctrl-C interrupts the child, and again on a second press", async () => {
   const child = new FakeChild()
   const app = await bootSetup(child)
   try {
     await app.until((f) => f.includes("Working…"))
     app.input.pressCtrlC()
-    await app.until((f) => f.includes("Press Ctrl+C again to stop"))
-    await Bun.sleep(100)
-    expect(child.interrupts).toBe(0)
-    expect(app.frame()).toContain("Working…")
-    app.input.pressCtrlC()
-    await app.until((f) => f.includes("Stopping…") && !f.includes("Press Ctrl+C again to stop"))
+    await app.until((f) => f.includes("Stopping…"))
     expect(child.interrupts).toBe(1)
     app.input.pressCtrlC()
     await until(() => child.interrupts === 2)
@@ -52,18 +47,14 @@ test("one Ctrl-C shows a hint and stops nothing; a second interrupts the child, 
   }
 })
 
-test("Ctrl-C twice with a question open hides it and says the child is stopping", async () => {
+test("Ctrl-C with a question open hides it and says the child is stopping", async () => {
   const child = new FakeChild()
   const app = await bootSetup(child)
   try {
     child.push({ type: "ask", question: "Company", default: "" })
     await app.until((f) => f.includes("Company") && f.includes("Type your answer here"))
     app.input.pressCtrlC()
-    let f = await app.until((f) => f.includes("Press Ctrl+C again to stop"))
-    expect(f).toContain("Type your answer here")
-    expect(child.interrupts).toBe(0)
-    app.input.pressCtrlC()
-    f = await app.until((f) => f.includes("Stopping…"))
+    const f = await app.until((f) => f.includes("Stopping…"))
     expect(f).not.toContain("Type your answer here")
     expect(child.interrupts).toBe(1)
     expect(child.answers).toEqual([])
