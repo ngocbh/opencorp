@@ -61,14 +61,34 @@ async def read_body(request: Request) -> bytes:
     return bytes(body)
 
 
+_QUOTES_INPUT = {"union_tag_invalid": "isn't an allowed value", "literal_error": "isn't an allowed value",
+                 "uuid_parsing": "should be a valid UUID", "value_error": "isn't valid", "assertion_error": "isn't valid"}
+"""Fixed text for the error types whose message can quote the input."""
+
+
+def _errors(model: type[BaseModel], exc: ValidationError) -> str:
+    """The validation errors, naming only ``model``'s top-level fields: never an input value or an extra key."""
+    lines = []
+    for e in exc.errors(include_url=False, include_input=False, include_context=False):
+        head = e["loc"][0] if e["loc"] else None
+        where = head if head in model.model_fields else "body" if head is None else "an extra field"
+        lines.append(f"{where}: {_QUOTES_INPUT.get(e['type'], e['msg'])}")
+    return "; ".join(lines)
+
+
 async def parse[M: BaseModel](request: Request, model: type[M]) -> M:
     """The request body validated as ``model``; ``HTTPError(422)`` when it isn't."""
     body = await read_body(request)
     # Parsed on the loop: at MAX_BODY this takes a few milliseconds.
+    # The 422 never echoes the body: it may hold a key or a password.
     try:
-        return model.model_validate(json.loads(body))
-    except (ValueError, ValidationError, RecursionError) as exc:  # JSONDecodeError is a ValueError
-        raise HTTPError(422, "invalid_body", str(exc)) from exc
+        data = json.loads(body)
+    except (ValueError, RecursionError):  # JSONDecodeError is a ValueError
+        raise HTTPError(422, "invalid_body", "the body isn't JSON") from None
+    try:
+        return model.model_validate(data)
+    except ValidationError as exc:
+        raise HTTPError(422, "invalid_body", _errors(model, exc)) from None
 
 
 async def call[T](fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
