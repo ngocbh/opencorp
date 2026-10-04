@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from agent_composer.llm_clients.connection import _API_ENDPOINT
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from agent_corp.chat.provider import Provider, ProviderError, load_provider
@@ -33,6 +32,10 @@ NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
 AUTH_FILE_ENV = "AGENT_COMPOSER_AUTH_FILE"
 """The variable that points composer at a subscription's own auth store."""
+
+# Composer's own default OpenAI endpoint (_API_ENDPOINT in agent_composer/llm_clients/connection.py). If the two
+# drift, a run with no record no longer matches office and only has to start fresh.
+OPENAI_ENDPOINT = "https://api.openai.com/v1"
 
 SIGN_IN_LOCK_TIMEOUT = 30.0
 """Seconds ``remove`` waits for composer's lock on a sign-in; composer's own store waits as long."""
@@ -120,8 +123,9 @@ class Connections:
             ProviderError: its file can't be used.
         """
         if name == OFFICE:
-            # Read as a plain Provider, so provider.json is checked exactly as before connections.
-            return ConnectionFile(**dict(load_provider(self.office / "provider.json")))
+            # Checked as a plain Provider, exactly as before connections; the checks only an added connection
+            # needs (such as no AGENT_COMPOSER_AUTH_FILE) don't apply to it.
+            return ConnectionFile.model_construct(**dict(load_provider(self.office / "provider.json")))
         _check(name)
         if name in self._removed():
             raise ConnectionGone(f"connection '{name}' was removed")
@@ -180,7 +184,8 @@ class Connections:
         """Add ``conn`` under the first free name of ``base``, ``base-2``, …, and return that name.
 
         ``sign_in``, when given, saves the connection's sign-in to the path it is passed before the connection file
-        is written; if either fails, the sign-in is removed again.
+        is written; if either fails, the sign-in is removed again. It runs under the office's lock on connections,
+        so it must be quick: a save of a sign-in already made, not a device login.
         """
         with self._lock:
             name = self._free_name(base)
@@ -192,7 +197,10 @@ class Connections:
                 self.put(name, conn)
             except BaseException:
                 if sign_in is not None:
-                    _remove_sign_in(auth)
+                    try:
+                        _remove_sign_in(auth)
+                    except Exception:  # the error that stopped the add is the one to raise
+                        log.warning("couldn't remove the sign-in of connection %s after its add failed", name)
                 raise
             return name
 
@@ -207,7 +215,8 @@ class Connections:
         path = self._path(name)
         auth = self.auth_file(name)
         with self._lock:
-            if name not in self.names() and not os.path.lexists(auth):
+            # By its files, not names(): a retry after a remove cut short must still clean up a retired name.
+            if not os.path.lexists(path) and not os.path.lexists(auth):
                 raise ConnectionGone(f"there is no connection '{name}' on this office")
             # The name is retired before its files go: a connection re-added under it would move that name's
             # chats and runs to a new account without a word, and a remove cut short still reads as removed.
@@ -428,7 +437,7 @@ def read_run_record(path: Path) -> RunRecord | None:
 def _endpoint(provider: Any, url: Any) -> tuple[Any, Any]:
     """``(provider, url)`` with an OpenAI model's unset endpoint as composer's, and no trailing slash."""
     if provider == "openai" and not url:
-        url = _API_ENDPOINT  # what composer pins an OpenAI model to when nothing else gives an endpoint
+        url = OPENAI_ENDPOINT  # what composer pins an OpenAI model to when nothing else gives an endpoint
     return provider, url.rstrip("/") if isinstance(url, str) else url
 
 

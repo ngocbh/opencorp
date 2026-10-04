@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from agent_composer.llm_clients.connection import ConnectionSnapshot
 from pydantic import ValidationError
 
 from agent_corp.chat.connections import (
@@ -308,6 +309,23 @@ def test_a_connection_cannot_set_the_auth_file(tmp_path):
                        env={"AGENT_COMPOSER_AUTH_FILE": str(tmp_path / "other.auth.json")})
 
 
+def test_office_may_still_set_the_auth_file(tmp_path):
+    # provider.json was valid with it before connections; only an added connection may not set it.
+    auth = str(tmp_path / "composer-auth.json")
+    office = office_dir(tmp_path, {"llm_config": {"provider": "openai", "model": "m"},
+                                   "env": {"AGENT_COMPOSER_AUTH_FILE": auth}})
+    c = Connections(office)
+    provider = c.resolve(OFFICE, None)
+    assert provider.env == {"AGENT_COMPOSER_AUTH_FILE": auth}
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl", openai())
+    assert c.for_run(None, log, exact=True) == provider
+    path = tmp_path / "runs" / "r2.model.json"
+    write_run_record(path, OFFICE, None, provider)
+    assert c.for_run(read_run_record(path), tmp_path / "runs" / "r2.jsonl", exact=True) == provider
+    infos, default = c.infos()
+    assert [i.name for i in infos] == [OFFICE] and default == OFFICE
+
+
 def test_infos_lists_every_readable_connection_and_logs_only_a_broken_ones_name(tmp_path, caplog):
     office = office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}})
     c = Connections(office)
@@ -322,6 +340,36 @@ def test_infos_lists_every_readable_connection_and_logs_only_a_broken_ones_name(
     assert [(i.name, i.default) for i in infos] == [(OFFICE, False), ("second", True)]
     assert "broken" in caplog.text and "loose" in caplog.text and SENTINEL not in caplog.text
     assert SENTINEL not in repr(infos)
+
+
+def test_remove_finishes_a_remove_cut_short(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.put("chatgpt", subscription())
+    write_private(c.dir / "_removed.json", b'{"names": ["chatgpt"]}')  # retired, but its file was left
+    assert c.names() == [OFFICE]
+    c.remove("chatgpt")
+    assert tree(c.dir) == ["_removed.json"]
+    assert json.loads((c.dir / "_removed.json").read_text()) == {"names": ["chatgpt"]}
+    with pytest.raises(ConnectionGone):
+        c.remove("chatgpt")
+
+
+def test_add_raises_its_own_error_when_the_sign_in_cannot_be_removed(tmp_path, monkeypatch, caplog):
+    import agent_corp.chat.connections as connections
+
+    c = Connections(office_dir(tmp_path))
+
+    def stuck(auth):
+        raise ProviderError(f"timed out waiting for the lock on {auth}")
+
+    def refuse(path):
+        path.write_bytes(SENTINEL.encode())
+        raise ProviderError("sign-in cancelled")
+
+    monkeypatch.setattr(connections, "_remove_sign_in", stuck)
+    with pytest.raises(ProviderError, match="cancelled"):
+        c.add("chatgpt", subscription(), sign_in=refuse)
+    assert "connection chatgpt" in caplog.text and SENTINEL not in caplog.text
 
 
 def test_office_cannot_be_removed(tmp_path):
@@ -402,7 +450,7 @@ def test_concurrent_adds_take_distinct_names_and_defaults_stay_whole(tmp_path):
             for _ in range(30):
                 c.set_default(name)
                 assert c.default() in (OFFICE, "second")
-        except Exception as exc:  # noqa: BLE001 - reported below
+        except Exception as exc:  # reported below, from the main thread
             errors.append(exc)
 
     threads = [threading.Thread(target=add) for _ in range(4)]
@@ -635,7 +683,10 @@ def test_a_run_without_a_record_follows_the_endpoint_the_environment_gave(tmp_pa
     office = office_dir(tmp_path, {"llm_config": {"provider": "openai", "api_key": SENTINEL, "model": "m"},
                                    "env": {"OPENAI_BASE_URL": "https://proxy.example/v1/"}})
     c = Connections(office)
-    pinned = openai(_connection={"kind": "api_key", "endpoint": "https://proxy.example/v1"})
+    # As composer pins a host-key OpenAI model when OPENAI_BASE_URL gave the endpoint.
+    snapshot = ConnectionSnapshot(defaults={}, provider_models={}, connections={},
+                                  api_endpoint="https://proxy.example/v1/")
+    pinned = openai(_host_key=True, _connection=snapshot.host_connection())
     log = run_started_log(tmp_path / "runs" / "r1.jsonl", pinned)
     assert office_endpoint(c.resolve(OFFICE, None)) == ("openai", "https://proxy.example/v1")
     assert c.for_run(None, log, exact=True) == c.resolve(OFFICE, None)
