@@ -15,7 +15,7 @@ from agent_composer.memory.storage.markdown import MarkdownStore
 
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
-from agent_corp.chat.identity import person_inputs
+from agent_corp.chat.identity import person_inputs, talking_to
 from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds
@@ -102,12 +102,14 @@ class _Live:
     transcript: Transcript
     worker: Worker | None = None
     provider: Provider = field(default_factory=Provider)
-    owner: str | None = None  # the pinned company's CEO, who answers for the person
+    owner: str | None = None  # who answers for the person: the session's opener, else the pinned company's CEO
     reply_node: str | None = None
     turn_node: str | None = None  # the open turn question's node id
     next_reply: str | None = None  # the reply the answered turn starts, until its NodeStarted arrives
     turn_q: str | None = None
     pending: list[str] = field(default_factory=list)
+    pending_by: str | None = None  # who sent the latest queued message; the owner when None
+    steered_by: str | None = None  # who sent the latest steer the reply took, if it ends without reading it
     ending: bool = False
     capped: bool = False
     exits: int = 0
@@ -189,9 +191,11 @@ class Harness:
 
     # --- starting ---------------------------------------------------------------------
 
-    def start_session(self, handle: str, cwd: str, harness: str = "composer") -> Session:
+    def start_session(self, handle: str, cwd: str, harness: str = "composer", *,
+                      opened_by: str | None = None) -> Session:
         """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
 
+        ``opened_by`` is the human who opened it; the work item is theirs (the CEO's when None).
         A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
         """
         if harness != "composer":
@@ -214,11 +218,12 @@ class Harness:
         t = now()
         item = self.store.create_work_item(WorkItem(
             id=new_id(), title=f"Chat with {person.name} in {Path(cwd).name or cwd}", kind="task",
-            status="in_progress", requester=repo.company.ceo if repo.company else handle, assignee=handle,
-            created_at=t, updated_at=t))
+            status="in_progress", requester=opened_by or (repo.company.ceo if repo.company else handle),
+            assignee=handle, created_at=t, updated_at=t))
         session = self.store.create_session(Session(
             id=session_id, person=handle, harness="composer", office=socket.gethostname(), cwd=cwd,
-            repo_commit=head, status="starting", kind="main", work_item_id=item.id, created_at=t, updated_at=t))
+            repo_commit=head, status="starting", kind="main", work_item_id=item.id, opened_by=opened_by,
+            created_at=t, updated_at=t))
         self.store.touch_worked_folder(handle, cwd)
         try:
             spec = self.main_spec(session)
@@ -238,7 +243,10 @@ class Harness:
         return self.store.get_session(session_id)
 
     def main_spec(self, session: Session) -> RunSpec:
-        """The run spec of a person's main chat: the chat flow, who they are, profile and session memory, and every tool group."""
+        """The run spec of a person's main chat.
+
+        The chat flow, who they are and who they're talking with, profile and session memory, and every tool group.
+        """
         pin = self.git.pin(session.repo_commit)
         repo = load_repo(pin)
         person = repo.people[session.person]
@@ -252,7 +260,8 @@ class Harness:
 
         return RunSpec(
             flow=person_flow(person.handle, person.main), groups=groups,
-            inputs={"person": person_inputs(repo, person)}, chat=MAIN_CHAT, learnable=True,
+            inputs={"person": person_inputs(repo, person), "talking_to": talking_to(repo, person, session.opened_by)},
+            chat=MAIN_CHAT, learnable=True,
             memory={"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars),
                     "session": SessionMemorySpec(storage=str(self._run_dir(session.id) / "memory.sqlite"))},
             stores={"profile": GitProfileStore(self.git, person.handle)}, skills=list(person.skills),
@@ -284,7 +293,8 @@ class Harness:
     def _new_live(self, session: Session, run_id: str, spec: RunSpec) -> _Live:
         repo = load_repo(self.git.pin(session.repo_commit))
         return _Live(session.id, session.person, run_id, spec, _defaults(repo),
-                     Transcript(self.store, session.id, self.office.bus.publish_live), owner=_ceo(repo))
+                     Transcript(self.store, session.id, self.office.bus.publish_live),
+                     owner=session.opened_by or _ceo(repo))
 
     def restore(self) -> None:
         """Resume every session that was live when the office stopped, under the same run id."""
@@ -352,11 +362,12 @@ class Harness:
 
     # --- the person's keys -------------------------------------------------------------
 
-    def prompt(self, session_id: str, text: str) -> str:
+    def prompt(self, session_id: str, text: str, *, by: str | None = None) -> str:
         """Take a message: a new turn, an answer to the model's open question, a steer, or queued.
 
         Returns which one: ``turn``, ``answer``, ``steer``, or ``queued`` (the next turn
-        takes it; so do messages while the session is over its cost cap).
+        takes it; so do messages while the session is over its cost cap). ``by`` is the
+        human who sent it (the session's owner when None).
         """
         with self._lock:
             live = self._must(session_id)
@@ -367,35 +378,38 @@ class Harness:
                 if live.turn_q is not None:
                     live.transcript.user(text)
                     if self._provider_changed(live):
-                        self._restart(live, text)
+                        self._restart(live, text, by=by)
                     else:
-                        self._answer_turn(live, live.turn_q, text)
+                        self._answer_turn(live, live.turn_q, text, by=by)
                     return "turn"
                 asked = self.store.list_questions(run_id=live.run_id, status="open", source="ask_user")
                 if asked:
                     try:
-                        self.store.answer_question(asked[0].id, text, "text", answered_by=live.owner)
+                        self.store.answer_question(asked[0].id, text, "text", answered_by=by or live.owner)
                         return "answer"
                     except InvalidTransition:
                         pass  # a card answered it first (cards don't take this lock); the text is the next message
             live.transcript.user(text)
             if live.reply_node is not None and live.worker is not None and live.worker.steer(live.reply_node, text):
+                live.steered_by = by
                 return "steer"
-            self._queue(live, [text])
+            self._queue(live, [text], by=by)
             return "queued"
 
-    def steer(self, session_id: str, text: str) -> str:
-        """Steer the running reply; a message with no reply running is a ``prompt``."""
+    def steer(self, session_id: str, text: str, *, by: str | None = None) -> str:
+        """Steer the running reply as ``by``; a message with no reply running is a ``prompt``."""
         with self._lock:
             live = self._must(session_id)
             if live.reply_node is not None and live.worker is not None and not live.ending:
                 self._check_prompt(live, text)
                 live.transcript.user(text)
                 if live.worker.steer(live.reply_node, text):
+                    live.steered_by = by
                     return "steer"
                 live.pending.append(text)
+                live.pending_by = by
                 return "queued"
-        return self.prompt(session_id, text)
+        return self.prompt(session_id, text, by=by)
 
     def interrupt(self, session_id: str) -> None:
         """Esc: answer the model's open questions, kill workspace calls, answer office calls, stop the reply."""
@@ -425,12 +439,15 @@ class Harness:
             self.store.update_session(session_id, status="ending")
             turn = live.turn_q
             if turn is not None and live.spec.chat is not None:
-                self._answer_turn(live, turn, live.spec.chat.exit, by=None)
+                self._answer_turn(live, turn, live.spec.chat.exit, typed=False)
                 return
         self.interrupt(session_id)  # the next turn question is answered with the exit command
 
-    def answer(self, question_id: str, answer: Any, kind: str) -> Question:
-        """Answer a question for the person, after the ``answer_check`` hooks; a chat turn goes through ``prompt``."""
+    def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
+        """Answer a question for ``by`` (the session's owner when None), after the ``answer_check`` hooks.
+
+        A chat turn is answered as ``prompt`` would.
+        """
         question = self.store.get_question(question_id)
         if question is None:
             raise HarnessError(404, "not_found", f"no question {question_id}")
@@ -449,10 +466,11 @@ class Harness:
                     raise HarnessError(409, "not_open", f"question {question_id} can't take a turn now")
                 self._check_prompt(live, answer)
                 live.transcript.user(answer)
-                self._answer_turn(live, question_id, answer)
+                self._answer_turn(live, question_id, answer, by=by)
             return self.store.get_question(question_id)
         try:
-            return self.store.answer_question(question_id, answer, kind, answered_by=self._owner(question, live))
+            return self.store.answer_question(question_id, answer, kind,
+                                              answered_by=by or self._owner(question, live))
         except InvalidTransition as exc:
             raise HarnessError(409, "not_open", str(exc)) from exc
 
@@ -562,7 +580,7 @@ class Harness:
             self.store.update_session(live.session_id, status="ending" if live.ending else "idle")
             if live.ending or self._turns(live) >= live.defaults.max_turns:
                 live.ending = True
-                self._answer_turn(live, question_id, chat.exit, by=None)
+                self._answer_turn(live, question_id, chat.exit, typed=False)
                 return
             if not self._deliver(live) and not live.pending:  # a held message isn't idleness
                 live.timer = threading.Timer(seconds(live.defaults.idle_end), self._post,
@@ -570,9 +588,10 @@ class Harness:
                 live.timer.daemon = True
                 live.timer.start()
 
-    def _queue(self, live: _Live, texts: list[str]) -> None:
-        """Queue messages for the next turn; a queued message stops the idle timer."""
+    def _queue(self, live: _Live, texts: list[str], *, by: str | None = None) -> None:
+        """Queue messages from ``by`` for the next turn; a queued message stops the idle timer."""
         live.pending.extend(texts)
+        live.pending_by = by
         if live.timer is not None:
             live.timer.cancel()
             live.timer = None
@@ -582,16 +601,21 @@ class Harness:
         """Answer the open turn with the queued messages, unless held; True if it did."""
         if live.turn_q is None or not live.pending or live.ending or self._held(live):
             return False
-        self._answer_turn(live, live.turn_q, "\n\n".join(live.pending))
+        self._answer_turn(live, live.turn_q, "\n\n".join(live.pending), by=live.pending_by)
         live.pending.clear()
         return True
 
-    def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None | bool = True) -> None:
-        """Answer the turn; if the store refuses, the turn stays open for the next try."""
+    def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None = None,
+                     typed: bool = True) -> None:
+        """Answer the turn as ``by`` (the session's owner when None); if the store refuses, the turn stays open.
+
+        ``typed`` is False for the office's own exit, which no one answered.
+        """
         # The person's message goes through turn_text; the exit command, typed or the office's, doesn't.
-        answer = self._turn_text(live, question_id, text) if by is True and text != live.spec.chat.exit else text
+        answer = self._turn_text(live, question_id, text) if typed and text != live.spec.chat.exit else text
         try:
-            self.store.answer_question(question_id, answer, "text", answered_by=live.owner if by is True else by)
+            self.store.answer_question(question_id, answer, "text",
+                                       answered_by=(by or live.owner) if typed else None)
             if live.turn_node is not None and text != live.spec.chat.exit:
                 live.next_reply = live.spec.chat.reply_after(live.turn_node)
         except InvalidTransition:
@@ -626,7 +650,11 @@ class Harness:
     def _steer_left(self, live: _Live, texts: list[str]) -> None:
         with self._lock:
             if self._current(live) and not live.ending:
-                self._queue(live, texts)  # already in the transcript
+                # Already in the transcript. This runs on the dispatcher after the reply ended, so a steer from
+                # someone else that the next reply took in between has replaced steered_by: these go as theirs.
+                # And _queue sets pending_by for the whole batch, so a message someone else queued before this
+                # runs goes as the steerer's.
+                self._queue(live, texts, by=live.steered_by)
 
     # --- worker frames ---------------------------------------------------------------
 
@@ -734,7 +762,7 @@ class Harness:
             return False  # a spawn would fail on it too; keep the worker that works
         return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
 
-    def _restart(self, live: _Live, text: str) -> None:
+    def _restart(self, live: _Live, text: str, *, by: str | None = None) -> None:
         """Hand ``text`` to a fresh run on the current provider instead of the worker waiting at a turn."""
         # A worker keeps the provider it started with, so a fixed key or endpoint would
         # otherwise reach only the run after the next one to fail.
@@ -744,6 +772,7 @@ class Harness:
             live.timer.cancel()
             live.timer = None
         live.pending.append(text)
+        live.pending_by = by
         self.store.update_session(live.session_id, status="busy")
         self._post(self._replace, live, worker)
 
@@ -854,10 +883,17 @@ class Harness:
         return session.cost >= cost_cap(session, live.defaults)
 
     def _owner(self, question: Question, live: _Live | None) -> str | None:
+        """Who an answer to ``question`` is credited to when the caller names no one.
+
+        Its session's opener, else the pinned company's CEO. Every route names the acting
+        person, so only internal callers get here.
+        """
         if live is not None and live.session_id == question.session_id:
             return live.owner
         session = self.store.get_session(question.session_id) if question.session_id else None
-        return _ceo(load_repo(self.git.pin(session.repo_commit))) if session is not None else None
+        if session is None:
+            return None
+        return session.opened_by or _ceo(load_repo(self.git.pin(session.repo_commit)))
 
     def _run_dir(self, session_id: str) -> Path:
         return self.office.paths.run_dir(session_id)

@@ -4,11 +4,13 @@ from importlib.resources import files
 
 import pytest
 
+from agent_corp.auth.tokens import new_token
 from agent_corp.extensions.questions import register
 from agent_corp.questions.side import SIDE_CHAT_FLOW
 from tests.chat.conftest import CHAT_FLOW
 from tests.company.conftest import base_files, write_repo
 from tests.daemon.test_app import ULID
+from tests.daemon.test_auth import add_human, bearer, give_device
 from tests.daemon.test_routes_sessions import chat, fake_llm, until  # noqa: F401
 from tests.store.conftest import question, session
 
@@ -128,6 +130,44 @@ async def test_send_back_and_stop(cards, client, fake_llm, tmp_path):
     await until(lambda: store.get_session(sid).status == "idle")
 
 
+@pytest.mark.parametrize(("action", "body"), [("answer", {"answer": "Back off", "answer_kind": "option"}),
+                                              ("send-back", {"note": ""})])
+async def test_a_side_chat_and_its_decision_are_credited_to_the_verified_person(cards, client, company, fake_llm,
+                                                                                tmp_path, action, body):
+    add_human(company, "ava")  # before the chat starts, so the asker's pinned commit knows her
+    fake_llm.script(ASK, {"content": "Retries hide flakes."}, {"content": "OK."})
+    store = cards.store
+    _, qid = await asked(cards, client, tmp_path)
+    ava = new_token()
+    give_device(company, "ava", "pc", ava)
+    r = await client.post(f"/questions/{qid}/side", json={"text": "why ask?"}, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["opened_by"] == "ava"
+    side = r.json()["id"]
+    await until(lambda: replies(store, side) == ["Retries hide flakes."] and store.get_session(side).status == "idle")
+    assert "You're talking with Ava (@ava), your peer." in fake_llm.requests()[1]["messages"][0]["content"]
+    r = await client.post(f"/questions/{qid}/{action}", json=body, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["answered_by"] == "ava"
+
+
+async def test_stopping_a_manager_question_is_credited_to_the_verified_person(cards, client, company, fake_llm,
+                                                                              tmp_path):
+    fake_llm.script({"tool_calls": [{"name": "ask_manager", "arguments": {"question": "Budget?"}}]},
+                    {"content": "Carrying on."})
+    store = cards.store
+    (tmp_path / "ws").mkdir()
+    # Opened while no one has a device: the chat is the CEO's.
+    sid = (await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws")})).json()["id"]
+    await until(lambda: store.get_session(sid).status == "idle")
+    assert (await client.post(f"/sessions/{sid}/prompt", json={"text": "plan it"})).status_code == 200
+    q = (await until(lambda: store.list_questions(session_id=sid, status="open", source="ask_manager")))[0]
+    add_human(company, "ava")
+    ava = new_token()
+    give_device(company, "ava", "pc", ava)
+    r = await client.post(f"/questions/{q.id}/stop", headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["answered_by"] == "ava"
+    await until(lambda: store.get_work_item(q.work_item_id).resolved_by == "ava")
+
+
 async def test_dismiss_a_carried_discussion(cards, client):
     s = cards.store.create_session(session())
     old = cards.store.add_question(question(s.id))
@@ -187,6 +227,15 @@ async def test_missing_question_is_404(client):
     assert (await client.get(f"/questions/{ULID}")).status_code == 404
     r = await client.post(f"/questions/{ULID}/answer", json={"answer": 1, "answer_kind": "text"})
     assert r.status_code == 404 and r.json()["error"] == "not_found"
+
+
+async def test_a_plain_answer_is_credited_to_the_verified_person(client, office, company):
+    add_human(company, "ava")
+    ava = new_token()
+    give_device(company, "ava", "pc", ava)
+    q = await _open_question(office)
+    r = await client.post(f"/questions/{q.id}/answer", json={"answer": "a", "answer_kind": "text"}, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["answered_by"] == "ava"
 
 
 async def test_answer_then_second_answer_is_409(client, office):

@@ -40,6 +40,23 @@ def test_the_profile_manager_proposes_an_edit_that_the_owner_applies(harness, fa
     assert harness.store.get_debrief(session.id) is None
 
 
+def test_the_profile_manager_is_opened_and_applied_by_who_acted(harness, fake_llm, learning):
+    version = GitProfileStore(harness.git, "minh").read()[1]
+    fake_llm.script({"tool_calls": [{"name": "propose_edit",
+                                     "arguments": {"text": PROFILE + "- x\n", "base_version": version}}]},
+                    {"content": "Proposed."})
+    session = learning.start_manager("minh", "Add x.", by="lan")
+    assert session.opened_by == "lan"
+    wait_for(lambda: texts(harness, session.id) == ["Proposed."], what="the reply")
+    assert [q.answered_by for q in harness.store.list_questions(session_id=session.id) if q.status != "open"] == ["lan"]
+    [proposal] = learning.proposals("minh")
+    learning.apply(proposal.id, by="lan")
+    assert git_log(harness, "-1", "--format=%s").strip() == "profile(@minh): lan via profile manager"
+    wait_for(lambda: status(harness, session.id) == "idle", what="the next turn")
+    harness.end(session.id)
+    wait_for(lambda: status(harness, session.id) == "ended", what="ended")
+
+
 def test_the_profile_manager_needs_a_known_person(harness, learning):
     with pytest.raises(HarnessError) as err:
         learning.start_manager("nobody", "hi")

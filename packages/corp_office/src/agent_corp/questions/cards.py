@@ -43,18 +43,24 @@ class Cards:
 
     # --- card actions ------------------------------------------------------------------
 
-    def answer(self, question_id: str, answer: Any, kind: str) -> Question:
-        """Answer a card: check and convert the answer, copy the discussion, then answer through the harness."""
+    def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
+        """Answer a card: check and convert the answer, copy the discussion, then answer through the harness.
+
+        ``by`` is the human answering.
+        """
         question = self._open(question_id)
         try:
             value = check_answer(question, answer, kind)
         except InvalidAnswer as exc:
             raise HarnessError(422, "invalid_answer", str(exc)) from exc
         self.snapshot(question)
-        return self.harness.answer(question_id, value, kind)
+        return self.harness.answer(question_id, value, kind, by=by)
 
-    def open_side(self, question_id: str, text: str) -> Session:
-        """"Chat about this": send ``text`` to the question's side session, starting it if needed."""
+    def open_side(self, question_id: str, text: str, *, by: str | None = None) -> Session:
+        """"Chat about this": send ``text`` to the question's side session, starting it if needed.
+
+        ``by`` is the human sending it; one who opens or reopens the side session is in it now.
+        """
         question = self._open(question_id)
         if self._is_turn(question):
             raise HarnessError(422, "not_a_card", "a chat turn is not a question card; reply in the chat")
@@ -65,11 +71,12 @@ class Cards:
             question = self._open(question_id)
             side = self.store.get_session(question.side_session_id) if question.side_session_id else None
             if side is None:
-                side, spec = self._create_side(question)
+                side, spec = self._create_side(question, opened_by=by)
                 self.harness.start_run(side, spec)
             elif not is_live(side):  # ended or failed: a new run continues its stored memory
+                side = side.model_copy(update={"opened_by": by or side.opened_by})  # whoever reopens it is in it now
                 spec = side_spec(self.harness, side)
-                side = self.store.update_session(side.id, status="starting")
+                side = self.store.update_session(side.id, status="starting", opened_by=side.opened_by)
                 self.harness.start_run(side, spec)
         if self.store.get_question(question_id).status != "open":  # answered while it started
             try:
@@ -77,11 +84,11 @@ class Cards:
             except HarnessError:
                 pass  # its run is already gone
             raise HarnessError(409, "not_open", f"question {question_id} is no longer open")
-        self.harness.prompt(side.id, text)
+        self.harness.prompt(side.id, text, by=by)
         return self.store.get_session(side.id)
 
-    def send_back(self, question_id: str, note: str) -> Question:
-        """Send the discussion back undecided; a non-blank ``note`` is the human's last message in it."""
+    def send_back(self, question_id: str, note: str, *, by: str | None = None) -> Question:
+        """Send the discussion back undecided as ``by``; a non-blank ``note`` is the human's last message in it."""
         question = self._open(question_id)
         if question.source == "human_input":
             raise HarnessError(422, "cannot_send_back", "a flow's own question can't be sent back")
@@ -92,13 +99,13 @@ class Cards:
             if note.strip():
                 self.store.update_question(question_id, discussion=[*question.discussion,
                                                                     DiscussionEntry(role="user", text=note)])
-            return self.harness.answer(question_id, None, "sent_back")
+            return self.harness.answer(question_id, None, "sent_back", by=by)
 
-    def stop(self, question_id: str) -> Question:
+    def stop(self, question_id: str, *, by: str | None = None) -> Question:
         """Stop the asker from the card: it gets ``[interrupted by the user]`` with the discussion.
 
-        A model question in a live chat is Esc on that chat (the reply stops too); any other
-        model question is answered and its run carries on.
+        A model question in a live chat is Esc on that chat (the reply stops too), which is no
+        one's; any other model question is answered as ``by`` and its run carries on.
         """
         question = self._open(question_id)
         if question.source == "human_input":
@@ -111,7 +118,7 @@ class Cards:
                 return self.store.get_question(question_id)
             except HarnessError:
                 pass  # its run is gone; answer the question alone
-        return self.harness.answer(question_id, INTERRUPTED, "interrupted")
+        return self.harness.answer(question_id, INTERRUPTED, "interrupted", by=by)
 
     def dismiss_carried(self, question_id: str) -> Question:
         """Stop carrying an expired question's discussion into this card and its answer."""
@@ -228,7 +235,7 @@ class Cards:
 
     # --- helpers -------------------------------------------------------------------------
 
-    def _create_side(self, question: Question) -> tuple[Session, RunSpec]:
+    def _create_side(self, question: Question, *, opened_by: str | None = None) -> tuple[Session, RunSpec]:
         asker = self.store.get_session(question.session_id)
         if asker is None:
             raise HarnessError(409, "not_open", f"question {question.id} has no session")
@@ -239,7 +246,7 @@ class Cards:
         t = now()
         side = Session(id=new_id(), person=question.asker, harness="composer", office=socket.gethostname(),
                        cwd=asker.cwd, repo_commit=asker.repo_commit, status="starting", kind="side",
-                       question_id=question.id, cost_cap_usd=defaults.side_chat_cost_cap_usd,
+                       question_id=question.id, cost_cap_usd=defaults.side_chat_cost_cap_usd, opened_by=opened_by,
                        created_at=t, updated_at=t)
         spec = side_spec(self.harness, side)  # refuse a missing flow or folder before anything is stored
         write_seed(self.office.paths.run_dir(side.id), seed)

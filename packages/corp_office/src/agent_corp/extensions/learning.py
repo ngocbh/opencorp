@@ -111,8 +111,11 @@ class Learning:
 
     # --- routes ----------------------------------------------------------------------
 
-    def add_feedback(self, request: FeedbackRequest) -> Feedback:
-        """Queue feedback on a finished run of a session (its latest run by default)."""
+    def add_feedback(self, request: FeedbackRequest, *, by: str | None = None) -> Feedback:
+        """Queue feedback on a finished run of a session (its latest run by default).
+
+        ``by`` is the human giving it (the CEO when None).
+        """
         session = self._session(request.session_id)
         if session.kind != "main":
             raise HarnessError(422, "not_learnable", f"session {session.id} is a {session.kind} session")
@@ -124,7 +127,7 @@ class Learning:
         if not self._finished(session.id, run_id):
             raise HarnessError(409, "run_unfinished", f"run {run_id} didn't finish, so it can't take feedback")
         feedback = self.store.add_feedback(Feedback(
-            id=new_id(), session_id=session.id, run_id=run_id, author=self._owner(), text=request.text,
+            id=new_id(), session_id=session.id, run_id=run_id, author=by or self._owner(), text=request.text,
             status="queued", created_at=now()))
         self._post(self._drain, session.id)
         return feedback
@@ -141,19 +144,22 @@ class Learning:
             self._post(self._retry_debrief, session_id)
         return record.debrief
 
-    def confirm(self, session_id: str, indices: Iterable[int]) -> Debrief:
-        """Confirm follow-ups of the session's debrief: one work item each."""
+    def confirm(self, session_id: str, indices: Iterable[int], *, by: str | None = None) -> Debrief:
+        """Confirm follow-ups of the session's debrief: one work item each, requested by ``by`` (the CEO when None)."""
         session = self._session(session_id)
         with self._confirming:
             try:
-                return confirm_follow_ups(self.store, session, indices, requester=self._owner())
+                return confirm_follow_ups(self.store, session, indices, requester=by or self._owner())
             except IndexError as exc:
                 raise HarnessError(422, "invalid_body", str(exc)) from exc
             except LookupError as exc:
                 raise HarnessError(409, "not_ready", str(exc)) from exc
 
-    def start_manager(self, handle: str, text: str) -> Session:
-        """Open a profile-manager session over a person's profile, with ``text`` as its first message."""
+    def start_manager(self, handle: str, text: str, *, by: str | None = None) -> Session:
+        """Open a profile-manager session over a person's profile, with ``text`` as its first message.
+
+        ``by`` is the human opening it (the CEO when None).
+        """
         self.git.commit_hand_edits()
         head = self.git.head()
         pin = self.git.pin(head)
@@ -165,9 +171,9 @@ class Learning:
         session = self.store.create_session(Session(
             id=new_id(), person=handle, harness="composer", office=socket.gethostname(),
             cwd=os.path.realpath(self.git.root), repo_commit=head, status="starting", kind="profile_manager",
-            created_at=t, updated_at=t))
+            opened_by=by, created_at=t, updated_at=t))
         self.harness.start_run(session, manager_spec(self.harness, session))
-        self.harness.prompt(session.id, text)  # the first turn takes it
+        self.harness.prompt(session.id, text, by=by)  # the first turn takes it
         return self.store.get_session(session.id)
 
     def proposals(self, handle: str) -> list[ProfileProposal]:
@@ -176,10 +182,10 @@ class Learning:
             raise HarnessError(404, "not_found", f"no person {handle}")
         return self.store.list_profile_proposals(handle)
 
-    def apply(self, proposal_id: str) -> Profile:
-        """Apply a proposal as the owner; ``MarkdownVersionMismatch`` if the profile moved on."""
+    def apply(self, proposal_id: str, *, by: str | None = None) -> Profile:
+        """Apply a proposal as ``by`` (the CEO when None); ``MarkdownVersionMismatch`` if the profile moved on."""
         try:
-            return apply_proposal(self.store, self.git, proposal_id, owner=self._owner(),
+            return apply_proposal(self.store, self.git, proposal_id, owner=by or self._owner(),
                                   max_chars=self._defaults(load_repo(self.git.root)).profile_max_chars)
         except LookupError as exc:
             raise HarnessError(404, "not_found", str(exc)) from exc

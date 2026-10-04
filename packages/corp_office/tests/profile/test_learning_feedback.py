@@ -75,6 +75,17 @@ def test_feedback_on_a_finished_run_is_learned_and_the_next_session_sees_it(harn
     assert "- Be brief." in asked(first)
 
 
+def test_feedback_and_follow_ups_are_credited_to_who_gave_them(harness, fake_llm, workspace, learning):
+    sid = ended(harness, fake_llm, workspace)
+    debrief = learning.confirm(sid, [0], by="lan")
+    assert harness.store.get_work_item(debrief.follow_ups[0].work_item_id).requester == "lan"
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."), by="lan")
+    assert fb.author == "lan"
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+    assert f"from feedback on run {fb.run_id} (lan)" in git_log(harness, "--format=%s")
+
+
 def test_a_second_feedback_on_the_same_run_learns_again(harness, fake_llm, workspace, learning):
     sid = ended(harness, fake_llm, workspace)
     fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))

@@ -6,17 +6,31 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
 from tests.chat.conftest import errors, status, texts, wait_for
+from tests.store.conftest import question as stored_question
 from tests.store.conftest import session as stored_session
 
 CHAT_WITHOUT_PERSON = (Path(__file__).parent / "fixtures" / "chat_without_person.yaml").read_text()
+CHAT_WITHOUT_TALKING_TO = (Path(__file__).parent / "fixtures" / "chat_without_talking_to.yaml").read_text()
 MINH = {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
         "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}
+LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
+                                  "manager": "ngocbh"}}
+TALKING_TO_CEO = "You're talking with Hong Ngoc Bui (@ngocbh), the CEO and your manager."
 
 
 def start(harness, workspace):
     session = harness.start_session("minh", str(workspace))
     wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
     return session.id
+
+
+def test_a_session_records_who_opened_it_and_its_work_item_is_theirs(make_harness, fake_llm, workspace):
+    harness = make_harness(files=LAN)
+    session = harness.start_session("minh", str(workspace), opened_by="lan")
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    assert (session.opened_by, harness.store.get_work_item(session.work_item_id).requester) == ("lan", "lan")
+    unsaid = harness.store.get_session(start(harness, workspace))
+    assert (unsaid.opened_by, harness.store.get_work_item(unsaid.work_item_id).requester) == (None, "ngocbh")
 
 
 def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspace):
@@ -43,9 +57,16 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
     assert err.value.code == "not_live"
 
 
-def test_a_main_run_gets_the_persons_identity(harness, workspace):
+def test_a_main_run_gets_the_persons_identity_and_who_they_talk_with(harness, workspace):
     session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head()))
-    assert harness.main_spec(session).inputs == {"person": MINH}
+    assert harness.main_spec(session).inputs == {"person": MINH, "talking_to": TALKING_TO_CEO}
+
+
+def test_a_main_run_is_told_who_opened_it(make_harness, workspace):
+    harness = make_harness(files=LAN)
+    session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head(),
+                                                          opened_by="lan"))
+    assert harness.main_spec(session).inputs["talking_to"] == "You're talking with Lan (@lan), your peer."
 
 
 def system_prompt(fake_llm, n):
@@ -60,7 +81,7 @@ def test_the_reply_speaks_as_the_person(harness, fake_llm, workspace):
     sid = start(harness, workspace)
     harness.prompt(sid, "Who are you?")
     assert system_prompt(fake_llm, 1).startswith(
-        "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
+        "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh). " + TALKING_TO_CEO + "\n")
     wait_for(lambda: texts(harness, sid) == ["I'm Minh."], what="the reply")
 
 
@@ -71,6 +92,17 @@ def test_a_chat_flow_that_does_not_take_the_person_still_runs(make_harness, fake
     harness.prompt(sid, "hi")
     wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
     assert not system_prompt(fake_llm, 1).startswith("You are Minh")
+
+
+def test_a_chat_flow_from_before_talking_to_still_speaks_as_the_person(make_harness, fake_llm, workspace):
+    harness = make_harness(files={"shared/flows/chat.yaml": CHAT_WITHOUT_TALKING_TO})
+    fake_llm.script({"content": "Hello."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
+    prompt = system_prompt(fake_llm, 1)
+    assert prompt.startswith("You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
+    assert "talking with" not in prompt
 
 
 def asked(fake_llm, n):
@@ -284,6 +316,59 @@ def test_turns_are_answered_for_the_ceo_of_the_pinned_company(harness, fake_llm,
     wait_for(lambda: texts(harness, sid)[-1:] == ["Hello."], what="the reply")
     (turn,) = [q for q in harness.store.list_questions(session_id=sid) if q.answer == "hi"]
     assert turn.answered_by == ceo
+
+
+def test_turns_are_answered_for_the_sessions_opener(make_harness, fake_llm, workspace):
+    harness = make_harness(files=LAN)
+    fake_llm.script({"content": "Hello."})
+    session = harness.start_session("minh", str(workspace), opened_by="lan")
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    harness.prompt(session.id, "hi")
+    wait_for(lambda: texts(harness, session.id)[-1:] == ["Hello."], what="the reply")
+    (turn,) = [q for q in harness.store.list_questions(session_id=session.id) if q.answer == "hi"]
+    assert turn.answered_by == "lan"
+
+
+def test_an_answer_off_a_live_run_is_credited_to_the_opener_else_the_ceo(harness, workspace):
+    head = harness.git.head()
+    for opened_by, credited in (("lan", "lan"), (None, "ngocbh")):
+        s = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=head, opened_by=opened_by))
+        q = harness.store.add_question(stored_question(s.id))
+        assert harness.answer(q.id, "yes", "text").answered_by == credited
+
+
+def test_messages_and_answers_are_credited_to_who_sent_them(harness, fake_llm, workspace):
+    fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which?"}}]},
+                    {"content": "Done."}, {"content": "Bye."})
+    sid = start(harness, workspace)  # opened by no one: the owner is the CEO
+    assert harness.prompt(sid, "pick one", by="lan") == "turn"
+    wait_for(lambda: harness.store.list_questions(session_id=sid, status="open", source="ask_user"),
+             what="the model's question")
+    assert harness.prompt(sid, "A", by="lan") == "answer"
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Done."] and status(harness, sid) == "idle", what="the reply")
+    turn = harness.store.list_questions(session_id=sid, status="open", source="human_input")[0]
+    assert harness.answer(turn.id, "thanks", "text", by="kai").answered_by == "kai"
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Bye."], what="the last reply")
+    by_answer = {t.answer: t.answered_by for t in harness.store.list_questions(session_id=sid)}
+    assert (by_answer["pick one"], by_answer["A"], by_answer["thanks"]) == ("lan", "lan", "kai")
+
+
+@pytest.mark.parametrize("send", ["steer", "prompt"])
+@pytest.mark.parametrize("refuse_steer", [True, False], ids=["queued", "steer_never_read"])
+def test_a_message_that_waits_for_the_next_turn_is_credited_to_who_sent_it(harness, fake_llm, workspace,
+                                                                           refuse_steer, send):
+    fake_llm.script({"content": "Done.", "hold": 30}, {"content": "Second."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    fake_llm.wait_for_requests(1)
+    if refuse_steer:  # the reply can't take it: it waits for the next turn
+        harness._live[sid].worker.steer = lambda node, text: False
+    sent = getattr(harness, send)(sid, "one more thing", by="lan")
+    assert sent == ("queued" if refuse_steer else "steer")
+    fake_llm.release()
+    wait_for(lambda: texts(harness, sid) == ["Done.", "Second."], what="the second reply")
+    turns = {q.answer: q.answered_by for q in harness.store.list_questions(session_id=sid, source="human_input")}
+    assert (turns["hi"], turns["one more thing"]) == ("ngocbh", "lan")
 
 
 def test_hooks_see_the_session(harness, fake_llm, workspace):
@@ -782,9 +867,11 @@ def test_a_turn_after_the_provider_changes_runs_on_the_new_provider(harness, fak
     new = old.model_copy(update={"llm_config": {**old.llm_config, "api_key": "sk-new"}})
     harness.provider = lambda: new
 
-    assert harness.prompt(sid, "second") == "turn"
+    assert harness.prompt(sid, "second", by="lan") == "turn"
     wait_for(lambda: texts(harness, sid) == ["One.", "Two."] and status(harness, sid) == "idle",
              what="the reply on the new provider")
+    turns = {q.answer: q.answered_by for q in harness.store.list_questions(session_id=sid, source="human_input")}
+    assert (turns["first"], turns["second"]) == ("ngocbh", "lan")
     (job,) = jobs
     assert (job.kind, job.llm_config["api_key"]) == ("chat", "sk-new")
     assert len(harness.store.get_session(sid).run_ids) == 2
