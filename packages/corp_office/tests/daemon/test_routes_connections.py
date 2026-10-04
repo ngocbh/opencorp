@@ -22,6 +22,8 @@ from tests.daemon.test_auth import add_human, bearer, give_device
 SENTINEL = "sk-sentinel-0d4c7e19b2a6"
 REFUSED = "sk-refused-5e8a1c03f7d2"
 """A key the fake provider refuses."""
+UNREACHABLE = "sk-unreachable-93b7f2a05c1e"
+"""A key whose provider the fake listing can't reach."""
 
 LISTS = {"azure": ["gpt-5.4", "o3"], "openai": ["chatgpt-4o-latest", "gpt-5.5", "o3"]}
 
@@ -36,6 +38,8 @@ def listings(monkeypatch):
         llm = conn.llm_config or {}
         if llm.get("api_key") == REFUSED:
             return own_models(conn, name, "HTTP 401", refused=True)
+        if llm.get("api_key") == UNREACHABLE:
+            return own_models(conn, name, "can't reach acme.openai.azure.com")
         if (label := provider_label(llm)) in LISTS:
             return Listing(connection=name, models=[ModelOption(id=m) for m in LISTS[label]], listed=True)
         return own_models(conn, name)
@@ -177,6 +181,21 @@ async def test_a_refused_key_is_not_saved(client, office, as_owner, checks):
         assert (r.status_code, r.json()) == (422, {"error": "key_refused",
                                                    "message": "The key didn't work (HTTP 401)"})
     assert not (office.paths.office / "connections").exists() and checks[0] == []
+
+
+async def test_azure_that_cant_list_needs_a_model_to_check(client, office, as_owner, checks):
+    calls, _ = checks
+    body = {"provider": "azure", "api_key": UNREACHABLE, "endpoint": "acme"}
+    r = await client.post("/connections", json=body, headers=as_owner)
+    assert (r.status_code, r.json()) == (422, {
+        "error": "models_unlisted",
+        "message": "Couldn't list the deployments (can't reach acme.openai.azure.com); name a model to check it with "
+                   "one reply"})
+    assert calls == [] and not (office.paths.office / "connections").exists()
+    r = await client.post("/connections", json=body | {"model": "gpt-5.4"}, headers=as_owner)
+    assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "azure", "gpt-5.4")
+    [checked] = calls
+    assert checked.llm_config["model"] == "gpt-5.4"
 
 
 async def test_a_provider_that_cant_list_gets_a_one_reply_check(client, office, as_owner, checks):

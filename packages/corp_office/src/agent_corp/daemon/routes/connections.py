@@ -109,6 +109,11 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
     listed = models.list_models(ConnectionFile(llm_config=llm), label)
     if listed.refused:
         raise HTTPError(422, "key_refused", f"The key didn't work ({listed.error})")
+    if listed.error and label == "azure" and not body.model:
+        # The one-reply check would ask for composer's OpenAI default, which isn't a deployment, and so report a
+        # problem that isn't the real one.
+        raise HTTPError(422, "models_unlisted",
+                        f"Couldn't list the deployments ({listed.error}); name a model to check it with one reply")
     if listed.listed:
         ids = [m.id for m in listed.models]
         default = PROVIDER_DEFAULT_MODELS.get(llm["provider"])
