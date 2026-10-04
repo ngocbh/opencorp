@@ -34,6 +34,8 @@ def test_load_provider_validates_as_the_given_model(tmp_path):
     write_private(path, b'{"method": "subscription"}')
     assert load_provider(path, model=_Extra).method == "subscription"
     assert load_provider(tmp_path / "missing.json", model=_Extra) == _Extra()
+    with pytest.raises(FileNotFoundError):
+        load_provider(tmp_path / "missing.json", model=_Extra, missing_ok=False)
 
 
 def test_reads_config_env_and_prices(tmp_path):
