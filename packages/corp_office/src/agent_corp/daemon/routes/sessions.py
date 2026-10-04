@@ -8,6 +8,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from agent_corp.chat.harness import Harness, HarnessError
+from agent_corp.daemon.auth import acting_person
 from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
 from agent_corp.protocol.models import Ack, CostCapRequest, CreateSessionRequest, PromptRequest, Session
 
@@ -61,31 +62,32 @@ def harness(request: Request) -> Harness:
     return found
 
 
-async def harness_call[T](fn: Callable[..., T], *args: Any) -> T:
+async def harness_call[T](fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """Run a blocking harness call in a thread; a ``HarnessError`` becomes its ``ApiError``."""
     try:
-        return await call(fn, *args)
+        return await call(fn, *args, **kwargs)
     except HarnessError as exc:
         raise HTTPError(exc.status, exc.code, exc.message) from exc
 
 
 async def create_session(request: Request) -> JSONResponse:
-    """Start a person's main chat in a folder."""
+    """Start a person's main chat in a folder, opened by the request's person."""
     body = await parse(request, CreateSessionRequest)
-    return ok(await harness_call(harness(request).start_session, body.person, body.cwd, body.harness))
+    return ok(await harness_call(harness(request).start_session, body.person, body.cwd, body.harness,
+                                 opened_by=acting_person(request)))
 
 
 async def prompt(request: Request) -> JSONResponse:
     """Send a message: the next turn, an answer to the model's question, a steer, or queued."""
     body = await parse(request, PromptRequest)
-    await harness_call(harness(request).prompt, request.path_params["id"], body.text)
+    await harness_call(harness(request).prompt, request.path_params["id"], body.text, by=acting_person(request))
     return ok(Ack(ok=True))
 
 
 async def steer(request: Request) -> JSONResponse:
     """Steer the running reply (a prompt when none is running)."""
     body = await parse(request, PromptRequest)
-    await harness_call(harness(request).steer, request.path_params["id"], body.text)
+    await harness_call(harness(request).steer, request.path_params["id"], body.text, by=acting_person(request))
     return ok(Ack(ok=True))
 
 

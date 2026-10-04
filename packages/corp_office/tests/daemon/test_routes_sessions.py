@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from agent_corp.auth.tokens import new_token
 from agent_corp.chat.harness import Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.perm.monitor import Monitor
@@ -13,6 +14,7 @@ from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.chat.conftest import CHAT_FLOW
 from tests.company.conftest import base_files, write_repo
 from tests.daemon.test_app import ULID
+from tests.daemon.test_auth import add_human, bearer, give_device
 from tests.store.conftest import message, session
 
 
@@ -122,6 +124,31 @@ async def test_a_chat_over_the_routes(chat, client, fake_llm, tmp_path):
     await until(lambda: store.get_session(sid).status == "ended")
     r = await client.post(f"/sessions/{sid}/prompt", json={"text": "late"})
     assert (r.status_code, r.json()["error"]) == (409, "not_live")
+
+
+async def test_a_chat_is_credited_to_the_verified_person(chat, client, company, fake_llm, tmp_path):
+    store = chat.store
+    add_human(company, "ava")
+    ava, ceo = new_token(), new_token()
+    give_device(company, "ava", "pc", ava)
+    give_device(company, "ngocbh", "mac", ceo)
+    fake_llm.script({"content": "Hi Ava."}, {"content": "Hi Ngoc."})
+    (tmp_path / "ws").mkdir()
+    r = await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws")}, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["opened_by"] == "ava"
+    sid = r.json()["id"]
+    assert store.get_work_item(r.json()["work_item_id"]).requester == "ava"
+    await until(lambda: store.get_session(sid).status == "idle")
+    r = await client.post(f"/sessions/{sid}/prompt", json={"text": "hello"}, headers=bearer(ava))
+    assert r.status_code == 200
+    await until(lambda: len(store.list_messages(sid)) == 2 and store.get_session(sid).status == "idle")
+    # Someone else in the same chat is credited as themselves; steer with no reply running is a prompt.
+    r = await client.post(f"/sessions/{sid}/steer", json={"text": "hi too"}, headers=bearer(ceo))
+    assert r.status_code == 200
+    await until(lambda: len(store.list_messages(sid)) == 4)
+    by_answer = {q.answer: q.answered_by for q in store.list_questions(session_id=sid, source="human_input")}
+    assert (by_answer["hello"], by_answer["hi too"]) == ("ava", "ngocbh")
+    assert "You're talking with Ava (@ava), your peer." in fake_llm.requests()[0]["messages"][0]["content"]
 
 
 async def test_end_is_ending_at_once_and_a_second_end_is_a_no_op(chat, client, fake_llm, tmp_path):
