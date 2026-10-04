@@ -371,6 +371,39 @@ test("a secret shows only as dots and is never shown or printed", async () => {
   }
 })
 
+test("in the secret box, Ctrl-C and Esc clear what was typed without showing it; on the empty box Ctrl-C still stops", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "secret", question: "API key" })
+    await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
+    await app.input.typeText(SECRET)
+    await app.until((f) => f.includes("•".repeat(28)))
+    app.input.pressCtrlC()
+    let f = await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
+    expect(f).not.toContain("•")
+    await app.input.typeText(SECRET)
+    await app.until((f) => f.includes("•".repeat(28)))
+    app.input.pressEscape()
+    f = await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
+    expect(f).not.toContain("•")
+    expect(f).not.toContain("Press Ctrl+C again to stop")
+    expect(child.interrupts).toBe(0)
+    // The empty box lets Ctrl-C through: the first press asks for a second, so the password prompt can still stop.
+    app.input.pressCtrlC()
+    f = await app.until((f) => f.includes("Press Ctrl+C again to stop"))
+    expect(f).toContain("Paste or type it here; it isn't shown")
+    expect(child.interrupts).toBe(0)
+    await app.input.typeText("abc")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["abc"])
+    expect(child.interrupts).toBe(0)
+    expect(app.frames.filter((f) => f.includes("sentinel"))).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
 test("after an answer the spinner shows until the next prompt", async () => {
   const { child, app } = await boot()
   try {
