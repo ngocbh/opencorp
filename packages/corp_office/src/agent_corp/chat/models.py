@@ -184,7 +184,8 @@ class ModelCache:
         return self._list(name, conn, entry, end)
 
     def offers(self, names: Iterable[str], model: str, *, deadline: float) -> list[str]:
-        """Those of ``names`` that offer ``model``, using any listing kept, however old, and listing the rest.
+        """Those of ``names`` that offer ``model``, using any listing kept, however old, and listing the rest and those
+        whose last listing timed out.
 
         Raises:
             ListTimeout: ``deadline`` seconds passed before every connection was listed.
@@ -196,7 +197,8 @@ class ModelCache:
             conn = self.connections.get(name)
             with self._lock:
                 entry = self._entries.get(name)
-            if entry is not None and entry[1] == config_hash(conn):
+            # A listing that timed out says nothing about the models, so it doesn't count as an answer.
+            if entry is not None and entry[1] == config_hash(conn) and entry[2].error != TIMED_OUT:
                 listed = entry[2]
             else:
                 listed = self._list(name, conn, entry, end)

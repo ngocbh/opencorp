@@ -284,3 +284,11 @@ def test_offers_gives_every_connection_together_only_the_deadline(connections):
     assert 0.45 < time.monotonic() - start < 0.7
     assert lister.calls == ["fast", "slow"] and lister.deadlines["slow"] < 0.25
 
+
+def test_offers_lists_again_a_connection_whose_last_listing_timed_out(connections):
+    lister = Lister(gates={"slow": threading.Event()})
+    cache = ModelCache(connections, lister=lister)
+    assert cache.get("slow", deadline=0.1).error == TIMED_OUT
+    lister.gates.clear()
+    assert cache.offers(["slow"], "m", deadline=5) == ["slow"]
+    assert lister.calls == ["slow"] * 2
