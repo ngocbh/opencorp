@@ -150,17 +150,22 @@ class Clock:
 
 
 class Lister:
-    """A fake ``list_models``: offers ``models`` (by connection name), waiting first on ``gates`` that name it."""
+    """A fake ``list_models``: offers ``models`` (by connection name), waiting first on ``gates`` that name it, or
+    for ``delays`` seconds; ``deadlines`` records the deadline each call got."""
 
-    def __init__(self, models=None, gates=None):
+    def __init__(self, models=None, gates=None, delays=None):
         self.models = models or {}
         self.gates = gates or {}
+        self.delays = delays or {}
         self.calls = []
+        self.deadlines = {}
         self.started = threading.Event()
 
     def __call__(self, conn, name, *, deadline):
         self.calls.append(name)
+        self.deadlines[name] = deadline
         self.started.set()
+        time.sleep(self.delays.get(name, 0))
         if name in self.gates and not self.gates[name].wait(deadline):
             return ModelList(connection=name, models=[], listed=False, error=TIMED_OUT)
         ids = self.models.get(name, ["m"])
@@ -266,14 +271,16 @@ def test_offers_uses_an_old_entry_and_lists_a_missing_one(connections):
     assert lister.calls == ["office", "second", "fast"]
 
 
-def test_offers_raises_list_timeout_when_the_deadline_passes(connections):
-    gates = {"slow": threading.Event(), "second": threading.Event()}
-    cache = ModelCache(connections, lister=Lister(gates=gates))
+def test_offers_gives_every_connection_together_only_the_deadline(connections):
+    gate = threading.Event()
+    lister = Lister(gates={"slow": gate}, delays={"fast": 0.3})
+    cache = ModelCache(connections, lister=lister)
     start = time.monotonic()
     try:
         with pytest.raises(ListTimeout):
-            cache.offers(["slow", "second"], "m", deadline=0.5)
+            cache.offers(["fast", "slow"], "m", deadline=0.5)
     finally:
-        for gate in gates.values():
-            gate.set()
-    assert time.monotonic() - start < 1
+        gate.set()
+    assert 0.45 < time.monotonic() - start < 0.7
+    assert lister.calls == ["fast", "slow"] and lister.deadlines["slow"] < 0.25
+
