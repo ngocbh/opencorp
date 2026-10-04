@@ -11,12 +11,23 @@ from tests.store.conftest import session as stored_session
 CHAT_WITHOUT_PERSON = (Path(__file__).parent / "fixtures" / "chat_without_person.yaml").read_text()
 MINH = {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
         "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}
+LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
+                                  "manager": "ngocbh"}}
 
 
 def start(harness, workspace):
     session = harness.start_session("minh", str(workspace))
     wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
     return session.id
+
+
+def test_a_session_records_who_opened_it_and_its_work_item_is_theirs(make_harness, fake_llm, workspace):
+    harness = make_harness(files=LAN)
+    session = harness.start_session("minh", str(workspace), opened_by="lan")
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    assert (session.opened_by, harness.store.get_work_item(session.work_item_id).requester) == ("lan", "lan")
+    unsaid = harness.store.get_session(start(harness, workspace))
+    assert (unsaid.opened_by, harness.store.get_work_item(unsaid.work_item_id).requester) == (None, "ngocbh")
 
 
 def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspace):

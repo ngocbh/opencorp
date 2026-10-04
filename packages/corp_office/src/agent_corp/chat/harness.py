@@ -189,9 +189,11 @@ class Harness:
 
     # --- starting ---------------------------------------------------------------------
 
-    def start_session(self, handle: str, cwd: str, harness: str = "composer") -> Session:
+    def start_session(self, handle: str, cwd: str, harness: str = "composer", *,
+                      opened_by: str | None = None) -> Session:
         """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
 
+        ``opened_by`` is the human who opened it; the work item is theirs (the CEO's when None).
         A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
         """
         if harness != "composer":
@@ -214,11 +216,12 @@ class Harness:
         t = now()
         item = self.store.create_work_item(WorkItem(
             id=new_id(), title=f"Chat with {person.name} in {Path(cwd).name or cwd}", kind="task",
-            status="in_progress", requester=repo.company.ceo if repo.company else handle, assignee=handle,
-            created_at=t, updated_at=t))
+            status="in_progress", requester=opened_by or (repo.company.ceo if repo.company else handle),
+            assignee=handle, created_at=t, updated_at=t))
         session = self.store.create_session(Session(
             id=session_id, person=handle, harness="composer", office=socket.gethostname(), cwd=cwd,
-            repo_commit=head, status="starting", kind="main", work_item_id=item.id, created_at=t, updated_at=t))
+            repo_commit=head, status="starting", kind="main", work_item_id=item.id, opened_by=opened_by,
+            created_at=t, updated_at=t))
         self.store.touch_worked_folder(handle, cwd)
         try:
             spec = self.main_spec(session)
