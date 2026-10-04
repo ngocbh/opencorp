@@ -26,7 +26,6 @@ export function SecretInput(props: {
     setLength(next.length)
   }
   const tuiConfig = useTuiConfig()
-  // Clears only the closure; nothing about the text leaves it but its length.
   useBindings(() => ({
     bindings: clearFirst(tuiConfig.keybinds.get("prompt.clear"), () => {
       if (!value) return false
