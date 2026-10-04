@@ -315,18 +315,28 @@ def test_a_failing_stop_hook_does_not_stop_the_others(home, tmp_path, monkeypatc
         importlib.import_module("stopfail.a").stop.set()  # never leave the thread running
 
 
-async def test_build_office_runs_the_chat_harness(home):
+async def test_build_office_runs_the_chat_harness(home, monkeypatch):
+    from agent_corp.chat.connections import Connections
     from agent_corp.chat.harness import Harness
     from agent_corp.chat.hire import Hiring
+    from agent_corp.chat.models import ModelCache
     from agent_corp.daemon.main import build_office
     from agent_corp.profile import GitProfileStore
 
-    office = build_office(OfficePaths(home))
+    warmed = []
+    monkeypatch.setattr(ModelCache, "warm", lambda self: warmed.append(self))
+    paths = OfficePaths(home)
+    office = build_office(paths)
     try:
         assert isinstance(office.workers, Harness) and office.extras["harness"] is office.workers
         assert isinstance(office.extras["hiring"], Hiring) and office.extras["hiring"].git is office.git
         assert isinstance(office.profile_store("minh"), GitProfileStore)
-        await office.start()  # restores live sessions (none here)
+        conns, cache = office.extras["connections"], office.extras["models"]
+        assert isinstance(conns, Connections) and conns.office == paths.office
+        assert isinstance(cache, ModelCache) and cache.connections is conns
+        assert warmed == []
+        await office.start()  # restores live sessions (none here) and lists each connection's models
+        assert warmed == [cache]
         await office.stop()
     finally:
         office.store.close()

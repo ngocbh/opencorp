@@ -15,8 +15,10 @@ from pathlib import Path
 
 import uvicorn
 
+from agent_corp.chat.connections import Connections
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.hire import Hiring
+from agent_corp.chat.models import ModelCache
 from agent_corp.chat.provider import load_provider
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app
@@ -168,7 +170,8 @@ def build_office(paths: OfficePaths) -> Office:
     """Open the store and the company clone and assemble the office, with the composer harness as its workers.
 
     Workers left by an earlier office are killed first; the harness resumes their sessions on start.
-    ``POST /people`` gets one ``Hiring`` for the office's life.
+    ``POST /people`` gets one ``Hiring`` for the office's life. On start, each connection's models are listed in the
+    background.
     """
     store = Store(paths.store)
     git = CompanyGit(paths.company, paths.worktrees)
@@ -179,7 +182,13 @@ def build_office(paths: OfficePaths) -> Office:
     office.workers = harness
     office.extras["harness"] = harness
     office.extras["hiring"] = Hiring(git)
+    connections = Connections(paths.office)
+    models = ModelCache(connections)
+    office.extras["connections"] = connections
+    office.extras["models"] = models
     office.on_start.append(lambda: asyncio.to_thread(harness.restore))
+    # Started, not awaited: a slow provider must not hold up the office's start.
+    office.on_start.append(lambda: models.warm() and None)
     return office
 
 
