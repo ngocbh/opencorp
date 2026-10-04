@@ -102,7 +102,7 @@ class _Live:
     transcript: Transcript
     worker: Worker | None = None
     provider: Provider = field(default_factory=Provider)
-    owner: str | None = None  # the pinned company's CEO, who answers for the person
+    owner: str | None = None  # who answers for the person: the session's opener, else the pinned company's CEO
     reply_node: str | None = None
     turn_node: str | None = None  # the open turn question's node id
     next_reply: str | None = None  # the reply the answered turn starts, until its NodeStarted arrives
@@ -291,7 +291,8 @@ class Harness:
     def _new_live(self, session: Session, run_id: str, spec: RunSpec) -> _Live:
         repo = load_repo(self.git.pin(session.repo_commit))
         return _Live(session.id, session.person, run_id, spec, _defaults(repo),
-                     Transcript(self.store, session.id, self.office.bus.publish_live), owner=_ceo(repo))
+                     Transcript(self.store, session.id, self.office.bus.publish_live),
+                     owner=session.opened_by or _ceo(repo))
 
     def restore(self) -> None:
         """Resume every session that was live when the office stopped, under the same run id."""
@@ -861,10 +862,17 @@ class Harness:
         return session.cost >= cost_cap(session, live.defaults)
 
     def _owner(self, question: Question, live: _Live | None) -> str | None:
+        """Who an answer to ``question`` is credited to when the caller names no one.
+
+        Its session's opener, else the pinned company's CEO. Every route names the acting
+        person, so only internal callers get here.
+        """
         if live is not None and live.session_id == question.session_id:
             return live.owner
         session = self.store.get_session(question.session_id) if question.session_id else None
-        return _ceo(load_repo(self.git.pin(session.repo_commit))) if session is not None else None
+        if session is None:
+            return None
+        return session.opened_by or _ceo(load_repo(self.git.pin(session.repo_commit)))
 
     def _run_dir(self, session_id: str) -> Path:
         return self.office.paths.run_dir(session_id)

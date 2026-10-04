@@ -6,6 +6,7 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
 from tests.chat.conftest import errors, status, texts, wait_for
+from tests.store.conftest import question as stored_question
 from tests.store.conftest import session as stored_session
 
 CHAT_WITHOUT_PERSON = (Path(__file__).parent / "fixtures" / "chat_without_person.yaml").read_text()
@@ -315,6 +316,25 @@ def test_turns_are_answered_for_the_ceo_of_the_pinned_company(harness, fake_llm,
     wait_for(lambda: texts(harness, sid)[-1:] == ["Hello."], what="the reply")
     (turn,) = [q for q in harness.store.list_questions(session_id=sid) if q.answer == "hi"]
     assert turn.answered_by == ceo
+
+
+def test_turns_are_answered_for_the_sessions_opener(make_harness, fake_llm, workspace):
+    harness = make_harness(files=LAN)
+    fake_llm.script({"content": "Hello."})
+    session = harness.start_session("minh", str(workspace), opened_by="lan")
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    harness.prompt(session.id, "hi")
+    wait_for(lambda: texts(harness, session.id)[-1:] == ["Hello."], what="the reply")
+    (turn,) = [q for q in harness.store.list_questions(session_id=session.id) if q.answer == "hi"]
+    assert turn.answered_by == "lan"
+
+
+def test_an_answer_off_a_live_run_is_credited_to_the_opener_else_the_ceo(harness, workspace):
+    head = harness.git.head()
+    for opened_by, credited in (("lan", "lan"), (None, "ngocbh")):
+        s = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=head, opened_by=opened_by))
+        q = harness.store.add_question(stored_question(s.id))
+        assert harness.answer(q.id, "yes", "text").answered_by == credited
 
 
 def test_hooks_see_the_session(harness, fake_llm, workspace):
