@@ -17,9 +17,9 @@ from urllib.parse import urlsplit
 from agent_composer.llm_clients.connection import _API_ENDPOINT
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from agent_corp.chat.provider import Provider, ProviderError, load_provider, read_private
+from agent_corp.chat.provider import Provider, ProviderError, load_provider
 from agent_corp.protocol import models
-from agent_corp.secrets import write_private
+from agent_corp.secrets import read_private, write_private
 
 log = logging.getLogger(__name__)
 
@@ -309,6 +309,8 @@ class Connections:
             name = json.loads(read_private(path))["name"]
         except FileNotFoundError:
             return OFFICE
+        except PermissionError as exc:
+            raise ProviderError(str(exc)) from None
         except (ValueError, LookupError, TypeError):
             name = None
         if not isinstance(name, str):
@@ -338,6 +340,8 @@ class Connections:
             names = json.loads(read_private(path))["names"]
         except FileNotFoundError:
             return set()
+        except PermissionError as exc:
+            raise ProviderError(str(exc)) from None
         except (ValueError, LookupError, TypeError):
             names = None
         if not isinstance(names, list) or not all(isinstance(n, str) for n in names):

@@ -1,4 +1,5 @@
-"""Private files: the office secret store of asset credentials, and ``write_private`` for other secrets."""
+"""Private files: the office secret store of asset credentials, and ``write_private``/``read_private`` for other
+secrets."""
 
 import errno
 import os
@@ -177,3 +178,25 @@ def write_private(path: Path, data: bytes) -> None:
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
+
+
+def read_private(path: Path) -> bytes:
+    """The contents of ``path``, which must be a regular file private to its owner.
+
+    Raises:
+        FileNotFoundError: there is no file.
+        PermissionError: the file is a symlink, not a regular file, another user's, or readable by others, or
+            can't be opened.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise PermissionError(f"can't open {path}: {exc.strerror}") from None
+    st = os.fstat(fd)  # before fdopen, which refuses a directory with IsADirectoryError
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+        os.close(fd)
+        raise PermissionError(f"{path} must be a regular file private to its owner (mode 0600)")
+    with os.fdopen(fd, "rb") as f:
+        return f.read()

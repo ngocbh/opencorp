@@ -2,13 +2,13 @@
 
 import fnmatch
 import json
-import os
 import re
-import stat
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from agent_corp.secrets import read_private
 
 _CREDENTIAL_NAMES = ("*_KEY", "*_APIKEY", "*_TOKEN", "*_SECRET", "*PASSWORD*", "*_PASS", "*_CREDENTIALS")
 _VARIABLE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
@@ -58,27 +58,6 @@ class Provider(BaseModel):
         return env
 
 
-def read_private(path: Path) -> bytes:
-    """The contents of ``path``, which must be a regular file private to its owner.
-
-    Raises:
-        FileNotFoundError: there is no file.
-        ProviderError: the file is a symlink, not a regular file, another user's, or readable by others.
-    """
-    try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        raise
-    except OSError as exc:
-        raise ProviderError(f"can't open {path}: {exc.strerror}") from None
-    st = os.fstat(fd)  # before fdopen, which refuses a directory with IsADirectoryError
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        os.close(fd)
-        raise ProviderError(f"{path} must be a regular file private to its owner (mode 0600)")
-    with os.fdopen(fd, "rb") as f:
-        return f.read()
-
-
 def load_provider[P: Provider](path: Path, model: type[P] = Provider, *, missing_ok: bool = True) -> P:
     """The provider in ``path``, validated as ``model``; ``model()`` when there is no file and ``missing_ok``.
 
@@ -94,6 +73,8 @@ def load_provider[P: Provider](path: Path, model: type[P] = Provider, *, missing
         if missing_ok:
             return model()
         raise
+    except PermissionError as exc:
+        raise ProviderError(str(exc)) from None
     try:
         return model.model_validate(json.loads(data))
     except (ValueError, ValidationError) as exc:
