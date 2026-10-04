@@ -1,4 +1,5 @@
-"""``ac doctor``: check the office home (there and private), company repo, provider, service, daemon, and sandbox."""
+"""``ac doctor``: check the office home (there and private), company repo, provider and connections, service,
+daemon, and sandbox."""
 
 import os
 import stat
@@ -97,6 +98,27 @@ def _provider(paths: OfficePaths) -> Check:
     return Check("provider", "ok", f"{llm.get('provider') or 'default provider'}, {login}")
 
 
+def _connections(paths: OfficePaths) -> Check | None:
+    """Whether office/connections and every file in it are private; None when no connection was added."""
+    folder = paths.office / "connections"
+    try:
+        st = os.lstat(folder)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(st.st_mode):
+        return Check("connections", "fail", f"{folder} must be a directory, not a symlink")
+    if (mode := stat.S_IMODE(st.st_mode)) != 0o700:
+        return Check("connections", "fail", f"{folder} is mode {mode:04o}, not 0700")
+    try:
+        entries = sorted(folder.iterdir())
+    except OSError as exc:
+        return Check("connections", "fail", f"can't read {folder}: {exc.strerror}")
+    loose = [p.name for p in entries if not stat.S_ISREG((m := os.lstat(p).st_mode)) or m & 0o077]
+    if loose:
+        return Check("connections", "fail", f"{', '.join(loose)} in {folder} must be private to its owner (mode 0600)")
+    return Check("connections", "ok", f"{folder} is private")
+
+
 def _linger(host: Host) -> bool | None:
     """Whether systemd keeps this user's services running after logout; None if ``loginctl`` can't say."""
     done = host.run(["loginctl", "show-user", str(host.uid), "--property=Linger"])
@@ -182,7 +204,10 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
     run = launch(home, repo=repo, user_home=host.user_home)
     paths = OfficePaths(run.home)
     running = host.answers(run.socket)
-    found = [_home(paths), _company(paths, running), _provider(paths), _service(run, host)]
+    found = [_home(paths), _company(paths, running), _provider(paths)]
+    if (added := _connections(paths)) is not None:
+        found.append(added)
+    found.append(_service(run, host))
     if running:
         pid = (paths.pidfile.read_text().strip() if paths.pidfile.exists() else "")
         found.append(Check("office", "ok", f"answering on {run.socket} (pid {pid or '?'})"))
@@ -206,4 +231,4 @@ def exit_code(found: Iterable[Check]) -> int:
 
 def report(found: Iterable[Check]) -> str:
     """The checks as aligned lines: status, name, detail."""
-    return "".join(f"{c.status:<4}  {c.name:<8}  {c.detail}\n" for c in found)
+    return "".join(f"{c.status:<4}  {c.name:<11}  {c.detail}\n" for c in found)

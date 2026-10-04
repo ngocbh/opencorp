@@ -5,6 +5,7 @@ import time
 
 import psutil
 
+from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.company_template import Owner, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import doctor, launchd, systemd
@@ -120,6 +121,22 @@ def test_a_provider_others_can_read_fails_without_showing_it(tmp_path):
     (paths.office / "provider.json").chmod(0o644)
     got = by_name(run_checks(tmp_path, paths))
     assert got["provider"].status == "fail" and "0600" in got["provider"].detail
+    assert all(KEY not in c.detail for c in got.values())
+
+
+def test_connections_others_can_read_fail_without_showing_them(tmp_path):
+    paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
+    assert "connections" not in by_name(run_checks(tmp_path, paths))  # none added
+    Connections(paths.office).put("second", ConnectionFile(llm_config={"provider": "anthropic", "api_key": KEY}))
+    folder = paths.office / "connections"
+    assert by_name(run_checks(tmp_path, paths))["connections"] == Check("connections", "ok", f"{folder} is private")
+    (folder / "second.json").chmod(0o640)
+    got = by_name(run_checks(tmp_path, paths))
+    assert got["connections"] == Check("connections", "fail",
+                                       f"second.json in {folder} must be private to its owner (mode 0600)")
+    folder.chmod(0o750)
+    got = by_name(run_checks(tmp_path, paths))
+    assert got["connections"] == Check("connections", "fail", f"{folder} is mode 0750, not 0700")
     assert all(KEY not in c.detail for c in got.values())
 
 

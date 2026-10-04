@@ -28,7 +28,7 @@ KEY = "sk-ant-sentinel-a7d93c10e5b2"
 def test_doctor_on_a_fresh_machine_fails_and_says_to_onboard(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
     assert main(["doctor", "--home", str(tmp_path / "home")]) == 1
-    assert "fail  company   no company repo" in capsys.readouterr().out
+    assert "fail  company      no company repo" in capsys.readouterr().out
 
 
 def test_the_home_defaults_to_agent_corp_home(tmp_path, monkeypatch, capsys):
