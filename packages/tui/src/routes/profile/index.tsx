@@ -2,12 +2,13 @@ import type { Profile as ProfileData, ProfileProposal } from "@agent-corp/protoc
 import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
+import { useTuiConfig } from "../../config"
 import { useLocal } from "../../context/local"
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
 import { openEditor } from "../../editor"
-import { AGENT_CORP_BASE_MODE, useBindings } from "../../keymap"
+import { AGENT_CORP_BASE_MODE, clearFirst, useBindings } from "../../keymap"
 import { OfficeError, OfficeUnavailable, VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
@@ -60,6 +61,7 @@ export function Profile() {
   const office = useOffice()
   const toast = useToast()
   const renderer = useRenderer()
+  const tuiConfig = useTuiConfig()
   const { theme, syntax } = useTheme()
   const person = data.person
   const [profile, setProfile] = createSignal<ProfileData>()
@@ -240,10 +242,20 @@ export function Profile() {
       { key: "escape", group: "Profile", cmd: back },
     ],
   }))
+  /** Empties the message box; false when it is already empty. */
+  function clearInput() {
+    if (!input || input.isDestroyed || !input.value) return false
+    input.value = ""
+    return true
+  }
   useBindings(() => ({
     mode: AGENT_CORP_BASE_MODE,
     enabled: () => !!input && renderer.currentFocusedEditor === input,
-    bindings: [{ key: "escape", group: "Profile", cmd: () => input?.blur() }],
+    bindings: [
+      // With text, Ctrl+C and Esc only clear it; on an empty box, Esc blurs and Ctrl+C goes on to leave.
+      ...clearFirst(tuiConfig.keybinds.get("prompt.clear"), clearInput),
+      { key: "escape", group: "Profile", cmd: () => input?.blur() },
+    ],
   }))
 
   // The diff gets eight rows: all of it if it fits, else seven lines and a count of the rest.

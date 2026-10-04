@@ -379,3 +379,76 @@ test("the typed box lets go of the keys while the side chat shows and keeps its 
     office.stop()
   }
 })
+
+test("in the side chat, Ctrl+C and Esc clear a draft first; on the empty box Esc interrupts and Ctrl+C asks to leave", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "busy" as const }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  say(office, side.id, "Explaining")
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const interrupts = () => office.requests.filter((r) => r.path === `/sessions/${side.id}/interrupt`).length
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · busy") && f.includes("Explaining"))
+    await app.input.typeText("half a thought")
+    await app.until((f) => f.includes("half a thought"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => !f.includes("half a thought") && f.includes("Ask @minh about the question"))
+    await app.input.typeText("another")
+    await app.until((f) => f.includes("another"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("another") && f.includes("Ask @minh about the question"))
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.frame()).not.toContain("Press again to leave")
+    expect(app.frame()).toContain("Side chat with @minh · busy")
+    expect(interrupts()).toBe(0)
+    app.input.pressEscape()
+    await app.until(() => interrupts() === 1)
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("Press again to leave"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    expect(app.frame()).toContain("Side chat with @minh")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("while a side message is on its way, Esc interrupts and Ctrl+C asks to leave; the text stays for a failed send", async () => {
+  const office = createFakeOffice({ notImplemented: ["POST /sessions/:id/prompt"] })
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "busy" as const }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  say(office, side.id, "Explaining")
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const interrupts = () => office.requests.filter((r) => r.path === `/sessions/${side.id}/interrupt`).length
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · busy") && f.includes("Explaining"))
+    // The office answers the send, with its 501, only once released.
+    const release = office.hold("POST /sessions/:id/prompt")
+    await app.input.typeText("more")
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/prompt`))
+    // The text is on its way, so it is no draft to clear: Esc interrupts and Ctrl+C starts leaving, as before.
+    app.input.pressEscape()
+    await app.until(() => interrupts() === 1)
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("Press again to leave"))
+    expect(app.frame()).toContain("more")
+    release()
+    await app.until((f) => f.includes("Side chats are not available yet") && f.includes("more"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

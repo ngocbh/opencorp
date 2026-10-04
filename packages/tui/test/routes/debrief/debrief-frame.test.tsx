@@ -325,3 +325,35 @@ test("a reconnect re-reads the debrief, since events missed while offline are no
     await app.until((f) => f.includes("Fixed the flaky clock test"))
   })
 })
+
+test("Ctrl+C in the feedback box clears a draft and stays; on the empty box it exits", async () => {
+  const office = createFakeOffice()
+  withTurns(office)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    app.input.pressKey("f")
+    await typeInto(app, "Too slow")
+    await app.until((f) => f.includes("> Too slow"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => !f.includes("Too slow") && f.includes("Feedback for the profile"))
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    expect(app.frame()).toContain("Debrief · @minh")
+    expect(app.setup.renderer.currentFocusedEditor).not.toBeNull()
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+    expect(office.requests.some((r) => r.path === "/feedback")).toBe(false)
+  })
+})
+
+test("with no box focused, one Ctrl+C exits", async () => {
+  const office = createFakeOffice()
+  withTurns(office)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    expect(app.setup.renderer.currentFocusedEditor).toBeNull()
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+  })
+})

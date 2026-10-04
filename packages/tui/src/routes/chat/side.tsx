@@ -4,7 +4,7 @@ import { createEffect, createMemo, on, onCleanup, onMount, Show } from "solid-js
 import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
-import { useBindings, useAgentCorpModeStack } from "../../keymap"
+import { clearFirst, useBindings, useAgentCorpModeStack } from "../../keymap"
 import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
 import { OfficeUnavailable, isNotImplemented } from "../../office/errors"
@@ -131,9 +131,19 @@ export function SideChat(props: {
     office.client.sessions.interrupt(s.id).catch(fail)
   }
 
+  /** Empties the box; false when it is empty or its text is on its way to the office. */
+  function clearBox() {
+    if (sending || !textarea || textarea.isDestroyed || !textarea.plainText) return false
+    textarea.setText("")
+    return true
+  }
+
   useBindings(() => ({
     mode: SIDE_MODE,
     bindings: [
+      // First: with text in the box, Ctrl+C and Esc only clear it. On an empty box they go on to the interrupt and
+      // leave below.
+      ...clearFirst(tuiConfig.keybinds.get("prompt.clear"), clearBox),
       { key: "return", desc: "Send to the side chat", group: "Side chat", cmd: () => submit() },
       { key: "escape", desc: "Interrupt the side reply", group: "Side chat", cmd: () => interrupt() },
       { key: "ctrl+b", desc: "Back to the question", group: "Side chat", cmd: () => props.onBack() },

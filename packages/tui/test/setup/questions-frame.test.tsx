@@ -45,6 +45,30 @@ test("an ask names its default in the gray placeholder; typed text replaces it, 
   }
 })
 
+test("in the ask box, Ctrl-C and Esc clear the text and stop nothing", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "ask", question: "Company", default: "Acme Inc" })
+    await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
+    await app.input.typeText("Globex")
+    await app.until((f) => f.includes("Globex") && !f.includes("Type your answer here"))
+    app.input.pressCtrlC()
+    await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
+    await app.input.typeText("Initech")
+    await app.until((f) => f.includes("Initech"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
+    await Bun.sleep(100)
+    expect(child.interrupts).toBe(0)
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual([""])
+    await app.until((f) => f.includes("Company → Acme Inc"))
+  } finally {
+    await app.stop()
+  }
+})
+
 test("a long question's answer wraps with it, right after the arrow", async () => {
   const { child, app } = await boot()
   const question =
@@ -199,7 +223,7 @@ test("a typed URL is sent whole but shown without its user and password", async 
   }
 })
 
-test("Esc does nothing on the card; Ctrl-C stops the install even from the box", async () => {
+test("Esc does nothing on the card or its empty box; there Ctrl-C stops the install", async () => {
   const { child, app } = await boot()
   try {
     child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
@@ -208,13 +232,41 @@ test("Esc does nothing on the card; Ctrl-C stops the install even from the box",
     await Bun.sleep(100)
     expect(app.frame()).toContain("2. Type your answer here")
     app.input.pressArrow("down")
+    // On the empty box, Esc finds nothing to clear and still does nothing.
+    app.input.pressEscape()
+    await Bun.sleep(100)
+    expect(app.frame()).toContain("2. Type your answer here")
+    expect(child.interrupts).toBe(0)
+    app.input.pressCtrlC()
+    const f = await app.until((f) => f.includes("Stopping…"))
+    expect(f).not.toContain("2. Type your answer here")
+    expect(child.interrupts).toBe(1)
+    expect(child.answers).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("on the card's box, Ctrl-C and Esc clear the text and stop nothing; typing goes on in the box", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressArrow("down")
     await app.input.typeText("abc")
     await app.until((f) => f.includes("2. abc"))
     app.input.pressCtrlC()
-    const f = await app.until((f) => f.includes("Stopping…"))
-    expect(f).not.toContain("2. abc")
-    expect(child.interrupts).toBe(1)
-    expect(child.answers).toEqual([])
+    await app.until((f) => f.includes("2. Type your answer here"))
+    await app.input.typeText("xyz")
+    await app.until((f) => f.includes("2. xyz"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("2. Type your answer here"))
+    await Bun.sleep(100)
+    expect(child.interrupts).toBe(0)
+    await app.input.typeText("git@h:a.git")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["git@h:a.git"])
   } finally {
     await app.stop()
   }
@@ -253,6 +305,26 @@ test("a typed default that isn't an option starts in the box, so Enter sends it"
   }
 })
 
+test("clearing a typed default empties the box; Enter then sends nothing until something is typed", async () => {
+  const { child, app } = await boot()
+  try {
+    const options = ["sonnet (the default)"]
+    child.push({ type: "choose", question: "Model", options, default: "my-model", typed: true })
+    await app.until((f) => f.includes("2. my-model"))
+    app.input.pressCtrlC()
+    await app.until((f) => f.includes("2. Type your answer here"))
+    app.input.pressEnter()
+    await Bun.sleep(100)
+    expect(child.answers).toEqual([])
+    await app.input.typeText("other-model")
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual(["other-model"])
+  } finally {
+    await app.stop()
+  }
+})
+
 test("a long option wraps instead of being cut", async () => {
   const { child, app } = await boot()
   const long = Array.from({ length: 30 }, (_, i) => `word${i}`).join(" ")
@@ -286,6 +358,33 @@ test("a secret shows only as dots and is never shown or printed", async () => {
     child.end(0)
     await app.task
     expect(app.out()).toBe("API key: (hidden)\n")
+    expect(app.frames.filter((f) => f.includes("sentinel"))).toEqual([])
+  } finally {
+    await app.stop()
+  }
+})
+
+test("in the secret box, Ctrl-C and Esc clear what was typed without showing it; on the empty box Ctrl-C still stops", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "secret", question: "API key" })
+    await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
+    await app.input.typeText(SECRET)
+    await app.until((f) => f.includes("•".repeat(28)))
+    app.input.pressCtrlC()
+    let f = await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
+    expect(f).not.toContain("•")
+    await app.input.typeText(SECRET)
+    await app.until((f) => f.includes("•".repeat(28)))
+    app.input.pressEscape()
+    f = await app.until((f) => f.includes("Paste or type it here; it isn't shown"))
+    expect(f).not.toContain("•")
+    expect(child.interrupts).toBe(0)
+    // The empty box lets Ctrl-C through, so the password prompt can still stop.
+    app.input.pressCtrlC()
+    await until(() => child.interrupts === 1)
+    await app.until((f) => f.includes("Stopping…"))
+    expect(child.answers).toEqual([])
     expect(app.frames.filter((f) => f.includes("sentinel"))).toEqual([])
   } finally {
     await app.stop()

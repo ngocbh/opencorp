@@ -2,6 +2,7 @@ import type { Debrief as DebriefData, Feedback } from "@agent-corp/protocol"
 import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"
+import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
@@ -46,6 +47,7 @@ export function Debrief() {
   const route = useRoute()
   const office = useOffice()
   const renderer = useRenderer()
+  const tuiConfig = useTuiConfig()
   const toast = useToast()
   const dialog = useDialog()
   const { theme } = useTheme()
@@ -213,10 +215,24 @@ export function Debrief() {
       { key: "escape", group: "Debrief", cmd: () => route.navigate({ type: "session", sessionID: id }) },
     ],
   }))
+  /** Empties the feedback box and its turn pre-fill; false when the box is already empty. */
+  function clearInput() {
+    if (!input || input.isDestroyed || !input.value) return false
+    input.value = ""
+    prefix = ""
+    return true
+  }
   useBindings(() => ({
     mode: AGENT_CORP_BASE_MODE,
     enabled: () => !!input && renderer.currentFocusedEditor === input,
-    bindings: [{ key: "escape", group: "Debrief", cmd: () => input?.blur() }],
+    bindings: [
+      // Esc only leaves the box: the draft stays for t and f to put a turn in front of. So only the clear keys
+      // (Ctrl+C) clear, not clearFirst's Esc; false on an empty box lets Ctrl+C go on to leave.
+      { key: "escape", group: "Debrief", cmd: () => input?.blur() },
+      ...tuiConfig.keybinds
+        .get("prompt.clear")
+        .map((b) => ({ ...b, desc: "Clear the box", group: "Debrief", cmd: clearInput })),
+    ],
   }))
 
   // The office answers 404 until the session is debriefing, then a pending debrief until it is

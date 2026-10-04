@@ -3,6 +3,7 @@ import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../script/stub"
 import { INTERRUPTED_TEXT } from "../src/routes/chat/freeze"
 import { bootFrame } from "./fixture/frame"
+import { until } from "./fixture/until"
 
 test("Enter on home creates a session for the person in the cwd, prompts it, and opens it", async () => {
   const office = createFakeOffice()
@@ -242,6 +243,62 @@ test("a 501 from the office shows as a toast, not a crash", async () => {
     app.input.typeText("hi")
     app.input.pressEnter()
     await app.until((f) => f.includes("not implemented yet"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Esc with a draft clears it and doesn't interrupt, idle or busy; on the empty prompt Esc interrupts", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const interrupts = () => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    await app.input.typeText("idle draft")
+    await app.until((f) => f.includes("idle draft"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("idle draft"))
+    office.setStatus(id, "busy")
+    await app.until((f) => f.includes("@minh · busy") && f.includes("esc interrupt"))
+    await app.input.typeText("half a thought")
+    await app.until((f) => f.includes("half a thought"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("half a thought"))
+    await Bun.sleep(100)
+    expect(interrupts()).toBe(0)
+    app.input.pressEscape()
+    await until(() => interrupts() === 1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("while busy, Esc closes an open @ menu and keeps the draft; the next Esc clears it, and only then Esc interrupts", async () => {
+  const office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const interrupts = () => office.requests.filter((r) => r.path === `/sessions/${id}/interrupt`).length
+  const app = await bootFrame(createStub(office), { sessionID: id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    office.setStatus(id, "busy")
+    await app.until((f) => f.includes("@minh · busy") && f.includes("esc interrupt"))
+    await app.input.typeText("look at @")
+    await app.until((f) => f.includes("look at @") && f.includes("No matching items"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("No matching items"))
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.frame()).toContain("look at @")
+    expect(interrupts()).toBe(0)
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("look at @"))
+    await Bun.sleep(100)
+    expect(interrupts()).toBe(0)
+    app.input.pressEscape()
+    await until(() => interrupts() === 1)
   } finally {
     await app.stop()
     office.stop()

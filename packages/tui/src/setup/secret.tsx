@@ -1,11 +1,16 @@
 import type { ColorInput } from "@opentui/core"
 import { useKeyboard, usePaste } from "@opentui/solid"
 import { createSignal } from "solid-js"
+import { useTuiConfig } from "../config"
+import { clearFirst, useBindings } from "../keymap"
 
 // Control characters: Tab, Ctrl-J and escape sequences are keys, not part of a secret.
 const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
 
-/** A masked input: a dot for each character typed, or `placeholder` before any; Enter hands the text to `onSubmit`. */
+/**
+ * A masked input: a dot for each character typed, or `placeholder` before any; Enter hands the text to `onSubmit`;
+ * Ctrl+C or Esc empties it.
+ */
 export function SecretInput(props: {
   placeholder?: string
   fg?: ColorInput
@@ -20,6 +25,14 @@ export function SecretInput(props: {
     value = next
     setLength(next.length)
   }
+  const tuiConfig = useTuiConfig()
+  useBindings(() => ({
+    bindings: clearFirst(tuiConfig.keybinds.get("prompt.clear"), () => {
+      if (!value) return false
+      set("")
+      return true
+    }),
+  }))
 
   useKeyboard((key) => {
     if (key.name === "return" || key.name === "enter") {

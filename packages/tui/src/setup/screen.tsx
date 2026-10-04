@@ -3,7 +3,9 @@ import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
 import type { SetupAsk, SetupChoose, SetupSecret } from "@agent-corp/protocol"
 import { Spinner } from "../component/spinner"
+import { useTuiConfig } from "../config"
 import { useTheme } from "../context/theme"
+import { clearFirst, useBindings } from "../keymap"
 import { QuestionView } from "../routes/chat/question-view"
 import { SplitBorder } from "../ui/border"
 import type { SetupChild } from "./child"
@@ -206,10 +208,21 @@ function Panel(props: ParentProps) {
   )
 }
 
-/** `question` in a panel above a line to type the answer on; Enter hands the text to `onSubmit`. */
+/**
+ * `question` in a panel above a line to type the answer on; Enter hands the text to `onSubmit`; Ctrl+C or Esc
+ * clears it.
+ */
 function Ask(props: { question: string; default: string; onSubmit: (text: string) => void }) {
   const { theme } = useTheme()
   let input: InputRenderable | undefined
+  const tuiConfig = useTuiConfig()
+  useBindings(() => ({
+    bindings: clearFirst(tuiConfig.keybinds.get("prompt.clear"), () => {
+      if (!input || input.isDestroyed || !input.value) return false
+      input.value = ""
+      return true
+    }),
+  }))
   return (
     <Panel>
       <text fg={theme.text} wrapMode="word">

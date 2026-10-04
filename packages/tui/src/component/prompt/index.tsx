@@ -535,6 +535,27 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // Esc with a draft clears it ahead of the interrupt; base mode only, so an open menu keeps Esc. Text being sent is
+  // no draft, so Esc interrupts then. The priority holds that order however the layers are registered.
+  useBindings(() => ({
+    target: inputTarget,
+    mode: AGENT_CORP_BASE_MODE,
+    priority: 1,
+    enabled: inputTarget() !== undefined && !props.disabled,
+    bindings: [
+      {
+        key: "escape",
+        desc: "Clear the prompt",
+        group: "Prompt",
+        cmd: () => {
+          if (submitting || !store.prompt.input) return false
+          clearPrompt()
+          return true
+        },
+      },
+    ],
+  }))
+
   useBindings(() => {
     return {
       target: inputTarget,

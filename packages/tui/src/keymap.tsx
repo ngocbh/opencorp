@@ -203,6 +203,20 @@ function formatOptions(config: FormatConfig) {
   } as const
 }
 
+/**
+ * The clear keys (`keys`, the `input_clear` bindings, Ctrl+C by default) and Esc bound to `clear`, which empties
+ * a typing box and returns true, or returns false when there is nothing to clear. With `input_clear` turned off,
+ * only Esc clears.
+ */
+export function clearFirst(
+  keys: readonly Binding<Renderable, KeyEvent>[],
+  clear: () => boolean,
+): Binding<Renderable, KeyEvent>[] {
+  // The keymap takes false as unhandled: it tries the key's next binding, then lets the key through to
+  // useKeyboard. Any other return, undefined too, handles the key and stops it, so `clear` returns a strict boolean.
+  return [...keys, { key: "escape" }].map((b) => ({ ...b, desc: "Clear the box", group: "Input", cmd: clear }))
+}
+
 export function formatKeySequence(parts: Parameters<typeof formatKeySequenceExtra>[0], config: FormatConfig) {
   return formatKeySequenceExtra(parts, formatOptions(config))
 }
