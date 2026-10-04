@@ -1,7 +1,9 @@
+import fcntl
 import hashlib
 import json
 import os
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,8 @@ from agent_corp.chat.connections import (
     key_id,
     provider_label,
     read_run_record,
-    recorded_base_urls,
+    office_endpoint,
+    recorded_endpoints,
     target_hash,
     write_run_record,
 )
@@ -58,11 +61,14 @@ def tree(root):
     return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
 
 
-def run_started_log(path, *base_urls):
-    """A run log whose first line is a run_started record with one agent per base URL (None: no base_url)."""
-    agents = {}
-    for i, url in enumerate(base_urls):
-        agents[f"agent{i}"] = {"provider": "openai", "model": "m"} | ({"base_url": url} if url else {})
+def openai(base_url=None, **extra):
+    """A model config as composer pins it in a run log: provider openai, ``base_url`` when given."""
+    return {"provider": "openai", "model": "m"} | ({"base_url": base_url} if base_url else {}) | extra
+
+
+def run_started_log(path, *configs):
+    """A run log whose first line is a run_started record with one agent per model config."""
+    agents = {f"agent{i}": config for i, config in enumerate(configs)}
     first = {"kind": "run_started", "payload": {"effective_llm_by_static_path": agents, "num_workers": 0},
              "run_id": path.stem, "schema": 9, "seq": 0}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -158,6 +164,8 @@ def test_remove_unlinks_the_connection_and_its_sign_in(tmp_path, monkeypatch):
     c = Connections(office)
     c.put("chatgpt", subscription())
     write_private(c.auth_file("chatgpt"), b"{}")
+    lock = c.dir / "chatgpt.auth.json.lock"
+    write_private(lock, b"")  # composer's lock on the sign-in
     removed_at_unlink = []
     unlink = Path.unlink
 
@@ -172,11 +180,148 @@ def test_remove_unlinks_the_connection_and_its_sign_in(tmp_path, monkeypatch):
     assert removed_at_unlink and all(r == {"names": ["chatgpt"]} for r in removed_at_unlink)
     assert not (office / "connections" / "chatgpt.json").exists()
     assert not c.auth_file("chatgpt").exists()
+    assert not lock.exists()
     assert c.names() == [OFFICE]
     with pytest.raises(ConnectionGone, match="removed"):
         c.get("chatgpt")
     with pytest.raises(ConnectionGone):
         c.remove("chatgpt")
+
+
+def test_remove_waits_for_composer_to_let_go_of_the_sign_in(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.put("chatgpt", subscription())
+    auth = c.auth_file("chatgpt")
+    write_private(auth, b"{}")
+    lock = c.dir / "chatgpt.auth.json.lock"
+    fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)  # composer refreshing the sign-in
+    done = threading.Event()
+    t = threading.Thread(target=lambda: (c.remove("chatgpt"), done.set()))
+    t.start()
+    assert not done.wait(0.4)
+    assert auth.exists() and lock.exists()
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+    t.join(5)
+    assert done.is_set() and not auth.exists() and not lock.exists()
+
+
+def test_remove_gives_up_on_a_sign_in_locked_too_long(tmp_path, monkeypatch):
+    import agent_corp.chat.connections as connections
+
+    monkeypatch.setattr(connections, "SIGN_IN_LOCK_TIMEOUT", 0.2)
+    c = Connections(office_dir(tmp_path))
+    c.put("chatgpt", subscription())
+    write_private(c.auth_file("chatgpt"), b"{}")
+    fd = os.open(c.dir / "chatgpt.auth.json.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        with pytest.raises(ProviderError, match="timed out"):
+            c.remove("chatgpt")
+    finally:
+        os.close(fd)
+    assert c.auth_file("chatgpt").exists()
+    assert c.names() == [OFFICE]  # still removed: its name was retired first
+    c.remove("chatgpt")
+    assert tree(c.dir) == ["_removed.json"]
+
+
+def test_remove_refuses_a_symlinked_lock(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.put("chatgpt", subscription())
+    write_private(c.auth_file("chatgpt"), b"{}")
+    target = tmp_path / "elsewhere"
+    target.write_text("")
+    (c.dir / "chatgpt.auth.json.lock").symlink_to(target)
+    with pytest.raises(ProviderError, match="can't open"):
+        c.remove("chatgpt")
+    assert target.exists()
+
+
+def test_remove_cleans_a_sign_in_whose_connection_was_never_written(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.ensure_dir()
+    write_private(c.auth_file("chatgpt"), b"{}")
+    c.remove("chatgpt")
+    assert tree(c.dir) == ["_removed.json"]
+    with pytest.raises(ConnectionGone):
+        c.remove("chatgpt")
+    with pytest.raises(ValueError):
+        c.remove("../x")
+
+
+def test_get_reads_a_connection_removed_mid_read_as_gone(tmp_path, monkeypatch):
+    import agent_corp.chat.connections as connections
+
+    c = Connections(office_dir(tmp_path))
+    c.put("second", api_key())
+    load = connections.load_provider
+
+    def removed_first(path, *args, **kwargs):
+        path.unlink()  # a remove landing between the removed-list check and the read
+        return load(path, *args, **kwargs)
+
+    monkeypatch.setattr(connections, "load_provider", removed_first)
+    with pytest.raises(ConnectionGone, match="no connection 'second'"):
+        c.get("second")
+
+
+def test_ensure_dir_fixes_a_loose_directory(tmp_path):
+    office = office_dir(tmp_path)
+    (office / "connections").mkdir(mode=0o755)
+    (office / "connections").chmod(0o755)
+    Connections(office).ensure_dir()
+    assert mode(office / "connections") == 0o700
+
+
+@pytest.mark.parametrize("name", ["_removed.json", "_default.json"])
+def test_a_symlinked_or_loose_list_is_refused(tmp_path, name):
+    office = office_dir(tmp_path)
+    c = Connections(office)
+    c.put("second", api_key())
+    body = b'{"names": ["second"]}' if name == "_removed.json" else b'{"name": "second"}'
+    real = tmp_path / "real.json"
+    write_private(real, body)
+    (c.dir / name).symlink_to(real)
+    with pytest.raises(ProviderError, match="can't open"):
+        c.names() if name == "_removed.json" else c.default()
+    (c.dir / name).unlink()
+    write_private(c.dir / name, body)
+    (c.dir / name).chmod(0o640)
+    with pytest.raises(ProviderError, match="private"):
+        c.names() if name == "_removed.json" else c.default()
+
+
+def test_a_garbled_default_is_refused_not_ignored(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.ensure_dir()
+    for garbled in (b"{", b'{"name": 1}', b"[]"):
+        write_private(c.dir / "_default.json", garbled)
+        with pytest.raises(ProviderError, match="_default.json"):
+            c.default()
+
+
+def test_a_connection_cannot_set_the_auth_file(tmp_path):
+    with pytest.raises(ValidationError, match="AGENT_COMPOSER_AUTH_FILE"):
+        ConnectionFile(method="subscription", llm_config={"provider": "openai"},
+                       env={"AGENT_COMPOSER_AUTH_FILE": str(tmp_path / "other.auth.json")})
+
+
+def test_infos_lists_every_readable_connection_and_logs_only_a_broken_ones_name(tmp_path, caplog):
+    office = office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}})
+    c = Connections(office)
+    c.put("second", api_key())
+    c.put("broken", api_key())
+    write_private(c.dir / "broken.json", json.dumps({"llm_config": {"api_key": SENTINEL}, "bogus": SENTINEL}).encode())
+    write_private(c.dir / "loose.json", api_key().model_dump_json().encode())
+    (c.dir / "loose.json").chmod(0o644)
+    c.set_default("second")
+    infos, default = c.infos()
+    assert default == "second"
+    assert [(i.name, i.default) for i in infos] == [(OFFICE, False), ("second", True)]
+    assert "broken" in caplog.text and "loose" in caplog.text and SENTINEL not in caplog.text
+    assert SENTINEL not in repr(infos)
 
 
 def test_office_cannot_be_removed(tmp_path):
@@ -187,15 +332,89 @@ def test_office_cannot_be_removed(tmp_path):
     assert (office / "provider.json").exists()
 
 
-def test_free_name_skips_names_with_either_file(tmp_path):
+def test_add_takes_the_first_name_no_file_holds(tmp_path):
     c = Connections(office_dir(tmp_path))
-    assert c.free_name("azure") == "azure"
-    c.put("azure", api_key())
+    assert c.add("azure", api_key()) == "azure"
     c.put("azure-2", api_key())
-    assert c.free_name("azure") == "azure-3"
+    assert c.add("azure", api_key()) == "azure-3"
+    assert c.names()[:4] == [OFFICE, "azure", "azure-2", "azure-3"]
     c.ensure_dir()
     write_private(c.auth_file("chatgpt"), b"{}")  # a sign-in whose connection was never written
-    assert c.free_name("chatgpt") == "chatgpt-2"
+    assert c.add("chatgpt", subscription()) == "chatgpt-2"
+    assert c.add("login", api_key()) == "login-2"  # a reserved name is skipped like a taken one
+    for bad in ("Bad", "x" * 33):
+        with pytest.raises(ValueError):
+            c.add(bad, api_key())
+    assert c.add("x" * 31, api_key()) == "x" * 31
+    with pytest.raises(ValueError):  # x*31-2 is too long a name
+        c.add("x" * 31, api_key())
+
+
+def test_add_saves_the_sign_in_before_the_connection(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    seen = []
+
+    def sign_in(path):
+        seen.append((path, sorted(p.name for p in c.dir.iterdir())))
+        write_private(path, b"{}")
+
+    name = c.add("chatgpt", subscription(), sign_in=sign_in)
+    assert name == "chatgpt" and seen == [(c.auth_file("chatgpt"), [])]
+    assert mode(c.dir) == 0o700
+    assert c.resolve("chatgpt", None).env["AGENT_COMPOSER_AUTH_FILE"] == str(c.auth_file("chatgpt"))
+
+
+def test_add_removes_the_sign_in_when_the_connection_cannot_be_written(tmp_path, monkeypatch):
+    c = Connections(office_dir(tmp_path))
+    import agent_corp.chat.connections as connections
+
+    def fail(path, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(connections, "write_private", fail)
+    with pytest.raises(OSError):
+        c.add("chatgpt", subscription(), sign_in=lambda path: path.write_bytes(b"{}"))
+    monkeypatch.undo()
+    assert tree(c.dir) == []
+
+    def refuse(path):
+        path.write_bytes(b"{}")
+        raise ProviderError("sign-in cancelled")
+
+    with pytest.raises(ProviderError, match="cancelled"):
+        c.add("chatgpt", subscription(), sign_in=refuse)
+    assert tree(c.dir) == []
+
+
+def test_concurrent_adds_take_distinct_names_and_defaults_stay_whole(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.put("second", api_key())
+    errors, names = [], []
+    barrier = threading.Barrier(8)
+
+    def add():
+        barrier.wait()
+        names.append(c.add("azure", api_key()))
+
+    def flip(name):
+        barrier.wait()
+        try:
+            for _ in range(30):
+                c.set_default(name)
+                assert c.default() in (OFFICE, "second")
+        except Exception as exc:  # noqa: BLE001 - reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=add) for _ in range(4)]
+    threads += [threading.Thread(target=flip, args=(n,)) for n in (OFFICE, "second", OFFICE, "second")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert sorted(names) == ["azure", "azure-2", "azure-3", "azure-4"]
+    assert json.loads((c.dir / "_default.json").read_text())["name"] in (OFFICE, "second")
+    assert not [p for p in c.dir.iterdir() if p.name.startswith(".")]
 
 
 def test_a_removed_name_is_never_reused(tmp_path):
@@ -203,11 +422,10 @@ def test_a_removed_name_is_never_reused(tmp_path):
     c = Connections(office)
     c.put("anthropic", ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL}))
     c.remove("anthropic")
-    assert c.free_name("anthropic") == "anthropic-2"
-    assert Connections(office).free_name("anthropic") == "anthropic-2"
+    assert Connections(office).add("anthropic", api_key()) == "anthropic-2"
     with pytest.raises(ValueError, match="removed"):
         c.put("anthropic", ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL}))
-    assert c.names() == [OFFICE]
+    assert c.names() == [OFFICE, "anthropic-2"]
 
 
 def test_a_removed_name_is_gone_even_if_its_file_was_left(tmp_path):
@@ -227,7 +445,7 @@ def test_a_garbled_removed_list_is_refused_not_ignored(tmp_path):
     for garbled in (b"{", b'{"names": "anthropic"}', b'{"names": [1]}'):
         write_private(office / "connections" / "_removed.json", garbled)
         with pytest.raises(ProviderError, match="_removed.json"):
-            c.free_name("anthropic")
+            c.add("anthropic", api_key())
 
 
 def test_resolve_puts_the_model_in_llm_config(tmp_path):
@@ -318,7 +536,8 @@ def test_a_run_record_holds_hashes_and_no_key(tmp_path, caplog):
 def test_write_run_record_creates_runs_dir(tmp_path):
     path = tmp_path / "session" / "runs" / "r1.model.json"
     write_run_record(path, OFFICE, None, Provider())
-    assert read_run_record(path) == RunRecord(OFFICE, None, config_hash(Provider()), target_hash(Provider()))
+    assert read_run_record(path) == RunRecord(connection=OFFICE, model=None, config=config_hash(Provider()),
+                                              target=target_hash(Provider()))
     assert read_run_record(tmp_path / "session" / "runs" / "none.model.json") is None
     path.write_text("{")
     with pytest.raises(ValueError):
@@ -369,30 +588,113 @@ def test_for_run_fails_on_a_removed_connection(tmp_path):
 def test_a_run_without_a_record_is_office_only_on_the_same_base_url(tmp_path):
     c = Connections(office_dir(tmp_path, {"llm_config": {"provider": "openai", "base_url": BASE,
                                                          "api_key": SENTINEL, "model": "m"}}))
-    log = run_started_log(tmp_path / "runs" / "r1.jsonl", BASE, BASE)
-    assert recorded_base_urls(log) == {BASE}
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl", openai(BASE), openai(BASE.rstrip("/")))
+    assert recorded_endpoints(log) == {("openai", BASE.rstrip("/"))}
     for exact in (True, False):
         assert c.for_run(None, log, exact=exact) == c.resolve(OFFICE, None)
-    run_started_log(log, BASE, "https://elsewhere.example/v1/")
-    with pytest.raises(RunMoved, match="run r1 has no record and ran on another endpoint"):
+    run_started_log(log, openai(BASE), openai("https://elsewhere.example/v1/"))
+    with pytest.raises(RunMoved, match="run r1 has no record and ran on another provider or endpoint"):
         c.for_run(None, log, exact=True)
-    run_started_log(log, None)
+    run_started_log(log, openai())
     with pytest.raises(RunMoved):
         c.for_run(None, log, exact=True)
     log.write_text("{not json\n")
-    assert recorded_base_urls(log) is None
+    assert recorded_endpoints(log) is None
     with pytest.raises(RunMoved, match="run r1 has no record"):
         c.for_run(None, log, exact=False)
     log.write_text('{"kind":"node_started","payload":{}}\n')
-    assert recorded_base_urls(log) is None
+    assert recorded_endpoints(log) is None
     log.unlink()
-    assert recorded_base_urls(log) is None
+    assert recorded_endpoints(log) is None
     with pytest.raises(RunMoved, match="run r1 has no record"):
         c.for_run(None, log, exact=True)
 
 
-def test_a_run_without_a_record_and_no_base_url_matches_an_office_without_one(tmp_path):
+def test_a_run_without_a_record_and_no_base_url_matches_an_office_on_the_same_provider(tmp_path):
     c = Connections(office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}}))
-    log = run_started_log(tmp_path / "runs" / "r1.jsonl", None)
-    assert recorded_base_urls(log) == {None}
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl", {"provider": "anthropic", "model": "m", "_host_key": True})
+    assert recorded_endpoints(log) == {("anthropic", None)}
     assert c.for_run(None, log, exact=True) == c.resolve(OFFICE, None)
+
+
+def test_a_run_without_a_record_from_another_provider_is_refused(tmp_path):
+    # Neither side has a base_url, so a check on base_url alone would take this openai run as anthropic's.
+    office = office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}})
+    c = Connections(office)
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl", openai())
+    assert recorded_endpoints(log) == {("openai", "https://api.openai.com/v1")}
+    for exact in (True, False):
+        with pytest.raises(RunMoved, match="another provider or endpoint"):
+            c.for_run(None, log, exact=exact)
+    run_started_log(log, {"provider": "anthropic", "model": "m"}, openai())
+    with pytest.raises(RunMoved):
+        c.for_run(None, log, exact=True)
+
+
+def test_a_run_without_a_record_follows_the_endpoint_the_environment_gave(tmp_path):
+    office = office_dir(tmp_path, {"llm_config": {"provider": "openai", "api_key": SENTINEL, "model": "m"},
+                                   "env": {"OPENAI_BASE_URL": "https://proxy.example/v1/"}})
+    c = Connections(office)
+    pinned = openai(_connection={"kind": "api_key", "endpoint": "https://proxy.example/v1"})
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl", pinned)
+    assert office_endpoint(c.resolve(OFFICE, None)) == ("openai", "https://proxy.example/v1")
+    assert c.for_run(None, log, exact=True) == c.resolve(OFFICE, None)
+    write_private(office / "provider.json", json.dumps(
+        {"llm_config": {"provider": "openai", "api_key": SENTINEL, "model": "m"},
+         "env": {"OPENAI_BASE_URL": "https://other-proxy.example/v1"}}).encode())
+    with pytest.raises(RunMoved, match="another provider or endpoint"):
+        c.for_run(None, log, exact=True)
+    write_private(office / "provider.json", json.dumps(
+        {"llm_config": {"provider": "openai", "api_key": SENTINEL, "model": "m"}}).encode())
+    with pytest.raises(RunMoved, match="another provider or endpoint"):  # now composer's default endpoint
+        c.for_run(None, log, exact=True)
+    run_started_log(log, openai())  # an old record with no _connection, which composer pins to its default
+    assert c.for_run(None, log, exact=True) == c.resolve(OFFICE, None)
+
+
+def test_a_run_without_a_record_or_models_matches_office(tmp_path):
+    # Composer keeps no key for a run whose models don't use it, so such a run reaches no endpoint.
+    c = Connections(office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}}))
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl")
+    assert recorded_endpoints(log) == set()
+    assert c.for_run(None, log, exact=True) == c.resolve(OFFICE, None)
+
+
+def test_a_run_without_a_record_on_an_unusable_office_raises_run_moved(tmp_path):
+    office = office_dir(tmp_path)
+    (office / "provider.json").write_text("{}")
+    (office / "provider.json").chmod(0o644)
+    log = run_started_log(tmp_path / "runs" / "r1.jsonl")
+    with pytest.raises(RunMoved, match="private"):
+        Connections(office).for_run(None, log, exact=True)
+
+
+def test_for_run_raises_only_run_moved(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    log = tmp_path / "runs" / "r1.jsonl"
+    for bad in ("../x", "default", ""):
+        record = RunRecord(connection=bad, model=None, config="c", target="t")
+        with pytest.raises(RunMoved, match="names no connection"):
+            c.for_run(record, log, exact=True)
+    c.put("chatgpt", subscription())
+    record = RunRecord(connection="chatgpt", model=None, config="c", target="t")
+    with pytest.raises(RunMoved, match="no sign-in"):
+        c.for_run(record, log, exact=False)
+    c.put("broken", api_key())
+    (c.dir / "broken.json").chmod(0o644)
+    with pytest.raises(RunMoved, match="private"):
+        c.for_run(RunRecord(connection="broken", model=None, config="c", target="t"), log, exact=True)
+
+
+def test_a_run_record_refuses_unknown_fields(tmp_path):
+    path = tmp_path / "r1.model.json"
+    path.write_text('{"connection": "office", "model": null, "config": "c", "target": "t", "extra": 1}')
+    with pytest.raises(ValueError):
+        read_run_record(path)
+
+
+def test_an_env_change_trips_both_hashes():
+    before = Provider(llm_config={"provider": "openai", "api_key": SENTINEL, "model": "m"})
+    after = Provider(llm_config=before.llm_config, env={"OPENAI_BASE_URL": "https://proxy.example/v1"})
+    assert config_hash(before) != config_hash(after)
+    assert target_hash(before) != target_hash(after)
