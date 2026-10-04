@@ -16,5 +16,6 @@
       "flow": "../../shared/flows/triage.yaml" }
   ],
   "provider_policy": "default",
-  "devices": []
+  "devices": [],
+  "model": "gpt-5.5"
 }
