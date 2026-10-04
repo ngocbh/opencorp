@@ -245,8 +245,8 @@ class Connections:
             env[AUTH_FILE_ENV] = str(auth)
         return Provider(llm_config=llm, env=env, prices=conn.prices)
 
-    def for_run(self, record: RunRecord | None, log: Path, *, exact: bool) -> Provider:
-        """The provider to resume (``exact``) or learn from (not ``exact``) the run with ``record`` and ``log``.
+    def for_run(self, record: RunRecord | None, run_log: Path, *, exact: bool) -> Provider:
+        """The provider to resume (``exact``) or learn from (not ``exact``) the run with ``record`` and ``run_log``.
 
         A run with no record is from before records, when every run was on ``office``: it counts as ``office``
         only if every model its log pinned has office's provider and endpoint.
@@ -255,10 +255,10 @@ class Connections:
             RunMoved: the run's connection is gone, can't be used, or no longer gives what the run had; the
                 message says why.
         """
-        run = log.name.removesuffix(".jsonl")
+        run = run_log.name.removesuffix(".jsonl")
         if record is None:
             office = self._for_run(OFFICE, None)
-            pinned = recorded_endpoints(log)
+            pinned = recorded_endpoints(run_log)
             if pinned is None:
                 raise RunMoved(f"run {run} has no record and no readable log")
             # A run with no models has an empty set and matches: composer then drops the host key, so it goes
@@ -428,15 +428,15 @@ def _endpoint(provider: Any, url: Any) -> tuple[Any, Any]:
     return provider, url.rstrip("/") if isinstance(url, str) else url
 
 
-def recorded_endpoints(log: Path) -> set[tuple[Any, Any]] | None:
-    """Each ``(provider, endpoint)`` the run_started record opening run log ``log`` pinned a model to (endpoint
+def recorded_endpoints(run_log: Path) -> set[tuple[Any, Any]] | None:
+    """Each ``(provider, endpoint)`` the run_started record opening ``run_log`` pinned a model to (endpoint
     None: the provider's own); None if it can't be read.
 
     The endpoint is a model's ``base_url``, else its OpenAI connection's ``endpoint``, which composer replays on
     resume even if the environment that gave it has changed.
     """
     try:
-        with log.open("rb") as f:
+        with run_log.open("rb") as f:
             first = json.loads(f.readline())
         if first["kind"] != "run_started":
             return None
