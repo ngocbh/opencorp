@@ -116,7 +116,8 @@ def test_a_failure_that_isnt_a_refusal_isnt_refused():
 ])
 def test_a_provider_that_cant_list_gives_its_own_model(conn):
     got = list_models(conn, "other", auth=OpenAIAuth(request=FakeRequest(None)))
-    assert got.model_dump() == ModelList(connection="other", models=[ModelOption(id="claude-x")], listed=False).model_dump()
+    want = ModelList(connection="other", models=[ModelOption(id="claude-x")], listed=False)
+    assert got.model_dump() == want.model_dump()
     got = list_models(ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL}), "other")
     assert (got.models, got.listed) == ([], False)
 
