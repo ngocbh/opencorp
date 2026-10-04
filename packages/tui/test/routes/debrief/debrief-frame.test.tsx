@@ -346,3 +346,14 @@ test("Ctrl+C in the feedback box clears a draft and stays; on the empty box it e
     expect(office.requests.some((r) => r.path === "/feedback")).toBe(false)
   })
 })
+
+test("with no box focused, one Ctrl+C exits", async () => {
+  const office = createFakeOffice()
+  withTurns(office)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    expect(app.setup.renderer.currentFocusedEditor).toBeNull()
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+  })
+})
