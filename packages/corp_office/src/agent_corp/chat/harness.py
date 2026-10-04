@@ -444,7 +444,7 @@ class Harness:
         self.interrupt(session_id)  # the next turn question is answered with the exit command
 
     def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
-        """Answer a question for ``by`` (the person's owner when None), after the ``answer_check`` hooks.
+        """Answer a question for ``by`` (the session's owner when None), after the ``answer_check`` hooks.
 
         A chat turn is answered as ``prompt`` would.
         """
@@ -652,6 +652,8 @@ class Harness:
             if self._current(live) and not live.ending:
                 # Already in the transcript. This runs on the dispatcher after the reply ended, so a steer from
                 # someone else that the next reply took in between has replaced steered_by: these go as theirs.
+                # And _queue sets pending_by for the whole batch, so a message someone else queued before this
+                # runs goes as the steerer's.
                 self._queue(live, texts, by=live.steered_by)
 
     # --- worker frames ---------------------------------------------------------------

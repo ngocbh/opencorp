@@ -207,7 +207,8 @@ def test_a_manager_question_is_stopped_by_answering_it(office, fake_llm, workspa
     lambda cards, q: cards.answer(q.id, "Back off", "option", by="lan"),
     lambda cards, q: cards.send_back(q.id, "", by="lan"),
 ], ids=["answer", "send_back"])
-def test_a_side_chat_and_the_decision_are_credited_to_who_acted(make_harness, fake_llm, workspace, decide):  # noqa: F811
+def test_a_side_chat_and_the_decision_are_credited_to_who_acted(make_harness, fake_llm, workspace,  # noqa: F811
+                                                                decide):
     office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW} | LAN))
     try:
         fake_llm.script(ASK, {"content": "Rate limits."}, {"content": "OK."})
@@ -216,7 +217,8 @@ def test_a_side_chat_and_the_decision_are_credited_to_who_acted(make_harness, fa
         side = cards.open_side(q.id, "why?", by="lan")
         assert side.opened_by == "lan"
         wait_for(lambda: texts(h, side.id) == ["Rate limits."] and status(h, side.id) == "idle", what="the side reply")
-        assert "You're talking with Lan (@lan), your peer." in fake_llm.wait_for_requests(2)[1]["messages"][0]["content"]
+        prompt = fake_llm.wait_for_requests(2)[1]["messages"][0]["content"]
+        assert "You're talking with Lan (@lan), your peer." in prompt
         assert [t.answered_by for t in h.store.list_questions(session_id=side.id) if t.status != "open"] == ["lan"]
         assert decide(cards, q).answered_by == "lan"
     finally:
@@ -254,8 +256,10 @@ def test_a_side_chat_reopened_by_someone_else_is_theirs(make_harness, fake_llm, 
         again = cards.open_side(q.id, "how often?", by="lan")
         assert (again.id, again.opened_by) == (side.id, "lan")
         wait_for(lambda: texts(h, side.id)[-1:] == ["Per hour."] and status(h, side.id) == "idle", what="the reply")
-        assert "You're talking with Lan (@lan), your peer." in fake_llm.wait_for_requests(3)[2]["messages"][0]["content"]
-        assert [t.answered_by for t in h.store.list_questions(session_id=side.id) if t.answer == "how often?"] == ["lan"]
+        prompt = fake_llm.wait_for_requests(3)[2]["messages"][0]["content"]
+        assert "You're talking with Lan (@lan), your peer." in prompt
+        turns = {t.answer: t.answered_by for t in h.store.list_questions(session_id=side.id)}
+        assert turns["how often?"] == "lan"
     finally:
         stop(office)
 
@@ -397,14 +401,16 @@ def test_the_seed_goes_once_when_no_ceo_answers_for_the_human(make_harness, fake
         stop(office)
 
 
-def test_a_side_chat_flow_from_before_talking_to_still_speaks_as_the_asker(make_harness, fake_llm, workspace):  # noqa: F811
+def test_a_side_chat_flow_from_before_talking_to_still_speaks_as_the_asker(make_harness, fake_llm,  # noqa: F811
+                                                                          workspace):
     office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_WITHOUT_TALKING_TO}))
     try:
         fake_llm.script(ASK, {"content": "Quota."})
         _, q = ask(office, fake_llm, workspace)
         chat(office, q, "why?", 1)
         prompt = fake_llm.wait_for_requests(2)[1]["messages"][0]["content"]
-        assert prompt.startswith("You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
+        assert prompt.startswith(
+            "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
         assert "talking with" not in prompt
     finally:
         stop(office)
