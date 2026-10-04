@@ -45,6 +45,31 @@ test("an ask names its default in the gray placeholder; typed text replaces it, 
   }
 })
 
+test("in the ask box, Ctrl-C and Esc clear the text and stop nothing", async () => {
+  const { child, app } = await boot()
+  try {
+    child.push({ type: "ask", question: "Company", default: "Acme Inc" })
+    await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
+    await app.input.typeText("Globex")
+    await app.until((f) => f.includes("Globex") && !f.includes("Type your answer here"))
+    app.input.pressCtrlC()
+    await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
+    await app.input.typeText("Initech")
+    await app.until((f) => f.includes("Initech"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Type your answer here (Enter for Acme Inc)"))
+    await Bun.sleep(100)
+    expect(app.frame()).not.toContain("Press Ctrl+C again to stop")
+    expect(child.interrupts).toBe(0)
+    app.input.pressEnter()
+    await until(() => child.answers.length === 1)
+    expect(child.answers).toEqual([""])
+    await app.until((f) => f.includes("Company → Acme Inc"))
+  } finally {
+    await app.stop()
+  }
+})
+
 test("a long question's answer wraps with it, right after the arrow", async () => {
   const { child, app } = await boot()
   const question =
