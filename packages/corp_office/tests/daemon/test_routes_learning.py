@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from agent_corp.auth.tokens import new_token
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.provider import Provider
 from agent_corp.extensions import learning
@@ -15,8 +16,9 @@ from agent_corp.profile.manager import propose
 from agent_corp.secrets import SecretStore
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.chat.conftest import CHAT_FLOW
-from tests.company.conftest import base_files, write_repo
+from tests.company.conftest import _git, base_files, write_repo
 from tests.daemon.test_app import ULID
+from tests.daemon.test_auth import add_human, bearer, give_device
 from tests.profile.conftest import LEARNING_FILES, debrief_reply, learner_reply
 from tests.store.conftest import session
 
@@ -158,3 +160,37 @@ async def test_learning_routes_refuse_bad_requests(learns, client):
     ]:
         r = await client.request(method, path, json=body)
         assert (r.status_code, r.json()["error"]) == (status, code), path
+
+
+async def test_learning_is_credited_to_the_verified_person(learns, client, company, fake_llm, tmp_path):
+    store, harness = learns.store, learns.extras["harness"]
+    add_human(company, "ava")
+    ava = new_token()
+    give_device(company, "ava", "pc", ava)
+    fake_llm.script({"content": "Done."}, debrief_reply())
+    (tmp_path / "ws").mkdir()
+    s = await asyncio.to_thread(harness.start_session, "minh", str(tmp_path / "ws"))
+    await until(lambda: store.get_session(s.id).status == "idle")
+    await asyncio.to_thread(harness.prompt, s.id, "fix the bug")
+    await until(lambda: len(store.list_messages(s.id)) == 2 and store.get_session(s.id).status == "idle")
+    await asyncio.to_thread(harness.end, s.id)
+    await until(lambda: store.get_session(s.id).status == "ended")
+    assert (await client.get(f"/debriefs/{s.id}", headers=bearer(ava))).json()["state"] == "ready"
+
+    r = await client.post(f"/debriefs/{s.id}/confirm", json={"indices": [0]}, headers=bearer(ava))
+    assert store.get_work_item(r.json()["follow_ups"][0]["work_item_id"]).requester == "ava"
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    r = await client.post("/feedback", json={"session_id": s.id, "text": "Be brief."}, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["author"] == "ava"
+    fid = r.json()["id"]
+    await until(lambda: store.get_feedback(fid).status == "applied")
+
+    fake_llm.script({"content": "What should change?"})
+    r = await client.post("/profiles/minh/manager", json={"text": "Tidy my profile."}, headers=bearer(ava))
+    assert r.status_code == 200 and r.json()["opened_by"] == "ava"
+    manager = store.get_session(r.json()["id"])
+    profile = GitProfileStore(learns.git, "minh")
+    text, version = profile.read()
+    proposal = propose(store, manager, profile, version, text, text + "- One.\n")
+    assert (await client.post(f"/profile-proposals/{proposal.id}/apply", headers=bearer(ava))).status_code == 200
+    assert _git(company, "log", "-1", "--format=%s") == "profile(@minh): ava via profile manager"
