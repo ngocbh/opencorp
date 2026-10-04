@@ -430,3 +430,48 @@ test("the chat's history is loaded once; the office's own re-read keeps it on re
     expect(loads()).toBe(before + 1)
   })
 })
+
+test("in the message box, Ctrl+C and Esc clear a draft; on the empty box Ctrl+C asks for a second press, which exits", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    app.input.pressKey("m")
+    await typeInto(app, "Say Minh writes tests first")
+    await app.until((f) => f.includes("Say Minh writes tests first"))
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => !f.includes("Say Minh writes tests first") && f.includes("Ask the profile manager"))
+    await typeInto(app, "Shorter please")
+    await app.until((f) => f.includes("Shorter please"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Shorter please") && f.includes("Ask the profile manager"))
+    await Bun.sleep(100)
+    await app.setup.renderOnce()
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    expect(app.frame()).not.toContain("Press again to exit")
+    expect(app.setup.renderer.currentFocusedEditor).not.toBeNull()
+    // The clears never counted toward leaving: on the empty box, the first Ctrl+C only asks for a second.
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("Press again to exit"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    expect(app.frame()).toContain("@minh · profile")
+    // Esc on the empty box leaves the box, and the view stays.
+    app.input.pressEscape()
+    await app.until(() => app.setup.renderer.currentFocusedEditor === null)
+    expect(app.frame()).toContain("@minh · profile")
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+    expect(office.requests.filter((r) => r.method === "POST")).toEqual([])
+  })
+})
+
+test("with no box focused, the first Ctrl+C asks for a second, which exits", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    expect(app.setup.renderer.currentFocusedEditor).toBeNull()
+    app.input.pressKey("c", { ctrl: true })
+    await app.until((f) => f.includes("Press again to exit"))
+    expect(app.setup.renderer.isDestroyed).toBe(false)
+    expect(app.frame()).toContain("@minh · profile")
+    app.input.pressKey("c", { ctrl: true })
+    await app.until(() => app.setup.renderer.isDestroyed)
+  })
+})

@@ -16,8 +16,8 @@ export function pressTwice(ms: number, now: () => number = Date.now) {
 }
 
 /**
- * The `app_exit` bindings with each key sent to `app.leave`, which takes a second press in a
- * chat. A `<leader>` chord is already deliberate, so it keeps `app.exit` and leaves at once.
+ * The `app_exit` bindings with each key sent to `app.leave`, which takes a second press
+ * everywhere but home. A `<leader>` chord is already deliberate, so it keeps `app.exit` and leaves at once.
  */
 export function leaveBindings<B extends { key: unknown; cmd?: unknown }>(bindings: readonly B[]): B[] {
   return bindings.flatMap((b) => {
