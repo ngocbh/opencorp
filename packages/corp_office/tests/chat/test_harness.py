@@ -337,6 +337,38 @@ def test_an_answer_off_a_live_run_is_credited_to_the_opener_else_the_ceo(harness
         assert harness.answer(q.id, "yes", "text").answered_by == credited
 
 
+def test_messages_and_answers_are_credited_to_who_sent_them(harness, fake_llm, workspace):
+    fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which?"}}]},
+                    {"content": "Done."}, {"content": "Bye."})
+    sid = start(harness, workspace)  # opened by no one: the owner is the CEO
+    assert harness.prompt(sid, "pick one", by="lan") == "turn"
+    wait_for(lambda: harness.store.list_questions(session_id=sid, status="open", source="ask_user"),
+             what="the model's question")
+    assert harness.prompt(sid, "A", by="lan") == "answer"
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Done."] and status(harness, sid) == "idle", what="the reply")
+    turn = harness.store.list_questions(session_id=sid, status="open", source="human_input")[0]
+    assert harness.answer(turn.id, "thanks", "text", by="kai").answered_by == "kai"
+    wait_for(lambda: texts(harness, sid)[-1:] == ["Bye."], what="the last reply")
+    by_answer = {t.answer: t.answered_by for t in harness.store.list_questions(session_id=sid)}
+    assert (by_answer["pick one"], by_answer["A"], by_answer["thanks"]) == ("lan", "lan", "kai")
+
+
+@pytest.mark.parametrize("refuse_steer", [True, False], ids=["queued", "steer_never_read"])
+def test_a_message_that_waits_for_the_next_turn_is_credited_to_who_sent_it(harness, fake_llm, workspace,
+                                                                           refuse_steer):
+    fake_llm.script({"content": "Done.", "hold": 30}, {"content": "Second."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    fake_llm.wait_for_requests(1)
+    if refuse_steer:  # the reply can't take it: it waits for the next turn
+        harness._live[sid].worker.steer = lambda node, text: False
+    assert harness.steer(sid, "one more thing", by="lan") == ("queued" if refuse_steer else "steer")
+    fake_llm.release()
+    wait_for(lambda: texts(harness, sid) == ["Done.", "Second."], what="the second reply")
+    turns = {q.answer: q.answered_by for q in harness.store.list_questions(session_id=sid, source="human_input")}
+    assert (turns["hi"], turns["one more thing"]) == ("ngocbh", "lan")
+
+
 def test_hooks_see_the_session(harness, fake_llm, workspace):
     seen = []
     harness.hooks.run_started.append(lambda s, run_id: seen.append(("run_started", run_id)))
