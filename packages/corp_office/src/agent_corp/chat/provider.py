@@ -58,8 +58,8 @@ class Provider(BaseModel):
         return env
 
 
-def load_provider(path: Path) -> Provider:
-    """The provider in ``path``; ``Provider()`` when there is no file.
+def load_provider[P: Provider](path: Path, model: type[P] = Provider) -> P:
+    """The provider in ``path``, validated as ``model``; ``model()`` when there is no file.
 
     The file holds the model key, so it must be a regular file private to its owner.
 
@@ -69,7 +69,7 @@ def load_provider(path: Path) -> Provider:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return Provider()
+        return model()
     except OSError as exc:
         raise ProviderError(f"can't open {path}: {exc.strerror}") from None
     st = os.fstat(fd)  # before fdopen, which refuses a directory with IsADirectoryError
@@ -78,7 +78,7 @@ def load_provider(path: Path) -> Provider:
         raise ProviderError(f"{path} must be a regular file private to its owner (mode 0600)")
     with os.fdopen(fd, "rb") as f:
         try:
-            return Provider.model_validate(json.loads(f.read()))
+            return model.model_validate(json.loads(f.read()))
         except (ValueError, ValidationError) as exc:
             # Never echo the file: it holds keys. Errors leave out input values, extra field
             # names, model names, and env names that aren't variable names, since a key

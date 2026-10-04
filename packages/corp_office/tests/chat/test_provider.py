@@ -5,6 +5,7 @@ import pytest
 from starlette.requests import Request
 
 from agent_corp.chat.provider import Price, Provider, ProviderError, load_provider
+from agent_corp.secrets import write_private
 from agent_corp.store import Store
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from agent_corp.worker.job import Job, SessionMemorySpec, group_specs
@@ -22,6 +23,17 @@ def write(path, data, mode=0o600):
 
 def test_no_file_means_composer_defaults(tmp_path):
     assert load_provider(tmp_path / "provider.json") == Provider()
+
+
+class _Extra(Provider):
+    method: str = "api_key"
+
+
+def test_load_provider_validates_as_the_given_model(tmp_path):
+    path = tmp_path / "c.json"
+    write_private(path, b'{"method": "subscription"}')
+    assert load_provider(path, model=_Extra).method == "subscription"
+    assert load_provider(tmp_path / "missing.json", model=_Extra) == _Extra()
 
 
 def test_reads_config_env_and_prices(tmp_path):
