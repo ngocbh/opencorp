@@ -80,7 +80,7 @@ def test_the_reply_speaks_as_the_person(harness, fake_llm, workspace):
     sid = start(harness, workspace)
     harness.prompt(sid, "Who are you?")
     assert system_prompt(fake_llm, 1).startswith(
-        "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
+        "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh). " + TALKING_TO_CEO + "\n")
     wait_for(lambda: texts(harness, sid) == ["I'm Minh."], what="the reply")
 
 

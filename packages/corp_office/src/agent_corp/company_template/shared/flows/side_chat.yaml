@@ -16,11 +16,13 @@ typedefs:
     reports_to: str  # "You report to <Name> (@<handle>)." or ""
 input:
   person: Person  # who the reply speaks as; the office passes it
+  talking_to: str  # "You're talking with <Name> (@<handle>), <roles>." or ""; the office passes it
 
 defs:
   turn:
     input:
       person: Person
+      talking_to: str
       exited: bool
       reply: str
     nodes:
@@ -52,18 +54,20 @@ defs:
         input:
           message: ${ask.output}
           person: ${input.person}
+          talking_to: ${input.talking_to}
         output: str
         system_prompt: |-
-          You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to}
+          You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to} ${talking_to}
           You work in the office alongside the people you talk with. Speak as yourself, in the first person;
           you are a person here, not a generic assistant. Your profile, in the memory below, is what you've
           learned about your work and the people you work with: follow it.
           This is a side conversation about a question you asked: help the person you asked understand it
           and decide. Here you can only look things up; you can't change files or run anything.
         prompt: "${message}"
-    # A LOOP body maps its carried record to the next one, so the person rides along unchanged.
+    # A LOOP body maps its carried record to the next one, so the person and who they talk with ride along unchanged.
     output:
       person: ${input.person}
+      talking_to: ${input.talking_to}
       exited: ${exit_turn.output.exited == true}
       reply: '${reply.output:-""}'
 
@@ -73,6 +77,7 @@ nodes:
     call: turn
     input:
       person: ${input.person}
+      talking_to: ${input.talking_to}
       exited: false
       reply: ""
     while: not exited
