@@ -2,12 +2,10 @@ import getpass
 import io
 import json
 import os
-import re
 import stat
 
 import sys
 
-import httpx
 import pytest
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
@@ -16,6 +14,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
+from agent_corp.chat.models import ModelListError
 from agent_corp.chat.provider import load_provider
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_OWN, NoTerminal, OnboardError,
@@ -191,42 +190,20 @@ def test_setting_azure_up_again_defaults_to_the_last_deployment(tmp_path, monkey
     assert load_provider(path).llm_config["model"] == "o3"
 
 
-def reply(monkeypatch, response):
-    """Make ``httpx.get`` return ``response`` (or raise it), recording each call."""
-    calls = []
+def test_azure_deployments_waits_fifteen_seconds_and_says_why_it_cant_list_them(monkeypatch):
+    seen = []
 
-    def get(url, **kwargs):
-        calls.append((url, kwargs))
-        if isinstance(response, Exception):
-            raise response
-        return httpx.Response(**response, request=httpx.Request("GET", url))
+    def listed(base_url, key, *, timeout):
+        seen.append((base_url, key, timeout))
+        if len(seen) > 1:
+            raise ModelListError("HTTP 401", 401)
+        return ["gpt-5.4"]
 
-    monkeypatch.setattr(httpx, "get", get)
-    return calls
-
-
-def test_azure_deployments_lists_the_ones_that_can_chat(monkeypatch):
-    data = [{"id": "gpt-5.4", "model": "gpt-5.4", "status": "succeeded"},
-            {"id": "embed", "model": "text-embedding-3-small", "status": "succeeded"},
-            {"id": "new", "model": "gpt-5.6", "status": "creating"},
-            {"id": "o3", "model": "o3", "status": "succeeded"}]
-    calls = reply(monkeypatch, {"status_code": 200, "json": {"data": data, "object": "list"}})
-    assert azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY) == ["gpt-5.4", "o3"]
-    [(url, kwargs)] = calls
-    assert url == "https://acme.openai.azure.com/openai/deployments"
-    assert kwargs["params"] == {"api-version": "2022-12-01"} and kwargs["headers"] == {"api-key": KEY}
-
-
-@pytest.mark.parametrize(("response", "problem"), [
-    ({"status_code": 401, "json": {"error": {"message": KEY}}}, "HTTP 401"),
-    ({"status_code": 200, "text": "<html>"}, "the reply isn't a deployment list"),
-    ({"status_code": 200, "json": {"data": "x"}}, "the reply isn't a deployment list"),
-    (httpx.ConnectError("boom"), "can't reach acme.openai.azure.com"),
-])
-def test_azure_deployments_says_why_it_cant_list_them(monkeypatch, response, problem):
-    reply(monkeypatch, response)
-    with pytest.raises(OnboardError, match=f"^{re.escape(problem)}$"):
+    monkeypatch.setattr("agent_corp.chat.models.azure_deployments", listed)
+    assert azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY) == ["gpt-5.4"]
+    with pytest.raises(OnboardError, match="^HTTP 401$"):
         azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY)
+    assert seen == [("https://acme.openai.azure.com/openai/v1/", KEY, 15)] * 2
 
 
 def test_azure_needs_a_key_and_a_usable_endpoint(tmp_path):
