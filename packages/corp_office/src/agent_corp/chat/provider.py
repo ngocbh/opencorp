@@ -2,13 +2,13 @@
 
 import fnmatch
 import json
-import os
 import re
-import stat
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from agent_corp.secrets import read_private
 
 _CREDENTIAL_NAMES = ("*_KEY", "*_APIKEY", "*_TOKEN", "*_SECRET", "*PASSWORD*", "*_PASS", "*_CREDENTIALS")
 _VARIABLE = re.compile(r"^[A-Z_][A-Z0-9_]{0,63}$")
@@ -58,33 +58,31 @@ class Provider(BaseModel):
         return env
 
 
-def load_provider(path: Path) -> Provider:
-    """The provider in ``path``; ``Provider()`` when there is no file.
+def load_provider[P: Provider](path: Path, model: type[P] = Provider, *, missing_ok: bool = True) -> P:
+    """The provider in ``path``, validated as ``model``; ``model()`` when there is no file and ``missing_ok``.
 
     The file holds the model key, so it must be a regular file private to its owner.
 
     Raises:
+        FileNotFoundError: there is no file, and not ``missing_ok``.
         ProviderError: the file is a symlink, readable by others, or not a valid provider.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        data = read_private(path)
     except FileNotFoundError:
-        return Provider()
-    except OSError as exc:
-        raise ProviderError(f"can't open {path}: {exc.strerror}") from None
-    st = os.fstat(fd)  # before fdopen, which refuses a directory with IsADirectoryError
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
-        os.close(fd)
-        raise ProviderError(f"{path} must be a regular file private to its owner (mode 0600)")
-    with os.fdopen(fd, "rb") as f:
-        try:
-            return Provider.model_validate(json.loads(f.read()))
-        except (ValueError, ValidationError) as exc:
-            # Never echo the file: it holds keys. Errors leave out input values, extra field
-            # names, model names, and env names that aren't variable names, since a key
-            # pasted there would be one.
-            detail = validation_errors(exc) if isinstance(exc, ValidationError) else "not valid JSON"
-            raise ProviderError(f"{path}: {detail}") from None
+        if missing_ok:
+            return model()
+        raise
+    except PermissionError as exc:
+        raise ProviderError(str(exc)) from None
+    try:
+        return model.model_validate(json.loads(data))
+    except (ValueError, ValidationError) as exc:
+        # Never echo the file: it holds keys. Errors leave out input values, extra field
+        # names, model names, and env names that aren't variable names, since a key
+        # pasted there would be one.
+        detail = validation_errors(exc) if isinstance(exc, ValidationError) else "not valid JSON"
+        raise ProviderError(f"{path}: {detail}") from None
 
 
 def _shown(name: str) -> str:

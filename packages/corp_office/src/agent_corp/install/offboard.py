@@ -124,7 +124,7 @@ def plan(home: Path, host: Host, *, delete_company: bool = False, repo: Path = R
     if listed:
         lines.append(f"this device ({me.device}) from @{me.handle} in the company repo")
     lines += found.service
-    described = {paths.office: "the office's store, provider.json, logs, and worktrees",
+    described = {paths.office: "the office's store, provider.json, connections and sign-ins, logs, and worktrees",
                  identity_path(paths.home): "this device's identity and token", paths.home / "tui": "ac's own state",
                  paths.home / CLONE: "an unfinished clone of a company"}
     lines += [f"{p} ({described[p]})" for p in state]

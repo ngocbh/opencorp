@@ -68,7 +68,7 @@ def test_offboard_says_what_it_will_remove_and_no_keeps_everything(tmp_path):
         offboard(paths.home, ask, host=make_host(tmp_path, Runner()), environ=no_launchers())
     said = "\n".join(ask.seen)
     assert f"this device ({device_name()}) from @me in the company repo" in said
-    assert f"{paths.office} (the office's store, provider.json, logs, and worktrees)" in said
+    assert f"{paths.office} (the office's store, provider.json, connections and sign-ins, logs, and worktrees)" in said
     assert str(paths.home / "identity.json") in said and str(paths.home / "tui") in said
     assert f"Keeping the company repo at {paths.company}: it has no remote, so this is its only copy" in said
     assert ask.seen[-1] == CONFIRM and ask.offered == [[KEEP, REMOVE]]

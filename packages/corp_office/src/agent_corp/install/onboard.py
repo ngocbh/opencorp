@@ -23,6 +23,7 @@ from agent_corp.auth.devices import DeviceRefused, add_device
 from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
 from agent_corp.auth.passwords import check_password
 from agent_corp.auth.tokens import new_token, token_sha256
+from agent_corp.chat.connections import azure_base_url
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.git import CompanyGit, CompanyGitError
 from agent_corp.company.lint import lint
@@ -256,12 +257,7 @@ def check_provider(data: object) -> Provider:
     return provider
 
 
-def _azure_base_url(answer: str) -> str:
-    """The v1 endpoint of an Azure OpenAI resource given by its name or its endpoint URL."""
-    url = answer.strip().rstrip("/").removesuffix("/openai/v1")
-    if "://" not in url:
-        url = f"https://{url}" if "." in url else f"https://{url}.openai.azure.com"
-    return f"{url}/openai/v1/"
+_azure_base_url = azure_base_url
 
 
 AZURE_DEPLOYMENTS_API = "2022-12-01"
