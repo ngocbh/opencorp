@@ -535,6 +535,29 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // Esc with a draft clears it, as Ctrl+C does, ahead of the base-mode Esc that interrupts the session; base mode
+  // only, so an open autocomplete keeps Esc to close itself. Text on its way to the office is no draft: Esc then
+  // interrupts as before and the text stays for a failed send. A false return lets Esc go on to the interrupt.
+  // The priority keeps this ahead of the interrupt binding however the layers come to be registered.
+  useBindings(() => ({
+    target: inputTarget,
+    mode: AGENT_CORP_BASE_MODE,
+    priority: 1,
+    enabled: inputTarget() !== undefined && !props.disabled,
+    bindings: [
+      {
+        key: "escape",
+        desc: "Clear the prompt",
+        group: "Prompt",
+        cmd: () => {
+          if (submitting || !store.prompt.input) return false
+          clearPrompt()
+          return true
+        },
+      },
+    ],
+  }))
+
   useBindings(() => {
     return {
       target: inputTarget,
