@@ -32,6 +32,10 @@
       "type": "string", "pattern": "^\\$[a-z0-9-]+\\$",
       "description": "A password's salted hash as a PHC string, such as $scrypt$ln=15,r=8,p=1$<salt>$<hash>; never the password itself."
     },
+    "ConnectionName": {
+      "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$",
+      "description": "A connection's name on its office; `office` is office/provider.json. A removed name is never reused."
+    },
     "Timestamp": {
       "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
       "description": "UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged."
@@ -104,6 +108,10 @@
         "password_hash": {
           "anyOf": [{ "$ref": "#/$defs/PasswordHash" }, { "type": "null" }], "default": null,
           "description": "The hash of the password this human logs in a new device with; null for none."
+        },
+        "model": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "A model id as a connection lists it, e.g. `gpt-5.5`, or `openai/gpt-4o` on OpenRouter. Each office starts the agent's chats on the first of its connections that offers it (the default first, then the others by name). If none does, it uses its default and says so in the chat."
         }
       }
     },
@@ -202,6 +210,18 @@
         "opened_by": {
           "anyOf": [{ "$ref": "#/$defs/Handle" }, { "type": "null" }], "default": null,
           "description": "The human who opened the session; null for sessions from before this field or opened by the office itself."
+        },
+        "connection": {
+          "anyOf": [{ "$ref": "#/$defs/ConnectionName" }, { "type": "null" }], "default": null,
+          "description": "The chat's connection on its office. Null: `office`, for sessions from before this field; every new session sets it."
+        },
+        "model": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "Null: the connection's own model. For Azure, a deployment name."
+        },
+        "model_note": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "Why the chat isn't on the model it was asked to start on, or why it moved."
         },
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "updated_at": { "$ref": "#/$defs/Timestamp" }
@@ -427,6 +447,10 @@
           "anyOf": [{ "$ref": "#/$defs/GitId" }, { "type": "null" }], "default": null,
           "description": "The profile commit once applied."
         },
+        "failure": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "Why learning from it failed, when the office knows."
+        },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       }
     },
@@ -465,7 +489,15 @@
       "properties": {
         "person": { "$ref": "#/$defs/Handle" },
         "cwd": { "type": "string" },
-        "harness": { "enum": ["composer", "codex", "claude"], "default": "composer" }
+        "harness": { "enum": ["composer", "codex", "claude"], "default": "composer" },
+        "connection": {
+          "anyOf": [{ "$ref": "#/$defs/ConnectionName" }, { "type": "null" }], "default": null,
+          "description": "The human's pick of connection for the new chat, which falls back as the office decides; null leaves it to the office."
+        },
+        "model": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "The human's pick of model for the new chat, which falls back as the office decides; null leaves it to the office."
+        }
       }
     },
     "PromptRequest": {
@@ -592,6 +624,89 @@
       "description": "The body of PUT /people/{handle}/password: the new password, which the office stores only as a hash.",
       "properties": {
         "password": { "type": "string", "minLength": 8 }
+      }
+    },
+    "Connection": {
+      "type": "object", "additionalProperties": false, "required": ["name", "provider", "method"],
+      "description": "A model connection on this office. Never holds a key.",
+      "properties": {
+        "name": { "$ref": "#/$defs/ConnectionName" },
+        "provider": { "type": "string" },
+        "method": { "enum": ["api_key", "subscription", "none"] },
+        "model": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "default": { "type": "boolean", "default": false }
+      }
+    },
+    "ConnectionList": {
+      "type": "object", "additionalProperties": false, "required": ["connections", "default", "can_manage"],
+      "description": "The connections on this office.",
+      "properties": {
+        "connections": { "type": "array", "items": { "$ref": "#/$defs/Connection" } },
+        "default": { "$ref": "#/$defs/ConnectionName" },
+        "can_manage": {
+          "type": "boolean",
+          "description": "Whether the asking person may add, remove or set the default."
+        }
+      }
+    },
+    "ModelOption": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "description": "A model a connection offers; `name` is its display name when the provider gives one.",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "ModelList": {
+      "type": "object", "additionalProperties": false, "required": ["connection", "models", "listed"],
+      "description": "`listed` false: the provider can't list models, so a model name is typed.",
+      "properties": {
+        "connection": { "$ref": "#/$defs/ConnectionName" },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/ModelOption" } },
+        "listed": { "type": "boolean" },
+        "error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "SetModelRequest": {
+      "type": "object", "additionalProperties": false, "required": ["connection", "model"],
+      "description": "A model equal to the connection's own is stored as null, so it follows that connection's changes.",
+      "properties": {
+        "connection": { "$ref": "#/$defs/ConnectionName" },
+        "model": { "type": "string", "minLength": 1 }
+      }
+    },
+    "AddConnectionRequest": {
+      "type": "object", "additionalProperties": false, "required": ["provider", "api_key"],
+      "description": "A new API-key connection. The office never echoes it: a 422 names fields only.",
+      "properties": {
+        "provider": { "type": "string" },
+        "api_key": { "type": "string", "minLength": 1 },
+        "endpoint": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "Azure: the resource name or URL. provider openai: an OpenAI-compatible base URL."
+        },
+        "model": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null }
+      }
+    },
+    "SetDefaultConnectionRequest": {
+      "type": "object", "additionalProperties": false, "required": ["connection"],
+      "properties": { "connection": { "$ref": "#/$defs/ConnectionName" } }
+    },
+    "StartLoginRequest": {
+      "type": "object", "additionalProperties": false, "required": ["provider"],
+      "description": "Starts a subscription sign-in that adds a connection.",
+      "properties": { "provider": { "enum": ["openai"] } }
+    },
+    "ConnectionLogin": {
+      "type": "object", "additionalProperties": false, "required": ["id", "state"],
+      "description": "A subscription sign-in. While `waiting`, the human opens `url` and enters `user_code`; `connection` names the new connection once `signed_in`; `message` says why it failed.",
+      "properties": {
+        "id": { "type": "string" },
+        "state": { "enum": ["waiting", "signed_in", "failed", "cancelled"] },
+        "url": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "user_code": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "message": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "connection": { "anyOf": [{ "$ref": "#/$defs/ConnectionName" }, { "type": "null" }], "default": null }
       }
     },
     "SetupPrompt": {

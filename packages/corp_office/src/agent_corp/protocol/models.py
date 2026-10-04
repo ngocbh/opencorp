@@ -67,6 +67,15 @@ type PasswordHash = Annotated[
 ]
 
 
+type ConnectionName = Annotated[
+    str,
+    Field(
+        description="A connection's name on its office; `office` is office/provider.json. A removed name is never reused.",
+        pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+    ),
+]
+
+
 class CompanyDefaults(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -156,6 +165,12 @@ class Person(BaseModel):
         PasswordHash | None,
         Field(
             description='The hash of the password this human logs in a new device with; null for none.'
+        ),
+    ] = None
+    model: Annotated[
+        str | None,
+        Field(
+            description="A model id as a connection lists it, e.g. `gpt-5.5`, or `openai/gpt-4o` on OpenRouter. Each office starts the agent's chats on the first of its connections that offers it (the default first, then the others by name). If none does, it uses its default and says so in the chat."
         ),
     ] = None
 
@@ -320,6 +335,24 @@ class Session(BaseModel):
         Handle | None,
         Field(
             description='The human who opened the session; null for sessions from before this field or opened by the office itself.'
+        ),
+    ] = None
+    connection: Annotated[
+        ConnectionName | None,
+        Field(
+            description="The chat's connection on its office. Null: `office`, for sessions from before this field; every new session sets it."
+        ),
+    ] = None
+    model: Annotated[
+        str | None,
+        Field(
+            description="Null: the connection's own model. For Azure, a deployment name."
+        ),
+    ] = None
+    model_note: Annotated[
+        str | None,
+        Field(
+            description="Why the chat isn't on the model it was asked to start on, or why it moved."
         ),
     ] = None
     created_at: Annotated[
@@ -594,6 +627,10 @@ class Feedback(BaseModel):
     commit: Annotated[
         GitId | None, Field(description='The profile commit once applied.')
     ] = None
+    failure: Annotated[
+        str | None,
+        Field(description='Why learning from it failed, when the office knows.'),
+    ] = None
     created_at: Annotated[
         str,
         Field(
@@ -650,6 +687,18 @@ class CreateSessionRequest(BaseModel):
     ]
     cwd: str
     harness: Literal['composer', 'codex', 'claude'] = 'composer'
+    connection: Annotated[
+        ConnectionName | None,
+        Field(
+            description="The human's pick of connection for the new chat, which falls back as the office decides; null leaves it to the office."
+        ),
+    ] = None
+    model: Annotated[
+        str | None,
+        Field(
+            description="The human's pick of model for the new chat, which falls back as the office decides; null leaves it to the office."
+        ),
+    ] = None
 
 
 class PromptRequest(BaseModel):
@@ -870,6 +919,160 @@ class SetPasswordRequest(BaseModel):
         extra='forbid',
     )
     password: Annotated[str, Field(min_length=8)]
+
+
+class Connection(BaseModel):
+    """
+    A model connection on this office. Never holds a key.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    name: Annotated[
+        str,
+        Field(
+            description="A connection's name on its office; `office` is office/provider.json. A removed name is never reused.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    provider: str
+    method: Literal['api_key', 'subscription', 'none']
+    model: str | None = None
+    default: bool = False
+
+
+class ConnectionList(BaseModel):
+    """
+    The connections on this office.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    connections: list[Connection]
+    default: Annotated[
+        str,
+        Field(
+            description="A connection's name on its office; `office` is office/provider.json. A removed name is never reused.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    can_manage: Annotated[
+        bool,
+        Field(
+            description='Whether the asking person may add, remove or set the default.'
+        ),
+    ]
+
+
+class ModelOption(BaseModel):
+    """
+    A model a connection offers; `name` is its display name when the provider gives one.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: str
+    name: str | None = None
+
+
+class ModelList(BaseModel):
+    """
+    `listed` false: the provider can't list models, so a model name is typed.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    connection: Annotated[
+        str,
+        Field(
+            description="A connection's name on its office; `office` is office/provider.json. A removed name is never reused.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    models: list[ModelOption]
+    listed: bool
+    error: str | None = None
+
+
+class SetModelRequest(BaseModel):
+    """
+    A model equal to the connection's own is stored as null, so it follows that connection's changes.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    connection: Annotated[
+        str,
+        Field(
+            description="A connection's name on its office; `office` is office/provider.json. A removed name is never reused.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    model: Annotated[str, Field(min_length=1)]
+
+
+class AddConnectionRequest(BaseModel):
+    """
+    A new API-key connection. The office never echoes it: a 422 names fields only.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    provider: str
+    api_key: Annotated[str, Field(min_length=1)]
+    endpoint: Annotated[
+        str | None,
+        Field(
+            description='Azure: the resource name or URL. provider openai: an OpenAI-compatible base URL.'
+        ),
+    ] = None
+    model: str | None = None
+
+
+class SetDefaultConnectionRequest(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    connection: Annotated[
+        str,
+        Field(
+            description="A connection's name on its office; `office` is office/provider.json. A removed name is never reused.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+
+
+class StartLoginRequest(BaseModel):
+    """
+    Starts a subscription sign-in that adds a connection.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    provider: Literal['openai']
+
+
+class ConnectionLogin(BaseModel):
+    """
+    A subscription sign-in. While `waiting`, the human opens `url` and enters `user_code`; `connection` names the new connection once `signed_in`; `message` says why it failed.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: str
+    state: Literal['waiting', 'signed_in', 'failed', 'cancelled']
+    url: str | None = None
+    user_code: str | None = None
+    message: str | None = None
+    connection: ConnectionName | None = None
 
 
 class SetupAsk(BaseModel):

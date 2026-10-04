@@ -48,6 +48,13 @@ export type TokenHash = string;
  */
 export type PasswordHash = string;
 /**
+ * A connection's name on its office; `office` is office/provider.json. A removed name is never reused.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "ConnectionName".
+ */
+export type ConnectionName = string;
+/**
  * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.
  *
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -154,6 +161,10 @@ export interface Person {
    * The hash of the password this human logs in a new device with; null for none.
    */
   password_hash?: PasswordHash | null;
+  /**
+   * A model id as a connection lists it, e.g. `gpt-5.5`, or `openai/gpt-4o` on OpenRouter. Each office starts the agent's chats on the first of its connections that offers it (the default first, then the others by name). If none does, it uses its default and says so in the chat.
+   */
+  model?: string | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -263,6 +274,18 @@ export interface Session {
    * The human who opened the session; null for sessions from before this field or opened by the office itself.
    */
   opened_by?: Handle | null;
+  /**
+   * The chat's connection on its office. Null: `office`, for sessions from before this field; every new session sets it.
+   */
+  connection?: ConnectionName | null;
+  /**
+   * Null: the connection's own model. For Azure, a deployment name.
+   */
+  model?: string | null;
+  /**
+   * Why the chat isn't on the model it was asked to start on, or why it moved.
+   */
+  model_note?: string | null;
   created_at: Timestamp;
   updated_at: Timestamp;
 }
@@ -493,6 +516,10 @@ export interface Feedback {
    * The profile commit once applied.
    */
   commit?: GitId | null;
+  /**
+   * Why learning from it failed, when the office knows.
+   */
+  failure?: string | null;
   created_at: Timestamp;
 }
 /**
@@ -548,6 +575,14 @@ export interface CreateSessionRequest {
   person: Handle;
   cwd: string;
   harness?: "composer" | "codex" | "claude";
+  /**
+   * The human's pick of connection for the new chat, which falls back as the office decides; null leaves it to the office.
+   */
+  connection?: ConnectionName | null;
+  /**
+   * The human's pick of model for the new chat, which falls back as the office decides; null leaves it to the office.
+   */
+  model?: string | null;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -717,6 +752,110 @@ export interface LoginRequest {
  */
 export interface SetPasswordRequest {
   password: string;
+}
+/**
+ * A model connection on this office. Never holds a key.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "Connection".
+ */
+export interface Connection {
+  name: ConnectionName;
+  provider: string;
+  method: "api_key" | "subscription" | "none";
+  model?: string | null;
+  default?: boolean;
+}
+/**
+ * The connections on this office.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "ConnectionList".
+ */
+export interface ConnectionList {
+  connections: Connection[];
+  default: ConnectionName;
+  /**
+   * Whether the asking person may add, remove or set the default.
+   */
+  can_manage: boolean;
+}
+/**
+ * A model a connection offers; `name` is its display name when the provider gives one.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "ModelOption".
+ */
+export interface ModelOption {
+  id: string;
+  name?: string | null;
+}
+/**
+ * `listed` false: the provider can't list models, so a model name is typed.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "ModelList".
+ */
+export interface ModelList {
+  connection: ConnectionName;
+  models: ModelOption[];
+  listed: boolean;
+  error?: string | null;
+}
+/**
+ * A model equal to the connection's own is stored as null, so it follows that connection's changes.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetModelRequest".
+ */
+export interface SetModelRequest {
+  connection: ConnectionName;
+  model: string;
+}
+/**
+ * A new API-key connection. The office never echoes it: a 422 names fields only.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "AddConnectionRequest".
+ */
+export interface AddConnectionRequest {
+  provider: string;
+  api_key: string;
+  /**
+   * Azure: the resource name or URL. provider openai: an OpenAI-compatible base URL.
+   */
+  endpoint?: string | null;
+  model?: string | null;
+}
+/**
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "SetDefaultConnectionRequest".
+ */
+export interface SetDefaultConnectionRequest {
+  connection: ConnectionName;
+}
+/**
+ * Starts a subscription sign-in that adds a connection.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "StartLoginRequest".
+ */
+export interface StartLoginRequest {
+  provider: "openai";
+}
+/**
+ * A subscription sign-in. While `waiting`, the human opens `url` and enters `user_code`; `connection` names the new connection once `signed_in`; `message` says why it failed.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "ConnectionLogin".
+ */
+export interface ConnectionLogin {
+  id: string;
+  state: "waiting" | "signed_in" | "failed" | "cancelled";
+  url?: string | null;
+  user_code?: string | null;
+  message?: string | null;
+  connection?: ConnectionName | null;
 }
 /**
  * A typed answer; an empty one means `default`.

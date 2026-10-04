@@ -17,6 +17,12 @@ def test_feedback_round_trips(store, sid):
     assert store.events_after()[-1].type == "feedback.created"
 
 
+def test_feedback_failure_round_trips_and_defaults_to_none(store, sid):
+    failed = store.add_feedback(feedback(sid, failure="the learner timed out"))
+    assert store.get_feedback(failed.id).failure == "the learner timed out"
+    assert store.get_feedback(store.add_feedback(feedback(sid)).id).failure is None
+
+
 def test_learning_counts_attempts_then_applies(store, sid):
     f = store.add_feedback(feedback(sid))
     assert store.set_feedback_status(f.id, "learning").attempts == 1
