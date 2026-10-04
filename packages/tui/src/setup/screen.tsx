@@ -1,9 +1,10 @@
 import { TextAttributes, type InputRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
-import { createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
+import { createSignal, For, Match, onCleanup, Show, Switch, type ParentProps } from "solid-js"
 import type { SetupAsk, SetupChoose, SetupSecret } from "@agent-corp/protocol"
 import { Spinner } from "../component/spinner"
 import { useTheme } from "../context/theme"
+import { PRESS_TWICE_MS, pressTwice } from "../routes/chat/leave"
 import { QuestionView } from "../routes/chat/question-view"
 import { SplitBorder } from "../ui/border"
 import type { SetupChild } from "./child"
@@ -21,7 +22,7 @@ function redact(text: string) {
 
 /**
  * The install's steps and answers, its pending question in a panel (choices on the question card), and a spinner
- * while it works; Ctrl-C asks it to stop.
+ * while it works. A first Ctrl-C asks for a second, which asks it to stop.
  */
 export function SetupScreen(props: { child: SetupChild; lines: string[]; command?: string }) {
   const { theme } = useTheme()
@@ -29,6 +30,11 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
   const [entries, setEntries] = createSignal<Entry[]>([])
   const [pending, setPending] = createSignal<SetupAsk | SetupChoose | SetupSecret>()
   const [stopping, setStopping] = createSignal(false)
+  // Shown after a first Ctrl-C, for as long as a second one stops the install.
+  const [warned, setWarned] = createSignal(false)
+  const again = pressTwice(PRESS_TWICE_MS)
+  let unwarn: ReturnType<typeof setTimeout> | undefined
+  onCleanup(() => clearTimeout(unwarn))
 
   /** Shows `entry` now; `printed` are its lines in the transcript printed once the screen is gone. */
   const add = (entry: Entry, ...printed: string[]) => {
@@ -53,6 +59,14 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
 
   useKeyboard((key) => {
     if (!key.ctrl || key.name !== "c") return
+    if (!stopping() && !again()) {
+      setWarned(true)
+      clearTimeout(unwarn)
+      unwarn = setTimeout(() => setWarned(false), PRESS_TWICE_MS)
+      return
+    }
+    clearTimeout(unwarn)
+    setWarned(false)
     props.child.interrupt()
     setStopping(true)
   })
@@ -183,6 +197,9 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
               </Match>
             </Switch>
           )}
+        </Show>
+        <Show when={warned()}>
+          <text fg={theme.warning}>Press Ctrl+C again to stop</text>
         </Show>
       </box>
     </box>

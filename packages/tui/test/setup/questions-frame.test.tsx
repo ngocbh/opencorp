@@ -199,7 +199,7 @@ test("a typed URL is sent whole but shown without its user and password", async 
   }
 })
 
-test("Esc does nothing on the card; Ctrl-C stops the install even from the box", async () => {
+test("Esc does nothing on the card or its empty box; there Ctrl-C asks for a second press, then stops", async () => {
   const { child, app } = await boot()
   try {
     child.push({ type: "choose", question: "Remote", options: ["None for now"], default: "None for now", typed: true })
@@ -208,11 +208,19 @@ test("Esc does nothing on the card; Ctrl-C stops the install even from the box",
     await Bun.sleep(100)
     expect(app.frame()).toContain("2. Type your answer here")
     app.input.pressArrow("down")
-    await app.input.typeText("abc")
-    await app.until((f) => f.includes("2. abc"))
+    // On the empty box, Esc finds nothing to clear and still does nothing.
+    app.input.pressEscape()
+    await Bun.sleep(100)
+    expect(app.frame()).toContain("2. Type your answer here")
+    expect(app.frame()).not.toContain("Press Ctrl+C again to stop")
+    expect(child.interrupts).toBe(0)
     app.input.pressCtrlC()
-    const f = await app.until((f) => f.includes("Stopping…"))
-    expect(f).not.toContain("2. abc")
+    let f = await app.until((f) => f.includes("Press Ctrl+C again to stop"))
+    expect(f).toContain("2. Type your answer here")
+    expect(child.interrupts).toBe(0)
+    app.input.pressCtrlC()
+    f = await app.until((f) => f.includes("Stopping…"))
+    expect(f).not.toContain("Press Ctrl+C again to stop")
     expect(child.interrupts).toBe(1)
     expect(child.answers).toEqual([])
   } finally {

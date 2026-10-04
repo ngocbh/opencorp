@@ -10,7 +10,7 @@ import { EpilogueProvider } from "./context/epilogue"
 import * as Selection from "./util/selection"
 import { createCliRenderer, MouseButton } from "@opentui/core"
 import { RouteProvider, useRoute } from "./context/route"
-import { leaveBindings, pressTwice } from "./routes/chat/leave"
+import { leaveBindings, PRESS_TWICE_MS, pressTwice } from "./routes/chat/leave"
 import {
   Switch,
   Match,
@@ -271,7 +271,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
   const office = useOffice()
-  const leave = pressTwice(5000)
+  const leave = pressTwice(PRESS_TWICE_MS)
   const exit = useExit()
   const promptRef = usePromptRef()
   const clipboard = useClipboard()

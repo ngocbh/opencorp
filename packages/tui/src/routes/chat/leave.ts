@@ -1,3 +1,6 @@
+/** How long a first Ctrl+C waits for the second that leaves a chat or stops the setup. */
+export const PRESS_TWICE_MS = 5000
+
 /** Returns a press counter that is true when a press comes within `ms` of an uncounted earlier one. */
 export function pressTwice(ms: number, now: () => number = Date.now) {
   let first: number | undefined
