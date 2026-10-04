@@ -220,6 +220,16 @@ def test_a_removed_name_is_gone_even_if_its_file_was_left(tmp_path):
         c.resolve("second", None)
 
 
+def test_a_garbled_removed_list_is_refused_not_ignored(tmp_path):
+    office = office_dir(tmp_path)
+    c = Connections(office)
+    c.ensure_dir()
+    for garbled in (b"{", b'{"names": "anthropic"}', b'{"names": [1]}'):
+        write_private(office / "connections" / "_removed.json", garbled)
+        with pytest.raises(ProviderError, match="_removed.json"):
+            c.free_name("anthropic")
+
+
 def test_resolve_puts_the_model_in_llm_config(tmp_path):
     c = Connections(office_dir(tmp_path, {"llm_config": {"provider": "vllm", "model": "a"},
                                           "env": {"VLLM_BASE_URL": "http://x"}}))

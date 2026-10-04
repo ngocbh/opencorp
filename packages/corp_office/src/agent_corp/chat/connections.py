@@ -248,14 +248,18 @@ class Connections:
         return self.dir / f"{name}.json"
 
     def _removed(self) -> set[str]:
+        """The names of removed connections, which are never used again."""
+        path = self.dir / "_removed.json"
         try:
-            names = json.loads((self.dir / "_removed.json").read_bytes())["names"]
+            names = json.loads(path.read_bytes())["names"]
         except FileNotFoundError:
             return set()
-        except (OSError, ValueError, LookupError, TypeError) as exc:
-            # Treating a garbled list as empty would let a removed name come back.
-            raise ProviderError(f"{self.dir / '_removed.json'} can't be read") from exc
-        return {n for n in names if isinstance(n, str)}
+        except (OSError, ValueError, LookupError, TypeError):
+            names = None
+        if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+            # Reading a garbled list as empty would let a removed name come back.
+            raise ProviderError(f"{path} can't be read")
+        return set(names)
 
 
 def key_id(provider: Provider) -> str | None:
