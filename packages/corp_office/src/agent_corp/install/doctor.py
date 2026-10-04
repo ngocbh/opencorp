@@ -105,15 +105,24 @@ def _connections(paths: OfficePaths) -> Check | None:
         st = os.lstat(folder)
     except FileNotFoundError:
         return None
-    if not stat.S_ISDIR(st.st_mode):
+    if stat.S_ISLNK(st.st_mode):
         return Check("connections", "fail", f"{folder} must be a directory, not a symlink")
+    if not stat.S_ISDIR(st.st_mode):
+        return Check("connections", "fail", f"{folder} is not a directory")
     if (mode := stat.S_IMODE(st.st_mode)) != 0o700:
         return Check("connections", "fail", f"{folder} is mode {mode:04o}, not 0700")
     try:
         entries = sorted(folder.iterdir())
     except OSError as exc:
         return Check("connections", "fail", f"can't read {folder}: {exc.strerror}")
-    loose = [p.name for p in entries if not stat.S_ISREG((m := os.lstat(p).st_mode)) or m & 0o077]
+    loose = []
+    for p in entries:
+        try:
+            m = os.lstat(p).st_mode
+        except FileNotFoundError:  # removed while this ran
+            continue
+        if not stat.S_ISREG(m) or m & 0o077:
+            loose.append(p.name)
     if loose:
         return Check("connections", "fail", f"{', '.join(loose)} in {folder} must be private to its owner (mode 0600)")
     return Check("connections", "ok", f"{folder} is private")

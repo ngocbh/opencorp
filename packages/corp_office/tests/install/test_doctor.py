@@ -140,6 +140,34 @@ def test_connections_others_can_read_fail_without_showing_them(tmp_path):
     assert all(KEY not in c.detail for c in got.values())
 
 
+def test_connections_that_is_not_a_directory_fails_with_what_it_is(tmp_path):
+    paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
+    folder = paths.office / "connections"
+    folder.write_text("")
+    assert by_name(run_checks(tmp_path, paths))["connections"] == Check("connections", "fail",
+                                                                        f"{folder} is not a directory")
+    folder.unlink()
+    (tmp_path / "elsewhere").mkdir(mode=0o700)
+    folder.symlink_to(tmp_path / "elsewhere")
+    assert by_name(run_checks(tmp_path, paths))["connections"] == Check(
+        "connections", "fail", f"{folder} must be a directory, not a symlink")
+
+
+def test_a_connection_removed_during_the_check_is_skipped(tmp_path, monkeypatch):
+    paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
+    Connections(paths.office).put("second", ConnectionFile(llm_config={"provider": "anthropic", "api_key": KEY}))
+    folder = paths.office / "connections"
+    lstat = os.lstat
+
+    def vanished(path, *args, **kwargs):
+        if str(path).endswith("second.json"):
+            raise FileNotFoundError(2, "No such file or directory", str(path))
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", vanished)
+    assert by_name(run_checks(tmp_path, paths))["connections"] == Check("connections", "ok", f"{folder} is private")
+
+
 def test_a_provider_composer_wont_take_fails_without_showing_the_key(tmp_path):
     paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY, KEY: 1}})
     got = by_name(run_checks(tmp_path, paths))
