@@ -9,10 +9,12 @@ from tests.chat.conftest import errors, status, texts, wait_for
 from tests.store.conftest import session as stored_session
 
 CHAT_WITHOUT_PERSON = (Path(__file__).parent / "fixtures" / "chat_without_person.yaml").read_text()
+CHAT_WITHOUT_TALKING_TO = (Path(__file__).parent / "fixtures" / "chat_without_talking_to.yaml").read_text()
 MINH = {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
         "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}
 LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
                                   "manager": "ngocbh"}}
+TALKING_TO_CEO = "You're talking with Hong Ngoc Bui (@ngocbh), the CEO and your manager."
 
 
 def start(harness, workspace):
@@ -54,9 +56,16 @@ def test_a_turn_replies_and_end_finishes_the_session(harness, fake_llm, workspac
     assert err.value.code == "not_live"
 
 
-def test_a_main_run_gets_the_persons_identity(harness, workspace):
+def test_a_main_run_gets_the_persons_identity_and_who_they_talk_with(harness, workspace):
     session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head()))
-    assert harness.main_spec(session).inputs == {"person": MINH}
+    assert harness.main_spec(session).inputs == {"person": MINH, "talking_to": TALKING_TO_CEO}
+
+
+def test_a_main_run_is_told_who_opened_it(make_harness, workspace):
+    harness = make_harness(files=LAN)
+    session = harness.store.create_session(stored_session(cwd=str(workspace), repo_commit=harness.git.head(),
+                                                          opened_by="lan"))
+    assert harness.main_spec(session).inputs["talking_to"] == "You're talking with Lan (@lan), your peer."
 
 
 def system_prompt(fake_llm, n):
@@ -82,6 +91,17 @@ def test_a_chat_flow_that_does_not_take_the_person_still_runs(make_harness, fake
     harness.prompt(sid, "hi")
     wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
     assert not system_prompt(fake_llm, 1).startswith("You are Minh")
+
+
+def test_a_chat_flow_from_before_talking_to_still_speaks_as_the_person(make_harness, fake_llm, workspace):
+    harness = make_harness(files={"shared/flows/chat.yaml": CHAT_WITHOUT_TALKING_TO})
+    fake_llm.script({"content": "Hello."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
+    prompt = system_prompt(fake_llm, 1)
+    assert prompt.startswith("You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
+    assert "talking with" not in prompt
 
 
 def asked(fake_llm, n):
