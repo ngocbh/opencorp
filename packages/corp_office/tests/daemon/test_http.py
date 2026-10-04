@@ -1,9 +1,13 @@
 """Request bodies: the size cap and bodies that don't parse."""
 
 import json
+from typing import Annotated, Literal
+
+import pytest
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent_corp.daemon.app import create_app
-from agent_corp.daemon.http import MAX_BODY
+from agent_corp.daemon.http import MAX_BODY, _errors
 from tests.daemon.conftest import served
 from tests.store.conftest import question, session
 
@@ -92,3 +96,59 @@ async def test_over_the_cap_on_a_real_socket_leaves_the_client_working(office, s
             r = await c.post(f"/questions/{q.id}/answer", content=content)
             assert r.status_code == 413 and json.loads(r.content)["error"] == "body_too_large"
             assert (await c.get("/people")).status_code == 200
+
+
+# A 422 never echoes the body: a password or key sent there would come back in the response.
+
+SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
+
+
+async def test_a_short_password_is_422_without_the_password(client):
+    short = "Zq7xWv"
+    r = await client.put("/people/ngocbh/password", json={"password": short})
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    assert short not in r.text and "password" in r.json()["message"]
+
+
+async def test_an_extra_key_is_422_without_its_name(client):
+    r = await client.put("/people/ngocbh/password", json={"password": "long-enough-password", SENTINEL: 1})
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    assert SENTINEL not in r.text and "an extra field" in r.json()["message"]
+
+
+async def test_a_bad_login_body_is_422_without_its_values_or_extra_keys(client):
+    body = {"handle": "ngocbh", "password": [SENTINEL], "device": "laptop", "token_sha256": "0" * 64,
+            SENTINEL: SENTINEL}
+    r = await client.post("/login", json=body)
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    assert SENTINEL not in r.text
+
+
+class _Cat(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["cat"]
+
+
+class _Dog(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["dog"]
+
+
+class _Pets(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    colour: Literal["red", "blue"]
+    pet: Annotated[_Cat | _Dog, Field(discriminator="type")]
+
+
+def test_errors_name_neither_a_literal_nor_a_union_tag_input():
+    with pytest.raises(ValidationError) as exc:
+        _Pets.model_validate({"colour": SENTINEL, "pet": {"type": SENTINEL}})
+    text = _errors(_Pets, exc.value)
+    assert SENTINEL not in text
+    assert text == "colour: isn't an allowed value; pet: isn't an allowed value"
+
+
+async def test_a_body_that_isnt_json_is_422(client, office):
+    q = _open_question(office)
+    r = await client.post(f"/questions/{q.id}/answer", content=b"{" + SENTINEL.encode())
+    assert (r.status_code, r.json()) == (422, {"error": "invalid_body", "message": "the body isn't JSON"})
