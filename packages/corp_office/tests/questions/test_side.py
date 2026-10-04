@@ -42,11 +42,16 @@ def test_a_side_run_reads_the_workspace_but_cannot_change_it(make_harness, works
     assert "the build is red" in groups["workspace"]["read_file"]("notes.txt")
 
 
-def test_a_side_run_gets_the_askers_identity(make_harness, workspace):  # noqa: F811
-    h = make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW})
-    assert side_spec(h, side_of(h, workspace)).inputs == {"person": {
-        "name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
-        "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}}
+def test_a_side_run_gets_the_askers_identity_and_who_opened_it(make_harness, workspace):  # noqa: F811
+    lan = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
+                                      "manager": "ngocbh"}}
+    h = make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW} | lan)
+    assert side_spec(h, side_of(h, workspace)).inputs == {
+        "person": {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
+                   "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."},
+        "talking_to": "You're talking with Hong Ngoc Bui (@ngocbh), the CEO and your manager."}
+    side = side_of(h, workspace, opened_by="lan")
+    assert side_spec(h, side).inputs["talking_to"] == "You're talking with Lan (@lan), your peer."
 
 
 def test_a_pin_without_the_side_chat_flow_gets_the_packaged_one(make_harness, workspace):  # noqa: F811

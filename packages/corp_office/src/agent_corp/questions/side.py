@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_corp.chat.harness import LIVE, Harness, HarnessError, RunSpec
-from agent_corp.chat.identity import person_inputs
+from agent_corp.chat.identity import person_inputs, talking_to
 from agent_corp.chat.turns import MAIN_CHAT
 from agent_corp.company.loader import load_repo
 from agent_corp.profile import GitProfileStore
@@ -27,7 +27,10 @@ SEED_FILE = "seed.md"
 
 
 def side_spec(harness: Harness, session: Session) -> RunSpec:
-    """The run spec of a side session: the side chat flow, who the asker is, read-only lookups, and memory that keeps the seed.
+    """The run spec of a side session.
+
+    The side chat flow, who the asker is and who they're talking with, read-only lookups, and memory that keeps
+    the seed.
 
     A pinned commit without the side chat flow (a company made before side chats) gets
     the packaged one. Raises ``HarnessError`` (``422``) when that path is taken by
@@ -54,8 +57,8 @@ def side_spec(harness: Harness, session: Session) -> RunSpec:
     # The seed is the first turn; composer summarizes history past the budget, so leave room for it.
     budget = defaults.side_seed_max_chars + SessionMemorySpec().history_budget_chars
     return RunSpec(
-        flow=SIDE_CHAT_FLOW, groups=groups, inputs={"person": person_inputs(repo, person)}, chat=SIDE_CHAT,
-        learnable=False,
+        flow=SIDE_CHAT_FLOW, groups=groups, chat=SIDE_CHAT, learnable=False,
+        inputs={"person": person_inputs(repo, person), "talking_to": talking_to(repo, person, session.opened_by)},
         memory={"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars),
                 "session": SessionMemorySpec(storage=str(run_dir / "memory.sqlite"), history_budget_chars=budget)},
         stores={"profile": GitProfileStore(harness.git, person.handle)},
