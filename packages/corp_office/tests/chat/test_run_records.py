@@ -361,6 +361,13 @@ def test_a_resume_runs_on_what_its_check_passed_even_if_the_choice_changes_meanw
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("resume", "stub")]
 
 
+def announced(harness):
+    """The run ids the harness's ``run_finished`` hook announces from now on, in order."""
+    seen = []
+    harness.hooks.run_finished.append(lambda session, run_id, outcome: seen.append(run_id))
+    return seen
+
+
 def killed(harness, sid):
     """Kill the session's worker."""
     os.killpg(harness._live[sid].worker.pgid, signal.SIGKILL)
@@ -407,10 +414,31 @@ def test_a_fresh_run_that_cant_be_recorded_fails_the_session_after_a_crash(make_
     def unrecorded(*args):
         raise OSError("disk full")
 
+    old = harness.store.get_session(sid).run_ids
+    finished = announced(harness)
     monkeypatch.setattr(harness.store, "add_session_run", unrecorded)
     killed(harness, sid)
     wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
     assert sid not in harness._live
+    assert finished == old  # the run that died, once; never a run the session didn't record
+
+
+def test_a_restart_that_cant_record_its_run_announces_the_old_run_once(make_harness, fake_llm, workspace,
+                                                                       monkeypatch):
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(harness, workspace)
+    old = harness.store.get_session(sid).run_ids
+    rewrite_office(harness, api_key="sk-another-key")
+    finished = announced(harness)
+
+    def unrecorded(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(harness.store, "add_session_run", unrecorded)
+    harness.prompt(sid, "a")  # the key changed, so a fresh run would take it
+    wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
+    assert finished == old and sid not in harness._live
+    assert harness.store.get_session(sid).run_ids == old
 
 
 def test_a_fresh_run_whose_note_cant_be_written_fails_the_session_at_restore(make_harness, fake_llm, workspace,

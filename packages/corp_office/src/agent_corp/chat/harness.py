@@ -120,6 +120,7 @@ class _Live:
     outcome: dict[str, Any] | None = None
     timer: threading.Timer | None = None
     calls: set[_Call] = field(default_factory=set)
+    announced: str | None = None  # the run whose run_finished has fired, so it never fires twice
 
 
 class _Handlers(BaseHandlers):
@@ -782,7 +783,7 @@ class Harness:
             self._finish(live, "ended", outcome)
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
             live.transcript.error(f"The reply failed ({_why(outcome, live.provider)}). Send your message again.")
-            self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
+            self._run_finished(live, session, outcome)
             self._new_run(live)
         else:
             self._finish(live, "failed", outcome)
@@ -795,8 +796,9 @@ class Harness:
         try:
             for q in self.store.list_questions(run_id=live.run_id, status="open"):
                 self.store.set_question_status(q.id, "stale")
-            live.run_id = new_id()
-            self.store.add_session_run(live.session_id, live.run_id)
+            run_id = new_id()
+            self.store.add_session_run(live.session_id, run_id)
+            live.run_id = run_id
         except Exception:
             self._cant_start(live)
             raise
@@ -849,7 +851,7 @@ class Harness:
         with self._lock:
             if not self._current(live) or self._stopping:
                 return
-        self.hooks.fire("run_finished", self.store.get_session(live.session_id), live.run_id, None)
+        self._run_finished(live, self.store.get_session(live.session_id), None)
         try:
             self._new_run(live)
         except Exception:
@@ -872,8 +874,14 @@ class Harness:
             if session.work_item_id:
                 self.store.update_work_item(session.work_item_id, status="done")
         session = self.store.update_session(live.session_id, status=status)
-        self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
+        if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
+            self._run_finished(live, session, outcome)
         self.hooks.fire("session_ended", session)
+
+    def _run_finished(self, live: _Live, session: Session, outcome: dict[str, Any] | None) -> None:
+        """Fire ``run_finished`` for ``live``'s current run."""
+        live.announced = live.run_id
+        self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
 
     def _fail(self, session_id: str) -> None:
         """Fail a session that has no live run."""
