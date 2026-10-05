@@ -309,6 +309,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }
   const [terminalTitleEnabled, setTerminalTitleEnabled] = createSignal(kv.get("terminal_title_enabled", true))
   const [pasteSummaryEnabled, setPasteSummaryEnabled] = createSignal(kv.get("paste_summary_enabled", true))
+  const [startOnLastPick, setStartOnLastPick] = kv.signal("start_on_last_pick", false)
 
   // Update terminal window title based on current route and session
   createEffect(() => {
@@ -405,6 +406,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         slashAliases: ["models"],
         run: () => {
           dialog.replace(() => <DialogModel />)
+        },
+      },
+      {
+        name: "model.last_pick.toggle",
+        title: startOnLastPick() ? "Stop starting new chats on my last pick" : "Start new chats on my last pick",
+        category: "Session",
+        run: () => {
+          setStartOnLastPick((prev) => !prev)
+          dialog.clear()
         },
       },
       {
