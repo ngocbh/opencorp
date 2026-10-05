@@ -1,7 +1,7 @@
-"""Connection routes: the office's model connections, the models each offers, and the default.
+"""Connection routes: the office's model connections, the models each offers, the default, and subscription sign-ins.
 
-Anyone signed in sees them; only those ``may_manage_connections`` allows add, remove or change the default. No
-response, log line or event holds a key.
+Anyone signed in sees them; only those ``may_manage_connections`` allows add, remove, sign in or change the default,
+and only the person who started a sign-in sees or cancels it. No response, log line or event holds a key or token.
 """
 
 from __future__ import annotations
@@ -18,13 +18,15 @@ from agent_corp.auth.identity import identity_path, read_identity
 from agent_corp.chat import check, models
 from agent_corp.chat.connections import (OFFICE, BadConnectionName, ConnectionFile, ConnectionGone, Connections,
                                          azure_base_url, provider_label)
+from agent_corp.chat.logins import LoginNotFound, Logins
 from agent_corp.chat.models import ModelCache
 from agent_corp.chat.provider import ProviderError
 from agent_corp.company.loader import load_repo
 from agent_corp.daemon.auth import acting_person
 from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
 from agent_corp.perm.office import may_manage_connections
-from agent_corp.protocol.models import Ack, AddConnectionRequest, ConnectionList, SetDefaultConnectionRequest
+from agent_corp.protocol.models import (Ack, AddConnectionRequest, ConnectionList, SetDefaultConnectionRequest,
+                                       StartLoginRequest)
 
 if TYPE_CHECKING:
     from agent_corp.daemon.app import Office
@@ -47,6 +49,11 @@ def model_cache(request: Request) -> ModelCache:
     return _extra(request, "models")
 
 
+def logins(request: Request) -> Logins:
+    """The office's subscription sign-ins; ``501`` if this office keeps none."""
+    return _extra(request, "logins")
+
+
 def _may_manage(office: Office, person: str) -> bool:
     owner = read_identity(identity_path(office.paths.home))
     # At HEAD: an uncommitted edit grants nothing until it is committed.
@@ -67,6 +74,14 @@ def _guarded[T](fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         raise HTTPError(404, "not_found", str(exc)) from None
     except ProviderError as exc:
         raise HTTPError(409, "connection_unusable", str(exc)) from None
+
+
+def _starters[T](fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """``fn(*args, **kwargs)``, with no such sign-in, or another person's, as a ``404``."""
+    try:
+        return fn(*args, **kwargs)
+    except LoginNotFound as exc:
+        raise HTTPError(404, "not_found", str(exc)) from None
 
 
 def _connection_list(conns: Connections, can_manage: bool) -> ConnectionList:
@@ -193,10 +208,34 @@ async def list_models(request: Request) -> JSONResponse:
     return ok(found)
 
 
+async def start_login(request: Request) -> JSONResponse:
+    """Start a subscription sign-in that adds a connection once approved; its URL and code to approve it with."""
+    found, person = logins(request), acting_person(request)
+    await call(_check_manage, get_office(request), person)  # before the body is read
+    await parse(request, StartLoginRequest)
+    return ok(await call(found.start, by=person))
+
+
+async def get_login(request: Request) -> JSONResponse:
+    """A sign-in the asking person started, as it is now."""
+    found = logins(request)
+    return ok(await call(_starters, found.get, request.path_params["id"], by=acting_person(request)))
+
+
+async def cancel_login(request: Request) -> JSONResponse:
+    """Cancel a sign-in the asking person started, saving nothing."""
+    found = logins(request)
+    await call(_starters, found.cancel, request.path_params["id"], by=acting_person(request))
+    return ok(Ack(ok=True))
+
+
 ROUTES = [
     Route("/connections", list_connections, methods=["GET"]),
     Route("/connections", add, methods=["POST"]),
     Route("/connections/default", set_default, methods=["PUT"]),
+    Route("/connections/login", start_login, methods=["POST"]),
+    Route("/connections/login/{id}", get_login, methods=["GET"]),
+    Route("/connections/login/{id}", cancel_login, methods=["DELETE"]),
     Route("/connections/{name}", remove, methods=["DELETE"]),
     Route("/connections/{name}/models", list_models, methods=["GET"]),
 ]

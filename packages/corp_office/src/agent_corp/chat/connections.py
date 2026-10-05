@@ -232,8 +232,9 @@ class Connections:
     def remove(self, name: str) -> None:
         """Remove connection ``name`` and its sign-in; ValueError for ``office``, ConnectionGone if neither exists.
 
-        A running reply keeps the key it has. Raises ProviderError if composer holds the sign-in's lock for longer
-        than ``SIGN_IN_LOCK_TIMEOUT``.
+        A running reply keeps the key it has, but one on a subscription may fail once it next reads or refreshes the
+        sign-in, which is gone. Raises ProviderError if composer holds the sign-in's lock for longer than
+        ``SIGN_IN_LOCK_TIMEOUT``.
         """
         if name == OFFICE:
             raise ValueError("office is office/provider.json; `ac onboard` changes it, and it can't be removed")

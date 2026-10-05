@@ -18,6 +18,7 @@ import uvicorn
 from agent_corp.chat.connections import Connections
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.hire import Hiring
+from agent_corp.chat.logins import Logins
 from agent_corp.chat.models import ModelCache
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app
@@ -170,7 +171,7 @@ def build_office(paths: OfficePaths) -> Office:
 
     Workers left by an earlier office are killed first; the harness resumes their sessions on start.
     ``POST /people`` gets one ``Hiring`` for the office's life. On start, each connection's models are listed in the
-    background.
+    background; on stop, subscription sign-ins still waiting are cancelled.
     """
     store = Store(paths.store)
     git = CompanyGit(paths.company, paths.worktrees)
@@ -179,15 +180,18 @@ def build_office(paths: OfficePaths) -> Office:
     monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
     connections = Connections(paths.office)
     models = ModelCache(connections)
+    logins = Logins(connections, models=models)
     harness = Harness(office, monitor, connections=connections, models=models)
     office.workers = harness
     office.extras["harness"] = harness
     office.extras["hiring"] = Hiring(git)
     office.extras["connections"] = connections
     office.extras["models"] = models
+    office.extras["logins"] = logins
     office.on_start.append(lambda: asyncio.to_thread(harness.restore))
     # warm returns its thread, which start doesn't wait on: a slow provider must not hold up the office's start.
     office.on_start.append(models.warm)
+    office.on_stop.append(lambda: asyncio.to_thread(logins.close_all))
     return office
 
 
