@@ -46,6 +46,7 @@ LIVE = ("starting", "idle", "busy", "ending")
 _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
+_UNREAD_DEFAULT = "The office's default connection can't be read"
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
 
@@ -257,40 +258,72 @@ class Harness:
     def _choose(self, person: Any, connection: str | None, model: str | None) -> tuple[str, str | None, str | None]:
         """The connection and model a new chat of ``person`` starts on, and a note when it isn't what was asked for.
 
-        The pick (``connection`` and ``model``; a model alone is on the default) if its connection is on this office;
-        else the first connection that offers ``person.model``, the default first and then the others by name; else
-        the default on its own model. Everything is decided within one ``choose_deadline``. A model equal to the
-        chosen connection's own is None.
+        The pick (``connection`` and ``model``; a model alone is on the default) if its connection is on this office
+        and can be used; else the first connection that offers ``person.model``, the default first and then the
+        others by name; else the default on its own model. Everything is decided within one ``choose_deadline``. A
+        model equal to the chosen connection's own is None.
         """
         end = time.monotonic() + self.choose_deadline
         try:
             names = self.connections.names()
-            default = self.connections.default()
         except ProviderError:
-            return OFFICE, None, None  # the spawn reports why the connections can't be read
-        skipped = None
+            return OFFICE, None, None  # the spawn reads the names too, and reports why they can't be read
+        default, unread = self._default()
+        why = []
+        picked = connection or default
         if connection is not None or model is not None:
-            if (connection or default) in names:
-                return connection or default, self._unless_own(connection or default, model), None
-            skipped = connection
-        name, model, note = default, None, None
+            if picked not in names:
+                why.append(f"Your last pick '{picked}' isn't on this office")
+            elif not self._usable(picked, model):
+                why.append(f"Your last pick '{picked}' can't be used on this office")
+            else:
+                model = self._unless_own(picked, model)
+                # A model picked alone is on the default, which may be office only because the default can't be read.
+                note = self._unread_note(model) if connection is None and unread else None
+                return picked, model, note
+        name, model = default, None
         if person.model:
             try:
-                found = next((n for n in [default] + [n for n in names if n != default]
+                found = next((n for n in [default] + sorted(n for n in names if n != default)
                               if self._offers(n, person.model, end)), None)
             except ListTimeout:
-                note = (f"Couldn't check in time which connection offers {person.model}; "
-                        f"this chat uses {self._named(default, None)}.")
+                why.append(f"Couldn't check in time which connection offers {person.model}")
             else:
                 if found is None:
-                    note = (f"@{person.handle} asks for {person.model}, which no connection on this office offers; "
-                            f"this chat uses {self._named(default, None)}.")
+                    why.append(f"@{person.handle} asks for {person.model}, which no connection on this office offers")
                 else:
                     name, model = found, self._unless_own(found, person.model)
-        if skipped is not None:
-            note = f"Your last pick '{skipped}' isn't on this office" + (
-                f". {note}" if note else f"; this chat uses {self._named(name, model)}.")
-        return name, model, note
+        if unread and name == default:
+            why.append(_UNREAD_DEFAULT)
+        return name, model, f"{'. '.join(why)}; this chat uses {self._named(name, model)}." if why else None
+
+    def default_choice(self) -> tuple[str, str | None]:
+        """The connection a chat that takes the default starts on, and a note if it is ``office`` only because the
+        office's default can't be read."""
+        default, unread = self._default()
+        return default, self._unread_note(None) if unread else None
+
+    def _default(self) -> tuple[str, bool]:
+        """The default connection, and whether it is ``office`` only because ``_default.json`` can't be read."""
+        try:
+            return self.connections.default(), False
+        except ProviderError:
+            # The spawn never reads _default.json, so nothing else would say why chats left the default.
+            log.warning("the office's default connection can't be read; new chats take office as the default")
+            return OFFICE, True
+
+    def _unread_note(self, model: str | None) -> str:
+        """The note of a chat on ``office`` and ``model`` because the office's default can't be read."""
+        return f"{_UNREAD_DEFAULT}; this chat uses {self._named(OFFICE, model)}."
+
+    def _usable(self, name: str, model: str | None) -> bool:
+        """Whether a run on connection ``name`` and ``model`` can be resolved now."""
+        try:
+            self.connections.resolve(name, model)
+            return True
+        except (ProviderError, ValueError):
+            log.warning("connection %s can't be used; a new chat doesn't start on it", name)
+            return False
 
     def _offers(self, name: str, model: str, end: float) -> bool:
         """Whether connection ``name`` offers ``model``, listing it by ``end`` (a ``time.monotonic()``) if need be.

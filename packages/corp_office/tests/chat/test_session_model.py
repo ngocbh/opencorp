@@ -105,6 +105,41 @@ def test_after_the_default_the_others_are_tried_by_name(make_harness, workspace)
     assert chose(s) == ("abe", "stub-7", None)
 
 
+def test_after_a_default_other_than_office_the_others_are_tried_by_name(make_harness, workspace):
+    h = make_harness(connections={"zed": "stub-2", "abe": "stub-3"},
+                     listings={"office": ["stub-7"], "abe": ["stub-7"], "zed": []}, files=wants("stub-7"))
+    h.connections.set_default("zed")
+    s = h.start_session("minh", str(workspace))
+    assert chose(s) == ("abe", "stub-7", None)
+
+
+def test_a_pick_that_cant_be_used_falls_through_with_a_note(make_harness, workspace):
+    h = make_harness(connections={"second": "stub-2", "third": "stub-3"}, files=wants("stub-3"))
+    write_private(h.connections.dir / "second.json", b"{not json")
+    s = h.start_session("minh", str(workspace), connection="second", model="stub-5")
+    assert chose(s) == ("third", None, "Your last pick 'second' can't be used on this office; "
+                                       "this chat uses third/stub-3.")
+
+
+def test_a_default_that_cant_be_read_still_takes_the_pick_and_the_persons_model(make_harness, workspace, caplog):
+    h = make_harness(connections={"second": "stub-2"}, files=wants("stub-2"))
+    write_private(h.connections.dir / "_default.json", b"[]")
+    assert h._choose(minh(h), "second", "stub-5") == ("second", "stub-5", None)
+    assert h._choose(minh(h), None, None) == ("second", None, None)
+    assert "default connection can't be read" in caplog.text
+    assert str(h.connections.dir) not in caplog.text
+
+
+def test_a_chat_on_the_office_because_the_default_cant_be_read_says_so(make_harness, workspace):
+    h = make_harness(connections={"second": "stub-2"})
+    write_private(h.connections.dir / "_default.json", b"[]")
+    s = h.start_session("minh", str(workspace))
+    assert chose(s) == ("office", None, "The office's default connection can't be read; this chat uses office/stub.")
+    assert h._choose(minh(h), "office", None) == ("office", None, None)  # picked, not fallen back on
+    assert h._choose(minh(h), None, "stub-5") == (
+        "office", "stub-5", "The office's default connection can't be read; this chat uses office/stub-5.")
+
+
 def test_a_connection_that_cant_be_read_offers_nothing(make_harness, workspace):
     h = make_harness(connections={"zed": "stub-2"}, listings={"zed": ["stub-7"]}, files=wants("stub-7"))
     write_private(h.connections.dir / "bad.json", b"{not json")
