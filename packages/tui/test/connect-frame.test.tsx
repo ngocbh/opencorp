@@ -486,7 +486,7 @@ test("a failed sign-in says so and to try /connect again", async () => {
   office.loginFailures.push("HTTP 400")
   await run(office, async (app) => {
     await signIn(app, office)
-    const f = await app.until((f) => f.includes("Sign-in failed (HTTP 400). Try /connect again."))
+    const f = await app.until((f) => f.includes("Sign-in failed (HTTP 400). Try /connect again."), 5000)
     expect(f).not.toContain("Waiting for you to sign in…")
     expect(f).not.toContain("c copy")
   })
@@ -512,6 +512,27 @@ test("a sign-in whose code comes on a later read shows the spinner until a read 
     expect(polls(office)).toHaveLength(1)
   })
 }, 10_000)
+
+test("a sign-in cancelled at the office says so and to try /connect again", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await signIn(app, office)
+    office.logins()[0].state = "cancelled"
+    const f = await app.until((f) => f.includes("The sign-in was cancelled. Try /connect again."), 5000)
+    expect(f).not.toContain("ABCD-EFGH")
+  })
+}, 10_000)
+
+test("a sign-in the office can't start says so", async () => {
+  const office = createFakeOffice()
+  office.broken.add("POST /connections/login")
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    await choose(app, "ChatGPT subscription", "chatgpt")
+    const f = await app.until((f) => f.includes("Couldn't start the sign-in"))
+    expect(f).not.toContain("Getting a sign-in code…")
+  })
+})
 
 test("a sign-in that can't be read says so rather than waiting on", async () => {
   const office = createFakeOffice()

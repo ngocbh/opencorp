@@ -311,7 +311,8 @@ function SubscriptionMethod(props: { provider: Provider }) {
     try {
       next = await office.client.connections.login(id)
     } catch (e) {
-      // A finished sign-in is forgotten after a while, and then reads as not found; either way it can't be waited on.
+      // The office keeps sign-ins in memory, so after a restart this one reads as not found; either way it can't be
+      // waited on.
       if (!closed) setError(`Couldn't check the sign-in: ${errorMessage(e)}. Try /connect again.`)
       return
     }
