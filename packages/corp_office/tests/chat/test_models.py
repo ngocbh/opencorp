@@ -7,7 +7,7 @@ import time
 
 import httpx
 import pytest
-from agent_composer.llm_clients.auth import AuthError, HttpResponse, OpenAIAuth
+from agent_composer.llm_clients.auth import HttpResponse
 
 from agent_corp.chat.connections import ConnectionFile, ConnectionGone, Connections
 from agent_corp.chat.models import (FRESH, TIMED_OUT, ListTimeout, ModelCache, ModelListError, azure_deployments,
@@ -16,6 +16,7 @@ from agent_corp.protocol.models import ModelList, ModelOption
 from agent_corp.secrets import write_private
 
 SENTINEL = "sk-sentinel-3c9e10b7a2f4"
+ANTHROPIC_KEY = "sk-ant-sentinel-a7d93c10e5b2"
 AZURE = "https://acme.openai.azure.com/openai/v1/"
 
 
@@ -36,7 +37,7 @@ def deployments_reply(request):
 
 
 class FakeRequest:
-    """Composer's ``request`` callable for ``OpenAIAuth``: answers every call with ``response``, recording it."""
+    """Composer's ``request`` sender for ``list_models``: answers every call with ``response``, recording it."""
 
     def __init__(self, response):
         self.response = response
@@ -85,49 +86,91 @@ def test_azure_deployments_says_why_it_cant_list_them(response, problem):
 def test_openai_with_a_key_lists_text_models():
     ids = ["gpt-5", "dall-e-3", "gpt-4o-realtime-preview", "o3", "text-embedding-3-small", "gpt-4o-mini-tts", "o4-mini"]
     request = FakeRequest(HttpResponse(200, {"data": [{"id": i} for i in ids]}))
-    got = list_models(openai(), "openai", deadline=6, auth=OpenAIAuth(request=request, request_timeout=6))
+    got = list_models(openai(), "openai", deadline=6, request=request)
     assert [m.id for m in got.models] == ["gpt-5", "o3", "o4-mini"] and got.listed and got.error is None
     [(method, url, kwargs)] = request.calls
     assert (method, url) == ("GET", "https://api.openai.com/v1/models")
     assert kwargs["headers"]["Authorization"] == f"Bearer {SENTINEL}" and kwargs["timeout"] <= 6
 
 
+@pytest.mark.parametrize(("llm", "url", "header"), [
+    ({"provider": "anthropic", "api_key": ANTHROPIC_KEY}, "https://api.anthropic.com/v1/models?limit=1000",
+     ("x-api-key", ANTHROPIC_KEY)),
+    ({"provider": "openrouter", "api_key": SENTINEL}, "https://openrouter.ai/api/v1/models",
+     ("Authorization", f"Bearer {SENTINEL}")),
+    ({"provider": "openai", "base_url": "https://gw.example/v1", "api_key": SENTINEL}, "https://gw.example/v1/models",
+     ("Authorization", f"Bearer {SENTINEL}")),
+])
+def test_other_providers_list_every_model_their_host_offers(llm, url, header):
+    ids = ["claude-x", "gpt-x", "llama-4"]
+    request = FakeRequest(HttpResponse(200, {"data": [{"id": i} for i in ids], "has_more": False}))
+    got = list_models(ConnectionFile(llm_config=llm | {"model": "claude-x"}), "other", deadline=6, request=request)
+    assert (got.listed, got.error, [m.id for m in got.models]) == (True, None, ids)
+    [(method, sent, kwargs)] = request.calls
+    assert (method, sent) == ("GET", url) and kwargs["headers"][header[0]] == header[1] and kwargs["timeout"] <= 6
+
+
+@pytest.mark.parametrize(("conn", "url"), [
+    (ConnectionFile(llm_config={"provider": "vllm", "model": "stub"}, env={"VLLM_BASE_URL": "http://127.0.0.1:9/v1"}),
+     "http://127.0.0.1:9/v1/models"),
+    (ConnectionFile(llm_config={"provider": "ollama", "model": "stub"},
+                    env={"OLLAMA_BASE_URL": "http://127.0.0.1:9"}), "http://127.0.0.1:9/api/tags"),
+])
+def test_a_provider_without_a_key_lists_the_host_its_runs_go_to(conn, url):
+    request = FakeRequest(HttpResponse(200, {"data": [{"id": "stub"}], "models": [{"name": "stub"}]}))
+    got = list_models(conn, "local", request=request)
+    assert (got.listed, [m.id for m in got.models]) == (True, ["stub"])
+    [(_, sent, kwargs)] = request.calls
+    assert sent == url and "Authorization" not in kwargs["headers"]
+
+
 @pytest.mark.parametrize("status", [401, 403])
-def test_a_refused_key_says_the_status_never_the_key(status):
-    request = FakeRequest(HttpResponse(status, {"error": {"message": f"bad key {SENTINEL}"}}))
-    got = list_models(openai(), "openai", auth=OpenAIAuth(request=request))
-    assert (got.error, got.refused) == (f"HTTP {status}", True)
-    assert SENTINEL not in got.model_dump_json() and "refused" not in got.model_dump()
+def test_a_refused_key_says_the_status_never_the_key(status, caplog):
+    request = FakeRequest(HttpResponse(status, {"error": {"message": f"bad key {SENTINEL} {ANTHROPIC_KEY}"}}))
+    for conn in (openai(), ConnectionFile(llm_config={"provider": "anthropic", "api_key": ANTHROPIC_KEY})):
+        got = list_models(conn, "openai", request=request)
+        assert (got.error, got.refused) == (f"HTTP {status}", True)
+        assert SENTINEL not in got.model_dump_json() and ANTHROPIC_KEY not in got.model_dump_json()
+        assert "refused" not in got.model_dump()
     got = list_models(azure(), "azure", transport=httpx.MockTransport(lambda r: httpx.Response(status)))
     assert (got.error, got.refused) == (f"HTTP {status}", True)
+    assert SENTINEL not in caplog.text and ANTHROPIC_KEY not in caplog.text
 
 
 def test_a_failure_that_isnt_a_refusal_isnt_refused():
-    got = list_models(openai(), "openai", auth=OpenAIAuth(request=FakeRequest(HttpResponse(500, {}))))
+    got = list_models(openai(), "openai", request=FakeRequest(HttpResponse(500, {})))
     assert (got.error, got.refused, got.listed) == ("HTTP 500", False, False)
     assert got.models == [ModelOption(id="gpt-5")]
 
 
-def test_a_request_composer_cant_make_keeps_composers_message():
-    # Composer reports its own request timing out as a failed request, like any other error in the request.
-    request = FakeRequest(AuthError("OpenAI authentication request timed out"))
-    got = list_models(openai(), "openai", auth=OpenAIAuth(request=request))
-    assert (got.error, got.refused, got.listed) == ("OpenAI authentication request failed", False, False)
+@pytest.mark.parametrize(("raised", "problem"), [
+    (TimeoutError("HTTP request timed out"), TIMED_OUT),
+    (OSError(f"refused {SENTINEL}"), "can't reach host"),
+    (ValueError("HTTP response body too large"), "invalid response"),
+])
+def test_a_request_that_fails_says_why_in_composers_words(raised, problem):
+    got = list_models(openai(), "openai", request=FakeRequest(raised))
+    assert (got.error, got.refused, got.listed) == (problem, False, False)
+    assert SENTINEL not in got.model_dump_json()
 
 
 @pytest.mark.parametrize("conn", [
-    ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"}),
-    ConnectionFile(llm_config={"provider": "openai", "base_url": "https://gw.example/v1", "api_key": SENTINEL,
-                               "model": "claude-x"}),
     ConnectionFile(method="subscription", llm_config={"provider": "openai", "model": "claude-x"}),
+    ConnectionFile(llm_config={"provider": "anthropic", "model": "claude-x"}),  # no key: runs have none either
+    ConnectionFile(llm_config={"provider": "azure", "api_key": SENTINEL, "model": "claude-x"}),  # composer: None
     ConnectionFile(llm_config={"provider": "openai", "api_key": SENTINEL, "model": "claude-x"},
                    env={"OPENAI_BASE_URL": "https://gw.example/v1"}),
+    ConnectionFile(llm_config={"provider": "anthropic", "api_key": ANTHROPIC_KEY, "model": "claude-x"},
+                   env={"ANTHROPIC_BASE_URL": "https://gw.example"}),
 ])
 def test_a_provider_that_cant_list_gives_its_own_model(conn):
-    got = list_models(conn, "other", auth=OpenAIAuth(request=FakeRequest(None)))
+    def never(*args, **kwargs):
+        raise AssertionError("no request expected")
+
+    got = list_models(conn, "other", request=never)
     want = ModelList(connection="other", models=[ModelOption(id="claude-x")], listed=False)
     assert got.model_dump() == want.model_dump()
-    got = list_models(ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL}), "other")
+    got = list_models(ConnectionFile(method="subscription", llm_config={"provider": "openai"}), "other", request=never)
     assert (got.models, got.listed) == ([], False)
 
 
