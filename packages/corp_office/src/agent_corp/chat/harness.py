@@ -325,27 +325,29 @@ class Harness:
 
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
+        provider: Provider | None
         try:
             stored = self.store.get_session(live.session_id)
             session = self._choice(stored)
+            try:
+                record = read_run_record(self._record_path(live))
+                ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
+                if ran_on != (session.connection or OFFICE, session.model):
+                    raise RunMoved("the chat's model changed since its last run")
+                provider = self.connections.for_run(record, self._log_path(live), exact=True)
+            except (RunMoved, ProviderError, ValueError) as exc:
+                # Resuming would replay the run's own endpoint and config with whatever key it is given.
+                log.info("session %s starts a fresh run: %s", live.session_id, exc)
+                provider = None
+                if session is stored:  # a chat _choice moved has its removal note, which says more
+                    self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
         except Exception:
             self._cant_start(live)
             raise
-        moved = session is not stored
-        try:
-            record = read_run_record(self._record_path(live))
-            ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
-            if ran_on != (session.connection or OFFICE, session.model):
-                raise RunMoved("the chat's model changed since its last run")
-            provider = self.connections.for_run(record, self._log_path(live), exact=True)
-        except (RunMoved, ProviderError, ValueError) as exc:
-            # Resuming would replay the run's own endpoint and config with whatever key it is given.
-            log.info("session %s starts a fresh run: %s", live.session_id, exc)
-            if not moved:  # a moved chat's removal note says more
-                self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
+        if provider is None:
             self._new_run(live)  # on failure, it fails the session and raises
-            return
-        self._spawn(live, "resume", provider)
+        else:
+            self._spawn(live, "resume", provider)
 
     def _interrupt_running_tools(self, session_id: str) -> None:
         """Mark tool parts a dead office left ``running`` as interrupted; their calls died with it."""

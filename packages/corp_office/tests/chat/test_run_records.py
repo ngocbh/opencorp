@@ -413,6 +413,26 @@ def test_a_fresh_run_that_cant_be_recorded_fails_the_session_after_a_crash(make_
     assert sid not in harness._live
 
 
+def test_a_fresh_run_whose_note_cant_be_written_fails_the_session_at_restore(make_harness, fake_llm, workspace,
+                                                                            monkeypatch):
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(first, workspace)
+    first.close_all()
+
+    second = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-another-key"})
+    update = second.store.update_session
+
+    def no_notes(session_id, **fields):
+        if "model_note" in fields:
+            raise OSError("disk full")
+        return update(session_id, **fields)
+
+    monkeypatch.setattr(second.store, "update_session", no_notes)
+    second.restore()
+    assert status(second, sid) == "failed" and sid not in second._live
+    assert second.store.get_session(sid).run_ids == first.store.get_session(sid).run_ids
+
+
 def test_a_removed_connection_stops_serving_turns_even_when_the_default_cant_be_used(make_harness, fake_llm,
                                                                                     workspace):
     harness = make_harness(connections={"second": "stub-2"})
