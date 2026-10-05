@@ -5,6 +5,8 @@ import httpx
 import pytest
 from agent_composer.run import run_flow
 
+from agent_corp.chat.connections import ConnectionFile
+from agent_corp.chat.models import list_models
 from agent_corp.company.flows import load_confined
 from agent_corp.testing.fake_llm import LLM_CONFIG
 
@@ -102,3 +104,14 @@ def test_hold_true_waits_until_release(fake_llm):
     fake_llm.release()
     caller.join(5)
     assert got["choices"][0]["message"]["content"] == "held"
+
+
+def test_it_lists_its_model_without_recording_a_chat_request(fake_llm):
+    r = httpx.get(f"{fake_llm.base_url}/v1/models")
+    assert r.json() == {"object": "list", "data": [{"id": "stub", "object": "model"}]}
+    assert fake_llm.requests() == [] and httpx.get(f"{fake_llm.base_url}/_requests").json() == []
+
+
+def test_a_connection_to_it_is_listed_cleanly(fake_llm):
+    listed = list_models(ConnectionFile(llm_config=LLM_CONFIG, env=fake_llm.env()), "office")
+    assert (listed.listed, listed.error, [m.id for m in listed.models]) == (True, None, ["stub"])

@@ -8,7 +8,9 @@ from collections.abc import Callable, Iterable
 from urllib.parse import urlsplit
 
 import httpx
-from agent_composer.llm_clients.auth import ApiKeyCredentials, AuthError, OpenAIAuth
+from agent_composer.llm_clients import ModelListError as HostListError
+from agent_composer.llm_clients import list_models as host_models
+from agent_composer.llm_clients.auth import HttpResponse
 from pydantic import Field
 
 from agent_corp.chat.connections import Connections, config_hash, provider_label
@@ -27,6 +29,20 @@ TIMED_OUT = "timed out"
 
 AZURE_DEPLOYMENTS_API = "2022-12-01"
 """The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key."""
+
+KEYLESS = ("ollama", "vllm")
+"""Providers whose runs need no key, so they are listed without one."""
+
+_ENV_BASE_URL = {"ollama": "OLLAMA_BASE_URL", "vllm": "VLLM_BASE_URL"}
+"""The variable composer's client for a provider reads its endpoint from when ``llm_config`` gives none."""
+
+_ENV_ELSEWHERE = {
+    "openai": ("OPENAI_API_BASE", "OPENAI_BASE_URL"),
+    "anthropic": ("ANTHROPIC_API_URL", "ANTHROPIC_BASE_URL"),
+    "google": ("GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI"),
+}
+"""Variables the SDK under composer's client for a provider reads to send runs to another host than the one
+composer lists, when ``llm_config`` gives no endpoint."""
 
 
 class ModelListError(Exception):
@@ -85,16 +101,36 @@ def _text_models(models: tuple[str, ...]) -> list[str]:
     ]
 
 
-def _openai_models(key: str, timeout: float, auth: OpenAIAuth | None) -> tuple[str, ...]:
-    """Every model the OpenAI key ``key`` can list; ModelListError if it can't."""
+def provider_models(provider: str, key: str | None, base_url: str | None = None, *, timeout: float,
+                    request: Callable[..., HttpResponse] | None = None) -> list[str] | None:
+    """The models the host of ``provider`` at ``base_url`` (None: the provider's own) lists for ``key``, sorted, or
+    None when the provider has no listing; at OpenAI's own host, only its text models. ``request`` stands in for
+    composer's HTTP sender.
+
+    Raises:
+        ModelListError: they couldn't be listed.
+    """
     try:
-        return (auth or OpenAIAuth(request_timeout=timeout)).api_models(ApiKeyCredentials(key))
-    except AuthError as exc:
-        # Composer's messages are safe to show; the status is the part that says whether the key was refused.
+        ids = host_models(provider, key, base_url, timeout=timeout, request=request)
+    except HostListError as exc:
+        # Composer's messages are fixed and safe to show; the status is the part that says whether the key was refused.
         message = str(exc)
-        if status := re.search(r"\(HTTP (\d{3})\)", message):
-            raise ModelListError(f"HTTP {status[1]}", int(status[1])) from None
-        raise ModelListError(message) from None
+        status = re.fullmatch(r"HTTP (\d{3})", message)
+        raise ModelListError(message, int(status[1]) if status else None) from None
+    if ids is None:
+        return None
+    return _text_models(ids) if provider == "openai" and base_url is None else list(ids)
+
+
+def _runs_host(llm: dict, env: dict[str, str]) -> tuple[bool, str | None]:
+    """Whether the host a connection with ``llm`` and ``env`` runs on is known, and its base URL (None: the
+    provider's own)."""
+    if base_url := llm.get("base_url"):
+        return True, base_url
+    provider = llm.get("provider", "")
+    if any(name in env for name in _ENV_ELSEWHERE.get(provider, ())):
+        return False, None
+    return True, env.get(_ENV_BASE_URL.get(provider, ""))
 
 
 def own_models(conn: Provider, name: str, error: str | None = None, *, refused: bool = False) -> Listing:
@@ -105,18 +141,18 @@ def own_models(conn: Provider, name: str, error: str | None = None, *, refused: 
                    refused=refused)
 
 
-def _listed(conn: Provider, name: str, timeout: float, auth: OpenAIAuth | None,
+def _listed(conn: Provider, name: str, timeout: float, request: Callable[..., HttpResponse] | None,
             transport: httpx.BaseTransport | None) -> Listing:
     llm = conn.llm_config or {}
-    key = llm.get("api_key")
-    label = provider_label(llm)
+    provider, key = llm.get("provider"), llm.get("api_key")
+    known, base_url = _runs_host(llm, conn.env)
     try:
-        if isinstance(key, str) and label == "azure":
-            ids = azure_deployments(llm["base_url"], key, timeout=timeout, transport=transport)
-        # OPENAI_BASE_URL sends the connection's runs elsewhere, so api.openai.com's list isn't theirs.
-        elif isinstance(key, str) and label == "openai" and "OPENAI_BASE_URL" not in conn.env:
-            ids = _text_models(_openai_models(key, timeout, auth))
-        else:
+        if isinstance(key, str) and provider_label(llm) == "azure" and base_url:
+            ids = azure_deployments(base_url, key, timeout=timeout, transport=transport)
+        # A connection's env can't hold a key, so a key not in llm_config is one its runs don't have either.
+        elif not provider or not known or not (isinstance(key, str) or provider in KEYLESS):
+            return own_models(conn, name)
+        elif (ids := provider_models(provider, key, base_url, timeout=timeout, request=request)) is None:
             return own_models(conn, name)
     except ModelListError as exc:
         return own_models(conn, name, str(exc), refused=exc.status in (401, 403))
@@ -124,19 +160,27 @@ def _listed(conn: Provider, name: str, timeout: float, auth: OpenAIAuth | None,
         # By type only: a client's message could quote the request.
         log.warning("listing the models of connection %s failed (%s)", name, type(exc).__name__)
         return own_models(conn, name, "the listing failed")
+    # The configured model answered when the connection was added, though a host may list only dated ids for an
+    # alias, and _text_models may drop it.
+    if (model := llm.get("model")) and model not in ids:
+        ids = [model, *ids]
     return Listing(connection=name, models=[ModelOption(id=i) for i in ids], listed=True)
 
 
-def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE, auth: OpenAIAuth | None = None,
+def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE,
+                request: Callable[..., HttpResponse] | None = None,
                 transport: httpx.BaseTransport | None = None) -> Listing:
     """The models connection ``name`` (``conn``) offers, within ``deadline`` seconds.
 
-    Azure and OpenAI with a key are listed (``auth`` and ``transport`` stand in for their clients); any other
-    connection offers only its configured model. A listing that fails offers the same, with ``error`` giving the
-    HTTP status or another reason, never the key.
+    Azure is listed by its deployments, and any other provider by composer's listing of the host its runs go to,
+    with the key they use (``request`` and ``transport`` stand in for the two HTTP clients); a listed connection
+    offers its configured model first if its host doesn't list it. A connection whose provider has no listing,
+    whose runs need a key it doesn't hold, or whose runs an environment variable sends to another host offers only
+    its configured model. A listing that fails offers the same, with ``error`` giving the HTTP status or another
+    reason, never the key.
     """
     done: list[Listing] = []
-    worker = threading.Thread(target=lambda: done.append(_listed(conn, name, deadline, auth, transport)),
+    worker = threading.Thread(target=lambda: done.append(_listed(conn, name, deadline, request, transport)),
                               name=f"models-{name}", daemon=True)
     worker.start()
     # The clients' timeouts bound each step, not the whole listing; a reply trickling in could outlast them.
@@ -202,6 +246,7 @@ class ModelCache:
                 listed = entry[2]
             else:
                 listed = self._list(name, conn, entry, end)
+                # Composer says "timed out" in the same fixed words, so a host that times out counts as a timeout too.
                 if listed.error == TIMED_OUT:
                     raise ListTimeout(f"listing the models of connection '{name}' took too long")
             if any(m.id == model for m in listed.models):
