@@ -1,7 +1,7 @@
 import type { Connection, ModelList } from "@agent-corp/protocol"
 import { TextAttributes } from "@opentui/core"
 import * as fuzzysort from "fuzzysort"
-import { createMemo, createSignal, onMount } from "solid-js"
+import { createEffect, createMemo, createSignal, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { samePick, useLocal, type ModelPick } from "../context/local"
 import { useOffice } from "../context/office"
@@ -10,9 +10,10 @@ import { useTheme } from "../context/theme"
 import { sessionModel } from "../office/models"
 import { useDialog } from "../ui/dialog"
 import { DialogPrompt } from "../ui/dialog-prompt"
-import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
+import { DialogSelect, type DialogSelectOption, type DialogSelectRef } from "../ui/dialog-select"
 import { useToast } from "../ui/toast"
 import { errorMessage } from "../util/error"
+import { DialogConnect } from "./dialog-connect"
 
 /** A row's value: a model on a connection, or `model: null` for typing a model name there. */
 type Choice = { connection: string; model: string | null }
@@ -23,8 +24,11 @@ export const HOME_PICK_NOTE =
 
 const TYPED = "Type a model name…"
 
-/** `/model`: switches the open chat's model, or on the home screen records the pick. */
-export function DialogModel() {
+/**
+ * `/model`: switches the open chat's model, or on the home screen records the pick. With `connection`, the
+ * highlight goes to that connection's first row once its models are listed.
+ */
+export function DialogModel(props: { connection?: string }) {
   const dialog = useDialog()
   const office = useOffice()
   const local = useLocal()
@@ -36,6 +40,17 @@ export function DialogModel() {
   const sessionID = () => (route.data.type === "session" ? route.data.sessionID : undefined)
   const session = createMemo(() => office.state.sessions.find((s) => s.id === sessionID()))
   let switching = false
+  const [select, setSelect] = createSignal<DialogSelectRef<Choice>>()
+  let focused = !props.connection
+  createEffect(() => {
+    if (focused || !lists[props.connection!]) return
+    const row = connectionRows().find((r) => r.value.connection === props.connection)
+    const ref = select()
+    if (!row || !ref) return
+    focused = true
+    // After DialogSelect's own move to the session's model, which waits a tick too.
+    setTimeout(() => ref.moveTo(row.value), 0)
+  })
 
   onMount(async () => {
     dialog.setSize("large")
@@ -164,6 +179,7 @@ export function DialogModel() {
       // Rows shift as late lists arrive and favorites move; keep the highlight on its model.
       preserveSelection={true}
       onFilter={setQuery}
+      ref={setSelect}
       onSelect={(option) => void choose(option.value)}
       actions={[
         {
@@ -174,6 +190,12 @@ export function DialogModel() {
             const { connection, model } = option.value
             if (model !== null) local.model.toggleFavorite({ connection, model })
           },
+        },
+        {
+          command: "model.dialog.connect",
+          title: "connect",
+          hidden: !office.canManage(),
+          onTrigger: () => dialog.replace(() => <DialogConnect />),
         },
       ]}
     />
