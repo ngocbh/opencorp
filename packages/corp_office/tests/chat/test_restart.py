@@ -88,22 +88,20 @@ def test_an_office_that_dies_mid_turn_is_reaped_and_its_run_resumed(make_harness
 
 
 def test_a_worker_that_cant_start_at_restore_fails_only_its_session(make_harness, fake_llm, workspace):
-    from agent_corp.chat.provider import ProviderError
-
     first = make_harness()
     sids = {start(first, workspace), start(first, workspace)}
     first.close_all()
 
     second = make_harness()
-    good, calls = second.provider, []
+    spawn, calls = second.registry.spawn, []
 
-    def once_bad():
+    def once_bad(*args):
         calls.append(1)
         if len(calls) == 1:
-            raise ProviderError("provider.json must be a regular file private to its owner (mode 0600)")
-        return good()
+            raise OSError("can't start the worker")
+        return spawn(*args)
 
-    second.provider = once_bad
+    second.registry.spawn = once_bad
     second.restore()  # doesn't raise
     (restored,) = wait_for(lambda: [sid for sid in sids if sid in second._live and second._live[sid].turn_q],
                            what="the other session's turn")

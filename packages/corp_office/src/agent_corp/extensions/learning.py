@@ -413,7 +413,7 @@ class Learning:
 
     def _provider(self) -> Provider:
         """The provider for a new job; its model key is remembered, so logs never show it."""
-        provider = self.harness.provider()
+        provider = self.harness.connections.resolve(None, None)
         key = (provider.llm_config or {}).get("api_key")
         if isinstance(key, str) and key:
             with self._lock:

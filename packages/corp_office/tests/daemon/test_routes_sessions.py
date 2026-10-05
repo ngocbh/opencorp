@@ -5,10 +5,11 @@ import asyncio
 import pytest
 
 from agent_corp.auth.tokens import new_token
+from agent_corp.chat.connections import Connections
 from agent_corp.chat.harness import Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.perm.monitor import Monitor
-from agent_corp.secrets import SecretStore
+from agent_corp.secrets import SecretStore, write_private
 from agent_corp.store import new_id
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.chat.conftest import CHAT_FLOW
@@ -33,7 +34,10 @@ def fake_llm():
 def chat(office, fake_llm):
     """The office, running the chat harness against the fake LLM."""
     monitor = Monitor(office.paths.company, office.store, SecretStore(office.paths.secrets))
-    harness = Harness(office, monitor, provider=lambda: Provider(llm_config=LLM_CONFIG, env=fake_llm.env()))
+    provider = Provider(llm_config=LLM_CONFIG, env=fake_llm.env())
+    office.paths.office.mkdir(parents=True, exist_ok=True)
+    write_private(office.paths.office / "provider.json", provider.model_dump_json().encode())
+    harness = Harness(office, monitor, connections=Connections(office.paths.office))
     office.workers = office.extras["harness"] = harness
     return office
 

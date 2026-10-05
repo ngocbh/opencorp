@@ -19,7 +19,6 @@ from agent_corp.chat.connections import Connections
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.hire import Hiring
 from agent_corp.chat.models import ModelCache
-from agent_corp.chat.provider import load_provider
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app
 from agent_corp.daemon.bus import Bus
@@ -178,11 +177,11 @@ def build_office(paths: OfficePaths) -> Office:
     reap(store)
     office = Office(paths=paths, store=store, git=git, bus=Bus(), profile_store=lambda handle: GitProfileStore(git, handle))
     monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
-    harness = Harness(office, monitor, provider=lambda: load_provider(paths.office / "provider.json"))
+    connections = Connections(paths.office)
+    harness = Harness(office, monitor, connections=connections)
     office.workers = harness
     office.extras["harness"] = harness
     office.extras["hiring"] = Hiring(git)
-    connections = Connections(paths.office)
     models = ModelCache(connections)
     office.extras["connections"] = connections
     office.extras["models"] = models

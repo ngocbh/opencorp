@@ -7,12 +7,13 @@ from types import SimpleNamespace
 import pytest
 
 from agent_corp.assets.registry import builtin_kinds
+from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.provider import Provider
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.perm.monitor import Monitor
-from agent_corp.secrets import SecretStore
+from agent_corp.secrets import SecretStore, write_private
 from agent_corp.store import Store
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git, base_files, write_repo  # noqa: F401
@@ -56,10 +57,14 @@ def workspace(tmp_path):
 
 @pytest.fixture
 def make_harness(tmp_path, fake_llm):
-    """Build a harness over a fresh company; ``defaults`` and ``files`` override the base company."""
+    """Build a harness over a fresh company; ``defaults`` and ``files`` override the base company.
+
+    office/provider.json is written from ``llm_config`` and ``prices`` on the FakeLLM; ``connections``
+    (``{name: model}``) adds connections on the FakeLLM.
+    """
     made = []
 
-    def make(*, defaults=None, files=None, kinds=None, prices=None, company=None, llm_config=None):
+    def make(*, defaults=None, files=None, kinds=None, prices=None, company=None, llm_config=None, connections=None):
         paths = OfficePaths(tmp_path)
         if company is None and not paths.company.exists():
             repo_files = base_files() | {"shared/flows/chat.yaml": CHAT_FLOW}
@@ -72,7 +77,11 @@ def make_harness(tmp_path, fake_llm):
         office = SimpleNamespace(paths=paths, store=store, git=git, bus=LiveLog())
         monitor = Monitor(paths.company, store, SecretStore(paths.secrets), kinds or builtin_kinds())
         provider = Provider(llm_config=llm_config or LLM_CONFIG, env=fake_llm.env(), prices=prices or {})
-        harness = Harness(office, monitor, provider=lambda: provider)
+        write_private(paths.office / "provider.json", provider.model_dump_json().encode())
+        conns = Connections(paths.office)
+        for name, model in (connections or {}).items():
+            conns.put(name, ConnectionFile(llm_config={**LLM_CONFIG, "model": model}, env=fake_llm.env()))
+        harness = Harness(office, monitor, connections=conns)
         made.append(harness)
         return harness
 
@@ -107,3 +116,29 @@ def texts(harness, sid, role="assistant"):
     """The text parts of a session's messages with ``role``, in order."""
     return [p.text for m in harness.store.list_messages(sid) if m.role == role
             for p in m.parts if p.type == "text"]
+
+
+def say(harness, sid, text):
+    """Send ``text`` and wait for its reply and the next turn; return the reply."""
+    n = len(texts(harness, sid))
+    harness.prompt(sid, text)
+    wait_for(lambda: len(texts(harness, sid)) > n and status(harness, sid) == "idle", what=f"the reply to {text!r}")
+    return texts(harness, sid)[-1]
+
+
+def on(harness, sid, name, model=None):
+    """Put a session on connection ``name`` (None: ``office``) and ``model``, as a switch would."""
+    return harness.store.update_session(sid, connection=name, model=model)
+
+
+def spawned(harness, see=lambda job: job):
+    """What ``see`` makes of each Job the harness's registry spawns, in order; ``see`` runs before the spawn."""
+    seen = []
+    spawn = harness.registry.spawn
+
+    def spy(job, *args):
+        seen.append(see(job))
+        return spawn(job, *args)
+
+    harness.registry.spawn = spy
+    return seen

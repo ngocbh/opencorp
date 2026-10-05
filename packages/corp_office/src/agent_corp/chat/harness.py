@@ -13,6 +13,7 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
+from agent_corp.chat.connections import Connections
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
@@ -164,15 +165,15 @@ class Harness:
 
     ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, and ``set_cost_cap`` are
     called from request threads. Worker frames and store events are handled on one
-    dispatcher thread, in order. ``provider`` is read at each spawn.
+    dispatcher thread, in order. ``connections`` are read at each spawn.
     """
 
-    def __init__(self, office: Any, monitor: Monitor, *, provider: Callable[[], Provider] = Provider) -> None:
+    def __init__(self, office: Any, monitor: Monitor, *, connections: Connections) -> None:
         self.office = office
         self.store = office.store
         self.git = office.git
         self.monitor = monitor
-        self.provider = provider
+        self.connections = connections
         self.hooks = Hooks()
         self.registry = WorkerRegistry(self.store)
         self.answers = Answers(self.store)
@@ -336,7 +337,7 @@ class Harness:
                     if q.node_id is None:
                         self.store.set_question_status(q.id, "stale")
             session = self.store.get_session(live.session_id)
-            live.provider = provider = self.provider()
+            live.provider = provider = self.connections.resolve(None, None)
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
             ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names,
@@ -757,7 +758,7 @@ class Harness:
     def _provider_changed(self, live: _Live) -> bool:
         """Whether the provider file no longer gives what ``live``'s worker got."""
         try:
-            provider = self.provider()
+            provider = self.connections.resolve(None, None)
         except ProviderError:
             return False  # a spawn would fail on it too; keep the worker that works
         return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
