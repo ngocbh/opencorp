@@ -7,6 +7,7 @@ import type {
   ConfirmFollowUpsRequest,
   Connection,
   ConnectionList,
+  ConnectionLogin,
   CostCapRequest,
   CreateSessionRequest,
   Debrief,
@@ -29,6 +30,7 @@ import type {
   SetDefaultConnectionRequest,
   SetModelRequest,
   SetPasswordRequest,
+  StartLoginRequest,
   SideChatRequest,
   WorkItem,
 } from "@agent-corp/protocol"
@@ -49,6 +51,12 @@ export const CREATE_TIMEOUT_MS = 30_000
  * key by listing the models, then with one reply, which takes about 95 s at most.
  */
 export const ADD_CONNECTION_TIMEOUT_MS = 120_000
+
+/**
+ * How long starting a subscription sign-in waits for the office before failing with `OfficeTimeout`: the office
+ * answers once the provider has given the code to show, which takes up to 20 s.
+ */
+export const START_LOGIN_TIMEOUT_MS = 30_000
 
 /** Who the office takes a request to be from: `GET /whoami`. */
 export type WhoAmI = { person: string; device: string | null }
@@ -115,6 +123,12 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number; t
         ),
       remove: (name: string) => call<Ack>("DELETE", `/connections/${seg(name)}`),
       setDefault: (req: SetDefaultConnectionRequest) => call<ConnectionList>("PUT", "/connections/default", req),
+      /** Starts a subscription sign-in, which adds a connection once the human approves it at its URL with its code. */
+      startLogin: (req: StartLoginRequest) =>
+        request<ConnectionLogin>(socket, "POST", "/connections/login", req, { timeoutMs: START_LOGIN_TIMEOUT_MS, token }),
+      /** A sign-in this person started, as it is now. */
+      login: (id: string) => get<ConnectionLogin>(`/connections/login/${seg(id)}`),
+      cancelLogin: (id: string) => call<Ack>("DELETE", `/connections/login/${seg(id)}`),
     },
     workItems: {
       get: (id: string) => get<WorkItem>(`/work-items/${seg(id)}`),
