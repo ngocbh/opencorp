@@ -350,3 +350,29 @@ def test_a_feedback_move_that_fails_doesnt_stop_the_ticks_other_feedback(harness
     learning.tick()  # the stuck one comes first
     wait_for(lambda: feedback_status(harness, feedback[1].id) == "applied", what="the other feedback applied")
     assert feedback_status(harness, feedback[0].id) == "queued"
+
+
+def test_a_store_error_after_a_failed_start_doesnt_stop_the_ticks_other_feedback(harness, fake_llm, workspace,
+                                                                                learning, monkeypatch):
+    stuck = ended(harness, fake_llm, workspace)
+    fine = ended(harness, fake_llm, workspace)
+    feedback = [harness.store.add_feedback(Feedback(
+        id=new_id(), session_id=sid, run_id=harness.store.get_session(sid).run_ids[-1], author="ngocbh",
+        text="Be brief.", status="queued", created_at=now())) for sid in (stuck, fine)]
+    spawn, set_status = harness.registry.spawn, harness.store.set_feedback_status
+
+    def no_worker(job, *args):
+        if job.session_id == stuck:
+            raise RuntimeError("can't start a worker")
+        return spawn(job, *args)
+
+    def no_requeue(feedback_id, status, **kwargs):
+        if feedback_id == feedback[0].id and status == "queued":
+            raise RuntimeError("the store is busy")
+        return set_status(feedback_id, status, **kwargs)
+
+    monkeypatch.setattr(harness.registry, "spawn", no_worker)
+    monkeypatch.setattr(harness.store, "set_feedback_status", no_requeue)
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    learning.tick()  # the stuck one comes first
+    wait_for(lambda: feedback_status(harness, feedback[1].id) == "applied", what="the other feedback applied")

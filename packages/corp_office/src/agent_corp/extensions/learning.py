@@ -361,8 +361,11 @@ class Learning:
             return
         # Released first: what it drains next may reserve the session again. Feedback that never
         # left the queue waits for the next drain.
-        if error is not None and self.store.get_feedback(feedback.id).status == "learning":
-            self._learned(feedback.id, handlers, {"type": "error", "message": error}, failure=unusable)
+        try:
+            if error is not None and self.store.get_feedback(feedback.id).status == "learning":
+                self._learned(feedback.id, handlers, {"type": "error", "message": error}, failure=unusable)
+        except Exception as exc:  # the tick goes on to other sessions; start() requeues feedback left learning
+            self._log_exception(exc, "can't move feedback %s on", feedback.id)
 
     def _learned(self, feedback_id: str, handlers: FeedbackHandlers | None, outcome: dict[str, Any] | None, *,
                  failure: str | None = None) -> None:
