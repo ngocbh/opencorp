@@ -314,6 +314,20 @@ test("feedback items keep their place as they move along, and a late update neve
   })
 })
 
+test("feedback that failed to learn shows why, when the office says", async () => {
+  const office = createFakeOffice()
+  withTurns(office)
+  await run(office, async (app) => {
+    await app.until((f) => f.includes("Fixed the flaky clock test"))
+    app.input.pressKey("f")
+    await typeInto(app, "Good call")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("queued · Good call"))
+    office.feedbackStatus(office.state.feedback[0].id, "learning_failed", { failure: "the profile is over budget" })
+    await app.until((f) => f.includes("learning failed · Good call — the profile is over budget"))
+  })
+})
+
 test("a reconnect re-reads the debrief, since events missed while offline are not replayed", async () => {
   const office = createFakeOffice()
   office.addDebrief(office.state.sessions[0].id, { state: "pending" })

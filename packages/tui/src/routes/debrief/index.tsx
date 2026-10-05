@@ -296,6 +296,7 @@ export function Debrief() {
             {(f) => (
               <text fg={f.status === "learning_failed" ? theme.error : theme.textMuted}>
                 {f.status.replace("_", " ")} · {f.text}
+                {f.failure ? ` — ${f.failure}` : ""}
               </text>
             )}
           </For>

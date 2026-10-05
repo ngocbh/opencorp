@@ -20,6 +20,7 @@ import { useTuiTerminalEnvironment } from "../../context/runtime"
 import { useClipboard } from "../../context/clipboard"
 import { useRoute } from "../../context/route"
 import { useOffice } from "../../context/office"
+import { sessionModel } from "../../office/models"
 import { usePromptRef } from "../../context/prompt"
 import { normalizePromptContent, openEditor } from "../../editor"
 import { useExit } from "../../context/exit"
@@ -936,6 +937,14 @@ export function Prompt(props: PromptProps) {
                           {person().title}
                         </text>
                       </Show>
+                    </>
+                  )}
+                </Show>
+                <Show when={session() && sessionModel(session()!, office.connections()).model}>
+                  {(model) => (
+                    <>
+                      <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>
+                      <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>{model()}</text>
                     </>
                   )}
                 </Show>

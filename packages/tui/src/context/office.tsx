@@ -1,6 +1,6 @@
-import { batch, createSignal, onCleanup, onMount } from "solid-js"
+import { batch, createEffect, createSignal, on, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
-import type { Question } from "@agent-corp/protocol"
+import type { ConnectionList, Question } from "@agent-corp/protocol"
 import { createOfficeClient } from "../office/client"
 import { runEach } from "../office/queue"
 import { emptyState, type OfficeState } from "../office/store"
@@ -53,6 +53,20 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       },
     })
 
+    const [connections, setConnections] = createSignal<ConnectionList>()
+    /** Re-reads the office's connections; on failure (an office older than them, say) the last list stays. */
+    async function refreshConnections() {
+      try {
+        setConnections(await client.connections.list())
+      } catch {}
+      return connections()
+    }
+    createEffect(
+      on(status, (s) => {
+        if (s === "online") void refreshConnections()
+      }),
+    )
+
     onMount(sync.start)
     onCleanup(() => {
       sync.stop()
@@ -66,6 +80,11 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
       status,
       /** Why the office's state couldn't be read, while `status()` is `"error"`. */
       error,
+      /** The office's model connections, read when it comes online and on `refreshConnections()`. */
+      connections,
+      refreshConnections,
+      /** Whether this person may add, remove or set the default connection. */
+      canManage: () => connections()?.can_manage ?? false,
       /** Loads a session's messages and open questions and keeps them live; resolves once they are in `state`. */
       async syncSession(id: string) {
         await sync.syncSession(id)
