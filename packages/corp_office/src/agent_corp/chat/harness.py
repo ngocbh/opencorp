@@ -802,8 +802,10 @@ class Harness:
 
     def _provider_changed(self, live: _Live) -> bool:
         """Whether the session's connection and model no longer give what ``live``'s worker got."""
+        session = self.store.get_session(live.session_id)
         try:
-            session = self._choice(self.store.get_session(live.session_id))
+            if (session.connection or OFFICE) not in self.connections.names():
+                return True  # the restart moves the chat, or reports why it can't
             provider = self.connections.resolve(session.connection, session.model)
         except ProviderError:
             return False  # a spawn would fail on it too; keep the worker that works
@@ -817,7 +819,10 @@ class Harness:
         name, model, moved = self.connections.choice(session.connection, session.model)
         if not moved:
             return session
-        own = (self.connections.get(name).llm_config or {}).get("model")
+        try:
+            own = (self.connections.get(name).llm_config or {}).get("model")
+        except (ProviderError, ValueError):
+            own = None  # only the note's text needs it; resolving it reports the error
         now_on = f"{name}/{own}" if own else name
         return self.store.update_session(session.id, connection=name, model=model, model_note=(
             f"Connection '{session.connection}' was removed; this chat now uses {now_on}."))

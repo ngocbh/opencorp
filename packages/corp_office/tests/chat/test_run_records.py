@@ -411,3 +411,21 @@ def test_a_fresh_run_that_cant_be_recorded_fails_the_session_after_a_crash(make_
     killed(harness, sid)
     wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
     assert sid not in harness._live
+
+
+def test_a_removed_connection_stops_serving_turns_even_when_the_default_cant_be_used(make_harness, fake_llm,
+                                                                                    workspace):
+    harness = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"content": "from two"}, {"content": "still from two"})
+    sid = start(harness, workspace)
+    on(harness, sid, "second")
+    say(harness, sid, "a")
+    n = len(fake_llm.requests())
+    harness.connections.remove("second")
+    (harness.office.paths.office / "provider.json").chmod(0o644)  # the default, office, refuses it
+    harness.prompt(sid, "b")
+    wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
+    assert len(fake_llm.requests()) == n  # the removed key sent nothing more
+    session = harness.store.get_session(sid)
+    assert session.model_note == "Connection 'second' was removed; this chat now uses office."
+    assert errors(harness, sid) and sid not in harness._live
