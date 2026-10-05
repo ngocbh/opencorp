@@ -3,6 +3,7 @@
 import logging
 import os
 import queue
+import re
 import socket
 import threading
 import time
@@ -48,8 +49,8 @@ _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 _UNREAD_DEFAULT = "The office's default connection can't be read"
-_AUTH_CAUSES = ("AuthenticationError", "PermissionDeniedError", "AuthError", "401")
-"""What a failure's cause or message holds when the model refused the connection's key."""
+_AUTH_CAUSES = ("AuthenticationError", "PermissionDeniedError", "AuthError")
+"""Cause types (bare or provider-prefixed) of a failure where the model refused the connection's key."""
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
 
@@ -653,9 +654,11 @@ class Harness:
             raise HarnessError(404, "not_found", f"no session {session_id}")
         if session.status not in LIVE:
             raise HarnessError(409, "not_live", f"session {session_id} has ended")
+        if session.status == "ending":
+            raise HarnessError(409, "ending", f"session {session_id} is ending")
         try:
             if connection not in self.connections.names():
-                raise ConnectionGone(connection)
+                raise HarnessError(422, "unknown_connection", f"no connection {connection!r} on this office")
             own = (self.connections.resolve(connection, None).llm_config or {}).get("model")
         except ConnectionGone:
             raise HarnessError(422, "unknown_connection", f"no connection {connection!r} on this office") from None
@@ -922,7 +925,7 @@ class Harness:
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
             why = _why(outcome, live.provider)
             hint = f" Check connection '{self._ran_on(live, session)}', or pick another model with /model." \
-                if any(cause in why for cause in _AUTH_CAUSES) else ""
+                if _refused_key(failure, why) else ""
             live.transcript.error(f"The reply failed ({why}). Send your message again.{hint}")
             self._run_finished(live, session, outcome)
             self._new_run(live)
@@ -1163,6 +1166,12 @@ def _why(outcome: dict[str, Any] | None, provider: Provider) -> str:
     cause, message = failure.get("cause_type"), failure.get("message") or outcome.get("message") or "no reason given"
     why = _redact(f"{cause}: {message}" if cause else str(message), provider)
     return why if len(why) <= _WHY_CHARS else why[:_WHY_CHARS - 1] + "…"
+
+
+def _refused_key(failure: dict[str, Any], why: str) -> bool:
+    """Whether a run failed because the model refused the connection's key."""
+    cause = failure.get("cause_type") or ""
+    return cause.endswith(_AUTH_CAUSES) or re.search(r"\b401\b", why) is not None
 
 
 def _redact(value: Any, provider: Provider) -> Any:

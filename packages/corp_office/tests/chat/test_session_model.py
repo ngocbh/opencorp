@@ -7,7 +7,7 @@ import time
 import pytest
 
 from agent_corp.chat.connections import read_run_record
-from agent_corp.chat.harness import HarnessError
+from agent_corp.chat.harness import HarnessError, _refused_key
 from agent_corp.chat.models import TIMED_OUT, Listing, own_models
 from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import ModelOption
@@ -279,6 +279,21 @@ def test_set_model_refuses_ended_sessions_and_unknown_connections(make_harness, 
     assert chose(h.store.get_session(s.id)) == ("office", None, None)
 
 
+def test_set_model_refuses_a_session_that_is_ending(make_harness, workspace, fake_llm):
+    h = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"content": "never", "hold": 30})
+    s = start(h, workspace)
+    h.prompt(s.id, "hi")
+    fake_llm.wait_for_requests(1)
+    h.end(s.id)
+    assert status(h, s.id) == "ending"
+    with pytest.raises(HarnessError) as err:
+        h.set_model(s.id, "second", "stub-2")
+    assert (err.value.status, err.value.code) == (409, "ending")
+    fake_llm.release()
+    wait_for(lambda: status(h, s.id) == "ended", what="the end")
+
+
 def test_set_model_refuses_a_connection_that_cant_be_read_without_naming_its_file(make_harness, workspace):
     h = make_harness(connections={"second": "stub-2"})
     s = h.start_session("minh", str(workspace))
@@ -339,3 +354,11 @@ def test_a_refused_key_says_which_connection_to_check(make_harness, workspace, f
     h.prompt(s.id, "again")
     wait_for(lambda: len(errors(h, s.id)) == 2, what="the second failure")
     assert "/model" not in errors(h, s.id)[1]  # a failure that isn't the key says nothing of it
+
+
+def test_a_refused_key_is_told_by_its_cause_or_status_not_any_401():
+    assert _refused_key({"cause_type": "OpenAIAuthenticationError"}, "")
+    assert _refused_key({"cause_type": "PermissionDeniedError"}, "")
+    assert _refused_key({"cause_type": "APIStatusError"}, "APIStatusError: Error code: 401 - unauthorized")
+    assert not _refused_key({"cause_type": "BadRequestError"}, "BadRequestError: your messages resulted in 140100 tokens")
+    assert not _refused_key({}, "no reason given")
