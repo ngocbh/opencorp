@@ -149,6 +149,20 @@ test("Make default makes the highlighted connection the default", async () => {
   })
 })
 
+test("a failed Make default still lists the connections again", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    app.input.pressArrow("down")
+    await app.until((f) => highlighted(app).startsWith("azure-2") && f.includes("Make default ctrl+s"))
+    office.broken.add("PUT /connections/default")
+    app.input.pressKey("s", { ctrl: true })
+    const reads = () => office.requests.map((r) => `${r.method} ${r.path}`)
+    await app.until(() => reads().includes("PUT /connections/default"))
+    await app.until(() => reads().slice(reads().indexOf("PUT /connections/default")).includes("GET /connections"))
+  })
+})
+
 test("Remove asks first, and says chats on it move to the default; office has no Remove", async () => {
   const office = createFakeOffice()
   await run(office, async (app) => {

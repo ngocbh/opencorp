@@ -97,11 +97,11 @@ function ConnectList(props: { onPick: (provider: Provider) => void }) {
   async function makeDefault(name: string) {
     try {
       await office.client.connections.setDefault({ connection: name })
+      toast.show({ variant: "success", message: `New chats start on ${name}` })
     } catch (e) {
-      return toast.error(e)
+      toast.error(e)
     }
     await office.refreshConnections().catch(() => {})
-    toast.show({ variant: "success", message: `New chats start on ${name}` })
   }
 
   async function remove(name: string) {
