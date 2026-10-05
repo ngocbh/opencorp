@@ -8,6 +8,7 @@ import stat
 import httpx
 import pytest
 import yaml
+from agent_composer.llm_clients import ModelListError as HostListError
 from pydantic import ValidationError
 
 from agent_corp.auth.identity import Identity, identity_path, write_identity
@@ -15,6 +16,7 @@ from agent_corp.auth.tokens import new_token
 from agent_corp.chat import check, models
 from agent_corp.chat.connections import ConnectionFile, Connections, provider_label
 from agent_corp.chat.models import Listing, ModelCache, own_models
+from agent_corp.chat.models import list_models as real_list_models
 from agent_corp.chat.provider import ProviderError
 from agent_corp.daemon.app import create_app
 from agent_corp.protocol.models import ModelOption
@@ -28,12 +30,14 @@ REFUSED = "sk-refused-5e8a1c03f7d2"
 UNREACHABLE = "sk-unreachable-93b7f2a05c1e"
 """A key whose provider the fake listing can't reach."""
 
-LISTS = {"azure": ["gpt-5.4", "o3"], "openai": ["chatgpt-4o-latest", "gpt-5.5", "o3"]}
+LISTS = {"azure": ["gpt-5.4", "o3"], "openai": ["chatgpt-4o-latest", "gpt-5.5", "o3"],
+         "anthropic": ["claude-opus-4-1", "claude-sonnet-4-5"], "custom": ["llama-4"]}
 
 
 @pytest.fixture
 def listings(monkeypatch):
-    """Stand in for listing a provider: Azure and OpenAI list ``LISTS``, ``REFUSED`` is refused; records each call."""
+    """Stand in for listing a provider: those in ``LISTS`` list it, ``REFUSED`` is refused, and ``UNREACHABLE``
+    can't be listed; records each call."""
     calls = []
 
     def list_models(conn, name, *, deadline=models.DEADLINE, **kwargs):
@@ -176,8 +180,7 @@ async def test_other_takes_a_base_url_and_needs_a_model(client, office, as_owner
     assert (r.status_code, r.json()["name"], r.json()["provider"]) == (200, "custom", "custom")
     assert saved(office, "custom")["llm_config"] == {"provider": "openai", "base_url": "https://gw.example/v1",
                                                      "api_key": SENTINEL, "model": "llama-4"}
-    [checked] = checks[0]
-    assert checked.llm_config["model"] == "llama-4"
+    assert checks[0] == []  # listing was the check
 
 
 async def test_an_endpoint_is_only_for_azure_or_openai(client, as_owner):
@@ -210,17 +213,41 @@ async def test_azure_that_cant_list_needs_a_model_to_check(client, office, as_ow
     assert checked.llm_config["model"] == "gpt-5.4"
 
 
-async def test_a_provider_that_cant_list_gets_a_one_reply_check(client, office, as_owner, checks):
+async def test_a_provider_that_cant_be_listed_gets_a_one_reply_check(client, office, as_owner, checks):
     calls, problems = checks
-    body = {"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"}
+    body = {"provider": "anthropic", "api_key": UNREACHABLE, "model": "claude-x"}
     r = await client.post("/connections", json=body, headers=as_owner)
     assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "anthropic", "claude-x")
-    assert calls[0].llm_config == {"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"}
+    assert calls[0].llm_config == {"provider": "anthropic", "api_key": UNREACHABLE, "model": "claude-x"}
     problems.append("Error code: 404 - model not found")
     r = await client.post("/connections", json=body, headers=as_owner)
     assert (r.status_code, r.json()) == (422, {"error": "model_refused",
                                                "message": "The model didn't answer: Error code: 404 - model not found"})
     assert sorted(os.listdir(office.paths.office / "connections")) == ["anthropic.json"]
+
+
+async def test_anthropic_is_checked_against_what_its_host_lists(client, office, as_owner, checks, monkeypatch, caplog):
+    seen = []
+
+    def host_models(provider, key, base_url=None, *, timeout, request=None):
+        seen.append((provider, key, base_url))
+        if key == REFUSED:
+            raise HostListError("HTTP 401")
+        return ("claude-opus-4-1", "claude-sonnet-4-5")
+
+    monkeypatch.setattr(models, "list_models", real_list_models)
+    monkeypatch.setattr(models, "host_models", host_models)
+    r = await client.post("/connections", json={"provider": "anthropic", "api_key": REFUSED}, headers=as_owner)
+    assert (r.status_code, r.json()) == (422, {"error": "key_refused", "message": "The key didn't work (HTTP 401)"})
+    r = await client.post("/connections", json={"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"},
+                          headers=as_owner)
+    assert (r.status_code, r.json()) == (422, {"error": "model_not_offered",
+                                               "message": "This connection doesn't offer 'claude-x'"})
+    assert not (office.paths.office / "connections").exists()
+    r = await client.post("/connections", json={"provider": "anthropic", "api_key": SENTINEL}, headers=as_owner)
+    assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "anthropic", "claude-sonnet-4-5")
+    assert seen == [("anthropic", REFUSED, None)] + [("anthropic", SENTINEL, None)] * 2
+    assert checks[0] == [] and SENTINEL not in r.text + caplog.text
 
 
 async def test_others_are_refused_before_the_body_is_read(client, office, as_ava):
@@ -327,7 +354,9 @@ async def test_models_route_lists_and_unknown_connection_is_404(client, conns, a
     await client.get("/connections/azure/models?refresh=1", headers=as_ava)
     assert listings == ["azure", "azure"]
     r = await client.get("/connections/office/models", headers=as_ava)
-    assert r.json() == {"connection": "office", "models": [], "listed": False, "error": None}
+    assert r.json() == {"connection": "office", "models": [{"id": "claude-opus-4-1", "name": None},
+                                                           {"id": "claude-sonnet-4-5", "name": None}],
+                        "listed": True, "error": None}
     r = await client.get("/connections/nope/models", headers=as_ava)
     assert (r.status_code, r.json()["error"]) == (404, "not_found")
 
