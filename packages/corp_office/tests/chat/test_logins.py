@@ -126,19 +126,21 @@ def test_start_returns_the_url_and_code_then_signs_in(conns, caplog):
     assert ACCESS.split(".")[2] in auth.read_text()  # the tokens are in the sign-in, and only there
 
 
-def test_the_sign_in_is_saved_before_the_connection(conns, monkeypatch):
+def test_the_sign_in_is_saved_before_the_connection(conns, monkeypatch, caplog):
     seen = []
 
     def put(name, conn):
         seen.append(conns.auth_file(name).exists())
-        raise ProviderError("the disk is full")
+        raise ProviderError(f"can't write {conns.dir / name}.json")
 
     monkeypatch.setattr(conns, "put", put)
     logins = make(conns, HTTP(*FLOW))
     login = logins.start(by="ngocbh")
     failed = until(logins, login.id, "failed")
     assert seen == [True]
-    assert failed.message == "the disk is full" and failed.connection is None
+    # Its error names the office's files, which neither the person nor the log is shown.
+    assert failed.message == "the sign-in couldn't be saved as a connection" and failed.connection is None
+    assert str(conns.dir) not in caplog.text and "ProviderError" in caplog.text
     assert not conns.auth_file("chatgpt").exists() and conns.names() == ["office"]
 
 

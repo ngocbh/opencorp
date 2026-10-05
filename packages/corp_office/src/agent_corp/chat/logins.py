@@ -138,9 +138,13 @@ class Logins:
                 sign_in=sign_in)
         except _Stopped:
             self._end(login, state="cancelled")
-        except (AuthError, ProviderError) as exc:
+        except AuthError as exc:
             # Composer's AuthError says only what failed and its HTTP status, never a token.
             self._end(login, state="failed", message=str(exc))
+        except ProviderError as exc:
+            # Its error may name the office's files; the log says which sign-in, the person gets no path.
+            log.warning("sign-in %s couldn't save its connection (%s)", login.view.id, type(exc).__name__)
+            self._end(login, state="failed", message="the sign-in couldn't be saved as a connection")
         except Exception as exc:
             log.warning("sign-in %s failed (%s)", login.view.id, type(exc).__name__)  # by type: it may quote a reply
             self._end(login, state="failed", message="the sign-in failed")
