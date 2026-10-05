@@ -108,7 +108,8 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
     label = provider_label(llm)
     # Listed without the model asked for, which a listing would offer as the connection's own.
     listed = models.list_models(ConnectionFile(llm_config={k: v for k, v in llm.items() if k != "model"}), label)
-    if listed.refused:
+    # Some gateways refuse their model list yet serve chat, so at an endpoint of the owner's own one reply decides.
+    if listed.refused and label != "custom":
         raise HTTPError(422, "key_refused", f"The key didn't work ({listed.error})")
     if listed.error and label == "azure" and not body.model:
         # The one-reply check would ask for composer's OpenAI default, which isn't a deployment, and so report a
@@ -128,7 +129,10 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
         needs_check = model not in ids
         provider = provider.model_copy(update={"llm_config": llm})
     if needs_check and (problem := check.one_reply_problem(provider)):
-        raise HTTPError(422, "model_refused", f"The model didn't answer: {problem}")
+        if body.model:
+            raise HTTPError(422, "model_refused", f"The model didn't answer: {problem}")
+        tried = llm.get("model") or PROVIDER_DEFAULT_MODELS[llm["provider"]]
+        raise HTTPError(422, "model_refused", f"The model '{tried}' didn't answer: {problem}; name another model")
     try:
         name = conns.add(label, ConnectionFile(llm_config=llm))
     except ProviderError as exc:

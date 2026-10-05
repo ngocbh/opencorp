@@ -197,13 +197,40 @@ async def test_an_endpoint_is_only_for_azure_or_openai(client, as_owner):
     assert (r.status_code, r.json()["error"]) == (422, "invalid_connection")
 
 
-async def test_a_refused_key_is_not_saved(client, office, as_owner, checks):
+async def test_a_refused_key_on_a_providers_own_host_or_azure_is_not_saved(client, office, as_owner, checks):
     for body in ({"provider": "openai", "api_key": REFUSED},
                  {"provider": "azure", "api_key": REFUSED, "endpoint": "acme"}):
         r = await client.post("/connections", json=body, headers=as_owner)
         assert (r.status_code, r.json()) == (422, {"error": "key_refused",
                                                    "message": "The key didn't work (HTTP 401)"})
     assert not (office.paths.office / "connections").exists() and checks[0] == []
+
+
+async def test_a_custom_endpoint_that_refuses_its_list_gets_a_one_reply_check(client, office, as_owner, checks):
+    calls, problems = checks
+    body = {"provider": "openai", "api_key": REFUSED, "endpoint": "https://gw.example/v1", "model": "llama-4"}
+    problems.append("Error code: 401 - invalid key")
+    r = await client.post("/connections", json=body, headers=as_owner)
+    assert (r.status_code, r.json()) == (422, {"error": "model_refused",
+                                               "message": "The model didn't answer: Error code: 401 - invalid key"})
+    assert not (office.paths.office / "connections").exists()
+    r = await client.post("/connections", json=body, headers=as_owner)
+    assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "custom", "llama-4")
+    assert [c.llm_config for c in calls] == [{"provider": "openai", "base_url": "https://gw.example/v1",
+                                              "api_key": REFUSED, "model": "llama-4"}] * 2
+
+
+async def test_a_default_model_that_doesnt_answer_is_named(client, office, as_owner, checks, monkeypatch):
+    calls, problems = checks
+    monkeypatch.setitem(LISTS, "openai", ["o3"])
+    problems.extend(["Error code: 404 - model not found"] * 2)
+    for body, model in (({"provider": "openai", "api_key": SENTINEL}, "gpt-5.5"),
+                        ({"provider": "anthropic", "api_key": UNREACHABLE}, "claude-sonnet-4-5")):
+        r = await client.post("/connections", json=body, headers=as_owner)
+        assert (r.status_code, r.json()) == (422, {
+            "error": "model_refused",
+            "message": f"The model '{model}' didn't answer: Error code: 404 - model not found; name another model"})
+    assert len(calls) == 2 and not (office.paths.office / "connections").exists()
 
 
 async def test_azure_that_cant_list_needs_a_model_to_check(client, office, as_owner, checks):
