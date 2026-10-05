@@ -143,6 +143,15 @@ async def test_a_listed_provider_without_a_default_takes_its_first_model(client,
     assert r.json()["model"] == "gpt-5.4"
 
 
+async def test_a_model_the_listing_doesnt_offer_is_not_saved(client, office, as_owner, checks):
+    for body in ({"provider": "openai", "api_key": SENTINEL, "model": "gpt5-prod"},
+                 {"provider": "azure", "api_key": SENTINEL, "endpoint": "acme", "model": "gpt5-prod"}):
+        r = await client.post("/connections", json=body, headers=as_owner)
+        assert (r.status_code, r.json()) == (422, {"error": "model_not_offered",
+                                                   "message": "This connection doesn't offer 'gpt5-prod'"})
+    assert not (office.paths.office / "connections").exists() and checks[0] == []
+
+
 async def test_azure_needs_an_endpoint_and_gets_its_v1_url(client, office, as_owner, checks):
     r = await client.post("/connections", json={"provider": "azure", "api_key": SENTINEL}, headers=as_owner)
     assert (r.status_code, r.json()["error"]) == (422, "invalid_connection")

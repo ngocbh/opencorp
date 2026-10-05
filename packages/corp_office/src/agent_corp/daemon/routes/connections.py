@@ -116,6 +116,8 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
                         f"Couldn't list the deployments ({listed.error}); name a model to check it with one reply")
     if listed.listed:
         ids = [m.id for m in listed.models]
+        if body.model and body.model not in ids:  # saved, it would fail the first chat
+            raise HTTPError(422, "model_not_offered", f"This connection doesn't offer '{body.model}'")
         default = PROVIDER_DEFAULT_MODELS.get(llm["provider"])
         model = body.model or (default if default in ids else ids[0] if ids else None)
         if model is None:
