@@ -13,8 +13,8 @@ from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_
 from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE
 from agent_corp.chat.harness import HarnessError, _refused_key
 from agent_corp.chat.models import TIMED_OUT, Listing, own_models
-from agent_corp.company.loader import load_repo
 from agent_corp.chat.provider import Price
+from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import write_private
 from tests.chat.conftest import errors, say, spawned, status, texts, wait_for

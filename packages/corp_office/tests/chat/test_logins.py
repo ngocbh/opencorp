@@ -162,9 +162,7 @@ def test_cancel_stops_the_poll_and_saves_nothing(conns):
     wait_for(lambda: len(http.calls) > 2, what="the poll")
     logins.cancel(login.id, by="ngocbh")
     assert logins.get(login.id, by="ngocbh").state == "cancelled"
-    polls = len(http.calls)
-    time.sleep(0.1)
-    assert len(http.calls) == polls
+    assert f"login-{login.id}" not in {thread.name for thread in threading.enumerate()}  # it polls no more
     assert conns.names() == ["office"] and not conns.auth_file("chatgpt").exists()
     logins.cancel(login.id, by="ngocbh")  # cancelling an ended sign-in changes nothing
     assert logins.get(login.id, by="ngocbh").state == "cancelled"
