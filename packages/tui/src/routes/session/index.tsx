@@ -47,6 +47,7 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { AGENT_CORP_BASE_MODE, useBindings, useAgentCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
+import { modelLabel } from "../../office/models"
 import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
@@ -520,7 +521,15 @@ export function Session() {
                     <Show when={costLabel(current())}>
                       {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
                     </Show>
+                    <span style={{ fg: theme.textMuted }}> · {modelLabel(current(), office.connections())}</span>
                   </text>
+                  <Show when={current().model_note}>
+                    {(note) => (
+                      <text fg={theme.warning} wrapMode="word">
+                        {note()}
+                      </text>
+                    )}
+                  </Show>
                 </box>
                 <scrollbox
                   ref={(r) => (scroll = r)}

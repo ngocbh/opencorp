@@ -85,6 +85,8 @@ export const Definitions = {
 
   stash_delete: keybind("ctrl+d", "Delete stash entry"),
   person_list: keybind("<leader>p", "Switch person"),
+  model_list: keybind("<leader>m", "Switch model"),
+  model_dialog_favorite: keybind("ctrl+f", "Favorite or unfavorite a model in the model list"),
   agent_cycle: keybind("tab", "Next person"),
   agent_cycle_reverse: keybind("shift+tab", "Previous person"),
 
@@ -219,6 +221,8 @@ export const CommandMap = {
   session_quick_switch_9: "session.quick_switch.9",
   stash_delete: "stash.delete",
   person_list: "person.list",
+  model_list: "model.list",
+  model_dialog_favorite: "model.dialog.favorite",
   agent_cycle: "agent.cycle",
   agent_cycle_reverse: "agent.cycle.reverse",
   messages_page_up: "session.page.up",

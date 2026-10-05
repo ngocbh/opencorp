@@ -1,9 +1,12 @@
 import type {
   Ack,
   AddDeviceRequest,
+  AddConnectionRequest,
   AnswerRequest,
   Comment,
   ConfirmFollowUpsRequest,
+  Connection,
+  ConnectionList,
   CostCapRequest,
   CreateSessionRequest,
   Debrief,
@@ -13,6 +16,7 @@ import type {
   HireResponse,
   LoginRequest,
   Message,
+  ModelList,
   Person,
   Profile,
   ProfileManagerRequest,
@@ -22,10 +26,13 @@ import type {
   Question,
   SendBackRequest,
   Session,
+  SetDefaultConnectionRequest,
+  SetModelRequest,
   SetPasswordRequest,
   SideChatRequest,
   WorkItem,
 } from "@agent-corp/protocol"
+import { OfficeTimeout } from "./errors"
 import { request, seg, type Method } from "./http"
 import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"
 
@@ -33,6 +40,9 @@ export type OfficeClient = ReturnType<typeof createOfficeClient>
 
 /** How long a read waits for the office before failing with `OfficeTimeout`. */
 export const READ_TIMEOUT_MS = 15_000
+
+/** How long starting a chat waits for the office before failing with `OfficeTimeout`. */
+export const CREATE_TIMEOUT_MS = 30_000
 
 /** Who the office takes a request to be from: `GET /whoami`. */
 export type WhoAmI = { person: string; device: string | null }
@@ -68,7 +78,13 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number; t
     },
     sessions: {
       list: (opts: { person?: string; limit?: number } = {}) => get<Session[]>(`/sessions${query(opts)}`),
-      create: (req: CreateSessionRequest) => post<Session>("/sessions", req),
+      // Starting a chat may wait up to 8 s for the connections' model lists, so it gets a limit of its own.
+      create: (req: CreateSessionRequest) =>
+        request<Session>(socket, "POST", "/sessions", req, { timeoutMs: CREATE_TIMEOUT_MS, token }).catch((e) => {
+          if (e instanceof OfficeTimeout)
+            e.message += "; the chat may have started, so look for it in the session list (/sessions)"
+          throw e
+        }),
       get: (id: string) => get<Session>(s(id)),
       messages: (id: string) => get<Message[]>(`${s(id)}/messages`),
       prompt: (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/prompt`, req),
@@ -76,6 +92,17 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number; t
       interrupt: (id: string) => post<Ack>(`${s(id)}/interrupt`),
       end: (id: string) => post<Ack>(`${s(id)}/end`),
       costCap: (id: string, req: CostCapRequest) => post<Session>(`${s(id)}/cost-cap`, req),
+      /** Switches a live chat's connection and model; its next reply runs on them. */
+      setModel: (id: string, req: SetModelRequest) => post<Session>(`${s(id)}/model`, req),
+    },
+    connections: {
+      list: () => get<ConnectionList>("/connections"),
+      /** The models a connection offers, as the office last listed them; `refresh` lists them again. */
+      models: (name: string, opts: { refresh?: boolean } = {}) =>
+        get<ModelList>(`/connections/${seg(name)}/models${query({ refresh: opts.refresh ? 1 : undefined })}`),
+      add: (req: AddConnectionRequest) => post<Connection>("/connections", req),
+      remove: (name: string) => call<Ack>("DELETE", `/connections/${seg(name)}`),
+      setDefault: (req: SetDefaultConnectionRequest) => call<ConnectionList>("PUT", "/connections/default", req),
     },
     workItems: {
       get: (id: string) => get<WorkItem>(`/work-items/${seg(id)}`),

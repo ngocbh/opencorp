@@ -41,6 +41,89 @@ export function pickPerson(input: {
   )
 }
 
+/** A model on a connection, as a `/model` pick names it. */
+export type ModelPick = { connection: string; model: string }
+
+const RECENT_MAX = 10
+
+/** Whether two picks name the same model on the same connection. */
+export const samePick = (a: ModelPick, b: ModelPick) => a.connection === b.connection && a.model === b.model
+
+/**
+ * This device's recent and favorite models, kept in `file` (`model.json`). An entry whose
+ * connection isn't in `connections()` is hidden, not deleted, so it comes back with its
+ * connection; while `connections()` is unknown, every entry shows.
+ */
+export function createModelState(file: string, connections: () => readonly string[] | undefined) {
+  const [store, setStore] = createStore<{ ready: boolean; recent: ModelPick[]; favorite: ModelPick[] }>({
+    ready: false,
+    recent: [],
+    favorite: [],
+  })
+  const state = { pending: false }
+  // Queued, so rapid picks reach the file in order.
+  let write = Promise.resolve()
+
+  function save() {
+    if (!store.ready) {
+      state.pending = true
+      return
+    }
+    state.pending = false
+    const snapshot = { recent: [...store.recent], favorite: [...store.favorite] }
+    write = write.then(() => writeJsonAtomic(file, snapshot)).catch(() => {})
+  }
+
+  const picks = (value: unknown) =>
+    Array.isArray(value)
+      ? value
+          .filter(
+            (x): x is ModelPick =>
+              !!x && typeof x === "object" && typeof x.connection === "string" && typeof x.model === "string",
+          )
+          .map((x) => ({ connection: x.connection, model: x.model }))
+      : []
+
+  readJson<unknown>(file)
+    .then((x) => {
+      if (!x || typeof x !== "object") return
+      const data = x as Record<string, unknown>
+      setStore({ recent: picks(data.recent).slice(0, RECENT_MAX), favorite: picks(data.favorite) })
+    })
+    .catch(() => {})
+    .finally(() => {
+      setStore("ready", true)
+      if (state.pending) save()
+    })
+
+  const shown = (list: ModelPick[]) => {
+    const names = connections()
+    return names ? list.filter((p) => names.includes(p.connection)) : list
+  }
+
+  return {
+    get ready() {
+      return store.ready
+    },
+    /** Newest first. */
+    recent: () => shown(store.recent),
+    favorite: () => shown(store.favorite),
+    isFavorite: (pick: ModelPick) => store.favorite.some((x) => samePick(x, pick)),
+    /** Makes `pick` the newest recent. */
+    pick(pick: ModelPick) {
+      setStore("recent", [pick, ...store.recent.filter((x) => !samePick(x, pick))].slice(0, RECENT_MAX))
+      save()
+    },
+    toggleFavorite(pick: ModelPick) {
+      const next = store.favorite.some((x) => samePick(x, pick))
+        ? store.favorite.filter((x) => !samePick(x, pick))
+        : [...store.favorite, pick]
+      setStore("favorite", next)
+      save()
+    },
+  }
+}
+
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
   init: () => {
@@ -187,9 +270,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const session = createSession()
 
+    const model = createModelState(path.join(paths.state, "model.json"), () =>
+      office.connections()?.connections.map((c) => c.name),
+    )
+
     const result = {
       person,
       session,
+      model,
     }
     return result
   },
