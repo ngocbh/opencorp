@@ -363,7 +363,7 @@ function SubscriptionMethod(props: { provider: Provider }) {
       <Show when={(!login() && !error()) || (waiting() && !code())}>
         <Spinner color={theme.textMuted}>Getting a sign-in code…</Spinner>
       </Show>
-      <Show when={code() && login()}>
+      <Show when={code() ? login() : undefined}>
         {(current) => (
           <>
             <box>
