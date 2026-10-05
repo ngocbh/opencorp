@@ -44,6 +44,12 @@ export const READ_TIMEOUT_MS = 15_000
 /** How long starting a chat waits for the office before failing with `OfficeTimeout`. */
 export const CREATE_TIMEOUT_MS = 30_000
 
+/**
+ * How long adding a connection waits for the office before failing with `OfficeTimeout`: the office checks the
+ * key by listing the models, then with one reply, which takes about 95 s at most.
+ */
+export const ADD_CONNECTION_TIMEOUT_MS = 120_000
+
 /** Who the office takes a request to be from: `GET /whoami`. */
 export type WhoAmI = { person: string; device: string | null }
 
@@ -100,7 +106,13 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number; t
       /** The models a connection offers, as the office last listed them; `refresh` lists them again. */
       models: (name: string, opts: { refresh?: boolean } = {}) =>
         get<ModelList>(`/connections/${seg(name)}/models${query({ refresh: opts.refresh ? 1 : undefined })}`),
-      add: (req: AddConnectionRequest) => post<Connection>("/connections", req),
+      add: (req: AddConnectionRequest) =>
+        request<Connection>(socket, "POST", "/connections", req, { timeoutMs: ADD_CONNECTION_TIMEOUT_MS, token }).catch(
+          (e) => {
+            if (e instanceof OfficeTimeout) e.message += "; the connection may have been added, so look in /connect"
+            throw e
+          },
+        ),
       remove: (name: string) => call<Ack>("DELETE", `/connections/${seg(name)}`),
       setDefault: (req: SetDefaultConnectionRequest) => call<ConnectionList>("PUT", "/connections/default", req),
     },

@@ -1,6 +1,6 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { CREATE_TIMEOUT_MS, createOfficeClient } from "../../src/office/client"
+import { ADD_CONNECTION_TIMEOUT_MS, CREATE_TIMEOUT_MS, createOfficeClient } from "../../src/office/client"
 import { OfficeError, OfficeTimeout, VersionConflictError } from "../../src/office/errors"
 import { request } from "../../src/office/http"
 import { until } from "../fixture/until"
@@ -211,6 +211,44 @@ test("managing connections: add, set the default, remove; office can't be remove
   office.state.managers = []
   const forbidden = await failure(client().connections.add({ provider: "openai", api_key: "sk-test" }))
   expect([forbidden.status, forbidden.code]).toEqual([403, "forbidden"])
+})
+
+test("adding a connection waits 120 s, as the office's key check (listing, then one reply) takes about 95 s at most", async () => {
+  office = createFakeOffice()
+  expect(ADD_CONNECTION_TIMEOUT_MS).toBe(120_000)
+  // The client asks for a 120 s limit; the test gets a 50 ms one so the held request times out.
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  const asked: number[] = []
+  const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms) => (asked.push(ms), timeout(50)))
+  const release = office.hold("POST /connections")
+  const err = await failure(client().connections.add({ provider: "anthropic", api_key: "sk-test" })).finally(() => {
+    spy.mockRestore()
+    release()
+  })
+  expect(asked).toEqual([ADD_CONNECTION_TIMEOUT_MS])
+  expect(err).toBeInstanceOf(OfficeTimeout)
+  expect(err.timeoutMs).toBe(ADD_CONNECTION_TIMEOUT_MS)
+  expect(err.message).toContain("/connect")
+})
+
+test("the office refuses a connection it can't use with a 422, and adds nothing", async () => {
+  office = createFakeOffice()
+  office.refusals.push({ error: "key_refused", message: "The key didn't work (HTTP 401)" })
+  const refused = await failure(client().connections.add({ provider: "anthropic", api_key: "sk-test" }))
+  expect([refused.status, refused.code, refused.message]).toEqual([422, "key_refused", "The key didn't work (HTTP 401)"])
+  const azure = await failure(client().connections.add({ provider: "azure", api_key: "sk-test" }))
+  expect([azure.status, azure.code]).toEqual([422, "invalid_connection"])
+  const google = await failure(client().connections.add({ provider: "google", api_key: "sk-test" }))
+  expect([google.status, google.code]).toEqual([422, "invalid_connection"])
+  expect(office.state.connections.map((c) => c.name)).toEqual(["office", "azure-2"])
+  // A custom endpoint is named for it, as the office labels it.
+  const custom = await client().connections.add({
+    provider: "openai",
+    api_key: "sk-test",
+    endpoint: "https://llm.example.com/v1",
+    model: "my-model",
+  })
+  expect([custom.name, custom.provider, custom.model]).toEqual(["custom", "custom", "my-model"])
 })
 
 test("setModel switches a live session and publishes it; unknown connections and ended sessions fail", async () => {

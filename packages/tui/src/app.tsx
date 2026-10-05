@@ -34,6 +34,7 @@ import { LocalProvider, useLocal } from "./context/local"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
 import { DialogModel } from "./component/dialog-model"
+import { DialogConnect } from "./component/dialog-connect"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogPeople, usePickerOnStart } from "./routes/picker/dialog-people"
@@ -84,6 +85,7 @@ const appBindingCommands = [
   "command.palette.show",
   "person.list",
   "model.list",
+  "provider.connect",
   "agent.cycle",
   "agent.cycle.reverse",
   "agentcorp.debug",
@@ -403,6 +405,17 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         slashAliases: ["models"],
         run: () => {
           dialog.replace(() => <DialogModel />)
+        },
+      },
+      {
+        name: "provider.connect",
+        title: "Connect a provider",
+        category: "Provider",
+        slashName: "connect",
+        // Adding, removing and the default are the office owner's, or a grant's.
+        hidden: !office.canManage(),
+        run: () => {
+          if (office.canManage()) dialog.replace(() => <DialogConnect />)
         },
       },
       {

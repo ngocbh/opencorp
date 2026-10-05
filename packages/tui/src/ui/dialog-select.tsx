@@ -74,6 +74,8 @@ export interface DialogSelectOption<T = any> {
 export type DialogSelectRef<T> = {
   filter: string
   filtered: DialogSelectOption<T>[]
+  /** The highlighted option; reactive. */
+  selected: DialogSelectOption<T> | undefined
   moveTo(value: T): void
 }
 
@@ -489,6 +491,9 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
     },
     get filtered() {
       return filtered()
+    },
+    get selected() {
+      return selected()
     },
     moveTo(value) {
       const index = flat().findIndex((option) => isDeepEqual(option.value, value))
