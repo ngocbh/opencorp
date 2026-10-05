@@ -247,10 +247,17 @@ def test_backward_after_a_model_only_change_still_runs(harness, fake_llm, worksp
 
 
 def test_backward_on_the_debrief_uses_the_debriefs_record(harness, fake_llm, workspace, learning):
-    sid = ended_on_second(harness, fake_llm, workspace)
+    fake_llm.script({"content": "Done."}, debrief_reply())
+    sid = harness.start_session("minh", str(workspace)).id
+    wait_for(lambda: status(harness, sid) == "idle", what="the first turn")
+    say(harness, sid, "fix the bug")  # the chat's runs are all on office
+    on(harness, sid, "second")
+    harness.end(sid)  # no turn on second: only the debrief runs there
+    wait_for(lambda: status(harness, sid) == "ended", what="the end of the debrief")
     record = harness.store.get_debrief_record(sid)
     runs = harness.office.paths.run_dir(sid) / "runs"
     assert read_run_record(runs / f"{record.run_id}.model.json").connection == "second"
+    assert read_run_record(runs / f"{harness.store.get_session(sid).run_ids[-1]}.model.json").connection == "office"
     on(harness, sid, None)
     jobs = spawned(harness)
     fake_llm.script(review_reply(), learner_reply(PROFILE + "\n- Shorter debriefs.\n"))
