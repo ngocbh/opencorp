@@ -7,7 +7,7 @@ import time
 
 import httpx
 import pytest
-from agent_composer.llm_clients.auth import HttpResponse
+from agent_composer.llm_clients.auth import AuthStore, HttpResponse, OAuthCredentials
 
 from agent_corp.chat.connections import ConnectionFile, ConnectionGone, Connections
 from agent_corp.chat.models import (FRESH, TIMED_OUT, ListTimeout, ModelCache, ModelListError, azure_deployments,
@@ -188,6 +188,99 @@ def test_a_provider_that_cant_list_gives_its_own_model(conn):
     assert (got.models, got.listed) == ([], False)
 
 
+# Subscriptions.
+
+ACCESS = "fake-access-1e7b40c9"
+REFRESH = "fake-refresh-9d3f62a1"
+NEW_ACCESS = "fake-access-new-5c08e2b7"
+
+CATALOG = HttpResponse(200, {"models": [{"slug": "gpt-5.5-codex", "visibility": "list", "priority": 2},
+                                        {"slug": "gpt-5.5", "visibility": "list", "priority": 1},
+                                        {"slug": "hidden", "visibility": "hide", "priority": 0}]})
+
+
+def subscription(model="gpt-5.5"):
+    return ConnectionFile(method="subscription", llm_config={"provider": "openai", "model": model})
+
+
+def signed_in(directory, expires_in=3600.0):
+    """A sign-in saved in ``directory`` (made 0700), with fake tokens expiring in ``expires_in`` seconds."""
+    directory.mkdir(mode=0o700, exist_ok=True)
+    auth = directory / "chatgpt.auth.json"
+    AuthStore(auth).save("openai", OAuthCredentials(ACCESS, REFRESH, time.time() + expires_in, "account-test"),
+                         "gpt-5.5")
+    return auth
+
+
+class Replies(FakeRequest):
+    """Composer's ``request`` sender answering each call with the next of ``responses``."""
+
+    def __call__(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return self.response.pop(0)
+
+
+def test_subscription_models_are_listed_through_its_auth_file(tmp_path):
+    auth = signed_in(tmp_path / "connections")
+    request = FakeRequest(CATALOG)
+    got = list_models(subscription(), "chatgpt", deadline=6, request=request, auth_file=auth)
+    assert (got.listed, got.error, [m.id for m in got.models]) == (True, None, ["gpt-5.5", "gpt-5.5-codex"])
+    [(method, url, kwargs)] = request.calls
+    assert (method, url.split("?")[0]) == ("GET", "https://chatgpt.com/backend-api/codex/models")
+    assert kwargs["headers"]["Authorization"] == f"Bearer {ACCESS}" and kwargs["timeout"] <= 6
+
+
+def test_an_expiring_sign_in_is_refreshed_and_each_request_gets_the_time_left(tmp_path):
+    auth = signed_in(tmp_path / "connections", expires_in=10)  # inside composer's refresh margin
+    request = Replies([HttpResponse(200, {"access_token": NEW_ACCESS, "expires_in": 3600}), CATALOG])
+    got = list_models(subscription(), "chatgpt", deadline=6, request=request, auth_file=auth)
+    assert got.listed and got.error is None
+    (_, refresh_url, refresh), (_, _, listing) = request.calls
+    assert refresh_url == "https://auth.openai.com/oauth/token" and refresh["form"]["refresh_token"] == REFRESH
+    assert listing["headers"]["Authorization"] == f"Bearer {NEW_ACCESS}"
+    assert 0 < listing["timeout"] <= refresh["timeout"] <= 6
+    assert NEW_ACCESS in auth.read_text()  # composer saved the refreshed sign-in where runs read it
+
+
+@pytest.mark.parametrize(("status", "refused"), [(401, True), (500, False)])
+def test_a_subscription_that_cant_be_listed_says_the_status_never_a_token(tmp_path, caplog, status, refused):
+    auth = signed_in(tmp_path / "connections")
+    request = FakeRequest(HttpResponse(status, {"error": f"bad token {ACCESS} {REFRESH}"}))
+    got = list_models(subscription(), "chatgpt", request=request, auth_file=auth)
+    assert (got.listed, got.refused, got.models) == (False, refused, [ModelOption(id="gpt-5.5")])
+    assert got.error.endswith(f"(HTTP {status})")
+    for text in (got.model_dump_json(), caplog.text):
+        assert ACCESS not in text and REFRESH not in text
+
+
+def test_a_subscription_without_its_sign_in_offers_its_own_model(tmp_path):
+    def never(*args, **kwargs):
+        raise AssertionError("no request expected")
+
+    (tmp_path / "connections").mkdir(mode=0o700)
+    got = list_models(subscription(), "chatgpt", request=never, auth_file=tmp_path / "connections" / "gone.auth.json")
+    assert (got.listed, got.error, got.models) == (False, "no sign-in", [ModelOption(id="gpt-5.5")])
+
+
+def test_the_cache_lists_a_subscription_through_its_own_auth_file(tmp_path):
+    office = tmp_path / "office"
+    office.mkdir(mode=0o700)
+    conns = Connections(office)
+    creds = OAuthCredentials(ACCESS, REFRESH, time.time() + 3600, "account-test")
+    conns.add("chatgpt", subscription(), sign_in=lambda path: AuthStore(path).save("openai", creds, "gpt-5.5"))
+    conns.put("openai", openai())
+    seen = {}
+
+    def lister(conn, name, *, deadline, auth_file):
+        seen[name] = auth_file
+        return list_models(conn, name, deadline=deadline, request=FakeRequest(CATALOG), auth_file=auth_file)
+
+    cache = ModelCache(conns, lister=lister)
+    assert [m.id for m in cache.get("chatgpt").models] == ["gpt-5.5", "gpt-5.5-codex"]
+    cache.get("openai")
+    assert seen == {"chatgpt": conns.auth_file("chatgpt"), "openai": None}
+
+
 def test_listing_returns_by_the_deadline():
     release = threading.Event()
 
@@ -228,7 +321,7 @@ class Lister:
         self.deadlines = {}
         self.started = threading.Event()
 
-    def __call__(self, conn, name, *, deadline):
+    def __call__(self, conn, name, *, deadline, auth_file):
         self.calls.append(name)
         self.deadlines[name] = deadline
         self.started.set()
@@ -348,7 +441,8 @@ def test_a_listed_connection_offers_its_own_model_first_when_its_host_doesnt_lis
     got = list_models(conn, "anthropic", request=request)
     assert (got.listed, [m.id for m in got.models]) == (True, ["claude-sonnet-4-5", *dated])
     connections.put("anthropic", conn)
-    cache = ModelCache(connections, lister=lambda conn, name, *, deadline: list_models(conn, name, request=request))
+    cache = ModelCache(connections,
+                       lister=lambda conn, name, *, deadline, auth_file: list_models(conn, name, request=request))
     assert cache.offers(["anthropic", "fast"], "claude-sonnet-4-5", deadline=5) == ["anthropic"]
     got = list_models(openai(model="gpt-5"), "openai", request=FakeRequest(HttpResponse(200, {"data": [{"id": "o3"}]})))
     assert [m.id for m in got.models] == ["gpt-5", "o3"]
@@ -372,8 +466,8 @@ def test_offers_gives_every_connection_together_only_the_deadline(connections):
 
 def test_a_host_that_times_out_in_composer_makes_offers_time_out(connections):
     request = FakeRequest(TimeoutError("HTTP request timed out"))
-    cache = ModelCache(connections, lister=lambda conn, name, *, deadline: list_models(conn, name, deadline=deadline,
-                                                                                       request=request))
+    cache = ModelCache(connections, lister=lambda conn, name, *, deadline, auth_file: list_models(
+        conn, name, deadline=deadline, request=request))
     with pytest.raises(ListTimeout):
         cache.offers(["fast"], "gpt-5", deadline=5)
     assert len(request.calls) == 1
@@ -394,7 +488,7 @@ def test_offers_uses_a_kept_listing_of_a_connection_that_cant_list(connections):
                                                         "model": "claude-x"}))
     calls = []
 
-    def lister(conn, name, *, deadline):
+    def lister(conn, name, *, deadline, auth_file):
         calls.append(name)
         return own_models(conn, name)
 

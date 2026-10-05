@@ -172,7 +172,7 @@ def test_the_note_names_a_default_with_no_configured_model_by_its_name(make_harn
 
 
 def test_resolution_has_one_deadline_and_falls_back_with_a_note(make_harness):
-    def slow(conn, name, *, deadline):
+    def slow(conn, name, *, deadline, auth_file):
         # Each listing alone fits the deadline; the two together don't.
         time.sleep(min(0.6, deadline))
         if deadline < 0.6:

@@ -60,7 +60,7 @@ def workspace(tmp_path):
 def lister(listings):
     """A lister that gives each connection in ``listings`` (``{name: [model id]}``) as listed, and any other
     connection only its configured model; it never reaches the network."""
-    def list_models(conn, name, *, deadline):
+    def list_models(conn, name, *, deadline, auth_file):
         if name in listings:
             return Listing(connection=name, models=[ModelOption(id=i) for i in listings[name]], listed=True)
         return own_models(conn, name)
