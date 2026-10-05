@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agent_corp.chat.connections import OFFICE, RunMoved, read_run_record, write_run_record
 from agent_corp.chat.harness import LIVE, Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.company.loader import load_repo
@@ -324,18 +325,27 @@ class Learning:
             return
         handlers: FeedbackHandlers | None = None
         spawned = False
-        error: str | None = None
+        error = moved = None
         try:
+            provider = self._pinned(session, feedback)
             feedback = self.store.set_feedback_status(feedback.id, "learning")
-            job, handlers = self._backward_job(session, feedback)
+            job, handlers = self._backward_job(session, feedback, provider)
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
             spawned = True
+        except RunMoved as exc:
+            moved = self._redact(str(exc))
         except Exception as exc:
             error = self._redact(str(exc))
             self._log_exception(exc, "can't start learning from feedback %s", feedback.id)
         finally:
             if not spawned:
                 self._release(session.id)
+        if moved is not None:
+            # No retry: another model or key would learn from a run it didn't make.
+            log.warning("can't learn from feedback %s: %s", feedback.id, moved)
+            self.store.set_feedback_status(feedback.id, "learning_failed", failure=moved)
+            self._drain(session.id)
+            return
         # Released first: what it drains next may reserve the session again. Feedback that never
         # left the queue waits for the next drain.
         if error is not None and self.store.get_feedback(feedback.id).status == "learning":
@@ -360,11 +370,18 @@ class Learning:
 
     # --- jobs ------------------------------------------------------------------------
 
-    def _debrief_job(self, session: Session, run_id: str, *, kind: str,
+    def _debrief_job(self, session: Session, run_id: str, *, kind: str, provider: Provider | None = None,
                      feedback: str | None = None) -> tuple[Job, dict[str, Any]]:
+        """A debrief job on ``provider``; with None, a new run on the session's connection, recorded here."""
         pin = self.git.pin(session.repo_commit)
         defaults = self._defaults(load_repo(pin))
-        provider = self._provider()
+        if provider is None:
+            name, model = session.connection or OFFICE, session.model
+            if name not in self.harness.connections.names():
+                name, model = self.harness.connections.default(), None
+            provider = self.harness.connections.resolve(name, model)
+            write_run_record(self._record(session.id, run_id), name, model, provider)
+        self._remember(provider)
         memory = {"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars,
                                                llm_config=provider.llm_config)}
         transcript = transcript_text(self.store.list_messages(session.id)) if kind == "chat" else ""
@@ -373,19 +390,21 @@ class Learning:
                   llm_config=provider.llm_config, learnable=True, memory=memory, env=provider.env, feedback=feedback)
         return job, {"profile": GitProfileStore(self.git, session.person)}
 
-    def _backward_job(self, session: Session, feedback: Feedback) -> tuple[Job, FeedbackHandlers]:
-        """The backward job for ``feedback``: the run's own flow, tools, and memory, from its pinned commit."""
+    def _backward_job(self, session: Session, feedback: Feedback,
+                      provider: Provider) -> tuple[Job, FeedbackHandlers]:
+        """The backward job for ``feedback`` on ``provider``: the run's own flow, tools, and memory at its pin."""
         record = self.store.get_debrief_record(session.id)
         exited: Callable[[dict[str, Any] | None], None] = lambda outcome: self._post(  # noqa: E731
             self._learned, feedback.id, handlers, outcome)
         source = f"from feedback on run {feedback.run_id} ({feedback.author})"
         if record is not None and record.run_id == feedback.run_id:
-            job, stores = self._debrief_job(session, feedback.run_id, kind="backward", feedback=feedback.text)
+            job, stores = self._debrief_job(session, feedback.run_id, kind="backward", provider=provider,
+                                            feedback=feedback.text)
             handlers = FeedbackHandlers(stores=stores, source=source, exited=exited,
                                         commit_log=self._commit_log(feedback))
             return job, handlers
         spec = self.harness.restorers[session.kind](session)
-        provider = self._provider()
+        self._remember(provider)
         tools = spec.groups(session, feedback.run_id, _no_questions)
         memory = {name: m.model_copy(update={"llm_config": provider.llm_config})
                   if m.kind == "profile" and m.llm_config is None else m for name, m in spec.memory.items()}
@@ -411,9 +430,20 @@ class Learning:
             except Exception as exc:
                 self._log_exception(exc, "learning: %s failed", getattr(fn, "__name__", fn))
 
-    def _provider(self) -> Provider:
-        """The provider for a new job; its model key is remembered, so logs never show it."""
-        provider = self.harness.connections.resolve(None, None)
+    def _pinned(self, session: Session, feedback: Feedback) -> Provider:
+        """The provider that gives ``feedback``'s run the endpoint and key it ran on.
+
+        Raises:
+            RunMoved: the run's connection is gone or no longer gives them; the message says why.
+        """
+        try:
+            record = read_run_record(self._record(session.id, feedback.run_id))
+        except ValueError:
+            raise RunMoved(f"run {feedback.run_id}'s record can't be read") from None
+        return self.harness.connections.for_run(record, Path(self._log(session.id, feedback.run_id)), exact=False)
+
+    def _remember(self, provider: Provider) -> Provider:
+        """``provider``, with its model key remembered, so logs never show it."""
         key = (provider.llm_config or {}).get("api_key")
         if isinstance(key, str) and key:
             with self._lock:
@@ -493,6 +523,10 @@ class Learning:
 
     def _log(self, session_id: str, run_id: str) -> str:
         return str(self._run_dir(session_id) / "runs" / f"{run_id}.jsonl")
+
+    def _record(self, session_id: str, run_id: str) -> Path:
+        """Where the record of what a run started on is kept."""
+        return self._run_dir(session_id) / "runs" / f"{run_id}.model.json"
 
     def _mark_finished(self, session_id: str, run_id: str) -> None:
         """Record that a run finished: only a finished run can take feedback (a killed one would re-run)."""

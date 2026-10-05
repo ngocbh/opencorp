@@ -3,9 +3,13 @@ import threading
 
 import pytest
 
+from agent_corp.chat.connections import ConnectionFile, read_run_record
 from agent_corp.chat.harness import HarnessError
+from agent_corp.extensions import learning as learning_module
+from agent_corp.profile.debrief import DEBRIEF_FLOW
 from agent_corp.profile.feedback import FeedbackHandlers
 from agent_corp.protocol.models import FeedbackRequest
+from tests.chat.conftest import on, say, spawned
 from tests.profile.conftest import (LEARNER_ASK, asked, chat, debrief_reply, fails_once, learner_reply, review_reply,
                                     settled, status, wait_for)
 from tests.store.conftest import session
@@ -174,3 +178,110 @@ def test_feedback_whose_move_into_learning_fails_stays_queued_and_learns_later(h
     fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
     learning.tick()
     wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+
+
+def ended_on_second(harness, fake_llm, workspace):
+    """A main session whose last run and debrief ran on connection ``second``; it has ended."""
+    fake_llm.script({"content": "Done."}, debrief_reply())
+    sid = harness.start_session("minh", str(workspace)).id
+    wait_for(lambda: status(harness, sid) == "idle", what="the first turn")
+    on(harness, sid, "second")
+    say(harness, sid, "fix the bug")  # a fresh run on second takes it
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end of the debrief")
+    return sid
+
+
+def change_second(harness, **llm):
+    """Change connection ``second``'s llm_config."""
+    conn = harness.connections.get("second")
+    harness.connections.put("second", ConnectionFile(llm_config={**conn.llm_config, **llm}, env=conn.env))
+
+
+def test_backward_uses_the_runs_own_connection(harness, fake_llm, workspace, learning):
+    sid = ended_on_second(harness, fake_llm, workspace)
+    on(harness, sid, None)  # the chat is on office now; its last run wasn't
+    jobs = spawned(harness)
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+    second = harness.connections.resolve("second", None)
+    (job,) = jobs
+    assert (job.kind, job.run_id, job.llm_config, job.env) == ("backward", fb.run_id, second.llm_config, second.env)
+    assert job.memory["profile"].llm_config == second.llm_config
+
+
+def test_backward_on_a_removed_connection_fails_at_once_with_a_reason(harness, fake_llm, workspace, learning):
+    sid = ended_on_second(harness, fake_llm, workspace)
+    harness.connections.remove("second")
+    jobs = spawned(harness)
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    settled(learning)
+    failed = harness.store.get_feedback(fb.id)
+    assert (failed.status, failed.attempts, failed.failure) == ("learning_failed", 0, "connection 'second' was removed")
+    assert jobs == [] and sid not in learning._active
+
+
+def test_backward_after_a_key_change_fails_instead_of_using_the_new_key(harness, fake_llm, workspace, learning):
+    sid = ended_on_second(harness, fake_llm, workspace)
+    change_second(harness, api_key="sk-a-new-key")
+    jobs = spawned(harness)
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    settled(learning)
+    failed = harness.store.get_feedback(fb.id)
+    assert (failed.status, failed.attempts) == ("learning_failed", 0)
+    assert failed.failure == f"connection 'second' changed (endpoint or key) since run {fb.run_id}"
+    assert jobs == []
+
+
+def test_backward_after_a_model_only_change_still_runs(harness, fake_llm, workspace, learning):
+    sid = ended_on_second(harness, fake_llm, workspace)
+    change_second(harness, model="stub-3")
+    jobs = spawned(harness)
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("backward", "stub-3")]
+
+
+def test_backward_on_the_debrief_uses_the_debriefs_record(harness, fake_llm, workspace, learning):
+    sid = ended_on_second(harness, fake_llm, workspace)
+    record = harness.store.get_debrief_record(sid)
+    runs = harness.office.paths.run_dir(sid) / "runs"
+    assert read_run_record(runs / f"{record.run_id}.model.json").connection == "second"
+    on(harness, sid, None)
+    jobs = spawned(harness)
+    fake_llm.script(review_reply(), learner_reply(PROFILE + "\n- Shorter debriefs.\n"))
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, run_id=record.run_id, text="Shorter debriefs."))
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+    assert [(j.kind, j.flow, j.llm_config["model"]) for j in jobs] == [("backward", DEBRIEF_FLOW, "stub-2")]
+
+
+def test_a_debrief_on_a_removed_connection_runs_on_the_default(harness, fake_llm, workspace, learning):
+    fake_llm.script({"content": "Done."}, debrief_reply())
+    sid = harness.start_session("minh", str(workspace)).id
+    wait_for(lambda: status(harness, sid) == "idle", what="the first turn")
+    say(harness, sid, "fix the bug")
+    on(harness, sid, "second")
+    harness.connections.remove("second")
+    jobs = spawned(harness)
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end of the debrief")
+    assert [(j.flow, j.llm_config["model"]) for j in jobs] == [(DEBRIEF_FLOW, "stub")]
+    run_id = harness.store.get_debrief_record(sid).run_id
+    record = read_run_record(harness.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json")
+    assert (record.connection, record.model) == ("office", None)
+    assert harness.store.get_session(sid).connection == "second"  # a debrief doesn't move the chat
+
+
+def test_the_debrief_records_its_run_before_it_spawns(harness, fake_llm, workspace, learning, monkeypatch):
+    def unwritable(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(learning_module, "write_run_record", unwritable)
+    jobs = spawned(harness)
+    sid = chat(harness, fake_llm, workspace)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    record = harness.store.get_debrief_record(sid)
+    assert (record.debrief.state, record.attempts) == ("pending", 1)
+    assert [j.flow for j in jobs if j.flow == DEBRIEF_FLOW] == []

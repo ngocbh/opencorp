@@ -1,4 +1,7 @@
-"""Learning fixtures: a harness whose company has the debrief and profile-manager flows, and Learning on it."""
+"""Learning fixtures: a harness whose company has the debrief and profile-manager flows, and Learning on it.
+
+The harness's office has a second connection, ``second``, on model ``stub-2``.
+"""
 
 import json
 import threading
@@ -20,7 +23,7 @@ OUTPUT = {"summary": "Fixed the bug.", "status": "done", "artifacts": ["PR #4"],
 
 @pytest.fixture
 def harness(make_harness):
-    return make_harness(files=LEARNING_FILES)
+    return make_harness(files=LEARNING_FILES, connections={"second": "stub-2"})
 
 
 @pytest.fixture
