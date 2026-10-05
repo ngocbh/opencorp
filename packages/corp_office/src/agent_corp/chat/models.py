@@ -174,9 +174,10 @@ def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE,
 
     Azure is listed by its deployments, and any other provider by composer's listing of the host its runs go to,
     with the key they use (``request`` and ``transport`` stand in for the two HTTP clients); a listed connection
-    offers its configured model first if its host doesn't list it. A connection whose provider has no listing, whose runs need a key it doesn't hold, or whose runs an environment variable sends to
-    another host offers only its configured model. A listing that fails offers the same, with ``error`` giving the
-    HTTP status or another reason, never the key.
+    offers its configured model first if its host doesn't list it. A connection whose provider has no listing,
+    whose runs need a key it doesn't hold, or whose runs an environment variable sends to another host offers only
+    its configured model. A listing that fails offers the same, with ``error`` giving the HTTP status or another
+    reason, never the key.
     """
     done: list[Listing] = []
     worker = threading.Thread(target=lambda: done.append(_listed(conn, name, deadline, request, transport)),

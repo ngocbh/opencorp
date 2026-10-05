@@ -124,6 +124,20 @@ def test_a_provider_without_a_key_lists_the_host_its_runs_go_to(conn, url):
     assert sent == url and "Authorization" not in kwargs["headers"]
 
 
+@pytest.mark.parametrize(("llm", "env"), [
+    ({"provider": "openai", "base_url": "https://gw.example/v1", "api_key": SENTINEL},
+     {"OPENAI_BASE_URL": "https://elsewhere.example/v1"}),
+    ({"provider": "vllm", "base_url": "https://gw.example/v1", "api_key": SENTINEL},
+     {"VLLM_BASE_URL": "http://127.0.0.1:9/v1"}),
+])
+def test_the_connections_base_url_wins_over_the_environment(llm, env):
+    request = FakeRequest(HttpResponse(200, {"data": [{"id": "llama-4"}]}))
+    got = list_models(ConnectionFile(llm_config=llm | {"model": "llama-4"}, env=env), "custom", request=request)
+    assert (got.listed, [m.id for m in got.models]) == (True, ["llama-4"])
+    [(_, sent, _)] = request.calls
+    assert sent == "https://gw.example/v1/models"
+
+
 @pytest.mark.parametrize("status", [401, 403])
 def test_a_refused_key_says_the_status_never_the_key(status, caplog):
     request = FakeRequest(HttpResponse(status, {"error": {"message": f"bad key {SENTINEL} {ANTHROPIC_KEY}"}}))

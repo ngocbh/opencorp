@@ -157,8 +157,8 @@ async def test_a_model_the_listing_doesnt_offer_gets_a_one_reply_check(client, o
     for body in ({"provider": "openai", "api_key": SENTINEL, "model": "gpt5-prod"},
                  {"provider": "azure", "api_key": SENTINEL, "endpoint": "acme", "model": "gpt5-prod"}):
         r = await client.post("/connections", json=body, headers=as_owner)
-        assert (r.status_code, r.json()) == (422, {"error": "model_refused",
-                                                   "message": "The model didn't answer: Error code: 404 - model not found"})
+        assert (r.status_code, r.json()) == (422, {
+            "error": "model_refused", "message": "The model didn't answer: Error code: 404 - model not found"})
     assert not (office.paths.office / "connections").exists()
     assert [c.llm_config["model"] for c in calls] == ["gpt5-prod"] * 2
     r = await client.post("/connections", json={"provider": "openai", "api_key": SENTINEL, "model": "gpt5-prod"},
@@ -232,6 +232,20 @@ async def test_a_provider_that_cant_be_listed_gets_a_one_reply_check(client, off
     assert (r.status_code, r.json()) == (422, {"error": "model_refused",
                                                "message": "The model didn't answer: Error code: 404 - model not found"})
     assert sorted(os.listdir(office.paths.office / "connections")) == ["anthropic.json"]
+
+
+async def test_a_provider_the_listing_leaves_unlisted_gets_a_one_reply_check(client, office, as_owner, checks):
+    calls, problems = checks
+    body = {"provider": "google", "api_key": SENTINEL, "model": "gemini-x"}
+    r = await client.post("/connections", json=body, headers=as_owner)
+    assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "google", "gemini-x")
+    [checked] = calls
+    assert checked.llm_config == {"provider": "google", "api_key": SENTINEL, "model": "gemini-x"}
+    problems.append("Error code: 404 - model not found")
+    r = await client.post("/connections", json=body, headers=as_owner)
+    assert (r.status_code, r.json()) == (422, {"error": "model_refused",
+                                               "message": "The model didn't answer: Error code: 404 - model not found"})
+    assert sorted(os.listdir(office.paths.office / "connections")) == ["google.json"]
 
 
 async def test_anthropic_is_checked_against_what_its_host_lists(client, office, as_owner, checks, monkeypatch, caplog):
