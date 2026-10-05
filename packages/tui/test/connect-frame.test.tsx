@@ -491,6 +491,27 @@ test("a failed sign-in says so and to try /connect again", async () => {
   })
 }, 10_000)
 
+test("a sign-in whose code comes on a later read shows the spinner until a read brings the link and code", async () => {
+  const office = createFakeOffice()
+  office.loginCodeReads.push(1)
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    // The first read is held, so the screen shows the office's first answer, which has no code.
+    const release = office.hold("GET /connections/login/:id")
+    await choose(app, "ChatGPT subscription", "chatgpt")
+    await app.until(() => polls(office).length === 1, 5000)
+    expect(office.logins()[0]).toMatchObject({ state: "waiting", url: null, user_code: null })
+    let f = await app.until((f) => f.includes("Getting a sign-in code…"))
+    expect(f).not.toContain("c copy")
+    release()
+    f = await app.until((f) => f.includes("ABCD-EFGH"))
+    expect(f).toContain("https://auth.openai.com/codex/device")
+    expect(f).toContain("c copy")
+    expect(f).not.toContain("Getting a sign-in code…")
+    expect(polls(office)).toHaveLength(1)
+  })
+}, 10_000)
+
 test("a sign-in that can't be read says so rather than waiting on", async () => {
   const office = createFakeOffice()
   office.broken.add("GET /connections/login/:id")

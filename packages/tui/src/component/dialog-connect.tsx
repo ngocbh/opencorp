@@ -272,6 +272,8 @@ function SubscriptionMethod(props: { provider: Provider }) {
   const [login, setLogin] = createSignal<ConnectionLogin>()
   const [error, setError] = createSignal<string>()
   const waiting = () => login()?.state === "waiting" && !error()
+  // The office can answer before the provider has given a code; a later read brings it.
+  const code = () => (waiting() ? login()?.user_code : undefined)
   // Closing or replacing the dialog stops the reads; a late answer must not touch whatever is open then.
   let closed = false
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -324,7 +326,7 @@ function SubscriptionMethod(props: { provider: Provider }) {
   }
 
   useBindings(() => ({
-    enabled: waiting() && !!login()?.user_code,
+    enabled: () => !!code() && renderer.currentFocusedEditor === null,
     bindings: [
       {
         key: "c",
@@ -332,7 +334,7 @@ function SubscriptionMethod(props: { provider: Provider }) {
         group: "Dialog",
         cmd: () => {
           clipboard
-            .write?.(login()?.user_code ?? "")
+            .write?.(code() ?? "")
             .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
             .catch(toast.error)
         },
@@ -357,10 +359,10 @@ function SubscriptionMethod(props: { provider: Provider }) {
           esc
         </text>
       </box>
-      <Show when={!login() && !error()}>
+      <Show when={(!login() && !error()) || (waiting() && !code())}>
         <Spinner color={theme.textMuted}>Getting a sign-in code…</Spinner>
       </Show>
-      <Show when={waiting() && login()}>
+      <Show when={code() && login()}>
         {(current) => (
           <>
             <box>

@@ -211,8 +211,14 @@ export function createFakeOffice(
   const replyHolds = new Map<string, Promise<void>>()
   const refusals: { error: string; message: string }[] = []
   const loginFailures: string[] = []
-  // Subscription sign-ins by id, with who started each, how often it was read, and why it will fail, if it will.
-  const logins = new Map<string, { login: ConnectionLogin; by: string; polls: number; failure?: string }>()
+  const loginCodeReads: number[] = []
+  // Subscription sign-ins by id, with who started each, how often it was read, the read that brings its code, and
+  // why it will fail, if it will.
+  const logins = new Map<
+    string,
+    { login: ConnectionLogin; by: string; polls: number; codeAt: number; failure?: string }
+  >()
+  const CODE = { url: "https://auth.openai.com/codex/device", user_code: "ABCD-EFGH" }
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const interrupts: ((sessionId: string) => void)[] = []
   // Messages sent with no open turn and no reply running, by session; the next turn takes them.
@@ -698,6 +704,7 @@ export function createFakeOffice(
     const { login } = found
     if (login.state !== "waiting") return login
     found.polls++
+    if (found.polls >= found.codeAt) Object.assign(login, CODE)
     if (found.failure !== undefined) {
       Object.assign(login, { state: "failed", message: found.failure })
     } else if (found.polls >= 3) {
@@ -841,15 +848,15 @@ export function createFakeOffice(
       ({ body, actor }) => {
         checkManage(actor)
         check(body?.provider === "openai", "provider must be openai")
+        const codeAt = loginCodeReads.shift() ?? 0
         const login: ConnectionLogin = {
           id: nextId(),
           state: "waiting",
-          url: "https://auth.openai.com/codex/device",
-          user_code: "ABCD-EFGH",
+          ...(codeAt ? { url: null, user_code: null } : CODE),
           connection: null,
           message: null,
         }
-        logins.set(login.id, { login, by: actor, polls: 0, failure: loginFailures.shift() })
+        logins.set(login.id, { login, by: actor, polls: 0, codeAt, failure: loginFailures.shift() })
         return Response.json(login)
       },
     ],
@@ -1248,6 +1255,11 @@ export function createFakeOffice(
     refusals,
     /** Why the next sign-ins fail, in order: each fails with that message on its first read. */
     loginFailures,
+    /**
+     * The read that brings each next sign-in its code, in order: until then it waits with no URL or code, as the
+     * office's does when the provider is slow to give one.
+     */
+    loginCodeReads,
     /** Subscription sign-ins by id, as they are now. */
     logins: () => [...logins.values()].map((l) => l.login),
     nextId,
