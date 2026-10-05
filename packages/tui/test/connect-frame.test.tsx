@@ -436,15 +436,16 @@ test("the sign-in is read every 2 s; once signed in, the model list opens on the
   const office = createFakeOffice()
   await run(office, async (app) => {
     await signIn(app, office)
-    const seen: number[] = []
-    await app.until((f) => {
-      while (seen.length < polls(office).length) seen.push(Date.now())
-      return f.includes("Select model") && f.includes("chatgpt (chatgpt)")
-    }, 10_000)
+    // The connections are read again once signed in; held, the screen says what it waits on.
+    const release = office.hold("GET /connections")
+    await app.until((f) => f.includes("Signed in. Opening the model list…"), 10_000)
     const id = office.logins()[0].id
     expect(polls(office)).toEqual(Array(3).fill(`/connections/login/${id}`))
-    expect(seen[1] - seen[0]).toBeGreaterThan(1800)
-    expect(seen[2] - seen[1]).toBeGreaterThan(1800)
+    const at = office.requests.filter((r) => r.path.startsWith("/connections/login/")).map((r) => r.at)
+    expect(at[1] - at[0]).toBeGreaterThan(1900)
+    expect(at[2] - at[1]).toBeGreaterThan(1900)
+    release()
+    await app.until((f) => f.includes("Select model") && f.includes("chatgpt (chatgpt)"))
     await app.until(() => highlighted(app, "Select model").startsWith("gpt-5"))
     expect(app.frame()).toContain("Connected chatgpt")
     expect(writes(office)).toEqual(["POST /connections/login"])

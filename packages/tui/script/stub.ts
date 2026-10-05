@@ -204,7 +204,7 @@ export function createFakeOffice(
   const notImplemented = new Set(opts.notImplemented ?? [])
   const broken = new Set<string>()
   const missing = new Set(opts.missing ?? [])
-  const requests: { method: string; path: string; raw: string; body: unknown; authorization?: string }[] = []
+  const requests: { method: string; path: string; raw: string; body: unknown; at: number; authorization?: string }[] = []
   // Humans' passwords by handle, kept as given: the office keeps only a hash, and never serves it.
   const passwords = new Map<string, string>()
   const holds = new Map<string, Promise<void>>()
@@ -1187,6 +1187,7 @@ export function createFakeOffice(
       path: decodeURIComponent(url.pathname) + url.search,
       raw,
       body,
+      at: Date.now(),
       ...(authorization !== null && { authorization }),
     })
     let who: { actor: string; device: string | null } = { actor: ceo(), device: null }
@@ -1243,7 +1244,10 @@ export function createFakeOffice(
     socket: server.socket,
     /** The office's data; tests may edit it directly (no events are sent for direct edits). */
     state,
-    /** Every request received, in order: `path` is decoded and keeps the query string, `raw` is as sent. */
+    /**
+     * Every request received, in order: `path` is decoded and keeps the query string, `raw` is as sent, and `at` is
+     * when it came in (ms since the epoch).
+     */
     requests,
     /** Humans' passwords by handle; set one to give a human a password. */
     passwords,

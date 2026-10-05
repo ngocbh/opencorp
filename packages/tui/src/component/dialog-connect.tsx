@@ -381,6 +381,9 @@ function SubscriptionMethod(props: { provider: Provider }) {
           </>
         )}
       </Show>
+      <Show when={login()?.state === "signed_in"}>
+        <text fg={theme.textMuted}>Signed in. Opening the model list…</text>
+      </Show>
       <Show when={error() ?? ended()}>
         {(message) => (
           <text fg={theme.error} wrapMode="word">
