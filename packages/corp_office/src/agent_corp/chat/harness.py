@@ -13,7 +13,7 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
-from agent_corp.chat.connections import Connections
+from agent_corp.chat.connections import OFFICE, Connections, write_run_record
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
@@ -337,7 +337,7 @@ class Harness:
                     if q.node_id is None:
                         self.store.set_question_status(q.id, "stale")
             session = self.store.get_session(live.session_id)
-            live.provider = provider = self.connections.resolve(None, None)
+            live.provider = provider = self.connections.resolve(session.connection, session.model)
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
             ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names,
@@ -347,9 +347,11 @@ class Harness:
             run_dir = self._run_dir(live.session_id)
             job = Job(kind=kind, session_id=live.session_id, run_id=live.run_id, person=live.person,
                       pin=str(self.git.pin(session.repo_commit)), flow=live.spec.flow,
-                      log=str(run_dir / "runs" / f"{live.run_id}.jsonl"), inputs=live.spec.inputs,
+                      log=str(self._log_path(live)), inputs=live.spec.inputs,
                       llm_config=provider.llm_config, learnable=live.spec.learnable, skills=live.spec.skills,
                       groups=group_specs(tools), memory=memory, env=provider.env)
+            if kind == "chat":
+                write_run_record(self._record_path(live), session.connection or OFFICE, session.model, provider)
             # Under the lock, so a steer or close_all never meets a worker that is still starting.
             with self._lock:
                 if self._stopping:
@@ -756,9 +758,10 @@ class Harness:
         self._spawn(live, "chat")
 
     def _provider_changed(self, live: _Live) -> bool:
-        """Whether the provider file no longer gives what ``live``'s worker got."""
+        """Whether the session's connection and model no longer give what ``live``'s worker got."""
         try:
-            provider = self.connections.resolve(None, None)
+            session = self.store.get_session(live.session_id)
+            provider = self.connections.resolve(session.connection, session.model)
         except ProviderError:
             return False  # a spawn would fail on it too; keep the worker that works
         return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
@@ -898,6 +901,12 @@ class Harness:
 
     def _run_dir(self, session_id: str) -> Path:
         return self.office.paths.run_dir(session_id)
+
+    def _log_path(self, live: _Live) -> Path:
+        return self._run_dir(live.session_id) / "runs" / f"{live.run_id}.jsonl"
+
+    def _record_path(self, live: _Live) -> Path:
+        return self._run_dir(live.session_id) / "runs" / f"{live.run_id}.model.json"
 
     def _policy(self, handle: str, policy: Any, cwd: str, session_id: str) -> SandboxPolicy:
         """The sandbox for ``cwd``; a missing or unsafe folder is refused before the run's tmp is made."""
