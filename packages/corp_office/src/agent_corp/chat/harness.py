@@ -172,8 +172,8 @@ class _Handlers(BaseHandlers):
 class Harness:
     """Run each session as one live composer run in a worker, and drive it.
 
-    ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, and ``set_cost_cap`` are
-    called from request threads. Worker frames and store events are handled on one
+    ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, ``set_cost_cap``, and ``set_model``
+    are called from request threads. Worker frames and store events are handled on one
     dispatcher thread, in order. ``connections`` are read at each spawn. ``models`` tells which connections
     offer a person's model when a chat starts, within ``choose_deadline`` seconds.
     """
