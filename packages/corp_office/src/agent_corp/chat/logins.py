@@ -51,6 +51,8 @@ class _Login:
             raise _Stopped
 
     def show(self, url: str, user_code: str) -> None:
+        """Show the URL and code the person approves the sign-in with."""
+        # Only the login's thread writes ``view``, and readers take it whole, so it needs no lock.
         self.view = self.view.model_copy(update={"url": url, "user_code": user_code})
         self.shown.set()
 
@@ -90,7 +92,11 @@ class Logins:
         return self._find(login_id, by).view
 
     def cancel(self, login_id: str, *, by: str) -> None:
-        """Cancel sign-in ``login_id`` if it still waits, saving nothing; LoginNotFound as ``get``."""
+        """Cancel sign-in ``login_id`` if it still waits, saving nothing; LoginNotFound as ``get``.
+
+        A cancel that comes while the sign-in is being saved is too late, and the sign-in still succeeds; ``get`` tells
+        how it ended.
+        """
         self._stop([self._find(login_id, by)])
 
     def close_all(self) -> None:
