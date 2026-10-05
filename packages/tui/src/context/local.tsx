@@ -269,9 +269,14 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const session = createSession()
 
+    const model = createModelState(path.join(paths.state, "model.json"), () =>
+      office.connections()?.connections.map((c) => c.name),
+    )
+
     const result = {
       person,
       session,
+      model,
     }
     return result
   },

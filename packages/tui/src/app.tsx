@@ -33,6 +33,7 @@ import { personLabel } from "./util/transcript"
 import { LocalProvider, useLocal } from "./context/local"
 import { DialogDebug } from "./component/dialog-debug"
 import { DialogThemeList } from "./component/dialog-theme-list"
+import { DialogModel } from "./component/dialog-model"
 import { DialogHelp } from "./ui/dialog-help"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogPeople, usePickerOnStart } from "./routes/picker/dialog-people"
@@ -82,6 +83,7 @@ const appGlobalBindingCommands = [
 const appBindingCommands = [
   "command.palette.show",
   "person.list",
+  "model.list",
   "agent.cycle",
   "agent.cycle.reverse",
   "agentcorp.debug",
@@ -391,6 +393,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         slashName: "people",
         run: () => {
           dialog.replace(() => <DialogPeople />)
+        },
+      },
+      {
+        name: "model.list",
+        title: "Switch model",
+        category: "Session",
+        slashName: "model",
+        slashAliases: ["models"],
+        run: () => {
+          dialog.replace(() => <DialogModel />)
         },
       },
       {

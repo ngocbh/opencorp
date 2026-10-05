@@ -5,9 +5,9 @@ import type { TuiInput } from "../../src/app"
 import type { Args } from "../../src/context/args"
 import { Global } from "../../src/core/global"
 
-/** Runs the app in a 100x30 test renderer against `input`; returns frame helpers. */
-export async function bootFrame(input: Omit<TuiInput, "args">, args: Args = {}) {
-  const setup = await createTestRenderer({ width: 100, height: 30, useThread: false })
+/** Runs the app in a test renderer (100x30 unless `size` says) against `input`; returns frame helpers. */
+export async function bootFrame(input: Omit<TuiInput, "args">, args: Args = {}, size = { width: 100, height: 30 }) {
+  const setup = await createTestRenderer({ ...size, useThread: false })
   const core = await import("@opentui/core")
   mock.module("@opentui/core", () => ({ ...core, createCliRenderer: async () => setup.renderer }))
   const { run } = await import("../../src/app")
