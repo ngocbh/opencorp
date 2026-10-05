@@ -18,7 +18,7 @@ from agent_corp.auth.identity import identity_path, read_identity
 from agent_corp.chat import check, models
 from agent_corp.chat.connections import (OFFICE, BadConnectionName, ConnectionFile, ConnectionGone, Connections,
                                          azure_base_url, provider_label)
-from agent_corp.chat.logins import LoginNotFound, Logins
+from agent_corp.chat.logins import LoginNotFound, Logins, LoginsClosed
 from agent_corp.chat.models import ModelCache
 from agent_corp.chat.provider import ProviderError
 from agent_corp.company.loader import load_repo
@@ -213,7 +213,10 @@ async def start_login(request: Request) -> JSONResponse:
     found, person = logins(request), acting_person(request)
     await call(_check_manage, get_office(request), person)  # before the body is read
     await parse(request, StartLoginRequest)
-    return ok(await call(found.start, by=person))
+    try:
+        return ok(await call(found.start, by=person))
+    except LoginsClosed as exc:
+        raise HTTPError(503, "stopping", str(exc)) from None
 
 
 async def get_login(request: Request) -> JSONResponse:

@@ -517,3 +517,9 @@ async def test_only_the_starter_sees_or_cancels_a_sign_in(client, conns, as_owne
     assert r.json()["state"] == "cancelled"
     openai.approved.set()
     assert conns.names() == ["office"]
+
+
+async def test_no_sign_in_starts_once_the_office_is_stopping(client, office, as_owner, openai):
+    office.extras["logins"].close_all()
+    r = await client.post("/connections/login", json={"provider": "openai"}, headers=as_owner)
+    assert (r.status_code, r.json()["error"]) == (503, "stopping")

@@ -13,7 +13,7 @@ from agent_composer.llm_clients.auth import AuthStore, HttpResponse, OpenAIAuth
 
 from agent_corp.chat import logins as logins_module
 from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, Connections
-from agent_corp.chat.logins import FORGET, LoginNotFound, Logins
+from agent_corp.chat.logins import FORGET, LoginNotFound, Logins, LoginsClosed
 from agent_corp.chat.provider import ProviderError
 from agent_corp.secrets import write_private
 from tests.chat.conftest import wait_for
@@ -252,6 +252,23 @@ def test_close_all_cancels_every_open_sign_in(conns):
     ids = [logins.start(by="ngocbh").id, logins.start(by="ava").id]
     logins.close_all()
     assert [logins.get(i, by=by).state for i, by in zip(ids, ("ngocbh", "ava"))] == ["cancelled", "cancelled"]
+    assert conns.names() == ["office"]
+
+
+def test_close_all_waits_for_every_sign_in_at_once_and_refuses_new_ones(conns, monkeypatch):
+    monkeypatch.setattr(logins_module, "START_WAIT", 0.05)
+    monkeypatch.setattr(logins_module, "STOP_WAIT", 0.5)
+    release = threading.Event()
+    logins = make(conns, HTTP(rest=held(USERCODE, release)))  # each thread is stuck in a request, deaf to a cancel
+    ids = [logins.start(by="ngocbh").id for _ in range(3)]
+    began = time.monotonic()
+    logins.close_all()
+    assert time.monotonic() - began < 1.0  # one wait for them all, not one each
+    with pytest.raises(LoginsClosed):
+        logins.start(by="ngocbh")
+    release.set()
+    for login_id in ids:
+        until(logins, login_id, "cancelled")
     assert conns.names() == ["office"]
 
 

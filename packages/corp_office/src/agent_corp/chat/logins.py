@@ -30,6 +30,10 @@ class LoginNotFound(LookupError):
     """No sign-in with that id that the asking person started."""
 
 
+class LoginsClosed(RuntimeError):
+    """The office is stopping, so no sign-in starts."""
+
+
 class _Stopped(Exception):
     """The sign-in was cancelled."""
 
@@ -74,13 +78,16 @@ class Logins:
         self._monotonic = monotonic
         self._lock = threading.Lock()
         self._logins: dict[str, _Login] = {}
+        self._closed = False  # set by close_all: no sign-in starts after it
 
     def start(self, *, by: str) -> ConnectionLogin:
         """Start a sign-in for ``by``; once OpenAI gives its URL and code, or ``START_WAIT`` seconds pass, the
-        sign-in as it is then."""
+        sign-in as it is then. Raises LoginsClosed once ``close_all`` has run."""
         login = _Login(by)
         login.thread = threading.Thread(target=self._run, args=(login,), name=f"login-{login.view.id}", daemon=True)
         with self._lock:
+            if self._closed:
+                raise LoginsClosed("the office is stopping")
             self._forget()
             self._logins[login.view.id] = login
         login.thread.start()
@@ -100,8 +107,9 @@ class Logins:
         self._stop([self._find(login_id, by)])
 
     def close_all(self) -> None:
-        """Cancel every sign-in still waiting."""
+        """Cancel every sign-in still waiting, and refuse any that would start after."""
         with self._lock:
+            self._closed = True
             open_ = [login for login in self._logins.values() if login.ended is None]
         self._stop(open_)
 
@@ -123,11 +131,13 @@ class Logins:
 
     @staticmethod
     def _stop(logins: list[_Login]) -> None:
+        """Stop ``logins``, waiting up to ``STOP_WAIT`` seconds for all their threads together."""
         for login in logins:
             login.stopped.set()
+        end = time.monotonic() + STOP_WAIT
         for login in logins:
             if login.thread is not None:
-                login.thread.join(STOP_WAIT)
+                login.thread.join(max(0.0, end - time.monotonic()))
 
     def _run(self, login: _Login) -> None:
         try:
