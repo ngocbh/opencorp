@@ -18,9 +18,10 @@ from agent_corp.chat.models import ModelListError
 from agent_corp.chat.provider import load_provider
 from agent_corp.install import onboard as onboard_module
 from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_OWN, NoTerminal, OnboardError,
-                                        TtyPrompter, azure_deployments, ensure_provider, step_lines)
+                                        TtyPrompter, azure_deployments, ensure_provider, provider_models, step_lines)
 
 KEY = "sk-ant-test-0123456789"
+SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
 
 
 class Script:
@@ -204,6 +205,69 @@ def test_azure_deployments_waits_fifteen_seconds_and_says_why_it_cant_list_them(
     with pytest.raises(OnboardError, match="^HTTP 401$"):
         azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY)
     assert seen == [("https://acme.openai.azure.com/openai/v1/", KEY, 15)] * 2
+
+
+def test_a_provider_offers_the_models_it_lists_for_the_key(tmp_path, monkeypatch):
+    path = tmp_path / "provider.json"
+    seen = []
+    monkeypatch.setattr(onboard_module, "provider_models",
+                        lambda name, key: seen.append((name, key)) or ["claude-opus-4-1", "claude-sonnet-4-5"])
+    ask = Script("anthropic", SENTINEL, "2")
+    ensure_provider(path, ask)
+    assert json.loads(path.read_text())["llm_config"] == {"provider": "anthropic", "api_key": SENTINEL,
+                                                          "model": "claude-opus-4-1"}
+    assert seen == [("anthropic", SENTINEL)]
+    assert ask.offered[-1] == ["claude-sonnet-4-5 (the default)", "claude-opus-4-1"] and ask.typed[-1] is True
+    assert all(SENTINEL not in line for line in ask.seen)
+
+
+def test_a_provider_without_a_default_offers_its_models_and_takes_a_typed_one(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_module, "provider_models", lambda name, key: ["gemini-2.5-flash", "gemini-2.5-pro"])
+    path = tmp_path / "provider.json"
+    ask = Script("google", SENTINEL, "")
+    ensure_provider(path, ask)
+    assert load_provider(path).llm_config["model"] == "gemini-2.5-flash"
+    assert ask.offered[-1] == ["gemini-2.5-flash", "gemini-2.5-pro"] and ask.typed[-1] is True
+    assert onboard_module._ask_model(Script("gemini-3-pro"), "google", key=SENTINEL) == "gemini-3-pro"
+
+
+def test_a_listing_that_fails_falls_back_to_typing_the_model(tmp_path, monkeypatch):
+    def refused(name, key):
+        raise OnboardError("HTTP 401")
+
+    monkeypatch.setattr(onboard_module, "provider_models", refused)
+    path = tmp_path / "provider.json"
+    ask = Script("google", SENTINEL, "gemini-2.5-pro")
+    ensure_provider(path, ask)
+    assert load_provider(path).llm_config["model"] == "gemini-2.5-pro"
+    assert ask.seen[-2:] == ["Couldn't list the models (HTTP 401).", "Model name (google has no default model)"]
+
+
+def test_nothing_is_listed_without_a_key_or_someone_to_ask(tmp_path, monkeypatch):
+    def never(name, key):
+        raise AssertionError("nothing to list with")
+
+    monkeypatch.setattr(onboard_module, "provider_models", never)
+    ensure_provider(tmp_path / "provider.json", Script("anthropic", "", ""))
+    assert onboard_module._ask_model(Script("", interactive=False), "anthropic", key=SENTINEL) == ""
+
+
+def test_provider_models_waits_fifteen_seconds_and_says_why_it_cant_list_them(monkeypatch):
+    seen, replies = [], [["claude-sonnet-4-5"], None, ModelListError("HTTP 401", 401)]
+
+    def listed(name, key, *, timeout):
+        seen.append((name, key, timeout))
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    monkeypatch.setattr("agent_corp.chat.models.provider_models", listed)
+    assert provider_models("anthropic", SENTINEL) == ["claude-sonnet-4-5"]
+    assert provider_models("azure", SENTINEL) == []
+    with pytest.raises(OnboardError, match="^HTTP 401$"):
+        provider_models("anthropic", SENTINEL)
+    assert seen == [("anthropic", SENTINEL, 15), ("azure", SENTINEL, 15), ("anthropic", SENTINEL, 15)]
 
 
 def test_azure_needs_a_key_and_a_usable_endpoint(tmp_path):

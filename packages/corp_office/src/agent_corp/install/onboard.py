@@ -272,6 +272,19 @@ def azure_deployments(base_url: str, key: str) -> list[str]:
         raise OnboardError(str(exc)) from None
 
 
+def provider_models(name: str, key: str) -> list[str]:
+    """The models provider ``name`` lists for ``key`` (an empty key sends none), sorted; none when it has no
+    listing.
+
+    Raises:
+        OnboardError: they couldn't be listed; the message never contains the key.
+    """
+    try:
+        return models.provider_models(name, key or None, timeout=15) or []
+    except models.ModelListError as exc:
+        raise OnboardError(str(exc)) from None
+
+
 def _ask_deployment(prompter: Prompter, base_url: str, key: str, last: str) -> str:
     """The deployment to use at the resource whose v1 endpoint is ``base_url``, picked from its list when it can be
     listed, ``last`` for an empty answer."""
@@ -316,13 +329,23 @@ def _ask_key(prompter: Prompter, name: str, *, required: bool, last: str = "") -
     raise OnboardError(f"no usable answer to {question!r}")
 
 
-def _ask_model(prompter: Prompter, name: str, last: str = "") -> str:
-    """The model for provider ``name``, ``last`` for an empty answer; empty for composer's default."""
+def _ask_model(prompter: Prompter, name: str, last: str = "", key: str = "") -> str:
+    """The model for provider ``name``, picked from those it lists for ``key`` when it can be listed, ``last`` for an
+    empty answer; empty for composer's default."""
+    listed = []
+    # Without a key the runs use composer's own login, which the listing can't.
+    if prompter.interactive and (key or name in models.KEYLESS):
+        try:
+            listed = provider_models(name, key)
+        except OnboardError as exc:
+            prompter.say(f"Couldn't list the models ({exc}).")
     if default := PROVIDER_DEFAULT_MODELS.get(name):
         first = f"{default} (the default)"
         # Typing a name picks another model; the one typed last time is the answer for nothing.
-        picked = prompter.choose("Model", [first], last or first, typed=True)
+        picked = prompter.choose("Model", [first, *(m for m in listed if m != default)], last or first, typed=True)
         return "" if picked == first else picked
+    if listed:
+        return prompter.choose("Model", listed, last or listed[0], typed=True)
     return ask_until(prompter, f"Model name ({name} has no default model)", last,
                      lambda m: None if m.strip() else "type the model's name")
 
@@ -353,7 +376,7 @@ def _ask_provider(prompter: Prompter, last: dict[str, str]) -> dict:
         llm["api_key"] = last["key"]
     else:
         prompter.say(f"No key saved; runs will use composer's own login (`composer auth {name}`).")
-    last["model"] = _ask_model(prompter, name, last.get("model", "")).strip()
+    last["model"] = _ask_model(prompter, name, last.get("model", ""), last["key"]).strip()
     if last["model"]:
         llm["model"] = last["model"]
     return {"llm_config": llm}
