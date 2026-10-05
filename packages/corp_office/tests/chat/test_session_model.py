@@ -2,17 +2,22 @@
 then whatever the chat is switched to."""
 
 import json
+import os
+import signal
 import time
 
 import pytest
+from agent_composer.llm_clients.auth import AuthStore, OAuthCredentials
 
-from agent_corp.chat.connections import read_run_record
+from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_record
+from agent_corp.chat.cost import ZERO_PRICE
 from agent_corp.chat.harness import HarnessError, _refused_key
 from agent_corp.chat.models import TIMED_OUT, Listing, own_models
 from agent_corp.company.loader import load_repo
+from agent_corp.chat.provider import Price
 from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import write_private
-from tests.chat.conftest import errors, say, status, texts, wait_for
+from tests.chat.conftest import errors, say, spawned, status, texts, wait_for
 from tests.company.conftest import person
 
 
@@ -362,3 +367,63 @@ def test_a_refused_key_is_told_by_its_cause_or_status_not_any_401():
     assert _refused_key({"cause_type": "APIStatusError"}, "APIStatusError: Error code: 401 - unauthorized")
     assert not _refused_key({"cause_type": "BadRequestError"}, "BadRequestError: your messages resulted in 140100 tokens")
     assert not _refused_key({}, "no reason given")
+
+
+# Subscriptions.
+
+ACCESS = "fake-access-7d2c91e0"
+REFRESH = "fake-refresh-4a6b03f8"
+
+NO_NETWORK = {"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9"}
+"""A subscription runs against chatgpt.com; should a test's worker ever call it, the call goes nowhere."""
+
+
+def subscribe(harness, name="chatgpt", prices=None):
+    """Add subscription ``name`` on model ``gpt-sub``, signed in with fake tokens good for a year; its auth file."""
+    creds = OAuthCredentials(ACCESS, REFRESH, time.time() + 365 * 86400, "account-test")
+    harness.connections.add(name, ConnectionFile(method="subscription", llm_config={"provider": "openai",
+                                                                                     "model": "gpt-sub"},
+                                                 env=NO_NETWORK, prices=prices or {}),
+                            sign_in=lambda path: AuthStore(path).save("openai", creds, "gpt-sub"))
+    return harness.connections.auth_file(name)
+
+
+def test_a_subscription_chat_runs_on_its_own_sign_in_without_a_key(make_harness, workspace, fake_llm):
+    h = make_harness()
+    auth = subscribe(h)
+    jobs = spawned(h)
+    s = start(h, workspace, connection="chatgpt")
+    [job] = jobs
+    assert job.env[AUTH_FILE_ENV] == str(auth)
+    assert job.llm_config == {"provider": "openai", "model": "gpt-sub"}
+    assert ACCESS not in json.dumps(job.env) and REFRESH not in json.dumps(job.env)
+    assert chose(h.store.get_session(s.id)) == ("chatgpt", None, None)
+    assert fake_llm.requests() == []
+
+
+@pytest.mark.parametrize(("prices", "usd"), [(None, 0), ({"gpt-sub": Price(input=1, output=2)}, 3.0)])
+def test_a_subscriptions_usage_is_free_unless_its_file_prices_it(make_harness, workspace, prices, usd):
+    h = make_harness()
+    subscribe(h, prices=prices)
+    s = start(h, workspace, connection="chatgpt")
+    usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000}
+    h._charge(h._live[s.id], {"model": "gpt-sub", "usage": usage})
+    assert h.store.get_session(s.id).cost == pytest.approx(usd)
+    assert [(u.input_tokens, u.usd) for u in h.store.list_usage(s.id)] == [(1_000_000, pytest.approx(usd))]
+
+
+def test_a_subscription_run_is_recorded_on_it_and_resumed_and_learned_from_on_the_same_sign_in(make_harness,
+                                                                                               workspace):
+    h = make_harness()
+    auth = subscribe(h)
+    jobs = spawned(h, lambda job: (job.kind, job.env.get(AUTH_FILE_ENV)))
+    s = start(h, workspace, connection="chatgpt")
+    record = record_of(h, s.id)
+    assert (record.connection, record.model) == ("chatgpt", None)
+    run_log = h.office.paths.run_dir(s.id) / "runs" / f"{h.store.get_session(s.id).run_ids[-1]}.jsonl"
+    assert h.connections.for_run(record, run_log, exact=False).env[AUTH_FILE_ENV] == str(auth)  # backward
+    old = h._live[s.id].worker
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: h._live[s.id].worker not in (None, old) and h._live[s.id].turn_q, what="the resume")
+    assert jobs == [("chat", str(auth)), ("resume", str(auth))]
+    assert h._live[s.id].default_price == ZERO_PRICE

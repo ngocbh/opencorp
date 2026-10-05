@@ -17,11 +17,11 @@ from agent_composer.memory.storage.markdown import MarkdownStore
 
 from agent_corp.chat.connections import (OFFICE, ConnectionGone, Connections, RunMoved, read_run_record,
                                          write_run_record)
-from agent_corp.chat.cost import call_usd, cost_cap
+from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE, call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
 from agent_corp.chat.models import DEADLINE, ListTimeout, ModelCache
-from agent_corp.chat.provider import Provider, ProviderError
+from agent_corp.chat.provider import Price, Provider, ProviderError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds
 from agent_corp.company.loader import load_repo
@@ -112,6 +112,7 @@ class _Live:
     transcript: Transcript
     worker: Worker | None = None
     provider: Provider = field(default_factory=Provider)
+    default_price: Price = field(default_factory=lambda: DEFAULT_PRICE)  # for models the provider has no price for
     owner: str | None = None  # who answers for the person: the session's opener, else the pinned company's CEO
     reply_node: str | None = None
     turn_node: str | None = None  # the open turn question's node id
@@ -483,6 +484,9 @@ class Harness:
                 session = self._choice(session)
                 provider = self.connections.resolve(session.connection, session.model)
             live.provider = provider
+            # A subscription's calls are already paid for, so only a price its file sets counts against the cap.
+            subscribed = self.connections.get(session.connection or OFFICE).method == "subscription"
+            live.default_price = ZERO_PRICE if subscribed else DEFAULT_PRICE
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
             ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names,
@@ -859,7 +863,8 @@ class Harness:
         usage = data["usage"]
         self.store.record_usage(session_id=live.session_id, run_id=live.run_id, model=data.get("model") or "",
                                 input_tokens=usage["input_tokens"], output_tokens=usage["output_tokens"],
-                                usd=call_usd(live.provider.prices, data.get("model"), usage))
+                                usd=call_usd(live.provider.prices, data.get("model"), usage,
+                                             default=live.default_price))
         session = self.store.update_session(live.session_id, cost=self.store.session_usage_usd(live.session_id))
         if session.cost >= cost_cap(session, live.defaults) and not live.capped:
             live.capped = True
