@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import os
 import stat
 import threading
@@ -104,7 +105,8 @@ def no_tokens(*texts):
         assert SIGNATURE not in text and REFRESH not in text
 
 
-def test_start_returns_the_url_and_code_then_signs_in(conns):
+def test_start_returns_the_url_and_code_then_signs_in(conns, caplog):
+    caplog.set_level(logging.DEBUG)
     release = threading.Event()
     http = HTTP(USERCODE, held(PENDING, release), APPROVED, TOKENS, CATALOG)
     logins = make(conns, http)
@@ -120,7 +122,7 @@ def test_start_returns_the_url_and_code_then_signs_in(conns):
     assert conns.get("chatgpt") == ConnectionFile(method="subscription",
                                                   llm_config={"provider": "openai", "model": "gpt-5.5"})
     assert conns.resolve("chatgpt", None).env == {AUTH_FILE_ENV: str(auth)}
-    no_tokens(login.model_dump_json(), done.model_dump_json(), (conns.dir / "chatgpt.json").read_text())
+    no_tokens(login.model_dump_json(), done.model_dump_json(), (conns.dir / "chatgpt.json").read_text(), caplog.text)
     assert ACCESS.split(".")[2] in auth.read_text()  # the tokens are in the sign-in, and only there
 
 
@@ -164,6 +166,44 @@ def test_cancel_stops_the_poll_and_saves_nothing(conns):
     assert conns.names() == ["office"] and not conns.auth_file("chatgpt").exists()
     logins.cancel(login.id, by="ngocbh")  # cancelling an ended sign-in changes nothing
     assert logins.get(login.id, by="ngocbh").state == "cancelled"
+
+
+@pytest.mark.parametrize("held_at", ["the listing", "the save"])
+def test_a_cancel_after_the_code_is_approved_saves_nothing(conns, monkeypatch, held_at):
+    monkeypatch.setattr(logins_module, "STOP_WAIT", 0.05)  # so cancel returns while the sign-in is held
+    reached, release = threading.Event(), threading.Event()
+
+    def hold():
+        reached.set()
+        assert release.wait(30)
+
+    def catalog(url):
+        hold()
+        return CATALOG
+
+    if held_at == "the save":
+        add = conns.add
+        monkeypatch.setattr(conns, "add", lambda *args, **kwargs: (hold(), add(*args, **kwargs))[1])
+    logins = make(conns, HTTP(USERCODE, APPROVED, TOKENS, catalog if held_at == "the listing" else CATALOG))
+    login = logins.start(by="ngocbh")
+    assert reached.wait(5)
+    logins.cancel(login.id, by="ngocbh")
+    release.set()
+    until(logins, login.id, "cancelled")
+    assert conns.names() == ["office"] and not conns.auth_file("chatgpt").exists()
+
+
+def test_a_sign_in_lists_the_models_of_every_connection_again(conns):
+    warmed = threading.Event()
+
+    class Cache:
+        def warm(self):
+            assert conns.names() == ["office", "chatgpt"]  # after the new connection is saved
+            warmed.set()
+
+    logins = make(conns, HTTP(*FLOW), models=Cache())
+    until(logins, logins.start(by="ngocbh").id, "signed_in")
+    assert warmed.wait(5)
 
 
 def test_a_failed_sign_in_says_why_without_tokens(conns, caplog):
