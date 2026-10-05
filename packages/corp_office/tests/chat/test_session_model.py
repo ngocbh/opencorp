@@ -10,7 +10,7 @@ import pytest
 from agent_composer.llm_clients.auth import AuthStore, OAuthCredentials
 
 from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_record
-from agent_corp.chat.cost import ZERO_PRICE
+from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE
 from agent_corp.chat.harness import HarnessError, _refused_key
 from agent_corp.chat.models import TIMED_OUT, Listing, own_models
 from agent_corp.company.loader import load_repo
@@ -427,3 +427,20 @@ def test_a_subscription_run_is_recorded_on_it_and_resumed_and_learned_from_on_th
     wait_for(lambda: h._live[s.id].worker not in (None, old) and h._live[s.id].turn_q, what="the resume")
     assert jobs == [("chat", str(auth)), ("resume", str(auth))]
     assert h._live[s.id].default_price == ZERO_PRICE
+
+
+def test_a_connection_removed_as_its_chat_starts_is_priced_as_a_key(make_harness, workspace):
+    h = make_harness(connections={"second": "stub-2"})
+    resolve, calls = h.connections.resolve, []
+
+    def resolve_then_remove(name, model):
+        provider = resolve(name, model)
+        calls.append(name)
+        if calls.count("second") == 2:  # the spawn's resolve, after the start checked it can be used
+            h.connections.remove(name)  # removed between the chat resolving it and pricing it
+        return provider
+
+    h.connections.resolve = resolve_then_remove
+    s = start(h, workspace, connection="second")
+    assert h.store.get_session(s.id).connection == "second" and "second" not in h.connections.names()
+    assert h._live[s.id].default_price == DEFAULT_PRICE

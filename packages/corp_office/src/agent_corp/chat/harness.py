@@ -485,7 +485,10 @@ class Harness:
                 provider = self.connections.resolve(session.connection, session.model)
             live.provider = provider
             # A subscription's calls are already paid for, so only a price its file sets counts against the cap.
-            subscribed = self.connections.get(session.connection or OFFICE).method == "subscription"
+            try:
+                subscribed = self.connections.get(session.connection or OFFICE).method == "subscription"
+            except ProviderError:  # removed or broken since it resolved: the run still has what it resolved
+                subscribed = False
             live.default_price = ZERO_PRICE if subscribed else DEFAULT_PRICE
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
