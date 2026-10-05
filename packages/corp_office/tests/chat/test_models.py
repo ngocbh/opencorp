@@ -370,6 +370,15 @@ def test_offers_gives_every_connection_together_only_the_deadline(connections):
     assert lister.calls == ["fast", "slow"] and lister.deadlines["slow"] < 0.25
 
 
+def test_a_host_that_times_out_in_composer_makes_offers_time_out(connections):
+    request = FakeRequest(TimeoutError("HTTP request timed out"))
+    cache = ModelCache(connections, lister=lambda conn, name, *, deadline: list_models(conn, name, deadline=deadline,
+                                                                                       request=request))
+    with pytest.raises(ListTimeout):
+        cache.offers(["fast"], "gpt-5", deadline=5)
+    assert len(request.calls) == 1
+
+
 @pytest.mark.parametrize("error", [TIMED_OUT, "can't reach api.openai.com", "the listing failed"])
 def test_offers_lists_again_a_connection_whose_last_listing_failed(connections, error):
     lister = Lister(errors={"slow": error})

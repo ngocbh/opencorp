@@ -37,6 +37,8 @@ class FakeLLM:
     A request takes the first queued reply it matches; an unmatched request gets a
     ``500`` carrying the request. Error replies are never retried by the SDK.
 
+    ``GET /v1/models`` lists the one model ``LLM_CONFIG`` names, and isn't recorded as a request.
+
     Use it as a context manager. Tests script it in-process, or over HTTP with
     ``POST /_script``, ``GET /_requests``, and ``POST /_release``.
     """
@@ -122,10 +124,14 @@ class FakeLLM:
     def _app(self) -> Starlette:
         return Starlette(routes=[
             Route("/v1/chat/completions", self._completions, methods=["POST"]),
+            Route("/v1/models", self._models, methods=["GET"]),
             Route("/_script", self._script_route, methods=["POST"]),
             Route("/_requests", self._requests_route, methods=["GET"]),
             Route("/_release", self._release_route, methods=["POST"]),
         ])
+
+    async def _models(self, request: Request) -> Response:
+        return JSONResponse({"object": "list", "data": [{"id": LLM_CONFIG["model"], "object": "model"}]})
 
     async def _script_route(self, request: Request) -> Response:
         self.script(*(await request.json())["replies"])

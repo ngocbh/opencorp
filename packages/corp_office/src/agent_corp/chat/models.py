@@ -246,6 +246,7 @@ class ModelCache:
                 listed = entry[2]
             else:
                 listed = self._list(name, conn, entry, end)
+                # Composer says "timed out" in the same fixed words, so a host that times out counts as a timeout too.
                 if listed.error == TIMED_OUT:
                     raise ListTimeout(f"listing the models of connection '{name}' took too long")
             if any(m.id == model for m in listed.models):
