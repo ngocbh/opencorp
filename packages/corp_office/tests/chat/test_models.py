@@ -232,13 +232,22 @@ def test_subscription_models_are_listed_through_its_auth_file(tmp_path):
 
 def test_an_expiring_sign_in_is_refreshed_and_each_request_gets_the_time_left(tmp_path):
     auth = signed_in(tmp_path / "connections", expires_in=10)  # inside composer's refresh margin
-    request = Replies([HttpResponse(200, {"access_token": NEW_ACCESS, "expires_in": 3600}), CATALOG])
+
+    class SlowRefresh(Replies):
+        def __call__(self, method, url, **kwargs):
+            reply = super().__call__(method, url, **kwargs)
+            if url.endswith("/oauth/token"):
+                time.sleep(0.3)
+            return reply
+
+    request = SlowRefresh([HttpResponse(200, {"access_token": NEW_ACCESS, "expires_in": 3600}), CATALOG])
     got = list_models(subscription(), "chatgpt", deadline=6, request=request, auth_file=auth)
     assert got.listed and got.error is None
     (_, refresh_url, refresh), (_, _, listing) = request.calls
     assert refresh_url == "https://auth.openai.com/oauth/token" and refresh["form"]["refresh_token"] == REFRESH
     assert listing["headers"]["Authorization"] == f"Bearer {NEW_ACCESS}"
-    assert 0 < listing["timeout"] <= refresh["timeout"] <= 6
+    assert refresh["timeout"] <= 6
+    assert 0.3 <= refresh["timeout"] - listing["timeout"] < 1.5  # the listing gets only what the refresh left
     assert NEW_ACCESS in auth.read_text()  # composer saved the refreshed sign-in where runs read it
 
 
