@@ -81,6 +81,8 @@ const now = () => new Date().toISOString()
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
 /** The connection the office sets up at onboarding, which can't be removed. */
 const OFFICE = "office"
+/** The providers composer has a default model for; any other needs one named. */
+const DEFAULT_MODELS = new Set(["openai", "anthropic"])
 /** Statuses with a live run, which take interrupt and end. */
 const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
 
@@ -206,6 +208,7 @@ export function createFakeOffice(
   const passwords = new Map<string, string>()
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
+  const refusals: { error: string; message: string }[] = []
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const interrupts: ((sessionId: string) => void)[] = []
   // Messages sent with no open turn and no reply running, by session; the next turn takes them.
@@ -651,13 +654,28 @@ export function createFakeOffice(
     if (!state.managers.includes(actor))
       throw fail(403, "forbidden", "managing this office's connections needs its owner or a grant")
   }
-  /** Adds an API-key connection named for its provider, as the office does (no key check here). */
+  /**
+   * Adds an API-key connection named for its provider as the office labels it (`azure`, `custom` for another
+   * OpenAI-compatible endpoint, or the provider), checking its fields as the office does; the key is checked
+   * only by `refusals`.
+   */
   function addConnection(body: any) {
     check(str(body?.provider) && str(body?.api_key), "provider and api_key are required")
+    const invalid = (message: string) => fail(422, "invalid_connection", message)
+    const endpoint = typeof body.endpoint === "string" ? body.endpoint.trim() : ""
+    if (body.provider === "azure" && !endpoint) throw invalid("an Azure connection needs its endpoint or resource name")
+    if (endpoint && body.provider !== "azure" && body.provider !== "openai")
+      throw invalid("only provider azure or openai takes an endpoint")
+    if (endpoint && body.provider === "openai" && !body.model) throw invalid("an OpenAI-compatible endpoint needs a model")
+    if (!body.model && !endpoint && !DEFAULT_MODELS.has(body.provider))
+      throw invalid(`llm_config.model is missing, and ${body.provider} has no default model`)
+    const refusal = refusals.shift()
+    if (refusal) throw fail(422, refusal.error, refusal.message)
+    const label = body.provider === "openai" && endpoint ? "custom" : body.provider
     const taken = (name: string) => state.connections.some((c) => c.name === name)
-    let name = body.provider
-    for (let n = 2; taken(name); n++) name = `${body.provider}-${n}`
-    const c: Connection = { name, provider: body.provider, method: "api_key", model: body.model ?? null }
+    let name = label
+    for (let n = 2; taken(name); n++) name = `${label}-${n}`
+    const c: Connection = { name, provider: label, method: "api_key", model: body.model ?? null }
     state.connections.push(c)
     return c
   }
@@ -1168,6 +1186,8 @@ export function createFakeOffice(
     notImplemented,
     /** Route keys (`"GET /connections"`) answered with 500, as an office that hit an error. */
     broken,
+    /** How the office refuses the next `POST /connections`, in order: each is sent as a 422 with that code. */
+    refusals,
     nextId,
     emit,
     live,
