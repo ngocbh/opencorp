@@ -5,6 +5,7 @@ import os
 import queue
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from agent_corp.chat.connections import OFFICE, Connections, RunMoved, read_run_
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
+from agent_corp.chat.models import DEADLINE, ListTimeout, ModelCache
 from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds
@@ -44,6 +46,7 @@ LIVE = ("starting", "idle", "busy", "ending")
 _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
+_UNREAD_DEFAULT = "The office's default connection can't be read"
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
 
@@ -168,15 +171,19 @@ class Harness:
 
     ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, and ``set_cost_cap`` are
     called from request threads. Worker frames and store events are handled on one
-    dispatcher thread, in order. ``connections`` are read at each spawn.
+    dispatcher thread, in order. ``connections`` are read at each spawn. ``models`` tells which connections
+    offer a person's model when a chat starts, within ``choose_deadline`` seconds.
     """
 
-    def __init__(self, office: Any, monitor: Monitor, *, connections: Connections) -> None:
+    def __init__(self, office: Any, monitor: Monitor, *, connections: Connections, models: ModelCache | None = None,
+                 choose_deadline: float = DEADLINE) -> None:
         self.office = office
         self.store = office.store
         self.git = office.git
         self.monitor = monitor
         self.connections = connections
+        self.models = models if models is not None else ModelCache(connections)
+        self.choose_deadline = choose_deadline
         self.hooks = Hooks()
         self.registry = WorkerRegistry(self.store)
         self.answers = Answers(self.store)
@@ -195,11 +202,12 @@ class Harness:
 
     # --- starting ---------------------------------------------------------------------
 
-    def start_session(self, handle: str, cwd: str, harness: str = "composer", *,
-                      opened_by: str | None = None) -> Session:
+    def start_session(self, handle: str, cwd: str, harness: str = "composer", *, opened_by: str | None = None,
+                      connection: str | None = None, model: str | None = None) -> Session:
         """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
 
         ``opened_by`` is the human who opened it; the work item is theirs (the CEO's when None).
+        ``connection`` and ``model`` are their pick, which ``_choose`` may pass over.
         A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
         """
         if harness != "composer":
@@ -219,6 +227,7 @@ class Harness:
         cwd = os.path.realpath(cwd)  # clients match folders by their resolved path (/tmp is /private/tmp on macOS)
         session_id = new_id()
         self._policy(handle, person.harness_policy, cwd, session_id)  # refuse a bad folder before any write
+        connection, model, note = self._choose(person, connection, model)
         t = now()
         item = self.store.create_work_item(WorkItem(
             id=new_id(), title=f"Chat with {person.name} in {Path(cwd).name or cwd}", kind="task",
@@ -227,7 +236,7 @@ class Harness:
         session = self.store.create_session(Session(
             id=session_id, person=handle, harness="composer", office=socket.gethostname(), cwd=cwd,
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, opened_by=opened_by,
-            created_at=t, updated_at=t))
+            connection=connection, model=model, model_note=note, created_at=t, updated_at=t))
         self.store.touch_worked_folder(handle, cwd)
         try:
             spec = self.main_spec(session)
@@ -245,6 +254,103 @@ class Harness:
             why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
             raise HarnessError(500, "start_failed", f"session {session_id} failed to start{why}") from exc
         return self.store.get_session(session_id)
+
+    def _choose(self, person: Any, connection: str | None, model: str | None) -> tuple[str, str | None, str | None]:
+        """The connection and model a new chat of ``person`` starts on, and a note when it isn't what was asked for.
+
+        The pick (``connection`` and ``model``; a model alone is on the default) if its connection is on this office
+        and can be used; else the first connection that offers ``person.model``, the default first and then the
+        others by name; else the default on its own model. Everything is decided within one ``choose_deadline``. A
+        model equal to the chosen connection's own is None.
+        """
+        end = time.monotonic() + self.choose_deadline
+        try:
+            names = self.connections.names()
+        except ProviderError:
+            return OFFICE, None, None  # the spawn reads the names too, and reports why they can't be read
+        default, unread = self._default()
+        why = []
+        picked = connection or default
+        if connection is not None or model is not None:
+            if picked not in names:
+                why.append(f"Your last pick '{picked}' isn't on this office")
+            elif not self._usable(picked, model):
+                why.append(f"Your last pick '{picked}' can't be used on this office")
+            else:
+                model = self._unless_own(picked, model)
+                # A model picked alone is on the default, which may be office only because the default can't be read.
+                note = self._unread_note(model) if connection is None and unread else None
+                return picked, model, note
+        name, model = default, None
+        if person.model:
+            try:
+                found = next((n for n in [default] + sorted(n for n in names if n != default)
+                              if self._offers(n, person.model, end)), None)
+            except ListTimeout:
+                why.append(f"Couldn't check in time which connection offers {person.model}")
+            else:
+                if found is None:
+                    why.append(f"@{person.handle} asks for {person.model}, which no connection on this office offers")
+                else:
+                    name, model = found, self._unless_own(found, person.model)
+        if unread and name == default:
+            why.append(_UNREAD_DEFAULT)
+        return name, model, f"{'. '.join(why)}; this chat uses {self._named(name, model)}." if why else None
+
+    def default_choice(self) -> tuple[str, str | None]:
+        """The connection a chat that takes the default starts on, and a note if it is ``office`` only because the
+        office's default can't be read."""
+        default, unread = self._default()
+        return default, self._unread_note(None) if unread else None
+
+    def _default(self) -> tuple[str, bool]:
+        """The default connection, and whether it is ``office`` only because ``_default.json`` can't be read."""
+        try:
+            return self.connections.default(), False
+        except ProviderError:
+            # The spawn never reads _default.json, so nothing else would say why chats left the default.
+            log.warning("the office's default connection can't be read; new chats take office as the default")
+            return OFFICE, True
+
+    def _unread_note(self, model: str | None) -> str:
+        """The note of a chat on ``office`` and ``model`` because the office's default can't be read."""
+        return f"{_UNREAD_DEFAULT}; this chat uses {self._named(OFFICE, model)}."
+
+    def _usable(self, name: str, model: str | None) -> bool:
+        """Whether a run on connection ``name`` and ``model`` can be resolved now."""
+        try:
+            self.connections.resolve(name, model)
+            return True
+        except (ProviderError, ValueError):
+            log.warning("connection %s can't be used; a new chat doesn't start on it", name)
+            return False
+
+    def _offers(self, name: str, model: str, end: float) -> bool:
+        """Whether connection ``name`` offers ``model``, listing it by ``end`` (a ``time.monotonic()``) if need be.
+
+        A connection that can't be read offers nothing; ListTimeout if ``end`` passes.
+        """
+        try:
+            return bool(self.models.offers([name], model, deadline=end - time.monotonic()))
+        except (ValueError, ProviderError):
+            log.warning("connection %s can't be read; a new chat doesn't start on it", name)
+            return False
+
+    def _own(self, name: str) -> str | None:
+        """Connection ``name``'s configured model; None without one, or if it can't be read."""
+        try:
+            return (self.connections.get(name).llm_config or {}).get("model")
+        except (ProviderError, ValueError):
+            return None  # resolving it at the spawn reports the error
+
+    def _unless_own(self, name: str, model: str | None) -> str | None:
+        """``model``, or None if it is connection ``name``'s own, so the chat follows that connection's changes."""
+        return None if model is not None and model == self._own(name) else model
+
+    def _named(self, name: str, model: str | None) -> str:
+        """How a note names connection ``name`` on ``model`` (None: its own): ``name/model``, or ``name`` alone."""
+        model = model or self._own(name)
+        return f"{name}/{model}" if model else name
 
     def main_spec(self, session: Session) -> RunSpec:
         """The run spec of a person's main chat.
@@ -823,13 +929,8 @@ class Harness:
         name, model, moved = self.connections.choice(session.connection, session.model)
         if not moved:
             return session
-        try:
-            own = (self.connections.get(name).llm_config or {}).get("model")
-        except (ProviderError, ValueError):
-            own = None  # only the note's text needs it; resolving it reports the error
-        now_on = f"{name}/{own}" if own else name
         return self.store.update_session(session.id, connection=name, model=model, model_note=(
-            f"Connection '{session.connection}' was removed; this chat now uses {now_on}."))
+            f"Connection '{session.connection}' was removed; this chat now uses {self._named(name, model)}."))
 
     def _restart(self, live: _Live, text: str, *, by: str | None = None) -> None:
         """Hand ``text`` to a fresh run on the current provider instead of the worker waiting at a turn."""

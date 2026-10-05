@@ -168,11 +168,12 @@ class Learning:
             raise HarnessError(404, "not_found", f"no person {handle}")
         if not (pin / MANAGER_FLOW).is_file():
             raise HarnessError(422, "no_manager_flow", f"the company has no {MANAGER_FLOW}")
+        connection, note = self.harness.default_choice()
         t = now()
         session = self.store.create_session(Session(
             id=new_id(), person=handle, harness="composer", office=socket.gethostname(),
             cwd=os.path.realpath(self.git.root), repo_commit=head, status="starting", kind="profile_manager",
-            opened_by=by, created_at=t, updated_at=t))
+            opened_by=by, connection=connection, model=None, model_note=note, created_at=t, updated_at=t))
         self.harness.start_run(session, manager_spec(self.harness, session))
         self.harness.prompt(session.id, text, by=by)  # the first turn takes it
         return self.store.get_session(session.id)

@@ -178,11 +178,11 @@ def build_office(paths: OfficePaths) -> Office:
     office = Office(paths=paths, store=store, git=git, bus=Bus(), profile_store=lambda handle: GitProfileStore(git, handle))
     monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
     connections = Connections(paths.office)
-    harness = Harness(office, monitor, connections=connections)
+    models = ModelCache(connections)
+    harness = Harness(office, monitor, connections=connections, models=models)
     office.workers = harness
     office.extras["harness"] = harness
     office.extras["hiring"] = Hiring(git)
-    models = ModelCache(connections)
     office.extras["connections"] = connections
     office.extras["models"] = models
     office.on_start.append(lambda: asyncio.to_thread(harness.restore))

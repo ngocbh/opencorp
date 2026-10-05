@@ -532,3 +532,20 @@ def test_a_side_chat_that_idles_out_reopens_on_the_next_message(make_harness, fa
         assert last_user(fake_llm, 2) == "and SQLite?" and framings(fake_llm, 2) == 1
     finally:
         stop(office)
+
+
+def test_a_side_chat_uses_its_askers_model(make_harness, fake_llm, workspace):  # noqa: F811
+    office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW}, connections={"second": "stub-2"}))
+    try:
+        fake_llm.script(ASK, {"content": "On five."})
+        h = office.extras["harness"]
+        session = h.start_session("minh", str(workspace), connection="second", model="stub-5")
+        wait_for(lambda: status(h, session.id) == "idle", what="the first turn")
+        h.prompt(session.id, "fix the build")
+        q = wait_for(lambda: h.store.list_questions(session_id=session.id, status="open", source="ask_user"),
+                     what="the question")[0]
+        side = chat(office, q, "why?", 1)
+        assert (side.connection, side.model) == ("second", "stub-5")
+        assert fake_llm.wait_for_requests(2)[1]["model"] == "stub-5"
+    finally:
+        stop(office)

@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from agent_corp.auth.tokens import new_token
-from agent_corp.chat.connections import Connections
+from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.chat.harness import Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.perm.monitor import Monitor
@@ -128,6 +128,20 @@ async def test_a_chat_over_the_routes(chat, client, fake_llm, tmp_path):
     await until(lambda: store.get_session(sid).status == "ended")
     r = await client.post(f"/sessions/{sid}/prompt", json={"text": "late"})
     assert (r.status_code, r.json()["error"]) == (409, "not_live")
+
+
+async def test_a_chat_starts_on_the_requested_connection_and_model(chat, client, fake_llm, tmp_path):
+    Connections(chat.paths.office).put("second", ConnectionFile(llm_config={**LLM_CONFIG, "model": "stub-2"},
+                                                                 env=fake_llm.env()))
+    (tmp_path / "ws").mkdir()
+    r = await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws"),
+                                             "connection": "second", "model": "stub-5"})
+    assert r.status_code == 200
+    assert (r.json()["connection"], r.json()["model"], r.json()["model_note"]) == ("second", "stub-5", None)
+    sid = r.json()["id"]
+    await until(lambda: chat.store.get_session(sid).status == "idle")
+    assert (await client.post(f"/sessions/{sid}/end")).json() == {"ok": True}
+    await until(lambda: chat.store.get_session(sid).status == "ended")
 
 
 async def test_a_chat_is_credited_to_the_verified_person(chat, client, company, fake_llm, tmp_path):

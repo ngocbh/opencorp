@@ -71,10 +71,10 @@ async def harness_call[T](fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
 
 
 async def create_session(request: Request) -> JSONResponse:
-    """Start a person's main chat in a folder, opened by the request's person."""
+    """Start a person's main chat in a folder, opened by the request's person, on the model the office chooses."""
     body = await parse(request, CreateSessionRequest)
     return ok(await harness_call(harness(request).start_session, body.person, body.cwd, body.harness,
-                                 opened_by=acting_person(request)))
+                                 opened_by=acting_person(request), connection=body.connection, model=body.model))
 
 
 async def prompt(request: Request) -> JSONResponse:

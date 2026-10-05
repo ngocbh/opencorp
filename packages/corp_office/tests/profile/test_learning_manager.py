@@ -5,6 +5,7 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.profile import GitProfileStore
 from agent_corp.profile.manager import profile_tools
+from agent_corp.secrets import write_private
 from tests.profile.conftest import asked, status, texts, wait_for
 from tests.profile.test_learning_feedback import PROFILE, git_log, profile_text
 from tests.store.conftest import session
@@ -52,6 +53,30 @@ def test_the_profile_manager_is_opened_and_applied_by_who_acted(harness, fake_ll
     [proposal] = learning.proposals("minh")
     learning.apply(proposal.id, by="lan")
     assert git_log(harness, "-1", "--format=%s").strip() == "profile(@minh): lan via profile manager"
+    wait_for(lambda: status(harness, session.id) == "idle", what="the next turn")
+    harness.end(session.id)
+    wait_for(lambda: status(harness, session.id) == "ended", what="ended")
+
+
+def test_the_profile_manager_stores_the_default(harness, fake_llm, learning):
+    harness.connections.set_default("second")
+    fake_llm.script({"content": "Hello."})
+    session = learning.start_manager("minh", "Hi.")
+    assert (session.connection, session.model) == ("second", None)
+    wait_for(lambda: texts(harness, session.id) == ["Hello."], what="the reply")
+    assert fake_llm.requests()[0]["model"] == "stub-2"
+    wait_for(lambda: status(harness, session.id) == "idle", what="the next turn")
+    harness.end(session.id)
+    wait_for(lambda: status(harness, session.id) == "ended", what="ended")
+
+
+def test_the_profile_manager_says_when_the_default_cant_be_read(harness, fake_llm, learning):
+    write_private(harness.connections.dir / "_default.json", b"[]")
+    fake_llm.script({"content": "Hello."})
+    session = learning.start_manager("minh", "Hi.")
+    assert (session.connection, session.model, session.model_note) == (
+        "office", None, "The office's default connection can't be read; this chat uses office/stub.")
+    wait_for(lambda: texts(harness, session.id) == ["Hello."], what="the reply")
     wait_for(lambda: status(harness, session.id) == "idle", what="the next turn")
     harness.end(session.id)
     wait_for(lambda: status(harness, session.id) == "ended", what="ended")
