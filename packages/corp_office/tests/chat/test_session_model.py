@@ -257,7 +257,7 @@ def test_a_queued_message_after_a_switch_reaches_the_new_model_once(make_harness
     requests = fake_llm.requests()
     assert requests[-1]["model"] == "stub-2"
     assert [r for r in requests if "queued-1" in json.dumps(r["messages"])] == [requests[-1]]
-    assert "queued-1" in user_texts(requests[-1])[-1]
+    assert user_texts(requests[-1])[-1] == "queued-1"
     assert not {"ending", "ended"} & set(statuses)
     assert len(h.store.get_session(s.id).run_ids) == 2
 
