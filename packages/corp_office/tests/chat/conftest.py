@@ -11,10 +11,10 @@ from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.models import Listing, ModelCache, own_models
 from agent_corp.chat.provider import Provider
-from agent_corp.protocol.models import ModelOption
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.perm.monitor import Monitor
+from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import SecretStore, write_private
 from agent_corp.store import Store
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
