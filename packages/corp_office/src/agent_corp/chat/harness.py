@@ -332,10 +332,10 @@ class Harness:
             session = self._choice(stored)
             moved = session is not stored
             record = read_run_record(self._record_path(live))
-            if record is not None and (record.connection, record.model) != (session.connection or OFFICE,
-                                                                             session.model):
+            ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
+            if ran_on != (session.connection or OFFICE, session.model):
                 raise RunMoved("the chat's model changed since its last run")
-            self.connections.for_run(record, self._log_path(live), exact=True)
+            provider = self.connections.for_run(record, self._log_path(live), exact=True)
         except (RunMoved, ProviderError, ValueError) as exc:
             # Resuming would replay the run's own endpoint and config with whatever key it is given.
             log.info("session %s starts a fresh run: %s", live.session_id, exc)
@@ -343,7 +343,7 @@ class Harness:
                 self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
             self._new_run(live)  # on failure, _spawn fails the session and raises
             return
-        self._spawn(live, "resume")
+        self._spawn(live, "resume", provider)
 
     def _interrupt_running_tools(self, session_id: str) -> None:
         """Mark tool parts a dead office left ``running`` as interrupted; their calls died with it."""
@@ -352,16 +352,22 @@ class Harness:
                 if part.type == "tool" and part.state == "running":
                     self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
 
-    def _spawn(self, live: _Live, kind: str) -> None:
-        """Start ``live``'s worker; if anything fails, fail the session (dropping it from the live ones) and raise."""
+    def _spawn(self, live: _Live, kind: str, provider: Provider | None = None) -> None:
+        """Start ``live``'s worker; if anything fails, fail the session (dropping it from the live ones) and raise.
+
+        ``provider`` is the one a resume checked; None resolves the session's connection and model.
+        """
         try:
             if kind == "resume":
                 # The agent node that asked re-runs and asks afresh.
                 for q in self.store.list_questions(run_id=live.run_id, status="open"):
                     if q.node_id is None:
                         self.store.set_question_status(q.id, "stale")
-            session = self._choice(self.store.get_session(live.session_id))
-            live.provider = provider = self.connections.resolve(session.connection, session.model)
+            session = self.store.get_session(live.session_id)
+            if provider is None:
+                session = self._choice(session)
+                provider = self.connections.resolve(session.connection, session.model)
+            live.provider = provider
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
             ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names,

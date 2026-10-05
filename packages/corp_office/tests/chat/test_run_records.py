@@ -285,3 +285,77 @@ def test_the_key_change_on_the_same_name_restarts_on_the_next_turn(make_harness,
     assert len(harness.store.get_session(sid).run_ids) == 3
     assert after.connection == "second" and after.config != before.config
     assert after.config == config_hash(harness.connections.resolve("second", None))
+
+
+def unrecord(harness, sid):
+    """Delete the record of a session's latest run, as for a run from before records."""
+    run_id = harness.store.get_session(sid).run_ids[-1]
+    (harness.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json").unlink()
+
+
+def test_restore_of_a_run_without_a_record_on_another_connection_starts_fresh_on_it(make_harness, fake_llm,
+                                                                                     workspace):
+    first = make_harness(connections={"second": "stub-2"})
+    sid = start(first, workspace)
+    first.close_all()
+    unrecord(first, sid)
+    on(first, sid, "second")
+
+    second = make_harness()
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub-2")]
+    assert second.store.get_session(sid).model_note == FRESH
+
+
+def test_a_crash_resume_of_a_run_without_a_record_on_another_connection_starts_fresh_on_it(make_harness, fake_llm,
+                                                                                            workspace):
+    harness = make_harness(connections={"second": "stub-2"})
+    sid = start(harness, workspace)
+    unrecord(harness, sid)
+    on(harness, sid, "second")
+    jobs = spawned(harness)
+    kill(harness, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub-2")]
+
+
+def test_restore_after_a_model_change_starts_a_fresh_run_on_it(make_harness, fake_llm, workspace):
+    first = make_harness()
+    sid = start(first, workspace)
+    on(first, sid, OFFICE, "stub-3")
+    first.close_all()
+
+    second = make_harness()
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub-3")]
+    assert second.store.get_session(sid).model_note == FRESH
+
+
+def test_a_crash_resume_after_a_model_change_starts_a_fresh_run_on_it(make_harness, fake_llm, workspace):
+    harness = make_harness()
+    sid = start(harness, workspace)
+    on(harness, sid, OFFICE, "stub-3")
+    jobs = spawned(harness)
+    kill(harness, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub-3")]
+    assert harness.store.get_session(sid).model_note == FRESH
+
+
+def test_a_resume_runs_on_what_its_check_passed_even_if_the_choice_changes_meanwhile(make_harness, fake_llm,
+                                                                                     workspace):
+    harness = make_harness(connections={"second": "stub-2"})
+    sid = start(harness, workspace)
+    for_run = harness.connections.for_run
+
+    def then_switch(*args, **kwargs):
+        provider = for_run(*args, **kwargs)
+        on(harness, sid, "second")  # a /model between the check and the spawn
+        return provider
+
+    harness.connections.for_run = then_switch
+    jobs = spawned(harness)
+    kill(harness, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("resume", "stub")]
