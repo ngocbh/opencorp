@@ -5,8 +5,10 @@ import logging
 import os
 import stat
 
+import httpx
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from agent_corp.auth.identity import Identity, identity_path, write_identity
 from agent_corp.auth.tokens import new_token
@@ -14,6 +16,7 @@ from agent_corp.chat import check, models
 from agent_corp.chat.connections import ConnectionFile, Connections, provider_label
 from agent_corp.chat.models import Listing, ModelCache, own_models
 from agent_corp.chat.provider import ProviderError
+from agent_corp.daemon.app import create_app
 from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import write_private
 from tests.company.conftest import _git
@@ -267,6 +270,22 @@ async def test_a_remove_that_cant_get_the_sign_in_lock_is_409(client, conns, as_
     monkeypatch.setattr(conns, "remove", remove)
     r = await client.delete("/connections/azure", headers=as_owner)
     assert (r.status_code, r.json()["error"]) == (409, "connection_unusable")
+
+
+async def test_an_unexpected_value_error_is_a_500_not_a_404(office, conns, as_owner, monkeypatch):
+    try:
+        ConnectionFile.model_validate({"llm_config": 5})
+    except ValidationError as exc:
+        invalid = exc
+
+    def remove(name):
+        raise invalid
+
+    monkeypatch.setattr(conns, "remove", remove)
+    transport = httpx.ASGITransport(app=create_app(office), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://localhost") as c:
+        r = await c.delete("/connections/azure", headers=as_owner)
+    assert (r.status_code, r.json()) == (500, {"error": "internal_error", "message": "internal error"})
 
 
 async def test_a_default_whose_file_cant_be_read_is_still_the_default(client, office, conns, as_owner):

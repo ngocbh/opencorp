@@ -16,8 +16,8 @@ from starlette.routing import Route
 
 from agent_corp.auth.identity import identity_path, read_identity
 from agent_corp.chat import check, models
-from agent_corp.chat.connections import (OFFICE, ConnectionFile, ConnectionGone, Connections, azure_base_url,
-                                         provider_label)
+from agent_corp.chat.connections import (OFFICE, BadConnectionName, ConnectionFile, ConnectionGone, Connections,
+                                         azure_base_url, provider_label)
 from agent_corp.chat.models import ModelCache
 from agent_corp.chat.provider import ProviderError
 from agent_corp.company.loader import load_repo
@@ -63,7 +63,7 @@ def _guarded[T](fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
     """``fn(*args, **kwargs)``, with no such connection as a ``404`` and one that can't be used as a ``409``."""
     try:
         return fn(*args, **kwargs)
-    except (ConnectionGone, ValueError) as exc:  # ValueError: not a connection name
+    except (ConnectionGone, BadConnectionName) as exc:
         raise HTTPError(404, "not_found", str(exc)) from None
     except ProviderError as exc:
         raise HTTPError(409, "connection_unusable", str(exc)) from None

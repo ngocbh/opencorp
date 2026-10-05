@@ -170,7 +170,7 @@ class ModelCache:
         if the last listing failed.
 
         Raises:
-            ValueError: ``name`` isn't a connection name.
+            BadConnectionName: ``name`` isn't a connection name.
             ConnectionGone: there is no such connection.
             ProviderError: its file can't be used.
         """
@@ -189,7 +189,7 @@ class ModelCache:
 
         Raises:
             ListTimeout: ``deadline`` seconds passed before every connection was listed.
-            ValueError, ConnectionGone, ProviderError: as ``get``.
+            BadConnectionName, ConnectionGone, ProviderError: as ``get``.
         """
         end = time.monotonic() + deadline
         found = []

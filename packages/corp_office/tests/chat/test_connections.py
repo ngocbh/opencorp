@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from agent_corp.chat.connections import (
     OFFICE,
+    BadConnectionName,
     ConnectionFile,
     ConnectionGone,
     Connections,
@@ -250,6 +251,14 @@ def test_remove_cleans_a_sign_in_whose_connection_was_never_written(tmp_path):
         c.remove("chatgpt")
     with pytest.raises(ValueError):
         c.remove("../x")
+
+
+def test_a_bad_name_raises_bad_connection_name(tmp_path):
+    c = Connections(office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}}))
+    for call in (lambda: c.get("Bad"), lambda: c.remove("../x"), lambda: c.set_default("login"),
+                 lambda: c.put("office", api_key())):
+        with pytest.raises(BadConnectionName):
+            call()
 
 
 def test_get_reads_a_connection_removed_mid_read_as_gone(tmp_path, monkeypatch):
