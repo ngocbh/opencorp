@@ -301,7 +301,7 @@ function SubscriptionMethod(props: { provider: Provider }) {
   function show(next: ConnectionLogin) {
     setLogin(next)
     if (next.state === "waiting") timer = setTimeout(() => void poll(next.id), LOGIN_POLL_MS)
-    else if (next.state === "signed_in" && next.connection) void finish(next.connection)
+    else if (next.state === "signed_in") void finish(next.connection)
   }
 
   async function poll(id: string) {
@@ -316,11 +316,11 @@ function SubscriptionMethod(props: { provider: Provider }) {
     if (!closed) show(next)
   }
 
-  async function finish(name: string) {
+  async function finish(name?: string | null) {
     await office.refreshConnections().catch(() => {})
-    toast.show({ variant: "success", message: `Connected ${name}` })
+    toast.show({ variant: "success", message: name ? `Connected ${name}` : "Signed in" })
     if (closed) return
-    dialog.replace(() => <DialogModel connection={name} />)
+    dialog.replace(() => <DialogModel connection={name ?? undefined} />)
   }
 
   useBindings(() => ({
@@ -343,7 +343,7 @@ function SubscriptionMethod(props: { provider: Provider }) {
   const ended = () => {
     const current = login()
     if (current?.state === "failed")
-      return current.message ? `Sign-in failed (${current.message}). Try /connect again.` : "Sign-in failed. Try /connect again."
+      return `Sign-in failed${current.message ? ` (${current.message})` : ""}. Try /connect again.`
     if (current?.state === "cancelled") return "The sign-in was cancelled. Try /connect again."
   }
 

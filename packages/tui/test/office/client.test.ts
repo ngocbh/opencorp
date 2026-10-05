@@ -236,7 +236,7 @@ test("adding a connection waits 120 s, as the office's key check (listing, then 
   expect(err.message).toContain("/connect")
 })
 
-test("a subscription sign-in: start it, read it until it signs in, or cancel it; only its starter may read it", async () => {
+test("a subscription sign-in: start it, read it until it signs in, or cancel it; an unknown one is not found", async () => {
   office = createFakeOffice()
   const login = await client().connections.startLogin({ provider: "openai" })
   expect([login.state, login.user_code]).toEqual(["waiting", "ABCD-EFGH"])

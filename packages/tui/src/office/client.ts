@@ -30,8 +30,8 @@ import type {
   SetDefaultConnectionRequest,
   SetModelRequest,
   SetPasswordRequest,
-  StartLoginRequest,
   SideChatRequest,
+  StartLoginRequest,
   WorkItem,
 } from "@agent-corp/protocol"
 import { OfficeTimeout } from "./errors"
