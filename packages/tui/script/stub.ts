@@ -4,6 +4,7 @@ import type {
   Comment,
   Connection,
   ConnectionList,
+  ConnectionLogin,
   Debrief,
   Event,
   Feedback,
@@ -203,12 +204,21 @@ export function createFakeOffice(
   const notImplemented = new Set(opts.notImplemented ?? [])
   const broken = new Set<string>()
   const missing = new Set(opts.missing ?? [])
-  const requests: { method: string; path: string; raw: string; body: unknown; authorization?: string }[] = []
+  const requests: { method: string; path: string; raw: string; body: unknown; at: number; authorization?: string }[] = []
   // Humans' passwords by handle, kept as given: the office keeps only a hash, and never serves it.
   const passwords = new Map<string, string>()
   const holds = new Map<string, Promise<void>>()
   const replyHolds = new Map<string, Promise<void>>()
   const refusals: { error: string; message: string }[] = []
+  const loginFailures: string[] = []
+  const loginCodeReads: number[] = []
+  // Subscription sign-ins by id, with who started each, how often it was read, the read that brings its code, and
+  // why it will fail, if it will.
+  const logins = new Map<
+    string,
+    { login: ConnectionLogin; by: string; polls: number; codeAt: number; failure?: string }
+  >()
+  const CODE = { url: "https://auth.openai.com/codex/device", user_code: "ABCD-EFGH" }
   const prompts: ((sessionId: string, req: PromptRequest) => void)[] = []
   const interrupts: ((sessionId: string) => void)[] = []
   // Messages sent with no open turn and no reply running, by session; the next turn takes them.
@@ -679,6 +689,33 @@ export function createFakeOffice(
     state.connections.push(c)
     return c
   }
+  /** A sign-in `actor` started; the office answers 404 to anyone else. */
+  function startedLogin(id: string, actor: string) {
+    const found = logins.get(id)
+    if (!found || found.by !== actor) throw fail(404, "not_found", `no sign-in ${id}`)
+    return found
+  }
+  /**
+   * A sign-in as it is now: a waiting one signs in on its third read, adding a subscription connection named
+   * `chatgpt` (then `chatgpt-2`, …), or fails on its first read if `loginFailures` gave it a message.
+   */
+  function readLogin(id: string, actor: string) {
+    const found = startedLogin(id, actor)
+    const { login } = found
+    if (login.state !== "waiting") return login
+    found.polls++
+    if (found.polls >= found.codeAt) Object.assign(login, CODE)
+    if (found.failure !== undefined) {
+      Object.assign(login, { state: "failed", message: found.failure })
+    } else if (found.polls >= 3) {
+      const taken = (name: string) => state.connections.some((c) => c.name === name)
+      let name = "chatgpt"
+      for (let n = 2; taken(name); n++) name = `chatgpt-${n}`
+      state.connections.push({ name, provider: "chatgpt", method: "subscription", model: "gpt-5" })
+      Object.assign(login, { state: "signed_in", connection: name })
+    }
+    return login
+  }
   /** The office's switch: the next reply runs on `connection`; its own model is stored as null. */
   function setModel(id: string, body: any) {
     check(str(body?.connection) && str(body?.model), "connection and model are required")
@@ -805,6 +842,34 @@ export function createFakeOffice(
       },
     ],
     ["POST", "/connections", ({ body, actor }) => (checkManage(actor), Response.json(addConnection(body)))],
+    [
+      "POST",
+      "/connections/login",
+      ({ body, actor }) => {
+        checkManage(actor)
+        check(body?.provider === "openai", "provider must be openai")
+        const codeAt = loginCodeReads.shift() ?? 0
+        const login: ConnectionLogin = {
+          id: nextId(),
+          state: "waiting",
+          ...(codeAt ? { url: null, user_code: null } : CODE),
+          connection: null,
+          message: null,
+        }
+        logins.set(login.id, { login, by: actor, polls: 0, codeAt, failure: loginFailures.shift() })
+        return Response.json(login)
+      },
+    ],
+    ["GET", "/connections/login/:id", ({ params, actor }) => Response.json(readLogin(params.id, actor))],
+    [
+      "DELETE",
+      "/connections/login/:id",
+      ({ params, actor }) => {
+        const { login } = startedLogin(params.id, actor)
+        if (login.state === "waiting") login.state = "cancelled"
+        return Response.json({ ok: true })
+      },
+    ],
     [
       "DELETE",
       "/connections/:name",
@@ -1122,6 +1187,7 @@ export function createFakeOffice(
       path: decodeURIComponent(url.pathname) + url.search,
       raw,
       body,
+      at: Date.now(),
       ...(authorization !== null && { authorization }),
     })
     let who: { actor: string; device: string | null } = { actor: ceo(), device: null }
@@ -1178,7 +1244,10 @@ export function createFakeOffice(
     socket: server.socket,
     /** The office's data; tests may edit it directly (no events are sent for direct edits). */
     state,
-    /** Every request received, in order: `path` is decoded and keeps the query string, `raw` is as sent. */
+    /**
+     * Every request received, in order: `path` is decoded and keeps the query string, `raw` is as sent, and `at` is
+     * when it came in (ms since the epoch).
+     */
     requests,
     /** Humans' passwords by handle; set one to give a human a password. */
     passwords,
@@ -1188,6 +1257,15 @@ export function createFakeOffice(
     broken,
     /** How the office refuses the next `POST /connections`, in order: each is sent as a 422 with that code. */
     refusals,
+    /** Why the next sign-ins fail, in order: each fails with that message on its first read. */
+    loginFailures,
+    /**
+     * The read that brings each next sign-in its code, in order: until then it waits with no URL or code, as the
+     * office's does when the provider is slow to give one.
+     */
+    loginCodeReads,
+    /** Subscription sign-ins by id, as they are now. */
+    logins: () => [...logins.values()].map((l) => l.login),
     nextId,
     emit,
     live,

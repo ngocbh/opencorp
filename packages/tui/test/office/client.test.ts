@@ -1,6 +1,11 @@
 import { afterEach, expect, spyOn, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { ADD_CONNECTION_TIMEOUT_MS, CREATE_TIMEOUT_MS, createOfficeClient } from "../../src/office/client"
+import {
+  ADD_CONNECTION_TIMEOUT_MS,
+  CREATE_TIMEOUT_MS,
+  START_LOGIN_TIMEOUT_MS,
+  createOfficeClient,
+} from "../../src/office/client"
 import { OfficeError, OfficeTimeout, VersionConflictError } from "../../src/office/errors"
 import { request } from "../../src/office/http"
 import { until } from "../fixture/until"
@@ -229,6 +234,40 @@ test("adding a connection waits 120 s, as the office's key check (listing, then 
   expect(err).toBeInstanceOf(OfficeTimeout)
   expect(err.timeoutMs).toBe(ADD_CONNECTION_TIMEOUT_MS)
   expect(err.message).toContain("/connect")
+})
+
+test("a subscription sign-in: start it, read it until it signs in, or cancel it; an unknown one is not found", async () => {
+  office = createFakeOffice()
+  const login = await client().connections.startLogin({ provider: "openai" })
+  expect([login.state, login.user_code]).toEqual(["waiting", "ABCD-EFGH"])
+  expect(office.requests.at(-1)).toMatchObject({ method: "POST", path: "/connections/login", body: { provider: "openai" } })
+  expect((await client().connections.login(login.id)).state).toBe("waiting")
+  expect(office.requests.at(-1)).toMatchObject({ method: "GET", path: `/connections/login/${login.id}` })
+  expect((await client().connections.login(login.id)).state).toBe("waiting")
+  const done = await client().connections.login(login.id)
+  expect([done.state, done.connection]).toEqual(["signed_in", "chatgpt"])
+  expect(office.state.connections.at(-1)).toMatchObject({ name: "chatgpt", method: "subscription" })
+
+  const other = await client().connections.startLogin({ provider: "openai" })
+  expect(await client().connections.cancelLogin(other.id)).toEqual({ ok: true })
+  expect(office.requests.at(-1)).toMatchObject({ method: "DELETE", path: `/connections/login/${other.id}` })
+  expect((await client().connections.login(other.id)).state).toBe("cancelled")
+  expect((await failure(client().connections.login("nope"))).status).toBe(404)
+})
+
+test("starting a sign-in waits 30 s, as the office answers once the code is shown, up to 20 s", async () => {
+  office = createFakeOffice()
+  expect(START_LOGIN_TIMEOUT_MS).toBe(30_000)
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  const asked: number[] = []
+  const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms) => (asked.push(ms), timeout(50)))
+  const release = office.hold("POST /connections/login")
+  const err = await failure(client().connections.startLogin({ provider: "openai" })).finally(() => {
+    spy.mockRestore()
+    release()
+  })
+  expect(asked).toEqual([START_LOGIN_TIMEOUT_MS])
+  expect(err).toBeInstanceOf(OfficeTimeout)
 })
 
 test("the office refuses a connection it can't use with a 422, and adds nothing", async () => {

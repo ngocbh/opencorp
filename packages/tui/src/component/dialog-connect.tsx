@@ -1,10 +1,13 @@
-import type { AddConnectionRequest } from "@agent-corp/protocol"
+import type { AddConnectionRequest, ConnectionLogin } from "@agent-corp/protocol"
 import { InputRenderable, TextAttributes } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
+import { useClipboard } from "../context/clipboard"
 import { useOffice } from "../context/office"
 import { useTheme } from "../context/theme"
+import { openUrl } from "../core/open"
+import { useBindings } from "../keymap"
 import { OFFICE } from "../office/models"
 import { SecretInput } from "../setup/secret"
 import { useDialog } from "../ui/dialog"
@@ -23,7 +26,12 @@ type Provider = {
   endpoint?: { label: string; placeholder: string }
   /** The model name's placeholder, for a provider with no default model. */
   model?: string
+  /** Signed in to with a subscription in the browser, rather than with a key. */
+  subscription?: boolean
 }
+
+/** How often the sign-in screen asks the office whether the human has signed in. */
+const LOGIN_POLL_MS = 2_000
 
 const PROVIDERS: Provider[] = [
   {
@@ -32,6 +40,7 @@ const PROVIDERS: Provider[] = [
     endpoint: { label: "Endpoint or resource name", placeholder: "my-resource, or https://my-resource.openai.azure.com" },
   },
   { title: "OpenAI", id: "openai" },
+  { title: "ChatGPT subscription", id: "openai", subscription: true },
   { title: "Anthropic", id: "anthropic" },
   { title: "Google", id: "google", model: "e.g. gemini-2.5-pro" },
   { title: "OpenRouter", id: "openrouter", model: "e.g. anthropic/claude-sonnet-4.5" },
@@ -49,14 +58,17 @@ const PROVIDERS: Provider[] = [
 /** A row: one of the office's connections, or a provider to add. */
 type Row = { connection: string } | { provider: number }
 
-/** `/connect`: the office's connections, to make default or remove, and the providers to add one with a key. */
+/**
+ * `/connect`: the office's connections, to make default or remove, and the providers to add one with a key or, for
+ * a subscription, by signing in.
+ */
 export function DialogConnect() {
   const [provider, setProvider] = createSignal<Provider>()
   // In a box: the dialog re-runs a bare Show's parent when it switches, which would start the dialog over.
   return (
     <box>
       <Show when={provider()} keyed fallback={<ConnectList onPick={setProvider} />}>
-        {(p) => <ConnectForm provider={p} />}
+        {(p) => (p.subscription ? <SubscriptionMethod provider={p} /> : <ConnectForm provider={p} />)}
       </Show>
     </box>
   )
@@ -240,6 +252,145 @@ function ConnectForm(props: { provider: Provider }) {
         <text fg={theme.error} wrapMode="word">
           {error()}
         </text>
+      </Show>
+      <box paddingBottom={1} />
+    </box>
+  )
+}
+
+/**
+ * A subscription sign-in: the office starts it, this shows the link and the code to enter there, then reads it
+ * every 2 s until it ends. Each read is a short call, as office reads time out at 15 s.
+ */
+function SubscriptionMethod(props: { provider: Provider }) {
+  const dialog = useDialog()
+  const office = useOffice()
+  const toast = useToast()
+  const clipboard = useClipboard()
+  const renderer = useRenderer()
+  const { theme } = useTheme()
+  const [login, setLogin] = createSignal<ConnectionLogin>()
+  const [error, setError] = createSignal<string>()
+  const waiting = () => login()?.state === "waiting" && !error()
+  // The office can answer before the provider has given a code; a later read brings it.
+  const code = () => (waiting() ? login()?.user_code : undefined)
+  // Closing or replacing the dialog stops the reads; a late answer must not touch whatever is open then.
+  let closed = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const cancel = (id: string) => office.client.connections.cancelLogin(id).catch(() => {})
+  onCleanup(() => {
+    closed = true
+    clearTimeout(timer)
+    const current = login()
+    // So the office stops waiting on a sign-in no one will finish.
+    if (current?.state === "waiting") void cancel(current.id)
+  })
+
+  onMount(async () => {
+    // The search box of the list before this keeps focus once removed; it must not take the `c`.
+    renderer.currentFocusedRenderable?.blur()
+    let started: ConnectionLogin
+    try {
+      started = await office.client.connections.startLogin({ provider: "openai" })
+    } catch (e) {
+      if (!closed) setError(`Couldn't start the sign-in: ${errorMessage(e)}. Try /connect again.`)
+      return
+    }
+    if (closed) return void cancel(started.id)
+    show(started)
+  })
+
+  function show(next: ConnectionLogin) {
+    setLogin(next)
+    if (next.state === "waiting") timer = setTimeout(() => void poll(next.id), LOGIN_POLL_MS)
+    else if (next.state === "signed_in") void finish(next.connection)
+  }
+
+  async function poll(id: string) {
+    let next: ConnectionLogin
+    try {
+      next = await office.client.connections.login(id)
+    } catch (e) {
+      // The office keeps sign-ins in memory, so after a restart this one reads as not found; either way it can't be
+      // waited on.
+      if (!closed) setError(`Couldn't check the sign-in: ${errorMessage(e)}. Try /connect again.`)
+      return
+    }
+    if (!closed) show(next)
+  }
+
+  async function finish(name?: string | null) {
+    await office.refreshConnections().catch(() => {})
+    toast.show({ variant: "success", message: name ? `Connected ${name}` : "Signed in" })
+    if (closed) return
+    dialog.replace(() => <DialogModel connection={name ?? undefined} />)
+  }
+
+  useBindings(() => ({
+    enabled: () => !!code() && renderer.currentFocusedEditor === null,
+    bindings: [
+      {
+        key: "c",
+        desc: "Copy the sign-in code",
+        group: "Dialog",
+        cmd: () => {
+          clipboard
+            .write?.(code() ?? "")
+            .then(() => toast.show({ message: "Copied to clipboard", variant: "info" }))
+            .catch(toast.error)
+        },
+      },
+    ],
+  }))
+
+  const ended = () => {
+    const current = login()
+    if (current?.state === "failed")
+      return `Sign-in failed${current.message ? ` (${current.message})` : ""}. Try /connect again.`
+    if (current?.state === "cancelled") return "The sign-in was cancelled. Try /connect again."
+  }
+
+  return (
+    <box paddingLeft={2} paddingRight={2} gap={1}>
+      <box flexDirection="row" justifyContent="space-between">
+        <text attributes={TextAttributes.BOLD} fg={theme.text}>
+          {`Connect ${props.provider.title}`}
+        </text>
+        <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
+          esc
+        </text>
+      </box>
+      <Show when={(!login() && !error()) || (waiting() && !code())}>
+        <Spinner color={theme.textMuted}>Getting a sign-in code…</Spinner>
+      </Show>
+      <Show when={code() ? login() : undefined}>
+        {(current) => (
+          <>
+            <box>
+              <text fg={theme.textMuted}>Open this link and enter the code:</text>
+              <text fg={theme.primary} wrapMode="char" onMouseUp={() => openUrl(current().url ?? "").catch(() => {})}>
+                {current().url}
+              </text>
+            </box>
+            <text attributes={TextAttributes.BOLD} fg={theme.text}>
+              {current().user_code}
+            </text>
+            <Spinner color={theme.textMuted}>Waiting for you to sign in…</Spinner>
+            <text fg={theme.text}>
+              c <span style={{ fg: theme.textMuted }}>copy</span>
+            </text>
+          </>
+        )}
+      </Show>
+      <Show when={login()?.state === "signed_in"}>
+        <text fg={theme.textMuted}>Signed in. Opening the model list…</text>
+      </Show>
+      <Show when={error() ?? ended()}>
+        {(message) => (
+          <text fg={theme.error} wrapMode="word">
+            {message()}
+          </text>
+        )}
       </Show>
       <box paddingBottom={1} />
     </box>

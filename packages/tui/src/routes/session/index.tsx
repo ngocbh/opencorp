@@ -518,7 +518,7 @@ export function Session() {
                       {" "}
                       · {current().status}
                     </span>
-                    <Show when={costLabel(current())}>
+                    <Show when={costLabel(current(), office.connections())}>
                       {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}
                     </Show>
                     <span style={{ fg: theme.textMuted }}> · {modelLabel(current(), office.connections())}</span>

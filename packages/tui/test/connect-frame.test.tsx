@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test"
+import { expect, mock, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import path from "node:path"
 import { InputRenderable, TextareaRenderable, type CapturedLine } from "@opentui/core"
 import { createFakeOffice, createStub } from "../script/stub"
+import * as clipboard from "../src/context/clipboard"
 import { Global } from "../src/core/global"
 import { bootFrame } from "./fixture/frame"
 import { typeInto } from "./routes/picker/type"
@@ -13,7 +14,17 @@ type Office = ReturnType<typeof createFakeOffice>
 const SECRET = "sk-ant-sentinel-a7d93c10e5b2"
 const DOTS = "•".repeat(SECRET.length)
 const PLACEHOLDER = "Paste or type it here; it isn't shown"
-const PROVIDERS = ["Azure OpenAI", "OpenAI", "Anthropic", "Google", "OpenRouter", "xAI", "DeepSeek", "Other (OpenAI-compatible)"]
+const PROVIDERS = [
+  "Azure OpenAI",
+  "OpenAI",
+  "ChatGPT subscription",
+  "Anthropic",
+  "Google",
+  "OpenRouter",
+  "xAI",
+  "DeepSeek",
+  "Other (OpenAI-compatible)",
+]
 
 /** What a prompt file under the app's state directory holds, or "" when there is none. */
 const stateFile = (name: string) => {
@@ -104,6 +115,17 @@ async function typeKey(app: App) {
 
 /** The requests that change something, as `METHOD path`. */
 const writes = (office: Office) => office.requests.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`)
+
+/** The reads of a subscription sign-in. */
+const polls = (office: Office) =>
+  office.requests.filter((r) => r.method === "GET" && r.path.startsWith("/connections/login/")).map((r) => r.path)
+
+/** Opens ChatGPT subscription and waits for the code to enter. */
+async function signIn(app: App, office: Office) {
+  await openConnect(app, office)
+  await choose(app, "ChatGPT subscription", "chatgpt")
+  return app.until((f) => f.includes("ABCD-EFGH"))
+}
 
 test("/connect lists the connections, then every provider; managers see Make default and Remove on connected rows", async () => {
   const office = createFakeOffice()
@@ -384,6 +406,144 @@ test("Esc on a key box with text clears it first; Esc on an empty one closes the
     expect(office.requests.some((r) => r.path === `/sessions/${id}/interrupt`)).toBe(false)
   })
 })
+
+test("ChatGPT subscription shows the link in full, the code, and that it waits for the sign-in; c copies the code", async () => {
+  const office = createFakeOffice()
+  // The machine's clipboard is left alone: the app's writes are kept here instead.
+  const real = { ...clipboard }
+  const copied: string[] = []
+  const fake = { write: async (text: string) => void copied.push(text) }
+  mock.module("../src/context/clipboard", () => ({ ...real, useClipboard: () => fake }))
+  try {
+    await run(office, async (app) => {
+      const f = await signIn(app, office)
+      expect(f).toContain("Connect ChatGPT subscription")
+      expect(f).toContain("https://auth.openai.com/codex/device")
+      expect(f).toContain("Waiting for you to sign in…")
+      expect(f).toContain("c copy")
+      expect(writes(office)).toEqual(["POST /connections/login"])
+      expect(office.requests.find((r) => r.method === "POST")?.body).toEqual({ provider: "openai" })
+      await app.input.typeText("c")
+      await app.until((f) => f.includes("Copied to clipboard") && f.includes("ABCD-EFGH"))
+      expect(copied).toEqual(["ABCD-EFGH"])
+    })
+  } finally {
+    mock.module("../src/context/clipboard", () => real)
+  }
+})
+
+test("the sign-in is read every 2 s; once signed in, the model list opens on the new connection", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await signIn(app, office)
+    // The connections are read again once signed in; held, the screen says what it waits on.
+    const release = office.hold("GET /connections")
+    await app.until((f) => f.includes("Signed in. Opening the model list…"), 10_000)
+    const id = office.logins()[0].id
+    expect(polls(office)).toEqual(Array(3).fill(`/connections/login/${id}`))
+    const at = office.requests.filter((r) => r.path.startsWith("/connections/login/")).map((r) => r.at)
+    expect(at[1] - at[0]).toBeGreaterThan(1900)
+    expect(at[2] - at[1]).toBeGreaterThan(1900)
+    release()
+    await app.until((f) => f.includes("Select model") && f.includes("chatgpt (chatgpt)"))
+    await app.until(() => highlighted(app, "Select model").startsWith("gpt-5"))
+    expect(app.frame()).toContain("Connected chatgpt")
+    expect(writes(office)).toEqual(["POST /connections/login"])
+  })
+}, 20_000)
+
+test("Esc cancels the sign-in at the office and closes the dialog; it isn't read again", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await signIn(app, office)
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("ABCD-EFGH") && !f.includes("Add a provider"))
+    const id = office.logins()[0].id
+    await app.until(() => writes(office).includes(`DELETE /connections/login/${id}`))
+    expect(office.logins()[0].state).toBe("cancelled")
+    await Bun.sleep(2500)
+    expect(polls(office)).toEqual([])
+  })
+}, 15_000)
+
+test("a sign-in the office starts after the dialog closed is cancelled", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    const release = office.hold("POST /connections/login")
+    await choose(app, "ChatGPT subscription", "chatgpt")
+    await app.until((f) => f.includes("Getting a sign-in code…"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Getting a sign-in code…"))
+    release()
+    await app.until(() => writes(office).some((w) => w.startsWith("DELETE /connections/login/")))
+    expect(office.logins()[0].state).toBe("cancelled")
+  })
+})
+
+test("a failed sign-in says so and to try /connect again", async () => {
+  const office = createFakeOffice()
+  office.loginFailures.push("HTTP 400")
+  await run(office, async (app) => {
+    await signIn(app, office)
+    const f = await app.until((f) => f.includes("Sign-in failed (HTTP 400). Try /connect again."), 5000)
+    expect(f).not.toContain("Waiting for you to sign in…")
+    expect(f).not.toContain("c copy")
+  })
+}, 10_000)
+
+test("a sign-in whose code comes on a later read shows the spinner until a read brings the link and code", async () => {
+  const office = createFakeOffice()
+  office.loginCodeReads.push(1)
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    // The first read is held, so the screen shows the office's first answer, which has no code.
+    const release = office.hold("GET /connections/login/:id")
+    await choose(app, "ChatGPT subscription", "chatgpt")
+    await app.until(() => polls(office).length === 1, 5000)
+    expect(office.logins()[0]).toMatchObject({ state: "waiting", url: null, user_code: null })
+    let f = await app.until((f) => f.includes("Getting a sign-in code…"))
+    expect(f).not.toContain("c copy")
+    release()
+    f = await app.until((f) => f.includes("ABCD-EFGH"))
+    expect(f).toContain("https://auth.openai.com/codex/device")
+    expect(f).toContain("c copy")
+    expect(f).not.toContain("Getting a sign-in code…")
+    expect(polls(office)).toHaveLength(1)
+  })
+}, 10_000)
+
+test("a sign-in cancelled at the office says so and to try /connect again", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await signIn(app, office)
+    office.logins()[0].state = "cancelled"
+    const f = await app.until((f) => f.includes("The sign-in was cancelled. Try /connect again."), 5000)
+    expect(f).not.toContain("ABCD-EFGH")
+  })
+}, 10_000)
+
+test("a sign-in the office can't start says so", async () => {
+  const office = createFakeOffice()
+  office.broken.add("POST /connections/login")
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    await choose(app, "ChatGPT subscription", "chatgpt")
+    const f = await app.until((f) => f.includes("Couldn't start the sign-in"))
+    expect(f).not.toContain("Getting a sign-in code…")
+  })
+})
+
+test("a sign-in that can't be read says so rather than waiting on", async () => {
+  const office = createFakeOffice()
+  office.broken.add("GET /connections/login/:id")
+  await run(office, async (app) => {
+    await signIn(app, office)
+    const f = await app.until((f) => f.includes("Couldn't check the sign-in"), 5000)
+    expect(f).not.toContain("Waiting for you to sign in…")
+    expect(polls(office)).toHaveLength(1)
+  })
+}, 10_000)
 
 test("Ctrl+A in /model opens it for managers", async () => {
   const office = createFakeOffice()
