@@ -667,7 +667,7 @@ export function createFakeOffice(
     const s = liveSession(id)
     if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
     const c = state.connections.find((x) => x.name === body.connection)
-    if (!c) throw fail(422, "unknown_connection", `no connection ${body.connection}`)
+    if (!c) throw fail(422, "unknown_connection", `no connection '${body.connection}' on this office`)
     const model = body.model === c.model ? null : body.model
     return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
   }
@@ -1135,6 +1135,7 @@ export function createFakeOffice(
       )
     const key = `${route.method} ${route.pattern}`
     await holds.get(key)
+    await holds.get(`${req.method} ${url.pathname}`)
     if (broken.has(key))
       return Response.json({ error: "internal", message: `${req.method} ${url.pathname} failed` }, { status: 500 })
     if (notImplemented.has(key) || notImplemented.has(`${req.method} ${url.pathname}`))
@@ -1192,7 +1193,8 @@ export function createFakeOffice(
     /** The number of open event streams. */
     streams: () => streams.size,
     /**
-     * Delays requests to a route (`"GET /sessions"`, `"GET /sessions/:id/messages"`) until the
+     * Delays requests to a route (`"GET /sessions"`, `"GET /sessions/:id/messages"`) or, before
+     * they are handled only, to an exact path (`"GET /connections/office/models"`) until the
      * returned release is called: before they are handled, or with `"reply"`, after (so the
      * reply is what the state was when the request came in).
      */

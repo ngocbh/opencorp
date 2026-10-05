@@ -51,11 +51,7 @@ export type WhoAmI = { person: string; device: string | null }
  * A typed client for the office's HTTP API on `socket`, sending `token` (this device's) with
  * every request. Every method throws `OfficeError` on failure, `UnknownDevice` on a 401.
  */
-export function createOfficeClient(opts: {
-  socket: string
-  timeoutMs?: number
-  token?: string
-}) {
+export function createOfficeClient(opts: { socket: string; timeoutMs?: number; token?: string }) {
   const { socket, timeoutMs = READ_TIMEOUT_MS, token } = opts
   const call = <T>(method: Method, path: string, body?: unknown) => request<T>(socket, method, path, body, { token })
   // A hung read would stall the bootstrap or a session load forever; writes aren't retried,

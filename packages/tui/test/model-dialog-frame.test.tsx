@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs"
 import path from "node:path"
 import { createFakeOffice, createStub } from "../script/stub"
 import { Global } from "../src/core/global"
+import type { CapturedLine } from "@opentui/core"
 import { bootFrame } from "./fixture/frame"
 import { typeInto } from "./routes/picker/type"
 
@@ -38,12 +39,34 @@ async function openDialog(app: App, slash = "/model", shown = (f: string) => f.i
   return app.until((f) => f.includes("Select model") && shown(f) && !f.includes("listing…"))
 }
 
-/** Types `text` in the search box until `shown` holds; the dialog selects the first match a tick later. */
+/**
+ * The dialog's list rows, below its search box, each with whether it is drawn highlighted: its
+ * background, where the dialog's title starts, differs from the title's.
+ */
+function listRows(app: App) {
+  const { lines } = app.setup.captureSpans()
+  const text = (l: CapturedLine) => l.spans.map((s) => s.text).join("")
+  const bgAt = (l: CapturedLine, col: number) => {
+    let x = 0
+    for (const s of l.spans) if (col < (x += s.width)) return s.bg
+  }
+  const title = lines.findIndex((l) => text(l).includes("Select model"))
+  if (title < 0) return []
+  const col = text(lines[title]).indexOf("Select model")
+  const end = lines.findIndex((l, i) => i > title && text(l).includes("favorite ctrl+f"))
+  return lines
+    .slice(title + 3, end)
+    .map((l) => ({ text: text(l).trim(), highlighted: !bgAt(l, col)?.equals(bgAt(lines[title], col)) }))
+    .filter((r) => r.text)
+}
+
+/** The highlighted row's text, or "" when none is. */
+const highlighted = (app: App) => listRows(app).find((r) => r.highlighted)?.text ?? ""
+
+/** Types `text` in the search box until `shown` holds and the dialog has highlighted the first match. */
 async function search(app: App, text: string, shown: (f: string) => boolean) {
   await typeInto(app, text)
-  const f = await app.until(shown)
-  await Bun.sleep(20)
-  return f
+  return app.until((f) => shown(f) && listRows(app)[0]?.highlighted === true)
 }
 
 const line = (f: string, text: string) => f.split("\n").find((l) => l.includes(text))?.trimEnd() ?? ""
@@ -188,6 +211,43 @@ test("Ctrl+F toggles a favorite", async () => {
   })
 })
 
+test("Ctrl+F twice on the last row favorites that model, then unfavorites it", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await openDialog(app)
+    // The session's model is highlighted first; o3-mini is two rows below it, at the end.
+    await app.until(() => highlighted(app) === "● gpt-4o")
+    for (let i = 0; i < 2; i++) app.input.pressArrow("down")
+    await app.until(() => highlighted(app).startsWith("o3-mini") && listRows(app).at(-1)?.highlighted === true)
+    app.input.pressKey("f", { ctrl: true })
+    await app.until(() => saved().includes("o3-mini"))
+    expect(JSON.parse(saved()).favorite).toEqual([{ connection: "azure-2", model: "o3-mini" }])
+    // The row moved up into Favorites, and the highlight went with it.
+    await app.until((f) => f.indexOf("Favorites") < f.indexOf("o3-mini") && highlighted(app).startsWith("o3-mini"))
+    app.input.pressKey("f", { ctrl: true })
+    await app.until(() => JSON.parse(saved()).favorite.length === 0)
+    expect(JSON.parse(saved())).toEqual({ recent: [], favorite: [] })
+  })
+})
+
+test("a list that arrives late keeps the highlight on the same model", async () => {
+  const office = createFakeOffice()
+  const release = office.hold("GET /connections/office/models")
+  await run(office, async (app) => {
+    await app.input.typeText("/model")
+    await app.until((f) => f.includes("Switch model"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("o3-mini") && f.includes("listing…"))
+    for (let i = 0; i < 2; i++) app.input.pressArrow("down")
+    await app.until(() => highlighted(app).startsWith("o3-mini"))
+    release()
+    await app.until((f) => f.includes("gpt-4.1") && !f.includes("listing…"))
+    expect(highlighted(app)).toStartWith("o3-mini")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Next reply uses azure-2/o3-mini"))
+  })
+})
+
 test("a refused switch shows the office's message and leaves the dialog open", async () => {
   const office = createFakeOffice()
   await run(office, async (app) => {
@@ -196,7 +256,7 @@ test("a refused switch shows the office's message and leaves the dialog open", a
     // The connection goes away after the dialog listed it.
     office.state.connections = office.state.connections.filter((c) => c.name !== "azure-2")
     app.input.pressEnter()
-    const f = await app.until((f) => f.includes("no connection azure-2"))
+    const f = await app.until((f) => f.includes("no connection 'azure-2' on this office"))
     expect(f).toContain("Select model")
     expect(f).not.toContain("Next reply uses")
     for (let i = 0; i < 2; i++) app.input.pressBackspace()
@@ -261,11 +321,29 @@ test("when the connection list can't be read, the header names the connection an
     await app.input.typeText("/model")
     await app.until((f) => f.includes("Switch model"))
     app.input.pressEnter()
-    await app.until((f) => f.includes("Select model") && f.includes("couldn't list connections"))
+    await app.until((f) => f.includes("Select model") && f.includes("Couldn't list connections"))
     app.input.pressEscape()
     await app.until((f) => !f.includes("Select model"))
     office.broken.delete("GET /connections")
     await openDialog(app)
+  })
+})
+
+test("a slow earlier read of the connections can't overwrite a later one", async () => {
+  const office = createFakeOffice()
+  // The startup read is answered with the list as it is now, but held back.
+  const stale = office.hold("GET /connections", "reply")
+  await run(office, async (app) => {
+    await app.until(() => office.requests.some((r) => r.path === "/connections"))
+    office.state.connections = office.state.connections.map((c) => (c.name === "office" ? { ...c, model: "gpt-4.1" } : c))
+    // A second hold, released at once, lets later reads through while the first stays held.
+    office.hold("GET /connections", "reply")()
+    await openDialog(app)
+    await app.until((f) => f.includes("gpt-4.1 (office)"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Select model"))
+    stale()
+    await expect(app.until((f) => f.includes("gpt-4o (office)"), 500)).rejects.toThrow()
   })
 })
 

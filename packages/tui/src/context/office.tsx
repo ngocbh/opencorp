@@ -54,10 +54,15 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
     })
 
     const [connections, setConnections] = createSignal<ConnectionList>()
-    /** Re-reads the office's connections and returns them; on failure it throws and the last list stays. */
+    let connectionsRead = 0
+    /**
+     * Re-reads the office's connections and returns them; on failure it throws and the last list
+     * stays. Only the latest read's answer is kept, so a slow earlier one can't overwrite it.
+     */
     async function refreshConnections() {
+      const read = ++connectionsRead
       const list = await client.connections.list()
-      setConnections(list)
+      if (read === connectionsRead) setConnections(list)
       return list
     }
     // Labels fall back to the bare connection without the list (an office older than connections,

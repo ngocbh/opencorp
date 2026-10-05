@@ -46,7 +46,8 @@ export type ModelPick = { connection: string; model: string }
 
 const RECENT_MAX = 10
 
-const samePick = (a: ModelPick, b: ModelPick) => a.connection === b.connection && a.model === b.model
+/** Whether two picks name the same model on the same connection. */
+export const samePick = (a: ModelPick, b: ModelPick) => a.connection === b.connection && a.model === b.model
 
 /**
  * This device's recent and favorite models, kept in `file` (`model.json`). An entry whose

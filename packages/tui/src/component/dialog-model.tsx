@@ -3,7 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import * as fuzzysort from "fuzzysort"
 import { createMemo, createSignal, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
-import { useLocal, type ModelPick } from "../context/local"
+import { samePick, useLocal, type ModelPick } from "../context/local"
 import { useOffice } from "../context/office"
 import { useRoute } from "../context/route"
 import { useTheme } from "../context/theme"
@@ -40,7 +40,7 @@ export function DialogModel() {
   onMount(async () => {
     dialog.setSize("large")
     const list = await office.refreshConnections().catch((e) => {
-      toast.show({ variant: "error", message: `couldn't list connections: ${errorMessage(e)}` })
+      toast.show({ variant: "error", message: `Couldn't list connections: ${errorMessage(e)}` })
     })
     // On failure the last list, if any, still offers its connections.
     for (const c of (list ?? office.connections())?.connections ?? [])
@@ -106,19 +106,19 @@ export function DialogModel() {
         .map((x) => x.obj)
     const favorite = local.model.favorite()
     const recent = local.model.recent().filter((p) => !local.model.isFavorite(p))
-    const same = (a: ModelPick) => (b: Choice) => a.connection === b.connection && a.model === b.model
     const shown = [...favorite, ...recent]
+    // A fresh `{connection, model}`, so DialogSelect can match it with any row's value.
     const pickRow = (p: ModelPick, category: string) => ({
       title: p.model,
       description: p.connection,
-      value: p as Choice,
+      value: { connection: p.connection, model: p.model } as Choice,
       category,
     })
     // A pick shows once, in Favorites or Recent, so one row is marked as the session's model.
     return [
       ...favorite.map((p) => pickRow(p, "Favorites")),
       ...recent.map((p) => pickRow(p, "Recent")),
-      ...rows.filter((r) => r.value.model === null || !shown.some((p) => same(p)(r.value))),
+      ...rows.filter((r) => r.value.model === null || !shown.some((p) => samePick(p, r.value as ModelPick))),
     ]
   })
 
@@ -161,6 +161,8 @@ export function DialogModel() {
       current={current()}
       flat={true}
       skipFilter={true}
+      // Rows shift as late lists arrive and favorites move; keep the highlight on its model.
+      preserveSelection={true}
       onFilter={setQuery}
       onSelect={(option) => void choose(option.value)}
       actions={[
