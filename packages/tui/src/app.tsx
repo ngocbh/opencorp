@@ -85,6 +85,7 @@ const appBindingCommands = [
   "command.palette.show",
   "person.list",
   "model.list",
+  "model.last_pick.toggle",
   "provider.connect",
   "agent.cycle",
   "agent.cycle.reverse",
