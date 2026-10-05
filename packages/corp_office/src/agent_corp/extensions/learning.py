@@ -325,7 +325,7 @@ class Learning:
             return
         handlers: FeedbackHandlers | None = None
         spawned = False
-        error = moved = None
+        error = moved = unusable = None
         try:
             provider = self._pinned(session, feedback)
             feedback = self.store.set_feedback_status(feedback.id, "learning")
@@ -333,10 +333,10 @@ class Learning:
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
             spawned = True
         except ConnectionUnusable as exc:
-            # It may pass: count it as an attempt that failed to start, retried later like the others.
             error = self._redact(str(exc))
+            # Stored if it runs out of attempts: the message names a file.
+            unusable = self._redact(f"connection '{exc.connection}' couldn't be used")
             self._log_exception(exc, "can't start learning from feedback %s", feedback.id)
-            self.store.set_feedback_status(feedback.id, "learning")
         except RunMoved as exc:
             moved = self._redact(str(exc))
         except Exception as exc:
@@ -345,18 +345,28 @@ class Learning:
         finally:
             if not spawned:
                 self._release(session.id)
+        try:
+            if moved is not None:
+                # No retry: another model or key would learn from a run it didn't make.
+                log.warning("can't learn from feedback %s: %s", feedback.id, moved)
+                self.store.set_feedback_status(feedback.id, "learning_failed", failure=moved)
+            elif unusable is not None:
+                # It may pass: count it as an attempt that failed to start, retried later like the others.
+                self.store.set_feedback_status(feedback.id, "learning")
+        except Exception as exc:  # it stays queued for the next drain; the tick goes on to other sessions
+            self._log_exception(exc, "can't move feedback %s on", feedback.id)
+            return
         if moved is not None:
-            # No retry: another model or key would learn from a run it didn't make.
-            log.warning("can't learn from feedback %s: %s", feedback.id, moved)
-            self.store.set_feedback_status(feedback.id, "learning_failed", failure=moved)
             self._drain(session.id)
             return
         # Released first: what it drains next may reserve the session again. Feedback that never
         # left the queue waits for the next drain.
         if error is not None and self.store.get_feedback(feedback.id).status == "learning":
-            self._learned(feedback.id, handlers, {"type": "error", "message": error})
+            self._learned(feedback.id, handlers, {"type": "error", "message": error}, failure=unusable)
 
-    def _learned(self, feedback_id: str, handlers: FeedbackHandlers | None, outcome: dict[str, Any] | None) -> None:
+    def _learned(self, feedback_id: str, handlers: FeedbackHandlers | None, outcome: dict[str, Any] | None, *,
+                 failure: str | None = None) -> None:
+        """Move feedback on after an attempt's ``outcome``; ``failure`` is stored if that fails it."""
         feedback = self.store.get_feedback(feedback_id)
         self._release(feedback.session_id)
         commit = handlers.committed() if handlers is not None else None
@@ -366,7 +376,7 @@ class Learning:
             self.store.set_feedback_status(feedback_id, "applied", commit=commit or self.git.head())
         elif status == "learning_failed":
             log.warning("learning from feedback %s failed: %s", feedback_id, self._failure(outcome))
-            self.store.set_feedback_status(feedback_id, "learning_failed")
+            self.store.set_feedback_status(feedback_id, "learning_failed", failure=failure)
         else:
             self.store.set_feedback_status(feedback_id, "queued")
             if status == "retry_later":

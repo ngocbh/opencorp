@@ -54,7 +54,11 @@ class RunMoved(ProviderError):
 
 
 class ConnectionUnusable(RunMoved):
-    """A run's connection is there but can't be read or used now, which may pass."""
+    """A run's connection, ``connection``, is there but can't be read or used now, which may pass."""
+
+    def __init__(self, message: str, connection: str) -> None:
+        super().__init__(message)
+        self.connection = connection
 
 
 class ConnectionFile(Provider):
@@ -313,7 +317,7 @@ class Connections:
         except ConnectionGone:
             raise RunMoved(f"connection '{name}' was removed") from None
         except ProviderError as exc:
-            raise ConnectionUnusable(str(exc)) from None
+            raise ConnectionUnusable(str(exc), name) from None
 
     def _load(self, name: str) -> ConnectionFile:
         """The file of added connection ``name``, removed or not; ConnectionGone if there is none."""

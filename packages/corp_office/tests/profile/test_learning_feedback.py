@@ -7,8 +7,10 @@ from agent_corp.chat.connections import ConnectionFile, read_run_record
 from agent_corp.chat.harness import HarnessError
 from agent_corp.extensions import learning as learning_module
 from agent_corp.profile.debrief import DEBRIEF_FLOW
-from agent_corp.profile.feedback import FeedbackHandlers
-from agent_corp.protocol.models import FeedbackRequest
+from agent_corp.profile.feedback import MAX_ATTEMPTS, FeedbackHandlers
+from agent_corp.protocol import now
+from agent_corp.protocol.models import Feedback, FeedbackRequest
+from agent_corp.store import new_id
 from tests.chat.conftest import on, say, spawned
 from tests.profile.conftest import (LEARNER_ASK, asked, chat, debrief_reply, fails_once, learner_reply, review_reply,
                                     settled, status, wait_for)
@@ -301,3 +303,43 @@ def test_backward_retries_later_when_the_connections_cant_be_read_now(harness, f
     learning.tick()
     wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
     assert [j.kind for j in jobs] == ["backward"]
+
+
+def test_backward_that_cant_use_its_connection_for_good_fails_with_a_fixed_reason(harness, fake_llm, workspace,
+                                                                                    learning):
+    sid = ended(harness, fake_llm, workspace)
+    (harness.office.paths.office / "provider.json").chmod(0o644)
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    settled(learning)
+    for _ in range(MAX_ATTEMPTS):
+        learning.tick()
+        settled(learning)
+    failed = harness.store.get_feedback(fb.id)
+    assert (failed.status, failed.attempts) == ("learning_failed", MAX_ATTEMPTS)
+    assert failed.failure == "connection 'office' couldn't be used"  # never a path
+
+
+@pytest.mark.parametrize("why", ["removed", "unusable"])
+def test_a_feedback_move_that_fails_doesnt_stop_the_ticks_other_feedback(harness, fake_llm, workspace, learning,
+                                                                         monkeypatch, why):
+    stuck = ended_on_second(harness, fake_llm, workspace)
+    fine = ended(harness, fake_llm, workspace)
+    if why == "removed":
+        harness.connections.remove("second")
+    else:
+        (harness.connections.dir / "second.json").chmod(0o644)
+    feedback = [harness.store.add_feedback(Feedback(
+        id=new_id(), session_id=sid, run_id=harness.store.get_session(sid).run_ids[-1], author="ngocbh",
+        text="Be brief.", status="queued", created_at=now())) for sid in (stuck, fine)]
+    set_status = harness.store.set_feedback_status
+
+    def flaky(feedback_id, status, **kwargs):
+        if feedback_id == feedback[0].id:
+            raise RuntimeError("the store is busy")
+        return set_status(feedback_id, status, **kwargs)
+
+    monkeypatch.setattr(harness.store, "set_feedback_status", flaky)
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    learning.tick()  # the stuck one comes first
+    wait_for(lambda: feedback_status(harness, feedback[1].id) == "applied", what="the other feedback applied")
+    assert feedback_status(harness, feedback[0].id) == "queued"
