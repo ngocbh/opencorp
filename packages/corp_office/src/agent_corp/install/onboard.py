@@ -12,9 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
-from urllib.parse import urlsplit
 
-import httpx
 from agent_composer._settings import PROVIDER_DEFAULT_MODELS
 from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
@@ -23,6 +21,7 @@ from agent_corp.auth.devices import DeviceRefused, add_device
 from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
 from agent_corp.auth.passwords import check_password
 from agent_corp.auth.tokens import new_token, token_sha256
+from agent_corp.chat import models
 from agent_corp.chat.connections import azure_base_url
 from agent_corp.chat.provider import Provider, ProviderError, load_provider, validation_errors
 from agent_corp.company.git import CompanyGit, CompanyGitError
@@ -260,9 +259,6 @@ def check_provider(data: object) -> Provider:
 _azure_base_url = azure_base_url
 
 
-AZURE_DEPLOYMENTS_API = "2022-12-01"
-"""The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key."""
-
 def azure_deployments(base_url: str, key: str) -> list[str]:
     """The deployments at the Azure OpenAI resource whose v1 endpoint is ``base_url`` that are ready and not
     embedding models, in Azure's order.
@@ -270,20 +266,10 @@ def azure_deployments(base_url: str, key: str) -> list[str]:
     Raises:
         OnboardError: they couldn't be listed; the message never contains the key.
     """
-    root = base_url.rstrip("/").removesuffix("/openai/v1")
     try:
-        reply = httpx.get(f"{root}/openai/deployments", params={"api-version": AZURE_DEPLOYMENTS_API},
-                          headers={"api-key": key}, timeout=15)
-    except httpx.HTTPError:
-        raise OnboardError(f"can't reach {urlsplit(root).hostname}") from None
-    if reply.status_code != 200:
-        raise OnboardError(f"HTTP {reply.status_code}")
-    try:
-        data = reply.json()["data"]
-        # Entries say no more about what a model can do than its name.
-        return [d["id"] for d in data if d.get("status") == "succeeded" and "embedding" not in d.get("model", "")]
-    except (ValueError, LookupError, TypeError, AttributeError):
-        raise OnboardError("the reply isn't a deployment list") from None
+        return models.azure_deployments(base_url, key, timeout=15)
+    except models.ModelListError as exc:
+        raise OnboardError(str(exc)) from None
 
 
 def _ask_deployment(prompter: Prompter, base_url: str, key: str, last: str) -> str:

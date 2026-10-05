@@ -45,6 +45,10 @@ class ConnectionGone(ProviderError):
     """A connection is no longer on this office."""
 
 
+class BadConnectionName(ValueError):
+    """A name that can't name a connection: malformed or reserved."""
+
+
 class RunMoved(ProviderError):
     """A run's connection is gone, or no longer gives the endpoint, key or config the run had."""
 
@@ -85,11 +89,11 @@ class RunRecord(BaseModel):
 
 
 def _check(name: str) -> None:
-    """Raise ValueError unless ``name`` may name an added connection."""
+    """Raise BadConnectionName unless ``name`` may name an added connection."""
     if not isinstance(name, str) or not NAME.fullmatch(name):
-        raise ValueError(f"a connection name must match {NAME.pattern}")
+        raise BadConnectionName(f"a connection name must match {NAME.pattern}")
     if name in RESERVED:
-        raise ValueError(f"{name!r} is reserved" + (" for office/provider.json" if name == OFFICE else ""))
+        raise BadConnectionName(f"{name!r} is reserved" + (" for office/provider.json" if name == OFFICE else ""))
 
 
 class Connections:
@@ -118,7 +122,7 @@ class Connections:
         """Connection ``name``, key included.
 
         Raises:
-            ValueError: ``name`` isn't a connection name.
+            BadConnectionName: ``name`` isn't a connection name.
             ConnectionGone: there is no such connection, or it was removed.
             ProviderError: its file can't be used.
         """
@@ -236,7 +240,7 @@ class Connections:
         """What a run on connection ``name`` (None: ``office``) and ``model`` (None: the connection's own) gets.
 
         Raises:
-            ValueError: ``name`` isn't a connection name.
+            BadConnectionName: ``name`` isn't a connection name.
             ConnectionGone: there is no such connection, or it was removed.
             ProviderError: its file can't be used, or a subscription has no sign-in.
         """
