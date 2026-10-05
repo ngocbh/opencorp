@@ -10,7 +10,8 @@ from starlette.routing import Route
 from agent_corp.chat.harness import Harness, HarnessError
 from agent_corp.daemon.auth import acting_person
 from agent_corp.daemon.http import HTTPError, call, get_office, ok, parse
-from agent_corp.protocol.models import Ack, CostCapRequest, CreateSessionRequest, PromptRequest, Session
+from agent_corp.protocol.models import (Ack, CostCapRequest, CreateSessionRequest, PromptRequest, Session,
+                                       SetModelRequest)
 
 DEFAULT_LIMIT = 50
 MAX_LIMIT = 500
@@ -109,6 +110,12 @@ async def cost_cap(request: Request) -> JSONResponse:
     return ok(await harness_call(harness(request).set_cost_cap, request.path_params["id"], body.cost_cap_usd))
 
 
+async def set_model(request: Request) -> JSONResponse:
+    """Switch the session's connection and model; its next turn runs on them. Anyone who may chat may switch."""
+    body = await parse(request, SetModelRequest)
+    return ok(await harness_call(harness(request).set_model, request.path_params["id"], body.connection, body.model))
+
+
 ROUTES = [
     Route("/sessions", list_sessions, methods=["GET"]),
     Route("/sessions", create_session, methods=["POST"]),
@@ -119,4 +126,5 @@ ROUTES = [
     Route("/sessions/{id}/interrupt", interrupt, methods=["POST"]),
     Route("/sessions/{id}/end", end, methods=["POST"]),
     Route("/sessions/{id}/cost-cap", cost_cap, methods=["POST"]),
+    Route("/sessions/{id}/model", set_model, methods=["POST"]),
 ]

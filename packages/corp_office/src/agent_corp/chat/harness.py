@@ -3,6 +3,7 @@
 import logging
 import os
 import queue
+import re
 import socket
 import threading
 import time
@@ -14,7 +15,8 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
-from agent_corp.chat.connections import OFFICE, Connections, RunMoved, read_run_record, write_run_record
+from agent_corp.chat.connections import (OFFICE, ConnectionGone, Connections, RunMoved, read_run_record,
+                                         write_run_record)
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
@@ -47,6 +49,8 @@ _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 _UNREAD_DEFAULT = "The office's default connection can't be read"
+_AUTH_CAUSES = ("AuthenticationError", "PermissionDeniedError", "AuthError")
+"""Cause types (bare or provider-prefixed) of a failure where the model refused the connection's key."""
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
 
@@ -169,8 +173,8 @@ class _Handlers(BaseHandlers):
 class Harness:
     """Run each session as one live composer run in a worker, and drive it.
 
-    ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, and ``set_cost_cap`` are
-    called from request threads. Worker frames and store events are handled on one
+    ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, ``set_cost_cap``, and ``set_model``
+    are called from request threads. Worker frames and store events are handled on one
     dispatcher thread, in order. ``connections`` are read at each spawn. ``models`` tells which connections
     offer a person's model when a chat starts, within ``choose_deadline`` seconds.
     """
@@ -640,6 +644,32 @@ class Harness:
                 self._deliver(live)
         return session
 
+    def set_model(self, session_id: str, connection: str, model: str) -> Session:
+        """Switch the session to ``connection``/``model``; its next turn runs on them in a fresh run.
+
+        A reply already running finishes where it is. A model equal to the connection's own is stored as None.
+        """
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise HarnessError(404, "not_found", f"no session {session_id}")
+        if session.status not in LIVE:
+            raise HarnessError(409, "not_live", f"session {session_id} has ended")
+        if session.status == "ending":
+            raise HarnessError(409, "ending", f"session {session_id} is ending")
+        try:
+            if connection not in self.connections.names():
+                raise HarnessError(422, "unknown_connection", f"no connection {connection!r} on this office")
+            own = (self.connections.resolve(connection, None).llm_config or {}).get("model")
+        except ConnectionGone:
+            raise HarnessError(422, "unknown_connection", f"no connection {connection!r} on this office") from None
+        except (ProviderError, ValueError):
+            # Its error may name the office's files; the log says which connection, the client gets no path.
+            log.warning("connection %s can't be used; session %s stays where it is", connection, session_id)
+            raise HarnessError(409, "connection_unusable",
+                               f"connection {connection!r} can't be used on this office now") from None
+        return self.store.update_session(session_id, connection=connection,
+                                         model=None if model == own else model, model_note=None)
+
     def close_all(self) -> None:
         """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
 
@@ -746,11 +776,16 @@ class Harness:
         self._deliver(live)
 
     def _deliver(self, live: _Live) -> bool:
-        """Answer the open turn with the queued messages, unless held; True if it did."""
+        """Answer the open turn with the queued messages, unless held; True if it did (or handed them to a new run)."""
         if live.turn_q is None or not live.pending or live.ending or self._held(live):
             return False
-        self._answer_turn(live, live.turn_q, "\n\n".join(live.pending), by=live.pending_by)
+        text, by = "\n\n".join(live.pending), live.pending_by
         live.pending.clear()
+        live.pending_by = None
+        if self._provider_changed(live):
+            self._restart(live, text, by=by)  # re-queues text for the new run's first turn
+        else:
+            self._answer_turn(live, live.turn_q, text, by=by)
         return True
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None = None,
@@ -888,11 +923,22 @@ class Harness:
                                             or failure.get("cause_type") == "LoopMaxExceeded"):
             self._finish(live, "ended", outcome)
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
-            live.transcript.error(f"The reply failed ({_why(outcome, live.provider)}). Send your message again.")
+            why = _why(outcome, live.provider)
+            hint = f" Check connection '{self._ran_on(live, session)}', or pick another model with /model." \
+                if _refused_key(failure, why) else ""
+            live.transcript.error(f"The reply failed ({why}). Send your message again.{hint}")
             self._run_finished(live, session, outcome)
             self._new_run(live)
         else:
             self._finish(live, "failed", outcome)
+
+    def _ran_on(self, live: _Live, session: Session) -> str:
+        """The connection ``live``'s run started on, by its record; the session's if the record can't tell."""
+        try:
+            record = read_run_record(self._record_path(live))
+        except ValueError:
+            record = None
+        return record.connection if record is not None else session.connection or OFFICE
 
     def _new_run(self, live: _Live) -> None:
         """Start a fresh chat run for ``live``; the old run's open questions go stale.
@@ -1120,6 +1166,12 @@ def _why(outcome: dict[str, Any] | None, provider: Provider) -> str:
     cause, message = failure.get("cause_type"), failure.get("message") or outcome.get("message") or "no reason given"
     why = _redact(f"{cause}: {message}" if cause else str(message), provider)
     return why if len(why) <= _WHY_CHARS else why[:_WHY_CHARS - 1] + "…"
+
+
+def _refused_key(failure: dict[str, Any], why: str) -> bool:
+    """Whether a run failed because the model refused the connection's key."""
+    cause = failure.get("cause_type") or ""
+    return cause.endswith(_AUTH_CAUSES) or re.search(r"\b401\b", why) is not None
 
 
 def _redact(value: Any, provider: Provider) -> Any:

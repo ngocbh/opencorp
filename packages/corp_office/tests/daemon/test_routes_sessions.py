@@ -57,6 +57,7 @@ async def until(predicate, timeout=30):
     (f"/sessions/{ULID}/interrupt", None),
     (f"/sessions/{ULID}/end", None),
     (f"/sessions/{ULID}/cost-cap", {"cost_cap_usd": 10}),
+    (f"/sessions/{ULID}/model", {"connection": "office", "model": "stub"}),
 ])
 async def test_session_actions_need_a_harness(client, path, body):
     r = await client.post(path, json=body)
@@ -169,6 +170,29 @@ async def test_a_chat_is_credited_to_the_verified_person(chat, client, company, 
     assert "You're talking with Ava (@ava), your peer." in fake_llm.requests()[0]["messages"][0]["content"]
 
 
+async def test_anyone_who_may_chat_may_switch_its_model(chat, client, company, fake_llm, tmp_path):
+    Connections(chat.paths.office).put("second", ConnectionFile(llm_config={**LLM_CONFIG, "model": "stub-2"},
+                                                                 env=fake_llm.env()))
+    add_human(company, "ava")
+    ava, ceo = new_token(), new_token()
+    give_device(company, "ava", "pc", ava)
+    give_device(company, "ngocbh", "mac", ceo)
+    (tmp_path / "ws").mkdir()
+    r = await client.post("/sessions", json={"person": "minh", "cwd": str(tmp_path / "ws")}, headers=bearer(ceo))
+    sid = r.json()["id"]
+    await until(lambda: chat.store.get_session(sid).status == "idle")
+    r = await client.post(f"/sessions/{sid}/model", json={"connection": "second", "model": "stub-5"},
+                          headers=bearer(ava))
+    assert r.status_code == 200
+    assert (r.json()["connection"], r.json()["model"], r.json()["model_note"]) == ("second", "stub-5", None)
+    r = await client.post(f"/sessions/{sid}/model", json={"connection": "gone", "model": "stub-5"},
+                          headers=bearer(ava))
+    assert (r.status_code, r.json()["error"]) == (422, "unknown_connection")
+    assert (chat.store.get_session(sid).connection, chat.store.get_session(sid).model) == ("second", "stub-5")
+    assert (await client.post(f"/sessions/{sid}/end", headers=bearer(ceo))).json() == {"ok": True}
+    await until(lambda: chat.store.get_session(sid).status == "ended")
+
+
 async def test_end_is_ending_at_once_and_a_second_end_is_a_no_op(chat, client, fake_llm, tmp_path):
     store = chat.store
     fake_llm.script({"content": "Working", "hold": 30}, {"content": "never"})
@@ -242,6 +266,9 @@ async def test_a_spec_that_cant_be_built_fails_the_session(chat, client, tmp_pat
     (f"/sessions/{ULID}/interrupt", None, 404, "not_found"),
     (f"/sessions/{ULID}/end", None, 404, "not_found"),
     (f"/sessions/{ULID}/cost-cap", {"cost_cap_usd": 1}, 404, "not_found"),
+    (f"/sessions/{ULID}/model", {"connection": "office", "model": "stub"}, 404, "not_found"),
+    (f"/sessions/{ULID}/model", {"connection": "office", "model": ""}, 422, "invalid_body"),
+    (f"/sessions/{ULID}/model", {"connection": "office"}, 422, "invalid_body"),
     (f"/questions/{ULID}/answer", {"answer": "x", "answer_kind": "text"}, 404, "not_found"),
 ])
 async def test_chat_routes_refuse_bad_requests(chat, client, path, body, status, code):
