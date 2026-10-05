@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -17,8 +18,9 @@ SENTINEL = "sk-ant-sentinel-61f0d2c9a8b3"
 PROVIDER = Provider(llm_config={"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"})
 
 
-def fake_run(monkeypatch, stdout="", raises=None):
-    """Make the check's ``subprocess.run`` answer ``stdout`` (or raise ``raises``); returns the calls it gets."""
+def fake_run(monkeypatch, stdout="", raises=None, returncode=0):
+    """Make the check's ``subprocess.run`` answer ``stdout`` and ``returncode`` (or raise ``raises``); returns the
+    calls it gets."""
     calls = []
 
     def run(argv, **kwargs):
@@ -26,7 +28,7 @@ def fake_run(monkeypatch, stdout="", raises=None):
                       "cwd_files": os.listdir(kwargs["cwd"])})
         if raises is not None:
             raise raises
-        return subprocess.CompletedProcess(argv, 0, stdout=stdout, stderr="")
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=None)
 
     monkeypatch.setattr(check.subprocess, "run", run)
     return calls
@@ -39,7 +41,8 @@ def test_one_reply_check_runs_isolated_in_a_temp_cwd(monkeypatch):
     assert call["argv"] == [sys.executable, "-I", "-m", "agent_corp.chat.check"]
     assert call["cwd_existed"] and call["cwd_files"] == [] and not os.path.exists(call["cwd"])
     assert os.path.realpath(call["cwd"]) != os.path.realpath(os.getcwd())
-    assert call["env"] == worker_env() and call["capture_output"] and call["timeout"] == 90
+    assert call["env"] == worker_env() and call["timeout"] == 90
+    assert (call["stdout"], call["stderr"]) == (subprocess.PIPE, subprocess.DEVNULL) and "capture_output" not in call
     assert Provider.model_validate_json(call["input"]) == PROVIDER
     assert SENTINEL not in json.dumps([call["argv"], call["env"]])
 
@@ -57,6 +60,13 @@ def test_one_reply_check_runs_isolated_in_a_temp_cwd(monkeypatch):
 def test_only_the_result_line_is_read(monkeypatch, stdout, problem):
     fake_run(monkeypatch, stdout)
     assert one_reply_problem(PROVIDER) == problem
+
+
+def test_a_check_without_a_result_logs_its_exit_code_never_its_output(monkeypatch, caplog):
+    caplog.set_level(logging.DEBUG)
+    fake_run(monkeypatch, f"Traceback: {SENTINEL}\n", returncode=3)
+    assert one_reply_problem(PROVIDER) == NO_RESULT
+    assert "exit code 3" in caplog.text and SENTINEL not in caplog.text and "Traceback" not in caplog.text
 
 
 def test_a_hung_check_says_it_didnt_finish(monkeypatch):

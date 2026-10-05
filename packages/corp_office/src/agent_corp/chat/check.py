@@ -5,12 +5,15 @@
 
 import contextlib
 import json
+import logging
 import subprocess
 import sys
 import tempfile
 
 from agent_corp.chat.provider import Provider
 from agent_corp.worker.spawn import worker_env
+
+log = logging.getLogger(__name__)
 
 TIMEOUT = 90.0
 """Seconds the check may take: one short reply from the model."""
@@ -28,12 +31,16 @@ def one_reply_problem(provider: Provider, *, timeout: float = TIMEOUT) -> str | 
     """
     with tempfile.TemporaryDirectory(prefix="ac-check-") as cwd:
         try:
+            # Its stderr is dropped, never read: composer's errors there could quote the request.
             done = subprocess.run([sys.executable, "-I", "-m", "agent_corp.chat.check"],
                                   input=provider.model_dump_json(), env=worker_env(), cwd=cwd,
-                                  capture_output=True, text=True, timeout=timeout)
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=timeout)
         except subprocess.TimeoutExpired:
             return NOT_FINISHED
-    return _result(done.stdout)
+    problem = _result(done.stdout)
+    if problem == NO_RESULT:
+        log.warning("the one-reply check gave no result (exit code %s)", done.returncode)
+    return problem
 
 
 def _result(stdout: str) -> str | None:
