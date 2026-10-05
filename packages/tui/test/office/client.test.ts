@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { createOfficeClient } from "../../src/office/client"
+import { CREATE_TIMEOUT_MS, createOfficeClient } from "../../src/office/client"
 import { OfficeError, OfficeTimeout, VersionConflictError } from "../../src/office/errors"
 import { request } from "../../src/office/http"
 import { until } from "../fixture/until"
@@ -177,4 +177,74 @@ test("reads give up after timeoutMs with an OfficeTimeout", async () => {
   release()
   expect(err).toBeInstanceOf(OfficeTimeout)
   expect(err.message).toContain("/messages")
+})
+
+test("connections: the list with can_manage for the asker, a connection's models, and ?refresh=1", async () => {
+  office = createFakeOffice()
+  const list = await client().connections.list()
+  expect(list.connections.map((c) => `${c.name} (${c.provider})`)).toEqual(["office (azure)", "azure-2 (azure)"])
+  expect([list.default, list.can_manage]).toEqual(["office", true])
+  const models = await client().connections.models("azure-2")
+  expect([models.connection, models.listed, models.models.map((m) => m.id)]).toEqual([
+    "azure-2",
+    true,
+    ["gpt-4o-mini", "o3-mini"],
+  ])
+  await client().connections.models("azure-2", { refresh: true })
+  expect(office.requests.at(-1)?.raw).toBe("/connections/azure-2/models?refresh=1")
+  expect((await failure(client().connections.models("nope"))).code).toBe("not_found")
+  office.state.managers = []
+  expect((await client().connections.list()).can_manage).toBe(false)
+})
+
+test("managing connections: add, set the default, remove; office can't be removed; others get 403", async () => {
+  office = createFakeOffice()
+  const added = await client().connections.add({ provider: "openai", api_key: "sk-test", model: "gpt-4.1" })
+  expect([added.name, added.provider, added.model]).toEqual(["openai", "openai", "gpt-4.1"])
+  expect(office.requests.at(-1)).toMatchObject({ method: "POST", path: "/connections" })
+  expect((await client().connections.setDefault({ connection: "openai" })).default).toBe("openai")
+  expect(office.requests.at(-1)).toMatchObject({ method: "PUT", path: "/connections/default", body: { connection: "openai" } })
+  expect(await client().connections.remove("openai")).toEqual({ ok: true })
+  expect(office.requests.at(-1)).toMatchObject({ method: "DELETE", path: "/connections/openai" })
+  const onboard = await failure(client().connections.remove("office"))
+  expect([onboard.status, onboard.code]).toEqual([422, "set_up_by_onboard"])
+  office.state.managers = []
+  const forbidden = await failure(client().connections.add({ provider: "openai", api_key: "sk-test" }))
+  expect([forbidden.status, forbidden.code]).toEqual([403, "forbidden"])
+})
+
+test("setModel switches a live session and publishes it; unknown connections and ended sessions fail", async () => {
+  office = createFakeOffice()
+  const id = office.state.sessions[0].id
+  const s = await client().sessions.setModel(id, { connection: "azure-2", model: "o3-mini" })
+  expect([s.connection, s.model, s.model_note]).toEqual(["azure-2", "o3-mini", null])
+  expect(office.requests.at(-1)).toMatchObject({
+    method: "POST",
+    path: `/sessions/${id}/model`,
+    body: { connection: "azure-2", model: "o3-mini" },
+  })
+  // The connection's own model is stored as null, so it follows that connection.
+  expect((await client().sessions.setModel(id, { connection: "azure-2", model: "gpt-4o-mini" })).model).toBeNull()
+  const unknown = await failure(client().sessions.setModel(id, { connection: "nope", model: "x" }))
+  expect([unknown.status, unknown.code]).toEqual([422, "unknown_connection"])
+  office.setStatus(id, "ended")
+  const over = await failure(client().sessions.setModel(id, { connection: "office", model: "gpt-4o" }))
+  expect([over.status, over.code]).toEqual([409, "not_live"])
+})
+
+test("create sends the pick and waits 30 s; a timeout says the chat may have started", async () => {
+  office = createFakeOffice()
+  expect(CREATE_TIMEOUT_MS).toBe(30_000)
+  const s = await client().sessions.create({ person: "minh", cwd: "/tmp/proj", connection: "azure-2", model: "o3-mini" })
+  expect([s.connection, s.model]).toEqual(["azure-2", "o3-mini"])
+  expect(office.requests.at(-1)).toMatchObject({ method: "POST", path: "/sessions" })
+  // The office records its default connection when none is asked for.
+  expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).connection).toBe("office")
+  const release = office.hold("POST /sessions")
+  const c = createOfficeClient({ socket: office.socket, createTimeoutMs: 50 })
+  const err = await failure(c.sessions.create({ person: "minh", cwd: "/tmp/proj" }))
+  release()
+  expect(err).toBeInstanceOf(OfficeTimeout)
+  expect(err.message).toContain("the chat may have started")
+  expect(err.message).toContain("session list")
 })

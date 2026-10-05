@@ -2,6 +2,8 @@
 // speaks the office's HTTP routes and SSE framing, with no Python.
 import type {
   Comment,
+  Connection,
+  ConnectionList,
   Debrief,
   Event,
   Feedback,
@@ -9,6 +11,7 @@ import type {
   HireResponse,
   LiveEvent,
   Message,
+  ModelList,
   Person,
   Profile,
   ProfileProposal,
@@ -63,12 +66,21 @@ export type FakeState = {
   feedback: Feedback[]
   /** Hire previews by handle. */
   hires: Record<string, HireRequest>
+  /** The office's model connections, in the order it lists them; `default` comes from `defaultConnection`. */
+  connections: Connection[]
+  defaultConnection: string
+  /** What each connection's models route answers; a connection with none offers only its own model. */
+  models: Record<string, ModelList>
+  /** Who may add, remove or set the default connection. */
+  managers: string[]
 }
 
 const now = () => new Date().toISOString()
 
 /** Words a side chat refuses, in any case: only the office ends a side run. */
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
+/** The connection the office sets up at onboarding, which can't be removed. */
+const OFFICE = "office"
 /** Statuses with a live run, which take interrupt and end. */
 const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
 
@@ -85,8 +97,8 @@ function counter() {
 }
 
 /**
- * A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human), one idle main session
- * waiting on its first turn.
+ * A seeded office: @minh (agent, worked in /tmp/proj), @ngocbh (human, who manages connections),
+ * one idle main session waiting on its first turn, and two Azure connections.
  */
 export function seed(nextId = counter()): FakeState {
   const at = now()
@@ -135,6 +147,16 @@ export function seed(nextId = counter()): FakeState {
     debriefs: {},
     feedback: [],
     hires: {},
+    connections: [
+      { name: OFFICE, provider: "azure", method: "api_key", model: "gpt-4o" },
+      { name: "azure-2", provider: "azure", method: "api_key", model: "gpt-4o-mini" },
+    ],
+    defaultConnection: OFFICE,
+    models: {
+      [OFFICE]: { connection: OFFICE, models: [{ id: "gpt-4.1" }, { id: "gpt-4o" }], listed: true, error: null },
+      "azure-2": { connection: "azure-2", models: [{ id: "gpt-4o-mini" }, { id: "o3-mini" }], listed: true, error: null },
+    },
+    managers: ["ngocbh"],
   }
 }
 
@@ -612,6 +634,43 @@ export function createFakeOffice(
     return Response.json({ person, diff, issues, commit: blobId(diff) } satisfies HireResponse)
   }
 
+  const connection = (name: string) =>
+    need(
+      state.connections.find((c) => c.name === name),
+      `connection ${name}`,
+    )
+  function connectionList(actor: string): ConnectionList {
+    return {
+      connections: state.connections.map((c) => ({ ...c, default: c.name === state.defaultConnection })),
+      default: state.defaultConnection,
+      can_manage: state.managers.includes(actor),
+    }
+  }
+  function checkManage(actor: string) {
+    if (!state.managers.includes(actor))
+      throw fail(403, "forbidden", "managing this office's connections needs its owner or a grant")
+  }
+  /** Adds an API-key connection named for its provider, as the office does (no key check here). */
+  function addConnection(body: any) {
+    check(str(body?.provider) && str(body?.api_key), "provider and api_key are required")
+    const taken = (name: string) => state.connections.some((c) => c.name === name)
+    let name = body.provider
+    for (let n = 2; taken(name); n++) name = `${body.provider}-${n}`
+    const c: Connection = { name, provider: body.provider, method: "api_key", model: body.model ?? null }
+    state.connections.push(c)
+    return c
+  }
+  /** The office's switch: the next reply runs on `connection`; its own model is stored as null. */
+  function setModel(id: string, body: any) {
+    check(str(body?.connection) && str(body?.model), "connection and model are required")
+    const s = liveSession(id)
+    if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
+    const c = state.connections.find((x) => x.name === body.connection)
+    if (!c) throw fail(422, "unknown_connection", `no connection ${body.connection}`)
+    const model = body.model === c.model ? null : body.model
+    return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
+  }
+
   const routes: [string, string, Handler][] = [
     ["GET", "/health", () => Response.json({ ok: true })],
     ["GET", "/whoami", ({ actor, device }) => Response.json({ person: actor, device })],
@@ -661,7 +720,14 @@ export function createFakeOffice(
         )
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         const harness = body.harness ?? "composer"
-        const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting" })
+        const s = newSession({
+          person: body.person,
+          cwd: body.cwd,
+          harness,
+          status: "starting",
+          connection: body.connection ?? state.defaultConnection,
+          model: body.model ?? null,
+        })
         // Like the office, the session starts its run first and goes idle when that run opens its first turn.
         setTimeout(() => session(s.id).status === "starting" && openTurn(s.id), 10)
         return Response.json(s)
@@ -706,6 +772,40 @@ export function createFakeOffice(
           throw fail(422, "cap_too_low", `the cap must be above the session's cost of $${s.cost ?? 0}`)
         }
         return Response.json(upsertSession({ ...s, cost_cap_usd: body.cost_cap_usd, updated_at: now() }))
+      },
+    ],
+    ["POST", "/sessions/:id/model", ({ params, body }) => Response.json(setModel(params.id, body))],
+    ["GET", "/connections", ({ actor }) => Response.json(connectionList(actor))],
+    [
+      "GET",
+      "/connections/:name/models",
+      ({ params }) => {
+        const c = connection(params.name)
+        const own = c.model ? [{ id: c.model }] : []
+        return Response.json(state.models[c.name] ?? { connection: c.name, models: own, listed: false, error: null })
+      },
+    ],
+    ["POST", "/connections", ({ body, actor }) => (checkManage(actor), Response.json(addConnection(body)))],
+    [
+      "DELETE",
+      "/connections/:name",
+      ({ params, actor }) => {
+        checkManage(actor)
+        if (params.name === OFFICE)
+          throw fail(422, "set_up_by_onboard", "office is office/provider.json; `ac onboard` changes it")
+        connection(params.name)
+        state.connections = state.connections.filter((c) => c.name !== params.name)
+        return Response.json({ ok: true })
+      },
+    ],
+    [
+      "PUT",
+      "/connections/default",
+      ({ body, actor }) => {
+        checkManage(actor)
+        check(str(body?.connection), "connection is required")
+        state.defaultConnection = connection(body.connection).name
+        return Response.json(connectionList(actor))
       },
     ],
     [
@@ -1069,6 +1169,8 @@ export function createFakeOffice(
     openTurn,
     expire,
     setStatus,
+    /** Changes a session's fields and publishes `session.updated`, as the office does. */
+    updateSession: (id: string, fields: Partial<Session>) => upsertSession({ ...session(id), ...fields, updated_at: now() }),
     propose,
     addDebrief,
     feedbackStatus,
