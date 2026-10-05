@@ -19,9 +19,14 @@ beforeEach(() => rmSync(modelFile(), { force: true }))
  * Opens the seeded session (or home, with `home`), then runs `body` against it. The terminal is
  * 60 rows so the dialog, at most half the height, shows every group.
  */
-async function run(office: Office, body: (app: App, id: string) => Promise<void>, opts: { home?: boolean } = {}) {
+async function run(
+  office: Office,
+  body: (app: App, id: string) => Promise<void>,
+  opts: { home?: boolean; width?: number } = {},
+) {
   const id = office.state.sessions[0].id
-  const app = await bootFrame(createStub(office), opts.home ? {} : { sessionID: id }, { width: 100, height: 60 })
+  const size = { width: opts.width ?? 100, height: 60 }
+  const app = await bootFrame(createStub(office), opts.home ? {} : { sessionID: id }, size)
   try {
     await app.until((f) => f.includes("@minh"))
     await body(app, id)
@@ -302,6 +307,22 @@ test("on a subscription connection, the header's cost label says subscription, u
     f = await app.until((f) => f.includes("gpt-5 (chatgpt)"))
     expect(line(f, "@minh · idle")).toEndWith("· $0.00 (subscription, unpriced) · gpt-5 (chatgpt)")
   })
+})
+
+test("the sidebar's cost follows the chat onto a subscription connection", async () => {
+  const office = createFakeOffice()
+  office.state.connections.push({ name: "chatgpt", provider: "chatgpt", method: "subscription", model: "gpt-5" })
+  // Wider than 120 columns, the sidebar shows beside the chat.
+  await run(
+    office,
+    async (app, id) => {
+      await app.until((f) => f.includes("gpt-4o (office)") && f.includes("Software engineer"))
+      office.updateSession(id, { connection: "chatgpt" })
+      // The header and the sidebar each say it.
+      await app.until((f) => f.split("(subscription, unpriced)").length === 3)
+    },
+    { width: 160 },
+  )
 })
 
 test("a connection's configured model comes first, as the office lists it", async () => {

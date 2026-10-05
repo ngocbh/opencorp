@@ -72,10 +72,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 <text fg={theme.textMuted}>{abbreviateHome(current().cwd, paths.home)}</text>
                 <text fg={theme.textMuted}>
                   {current().status}
-                  <Show when={costLabel(current(), office.connections())}>
-                    {" "}
-                    · {costLabel(current(), office.connections())}
-                  </Show>
+                  <Show when={costLabel(current(), office.connections())}>{(cost) => <span> · {cost()}</span>}</Show>
                 </text>
               </box>
               <text fg={theme.textMuted}>{props.sessionID}</text>
