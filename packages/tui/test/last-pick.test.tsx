@@ -136,20 +136,34 @@ test("with it on, a pick on the home screen is what the next new chat starts on"
   )
 })
 
-test("the office's note on a last pick it doesn't have shows in the new chat", async () => {
+test("the last pick is sent even when its connection isn't on the office, and the office's note shows", async () => {
   setting(true)
-  await Bun.write(modelFile(), JSON.stringify({ recent: [{ connection: "azure-2", model: "o3-mini" }], favorite: [] }))
+  await Bun.write(
+    modelFile(),
+    JSON.stringify({
+      recent: [
+        { connection: "gone", model: "o3-mini" },
+        { connection: "azure-2", model: "gpt-4o-mini" },
+      ],
+      favorite: [],
+    }),
+  )
   const office = createFakeOffice()
   await run(
     office,
     async (app) => {
-      // The connection goes away after this TUI read the office's list.
-      await until(() => office.requests.some((r) => r.method === "GET" && r.path === "/connections"))
-      office.state.connections = office.state.connections.filter((c) => c.name !== "azure-2")
-      expect(await newChat(app, office, "hello")).toMatchObject({ connection: "azure-2", model: "o3-mini" })
-      const note = "Your last pick 'azure-2' isn't on this office; this chat uses office/gpt-4o."
-      const f = await app.until((f) => f.includes(note))
-      expect(f.indexOf("@minh · ")).toBeLessThan(f.indexOf(note))
+      // /model's Recent hides the pick, since the office's list doesn't have its connection.
+      await app.input.typeText("/model")
+      await app.until((f) => f.includes("Switch model"))
+      app.input.pressEnter()
+      const f = await app.until((f) => f.includes("Select model") && f.includes("azure-2 (azure)") && !f.includes("listing…"))
+      expect(f).not.toContain("gone")
+      app.input.pressEscape()
+      await app.until((f) => !f.includes("Select model"))
+      expect(await newChat(app, office, "hello")).toMatchObject({ connection: "gone", model: "o3-mini" })
+      const note = "Your last pick 'gone' isn't on this office; this chat uses office/gpt-4o."
+      const shown = await app.until((f) => f.includes(note))
+      expect(shown.indexOf("@minh · ")).toBeLessThan(shown.indexOf(note))
     },
     { home: true },
   )

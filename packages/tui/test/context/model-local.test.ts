@@ -65,3 +65,14 @@ test("an entry whose connection is gone is hidden, not deleted", async () => {
   expect(state.recent()).toEqual([pick("office", "gpt-4o"), pick("azure-2", "gpt-4o-mini")])
   expect(state.favorite()).toEqual([pick("azure-2", "o3-mini")])
 })
+
+test("the last pick is the newest, even when its connection is hidden", async () => {
+  const [names, setNames] = createSignal<readonly string[] | undefined>(["office", "azure-2"])
+  const state = await open(names)
+  expect(state.last()).toBeUndefined()
+  state.pick(pick("office", "gpt-4o"))
+  state.pick(pick("azure-2", "o3-mini"))
+  setNames(["office"])
+  expect(state.recent()).toEqual([pick("office", "gpt-4o")])
+  expect(state.last()).toEqual(pick("azure-2", "o3-mini"))
+})

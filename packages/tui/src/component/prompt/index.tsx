@@ -688,7 +688,7 @@ export function Prompt(props: PromptProps) {
     let undo: (() => void) | void = undefined
     try {
       if (!sessionID) {
-        const pick = kv.get("start_on_last_pick", false) ? local.model.recent()[0] : undefined
+        const pick = kv.get("start_on_last_pick", false) ? local.model.last() : undefined
         const created = await office.client.sessions.create({ person: person!.handle, cwd: office.cwd, ...pick })
         sessionID = created.id
         await office.syncSession(sessionID)
