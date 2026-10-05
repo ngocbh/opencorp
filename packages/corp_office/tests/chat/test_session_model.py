@@ -326,3 +326,16 @@ def test_restore_after_a_switch_starts_a_fresh_run(make_harness, workspace, fake
     assert session.model_note == FRESH
     assert say(second, s.id, "b") == "on two"
     assert fake_llm.requests()[-1]["model"] == "stub-2"
+
+
+def test_a_refused_key_says_which_connection_to_check(make_harness, workspace, fake_llm):
+    h = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"error": 401}, {"error": 500})
+    s = start(h, workspace, connection="second")
+    h.prompt(s.id, "hi")
+    wait_for(lambda: len(h.store.get_session(s.id).run_ids) == 2 and status(h, s.id) == "idle", what="the new run")
+    (error,) = errors(h, s.id)
+    assert error.endswith("Send your message again. Check connection 'second', or pick another model with /model.")
+    h.prompt(s.id, "again")
+    wait_for(lambda: len(errors(h, s.id)) == 2, what="the second failure")
+    assert "/model" not in errors(h, s.id)[1]  # a failure that isn't the key says nothing of it

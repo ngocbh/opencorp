@@ -48,6 +48,8 @@ _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 _UNREAD_DEFAULT = "The office's default connection can't be read"
+_AUTH_CAUSES = ("AuthenticationError", "PermissionDeniedError", "AuthError", "401")
+"""What a failure's cause or message holds when the model refused the connection's key."""
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
 
@@ -918,11 +920,22 @@ class Harness:
                                             or failure.get("cause_type") == "LoopMaxExceeded"):
             self._finish(live, "ended", outcome)
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
-            live.transcript.error(f"The reply failed ({_why(outcome, live.provider)}). Send your message again.")
+            why = _why(outcome, live.provider)
+            hint = f" Check connection '{self._ran_on(live, session)}', or pick another model with /model." \
+                if any(cause in why for cause in _AUTH_CAUSES) else ""
+            live.transcript.error(f"The reply failed ({why}). Send your message again.{hint}")
             self._run_finished(live, session, outcome)
             self._new_run(live)
         else:
             self._finish(live, "failed", outcome)
+
+    def _ran_on(self, live: _Live, session: Session) -> str:
+        """The connection ``live``'s run started on, by its record; the session's if the record can't tell."""
+        try:
+            record = read_run_record(self._record_path(live))
+        except ValueError:
+            record = None
+        return record.connection if record is not None else session.connection or OFFICE
 
     def _new_run(self, live: _Live) -> None:
         """Start a fresh chat run for ``live``; the old run's open questions go stale.
