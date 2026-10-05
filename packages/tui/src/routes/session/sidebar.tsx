@@ -1,8 +1,9 @@
-import type { Session } from "@agent-corp/protocol"
+import type { ConnectionList, Session } from "@agent-corp/protocol"
 import { createMemo, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
+import { sessionModel } from "../../office/models"
 import { useTuiPaths } from "../../context/runtime"
 import { abbreviateHome } from "../../runtime"
 import { personLabel } from "../../util/transcript"
@@ -10,10 +11,19 @@ import { getScrollAcceleration } from "../../util/scroll"
 
 const usd = (n: number) => `$${n.toFixed(2)}`
 
-/** The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. */
-export function costLabel(session: Pick<Session, "cost" | "cost_cap_usd">) {
-  if (session.cost === undefined) return undefined
-  return session.cost_cap_usd == null ? usd(session.cost) : `${usd(session.cost)} of ${usd(session.cost_cap_usd)}`
+/**
+ * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` it adds
+ * `(subscription, unpriced)`: the office records that connection's tokens at $0.
+ */
+export function costLabel(
+  session: Pick<Session, "cost" | "cost_cap_usd" | "connection" | "model">,
+  list?: ConnectionList,
+) {
+  const { connection } = sessionModel(session, list)
+  const subscription = list?.connections.find((c) => c.name === connection)?.method === "subscription"
+  if (session.cost === undefined) return subscription ? "subscription, unpriced" : undefined
+  const cost = session.cost_cap_usd == null ? usd(session.cost) : `${usd(session.cost)} of ${usd(session.cost_cap_usd)}`
+  return subscription ? `${cost} (subscription, unpriced)` : cost
 }
 
 /** The session's person, folder, status, cost, and id. */
@@ -62,7 +72,10 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 <text fg={theme.textMuted}>{abbreviateHome(current().cwd, paths.home)}</text>
                 <text fg={theme.textMuted}>
                   {current().status}
-                  <Show when={costLabel(current())}> · {costLabel(current())}</Show>
+                  <Show when={costLabel(current(), office.connections())}>
+                    {" "}
+                    · {costLabel(current(), office.connections())}
+                  </Show>
                 </text>
               </box>
               <text fg={theme.textMuted}>{props.sessionID}</text>

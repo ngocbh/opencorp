@@ -292,6 +292,18 @@ test("a session's model note shows under the header until it is cleared", async 
   })
 })
 
+test("on a subscription connection, the header's cost label says subscription, unpriced", async () => {
+  const office = createFakeOffice()
+  office.state.connections.push({ name: "chatgpt", provider: "chatgpt", method: "subscription", model: "gpt-5" })
+  await run(office, async (app, id) => {
+    let f = await app.until((f) => f.includes("gpt-4o (office)"))
+    expect(line(f, "@minh · idle")).not.toContain("subscription")
+    office.updateSession(id, { connection: "chatgpt" })
+    f = await app.until((f) => f.includes("gpt-5 (chatgpt)"))
+    expect(line(f, "@minh · idle")).toEndWith("· $0.00 (subscription, unpriced) · gpt-5 (chatgpt)")
+  })
+})
+
 test("a connection's configured model comes first, as the office lists it", async () => {
   const office = createFakeOffice()
   office.state.connections = office.state.connections.map((c) =>

@@ -78,7 +78,7 @@ change that rewires a kept file.
 | --- | --- | --- | --- |
 | App shell | `app.tsx`, `index.tsx`, `runtime.tsx`, `context/{args,exit,epilogue,helper,route,runtime,prompt,clipboard,path-format}.ts(x)`, `util/**` except below | keep | `OfficeProvider` (`context/office.tsx`) replaced the SDK provider; `path-format` takes its base folder from the open session. |
 | Home | `routes/home.tsx`, `component/logo.tsx`, `logo.ts` | keep | The employee picker goes on the home screen. |
-| Session view | `routes/session/{index,sidebar,dialog-message}.tsx` | keep | Renders protocol messages and live parts. |
+| Session view | `routes/session/{index,sidebar,dialog-message}.tsx` | keep | Renders protocol messages and live parts. The header and sidebar add `(subscription, unpriced)` to the cost of a chat on a subscription connection, whose tokens the office records at $0. |
 | Question view | `routes/session/question.tsx` | keep | Shows a session's open office question and answers it. |
 | Prompt | `component/prompt/{index,autocomplete,frecency,history,stash,local-attachment}.ts(x)`, `prompt/**` | keep | The chat screen (Enter to steer, Esc to interrupt). |
 | Dialog and UI kit | `ui/**`, `component/{command-palette,dialog-session-list,dialog-stash,dialog-theme-list,dialog-debug,error-component,spinner,register-spinner}.ts(x)` | keep | Used by every later screen. The session list reads office sessions. |
