@@ -336,7 +336,7 @@ class Harness:
                 for q in self.store.list_questions(run_id=live.run_id, status="open"):
                     if q.node_id is None:
                         self.store.set_question_status(q.id, "stale")
-            session = self.store.get_session(live.session_id)
+            session = self._choice(self.store.get_session(live.session_id))
             live.provider = provider = self.connections.resolve(session.connection, session.model)
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
@@ -760,11 +760,22 @@ class Harness:
     def _provider_changed(self, live: _Live) -> bool:
         """Whether the session's connection and model no longer give what ``live``'s worker got."""
         try:
-            session = self.store.get_session(live.session_id)
+            session = self._choice(self.store.get_session(live.session_id))
             provider = self.connections.resolve(session.connection, session.model)
         except ProviderError:
             return False  # a spawn would fail on it too; keep the worker that works
         return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
+
+    def _choice(self, session: Session) -> Session:
+        """``session``, moved to the default connection's own model, with a note, if its connection was removed."""
+        name = session.connection or OFFICE
+        if name in self.connections.names():
+            return session
+        default = self.connections.default()
+        model = (self.connections.get(default).llm_config or {}).get("model")
+        now_on = f"{default}/{model}" if model else default
+        return self.store.update_session(session.id, connection=default, model=None,
+                                         model_note=f"Connection '{name}' was removed; this chat now uses {now_on}.")
 
     def _restart(self, live: _Live, text: str, *, by: str | None = None) -> None:
         """Hand ``text`` to a fresh run on the current provider instead of the worker waiting at a turn."""

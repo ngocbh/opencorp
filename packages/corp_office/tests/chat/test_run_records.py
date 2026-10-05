@@ -80,6 +80,26 @@ def test_a_session_on_a_model_of_its_connection_runs_on_that_model(make_harness,
     assert (record_of(harness, sid).connection, record_of(harness, sid).model) == (OFFICE, "stub-3")
 
 
+def test_a_removed_connection_moves_the_chat_to_the_default_on_its_next_turn(make_harness, fake_llm, workspace):
+    harness = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"content": "from two", "hold": True}, {"content": "from one"})
+    sid = start(harness, workspace)
+    on(harness, sid, "second")
+    harness.prompt(sid, "a")
+    fake_llm.wait_for_requests(1)
+    harness.connections.remove("second")
+    fake_llm.release()  # a running reply keeps the key it has
+    wait_for(lambda: status(harness, sid) == "idle" and harness._live[sid].turn_q, what="the held reply")
+    assert model_of(fake_llm.requests()[-1]) == "stub-2"
+
+    assert say(harness, sid, "b") == "from one"
+    assert model_of(fake_llm.requests()[-1]) == "stub"
+    session = harness.store.get_session(sid)
+    assert (session.connection, session.model) == (OFFICE, None)
+    assert session.model_note == "Connection 'second' was removed; this chat now uses office/stub."
+    assert record_of(harness, sid).connection == OFFICE
+
+
 def test_the_key_change_on_the_same_name_restarts_on_the_next_turn(make_harness, fake_llm, workspace):
     harness = make_harness(connections={"second": "stub-2"})
     fake_llm.script({"content": "one"}, {"content": "two"})
