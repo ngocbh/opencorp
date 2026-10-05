@@ -187,8 +187,8 @@ def build_office(paths: OfficePaths) -> Office:
     office.extras["connections"] = connections
     office.extras["models"] = models
     office.on_start.append(lambda: asyncio.to_thread(harness.restore))
-    # Started, not awaited: a slow provider must not hold up the office's start.
-    office.on_start.append(lambda: models.warm() and None)
+    # warm returns its thread, which start doesn't wait on: a slow provider must not hold up the office's start.
+    office.on_start.append(models.warm)
     return office
 
 

@@ -129,7 +129,6 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
         name = conns.add(label, ConnectionFile(llm_config=llm))
     except ProviderError as exc:
         raise HTTPError(409, "connection_unusable", str(exc)) from None
-    cache.invalidate(name)
     cache.warm()
     return name
 
@@ -140,9 +139,8 @@ def _remove(conns: Connections, cache: ModelCache, name: str) -> None:
     cache.warm()
 
 
-def _set_default(conns: Connections, cache: ModelCache, name: str) -> ConnectionList:
+def _set_default(conns: Connections, name: str) -> ConnectionList:
     _guarded(conns.set_default, name)
-    cache.warm()
     return _connection_list(conns, True)
 
 
@@ -174,10 +172,10 @@ async def remove(request: Request) -> JSONResponse:
 
 async def set_default(request: Request) -> JSONResponse:
     """Make a connection the one new chats start on; every connection afterwards."""
-    conns, cache = connections(request), model_cache(request)
+    conns = connections(request)
     await call(_check_manage, get_office(request), acting_person(request))  # before the body is read
     body = await parse(request, SetDefaultConnectionRequest)
-    return ok(await call(_set_default, conns, cache, body.connection))
+    return ok(await call(_set_default, conns, body.connection))
 
 
 async def list_models(request: Request) -> JSONResponse:
