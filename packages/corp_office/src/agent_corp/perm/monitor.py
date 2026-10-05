@@ -52,12 +52,12 @@ class Monitor:
         of unknown kinds are never listed.
         """
         repo = load_repo(self.root)
-        subjects = _subjects(repo, person)
+        covering = subjects(repo, person)
         found: dict[str, BaseTool] = {}
         for aid, asset in sorted(repo.assets.items()):
             for tool, spec in asset.tools.items():
                 impl = self.kinds.get(asset.kind, {}).get(tool)
-                if impl is None or spec.risk == "gated" or not _grants(asset, tool, subjects):
+                if impl is None or spec.risk == "gated" or not grants(asset, tool, covering):
                     continue
                 name = asset_tool_name(aid, tool)
                 found[name] = StructuredTool.from_function(
@@ -214,25 +214,26 @@ def _reason(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 
-def _subjects(repo: CompanyRepo, person: str) -> set[str]:
+def subjects(repo: CompanyRepo, person: str) -> set[str]:
     """The grantee names that cover ``person``: the handle, and ``group:<id>`` for each group
     the person is in, directly or through a child group."""
     found = repo.people.get(person)
     if found is None:
         return set()
-    subjects, todo = {person}, list(found.groups)
+    covering, todo = {person}, list(found.groups)
     while todo:
         gid = todo.pop()
-        if f"group:{gid}" in subjects:
+        if f"group:{gid}" in covering:
             continue  # also stops a parent cycle, which lint reports
-        subjects.add(f"group:{gid}")
+        covering.add(f"group:{gid}")
         if (group := repo.groups.get(gid)) is not None and group.parent is not None:
             todo.append(group.parent)
-    return subjects
+    return covering
 
 
-def _grants(asset: Asset, tool: str, subjects: set[str]) -> list[Grant]:
-    return [g for g in asset.grants if g.who in subjects and (tool in g.can or "admin" in g.can)]
+def grants(asset: Asset, tool: str, covering: set[str]) -> list[Grant]:
+    """The grants on ``asset`` that allow ``tool`` (by name or ``admin``) to any of the grantee names ``covering``."""
+    return [g for g in asset.grants if g.who in covering and (tool in g.can or "admin" in g.can)]
 
 
 def _find(repo: CompanyRepo, name: str) -> tuple[Asset | None, str | None]:
@@ -257,13 +258,13 @@ def _same(value: Any, allowed: Any) -> bool:
 def _denial(repo: CompanyRepo, person: str, asset: Asset | None, tool: str | None, name: str,
             args: Mapping[str, Any]) -> str | None:
     """Why ``person`` may not make this call, or None if a grant allows it."""
-    grants = _grants(asset, tool, _subjects(repo, person)) if asset and tool else []
-    if not grants:
+    allowing = grants(asset, tool, subjects(repo, person)) if asset and tool else []
+    if not allowing:
         return f"no grant for {name}"
     if asset.tools[tool].risk == "gated":
         return f"{name} is gated"
     reasons = []
-    for grant in grants:
+    for grant in allowing:
         failed = [key for key, allowed in (grant.where or {}).items()
                   if key not in args or not any(_same(args[key], a) for a in allowed)]
         if not failed:
