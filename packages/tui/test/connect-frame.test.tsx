@@ -330,6 +330,30 @@ test("a refused key or model shows the office's message and empties the box", as
   })
 })
 
+test("a key refused after the dialog was closed shows as a toast, and leaves what the user opened", async () => {
+  const office = createFakeOffice()
+  office.refusals.push({ error: "key_refused", message: "The key didn't work (HTTP 401)" })
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    await choose(app, "Anthropic")
+    const release = office.hold("POST /connections")
+    await typeKey(app)
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Checking the key…"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Checking the key…"))
+    await app.input.typeText("/model")
+    await app.until((f) => f.includes("Switch model"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Select model"))
+    release()
+    // The toast wraps the office's message.
+    const f = await app.until((f) => f.includes("Couldn't connect Anthropic: The key didn't work"))
+    expect(f).toContain("Select model")
+    expect(f).not.toContain("API key")
+  })
+})
+
 test("Esc on a key box with text clears it first; Esc on an empty one closes the dialog", async () => {
   const office = createFakeOffice()
   await run(office, async (app, id) => {

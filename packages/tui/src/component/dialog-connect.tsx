@@ -199,7 +199,10 @@ function ConnectForm(props: { provider: Provider }) {
     try {
       name = (await office.client.connections.add(req)).name
     } catch (e) {
-      if (closed) return
+      // Closed while the key was checked: the box is gone, so say it where it will be seen.
+      if (closed) {
+        return toast.show({ variant: "error", message: `Couldn't connect ${props.provider.title}: ${errorMessage(e)}` })
+      }
       setChecking(false)
       return setError(errorMessage(e))
     }
