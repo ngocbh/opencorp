@@ -9,7 +9,9 @@ import pytest
 from agent_corp.assets.registry import builtin_kinds
 from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.chat.harness import Harness
+from agent_corp.chat.models import Listing, ModelCache, own_models
 from agent_corp.chat.provider import Provider
+from agent_corp.protocol.models import ModelOption
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.perm.monitor import Monitor
@@ -55,16 +57,29 @@ def workspace(tmp_path):
     return path
 
 
+def lister(listings):
+    """A lister that gives each connection in ``listings`` (``{name: [model id]}``) as listed, and any other
+    connection only its configured model; it never reaches the network."""
+    def list_models(conn, name, *, deadline):
+        if name in listings:
+            return Listing(connection=name, models=[ModelOption(id=i) for i in listings[name]], listed=True)
+        return own_models(conn, name)
+
+    return list_models
+
+
 @pytest.fixture
 def make_harness(tmp_path, fake_llm):
     """Build a harness over a fresh company; ``defaults`` and ``files`` override the base company.
 
     office/provider.json is written from ``llm_config`` and ``prices`` on the FakeLLM; ``connections``
-    (``{name: model}``) adds connections on the FakeLLM.
+    (``{name: model}``) adds connections on the FakeLLM. The harness's model cache lists connections with
+    ``models`` (a lister), else with ``lister(listings or {})``; ``choose_deadline`` replaces its 8 s.
     """
     made = []
 
-    def make(*, defaults=None, files=None, kinds=None, prices=None, company=None, llm_config=None, connections=None):
+    def make(*, defaults=None, files=None, kinds=None, prices=None, company=None, llm_config=None, connections=None,
+             listings=None, models=None, choose_deadline=None):
         paths = OfficePaths(tmp_path)
         if company is None and not paths.company.exists():
             repo_files = base_files() | {"shared/flows/chat.yaml": CHAT_FLOW}
@@ -81,7 +96,9 @@ def make_harness(tmp_path, fake_llm):
         conns = Connections(paths.office)
         for name, model in (connections or {}).items():
             conns.put(name, ConnectionFile(llm_config={**LLM_CONFIG, "model": model}, env=fake_llm.env()))
-        harness = Harness(office, monitor, connections=conns)
+        cache = ModelCache(conns, lister=models or lister(listings or {}))
+        extra = {} if choose_deadline is None else {"choose_deadline": choose_deadline}
+        harness = Harness(office, monitor, connections=conns, models=cache, **extra)
         made.append(harness)
         return harness
 
