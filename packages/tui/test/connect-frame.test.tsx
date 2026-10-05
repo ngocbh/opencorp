@@ -175,6 +175,32 @@ test("Remove asks first, and says chats on it move to the default; office has no
   })
 })
 
+test("a remove that finishes after the user moved on leaves what they opened", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app) => {
+    await openConnect(app, office)
+    app.input.pressArrow("down")
+    await app.until(() => highlighted(app).startsWith("azure-2"))
+    const release = office.hold("DELETE /connections/azure-2")
+    app.input.pressKey("d", { ctrl: true })
+    await app.until((f) => f.includes("Remove azure-2?"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Add a provider"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Add a provider"))
+    await app.input.typeText("/model")
+    await app.until((f) => f.includes("Switch model"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Select model"))
+    release()
+    await app.until((f) => f.includes("Removed azure-2"))
+    expect(office.state.connections.map((c) => c.name)).toEqual(["office"])
+    const f = app.frame()
+    expect(f).toContain("Select model")
+    expect(f).not.toContain("Add a provider")
+  })
+})
+
 test("Anthropic asks only for the key; it shows as dots, and Enter posts it and opens the model list on it", async () => {
   const office = createFakeOffice()
   await run(office, async (app, id) => {

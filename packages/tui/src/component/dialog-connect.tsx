@@ -110,16 +110,16 @@ function ConnectList(props: { onPick: (provider: Provider) => void }) {
       `Remove ${name}?`,
       "Chats on it move to the default on their next message.",
     )
-    if (sure) {
-      try {
-        await office.client.connections.remove(name)
-        toast.show({ variant: "success", message: `Removed ${name}` })
-      } catch (e) {
-        toast.error(e)
-      }
-      await office.refreshConnections().catch(() => {})
-    }
+    // Back to the list now: the user may open something else before the office answers.
     dialog.replace(() => <DialogConnect />)
+    if (!sure) return
+    try {
+      await office.client.connections.remove(name)
+      toast.show({ variant: "success", message: `Removed ${name}` })
+    } catch (e) {
+      toast.error(e)
+    }
+    await office.refreshConnections().catch(() => {})
   }
 
   return (
