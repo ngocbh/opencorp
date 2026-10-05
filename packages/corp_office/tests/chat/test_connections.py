@@ -16,6 +16,7 @@ from agent_corp.chat.connections import (
     ConnectionFile,
     ConnectionGone,
     Connections,
+    ConnectionUnusable,
     RunMoved,
     RunRecord,
     azure_base_url,
@@ -640,6 +641,25 @@ def test_for_run_fails_on_a_removed_connection(tmp_path):
     for exact in (True, False):
         with pytest.raises(RunMoved, match="connection 'second' was removed"):
             c.for_run(record, log, exact=exact)
+
+
+def test_for_run_tells_a_connection_that_cant_be_used_now_from_one_that_moved(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.put("second", api_key())
+    record, log = _record(c, tmp_path)
+    (c.dir / "second.json").chmod(0o644)
+    for exact in (True, False):
+        with pytest.raises(ConnectionUnusable, match="private"):
+            c.for_run(record, log, exact=exact)
+    (c.dir / "second.json").chmod(0o600)
+    c.put("second", api_key(key=OTHER_KEY))
+    with pytest.raises(RunMoved) as info:
+        c.for_run(record, log, exact=False)
+    assert not isinstance(info.value, ConnectionUnusable)
+    c.remove("second")
+    with pytest.raises(RunMoved) as info:
+        c.for_run(record, log, exact=False)
+    assert not isinstance(info.value, ConnectionUnusable)
 
 
 def test_a_run_without_a_record_is_office_only_on_the_same_base_url(tmp_path):

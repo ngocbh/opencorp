@@ -53,6 +53,10 @@ class RunMoved(ProviderError):
     """A run's connection is gone, or no longer gives the endpoint, key or config the run had."""
 
 
+class ConnectionUnusable(RunMoved):
+    """A run's connection is there but can't be read or used now, which may pass."""
+
+
 class ConnectionFile(Provider):
     """A connection file: a ``Provider`` plus how it signs in."""
 
@@ -265,8 +269,8 @@ class Connections:
         only if every model its log pinned has office's provider and endpoint.
 
         Raises:
-            RunMoved: the run's connection is gone, can't be used, or no longer gives what the run had; the
-                message says why.
+            RunMoved: the run's connection is gone, can't be used (``ConnectionUnusable``), or no longer gives
+                what the run had; the message says why.
         """
         run = run_log.name.removesuffix(".jsonl")
         if record is None:
@@ -296,7 +300,7 @@ class Connections:
         except ConnectionGone:
             raise RunMoved(f"connection '{name}' was removed") from None
         except ProviderError as exc:
-            raise RunMoved(str(exc)) from None
+            raise ConnectionUnusable(str(exc)) from None
 
     def _load(self, name: str) -> ConnectionFile:
         """The file of added connection ``name``, removed or not; ConnectionGone if there is none."""

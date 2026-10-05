@@ -285,3 +285,19 @@ def test_the_debrief_records_its_run_before_it_spawns(harness, fake_llm, workspa
     record = harness.store.get_debrief_record(sid)
     assert (record.debrief.state, record.attempts) == ("pending", 1)
     assert [j.flow for j in jobs if j.flow == DEBRIEF_FLOW] == []
+
+
+def test_backward_retries_later_when_the_connections_cant_be_read_now(harness, fake_llm, workspace, learning):
+    sid = ended(harness, fake_llm, workspace)
+    provider_json = harness.office.paths.office / "provider.json"
+    provider_json.chmod(0o644)  # refused until it's private again
+    jobs = spawned(harness)
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Be brief."))
+    settled(learning)
+    waiting = harness.store.get_feedback(fb.id)
+    assert (waiting.status, waiting.attempts, waiting.failure, jobs) == ("queued", 1, None, [])
+    provider_json.chmod(0o600)
+    fake_llm.script(learner_reply(PROFILE + "\n- Be brief.\n"))
+    learning.tick()
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+    assert [j.kind for j in jobs] == ["backward"]

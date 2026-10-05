@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agent_corp.chat.connections import OFFICE, RunMoved, read_run_record, write_run_record
+from agent_corp.chat.connections import OFFICE, ConnectionUnusable, RunMoved, read_run_record, write_run_record
 from agent_corp.chat.harness import LIVE, Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.company.loader import load_repo
@@ -332,6 +332,11 @@ class Learning:
             job, handlers = self._backward_job(session, feedback, provider)
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
             spawned = True
+        except ConnectionUnusable as exc:
+            # It may pass: count it as an attempt that failed to start, retried later like the others.
+            error = self._redact(str(exc))
+            self._log_exception(exc, "can't start learning from feedback %s", feedback.id)
+            self.store.set_feedback_status(feedback.id, "learning")
         except RunMoved as exc:
             moved = self._redact(str(exc))
         except Exception as exc:
@@ -434,7 +439,8 @@ class Learning:
         """The provider that gives ``feedback``'s run the endpoint and key it ran on.
 
         Raises:
-            RunMoved: the run's connection is gone or no longer gives them; the message says why.
+            RunMoved: the run's connection is gone or no longer gives them, or (``ConnectionUnusable``) can't be
+                read or used now; the message says why.
         """
         try:
             record = read_run_record(self._record(session.id, feedback.run_id))
