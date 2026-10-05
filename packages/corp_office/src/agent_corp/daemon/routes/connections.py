@@ -115,16 +115,19 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
         # problem that isn't the real one.
         raise HTTPError(422, "models_unlisted",
                         f"Couldn't list the deployments ({listed.error}); name a model to check it with one reply")
+    needs_check = True
     if listed.listed:
         ids = [m.id for m in listed.models]
-        if body.model and body.model not in ids:  # saved, it would fail the first chat
-            raise HTTPError(422, "model_not_offered", f"This connection doesn't offer '{body.model}'")
-        default = PROVIDER_DEFAULT_MODELS.get(llm["provider"])
-        model = body.model or (default if default in ids else ids[0] if ids else None)
+        # An Azure deployment is named by its owner, so composer's OpenAI default is none of them.
+        default = None if label == "azure" else PROVIDER_DEFAULT_MODELS.get(llm["provider"])
+        model = body.model or default or (ids[0] if ids else None)
         if model is None:
             raise HTTPError(422, "invalid_connection", f"{label} lists no model to use; give one")
         llm["model"] = model
-    elif problem := check.one_reply_problem(provider):
+        # A host may not list a model it serves, such as an alias of a dated id, so one reply decides.
+        needs_check = model not in ids
+        provider = provider.model_copy(update={"llm_config": llm})
+    if needs_check and (problem := check.one_reply_problem(provider)):
         raise HTTPError(422, "model_refused", f"The model didn't answer: {problem}")
     try:
         name = conns.add(label, ConnectionFile(llm_config=llm))

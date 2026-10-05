@@ -128,7 +128,7 @@ async def test_everyone_signed_in_sees_connections_without_keys(client, conns, a
     assert (await client.get("/connections", headers=as_owner)).json()["can_manage"] is True
 
 
-async def test_the_owner_adds_a_connection(client, office, as_owner, caplog):
+async def test_the_owner_adds_a_connection(client, office, as_owner, checks, caplog):
     caplog.set_level(logging.DEBUG)
     r = await client.post("/connections", json={"provider": "openai", "api_key": SENTINEL}, headers=as_owner)
     assert (r.status_code, r.json()) == (200, {"name": "openai", "provider": "openai", "method": "api_key",
@@ -139,6 +139,7 @@ async def test_the_owner_adds_a_connection(client, office, as_owner, caplog):
     r = await client.post("/connections", json={"provider": "openai", "api_key": SENTINEL, "model": "o3"},
                           headers=as_owner)
     assert r.json()["name"] == "openai-2" and r.json()["model"] == "o3"
+    assert checks[0] == []  # a listed model needs no one-reply check
     listed = await client.get("/connections", headers=as_owner)
     assert SENTINEL not in r.text + listed.text + caplog.text
     assert [e for e in office.store.events_after() if SENTINEL in json.dumps(e.model_dump(mode="json"))] == []
@@ -150,13 +151,20 @@ async def test_a_listed_provider_without_a_default_takes_its_first_model(client,
     assert r.json()["model"] == "gpt-5.4"
 
 
-async def test_a_model_the_listing_doesnt_offer_is_not_saved(client, office, as_owner, checks):
+async def test_a_model_the_listing_doesnt_offer_gets_a_one_reply_check(client, office, as_owner, checks):
+    calls, problems = checks
+    problems.extend(["Error code: 404 - model not found"] * 2)
     for body in ({"provider": "openai", "api_key": SENTINEL, "model": "gpt5-prod"},
                  {"provider": "azure", "api_key": SENTINEL, "endpoint": "acme", "model": "gpt5-prod"}):
         r = await client.post("/connections", json=body, headers=as_owner)
-        assert (r.status_code, r.json()) == (422, {"error": "model_not_offered",
-                                                   "message": "This connection doesn't offer 'gpt5-prod'"})
-    assert not (office.paths.office / "connections").exists() and checks[0] == []
+        assert (r.status_code, r.json()) == (422, {"error": "model_refused",
+                                                   "message": "The model didn't answer: Error code: 404 - model not found"})
+    assert not (office.paths.office / "connections").exists()
+    assert [c.llm_config["model"] for c in calls] == ["gpt5-prod"] * 2
+    r = await client.post("/connections", json={"provider": "openai", "api_key": SENTINEL, "model": "gpt5-prod"},
+                          headers=as_owner)
+    assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "openai", "gpt5-prod")
+    assert calls[-1].llm_config == {"provider": "openai", "api_key": SENTINEL, "model": "gpt5-prod"}
 
 
 async def test_azure_needs_an_endpoint_and_gets_its_v1_url(client, office, as_owner, checks):
@@ -227,27 +235,36 @@ async def test_a_provider_that_cant_be_listed_gets_a_one_reply_check(client, off
 
 
 async def test_anthropic_is_checked_against_what_its_host_lists(client, office, as_owner, checks, monkeypatch, caplog):
+    calls, problems = checks
     seen = []
 
     def host_models(provider, key, base_url=None, *, timeout, request=None):
         seen.append((provider, key, base_url))
         if key == REFUSED:
             raise HostListError("HTTP 401")
-        return ("claude-opus-4-1", "claude-sonnet-4-5")
+        # Dated ids only: the aliases that answer as well aren't listed.
+        return ("claude-opus-4-1-20250805", "claude-sonnet-4-5-20250929")
 
     monkeypatch.setattr(models, "list_models", real_list_models)
     monkeypatch.setattr(models, "host_models", host_models)
     r = await client.post("/connections", json={"provider": "anthropic", "api_key": REFUSED}, headers=as_owner)
     assert (r.status_code, r.json()) == (422, {"error": "key_refused", "message": "The key didn't work (HTTP 401)"})
+    problems.append("Error code: 404 - model not found")
     r = await client.post("/connections", json={"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"},
                           headers=as_owner)
-    assert (r.status_code, r.json()) == (422, {"error": "model_not_offered",
-                                               "message": "This connection doesn't offer 'claude-x'"})
+    assert (r.status_code, r.json()) == (422, {"error": "model_refused",
+                                               "message": "The model didn't answer: Error code: 404 - model not found"})
     assert not (office.paths.office / "connections").exists()
     r = await client.post("/connections", json={"provider": "anthropic", "api_key": SENTINEL}, headers=as_owner)
     assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "anthropic", "claude-sonnet-4-5")
-    assert seen == [("anthropic", REFUSED, None)] + [("anthropic", SENTINEL, None)] * 2
-    assert checks[0] == [] and SENTINEL not in r.text + caplog.text
+    assert [c.llm_config for c in calls] == [
+        {"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"},
+        {"provider": "anthropic", "api_key": SENTINEL, "model": "claude-sonnet-4-5"}]
+    r = await client.post("/connections", json={"provider": "anthropic", "api_key": SENTINEL,
+                                                "model": "claude-opus-4-1-20250805"}, headers=as_owner)
+    assert (r.status_code, r.json()["model"]) == (200, "claude-opus-4-1-20250805") and len(calls) == 2
+    assert seen == [("anthropic", REFUSED, None)] + [("anthropic", SENTINEL, None)] * 3
+    assert SENTINEL not in r.text + caplog.text
 
 
 async def test_others_are_refused_before_the_body_is_read(client, office, as_ava):
