@@ -6,6 +6,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from agent_corp.chat.connections import OFFICE
 from agent_corp.chat.harness import Harness, HarnessError, RunSpec
 from agent_corp.chat.turns import MAIN_CHAT
 from agent_corp.company.loader import load_repo
@@ -247,7 +248,7 @@ class Cards:
         side = Session(id=new_id(), person=question.asker, harness="composer", office=socket.gethostname(),
                        cwd=asker.cwd, repo_commit=asker.repo_commit, status="starting", kind="side",
                        question_id=question.id, cost_cap_usd=defaults.side_chat_cost_cap_usd, opened_by=opened_by,
-                       created_at=t, updated_at=t)
+                       connection=asker.connection or OFFICE, model=asker.model, created_at=t, updated_at=t)
         spec = side_spec(self.harness, side)  # refuse a missing flow or folder before anything is stored
         write_seed(self.office.paths.run_dir(side.id), seed)
         side = self.store.create_session(side)

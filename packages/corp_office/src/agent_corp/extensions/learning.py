@@ -13,9 +13,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agent_corp.chat.connections import ConnectionUnusable, RunMoved, read_run_record, write_run_record
+from agent_corp.chat.connections import OFFICE, ConnectionUnusable, RunMoved, read_run_record, write_run_record
 from agent_corp.chat.harness import LIVE, Harness, HarnessError
-from agent_corp.chat.provider import Provider
+from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.company.loader import load_repo
 from agent_corp.perm.monitor import redact
 from agent_corp.profile import GitProfileStore
@@ -168,11 +168,15 @@ class Learning:
             raise HarnessError(404, "not_found", f"no person {handle}")
         if not (pin / MANAGER_FLOW).is_file():
             raise HarnessError(422, "no_manager_flow", f"the company has no {MANAGER_FLOW}")
+        try:
+            connection = self.harness.connections.default()
+        except ProviderError:
+            connection = OFFICE  # the spawn reports why the connections can't be read
         t = now()
         session = self.store.create_session(Session(
             id=new_id(), person=handle, harness="composer", office=socket.gethostname(),
             cwd=os.path.realpath(self.git.root), repo_commit=head, status="starting", kind="profile_manager",
-            opened_by=by, created_at=t, updated_at=t))
+            opened_by=by, connection=connection, model=None, created_at=t, updated_at=t))
         self.harness.start_run(session, manager_spec(self.harness, session))
         self.harness.prompt(session.id, text, by=by)  # the first turn takes it
         return self.store.get_session(session.id)

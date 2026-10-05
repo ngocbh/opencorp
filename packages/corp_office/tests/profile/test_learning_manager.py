@@ -57,6 +57,18 @@ def test_the_profile_manager_is_opened_and_applied_by_who_acted(harness, fake_ll
     wait_for(lambda: status(harness, session.id) == "ended", what="ended")
 
 
+def test_the_profile_manager_stores_the_default(harness, fake_llm, learning):
+    harness.connections.set_default("second")
+    fake_llm.script({"content": "Hello."})
+    session = learning.start_manager("minh", "Hi.")
+    assert (session.connection, session.model) == ("second", None)
+    wait_for(lambda: texts(harness, session.id) == ["Hello."], what="the reply")
+    assert fake_llm.requests()[0]["model"] == "stub-2"
+    wait_for(lambda: status(harness, session.id) == "idle", what="the next turn")
+    harness.end(session.id)
+    wait_for(lambda: status(harness, session.id) == "ended", what="ended")
+
+
 def test_the_profile_manager_needs_a_known_person(harness, learning):
     with pytest.raises(HarnessError) as err:
         learning.start_manager("nobody", "hi")
