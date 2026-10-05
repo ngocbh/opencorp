@@ -317,6 +317,13 @@ test("create sends the pick and waits 30 s; a timeout says the chat may have sta
   expect(office.requests.at(-1)).toMatchObject({ method: "POST", path: "/sessions" })
   // The office records its default connection when none is asked for.
   expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).connection).toBe("office")
+  // A pick the office doesn't have falls back to the default, with a note saying so.
+  const gone = await client().sessions.create({ person: "minh", cwd: "/tmp/proj", connection: "gone", model: "x" })
+  expect([gone.connection, gone.model, gone.model_note]).toEqual([
+    "office",
+    null,
+    "Your last pick 'gone' isn't on this office; this chat uses office/gpt-4o.",
+  ])
   // The client asks for a 30 s limit; the test gets a 50 ms one so the held request times out.
   const timeout = AbortSignal.timeout.bind(AbortSignal)
   const asked: number[] = []
