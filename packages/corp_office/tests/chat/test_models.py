@@ -7,11 +7,11 @@ import time
 
 import httpx
 import pytest
-from agent_composer.llm_clients.auth import HttpResponse, OpenAIAuth
+from agent_composer.llm_clients.auth import AuthError, HttpResponse, OpenAIAuth
 
 from agent_corp.chat.connections import ConnectionFile, ConnectionGone, Connections
 from agent_corp.chat.models import (FRESH, TIMED_OUT, ListTimeout, ModelCache, ModelListError, azure_deployments,
-                                    list_models)
+                                    list_models, own_models)
 from agent_corp.protocol.models import ModelList, ModelOption
 from agent_corp.secrets import write_private
 
@@ -44,6 +44,8 @@ class FakeRequest:
 
     def __call__(self, method, url, **kwargs):
         self.calls.append((method, url, kwargs))
+        if isinstance(self.response, Exception):
+            raise self.response
         return self.response
 
 
@@ -106,6 +108,13 @@ def test_a_failure_that_isnt_a_refusal_isnt_refused():
     assert got.models == [ModelOption(id="gpt-5")]
 
 
+def test_a_request_composer_cant_make_keeps_composers_message():
+    # Composer reports its own request timing out as a failed request, like any other error in the request.
+    request = FakeRequest(AuthError("OpenAI authentication request timed out"))
+    got = list_models(openai(), "openai", auth=OpenAIAuth(request=request))
+    assert (got.error, got.refused, got.listed) == ("OpenAI authentication request failed", False, False)
+
+
 @pytest.mark.parametrize("conn", [
     ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"}),
     ConnectionFile(llm_config={"provider": "openai", "base_url": "https://gw.example/v1", "api_key": SENTINEL,
@@ -151,12 +160,13 @@ class Clock:
 
 class Lister:
     """A fake ``list_models``: offers ``models`` (by connection name), waiting first on ``gates`` that name it, or
-    for ``delays`` seconds; ``deadlines`` records the deadline each call got."""
+    for ``delays`` seconds, and failing with ``errors``; ``deadlines`` records the deadline each call got."""
 
-    def __init__(self, models=None, gates=None, delays=None):
+    def __init__(self, models=None, gates=None, delays=None, errors=None):
         self.models = models or {}
         self.gates = gates or {}
         self.delays = delays or {}
+        self.errors = errors or {}
         self.calls = []
         self.deadlines = {}
         self.started = threading.Event()
@@ -168,6 +178,8 @@ class Lister:
         time.sleep(self.delays.get(name, 0))
         if name in self.gates and not self.gates[name].wait(deadline):
             return ModelList(connection=name, models=[], listed=False, error=TIMED_OUT)
+        if name in self.errors:
+            return ModelList(connection=name, models=[], listed=False, error=self.errors[name])
         ids = self.models.get(name, ["m"])
         return ModelList(connection=name, models=[ModelOption(id=i) for i in ids], listed=True)
 
@@ -285,10 +297,26 @@ def test_offers_gives_every_connection_together_only_the_deadline(connections):
     assert lister.calls == ["fast", "slow"] and lister.deadlines["slow"] < 0.25
 
 
-def test_offers_lists_again_a_connection_whose_last_listing_timed_out(connections):
-    lister = Lister(gates={"slow": threading.Event()})
+@pytest.mark.parametrize("error", [TIMED_OUT, "can't reach api.openai.com", "the listing failed"])
+def test_offers_lists_again_a_connection_whose_last_listing_failed(connections, error):
+    lister = Lister(errors={"slow": error})
     cache = ModelCache(connections, lister=lister)
-    assert cache.get("slow", deadline=0.1).error == TIMED_OUT
-    lister.gates.clear()
+    assert cache.get("slow").error == error
+    lister.errors.clear()
     assert cache.offers(["slow"], "m", deadline=5) == ["slow"]
     assert lister.calls == ["slow"] * 2
+
+
+def test_offers_uses_a_kept_listing_of_a_connection_that_cant_list(connections):
+    connections.put("other", ConnectionFile(llm_config={"provider": "anthropic", "api_key": SENTINEL,
+                                                        "model": "claude-x"}))
+    calls = []
+
+    def lister(conn, name, *, deadline):
+        calls.append(name)
+        return own_models(conn, name)
+
+    cache = ModelCache(connections, lister=lister)
+    cache.get("other")
+    assert cache.offers(["other"], "claude-x", deadline=5) == ["other"]
+    assert calls == ["other"]

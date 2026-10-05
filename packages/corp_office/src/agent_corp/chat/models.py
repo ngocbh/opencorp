@@ -94,7 +94,7 @@ def _openai_models(key: str, timeout: float, auth: OpenAIAuth | None) -> tuple[s
         message = str(exc)
         if status := re.search(r"\(HTTP (\d{3})\)", message):
             raise ModelListError(f"HTTP {status[1]}", int(status[1])) from None
-        raise ModelListError(TIMED_OUT if "timed out" in message else message) from None
+        raise ModelListError(message) from None
 
 
 def own_models(conn: Provider, name: str, error: str | None = None, *, refused: bool = False) -> Listing:
@@ -185,7 +185,7 @@ class ModelCache:
 
     def offers(self, names: Iterable[str], model: str, *, deadline: float) -> list[str]:
         """Those of ``names`` that offer ``model``, using any listing kept, however old, and listing the rest and those
-        whose last listing timed out.
+        whose last listing failed.
 
         Raises:
             ListTimeout: ``deadline`` seconds passed before every connection was listed.
@@ -197,8 +197,8 @@ class ModelCache:
             conn = self.connections.get(name)
             with self._lock:
                 entry = self._entries.get(name)
-            # A listing that timed out says nothing about the models, so it doesn't count as an answer.
-            if entry is not None and entry[1] == config_hash(conn) and entry[2].error != TIMED_OUT:
+            # A listing that failed says nothing about the models, so it doesn't count as an answer.
+            if entry is not None and entry[1] == config_hash(conn) and (entry[2].listed or entry[2].error is None):
                 listed = entry[2]
             else:
                 listed = self._list(name, conn, entry, end)
