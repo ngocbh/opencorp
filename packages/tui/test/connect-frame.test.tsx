@@ -89,6 +89,12 @@ async function choose(app: App, provider: string, search = provider) {
   app.input.pressEnter()
 }
 
+/** The key box reads keys itself, so no input or textarea may have focus beside it to take them too. */
+function expectNoInputFocused(app: App) {
+  const focused = app.setup.renderer.currentFocusedRenderable
+  expect(focused instanceof InputRenderable || focused instanceof TextareaRenderable).toBe(false)
+}
+
 /** Types the key in the key box, checking it shows only as dots. */
 async function typeKey(app: App) {
   await app.until((f) => f.includes("API key") && f.includes(PLACEHOLDER))
@@ -96,7 +102,7 @@ async function typeKey(app: App) {
   await app.until((f) => f.includes(DOTS) && !f.includes(PLACEHOLDER))
 }
 
-/** The bodies of the requests that change something, as `METHOD path`. */
+/** The requests that change something, as `METHOD path`. */
 const writes = (office: Office) => office.requests.filter((r) => r.method !== "GET").map((r) => `${r.method} ${r.path}`)
 
 test("/connect lists the connections, then every provider; managers see Make default and Remove on connected rows", async () => {
@@ -207,9 +213,7 @@ test("Anthropic asks only for the key; it shows as dots, and Enter posts it and 
     await openConnect(app, office)
     await choose(app, "Anthropic")
     await app.until((f) => f.includes("Connect Anthropic") && f.includes("API key"))
-    // The key box reads keys itself, so no input or textarea has focus beside it.
-    const focused = app.setup.renderer.currentFocusedRenderable
-    expect(focused instanceof InputRenderable || focused instanceof TextareaRenderable).toBe(false)
+    expectNoInputFocused(app)
     const release = office.hold("POST /connections")
     await typeKey(app)
     // Typing the key ran no command: nothing was sent, and the chat is still open behind the dialog.
@@ -237,6 +241,8 @@ test("Azure asks for the endpoint or resource name in a plain input, then the ke
     await app.until((f) => f.includes("Connect Azure OpenAI") && f.includes("Endpoint or resource name"))
     await typeInto(app, "my-resource")
     app.input.pressEnter()
+    await app.until((f) => f.includes("API key"))
+    expectNoInputFocused(app)
     await typeKey(app)
     expect(app.frame()).toContain("my-resource")
     app.input.pressEnter()
@@ -260,6 +266,8 @@ test("Other asks for the base URL and the model name, then the key", async () =>
     await app.until((f) => f.includes("Model name"))
     await typeInto(app, "my-model")
     app.input.pressEnter()
+    await app.until((f) => f.includes("API key"))
+    expectNoInputFocused(app)
     await typeKey(app)
     app.input.pressEnter()
     await app.until((f) => f.includes("Select model") && f.includes("custom (custom)"))
@@ -285,6 +293,8 @@ test("a provider with no default model asks for one, then the key", async () => 
     await app.until((f) => f.includes("Type the model's name"))
     await typeInto(app, "gemini-x")
     app.input.pressEnter()
+    await app.until((f) => f.includes("API key"))
+    expectNoInputFocused(app)
     await typeKey(app)
     app.input.pressEnter()
     await app.until((f) => f.includes("Select model") && f.includes("google (google)"))
