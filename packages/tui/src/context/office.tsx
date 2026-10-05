@@ -54,16 +54,17 @@ export const { use: useOffice, provider: OfficeProvider } = createSimpleContext(
     })
 
     const [connections, setConnections] = createSignal<ConnectionList>()
-    /** Re-reads the office's connections; on failure (an office older than them, say) the last list stays. */
+    /** Re-reads the office's connections and returns them; on failure it throws and the last list stays. */
     async function refreshConnections() {
-      try {
-        setConnections(await client.connections.list())
-      } catch {}
-      return connections()
+      const list = await client.connections.list()
+      setConnections(list)
+      return list
     }
+    // Labels fall back to the bare connection without the list (an office older than connections,
+    // say), so a failed read here is not worth an error.
     createEffect(
       on(status, (s) => {
-        if (s === "online") void refreshConnections()
+        if (s === "online") refreshConnections().catch(() => {})
       }),
     )
 

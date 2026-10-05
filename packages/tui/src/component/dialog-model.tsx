@@ -12,6 +12,7 @@ import { useDialog } from "../ui/dialog"
 import { DialogPrompt } from "../ui/dialog-prompt"
 import { DialogSelect, type DialogSelectOption } from "../ui/dialog-select"
 import { useToast } from "../ui/toast"
+import { errorMessage } from "../util/error"
 
 /** A row's value: a model on a connection, or `model: null` for typing a model name there. */
 type Choice = { connection: string; model: string | null }
@@ -38,8 +39,11 @@ export function DialogModel() {
 
   onMount(async () => {
     dialog.setSize("large")
-    const list = await office.refreshConnections()
-    for (const c of list?.connections ?? [])
+    const list = await office.refreshConnections().catch((e) => {
+      toast.show({ variant: "error", message: `couldn't list connections: ${errorMessage(e)}` })
+    })
+    // On failure the last list, if any, still offers its connections.
+    for (const c of (list ?? office.connections())?.connections ?? [])
       office.client.connections.models(c.name).then(
         (m) => setLists(c.name, m),
         (e) =>
@@ -47,7 +51,7 @@ export function DialogModel() {
             connection: c.name,
             models: [],
             listed: false,
-            error: e instanceof Error ? e.message : String(e),
+            error: errorMessage(e),
           }),
       )
   })

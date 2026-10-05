@@ -199,6 +199,7 @@ export function createFakeOffice(
   const profileMaxChars = opts.profileMaxChars ?? 32000
   const state = opts.seed ?? seed(nextId)
   const notImplemented = new Set(opts.notImplemented ?? [])
+  const broken = new Set<string>()
   const missing = new Set(opts.missing ?? [])
   const requests: { method: string; path: string; raw: string; body: unknown; authorization?: string }[] = []
   // Humans' passwords by handle, kept as given: the office keeps only a hash, and never serves it.
@@ -1134,6 +1135,8 @@ export function createFakeOffice(
       )
     const key = `${route.method} ${route.pattern}`
     await holds.get(key)
+    if (broken.has(key))
+      return Response.json({ error: "internal", message: `${req.method} ${url.pathname} failed` }, { status: 500 })
     if (notImplemented.has(key) || notImplemented.has(`${req.method} ${url.pathname}`))
       return Response.json(
         { error: "not_implemented", message: `${req.method} ${url.pathname} is not implemented yet` },
@@ -1162,6 +1165,8 @@ export function createFakeOffice(
     passwords,
     /** Route keys (`"POST /sessions/:id/prompt"`) or exact paths (`"GET /sessions/S2/messages"`) answered with 501. */
     notImplemented,
+    /** Route keys (`"GET /connections"`) answered with 500, as an office that hit an error. */
+    broken,
     nextId,
     emit,
     live,

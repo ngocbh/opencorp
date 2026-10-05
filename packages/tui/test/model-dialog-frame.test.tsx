@@ -46,7 +46,7 @@ async function search(app: App, text: string, shown: (f: string) => boolean) {
   return f
 }
 
-const line = (f: string, text: string) => f.split("\n").find((l) => l.includes(text)) ?? ""
+const line = (f: string, text: string) => f.split("\n").find((l) => l.includes(text))?.trimEnd() ?? ""
 
 test("/model lists Favorites, Recent, then each connection; the session's model is marked", async () => {
   await Bun.write(
@@ -67,8 +67,9 @@ test("/model lists Favorites, Recent, then each connection; the session's model 
     expect(at("office (azure)")).toBeLessThan(at("azure-2 (azure)"))
     expect(at("azure-2 (azure)")).toBeLessThan(at("gpt-4o-mini"))
     // A session with no connection or model runs on office's own model.
-    expect(line(f, "● ")).toMatch(/● +gpt-4o +/)
+    expect(line(f, "● ")).toMatch(/● +gpt-4o$/)
     expect(f).toContain("gpt-4o (office)")
+    expect(line(f, "Software engineer")).toMatch(/· gpt-4o$/)
   })
 })
 
@@ -110,6 +111,7 @@ test("Enter in a chat switches it: the header follows, the pick is a recent, and
     // The connection's own model is stored as null and labelled from the connection list.
     const f = await app.until((f) => f.includes("gpt-4o-mini (azure-2)"))
     expect(f).not.toContain("gpt-4o (office)")
+    expect(line(f, "Software engineer")).toMatch(/· gpt-4o-mini$/)
     await app.until(() => saved().includes("gpt-4o-mini"))
     const opened = await openDialog(app)
     const again = opened.slice(opened.indexOf("Select model"))
@@ -197,6 +199,24 @@ test("a refused switch shows the office's message and leaves the dialog open", a
     const f = await app.until((f) => f.includes("no connection azure-2"))
     expect(f).toContain("Select model")
     expect(f).not.toContain("Next reply uses")
+    for (let i = 0; i < 2; i++) app.input.pressBackspace()
+    await search(app, "gpt-4.1", (f) => f.includes("gpt-4.1") && !f.includes("o3-mini"))
+    app.input.pressEnter()
+    await app.until((f) => !f.includes("Select model") && f.includes("Next reply uses office/gpt-4.1"))
+  })
+})
+
+test("a session that is ending refuses the switch, and the dialog stays open", async () => {
+  const office = createFakeOffice()
+  await run(office, async (app, id) => {
+    office.updateSession(id, { status: "ending" })
+    await app.until((f) => f.includes("@minh · ending"))
+    await openDialog(app)
+    await search(app, "o3", (f) => f.includes("o3-mini") && !f.includes("gpt-4.1"))
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes(`session ${id} is ending`))
+    expect(f).toContain("Select model")
+    expect(office.state.sessions[0]).not.toMatchObject({ connection: "azure-2" })
   })
 })
 
@@ -209,6 +229,43 @@ test("a session's model note shows under the header until it is cleared", async 
     expect(f.indexOf("@minh · idle")).toBeLessThan(f.indexOf(note))
     office.updateSession(id, { model_note: null })
     await app.until((f) => !f.includes(note))
+  })
+})
+
+test("a connection's configured model comes first, as the office lists it", async () => {
+  const office = createFakeOffice()
+  office.state.connections = office.state.connections.map((c) =>
+    c.name === "azure-2" ? { ...c, model: "zz-deployment" } : c,
+  )
+  office.state.models["azure-2"] = {
+    connection: "azure-2",
+    models: [{ id: "zz-deployment" }, { id: "a-model" }, { id: "b-model" }],
+    listed: true,
+    error: null,
+  }
+  await run(office, async (app) => {
+    const f = await openDialog(app)
+    const at = (s: string) => f.indexOf(s)
+    expect(at("azure-2 (azure)")).toBeLessThan(at("zz-deployment"))
+    expect(at("zz-deployment")).toBeLessThan(at("a-model"))
+    expect(at("a-model")).toBeLessThan(at("b-model"))
+  })
+})
+
+test("when the connection list can't be read, the header names the connection and /model still opens", async () => {
+  const office = createFakeOffice()
+  office.broken.add("GET /connections")
+  await run(office, async (app) => {
+    const f = await app.until((f) => f.includes("@minh · idle"))
+    expect(line(f, "@minh · idle")).toMatch(/· office$/)
+    await app.input.typeText("/model")
+    await app.until((f) => f.includes("Switch model"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Select model") && f.includes("couldn't list connections"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Select model"))
+    office.broken.delete("GET /connections")
+    await openDialog(app)
   })
 })
 
