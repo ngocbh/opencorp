@@ -160,6 +160,10 @@ def _listed(conn: Provider, name: str, timeout: float, request: Callable[..., Ht
         # By type only: a client's message could quote the request.
         log.warning("listing the models of connection %s failed (%s)", name, type(exc).__name__)
         return own_models(conn, name, "the listing failed")
+    # The configured model answered when the connection was added, though a host may list only dated ids for an
+    # alias, and _text_models may drop it.
+    if (model := llm.get("model")) and model not in ids:
+        ids = [model, *ids]
     return Listing(connection=name, models=[ModelOption(id=i) for i in ids], listed=True)
 
 
@@ -169,8 +173,8 @@ def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE,
     """The models connection ``name`` (``conn``) offers, within ``deadline`` seconds.
 
     Azure is listed by its deployments, and any other provider by composer's listing of the host its runs go to,
-    with the key they use (``request`` and ``transport`` stand in for the two HTTP clients). A connection whose
-    provider has no listing, whose runs need a key it doesn't hold, or whose runs an environment variable sends to
+    with the key they use (``request`` and ``transport`` stand in for the two HTTP clients); a listed connection
+    offers its configured model first if its host doesn't list it. A connection whose provider has no listing, whose runs need a key it doesn't hold, or whose runs an environment variable sends to
     another host offers only its configured model. A listing that fails offers the same, with ``error`` giving the
     HTTP status or another reason, never the key.
     """

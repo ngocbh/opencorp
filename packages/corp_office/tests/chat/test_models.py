@@ -326,6 +326,22 @@ def test_offers_uses_an_old_entry_and_lists_a_missing_one(connections):
     assert lister.calls == ["office", "second", "fast"]
 
 
+def test_a_listed_connection_offers_its_own_model_first_when_its_host_doesnt_list_it(connections):
+    # Anthropic lists dated ids, not the aliases that answer as well.
+    conn = ConnectionFile(llm_config={"provider": "anthropic", "api_key": ANTHROPIC_KEY, "model": "claude-sonnet-4-5"})
+    dated = ["claude-opus-4-1-20250805", "claude-sonnet-4-5-20250929"]
+    request = FakeRequest(HttpResponse(200, {"data": [{"id": i} for i in dated], "has_more": False}))
+    got = list_models(conn, "anthropic", request=request)
+    assert (got.listed, [m.id for m in got.models]) == (True, ["claude-sonnet-4-5", *dated])
+    connections.put("anthropic", conn)
+    cache = ModelCache(connections, lister=lambda conn, name, *, deadline: list_models(conn, name, request=request))
+    assert cache.offers(["anthropic", "fast"], "claude-sonnet-4-5", deadline=5) == ["anthropic"]
+    got = list_models(openai(model="gpt-5"), "openai", request=FakeRequest(HttpResponse(200, {"data": [{"id": "o3"}]})))
+    assert [m.id for m in got.models] == ["gpt-5", "o3"]
+    got = list_models(openai(model="o3"), "openai", request=FakeRequest(HttpResponse(200, {"data": [{"id": "o3"}]})))
+    assert [m.id for m in got.models] == ["o3"]
+
+
 def test_offers_gives_every_connection_together_only_the_deadline(connections):
     gate = threading.Event()
     lister = Lister(gates={"slow": gate}, delays={"fast": 0.3})

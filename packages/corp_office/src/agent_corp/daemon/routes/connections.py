@@ -106,7 +106,8 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
     except OnboardError as exc:  # its message never holds a value
         raise HTTPError(422, "invalid_connection", str(exc)) from None
     label = provider_label(llm)
-    listed = models.list_models(ConnectionFile(llm_config=llm), label)
+    # Listed without the model asked for, which a listing would offer as the connection's own.
+    listed = models.list_models(ConnectionFile(llm_config={k: v for k, v in llm.items() if k != "model"}), label)
     if listed.refused:
         raise HTTPError(422, "key_refused", f"The key didn't work ({listed.error})")
     if listed.error and label == "azure" and not body.model:
