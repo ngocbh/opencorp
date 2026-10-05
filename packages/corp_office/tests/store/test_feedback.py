@@ -63,6 +63,16 @@ def test_commit_goes_with_applied_only(store, sid):
     assert store.get_feedback(f.id).status == "learning"
 
 
+def test_a_failure_goes_with_learning_failed_only(store, sid):
+    f = store.add_feedback(feedback(sid))
+    with pytest.raises(StoreError, match="failure"):
+        store.set_feedback_status(f.id, "learning", failure="connection 'second' was removed")
+    failed = store.set_feedback_status(f.id, "learning_failed", failure="connection 'second' was removed")
+    assert (failed.status, failed.attempts) == ("learning_failed", 0)
+    assert store.get_feedback(f.id).failure == "connection 'second' was removed"
+    assert store.events_after()[-1].data["failure"] == "connection 'second' was removed"
+
+
 def test_list_feedback(store, sid):
     a = store.add_feedback(feedback(sid))
     b = store.add_feedback(feedback(sid, run_id="run-2"))

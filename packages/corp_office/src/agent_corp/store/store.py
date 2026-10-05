@@ -905,22 +905,28 @@ class Store:
         where = {"session_id": session_id, "run_id": run_id, "status": status}
         return self._list(FEEDBACK, Feedback, where, "created_at, rowid")
 
-    def set_feedback_status(self, feedback_id: str, status: str, *, commit: str | None = None) -> Feedback:
+    def set_feedback_status(self, feedback_id: str, status: str, *, commit: str | None = None,
+                            failure: str | None = None) -> Feedback:
         """Move feedback along ``queued → learning → applied | learning_failed``.
 
         ``learning`` may go back to ``queued`` or start again; each move into ``learning``
         counts one attempt. ``queued`` may fail directly. ``commit`` is required for
-        ``applied`` and refused otherwise. Emits ``feedback.updated``.
+        ``applied`` and refused otherwise; ``failure``, why it failed, goes with ``learning_failed`` only.
+        Emits ``feedback.updated``.
         """
         with self.transaction() as tx:
             current = self._must(FEEDBACK, Feedback, feedback_id)
             _check_move("feedback", _FEEDBACK_MOVES, current.status, status)
             _check_commit("feedback", status, commit)
+            if failure is not None and status != "learning_failed":
+                raise StoreError(f"feedback moving to {status} takes no failure")
             update: dict[str, Any] = {"status": status}
             if status == "learning":
                 update["attempts"] = current.attempts + 1
             if commit is not None:
                 update["commit"] = commit
+            if failure is not None:
+                update["failure"] = failure
             feedback = self._changed(current, update, set())
             tx.update(FEEDBACK, self._columns(FEEDBACK, feedback))
             stored = self._must(FEEDBACK, Feedback, feedback_id)
