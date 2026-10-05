@@ -46,7 +46,7 @@ export const CREATE_TIMEOUT_MS = 30_000
 
 /**
  * How long adding a connection waits for the office before failing with `OfficeTimeout`: the office checks the
- * key, and a provider that can't list its models is checked with one reply, which may take 90 s.
+ * key by listing the models, then with one reply, which takes about 95 s at most.
  */
 export const ADD_CONNECTION_TIMEOUT_MS = 120_000
 

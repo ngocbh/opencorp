@@ -213,7 +213,7 @@ test("managing connections: add, set the default, remove; office can't be remove
   expect([forbidden.status, forbidden.code]).toEqual([403, "forbidden"])
 })
 
-test("adding a connection waits 120 s, as the office's key check can take 95 s", async () => {
+test("adding a connection waits 120 s, as the office's key check (listing, then one reply) takes about 95 s at most", async () => {
   office = createFakeOffice()
   expect(ADD_CONNECTION_TIMEOUT_MS).toBe(120_000)
   // The client asks for a 120 s limit; the test gets a 50 ms one so the held request times out.

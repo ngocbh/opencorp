@@ -41,13 +41,13 @@ export function DialogModel(props: { connection?: string }) {
   const session = createMemo(() => office.state.sessions.find((s) => s.id === sessionID()))
   let switching = false
   const [select, setSelect] = createSignal<DialogSelectRef<Choice>>()
-  let focused = !props.connection
+  let moved = !props.connection
   createEffect(() => {
-    if (focused || !lists[props.connection!]) return
+    if (moved || !lists[props.connection!]) return
     const row = connectionRows().find((r) => r.value.connection === props.connection)
     const ref = select()
     if (!row || !ref) return
-    focused = true
+    moved = true
     // After DialogSelect's own move to the session's model, which waits a tick too.
     setTimeout(() => ref.moveTo(row.value), 0)
   })
