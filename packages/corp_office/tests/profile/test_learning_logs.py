@@ -2,6 +2,7 @@ import logging
 
 import pytest
 
+from agent_corp.chat.connections import OFFICE, write_run_record
 from agent_corp.extensions.learning import Learning
 from agent_corp.profile.debrief import ready_debrief
 from agent_corp.protocol import now
@@ -48,6 +49,8 @@ def test_learning_never_logs_the_model_key(keyed, caplog):
 
         ended = harness.store.create_session(session(repo_commit=head, status="ended", run_ids=["r2"]))
         harness.store.save_debrief(ready_debrief(ended, OUTPUT), run_id="dbr", attempts=1)
+        write_run_record(harness.office.paths.run_dir(ended.id) / "runs" / "dbr.model.json", OFFICE, None,
+                         harness.connections.resolve(OFFICE, None))  # so the feedback's run is on a connection
         fb = harness.store.add_feedback(Feedback(id=new_id(), session_id=ended.id, run_id="dbr", author="ngocbh",
                                                  text="Be brief.", status="queued", created_at=now()))
         learning.tick()  # learning from it can't start

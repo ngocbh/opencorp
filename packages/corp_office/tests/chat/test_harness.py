@@ -5,6 +5,7 @@ import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
+from agent_corp.secrets import write_private
 from tests.chat.conftest import errors, status, texts, wait_for
 from tests.store.conftest import question as stored_question
 from tests.store.conftest import session as stored_session
@@ -460,18 +461,16 @@ def test_a_failing_hook_does_not_stop_the_session(harness, fake_llm, workspace):
 def test_a_provider_error_at_start_fails_the_session(harness, workspace):
     from agent_corp.chat.provider import ProviderError
 
-    def bad():
-        raise ProviderError("provider.json must be a regular file private to its owner (mode 0600)")
-
-    harness.provider = bad
+    provider_json = harness.office.paths.office / "provider.json"
+    provider_json.chmod(0o644)  # not private: load_provider refuses it
     ended = []
     harness.hooks.session_ended.append(lambda session: ended.append(session.status))
     with pytest.raises(HarnessError) as err:
         harness.start_session("minh", str(workspace))
     (session,) = harness.store.list_sessions()
     assert (err.value.status, err.value.code) == (500, "start_failed")
-    assert err.value.message == (f"session {session.id} failed to start: provider.json must be a regular file "
-                                 "private to its owner (mode 0600)")
+    assert err.value.message.startswith(f"session {session.id} failed to start: ")
+    assert str(provider_json) in err.value.message and "private" in err.value.message
     assert isinstance(err.value.__cause__, ProviderError)
     assert session.status == "failed" and session.id not in harness._live
     assert ended == ["failed"]
@@ -728,8 +727,9 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
     ulid = re.compile(r"[0-9A-HJKMNP-TV-Z]{26}")
     leaks = {("frame", f["type"], f.get("name")) for f in frames if has_key(f)}
     leaks |= {("live", e.type) for e in harness.office.bus.events if SENTINEL in e.model_dump_json()}
+    keys = harness.office.paths.office / "provider.json"  # where the key is kept
     leaks |= {("file", ulid.sub("<id>", str(p.relative_to(tmp_path)))) for p in tmp_path.rglob("*")
-              if p.is_file() and SENTINEL.encode() in p.read_bytes()}
+              if p.is_file() and p != keys and SENTINEL.encode() in p.read_bytes()}
     leaks |= {("hook", "run_finished") for result in finished if has_key(result)}
     leaks |= {("model request",) for request in fake_llm.requests() if has_key(request)}
     assert sorted(leaks, key=str) == []
@@ -855,6 +855,13 @@ def test_a_start_that_fails_otherwise_names_the_session_but_not_the_error(harnes
     assert session.id in err.value.message and "sentinel" not in err.value.message
 
 
+def rekey(harness, key):
+    """Give office/provider.json the model key ``key``."""
+    path = harness.office.paths.office / "provider.json"
+    provider = json.loads(path.read_text())
+    write_private(path, json.dumps({**provider, "llm_config": {**provider["llm_config"], "api_key": key}}).encode())
+
+
 def test_a_turn_after_the_provider_changes_runs_on_the_new_provider(harness, fake_llm, workspace):
     fake_llm.script({"content": "One."}, {"content": "Two."})
     sid = start(harness, workspace)
@@ -863,9 +870,7 @@ def test_a_turn_after_the_provider_changes_runs_on_the_new_provider(harness, fak
     jobs = []
     spawn = harness.registry.spawn
     harness.registry.spawn = lambda job, *args: (jobs.append(job), spawn(job, *args))[1]
-    old = harness.provider()
-    new = old.model_copy(update={"llm_config": {**old.llm_config, "api_key": "sk-new"}})
-    harness.provider = lambda: new
+    rekey(harness, "sk-new")
 
     assert harness.prompt(sid, "second", by="lan") == "turn"
     wait_for(lambda: texts(harness, sid) == ["One.", "Two."] and status(harness, sid) == "idle",
@@ -880,9 +885,7 @@ def test_a_turn_after_the_provider_changes_runs_on_the_new_provider(harness, fak
 
 def test_ending_while_a_new_provider_takes_over_ends_the_session(harness, fake_llm, workspace):
     sid = start(harness, workspace)
-    old = harness.provider()
-    new = old.model_copy(update={"llm_config": {**old.llm_config, "api_key": "sk-new"}})
-    harness.provider = lambda: new
+    rekey(harness, "sk-new")
     assert harness.prompt(sid, "hi") == "turn"
     harness.end(sid)
     wait_for(lambda: status(harness, sid) == "ended", what="the end")

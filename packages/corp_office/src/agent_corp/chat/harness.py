@@ -13,6 +13,7 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
+from agent_corp.chat.connections import OFFICE, Connections, RunMoved, read_run_record, write_run_record
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
@@ -43,6 +44,8 @@ LIVE = ("starting", "idle", "busy", "ending")
 _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
+_FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
+               "If your last message got no reply, send it again.")
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
 """``(session, run_id, on_question) -> {group: {tool name: tool}}``: the office tools of one run."""
@@ -117,6 +120,7 @@ class _Live:
     outcome: dict[str, Any] | None = None
     timer: threading.Timer | None = None
     calls: set[_Call] = field(default_factory=set)
+    announced: str | None = None  # the run whose run_finished has fired, so it never fires twice
 
 
 class _Handlers(BaseHandlers):
@@ -164,15 +168,15 @@ class Harness:
 
     ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, and ``set_cost_cap`` are
     called from request threads. Worker frames and store events are handled on one
-    dispatcher thread, in order. ``provider`` is read at each spawn.
+    dispatcher thread, in order. ``connections`` are read at each spawn.
     """
 
-    def __init__(self, office: Any, monitor: Monitor, *, provider: Callable[[], Provider] = Provider) -> None:
+    def __init__(self, office: Any, monitor: Monitor, *, connections: Connections) -> None:
         self.office = office
         self.store = office.store
         self.git = office.git
         self.monitor = monitor
-        self.provider = provider
+        self.connections = connections
         self.hooks = Hooks()
         self.registry = WorkerRegistry(self.store)
         self.answers = Answers(self.store)
@@ -297,7 +301,7 @@ class Harness:
                      owner=session.opened_by or _ceo(repo))
 
     def restore(self) -> None:
-        """Resume every session that was live when the office stopped, under the same run id."""
+        """Resume every session that was live when the office stopped, under the same run id where it can."""
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
@@ -316,9 +320,35 @@ class Harness:
             with self._lock:
                 self._live[session.id] = live
             try:
-                self._spawn(live, "resume")
+                self._resume(live)
             except Exception:
-                pass  # _spawn logged it and failed the session
+                pass  # it logged why and failed the session
+
+    def _resume(self, live: _Live) -> None:
+        """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
+        provider: Provider | None
+        try:
+            stored = self.store.get_session(live.session_id)
+            session = self._choice(stored)
+            try:
+                record = read_run_record(self._record_path(live))
+                ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
+                if ran_on != (session.connection or OFFICE, session.model):
+                    raise RunMoved("the chat's model changed since its last run")
+                provider = self.connections.for_run(record, self._log_path(live), exact=True)
+            except (RunMoved, ProviderError, ValueError) as exc:
+                # Resuming would replay the run's own endpoint and config with whatever key it is given.
+                log.info("session %s starts a fresh run: %s", live.session_id, exc)
+                provider = None
+                if session is stored:  # a chat _choice moved has its removal note, which says more
+                    self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
+        except Exception:
+            self._cant_start(live)
+            raise
+        if provider is None:
+            self._new_run(live)  # on failure, it fails the session and raises
+        else:
+            self._spawn(live, "resume", provider)
 
     def _interrupt_running_tools(self, session_id: str) -> None:
         """Mark tool parts a dead office left ``running`` as interrupted; their calls died with it."""
@@ -327,8 +357,11 @@ class Harness:
                 if part.type == "tool" and part.state == "running":
                     self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
 
-    def _spawn(self, live: _Live, kind: str) -> None:
-        """Start ``live``'s worker; if anything fails, fail the session (dropping it from the live ones) and raise."""
+    def _spawn(self, live: _Live, kind: str, provider: Provider | None = None) -> None:
+        """Start ``live``'s worker; if anything fails, fail the session (dropping it from the live ones) and raise.
+
+        ``provider`` is the one a resume checked; None resolves the session's connection and model.
+        """
         try:
             if kind == "resume":
                 # The agent node that asked re-runs and asks afresh.
@@ -336,7 +369,10 @@ class Harness:
                     if q.node_id is None:
                         self.store.set_question_status(q.id, "stale")
             session = self.store.get_session(live.session_id)
-            live.provider = provider = self.provider()
+            if provider is None:
+                session = self._choice(session)
+                provider = self.connections.resolve(session.connection, session.model)
+            live.provider = provider
             on_question = self._on_question(live)
             tools = live.spec.groups(session, live.run_id, on_question)
             ask = make_ask_user(session, live.run_id, on_question, names=live.spec.names,
@@ -346,19 +382,25 @@ class Harness:
             run_dir = self._run_dir(live.session_id)
             job = Job(kind=kind, session_id=live.session_id, run_id=live.run_id, person=live.person,
                       pin=str(self.git.pin(session.repo_commit)), flow=live.spec.flow,
-                      log=str(run_dir / "runs" / f"{live.run_id}.jsonl"), inputs=live.spec.inputs,
+                      log=str(self._log_path(live)), inputs=live.spec.inputs,
                       llm_config=provider.llm_config, learnable=live.spec.learnable, skills=live.spec.skills,
                       groups=group_specs(tools), memory=memory, env=provider.env)
+            if kind == "chat":
+                write_run_record(self._record_path(live), session.connection or OFFICE, session.model, provider)
             # Under the lock, so a steer or close_all never meets a worker that is still starting.
             with self._lock:
                 if self._stopping:
                     return
                 live.worker = self.registry.spawn(job, run_dir, _Handlers(self, live, ask, tools))
         except Exception:
-            log.exception("can't start a worker for session %s", live.session_id)
-            self._finish(live, "failed", None)
+            self._cant_start(live)
             raise
         self._post(self.hooks.fire, "run_started", session, live.run_id)
+
+    def _cant_start(self, live: _Live) -> None:
+        """Log why ``live``'s worker can't start, and fail its session."""
+        log.exception("can't start a worker for session %s", live.session_id)
+        self._finish(live, "failed", None)
 
     # --- the person's keys -------------------------------------------------------------
 
@@ -732,7 +774,7 @@ class Harness:
                 self._finish(live, "failed", None)
             else:
                 live.exits += 1
-                self._spawn(live, "resume")
+                self._resume(live)
             return
         live.exits = 0
         failure = outcome.get("failure") or {}
@@ -741,26 +783,53 @@ class Harness:
             self._finish(live, "ended", outcome)
         elif outcome["type"] == "result" and live.spec.chat is not None and self._asked_turn(live):
             live.transcript.error(f"The reply failed ({_why(outcome, live.provider)}). Send your message again.")
-            self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
+            self._run_finished(live, session, outcome)
             self._new_run(live)
         else:
             self._finish(live, "failed", outcome)
 
     def _new_run(self, live: _Live) -> None:
-        """Start a fresh chat run for ``live``; the old run's open questions go stale."""
-        for q in self.store.list_questions(run_id=live.run_id, status="open"):
-            self.store.set_question_status(q.id, "stale")
-        live.run_id = new_id()
-        self.store.add_session_run(live.session_id, live.run_id)
+        """Start a fresh chat run for ``live``; the old run's open questions go stale.
+
+        If it can't start, the session fails and the error is raised.
+        """
+        try:
+            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                self.store.set_question_status(q.id, "stale")
+            run_id = new_id()
+            self.store.add_session_run(live.session_id, run_id)
+            live.run_id = run_id
+        except Exception:
+            self._cant_start(live)
+            raise
         self._spawn(live, "chat")
 
     def _provider_changed(self, live: _Live) -> bool:
-        """Whether the provider file no longer gives what ``live``'s worker got."""
+        """Whether the session's connection and model no longer give what ``live``'s worker got."""
+        session = self.store.get_session(live.session_id)
         try:
-            provider = self.provider()
+            if (session.connection or OFFICE) not in self.connections.names():
+                return True  # the restart moves the chat, or reports why it can't
+            provider = self.connections.resolve(session.connection, session.model)
         except ProviderError:
             return False  # a spawn would fail on it too; keep the worker that works
         return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
+
+    def _choice(self, session: Session) -> Session:
+        """``session``, moved to the default connection's own model, with a note, if its connection was removed.
+
+        A session that isn't moved is returned as is.
+        """
+        name, model, moved = self.connections.choice(session.connection, session.model)
+        if not moved:
+            return session
+        try:
+            own = (self.connections.get(name).llm_config or {}).get("model")
+        except (ProviderError, ValueError):
+            own = None  # only the note's text needs it; resolving it reports the error
+        now_on = f"{name}/{own}" if own else name
+        return self.store.update_session(session.id, connection=name, model=model, model_note=(
+            f"Connection '{session.connection}' was removed; this chat now uses {now_on}."))
 
     def _restart(self, live: _Live, text: str, *, by: str | None = None) -> None:
         """Hand ``text`` to a fresh run on the current provider instead of the worker waiting at a turn."""
@@ -782,11 +851,11 @@ class Harness:
         with self._lock:
             if not self._current(live) or self._stopping:
                 return
-        self.hooks.fire("run_finished", self.store.get_session(live.session_id), live.run_id, None)
+        self._run_finished(live, self.store.get_session(live.session_id), None)
         try:
             self._new_run(live)
         except Exception:
-            pass  # _spawn logged it and failed the session
+            pass  # it logged why and failed the session
 
     def _asked_turn(self, live: _Live) -> bool:
         return any(live.spec.chat.is_turn(q.node_id)
@@ -805,8 +874,14 @@ class Harness:
             if session.work_item_id:
                 self.store.update_work_item(session.work_item_id, status="done")
         session = self.store.update_session(live.session_id, status=status)
-        self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
+        if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
+            self._run_finished(live, session, outcome)
         self.hooks.fire("session_ended", session)
+
+    def _run_finished(self, live: _Live, session: Session, outcome: dict[str, Any] | None) -> None:
+        """Fire ``run_finished`` for ``live``'s current run."""
+        live.announced = live.run_id
+        self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
 
     def _fail(self, session_id: str) -> None:
         """Fail a session that has no live run."""
@@ -897,6 +972,12 @@ class Harness:
 
     def _run_dir(self, session_id: str) -> Path:
         return self.office.paths.run_dir(session_id)
+
+    def _log_path(self, live: _Live) -> Path:
+        return self._run_dir(live.session_id) / "runs" / f"{live.run_id}.jsonl"
+
+    def _record_path(self, live: _Live) -> Path:
+        return self._run_dir(live.session_id) / "runs" / f"{live.run_id}.model.json"
 
     def _policy(self, handle: str, policy: Any, cwd: str, session_id: str) -> SandboxPolicy:
         """The sandbox for ``cwd``; a missing or unsafe folder is refused before the run's tmp is made."""

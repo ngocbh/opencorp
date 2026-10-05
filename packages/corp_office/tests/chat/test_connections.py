@@ -16,6 +16,7 @@ from agent_corp.chat.connections import (
     ConnectionFile,
     ConnectionGone,
     Connections,
+    ConnectionUnusable,
     RunMoved,
     RunRecord,
     azure_base_url,
@@ -159,6 +160,17 @@ def test_default_follows_the_pointer_and_falls_back_when_its_file_is_gone(tmp_pa
         c.set_default("nope")
     c.set_default(OFFICE)
     assert c.default() == OFFICE
+
+
+def test_a_chat_on_a_removed_connection_moves_to_the_default_on_its_own_model(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    for name in ("second", "third"):
+        c.put(name, api_key())
+    assert c.choice(None, None) == (OFFICE, None, False)
+    assert c.choice("second", "gpt-4o-mini") == ("second", "gpt-4o-mini", False)
+    c.set_default("third")
+    c.remove("second")
+    assert c.choice("second", "gpt-4o-mini") == ("third", None, True)
 
 
 def test_remove_unlinks_the_connection_and_its_sign_in(tmp_path, monkeypatch):
@@ -640,6 +652,25 @@ def test_for_run_fails_on_a_removed_connection(tmp_path):
     for exact in (True, False):
         with pytest.raises(RunMoved, match="connection 'second' was removed"):
             c.for_run(record, log, exact=exact)
+
+
+def test_for_run_tells_a_connection_that_cant_be_used_now_from_one_that_moved(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    c.put("second", api_key())
+    record, log = _record(c, tmp_path)
+    (c.dir / "second.json").chmod(0o644)
+    for exact in (True, False):
+        with pytest.raises(ConnectionUnusable, match="private"):
+            c.for_run(record, log, exact=exact)
+    (c.dir / "second.json").chmod(0o600)
+    c.put("second", api_key(key=OTHER_KEY))
+    with pytest.raises(RunMoved) as info:
+        c.for_run(record, log, exact=False)
+    assert not isinstance(info.value, ConnectionUnusable)
+    c.remove("second")
+    with pytest.raises(RunMoved) as info:
+        c.for_run(record, log, exact=False)
+    assert not isinstance(info.value, ConnectionUnusable)
 
 
 def test_a_run_without_a_record_is_office_only_on_the_same_base_url(tmp_path):

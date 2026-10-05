@@ -334,6 +334,7 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
         assert isinstance(office.profile_store("minh"), GitProfileStore)
         conns, cache = office.extras["connections"], office.extras["models"]
         assert isinstance(conns, Connections) and conns.office == paths.office
+        assert office.workers.connections is conns
         assert isinstance(cache, ModelCache) and cache.connections is conns
         assert started == []
         await office.start()  # restores live sessions, then lists each connection's models
