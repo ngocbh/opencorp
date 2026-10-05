@@ -9,10 +9,15 @@ from agent_corp.protocol.models import CompanyDefaults, Session
 DEFAULT_PRICE = Price(input=15.0, output=75.0)
 """The price of a model the provider file doesn't list: high, so an unknown model hits its cap early."""
 
+ZERO_PRICE = Price(input=0, output=0)
+"""The price of a subscription's model the provider file doesn't list: the subscription already pays for it."""
 
-def call_usd(prices: Mapping[str, Price], model: str | None, usage: Mapping[str, Any]) -> float:
-    """The price of one model call's ``usage`` (a composer ``TokenUsage`` as a dict)."""
-    price = prices.get(model or "", DEFAULT_PRICE)
+
+def call_usd(prices: Mapping[str, Price], model: str | None, usage: Mapping[str, Any], *,
+             default: Price = DEFAULT_PRICE) -> float:
+    """The price of one model call's ``usage`` (a composer ``TokenUsage`` as a dict); ``default`` prices a model
+    ``prices`` doesn't list."""
+    price = prices.get(model or "", default)
     return (usage["input_tokens"] * price.input + usage["output_tokens"] * price.output) / 1_000_000
 
 

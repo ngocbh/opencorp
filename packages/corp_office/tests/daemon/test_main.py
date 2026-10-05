@@ -319,6 +319,7 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
     from agent_corp.chat.connections import Connections
     from agent_corp.chat.harness import Harness
     from agent_corp.chat.hire import Hiring
+    from agent_corp.chat.logins import Logins
     from agent_corp.chat.models import ModelCache
     from agent_corp.daemon.main import build_office
     from agent_corp.profile import GitProfileStore
@@ -326,6 +327,7 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
     started = []
     monkeypatch.setattr(Harness, "restore", lambda self: started.append("restore"))
     monkeypatch.setattr(ModelCache, "warm", lambda self: started.append(("warm", self)))
+    monkeypatch.setattr(Logins, "close_all", lambda self: started.append(("close logins", self)))
     paths = OfficePaths(home)
     office = build_office(paths)
     try:
@@ -336,10 +338,13 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
         assert isinstance(conns, Connections) and conns.office == paths.office
         assert office.workers.connections is conns
         assert isinstance(cache, ModelCache) and cache.connections is conns
+        logins = office.extras["logins"]
+        assert isinstance(logins, Logins) and logins.connections is conns and logins.models is cache
         assert started == []
         await office.start()  # restores live sessions, then lists each connection's models
         assert started == ["restore", ("warm", cache)]
-        await office.stop()
+        await office.stop()  # cancels the sign-ins still open
+        assert started[-1] == ("close logins", logins)
     finally:
         office.store.close()
 

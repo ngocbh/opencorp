@@ -2,17 +2,22 @@
 then whatever the chat is switched to."""
 
 import json
+import os
+import signal
 import time
 
 import pytest
+from agent_composer.llm_clients.auth import AuthStore, OAuthCredentials
 
-from agent_corp.chat.connections import read_run_record
+from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_record
+from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE
 from agent_corp.chat.harness import HarnessError, _refused_key
 from agent_corp.chat.models import TIMED_OUT, Listing, own_models
+from agent_corp.chat.provider import Price
 from agent_corp.company.loader import load_repo
 from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import write_private
-from tests.chat.conftest import errors, say, status, texts, wait_for
+from tests.chat.conftest import errors, say, spawned, status, texts, wait_for
 from tests.company.conftest import person
 
 
@@ -167,7 +172,7 @@ def test_the_note_names_a_default_with_no_configured_model_by_its_name(make_harn
 
 
 def test_resolution_has_one_deadline_and_falls_back_with_a_note(make_harness):
-    def slow(conn, name, *, deadline):
+    def slow(conn, name, *, deadline, auth_file):
         # Each listing alone fits the deadline; the two together don't.
         time.sleep(min(0.6, deadline))
         if deadline < 0.6:
@@ -362,3 +367,95 @@ def test_a_refused_key_is_told_by_its_cause_or_status_not_any_401():
     assert _refused_key({"cause_type": "APIStatusError"}, "APIStatusError: Error code: 401 - unauthorized")
     assert not _refused_key({"cause_type": "BadRequestError"}, "BadRequestError: your messages resulted in 140100 tokens")
     assert not _refused_key({}, "no reason given")
+
+
+# Subscriptions.
+
+ACCESS = "fake-access-7d2c91e0"
+REFRESH = "fake-refresh-4a6b03f8"
+
+NO_NETWORK = {"HTTPS_PROXY": "http://127.0.0.1:9", "HTTP_PROXY": "http://127.0.0.1:9"}
+"""A subscription runs against chatgpt.com; should a test's worker ever call it, the call goes nowhere."""
+
+
+def subscribe(harness, name="chatgpt", prices=None):
+    """Add subscription ``name`` on model ``gpt-sub``, signed in with fake tokens good for a year; its auth file."""
+    creds = OAuthCredentials(ACCESS, REFRESH, time.time() + 365 * 86400, "account-test")
+    harness.connections.add(name, ConnectionFile(method="subscription", llm_config={"provider": "openai",
+                                                                                     "model": "gpt-sub"},
+                                                 env=NO_NETWORK, prices=prices or {}),
+                            sign_in=lambda path: AuthStore(path).save("openai", creds, "gpt-sub"))
+    return harness.connections.auth_file(name)
+
+
+def test_a_subscription_chat_runs_on_its_own_sign_in_without_a_key(make_harness, workspace, fake_llm):
+    h = make_harness()
+    auth = subscribe(h)
+    jobs = spawned(h)
+    s = start(h, workspace, connection="chatgpt")
+    [job] = jobs
+    assert job.env[AUTH_FILE_ENV] == str(auth)
+    assert job.llm_config == {"provider": "openai", "model": "gpt-sub"}
+    assert ACCESS not in json.dumps(job.env) and REFRESH not in json.dumps(job.env)
+    assert chose(h.store.get_session(s.id)) == ("chatgpt", None, None)
+    assert fake_llm.requests() == []
+
+
+@pytest.mark.parametrize(("prices", "usd"), [(None, 0), ({"gpt-sub": Price(input=1, output=2)}, 3.0)])
+def test_a_subscriptions_usage_is_free_unless_its_file_prices_it(make_harness, workspace, prices, usd):
+    h = make_harness()
+    subscribe(h, prices=prices)
+    s = start(h, workspace, connection="chatgpt")
+    usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "total_tokens": 2_000_000}
+    h._charge(h._live[s.id], {"model": "gpt-sub", "usage": usage})
+    assert h.store.get_session(s.id).cost == pytest.approx(usd)
+    assert [(u.input_tokens, u.usd) for u in h.store.list_usage(s.id)] == [(1_000_000, pytest.approx(usd))]
+
+
+def test_a_subscription_run_is_recorded_on_it_and_resumed_and_learned_from_on_the_same_sign_in(make_harness,
+                                                                                               workspace):
+    h = make_harness()
+    auth = subscribe(h)
+    jobs = spawned(h, lambda job: (job.kind, job.env.get(AUTH_FILE_ENV)))
+    s = start(h, workspace, connection="chatgpt")
+    record = record_of(h, s.id)
+    assert (record.connection, record.model) == ("chatgpt", None)
+    run_log = h.office.paths.run_dir(s.id) / "runs" / f"{h.store.get_session(s.id).run_ids[-1]}.jsonl"
+    assert h.connections.for_run(record, run_log, exact=False).env[AUTH_FILE_ENV] == str(auth)  # backward
+    old = h._live[s.id].worker
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: h._live[s.id].worker not in (None, old) and h._live[s.id].turn_q, what="the resume")
+    assert jobs == [("chat", str(auth)), ("resume", str(auth))]
+    assert h._live[s.id].default_price == ZERO_PRICE
+
+
+def test_a_chat_moved_off_a_subscription_pays_for_its_unpriced_models_again(make_harness, workspace, fake_llm):
+    h = make_harness(connections={"second": "stub-2"})
+    subscribe(h)
+    fake_llm.script({"content": "on two"})
+    s = start(h, workspace, connection="chatgpt")
+    assert h._live[s.id].default_price == ZERO_PRICE
+    h.set_model(s.id, "second", "stub-2")
+    assert say(h, s.id, "b") == "on two"
+    assert h._live[s.id].default_price == DEFAULT_PRICE
+    before = h.store.get_session(s.id).cost
+    h._charge(h._live[s.id], {"model": "unpriced", "usage": {"input_tokens": 1_000_000, "output_tokens": 0,
+                                                             "total_tokens": 1_000_000}})
+    assert h.store.get_session(s.id).cost - before == pytest.approx(DEFAULT_PRICE.input)
+
+
+def test_a_connection_removed_as_its_chat_starts_is_priced_as_a_key(make_harness, workspace):
+    h = make_harness(connections={"second": "stub-2"})
+    resolve, calls = h.connections.resolve, []
+
+    def resolve_then_remove(name, model):
+        provider = resolve(name, model)
+        calls.append(name)
+        if calls.count("second") == 2:  # the spawn's resolve, after the start checked it can be used
+            h.connections.remove(name)  # removed between the chat resolving it and pricing it
+        return provider
+
+    h.connections.resolve = resolve_then_remove
+    s = start(h, workspace, connection="second")
+    assert h.store.get_session(s.id).connection == "second" and "second" not in h.connections.names()
+    assert h._live[s.id].default_price == DEFAULT_PRICE

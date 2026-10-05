@@ -1,26 +1,31 @@
 """Connection routes: listing, adding, removing and the default, and who may manage them."""
 
+import asyncio
 import json
 import logging
 import os
 import stat
+import threading
 
 import httpx
 import pytest
 import yaml
 from agent_composer.llm_clients import ModelListError as HostListError
+from agent_composer.llm_clients.auth import OpenAIAuth
 from pydantic import ValidationError
 
 from agent_corp.auth.identity import Identity, identity_path, write_identity
 from agent_corp.auth.tokens import new_token
 from agent_corp.chat import check, models
 from agent_corp.chat.connections import ConnectionFile, Connections, provider_label
+from agent_corp.chat.logins import Logins
 from agent_corp.chat.models import Listing, ModelCache, own_models
 from agent_corp.chat.models import list_models as real_list_models
 from agent_corp.chat.provider import ProviderError
 from agent_corp.daemon.app import create_app
 from agent_corp.protocol.models import ModelOption
 from agent_corp.secrets import write_private
+from tests.chat.test_logins import APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, Clock
 from tests.company.conftest import _git
 from tests.daemon.test_auth import add_human, bearer, give_device
 
@@ -308,9 +313,10 @@ async def test_anthropic_is_checked_against_what_its_host_lists(client, office, 
     assert SENTINEL not in r.text + caplog.text
 
 
-async def test_others_are_refused_before_the_body_is_read(client, office, as_ava):
+async def test_others_are_refused_before_the_body_is_read(client, office, as_ava, openai):
     for method, path in [("POST", "/connections"), ("DELETE", "/connections/office"),
-                         ("DELETE", "/connections/nope"), ("PUT", "/connections/default")]:
+                         ("DELETE", "/connections/nope"), ("PUT", "/connections/default"),
+                         ("POST", "/connections/login")]:
         r = await client.request(method, path, content=b"not json", headers=as_ava)
         assert (r.status_code, r.json()["error"]) == (403, "forbidden")
     assert not (office.paths.office / "connections").exists()
@@ -383,7 +389,7 @@ async def test_a_default_whose_file_cant_be_read_is_still_the_default(client, of
         "azure", [("office", False)])
 
 
-async def test_unknown_names_are_404(client, as_owner):
+async def test_unknown_names_are_404(client, as_owner, openai):
     for method, path, body in [("DELETE", "/connections/nope", None), ("DELETE", "/connections/Bad_Name", None),
                                ("GET", "/connections/nope/models", None), ("GET", "/connections/login/models", None),
                                ("PUT", "/connections/default", {"connection": "nope"})]:
@@ -430,3 +436,90 @@ async def test_a_malformed_add_never_echoes_the_key(client, office, as_owner):
     r = await client.post("/connections", content=f'{{"api_key": "{SENTINEL}"'.encode(), headers=as_owner)
     assert r.status_code == 422 and SENTINEL not in r.text
     assert not (office.paths.office / "connections").exists()
+
+
+# Subscription sign-ins.
+
+
+class FakeOpenAI:
+    """OpenAI's sign-in and model catalog: the device code is approved once ``approved`` is set."""
+
+    def __init__(self):
+        self.approved = threading.Event()
+
+    def __call__(self, method, url, **kwargs):
+        if url.endswith("/usercode"):
+            return USERCODE
+        if url.endswith("/deviceauth/token"):
+            return APPROVED if self.approved.is_set() else PENDING
+        return TOKENS if url.endswith("/oauth/token") else CATALOG
+
+
+@pytest.fixture
+def openai(office, conns):
+    fake, clock = FakeOpenAI(), Clock()
+    found = Logins(conns, models=office.extras["models"],
+                   auth=lambda **kw: OpenAIAuth(request=fake, monotonic=clock, sleep=clock.sleep, **kw))
+    office.extras["logins"] = found
+    yield fake
+    found.close_all()
+
+
+async def poll(client, login_id, headers, state):
+    for _ in range(500):
+        r = await client.get(f"/connections/login/{login_id}", headers=headers)
+        if r.json().get("state") == state:
+            return r
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"sign-in {login_id} never became {state}")
+
+
+def no_tokens(*texts):
+    for text in texts:
+        assert SIGNATURE not in text and REFRESH not in text
+
+
+async def test_the_owner_signs_in_to_a_subscription(client, office, as_owner, openai):
+    r = await client.post("/connections/login", json={"provider": "openai"}, headers=as_owner)
+    login = r.json()
+    assert (r.status_code, login["state"], login["url"], login["user_code"], login["connection"]) == (
+        200, "waiting", "https://auth.openai.com/codex/device", "ABCD-EFGH", None)
+    shown = await client.get(f"/connections/login/{login['id']}", headers=as_owner)
+    assert shown.json() == login
+    openai.approved.set()
+    done = await poll(client, login["id"], as_owner, "signed_in")
+    assert done.json()["connection"] == "chatgpt"
+    listed = await client.get("/connections", headers=as_owner)
+    assert {"name": "chatgpt", "provider": "chatgpt", "method": "subscription", "model": "gpt-5.5",
+            "default": False} in listed.json()["connections"]
+    models = await client.get("/connections/chatgpt/models", headers=as_owner)
+    no_tokens(r.text, shown.text, done.text, listed.text, models.text,
+              (office.paths.office / "connections" / "chatgpt.json").read_text())
+
+
+async def test_a_sign_in_is_only_for_openai(client, office, as_owner, openai):
+    r = await client.post("/connections/login", json={"provider": "anthropic"}, headers=as_owner)
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")
+    assert not (office.paths.office / "connections").exists()
+
+
+async def test_only_the_starter_sees_or_cancels_a_sign_in(client, conns, as_owner, as_ava, commit_asset, openai):
+    commit_asset(office_asset([{"who": "ava", "can": ["connections"]}]))  # managing isn't enough
+    login = (await client.post("/connections/login", json={"provider": "openai"}, headers=as_owner)).json()
+    for method, path, headers in [("GET", login["id"], as_ava), ("DELETE", login["id"], as_ava),
+                                  ("GET", "01J0000000000000000000000Z", as_owner),
+                                  ("DELETE", "01J0000000000000000000000Z", as_owner)]:
+        r = await client.request(method, f"/connections/login/{path}", headers=headers)
+        assert (r.status_code, r.json()["error"]) == (404, "not_found"), (method, path)
+    r = await client.delete(f"/connections/login/{login['id']}", headers=as_owner)
+    assert (r.status_code, r.json()) == (200, {"ok": True})
+    r = await client.get(f"/connections/login/{login['id']}", headers=as_owner)
+    assert r.json()["state"] == "cancelled"
+    openai.approved.set()
+    assert conns.names() == ["office"]
+
+
+async def test_no_sign_in_starts_once_the_office_is_stopping(client, office, as_owner, openai):
+    office.extras["logins"].close_all()
+    r = await client.post("/connections/login", json={"provider": "openai"}, headers=as_owner)
+    assert (r.status_code, r.json()["error"]) == (503, "stopping")

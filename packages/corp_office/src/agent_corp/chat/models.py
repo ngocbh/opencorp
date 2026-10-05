@@ -5,15 +5,16 @@ import re
 import threading
 import time
 from collections.abc import Callable, Iterable
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 from agent_composer.llm_clients import ModelListError as HostListError
 from agent_composer.llm_clients import list_models as host_models
-from agent_composer.llm_clients.auth import HttpResponse
+from agent_composer.llm_clients.auth import AuthError, AuthStore, HttpResponse, OpenAIAuth
 from pydantic import Field
 
-from agent_corp.chat.connections import Connections, config_hash, provider_label
+from agent_corp.chat.connections import ConnectionFile, Connections, config_hash, provider_label
 from agent_corp.chat.provider import Provider, ProviderError
 from agent_corp.protocol.models import ModelList, ModelOption
 
@@ -122,6 +123,36 @@ def provider_models(provider: str, key: str | None, base_url: str | None = None,
     return _text_models(ids) if provider == "openai" and base_url is None else list(ids)
 
 
+def subscription_models(auth_file: Path, *, timeout: float,
+                        request: Callable[..., HttpResponse] | None = None) -> list[str]:
+    """The models the ChatGPT subscription signed in at ``auth_file`` offers, in its order, refreshing a sign-in about
+    to expire first; each request gets what is left of ``timeout``. ``request`` stands in for composer's HTTP sender.
+
+    Raises:
+        ModelListError: they couldn't be listed.
+    """
+    end = time.monotonic() + timeout
+
+    def auth() -> OpenAIAuth:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            raise ModelListError(TIMED_OUT)
+        return OpenAIAuth(request=request, request_timeout=remaining)
+
+    store = AuthStore(auth_file)
+    try:
+        selection = store.selection("openai")
+        if selection is None:
+            raise ModelListError("no sign-in")
+        credentials = store.credentials("openai", selection.credential_id, refresh=lambda old: auth().refresh(old))
+        return list(auth().subscription_models(credentials))
+    except AuthError as exc:
+        # Composer's messages are status-only and safe to show.
+        message = str(exc)
+        status = re.search(r"\(HTTP (\d{3})\)$", message)
+        raise ModelListError(message, int(status[1]) if status else None) from None
+
+
 def _runs_host(llm: dict, env: dict[str, str]) -> tuple[bool, str | None]:
     """Whether the host a connection with ``llm`` and ``env`` runs on is known, and its base URL (None: the
     provider's own)."""
@@ -142,12 +173,14 @@ def own_models(conn: Provider, name: str, error: str | None = None, *, refused: 
 
 
 def _listed(conn: Provider, name: str, timeout: float, request: Callable[..., HttpResponse] | None,
-            transport: httpx.BaseTransport | None) -> Listing:
+            transport: httpx.BaseTransport | None, auth_file: Path | None) -> Listing:
     llm = conn.llm_config or {}
     provider, key = llm.get("provider"), llm.get("api_key")
     known, base_url = _runs_host(llm, conn.env)
     try:
-        if isinstance(key, str) and provider_label(llm) == "azure" and base_url:
+        if auth_file is not None:
+            ids = subscription_models(auth_file, timeout=timeout, request=request)
+        elif isinstance(key, str) and provider_label(llm) == "azure" and base_url:
             ids = azure_deployments(base_url, key, timeout=timeout, transport=transport)
         # A connection's env can't hold a key, so a key not in llm_config is one its runs don't have either.
         elif not provider or not known or not (isinstance(key, str) or provider in KEYLESS):
@@ -169,9 +202,10 @@ def _listed(conn: Provider, name: str, timeout: float, request: Callable[..., Ht
 
 def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE,
                 request: Callable[..., HttpResponse] | None = None,
-                transport: httpx.BaseTransport | None = None) -> Listing:
+                transport: httpx.BaseTransport | None = None, auth_file: Path | None = None) -> Listing:
     """The models connection ``name`` (``conn``) offers, within ``deadline`` seconds.
 
+    A subscription is listed through its sign-in at ``auth_file``; without one, it offers only its configured model.
     Azure is listed by its deployments, and any other provider by composer's listing of the host its runs go to,
     with the key they use (``request`` and ``transport`` stand in for the two HTTP clients); a listed connection
     offers its configured model first if its host doesn't list it. A connection whose provider has no listing,
@@ -180,7 +214,7 @@ def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE,
     reason, never the key.
     """
     done: list[Listing] = []
-    worker = threading.Thread(target=lambda: done.append(_listed(conn, name, deadline, request, transport)),
+    worker = threading.Thread(target=lambda: done.append(_listed(conn, name, deadline, request, transport, auth_file)),
                               name=f"models-{name}", daemon=True)
     worker.start()
     # The clients' timeouts bound each step, not the whole listing; a reply trickling in could outlast them.
@@ -189,7 +223,7 @@ def list_models(conn: Provider, name: str, *, deadline: float = DEADLINE,
 
 
 Lister = Callable[..., ModelList]
-"""``list_models``, or a stand-in with its ``(conn, name, *, deadline)``."""
+"""``list_models``, or a stand-in with its ``(conn, name, *, deadline, auth_file)``."""
 
 
 class ModelCache:
@@ -289,7 +323,7 @@ class ModelCache:
         except (ValueError, ProviderError):
             log.warning("connection %s can't be read; its models aren't listed ahead of time", name)
 
-    def _list(self, name: str, conn: Provider, seen: tuple | None, end: float) -> ModelList:
+    def _list(self, name: str, conn: ConnectionFile, seen: tuple | None, end: float) -> ModelList:
         """List connection ``name``, unless another caller lists it while this one waits; ``seen`` is the entry this
         caller found, and ``end`` the ``time.monotonic()`` it must be done by."""
         with self._lock:
@@ -304,7 +338,8 @@ class ModelCache:
             remaining = end - time.monotonic()
             if remaining <= 0:
                 return own_models(conn, name, TIMED_OUT)
-            listed = self._lister(conn, name, deadline=remaining)
+            auth_file = self.connections.auth_file(name) if conn.method == "subscription" else None
+            listed = self._lister(conn, name, deadline=remaining, auth_file=auth_file)
             with self._lock:
                 self._entries[name] = (self._clock(), config_hash(conn), listed)
             return listed
