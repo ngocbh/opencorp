@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agent_corp.chat.connections import OFFICE, ConnectionUnusable, RunMoved, read_run_record, write_run_record
+from agent_corp.chat.connections import ConnectionUnusable, RunMoved, read_run_record, write_run_record
 from agent_corp.chat.harness import LIVE, Harness, HarnessError
 from agent_corp.chat.provider import Provider
 from agent_corp.company.loader import load_repo
@@ -381,9 +381,7 @@ class Learning:
         pin = self.git.pin(session.repo_commit)
         defaults = self._defaults(load_repo(pin))
         if provider is None:
-            name, model = session.connection or OFFICE, session.model
-            if name not in self.harness.connections.names():
-                name, model = self.harness.connections.default(), None
+            name, model, _ = self.harness.connections.choice(session.connection, session.model)
             provider = self.harness.connections.resolve(name, model)
             write_run_record(self._record(session.id, run_id), name, model, provider)
         self._remember(provider)

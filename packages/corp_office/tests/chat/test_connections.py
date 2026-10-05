@@ -162,6 +162,17 @@ def test_default_follows_the_pointer_and_falls_back_when_its_file_is_gone(tmp_pa
     assert c.default() == OFFICE
 
 
+def test_a_chat_on_a_removed_connection_moves_to_the_default_on_its_own_model(tmp_path):
+    c = Connections(office_dir(tmp_path))
+    for name in ("second", "third"):
+        c.put(name, api_key())
+    assert c.choice(None, None) == (OFFICE, None, False)
+    assert c.choice("second", "gpt-4o-mini") == ("second", "gpt-4o-mini", False)
+    c.set_default("third")
+    c.remove("second")
+    assert c.choice("second", "gpt-4o-mini") == ("third", None, True)
+
+
 def test_remove_unlinks_the_connection_and_its_sign_in(tmp_path, monkeypatch):
     office = office_dir(tmp_path)
     c = Connections(office)

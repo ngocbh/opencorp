@@ -163,6 +163,19 @@ class Connections:
         """
         return self._default(self.names())
 
+    def choice(self, connection: str | None, model: str | None) -> tuple[str, str | None, bool]:
+        """The connection and model a chat on ``connection`` and ``model`` runs on, and whether it moved.
+
+        A chat whose connection was removed moves to the default, on the default's own model.
+
+        Raises:
+            ProviderError: the connections can't be read.
+        """
+        name = connection or OFFICE
+        if name in self.names():
+            return name, model, False
+        return self.default(), None, True
+
     def set_default(self, name: str) -> None:
         """Make ``name`` the default; ConnectionGone if there is no such connection."""
         if name != OFFICE:

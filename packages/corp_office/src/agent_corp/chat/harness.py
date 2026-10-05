@@ -795,14 +795,13 @@ class Harness:
 
         A session that isn't moved is returned as is.
         """
-        name = session.connection or OFFICE
-        if name in self.connections.names():
+        name, model, moved = self.connections.choice(session.connection, session.model)
+        if not moved:
             return session
-        default = self.connections.default()
-        model = (self.connections.get(default).llm_config or {}).get("model")
-        now_on = f"{default}/{model}" if model else default
-        return self.store.update_session(session.id, connection=default, model=None,
-                                         model_note=f"Connection '{name}' was removed; this chat now uses {now_on}.")
+        own = (self.connections.get(name).llm_config or {}).get("model")
+        now_on = f"{name}/{own}" if own else name
+        return self.store.update_session(session.id, connection=name, model=model, model_note=(
+            f"Connection '{session.connection}' was removed; this chat now uses {now_on}."))
 
     def _restart(self, live: _Live, text: str, *, by: str | None = None) -> None:
         """Hand ``text`` to a fresh run on the current provider instead of the worker waiting at a turn."""
