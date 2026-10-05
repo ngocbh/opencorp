@@ -321,16 +321,18 @@ class Harness:
             try:
                 self._resume(live)
             except Exception:
-                pass  # _spawn logged it and failed the session
+                pass  # it logged why and failed the session
 
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
-        moved = False
         try:
-            # In the try: if the connections can't be read, the fresh run's spawn fails the session.
             stored = self.store.get_session(live.session_id)
             session = self._choice(stored)
-            moved = session is not stored
+        except Exception:
+            self._cant_start(live)
+            raise
+        moved = session is not stored
+        try:
             record = read_run_record(self._record_path(live))
             ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
             if ran_on != (session.connection or OFFICE, session.model):
@@ -341,7 +343,7 @@ class Harness:
             log.info("session %s starts a fresh run: %s", live.session_id, exc)
             if not moved:  # a moved chat's removal note says more
                 self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
-            self._new_run(live)  # on failure, _spawn fails the session and raises
+            self._new_run(live)  # on failure, it fails the session and raises
             return
         self._spawn(live, "resume", provider)
 
@@ -388,10 +390,14 @@ class Harness:
                     return
                 live.worker = self.registry.spawn(job, run_dir, _Handlers(self, live, ask, tools))
         except Exception:
-            log.exception("can't start a worker for session %s", live.session_id)
-            self._finish(live, "failed", None)
+            self._cant_start(live)
             raise
         self._post(self.hooks.fire, "run_started", session, live.run_id)
+
+    def _cant_start(self, live: _Live) -> None:
+        """Log why ``live``'s worker can't start, and fail its session."""
+        log.exception("can't start a worker for session %s", live.session_id)
+        self._finish(live, "failed", None)
 
     # --- the person's keys -------------------------------------------------------------
 
@@ -780,11 +786,18 @@ class Harness:
             self._finish(live, "failed", outcome)
 
     def _new_run(self, live: _Live) -> None:
-        """Start a fresh chat run for ``live``; the old run's open questions go stale."""
-        for q in self.store.list_questions(run_id=live.run_id, status="open"):
-            self.store.set_question_status(q.id, "stale")
-        live.run_id = new_id()
-        self.store.add_session_run(live.session_id, live.run_id)
+        """Start a fresh chat run for ``live``; the old run's open questions go stale.
+
+        If it can't start, the session fails and the error is raised.
+        """
+        try:
+            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                self.store.set_question_status(q.id, "stale")
+            live.run_id = new_id()
+            self.store.add_session_run(live.session_id, live.run_id)
+        except Exception:
+            self._cant_start(live)
+            raise
         self._spawn(live, "chat")
 
     def _provider_changed(self, live: _Live) -> bool:
@@ -833,7 +846,7 @@ class Harness:
         try:
             self._new_run(live)
         except Exception:
-            pass  # _spawn logged it and failed the session
+            pass  # it logged why and failed the session
 
     def _asked_turn(self, live: _Live) -> bool:
         return any(live.spec.chat.is_turn(q.node_id)

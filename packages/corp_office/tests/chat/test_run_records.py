@@ -359,3 +359,55 @@ def test_a_resume_runs_on_what_its_check_passed_even_if_the_choice_changes_meanw
     jobs = spawned(harness)
     kill(harness, sid)
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("resume", "stub")]
+
+
+def killed(harness, sid):
+    """Kill the session's worker."""
+    os.killpg(harness._live[sid].worker.pgid, signal.SIGKILL)
+
+
+def test_a_crash_resume_that_cant_read_where_the_chat_goes_fails_without_a_new_run(make_harness, fake_llm, workspace):
+    harness = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"content": "from two"})
+    sid = start(harness, workspace)
+    on(harness, sid, "second")
+    say(harness, sid, "a")
+    runs = harness.store.get_session(sid).run_ids
+    harness.connections.remove("second")
+    write_private(harness.connections.dir / "_default.json", b"{}")  # so the chat can't be moved
+    killed(harness, sid)
+    wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
+    session = harness.store.get_session(sid)
+    assert (session.run_ids, session.model_note, session.connection) == (runs, None, "second")
+    assert sid not in harness._live
+
+
+def test_a_fresh_run_that_cant_be_recorded_fails_the_session_at_restore(make_harness, fake_llm, workspace,
+                                                                       monkeypatch):
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(first, workspace)
+    first.close_all()
+
+    second = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-another-key"})
+
+    def unrecorded(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(second.store, "add_session_run", unrecorded)
+    second.restore()
+    assert status(second, sid) == "failed" and sid not in second._live
+
+
+def test_a_fresh_run_that_cant_be_recorded_fails_the_session_after_a_crash(make_harness, fake_llm, workspace,
+                                                                          monkeypatch):
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(harness, workspace)
+    rewrite_office(harness, api_key="sk-another-key")
+
+    def unrecorded(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(harness.store, "add_session_run", unrecorded)
+    killed(harness, sid)
+    wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
+    assert sid not in harness._live
