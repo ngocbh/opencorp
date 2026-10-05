@@ -14,7 +14,8 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
-from agent_corp.chat.connections import OFFICE, Connections, RunMoved, read_run_record, write_run_record
+from agent_corp.chat.connections import (OFFICE, ConnectionGone, Connections, RunMoved, read_run_record,
+                                         write_run_record)
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
@@ -640,6 +641,30 @@ class Harness:
                 self._deliver(live)
         return session
 
+    def set_model(self, session_id: str, connection: str, model: str) -> Session:
+        """Switch the session to ``connection``/``model``; its next turn runs on them in a fresh run.
+
+        A reply already running finishes where it is. A model equal to the connection's own is stored as None.
+        """
+        session = self.store.get_session(session_id)
+        if session is None:
+            raise HarnessError(404, "not_found", f"no session {session_id}")
+        if session.status not in LIVE:
+            raise HarnessError(409, "not_live", f"session {session_id} has ended")
+        try:
+            if connection not in self.connections.names():
+                raise ConnectionGone(connection)
+            own = (self.connections.resolve(connection, None).llm_config or {}).get("model")
+        except ConnectionGone:
+            raise HarnessError(422, "unknown_connection", f"no connection {connection!r} on this office") from None
+        except (ProviderError, ValueError):
+            # Its error may name the office's files; the log says which connection, the client gets no path.
+            log.warning("connection %s can't be used; session %s stays where it is", connection, session_id)
+            raise HarnessError(409, "connection_unusable",
+                               f"connection {connection!r} can't be used on this office now") from None
+        return self.store.update_session(session_id, connection=connection,
+                                         model=None if model == own else model, model_note=None)
+
     def close_all(self) -> None:
         """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
 
@@ -746,11 +771,16 @@ class Harness:
         self._deliver(live)
 
     def _deliver(self, live: _Live) -> bool:
-        """Answer the open turn with the queued messages, unless held; True if it did."""
+        """Answer the open turn with the queued messages, unless held; True if it did (or handed them to a new run)."""
         if live.turn_q is None or not live.pending or live.ending or self._held(live):
             return False
-        self._answer_turn(live, live.turn_q, "\n\n".join(live.pending), by=live.pending_by)
+        text, by = "\n\n".join(live.pending), live.pending_by
         live.pending.clear()
+        live.pending_by = None
+        if self._provider_changed(live):
+            self._restart(live, text, by=by)  # re-queues text for the new run's first turn
+        else:
+            self._answer_turn(live, live.turn_q, text, by=by)
         return True
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None = None,
