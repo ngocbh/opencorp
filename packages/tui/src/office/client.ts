@@ -54,10 +54,9 @@ export type WhoAmI = { person: string; device: string | null }
 export function createOfficeClient(opts: {
   socket: string
   timeoutMs?: number
-  createTimeoutMs?: number
   token?: string
 }) {
-  const { socket, timeoutMs = READ_TIMEOUT_MS, createTimeoutMs = CREATE_TIMEOUT_MS, token } = opts
+  const { socket, timeoutMs = READ_TIMEOUT_MS, token } = opts
   const call = <T>(method: Method, path: string, body?: unknown) => request<T>(socket, method, path, body, { token })
   // A hung read would stall the bootstrap or a session load forever; writes aren't retried,
   // so they wait for the office's answer.
@@ -85,7 +84,7 @@ export function createOfficeClient(opts: {
       list: (opts: { person?: string; limit?: number } = {}) => get<Session[]>(`/sessions${query(opts)}`),
       // Starting a chat may wait up to 8 s for the connections' model lists, so it gets a limit of its own.
       create: (req: CreateSessionRequest) =>
-        request<Session>(socket, "POST", "/sessions", req, { timeoutMs: createTimeoutMs, token }).catch((e) => {
+        request<Session>(socket, "POST", "/sessions", req, { timeoutMs: CREATE_TIMEOUT_MS, token }).catch((e) => {
           if (e instanceof OfficeTimeout)
             e.message += "; the chat may have started, so look for it in the session list (/sessions)"
           throw e

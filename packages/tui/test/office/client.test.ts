@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, spyOn, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { CREATE_TIMEOUT_MS, createOfficeClient } from "../../src/office/client"
 import { OfficeError, OfficeTimeout, VersionConflictError } from "../../src/office/errors"
@@ -240,11 +240,18 @@ test("create sends the pick and waits 30 s; a timeout says the chat may have sta
   expect(office.requests.at(-1)).toMatchObject({ method: "POST", path: "/sessions" })
   // The office records its default connection when none is asked for.
   expect((await client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).connection).toBe("office")
+  // The client asks for a 30 s limit; the test gets a 50 ms one so the held request times out.
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  const asked: number[] = []
+  const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms) => (asked.push(ms), timeout(50)))
   const release = office.hold("POST /sessions")
-  const c = createOfficeClient({ socket: office.socket, createTimeoutMs: 50 })
-  const err = await failure(c.sessions.create({ person: "minh", cwd: "/tmp/proj" }))
-  release()
+  const err = await failure(client().sessions.create({ person: "minh", cwd: "/tmp/proj" })).finally(() => {
+    spy.mockRestore()
+    release()
+  })
+  expect(asked).toEqual([CREATE_TIMEOUT_MS])
   expect(err).toBeInstanceOf(OfficeTimeout)
+  expect(err.timeoutMs).toBe(CREATE_TIMEOUT_MS)
   expect(err.message).toContain("the chat may have started")
   expect(err.message).toContain("session list")
 })
