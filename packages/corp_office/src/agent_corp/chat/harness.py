@@ -325,9 +325,12 @@ class Harness:
 
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
+        moved = False
         try:
             # In the try: if the connections can't be read, the fresh run's spawn fails the session.
-            session = self._choice(self.store.get_session(live.session_id))
+            stored = self.store.get_session(live.session_id)
+            session = self._choice(stored)
+            moved = session is not stored
             record = read_run_record(self._record_path(live))
             if record is not None and (record.connection, record.model) != (session.connection or OFFICE,
                                                                              session.model):
@@ -336,7 +339,8 @@ class Harness:
         except (RunMoved, ProviderError, ValueError) as exc:
             # Resuming would replay the run's own endpoint and config with whatever key it is given.
             log.info("session %s starts a fresh run: %s", live.session_id, exc)
-            self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
+            if not moved:  # a moved chat's removal note says more
+                self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
             self._new_run(live)  # on failure, _spawn fails the session and raises
             return
         self._spawn(live, "resume")
@@ -787,7 +791,10 @@ class Harness:
         return (provider.llm_config, provider.env) != (live.provider.llm_config, live.provider.env)
 
     def _choice(self, session: Session) -> Session:
-        """``session``, moved to the default connection's own model, with a note, if its connection was removed."""
+        """``session``, moved to the default connection's own model, with a note, if its connection was removed.
+
+        A session that isn't moved is returned as is.
+        """
         name = session.connection or OFFICE
         if name in self.connections.names():
             return session

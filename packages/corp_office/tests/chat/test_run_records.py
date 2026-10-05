@@ -17,6 +17,7 @@ from tests.chat.conftest import errors, on, say, spawned, status, wait_for
 KEY = "sk-record-test-0e7c"
 FRESH = ("This chat continues on a fresh run because its model or connection changed. "
          "If your last message got no reply, send it again.")
+REMOVED = "Connection 'second' was removed; this chat now uses office/stub."
 
 
 def start(harness, workspace):
@@ -229,7 +230,7 @@ def test_a_removed_connection_moves_the_chat_to_the_default_on_its_next_turn(mak
     assert model_of(fake_llm.requests()[-1]) == "stub"
     session = harness.store.get_session(sid)
     assert (session.connection, session.model) == (OFFICE, None)
-    assert session.model_note == "Connection 'second' was removed; this chat now uses office/stub."
+    assert session.model_note == REMOVED
     assert record_of(harness, sid).connection == OFFICE
 
 
@@ -245,8 +246,27 @@ def test_a_crash_resume_after_removal_moves_to_the_default(make_harness, fake_ll
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub")]
     session = harness.store.get_session(sid)
     assert (session.connection, session.model, len(session.run_ids)) == (OFFICE, None, 3)
+    assert session.model_note == REMOVED  # says more than the fresh-run note
     assert record_of(harness, sid).connection == OFFICE
     assert errors(harness, sid) == []
+
+
+def test_a_restore_after_removal_keeps_the_removal_note(make_harness, fake_llm, workspace):
+    first = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"content": "from two"})
+    sid = start(first, workspace)
+    on(first, sid, "second")
+    say(first, sid, "a")
+    first.close_all()
+    first.connections.remove("second")
+
+    second = make_harness()
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub")]
+    session = second.store.get_session(sid)
+    assert (session.connection, session.model_note) == (OFFICE, REMOVED)
 
 
 def test_the_key_change_on_the_same_name_restarts_on_the_next_turn(make_harness, fake_llm, workspace):
