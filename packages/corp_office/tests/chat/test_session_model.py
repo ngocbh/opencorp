@@ -429,6 +429,21 @@ def test_a_subscription_run_is_recorded_on_it_and_resumed_and_learned_from_on_th
     assert h._live[s.id].default_price == ZERO_PRICE
 
 
+def test_a_chat_moved_off_a_subscription_pays_for_its_unpriced_models_again(make_harness, workspace, fake_llm):
+    h = make_harness(connections={"second": "stub-2"})
+    subscribe(h)
+    fake_llm.script({"content": "on two"})
+    s = start(h, workspace, connection="chatgpt")
+    assert h._live[s.id].default_price == ZERO_PRICE
+    h.set_model(s.id, "second", "stub-2")
+    assert say(h, s.id, "b") == "on two"
+    assert h._live[s.id].default_price == DEFAULT_PRICE
+    before = h.store.get_session(s.id).cost
+    h._charge(h._live[s.id], {"model": "unpriced", "usage": {"input_tokens": 1_000_000, "output_tokens": 0,
+                                                             "total_tokens": 1_000_000}})
+    assert h.store.get_session(s.id).cost - before == pytest.approx(DEFAULT_PRICE.input)
+
+
 def test_a_connection_removed_as_its_chat_starts_is_priced_as_a_key(make_harness, workspace):
     h = make_harness(connections={"second": "stub-2"})
     resolve, calls = h.connections.resolve, []
