@@ -138,7 +138,7 @@ function ConnectList(props: { onPick: (provider: Provider) => void }) {
       actions={[
         {
           command: "connect.dialog.default",
-          title: "Make default",
+          title: "make default",
           hidden: !canDefault(),
           onTrigger: (option) => {
             if ("connection" in option.value) void makeDefault(option.value.connection)
@@ -146,7 +146,7 @@ function ConnectList(props: { onPick: (provider: Provider) => void }) {
         },
         {
           command: "connect.dialog.remove",
-          title: "Remove",
+          title: "remove",
           hidden: !canRemove(),
           onTrigger: (option) => {
             if ("connection" in option.value) void remove(option.value.connection)
