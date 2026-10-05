@@ -1,5 +1,8 @@
 """Run records: each chat run's connection and model, what a resume checks, and a removed connection."""
 
+import json
+import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -7,10 +10,13 @@ import pytest
 from agent_corp.chat import harness as harness_module
 from agent_corp.chat.connections import OFFICE, ConnectionFile, config_hash, read_run_record
 from agent_corp.chat.harness import HarnessError
+from agent_corp.secrets import write_private
 from agent_corp.testing.fake_llm import LLM_CONFIG
-from tests.chat.conftest import on, say, spawned, status, wait_for
+from tests.chat.conftest import errors, on, say, spawned, status, wait_for
 
 KEY = "sk-record-test-0e7c"
+FRESH = ("This chat continues on a fresh run because its model or connection changed. "
+         "If your last message got no reply, send it again.")
 
 
 def start(harness, workspace):
@@ -23,6 +29,32 @@ def record_of(harness, sid):
     """The run record of a session's latest run."""
     run_id = harness.store.get_session(sid).run_ids[-1]
     return read_run_record(harness.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json")
+
+
+def rewrite_office(harness, **llm):
+    """Change office/provider.json's llm_config, as ``ac onboard`` would."""
+    path = harness.office.paths.office / "provider.json"
+    provider = json.loads(path.read_text())
+    write_private(path, json.dumps({**provider, "llm_config": {**provider["llm_config"], **llm}}).encode())
+
+
+def resumed(harness, sid):
+    """Wait until the session's live run has a worker at an open turn."""
+    wait_for(lambda: sid in harness._live and harness._live[sid].worker and harness._live[sid].turn_q,
+             what="the live turn")
+
+
+def kill(harness, sid):
+    """Kill the session's worker and wait for its replacement to reach a turn."""
+    old = harness._live[sid].worker
+    os.killpg(old.pgid, signal.SIGKILL)
+    wait_for(lambda: sid in harness._live and harness._live[sid].worker not in (None, old)
+             and harness._live[sid].turn_q, what="the worker after the kill")
+
+
+def on_base_url(fake_llm):
+    """An llm_config for the FakeLLM that names its endpoint as a base_url (which composer sends a key to)."""
+    return {**LLM_CONFIG, "base_url": f"{fake_llm.base_url}/v1", "api_key": KEY}
 
 
 def model_of(request):
@@ -57,6 +89,107 @@ def test_a_failed_record_write_fails_the_spawn(make_harness, workspace, monkeypa
     (session,) = harness.store.list_sessions()
     assert (err.value.code, session.status, jobs) == ("start_failed", "failed", [])
     assert "failed to start" in err.value.message and session.id not in harness._live
+
+
+def test_restore_resumes_a_run_whose_record_matches(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    first = make_harness()
+    sid = start(first, workspace)
+    say(first, sid, "a")
+    first.close_all()
+
+    second = make_harness()
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert say(second, sid, "b") == "two"
+    assert [j.kind for j in jobs] == ["resume"]
+    session = second.store.get_session(sid)
+    assert (len(session.run_ids), session.model_note) == (1, None)
+
+
+def test_restore_after_the_key_changed_starts_a_fresh_run_with_a_note(make_harness, fake_llm, workspace):
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(first, workspace)
+    first.close_all()
+
+    second = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-another-key"})
+    jobs = spawned(second)
+    seen = []
+    second.store.add_listener(lambda e: seen.append(e.data.get("model_note")) if e.type == "session.updated" else None)
+    second.restore()
+    resumed(second, sid)
+    assert [(j.kind, j.llm_config["api_key"]) for j in jobs] == [("chat", "sk-another-key")]
+    session = second.store.get_session(sid)
+    assert (len(session.run_ids), session.model_note) == (2, FRESH)
+    assert FRESH in seen  # clients hear of it
+    assert record_of(second, sid).config == config_hash(second.connections.resolve(OFFICE, None))
+
+
+def test_restore_after_the_endpoint_changed_starts_a_fresh_run(make_harness, fake_llm, workspace):
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(first, workspace)
+    first.close_all()
+
+    second = make_harness(llm_config=on_base_url(fake_llm))
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert [j.kind for j in jobs] == ["chat"]
+    assert len(second.store.get_session(sid).run_ids) == 2
+
+
+def test_restore_of_a_run_without_a_record_resumes_on_the_same_base_url(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    first = make_harness()
+    sid = start(first, workspace)
+    say(first, sid, "a")
+    first.close_all()
+    run_id = first.store.get_session(sid).run_ids[-1]
+    (first.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json").unlink()  # a run from before records
+
+    second = make_harness()
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert say(second, sid, "b") == "two"
+    assert [j.kind for j in jobs] == ["resume"]
+    assert second.store.get_session(sid).run_ids == [run_id]
+
+
+def test_restore_of_a_run_without_a_record_on_another_base_url_starts_fresh(make_harness, fake_llm, workspace):
+    first = make_harness()
+    sid = start(first, workspace)
+    first.close_all()
+    run_id = first.store.get_session(sid).run_ids[-1]
+    (first.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json").unlink()
+
+    second = make_harness(llm_config=on_base_url(fake_llm))
+    jobs = spawned(second)
+    second.restore()
+    resumed(second, sid)
+    assert [j.kind for j in jobs] == ["chat"]
+    assert second.store.get_session(sid).model_note == FRESH
+
+
+def test_a_crash_resume_checks_the_record_too(make_harness, fake_llm, workspace):
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(harness, workspace)
+    jobs = spawned(harness)
+    rewrite_office(harness, api_key="sk-another-key")
+    kill(harness, sid)
+    assert [(j.kind, j.llm_config["api_key"]) for j in jobs] == [("chat", "sk-another-key")]
+    session = harness.store.get_session(sid)
+    assert (len(session.run_ids), session.model_note) == (2, FRESH)
+
+
+def test_a_crash_resume_whose_record_matches_resumes(make_harness, fake_llm, workspace):
+    harness = make_harness()
+    sid = start(harness, workspace)
+    jobs = spawned(harness)
+    kill(harness, sid)
+    assert [j.kind for j in jobs] == ["resume"]
+    assert harness.store.get_session(sid).model_note is None
 
 
 def test_a_session_on_a_second_connection_runs_on_it(make_harness, fake_llm, workspace):
@@ -98,6 +231,22 @@ def test_a_removed_connection_moves_the_chat_to_the_default_on_its_next_turn(mak
     assert (session.connection, session.model) == (OFFICE, None)
     assert session.model_note == "Connection 'second' was removed; this chat now uses office/stub."
     assert record_of(harness, sid).connection == OFFICE
+
+
+def test_a_crash_resume_after_removal_moves_to_the_default(make_harness, fake_llm, workspace):
+    harness = make_harness(connections={"second": "stub-2"})
+    fake_llm.script({"content": "from two"})
+    sid = start(harness, workspace)
+    on(harness, sid, "second")
+    say(harness, sid, "a")
+    harness.connections.remove("second")
+    jobs = spawned(harness)
+    kill(harness, sid)
+    assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub")]
+    session = harness.store.get_session(sid)
+    assert (session.connection, session.model, len(session.run_ids)) == (OFFICE, None, 3)
+    assert record_of(harness, sid).connection == OFFICE
+    assert errors(harness, sid) == []
 
 
 def test_the_key_change_on_the_same_name_restarts_on_the_next_turn(make_harness, fake_llm, workspace):

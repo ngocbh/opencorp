@@ -13,7 +13,7 @@ from typing import Any
 
 from agent_composer.memory.storage.markdown import MarkdownStore
 
-from agent_corp.chat.connections import OFFICE, Connections, write_run_record
+from agent_corp.chat.connections import OFFICE, Connections, RunMoved, read_run_record, write_run_record
 from agent_corp.chat.cost import call_usd, cost_cap
 from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.identity import person_inputs, talking_to
@@ -44,6 +44,8 @@ LIVE = ("starting", "idle", "busy", "ending")
 _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
+_FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
+               "If your last message got no reply, send it again.")
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
 """``(session, run_id, on_question) -> {group: {tool name: tool}}``: the office tools of one run."""
@@ -298,7 +300,7 @@ class Harness:
                      owner=session.opened_by or _ceo(repo))
 
     def restore(self) -> None:
-        """Resume every session that was live when the office stopped, under the same run id."""
+        """Resume every session that was live when the office stopped, under the same run id where it can."""
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
@@ -317,9 +319,27 @@ class Harness:
             with self._lock:
                 self._live[session.id] = live
             try:
-                self._spawn(live, "resume")
+                self._resume(live)
             except Exception:
                 pass  # _spawn logged it and failed the session
+
+    def _resume(self, live: _Live) -> None:
+        """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
+        try:
+            # In the try: if the connections can't be read, the fresh run's spawn fails the session.
+            session = self._choice(self.store.get_session(live.session_id))
+            record = read_run_record(self._record_path(live))
+            if record is not None and (record.connection, record.model) != (session.connection or OFFICE,
+                                                                             session.model):
+                raise RunMoved("the chat's model changed since its last run")
+            self.connections.for_run(record, self._log_path(live), exact=True)
+        except (RunMoved, ProviderError, ValueError) as exc:
+            # Resuming would replay the run's own endpoint and config with whatever key it is given.
+            log.info("session %s starts a fresh run: %s", live.session_id, exc)
+            self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
+            self._new_run(live)  # on failure, _spawn fails the session and raises
+            return
+        self._spawn(live, "resume")
 
     def _interrupt_running_tools(self, session_id: str) -> None:
         """Mark tool parts a dead office left ``running`` as interrupted; their calls died with it."""
@@ -735,7 +755,7 @@ class Harness:
                 self._finish(live, "failed", None)
             else:
                 live.exits += 1
-                self._spawn(live, "resume")
+                self._resume(live)
             return
         live.exits = 0
         failure = outcome.get("failure") or {}
