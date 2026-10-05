@@ -729,9 +729,12 @@ export function createFakeOffice(
 
   /**
    * The office's choice for a new chat: the pick when its connection is here (its own model stored as null), else
-   * the default on its own model with a note saying why.
+   * the default on its own model with a note saying why. Unlike the office, it skips the agent's model: the fake
+   * people have none.
    */
   function choose(body: any): Pick<Session, "connection" | "model" | "model_note"> {
+    if (body.connection == null && body.model == null)
+      return { connection: state.defaultConnection, model: null, model_note: null }
     const picked: string = body.connection ?? state.defaultConnection
     const c = state.connections.find((x) => x.name === picked)
     if (c) return { connection: c.name, model: body.model === c.model ? null : (body.model ?? null), model_note: null }

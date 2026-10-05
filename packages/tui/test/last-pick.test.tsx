@@ -25,8 +25,11 @@ beforeEach(() => {
   rmSync(modelFile(), { force: true })
   setting(undefined)
 })
-// Later test files expect the default.
-afterEach(() => setting(undefined))
+// Later test files expect the default and no picks.
+afterEach(() => {
+  rmSync(modelFile(), { force: true })
+  setting(undefined)
+})
 
 /** Opens the seeded session (or home, with `home`), then runs `body` against it. */
 async function run(office: Office, body: (app: App) => Promise<void>, opts: { home?: boolean } = {}) {
