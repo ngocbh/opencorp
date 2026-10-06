@@ -3,6 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import * as fuzzysort from "fuzzysort"
 import { createEffect, createMemo, createSignal, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
+import { useKV } from "../context/kv"
 import { samePick, useLocal, type ModelPick } from "../context/local"
 import { useOffice } from "../context/office"
 import { useRoute } from "../context/route"
@@ -18,7 +19,7 @@ import { DialogConnect } from "./dialog-connect"
 /** A row's value: a model on a connection, or `model: null` for typing a model name there. */
 type Choice = { connection: string; model: string | null }
 
-/** What a pick on the home screen does today: nothing for new chats, which start as the office decides. */
+/** What a pick on the home screen does while new chats don't start on the last pick: nothing for them. */
 export const HOME_PICK_NOTE =
   "New chats start on the agent's model or the office default. Turn on 'Start new chats on my last pick' to use this."
 
@@ -32,6 +33,7 @@ export function DialogModel(props: { connection?: string }) {
   const dialog = useDialog()
   const office = useOffice()
   const local = useLocal()
+  const kv = useKV()
   const route = useRoute()
   const toast = useToast()
   const { theme } = useTheme()
@@ -150,7 +152,10 @@ export function DialogModel(props: { connection?: string }) {
     if (!id) {
       local.model.pick(pick)
       dialog.clear()
-      toast.show({ variant: "info", message: HOME_PICK_NOTE, duration: 8000 })
+      const note = kv.get("start_on_last_pick", false)
+        ? `The next new chat starts on ${pick.connection}/${pick.model}`
+        : HOME_PICK_NOTE
+      toast.show({ variant: "info", message: note, duration: 8000 })
       return
     }
     if (switching) return

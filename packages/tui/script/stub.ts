@@ -727,6 +727,26 @@ export function createFakeOffice(
     return upsertSession({ ...s, connection: c.name, model, model_note: null, updated_at: now() })
   }
 
+  /**
+   * The office's choice for a new chat: the pick when its connection is here (its own model stored as null), else
+   * the default on its own model with a note saying why. Unlike the office, it skips the agent's model: the fake
+   * people have none.
+   */
+  function choose(body: any): Pick<Session, "connection" | "model" | "model_note"> {
+    if (body.connection == null && body.model == null)
+      return { connection: state.defaultConnection, model: null, model_note: null }
+    const picked: string = body.connection ?? state.defaultConnection
+    const c = state.connections.find((x) => x.name === picked)
+    if (c) return { connection: c.name, model: body.model === c.model ? null : (body.model ?? null), model_note: null }
+    const own = state.connections.find((x) => x.name === state.defaultConnection)?.model
+    const uses = own ? `${state.defaultConnection}/${own}` : state.defaultConnection
+    return {
+      connection: state.defaultConnection,
+      model: null,
+      model_note: `Your last pick '${picked}' isn't on this office; this chat uses ${uses}.`,
+    }
+  }
+
   const routes: [string, string, Handler][] = [
     ["GET", "/health", () => Response.json({ ok: true })],
     ["GET", "/whoami", ({ actor, device }) => Response.json({ person: actor, device })],
@@ -776,14 +796,7 @@ export function createFakeOffice(
         )
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         const harness = body.harness ?? "composer"
-        const s = newSession({
-          person: body.person,
-          cwd: body.cwd,
-          harness,
-          status: "starting",
-          connection: body.connection ?? state.defaultConnection,
-          model: body.model ?? null,
-        })
+        const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting", ...choose(body) })
         // Like the office, the session starts its run first and goes idle when that run opens its first turn.
         setTimeout(() => session(s.id).status === "starting" && openTurn(s.id), 10)
         return Response.json(s)

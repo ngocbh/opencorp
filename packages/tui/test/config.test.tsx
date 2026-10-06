@@ -102,3 +102,8 @@ test("provides resolved config through Solid context", async () => {
 test("requires the config provider", () => {
   expect(() => useTuiConfig()).toThrow("TuiConfigProvider is missing")
 })
+
+test("the last-pick toggle can be bound", () => {
+  const config = resolve({ keybinds: { model_last_pick_toggle: "<leader>l" } }, { terminalSuspend: true })
+  expect(config.keybinds.get("model.last_pick.toggle")).toMatchObject([{ key: "<leader>l" }])
+})

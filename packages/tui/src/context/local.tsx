@@ -108,6 +108,8 @@ export function createModelState(file: string, connections: () => readonly strin
     /** Newest first. */
     recent: () => shown(store.recent),
     favorite: () => shown(store.favorite),
+    /** The newest pick, even one whose connection is hidden. */
+    last: (): ModelPick | undefined => store.recent[0],
     isFavorite: (pick: ModelPick) => store.favorite.some((x) => samePick(x, pick)),
     /** Makes `pick` the newest recent. */
     pick(pick: ModelPick) {
