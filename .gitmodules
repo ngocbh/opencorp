@@ -1,3 +1,3 @@
-[submodule "agent-composer"]
-	path = packages/agent-composer
-	url = https://github.com/ngocbh/agent-composer.git
+[submodule "yian"]
+	path = packages/yian
+	url = https://github.com/ngocbh/yian.git

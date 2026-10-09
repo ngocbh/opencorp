@@ -28,7 +28,7 @@ dev = [
 python-preference = "only-managed"
 
 [tool.uv.sources]
-agent-composer = { path = "packages/agent-composer", editable = true }
+agent-composer = { path = "packages/yian", editable = true }
 
 [build-system]
 requires = ["hatchling"]
