@@ -1,9 +1,9 @@
-"""The office package imports next to agent-composer."""
+"""The office package imports next to yian."""
 
-import agent_composer
+import yian
 import agent_corp
 
 
 def test_office_and_composer_import():
     assert agent_corp.__version__ == "0.0.1"
-    assert hasattr(agent_composer, "run_flow")
+    assert hasattr(yian, "run_flow")

@@ -7,60 +7,10 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agent-composer"
-version = "0.0.1"
-source = { editable = "packages/agent-composer" }
-dependencies = [
-    { name = "langchain-core" },
-    { name = "lark" },
-    { name = "pydantic" },
-    { name = "pyyaml" },
-    { name = "questionary" },
-    { name = "rich" },
-    { name = "typer" },
-    { name = "typing-extensions" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "langchain-anthropic" },
-    { name = "langchain-google-genai" },
-    { name = "langchain-ollama" },
-    { name = "langchain-openai" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "black", marker = "extra == 'docs'", specifier = ">=24.0" },
-    { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
-    { name = "langchain-anthropic", marker = "extra == 'all'", specifier = ">=0.3.15" },
-    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=0.3.15" },
-    { name = "langchain-core", specifier = ">=0.3.81" },
-    { name = "langchain-google-genai", marker = "extra == 'all'", specifier = ">=4.0.0" },
-    { name = "langchain-google-genai", marker = "extra == 'google'", specifier = ">=4.0.0" },
-    { name = "langchain-ollama", marker = "extra == 'all'", specifier = ">=1.1.0" },
-    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0" },
-    { name = "langchain-openai", marker = "extra == 'all'", specifier = "==1.6.2" },
-    { name = "langchain-openai", marker = "extra == 'openai'", specifier = "==1.6.2" },
-    { name = "lark", specifier = ">=1.1" },
-    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
-    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.26" },
-    { name = "pydantic", specifier = ">=2.7.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "questionary", specifier = ">=2.1.0" },
-    { name = "rich", specifier = ">=13.7.0" },
-    { name = "typer", specifier = ">=0.21.0" },
-    { name = "typing-extensions", specifier = ">=4.14.0" },
-]
-provides-extras = ["anthropic", "openai", "google", "ollama", "all", "dev", "docs"]
-
-[[package]]
 name = "agent-corp"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
-    { name = "agent-composer", extra = ["all"] },
     { name = "httpx" },
     { name = "jsonschema" },
     { name = "psutil" },
@@ -70,6 +20,7 @@ dependencies = [
     { name = "questionary" },
     { name = "starlette" },
     { name = "uvicorn" },
+    { name = "yian", extra = ["all"] },
 ]
 
 [package.dev-dependencies]
@@ -82,7 +33,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-composer", extras = ["all"], editable = "packages/agent-composer" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "jsonschema", specifier = ">=4.23" },
     { name = "psutil", specifier = ">=7" },
@@ -92,6 +42,7 @@ requires-dist = [
     { name = "questionary", specifier = ">=2.1" },
     { name = "starlette", specifier = ">=1.0" },
     { name = "uvicorn", specifier = ">=0.54" },
+    { name = "yian", extras = ["all"], editable = "packages/yian" },
 ]
 
 [package.metadata.requires-dev]
@@ -2253,6 +2204,55 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/ad/23/2d549e5d5d7759eaf9ac2d2d2ab81ff60f1bb2b52cdaae8e5ec5c6524354/xxhash-4.0.1-graalpy312-graalpy250_312_native-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:deca2a30d983d240b8375ec2ee0a4288e72042827fc61df2f7671f8467e4cb2f", size = 38206, upload-time = "2026-08-17T08:36:32.193Z" },
     { url = "https://files.pythonhosted.org/packages/79/98/1ee576b27f78e6107ee4ea8ac03e8a52888dff256e57d560f8282c195563/xxhash-4.0.1-graalpy312-graalpy250_312_native-win_amd64.whl", hash = "sha256:7c343ee174d417a44d0c3355602c0cbbfa52a04d1bbbf1723378c7d2c8f60626", size = 37127, upload-time = "2026-08-17T08:23:42.705Z" },
 ]
+
+[[package]]
+name = "yian"
+version = "0.0.3"
+source = { editable = "packages/yian" }
+dependencies = [
+    { name = "langchain-core" },
+    { name = "lark" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "questionary" },
+    { name = "rich" },
+    { name = "typer" },
+    { name = "typing-extensions" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "langchain-anthropic" },
+    { name = "langchain-google-genai" },
+    { name = "langchain-ollama" },
+    { name = "langchain-openai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "black", marker = "extra == 'docs'", specifier = ">=24.0" },
+    { name = "build", marker = "extra == 'dev'", specifier = ">=1.2" },
+    { name = "langchain-anthropic", marker = "extra == 'all'", specifier = ">=0.3.15" },
+    { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=0.3.15" },
+    { name = "langchain-core", specifier = ">=0.3.81" },
+    { name = "langchain-google-genai", marker = "extra == 'all'", specifier = ">=4.0.0" },
+    { name = "langchain-google-genai", marker = "extra == 'google'", specifier = ">=4.0.0" },
+    { name = "langchain-ollama", marker = "extra == 'all'", specifier = ">=1.1.0" },
+    { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0" },
+    { name = "langchain-openai", marker = "extra == 'all'", specifier = "==1.6.2" },
+    { name = "langchain-openai", marker = "extra == 'openai'", specifier = "==1.6.2" },
+    { name = "lark", specifier = ">=1.1" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.26" },
+    { name = "pydantic", specifier = ">=2.7.0" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
+    { name = "pyyaml", specifier = ">=6.0.0" },
+    { name = "questionary", specifier = ">=2.1.0" },
+    { name = "rich", specifier = ">=13.7.0" },
+    { name = "typer", specifier = ">=0.21.0" },
+    { name = "typing-extensions", specifier = ">=4.14.0" },
+]
+provides-extras = ["anthropic", "openai", "google", "ollama", "all", "dev", "docs"]
 
 [[package]]
 name = "zstandard"

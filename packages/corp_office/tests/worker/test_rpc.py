@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 import pytest
-from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
+from yian.memory.storage.markdown import MarkdownVersionMismatch
 from pydantic import ValidationError
 
 from agent_corp.worker.job import tool_spec

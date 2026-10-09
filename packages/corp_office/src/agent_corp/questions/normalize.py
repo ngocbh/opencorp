@@ -44,7 +44,7 @@ def _key(label: str) -> str:
 
 
 def _labels(value: Any) -> list[str]:
-    # Mirrors agent_composer.tools.registry._normalize_options, which cleans a model's ask_user options.
+    # Mirrors yian.tools.registry._normalize_options, which cleans a model's ask_user options.
     if isinstance(value, str):
         try:
             parsed = json.loads(value)

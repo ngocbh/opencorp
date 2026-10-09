@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from agent_composer.memory.storage.markdown import MarkdownStore
+from yian.memory.storage.markdown import MarkdownStore
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 

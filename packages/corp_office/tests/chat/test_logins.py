@@ -9,7 +9,7 @@ import threading
 import time
 
 import pytest
-from agent_composer.llm_clients.auth import AuthStore, HttpResponse, OpenAIAuth
+from yian.llm_clients.auth import AuthStore, HttpResponse, OpenAIAuth
 
 from agent_corp.chat import logins as logins_module
 from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, Connections

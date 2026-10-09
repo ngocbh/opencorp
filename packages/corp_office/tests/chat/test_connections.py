@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from agent_composer.llm_clients.connection import ConnectionSnapshot
+from yian.llm_clients.connection import ConnectionSnapshot
 from pydantic import ValidationError
 
 from agent_corp.chat.connections import (
@@ -325,19 +325,19 @@ def test_a_garbled_default_is_refused_not_ignored(tmp_path):
 
 
 def test_a_connection_cannot_set_the_auth_file(tmp_path):
-    with pytest.raises(ValidationError, match="AGENT_COMPOSER_AUTH_FILE"):
+    with pytest.raises(ValidationError, match="YIAN_AUTH_FILE"):
         ConnectionFile(method="subscription", llm_config={"provider": "openai"},
-                       env={"AGENT_COMPOSER_AUTH_FILE": str(tmp_path / "other.auth.json")})
+                       env={"YIAN_AUTH_FILE": str(tmp_path / "other.auth.json")})
 
 
 def test_office_may_still_set_the_auth_file(tmp_path):
     # provider.json was valid with it before connections; only an added connection may not set it.
     auth = str(tmp_path / "composer-auth.json")
     office = office_dir(tmp_path, {"llm_config": {"provider": "openai", "model": "m"},
-                                   "env": {"AGENT_COMPOSER_AUTH_FILE": auth}})
+                                   "env": {"YIAN_AUTH_FILE": auth}})
     c = Connections(office)
     provider = c.resolve(OFFICE, None)
-    assert provider.env == {"AGENT_COMPOSER_AUTH_FILE": auth}
+    assert provider.env == {"YIAN_AUTH_FILE": auth}
     log = run_started_log(tmp_path / "runs" / "r1.jsonl", openai())
     assert c.for_run(None, log, exact=True) == provider
     path = tmp_path / "runs" / "r2.model.json"
@@ -430,7 +430,7 @@ def test_add_saves_the_sign_in_before_the_connection(tmp_path):
     name = c.add("chatgpt", subscription(), sign_in=sign_in)
     assert name == "chatgpt" and seen == [(c.auth_file("chatgpt"), [])]
     assert mode(c.dir) == 0o700
-    assert c.resolve("chatgpt", None).env["AGENT_COMPOSER_AUTH_FILE"] == str(c.auth_file("chatgpt"))
+    assert c.resolve("chatgpt", None).env["YIAN_AUTH_FILE"] == str(c.auth_file("chatgpt"))
 
 
 def test_add_removes_the_sign_in_when_the_connection_cannot_be_written(tmp_path, monkeypatch):
@@ -534,7 +534,7 @@ def test_a_subscription_resolves_to_its_own_auth_file_and_no_key(tmp_path):
     write_private(c.auth_file("chatgpt"), b"{}")
     p = c.resolve("chatgpt", "gpt-5.4")
     assert p.llm_config == {"provider": "openai", "model": "gpt-5.4"}
-    assert p.env == {"AGENT_COMPOSER_AUTH_FILE": str(tmp_path / "office" / "connections" / "chatgpt.auth.json")}
+    assert p.env == {"YIAN_AUTH_FILE": str(tmp_path / "office" / "connections" / "chatgpt.auth.json")}
     assert c.resolve("chatgpt", None).llm_config == {"provider": "openai", "model": "gpt-5.5"}
     assert c.info("chatgpt") == Connection(name="chatgpt", provider="chatgpt", method="subscription",
                                            model="gpt-5.5", default=False)

@@ -86,7 +86,7 @@ def _company(paths: OfficePaths, running: bool) -> Check:
 def _provider(paths: OfficePaths) -> Check:
     path = paths.office / "provider.json"
     if not os.path.lexists(path):
-        return Check("provider", "warn", f"no {path}; runs use composer's defaults. `ac onboard` asks for one")
+        return Check("provider", "warn", f"no {path}; runs use yian's defaults. `ac onboard` asks for one")
     try:
         provider = check_provider(load_provider(path).model_dump(exclude_defaults=True))
     except ProviderError as exc:
@@ -94,7 +94,7 @@ def _provider(paths: OfficePaths) -> Check:
     except OnboardError as exc:
         return Check("provider", "fail", f"{path}: {exc}")
     llm = provider.llm_config or {}
-    login = "key saved" if "api_key" in llm else "composer's own login"
+    login = "key saved" if "api_key" in llm else "yian's own login"
     return Check("provider", "ok", f"{llm.get('provider') or 'default provider'}, {login}")
 
 
@@ -186,8 +186,8 @@ def _crash(log: Path) -> str | None:
 
 
 def newest_source(repo: Path) -> float:
-    """The newest modification time of the Python the daemon runs (agent-corp and agent-composer)."""
-    roots = [repo / "packages" / "corp_office" / "src" / "agent_corp", repo / "packages" / "agent-composer" / "src"]
+    """The newest modification time of the Python the daemon runs (agent-corp and yian)."""
+    roots = [repo / "packages" / "corp_office" / "src" / "agent_corp", repo / "packages" / "yian" / "src"]
     return max((p.stat().st_mtime for root in roots for p in root.rglob("*.py")), default=0.0)
 
 

@@ -1,6 +1,6 @@
 """Profile routes: read and edit a person's profile.md through the office's MarkdownStore."""
 
-from agent_composer.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
+from yian.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route

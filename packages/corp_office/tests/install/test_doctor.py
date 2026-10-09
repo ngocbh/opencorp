@@ -60,7 +60,7 @@ def test_a_fresh_machine_is_told_to_onboard(tmp_path):
 def test_an_onboarded_office_that_isnt_running_is_only_a_warning(tmp_path):
     paths = onboarded(tmp_path, {"llm_config": {"provider": "openai"}})
     got = by_name(run_checks(tmp_path, paths))
-    assert got["company"].status == "ok" and got["provider"] == Check("provider", "ok", "openai, composer's own login")
+    assert got["company"].status == "ok" and got["provider"] == Check("provider", "ok", "openai, yian's own login")
     label = launchd.label(launch(paths.home, user_home=tmp_path))
     assert got["service"] == Check("service", "ok", f"launchd: {label} is loaded")
     assert got["home"] == Check("home", "ok", str(paths.home))
@@ -236,7 +236,7 @@ def test_an_office_older_than_the_code_is_told_to_restart(tmp_path):
 
 def test_the_newest_source_covers_the_office_and_composer(tmp_path):
     office = tmp_path / "packages/corp_office/src/agent_corp/x.py"
-    composer = tmp_path / "packages/agent-composer/src/agent_composer/y.py"
+    composer = tmp_path / "packages/yian/src/yian/y.py"
     for path, when in ((office, 100), (composer, 200)):
         path.parent.mkdir(parents=True)
         path.write_text("")

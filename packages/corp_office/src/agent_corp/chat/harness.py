@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from agent_composer.memory.storage.markdown import MarkdownStore
+from yian.memory.storage.markdown import MarkdownStore
 
 from agent_corp.chat.connections import (OFFICE, ConnectionGone, Connections, RunMoved, read_run_record,
                                          write_run_record)

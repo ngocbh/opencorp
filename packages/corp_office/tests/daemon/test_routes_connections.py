@@ -10,8 +10,8 @@ import threading
 import httpx
 import pytest
 import yaml
-from agent_composer.llm_clients import ModelListError as HostListError
-from agent_composer.llm_clients.auth import OpenAIAuth
+from yian.llm_clients import ModelListError as HostListError
+from yian.llm_clients.auth import OpenAIAuth
 from pydantic import ValidationError
 
 from agent_corp.auth.identity import Identity, identity_path, write_identity

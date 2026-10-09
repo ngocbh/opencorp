@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import pytest
 import uvicorn
-from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
+from yian.memory.storage.markdown import MarkdownVersionMismatch
 
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app

@@ -3,7 +3,7 @@
 import threading
 
 import pytest
-from agent_composer.tools import ToolSet
+from yian.tools import ToolSet
 
 from agent_corp.protocol.models import DiscussionEntry, Question
 from agent_corp.questions import ask as ask_module

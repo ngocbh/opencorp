@@ -1,7 +1,7 @@
 """The options normalizer: composer's label cleaning, then dropping the card's own action labels."""
 
 import pytest
-from agent_composer.tools.registry import _normalize_options
+from yian.tools.registry import _normalize_options
 
 from agent_corp.questions.normalize import _labels, normalize_options
 

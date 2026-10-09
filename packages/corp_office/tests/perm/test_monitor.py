@@ -1,6 +1,6 @@
 """The reference monitor: which asset tools a person gets, and every call's check and audit."""
 
-from agent_composer.tools import ToolSet
+from yian.tools import ToolSet
 
 from agent_corp.perm.monitor import DETAIL_CHARS
 from agent_corp.worker.job import group_specs

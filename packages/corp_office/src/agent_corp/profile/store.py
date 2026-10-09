@@ -6,8 +6,8 @@ import re
 import tempfile
 from pathlib import Path
 
-from agent_composer.memory.contracts import JsonObject
-from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
+from yian.memory.contracts import JsonObject
+from yian.memory.storage.markdown import MarkdownVersionMismatch
 
 from agent_corp.company.git import CompanyGit, CompanyGitError
 

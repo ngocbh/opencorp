@@ -12,7 +12,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 
-from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS
+from yian.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
 from agent_corp.chat.models import ModelListError
 from agent_corp.chat.provider import load_provider
@@ -88,7 +88,7 @@ def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     assert load_provider(path).llm_config["api_key"] == KEY
     assert all(KEY not in line for line in ask.seen)
     assert os.listdir(tmp_path) == ["provider.json"]  # no temp file left behind
-    assert ask.seen == ["Model provider", "anthropic API key (empty to use `composer auth anthropic`; not shown)",
+    assert ask.seen == ["Model provider", "anthropic API key (empty to use `yian auth anthropic`; not shown)",
                         "Model"]
     assert ask.offered == [list(SUPPORTED_LLM_PROVIDERS), ["claude-sonnet-4-5 (the default)"]]
     assert ask.typed == [False, True]
@@ -315,7 +315,7 @@ def test_no_key_means_composers_own_login(tmp_path):
     ask = Script("openai", "", "")
     ensure_provider(path, ask)
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
-    assert any("composer auth" in line for line in ask.seen)
+    assert any("yian auth" in line for line in ask.seen)
 
 
 def test_a_key_in_the_environment_is_never_read(tmp_path, monkeypatch):
@@ -782,4 +782,4 @@ def test_a_key_is_never_kept_for_another_provider(tmp_path):
     ask = Script("azure", "acme", KEY, "gpt-5-4", "2", "openai", "", "1")
     ensure_provider(path, ask, check_model=check)
     assert load_provider(path).llm_config == {"provider": "openai"}
-    assert "openai API key (empty to use `composer auth openai`; not shown)" in ask.seen
+    assert "openai API key (empty to use `yian auth openai`; not shown)" in ask.seen

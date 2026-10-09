@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
-from agent_composer import load_flow
+from yian import load_flow
 
 from agent_corp.auth.passwords import check_password
 from agent_corp.chat.provider import Provider
