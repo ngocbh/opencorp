@@ -3,9 +3,9 @@
 from collections.abc import Iterator
 from pathlib import Path
 
-from agent_composer import LoadError
-from agent_composer.compose.skills import load_skill_dir
-from agent_composer.skills import SkillError
+from yian import LoadError
+from yian.compose.skills import load_skill_dir
+from yian.skills import SkillError
 
 from agent_corp.company.flows import FlowOutsideRepo, load_confined
 from agent_corp.company.issues import RepoIssue

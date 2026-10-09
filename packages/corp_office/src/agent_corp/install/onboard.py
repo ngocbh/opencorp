@@ -13,8 +13,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
-from agent_composer._settings import PROVIDER_DEFAULT_MODELS
-from agent_composer.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
+from yian._settings import PROVIDER_DEFAULT_MODELS
+from yian.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
 
 from agent_corp.auth.devices import DeviceRefused, add_device
@@ -245,7 +245,7 @@ def check_provider(data: object) -> Provider:
     try:
         LLMConfig.model_validate(llm)
     except ValidationError as exc:
-        raise OnboardError(f"composer won't take this provider: {_llm_errors(exc)}") from None
+        raise OnboardError(f"yian won't take this provider: {_llm_errors(exc)}") from None
     if "api_key" in llm and not llm.get("provider"):
         # Composer refuses a key without a provider at run time; say so now.
         raise OnboardError("llm_config.api_key needs llm_config.provider, so the key goes only to that provider")
@@ -316,7 +316,7 @@ def _ask_key(prompter: Prompter, name: str, *, required: bool, last: str = "") -
     elif required:
         question = f"{name} API key (not shown)"
     else:
-        question = f"{name} API key (empty to use `composer auth {name}`; not shown)"
+        question = f"{name} API key (empty to use `yian auth {name}`; not shown)"
     for _ in range(TRIES):
         try:
             key = prompter.secret(question) or last
@@ -375,7 +375,7 @@ def _ask_provider(prompter: Prompter, last: dict[str, str]) -> dict:
     if last["key"]:
         llm["api_key"] = last["key"]
     else:
-        prompter.say(f"No key saved; runs will use composer's own login (`composer auth {name}`).")
+        prompter.say(f"No key saved; runs will use yian's own login (`yian auth {name}`).")
     last["model"] = _ask_model(prompter, name, last.get("model", ""), last["key"]).strip()
     if last["model"]:
         llm["model"] = last["model"]

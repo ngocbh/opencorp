@@ -7,7 +7,7 @@ import signal
 import time
 
 import pytest
-from agent_composer.llm_clients.auth import AuthStore, OAuthCredentials
+from yian.llm_clients.auth import AuthStore, OAuthCredentials
 
 from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_record
 from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE

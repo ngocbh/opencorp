@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from agent_composer._settings import PROVIDER_DEFAULT_MODELS
+from yian._settings import PROVIDER_DEFAULT_MODELS
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route

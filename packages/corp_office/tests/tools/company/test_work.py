@@ -1,7 +1,7 @@
 """Company tools bound to the caller: ask_manager, create_work_item, comment."""
 
 import pytest
-from agent_composer.tools import ToolSet
+from yian.tools import ToolSet
 
 from agent_corp.company.loader import load_repo
 from agent_corp.questions.ask import Answers, QuestionExpired

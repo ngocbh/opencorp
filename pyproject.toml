@@ -4,7 +4,7 @@ version = "0.0.1"
 description = "agent-corp office: daemon, run workers, sandbox, permissions."
 requires-python = ">=3.12"
 dependencies = [
-    "agent-composer[all]",
+    "yian[all]",
     "pydantic>=2.13",
     "pyyaml>=6",
     "python-ulid>=4",
@@ -28,7 +28,7 @@ dev = [
 python-preference = "only-managed"
 
 [tool.uv.sources]
-agent-composer = { path = "packages/agent-composer", editable = true }
+yian = { path = "packages/yian", editable = true }
 
 [build-system]
 requires = ["hatchling"]

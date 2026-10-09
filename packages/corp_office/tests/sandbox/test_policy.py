@@ -60,7 +60,7 @@ def test_home_and_its_ancestors_are_not_workspaces(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("rel", [
-    ".agent-corp", ".agent-corp/office/runs", ".ssh", ".aws", ".gnupg", ".config/agent-composer",
+    ".agent-corp", ".agent-corp/office/runs", ".ssh", ".aws", ".gnupg", ".config/yian",
     "Library/Keychains", ".claude", ".codex", ".docker", ".kube", ".netrc",
 ])
 def test_sensitive_home_paths_are_not_workspaces(tmp_path, monkeypatch, rel):

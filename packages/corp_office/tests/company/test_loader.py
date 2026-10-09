@@ -1,4 +1,4 @@
-from agent_composer import load_flow
+from yian import load_flow
 
 from agent_corp.company.loader import load_repo
 from tests.company.conftest import person

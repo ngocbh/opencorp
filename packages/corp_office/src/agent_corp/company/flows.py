@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import yaml
-from agent_composer import ComposedFlow, load_flow
+from yian import ComposedFlow, load_flow
 
 
 class FlowOutsideRepo(Exception):
@@ -37,7 +37,7 @@ def _load(root: Path, path: Path, loading: frozenset[Path]) -> ComposedFlow:
     ``<dir>/<path>.yaml``, and re-wraps only its own ``LoadError``, so
     ``FlowOutsideRepo`` reaches the caller unchanged. Composer ignores ``system.paths``
     when a child resolver is given, so such a flow is refused rather than loaded
-    differently from ``composer run``.
+    differently from ``yian run``.
     """
     # Compare resolved paths so /var -> /private/var on macOS and symlinked roots work.
     path = path.resolve()

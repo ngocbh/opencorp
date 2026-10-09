@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from agent_composer.memory.storage.markdown import FileMarkdownStore, MarkdownStore, MarkdownVersionMismatch
+from yian.memory.storage.markdown import FileMarkdownStore, MarkdownStore, MarkdownVersionMismatch
 
 from agent_corp.worker.remote_store import RemoteMarkdownStore
 from agent_corp.worker.rpc import BaseHandlers

@@ -9,9 +9,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
-from agent_composer.llm_clients import ModelListError as HostListError
-from agent_composer.llm_clients import list_models as host_models
-from agent_composer.llm_clients.auth import AuthError, AuthStore, HttpResponse, OpenAIAuth
+from yian.llm_clients import ModelListError as HostListError
+from yian.llm_clients import list_models as host_models
+from yian.llm_clients.auth import AuthError, AuthStore, HttpResponse, OpenAIAuth
 from pydantic import Field
 
 from agent_corp.chat.connections import ConnectionFile, Connections, config_hash, provider_label
@@ -93,7 +93,7 @@ def azure_deployments(base_url: str, key: str, *, timeout: float,
 
 
 def _text_models(models: tuple[str, ...]) -> list[str]:
-    """The general text models among ``models``, as composer's ``composer auth`` offers them."""
+    """The general text models among ``models``, as ``yian auth`` offers them."""
     return [
         name
         for name in models

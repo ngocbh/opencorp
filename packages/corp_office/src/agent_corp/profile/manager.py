@@ -4,7 +4,7 @@ import difflib
 from collections.abc import Callable
 from typing import Any
 
-from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
+from yian.memory.storage.markdown import MarkdownVersionMismatch
 
 from agent_corp.chat.harness import Harness, RunSpec
 from agent_corp.chat.turns import MAIN_CHAT

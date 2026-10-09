@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from agent_composer.llm_clients.auth import AuthError, AuthStore, OpenAIAuth
+from yian.llm_clients.auth import AuthError, AuthStore, OpenAIAuth
 
 from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.chat.models import ModelCache

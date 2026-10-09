@@ -10,11 +10,11 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
-from agent_composer.compose.skills import load_skills
-from agent_composer.memory.profile import ProfileMemory
-from agent_composer.memory.session import SessionMemory
-from agent_composer.run import resume_flow, run_flow
-from agent_composer.skills.catalog import Skill
+from yian.compose.skills import load_skills
+from yian.memory.profile import ProfileMemory
+from yian.memory.session import SessionMemory
+from yian.run import resume_flow, run_flow
+from yian.skills.catalog import Skill
 
 from agent_corp.company.flows import load_confined
 from agent_corp.worker.channel import Channel, ChannelClosed, FrameTooLarge, jsonable

@@ -1,6 +1,6 @@
 # agent-corp
 
-A local office daemon that runs AI employees on top of the agent-composer engine.
+A local office daemon that runs AI employees on top of the Yian engine.
 
 ## Layout
 
@@ -8,7 +8,7 @@ A local office daemon that runs AI employees on top of the agent-composer engine
 pyproject.toml                        # Python project "agent-corp" (import agent_corp)
 packages/corp_office/src/agent_corp/  # office daemon, run worker, sandbox launcher, permission layer, harness adapters
 packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/agent_corp/
-packages/agent-composer/              # submodule; uv path dependency
+packages/yian/                        # submodule; uv path dependency
 packages/protocol/                    # JSON Schema → TS types + pydantic
 packages/tui/                         # the TUI (forked from OpenCode)
 packages/ac/                          # `ac` CLI entry
@@ -63,9 +63,8 @@ Clients ignore enum values and event types they don't know. Make timestamps with
 
 Work is complete only when the PR merges.
 
-agent-composer changes go to the agent-composer repo (github.com/ngocbh/agent-composer) as their
-own issue and PR; never edit the submodule (`packages/agent-composer/`) here. Bump the submodule
-pointer in a separate commit.
+Yian changes go to the yian repo (github.com/ngocbh/yian) as their own issue and PR; never edit
+the submodule (`packages/yian/`) here. Bump the submodule pointer in a separate commit.
 
 ## Code style
 

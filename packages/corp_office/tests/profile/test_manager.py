@@ -3,7 +3,7 @@ import threading
 from importlib.resources import files
 
 import pytest
-from agent_composer.memory.storage.markdown import MarkdownVersionMismatch
+from yian.memory.storage.markdown import MarkdownVersionMismatch
 
 from agent_corp.company.flows import load_confined
 from agent_corp.company.git import CompanyGit

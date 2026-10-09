@@ -5,7 +5,7 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from agent_composer.memory.storage.markdown import MarkdownStore
+from yian.memory.storage.markdown import MarkdownStore
 
 from agent_corp.profile.store import GitProfileStore
 from agent_corp.worker import BaseHandlers

@@ -7,7 +7,7 @@ import time
 
 import httpx
 import pytest
-from agent_composer.llm_clients.auth import AuthStore, HttpResponse, OAuthCredentials
+from yian.llm_clients.auth import AuthStore, HttpResponse, OAuthCredentials
 
 from agent_corp.chat.connections import ConnectionFile, ConnectionGone, Connections
 from agent_corp.chat.models import (FRESH, TIMED_OUT, ListTimeout, ModelCache, ModelListError, azure_deployments,

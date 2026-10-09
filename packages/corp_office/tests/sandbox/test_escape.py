@@ -33,7 +33,7 @@ def office(short_dir, monkeypatch):
     """A fake home with the secrets and office state the sandbox must not reach."""
     home = short_dir / "home"
     files = {
-        ".config/agent-composer/auth.json": '{"key": "sk-decoy-auth"}',
+        ".config/yian/auth.json": '{"key": "sk-decoy-auth"}',
         ".ssh/id_ed25519": "decoy-ssh-key",
         ".aws/credentials": "decoy-aws",
         ".agent-corp/office/store.sqlite": "decoy-store",
@@ -77,7 +77,7 @@ except OSError as e:
 
 
 @pytest.mark.parametrize("rel", [
-    ".config/agent-composer/auth.json",
+    ".config/yian/auth.json",
     ".ssh/id_ed25519",
     ".aws/credentials",
     ".agent-corp/office/store.sqlite",

@@ -3,7 +3,7 @@ import threading
 
 import httpx
 import pytest
-from agent_composer.run import run_flow
+from yian.run import run_flow
 
 from agent_corp.chat.connections import ConnectionFile
 from agent_corp.chat.models import list_models

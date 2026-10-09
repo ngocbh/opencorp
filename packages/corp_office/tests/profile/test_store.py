@@ -4,11 +4,11 @@ import os
 import subprocess
 import threading
 
-import agent_composer.memory.profile as composer_profile
+import yian.memory.profile as composer_profile
 import pytest
-from agent_composer.memory import LearnContext
-from agent_composer.memory.profile import ProfileMemory
-from agent_composer.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
+from yian.memory import LearnContext
+from yian.memory.profile import ProfileMemory
+from yian.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
 from langchain_core.messages import AIMessage
 
 from agent_corp.company.git import CompanyGit, CompanyGitError

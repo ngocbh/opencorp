@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from agent_composer import load_flow, run_flow
+from yian import load_flow, run_flow
 
 from agent_corp.chat.provider import Provider, load_provider
 from agent_corp.company.draft import Draft, Teammate, draft_problems, field_problems

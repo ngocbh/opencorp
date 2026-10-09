@@ -2,7 +2,7 @@ import threading
 import time
 
 import pytest
-from agent_composer.tools import ToolSet
+from yian.tools import ToolSet
 
 from agent_corp.tools import workspace
 from agent_corp.tools.workspace import (

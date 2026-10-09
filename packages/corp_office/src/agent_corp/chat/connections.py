@@ -30,10 +30,10 @@ RESERVED = {OFFICE, "default", "login"}
 
 NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 
-AUTH_FILE_ENV = "AGENT_COMPOSER_AUTH_FILE"
+AUTH_FILE_ENV = "YIAN_AUTH_FILE"
 """The variable that points composer at a subscription's own auth store."""
 
-# Composer's own default OpenAI endpoint (_API_ENDPOINT in agent_composer/llm_clients/connection.py). If the two
+# Composer's own default OpenAI endpoint (_API_ENDPOINT in yian/llm_clients/connection.py). If the two
 # drift, a run with no record no longer matches office and only has to start fresh.
 OPENAI_ENDPOINT = "https://api.openai.com/v1"
 
@@ -136,7 +136,7 @@ class Connections:
         """
         if name == OFFICE:
             # Checked as a plain Provider, exactly as before connections; the checks only an added connection
-            # needs (such as no AGENT_COMPOSER_AUTH_FILE) don't apply to it.
+            # needs (such as no YIAN_AUTH_FILE) don't apply to it.
             return ConnectionFile.model_construct(**dict(load_provider(self.office / "provider.json")))
         _check(name)
         if name in self._removed():
@@ -297,7 +297,7 @@ class Connections:
             if pinned is None:
                 raise RunMoved(f"run {run} has no record and no readable log")
             # A run with no models has an empty set and matches: composer then drops the host key, so it goes
-            # nowhere (agent_composer/run.py, "A key that marks no agent", and the same check on resume).
+            # nowhere (yian/run.py, "A key that marks no agent", and the same check on resume).
             expected = office_endpoint(office)
             if any(p != expected for p in pinned):
                 raise RunMoved(f"run {run} has no record and ran on another provider or endpoint")
