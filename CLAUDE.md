@@ -2,6 +2,12 @@
 
 A local office daemon that runs AI employees on top of the Yian engine.
 
+## Goals
+
+- Yian flows hold each employee's traits and SOPs: repeatable work that improves over long runs.
+- Flexible or one-off work runs in Codex, Claude Code, or OpenCode, unchanged. agent-corp lets
+  an employee act as their user.
+
 ## Layout
 
 ```
