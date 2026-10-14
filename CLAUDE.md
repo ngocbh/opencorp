@@ -7,6 +7,21 @@ A local office daemon that runs AI employees on top of the Yian engine.
 - Yian flows hold each employee's traits and SOPs: repeatable work that improves over long runs.
 - Flexible or one-off work runs in Codex, Claude Code, or OpenCode, unchanged. agent-corp lets
   an employee act as their user.
+- agent-corp dogfoods Yian. Whenever we can, automate work with a Yian YAML flow that people and
+  agents can share and reuse, rather than with one-off code.
+
+## Building a feature on Yian
+
+Before designing a feature, during brainstorming:
+
+1. Ask whether the work repeats: will the owner, other people, or agents run it again? If so,
+   build it as a Yian flow (an SOP or part of an employee's flows) that anyone can share and reuse.
+   If it's one-off or flexible work, leave it to a harness (Codex, Claude Code, OpenCode) or
+   plain office code.
+2. For a flow, list the Yian features it needs and check that Yian supports each one.
+3. For each missing feature, file an issue on the yian repo (github.com/ngocbh/yian) asking for a
+   generic feature. Don't work around it in agent-corp; build on what Yian has today and expand
+   when Yian ships more.
 
 ## Layout
 
