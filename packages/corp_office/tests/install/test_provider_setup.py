@@ -302,12 +302,33 @@ def test_azure_needs_a_key_and_a_usable_endpoint(tmp_path):
     assert "That doesn't work: azure needs a key" in ask.seen
 
 
-@pytest.mark.parametrize("llm", [{"provider": "azure", "api_key": KEY}, {"provider": "google"}])
+@pytest.mark.parametrize("llm", [{"provider": "azure", "api_key": KEY}, {"provider": "google", "api_key": KEY}])
 def test_a_provider_with_no_model_and_no_default_is_refused(tmp_path, llm):
     with pytest.raises(OnboardError, match=f"llm_config.model is missing, and {llm['provider']} has no default model") \
             as info:
         ensure_provider(tmp_path / "provider.json", Script(), stdin=io.StringIO(json.dumps({"llm_config": llm})))
     assert KEY not in str(info.value) and not (tmp_path / "provider.json").exists()
+
+
+@pytest.mark.parametrize("name", ["google", "ollama"])
+def test_a_provider_with_no_key_and_no_model_takes_the_model_yians_login_saved(tmp_path, name):
+    path = tmp_path / "provider.json"
+    data = {"llm_config": {"provider": name}}
+    assert ensure_provider(path, Script(), stdin=io.StringIO(json.dumps(data))) is True
+    assert json.loads(path.read_text()) == data
+
+
+def test_an_endpoint_of_ones_own_with_no_model_is_refused(tmp_path):
+    path = tmp_path / "provider.json"
+    llm = {"provider": "openai", "base_url": "https://gateway.example.com/v1", "api_key": KEY}
+    with pytest.raises(OnboardError, match="^llm_config.model is missing, and an endpoint of your own has no default "
+                                           "model$"):
+        ensure_provider(path, Script(), stdin=io.StringIO(json.dumps({"llm_config": llm})))
+    assert not path.exists()
+    path.write_text(json.dumps({"llm_config": llm}))
+    path.chmod(0o600)
+    with pytest.raises(OnboardError, match="an endpoint of your own has no default model; fix it or remove it"):
+        ensure_provider(path, Script(interactive=False))
 
 
 def test_an_existing_provider_that_cant_be_used_is_asked_again_on_a_terminal(tmp_path):

@@ -249,7 +249,8 @@ def check_provider(data: object) -> Provider:
         # Composer refuses a key without a provider at run time; say so now.
         raise OnboardError("llm_config.api_key needs llm_config.provider, so the key goes only to that provider")
     name = llm.get("provider")
-    if name and not llm.get("model") and name not in models.DEFAULT_MODELS:
+    # Without a key, runs use the login `yian auth <name>` saved, which names its model.
+    if name and not llm.get("model") and "api_key" in llm and name not in models.DEFAULT_MODELS:
         # Composer finds this out only when a run starts; say so before the provider is saved.
         raise OnboardError(f"llm_config.model is missing, and {name} has no default model")
     return provider
@@ -258,14 +259,19 @@ def check_provider(data: object) -> Provider:
 def with_default_model(provider: Provider) -> Provider:
     """``provider`` naming its default model when it has a key and names none.
 
-    Yian has no default model. Without a key, runs use ``yian auth``'s login, which names one; an endpoint of the
-    owner's own has no default.
+    Yian has no default model. Without a key, runs use ``yian auth``'s login, which names one.
+
+    Raises:
+        OnboardError: ``provider`` has a key for an endpoint of the owner's own and names no model, since that
+            endpoint has no default.
     """
     llm = provider.llm_config or {}
-    default = models.DEFAULT_MODELS.get(llm.get("provider"))
-    if default is None or llm.get("model") or "api_key" not in llm or "base_url" in llm:
+    if llm.get("model") or "api_key" not in llm:
         return provider
-    return provider.model_copy(update={"llm_config": {**llm, "model": default}})
+    if "base_url" in llm:
+        raise OnboardError("llm_config.model is missing, and an endpoint of your own has no default model")
+    default = models.DEFAULT_MODELS.get(llm.get("provider"))
+    return provider if default is None else provider.model_copy(update={"llm_config": {**llm, "model": default}})
 
 
 _azure_base_url = azure_base_url
