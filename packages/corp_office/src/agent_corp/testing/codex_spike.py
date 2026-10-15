@@ -269,6 +269,18 @@ def _decision(method: str, choice: str) -> dict[str, Any]:
     return {"answers": {}}
 
 
+SCENARIOS = ("plain", "command-approve", "command-decline", "file-change", "interrupt", "steer", "resume",
+             "resume-empty")
+"""S3's scenarios, each on its own app-server and in its own ``sessions/<name>.jsonl``."""
+CORE = ("plain", "command-approve", "command-decline", "file-change")
+"""The scenarios S3's own ok needs; each later PR's gate names the scenarios it reads."""
+
+
+def core_ok(scenarios: dict[str, dict[str, Any]]) -> bool:
+    """Whether every scenario in ``CORE`` ran and is ok."""
+    return all(scenarios.get(name, {}).get("ok") for name in CORE)
+
+
 class Spike:
     """The checks, in order, against one ``codex`` binary, in a scratch repo under a temp folder that ``run``
     removes; outputs go under ``out``."""
@@ -411,18 +423,113 @@ class Spike:
             pin_schema(Path(tmp), self.out / "schema", version=version)
         return {"version": version}
 
+    # --- S3 ---------------------------------------------------------------------------
+
+    def sessions(self, only: set[str] | None = None) -> tuple[dict[str, Any], str | None]:
+        """S3: the scenarios (or ``only`` those; ``resume`` brings ``plain``, whose thread it resumes). One that
+        fails records its error, and the others still run."""
+        wanted = [n for n in SCENARIOS if only is None or n in only or (n == "plain" and "resume" in only)]
+        scenarios: dict[str, dict[str, Any]] = {}
+        thread = None
+        for name in wanted:
+            try:
+                result = getattr(self, "_" + name.replace("-", "_"))(thread)
+            except Exception as exc:
+                result = {"ok": False, "error": scrub(str(exc), self.replacements)}
+            thread = result.pop("thread", thread)
+            scenarios[name] = {"ok": bool(result.pop("ok", True)), **result}
+        seen = any('"item/autoApprovalReview/' in p.read_text() for p in (self.out / "sessions").glob("*.jsonl"))
+        return {"ok": core_ok(scenarios), "scenarios": scenarios, "auto_review_seen": seen}, thread
+
+    def rerun(self, scenarios: list[str]) -> dict[str, dict[str, Any]]:
+        """Run S3's ``scenarios`` again (one whose model didn't ask, say) and merge them into ``spike.json``."""
+        results = json.loads((self.out / "spike.json").read_text())
+        try:
+            detail, _ = self.sessions(set(scenarios))
+        finally:
+            shutil.rmtree(self.root, ignore_errors=True)
+        s3 = results["S3"]["detail"]
+        s3.setdefault("scenarios", {}).update(detail["scenarios"])
+        s3["auto_review_seen"] = detail["auto_review_seen"]
+        results["S3"]["ok"] = core_ok(s3["scenarios"])
+        self._write(results)
+        return results
+
+    def _plain(self, _thread: Any) -> dict[str, Any]:
+        with self.server("plain") as s:
+            thread = self.start(s)
+            status = self.turn(s, thread, "Reply with the single word: hello")["params"]["turn"]["status"]
+        return {"ok": status == "completed", "status": status, "thread": thread}
+
+    def _approval(self, name: str, text: str, decide: str) -> dict[str, Any]:
+        with self.server(name) as s:
+            status = self.turn(s, self.start(s), text, decide)["params"]["turn"]["status"]
+        return {"ok": status == "completed", "status": status}
+
+    def _command_approve(self, _thread: Any) -> dict[str, Any]:
+        return self._approval("command-approve", "Run the shell command `touch spike-approved.txt` here. Don't use "
+                              "apply_patch.", "accept")
+
+    def _command_decline(self, _thread: Any) -> dict[str, Any]:
+        return self._approval("command-decline", "Run the shell command `touch spike-declined.txt` here. Don't use "
+                              "apply_patch.", "decline")
+
+    def _file_change(self, _thread: Any) -> dict[str, Any]:
+        return self._approval("file-change", "Create notes.md containing the one line `hi`, using apply_patch.",
+                              "accept")
+
+    def _interrupt(self, _thread: Any) -> dict[str, Any]:
+        with self.server("interrupt") as s:
+            t = self.start(s)
+            pending = self.turn(s, t, "Run the shell command `touch spike-wait.txt` here. Don't use apply_patch.")
+            if pending.get("method") == "turn/completed":  # the model ran nothing that needed an approval
+                return {"ok": False, "asked": False}
+            s.request("turn/interrupt", {"threadId": t, "turnId": pending["params"]["turnId"]})
+            status = s.wait("turn/completed")["params"]["turn"]["status"]
+            resolved = any(m.get("method") == "serverRequest/resolved" for m in s.seen)
+        return {"ok": status == "interrupted", "status": status, "resolved_sent": resolved}
+
+    def _steer(self, _thread: Any) -> dict[str, Any]:
+        with self.server("steer") as s:
+            t = self.start(s, "workspace-write")
+            loop = "Run `for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 1; done` with the shell, then summarize it."
+            first = s.request("turn/start", {"threadId": t, "input": _text(loop)})["turn"]["id"]
+            s.wait("item/started", where=lambda m: m["params"]["item"]["type"] == "commandExecution")
+            second = s.request("turn/start", {"threadId": t, "input": _text("Also say pineapple in the summary.")})
+            status = s.wait("turn/completed")["params"]["turn"]["status"]
+        return {"ok": status == "completed", "same_turn": first == second["turn"]["id"]}
+
+    def _resume(self, thread: str | None) -> dict[str, Any]:
+        if thread is None:
+            raise SpikeError("needs the plain scenario's thread")
+        with self.server("resume") as s:
+            r = s.request("thread/resume", {"threadId": thread, **owner_load(str(self.ws))})
+            status = self.turn(s, thread, "Say hello once more.")["params"]["turn"]["status"]
+        return {"ok": status == "completed", "turns": len(r["thread"].get("turns") or []), "status": status,
+                "model": r.get("model")}
+
+    def _resume_empty(self, _thread: Any) -> dict[str, Any]:
+        with self.server("empty-thread-a") as s:
+            empty = self.start(s)
+        with self.server("empty-thread-b") as s:
+            answer = s.request_raw("thread/resume", {"threadId": empty, **owner_load(str(self.ws))})
+        return {"resumed": "result" in answer, "error": answer.get("error")}
+
 
 def main(argv: list[str] | None = None) -> int:
     """Run the spike and print its checklist; exit 1 when a check that gates a PR fails, 2 without ``codex``."""
     parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--codex", default="codex", help="the codex binary (default: codex on PATH)")
+    parser.add_argument("--scenario", action="append", choices=SCENARIOS,
+                        help="run only this S3 scenario again and merge it into spike.json (repeatable)")
     args = parser.parse_args(argv)
     codex = shutil.which(args.codex)
     if codex is None:
         print(f"{args.codex} is not on PATH")
         return 2
-    results = Spike(codex, args.out).run()
+    spike = Spike(codex, args.out)
+    results = spike.rerun(args.scenario) if args.scenario else spike.run()
     print(checklist(results), end="")
     gating = [c.id for c in CHECKS if c.gates != "none"]
     return 0 if all(results[i]["ok"] for i in gating) else 1

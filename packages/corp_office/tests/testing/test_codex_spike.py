@@ -5,6 +5,7 @@ import sys
 
 from agent_corp.testing.codex_spike import (
     CHECKS,
+    SCENARIOS,
     SCHEMA_FILES,
     AppServer,
     Recorder,
@@ -120,6 +121,26 @@ def test_one_failing_check_doesnt_hide_the_others(tmp_path, monkeypatch):
     assert not spike.root.exists()  # the scratch repo goes with the run
 
 
-def test_every_check_but_s3_has_its_method():
-    assert [c.name for c in CHECKS if c.id != "S3" and not callable(getattr(Spike, c.name.replace("-", "_"), None))
-            ] == []
+def test_every_check_has_its_method():
+    assert [c.name for c in CHECKS if not callable(getattr(Spike, c.name.replace("-", "_"), None))] == []
+
+
+def test_one_failing_scenario_doesnt_hide_the_others_and_runs_again_alone(tmp_path, monkeypatch):
+    spike = Spike("codex", tmp_path / "out")
+    for name in SCENARIOS:
+        monkeypatch.setattr(spike, "_" + name.replace("-", "_"),
+                            lambda thread, n=name: {"ran": n, **({"thread": "thr_1"} if n == "plain" else {})},
+                            raising=False)
+
+    def never_asked(thread):
+        raise KeyError("turnId")
+    monkeypatch.setattr(spike, "_interrupt", never_asked, raising=False)
+    detail, thread = spike.sessions()
+    assert (thread, detail["ok"]) == ("thr_1", True)
+    assert detail["scenarios"]["interrupt"] == {"ok": False, "error": "'turnId'"}
+    assert detail["scenarios"]["resume"] == {"ok": True, "ran": "resume"}
+    (tmp_path / "out" / "spike.json").write_text(json.dumps({"S3": {"ok": True, "detail": detail}}))
+    monkeypatch.setattr(spike, "_interrupt", lambda thread: {"status": "interrupted"})
+    again = spike.rerun(["interrupt"])["S3"]["detail"]["scenarios"]
+    assert again["interrupt"] == {"ok": True, "status": "interrupted"}
+    assert again["resume"] == {"ok": True, "ran": "resume"}  # the others are kept
