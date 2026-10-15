@@ -508,7 +508,8 @@ class Spike:
     def service_read(self, thread: str) -> dict[str, Any]:
         with self.server("service-read-a") as a, self.server("service-read-b") as b:
             a.request("thread/resume", {"threadId": thread, **owner_load(str(self.ws), "workspace-write")})
-            a.request("turn/start", {"threadId": thread, "input": _text("Run `sleep 5` with the shell, then say done.")})
+            a.request("turn/start", {"threadId": thread,
+                                     "input": _text("Run `sleep 5` with the shell, then say done.")})
             self.wait_command_started(a)
             answer = b.request_raw("thread/read", {"threadId": thread, "includeTurns": True})
             self.wait_completed(a)
@@ -660,8 +661,8 @@ class Spike:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the spike and print its checklist; exit 1 when a check that other work waits on fails, 2 without ``codex`` (or
-    without a full run's ``spike.json`` to merge ``--scenario`` into)."""
+    """Run the spike and print its checklist; exit 1 when a check that other work waits on fails, 2 without
+    ``codex`` (or without a full run's ``spike.json`` to merge ``--scenario`` into)."""
     parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--codex", default="codex",
