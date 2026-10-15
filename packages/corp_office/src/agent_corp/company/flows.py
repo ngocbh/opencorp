@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 import yaml
-from yian import ComposedFlow, load_flow
+from yian import ComposedFlow, LoadError, load_flow
 
 
 class FlowOutsideRepo(Exception):
@@ -31,19 +31,29 @@ def _values(node: yaml.Node | None, key: str) -> list[yaml.Node]:
 def load_confined(root: Path, path: Path) -> ComposedFlow:
     """Load the flow at ``path``; it and its ``uses:`` children load only from inside ``root``.
 
-    Raises ``FlowOutsideRepo`` for a flow outside ``root``, composer's ``LoadError`` for
-    a bad flow, ``OSError`` for an unreadable file, and ``ValueError`` for a reference
-    cycle, a pinned-version mismatch, or a flow that sets ``system.paths``.
+    Raises ``FlowOutsideRepo`` for a flow or child outside ``root``, composer's ``LoadError``
+    for a bad flow (and for a child's other problems below), ``OSError`` for an unreadable
+    file, and ``ValueError`` for a reference cycle, a pinned-version mismatch, or a flow
+    that sets ``system.paths``.
     """
-    return _load(root.resolve(), path, frozenset())
+    try:
+        return _load(root.resolve(), path, frozenset())
+    except LoadError as exc:
+        # Composer wraps what the child resolver raises in its own LoadError.
+        error: BaseException | None = exc
+        while error is not None and not isinstance(error, FlowOutsideRepo):
+            error = error.__cause__ or error.__context__
+        if error is None:
+            raise
+        raise error from None
 
 
 def _load(root: Path, path: Path, loading: frozenset[Path]) -> ComposedFlow:
     """Load one flow under the resolved ``root``; ``loading`` holds its ancestors.
 
     Composer calls the child resolver as ``resolve(path, version)`` for
-    ``<dir>/<path>.yaml``, and re-wraps only its own ``LoadError``, so
-    ``FlowOutsideRepo`` reaches the caller unchanged. Composer ignores ``system.paths``
+    ``<dir>/<path>.yaml``, and wraps anything else it raises in a ``LoadError`` caused by
+    it. Composer ignores ``system.paths``
     when a child resolver is given, so such a flow is refused rather than loaded
     differently from ``yian run``.
     """
