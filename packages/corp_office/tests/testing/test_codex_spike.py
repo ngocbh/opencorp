@@ -8,6 +8,7 @@ from agent_corp.testing.codex_spike import (
     SCHEMA_FILES,
     AppServer,
     Recorder,
+    Spike,
     checklist,
     kept,
     missing_names,
@@ -100,3 +101,20 @@ def test_the_checklist_names_every_check_and_marks_failures():
     text = checklist(results)
     assert [line.split()[1] for line in text.splitlines()] == [c.id for c in CHECKS]
     assert "FAIL S5" in text and "ok   S1" in text
+
+
+def test_one_failing_check_doesnt_hide_the_others(tmp_path, monkeypatch):
+    spike = Spike("codex", tmp_path / "out")
+    for check in CHECKS:
+        monkeypatch.setattr(spike, check.name.replace("-", "_"), lambda thread: {"thread": thread}, raising=False)
+    monkeypatch.setattr(spike, "sessions", lambda: ({"recorded": True}, "thr_1"), raising=False)
+
+    def boom(thread):
+        raise RuntimeError(f"no login under {spike.ws}")
+    monkeypatch.setattr(spike, "launch", boom, raising=False)
+    results = spike.run()
+    assert results["S1"] == {"ok": False, "detail": {"error": "no login under /work/spike/ws"}}
+    assert results["S4"] == {"ok": True, "detail": {"thread": "thr_1"}}
+    assert all(results[c.id]["ok"] for c in CHECKS if c.id != "S1")
+    assert json.loads((tmp_path / "out" / "spike.json").read_text()) == results
+    assert not spike.root.exists()  # the scratch repo goes with the run

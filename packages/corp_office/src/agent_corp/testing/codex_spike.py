@@ -267,3 +267,97 @@ def _decision(method: str, choice: str) -> dict[str, Any]:
     if method == "mcpServer/elicitation/request":
         return {"action": "cancel"}
     return {"answers": {}}
+
+
+class Spike:
+    """The checks, in order, against one ``codex`` binary, in a scratch repo under a temp folder that ``run``
+    removes; outputs go under ``out``."""
+
+    def __init__(self, codex: str, out: Path) -> None:
+        self.codex, self.out = codex, out
+        out.mkdir(parents=True, exist_ok=True)
+        self.root = Path(tempfile.mkdtemp(prefix="ac-codex-spike-"))
+        self.ws = self.root / "ws"
+        self.ws.mkdir()
+        # The owner's git config may sign commits or run hooks; a scratch repo needs neither.
+        git = ["git", "-c", "user.name=spike", "-c", "user.email=spike@example.com", "-c", "commit.gpgsign=false",
+               "-c", f"core.hooksPath={os.devnull}"]
+        subprocess.run([*git, "init", "-q"], cwd=self.ws, check=True)
+        (self.ws / "README.md").write_text("Scratch repo for the agent-corp Codex spike.\n")
+        subprocess.run([*git, "add", "-A"], cwd=self.ws, check=True)
+        subprocess.run([*git, "commit", "-qm", "init"], cwd=self.ws, check=True)
+        home, user = str(Path.home()), getpass.getuser()
+        self.replacements = {str(self.ws): "/work/spike/ws", os.path.realpath(self.ws): "/work/spike/ws",
+                             str(self.root): "/work/spike", os.path.realpath(self.root): "/work/spike",
+                             home: "/home/owner", os.path.realpath(home): "/home/owner"}
+        if len(user) >= 3:
+            self.replacements[user] = "owner"
+
+    def server(self, name: str, env: dict[str, str] | None = None) -> AppServer:
+        server = AppServer([self.codex, "app-server", "--listen", "stdio://"], self.ws,
+                           Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements), env)
+        server.request("initialize", {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike",
+                                                     "version": "0"}, "capabilities": {"experimentalApi": True}})
+        server.notify("initialized")
+        return server
+
+    def start(self, server: AppServer, sandbox: str = "read-only") -> str:
+        return server.request("thread/start", owner_load(str(self.ws), sandbox))["thread"]["id"]
+
+    def turn(self, server: AppServer, thread: str, text: str, decide: str | None = None) -> dict[str, Any]:
+        """Run a turn, answering each approval with ``decide``; return turn/completed, or the first request when
+        ``decide`` is None."""
+        server.request("turn/start", {"threadId": thread, "input": _text(text)})
+        while True:
+            msg = server.next()
+            if msg.get("method") == "turn/completed":
+                return msg
+            if "id" in msg:
+                if decide is None:
+                    return msg
+                server.reply(msg["id"], _decision(msg["method"], decide))
+
+    def run(self) -> dict[str, dict[str, Any]]:
+        """Every check; ``spike.json`` gets each one's result."""
+        results: dict[str, dict[str, Any]] = {}
+        thread = None
+        try:
+            for check in CHECKS:
+                try:
+                    if check.id == "S3":
+                        detail, thread = self.sessions()
+                    elif check.id in ("S4", "S5") and thread is None:
+                        raise SpikeError("needs the thread of S3's plain scenario")
+                    else:
+                        detail = getattr(self, check.name.replace("-", "_"))(thread)
+                    ok = bool(detail.pop("ok", True))
+                except Exception as exc:  # one failed check mustn't hide the others
+                    ok, detail = False, {"error": scrub(str(exc), self.replacements)}
+                results[check.id] = {"ok": ok, "detail": detail}
+        finally:
+            shutil.rmtree(self.root, ignore_errors=True)
+        self._write(results)
+        return results
+
+    def _write(self, results: dict[str, dict[str, Any]]) -> None:
+        (self.out / "spike.json").write_text(json.dumps(results, indent=2) + "\n")
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the spike and print its checklist; exit 1 when a check that gates a PR fails, 2 without ``codex``."""
+    parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--codex", default="codex", help="the codex binary (default: codex on PATH)")
+    args = parser.parse_args(argv)
+    codex = shutil.which(args.codex)
+    if codex is None:
+        print(f"{args.codex} is not on PATH")
+        return 2
+    results = Spike(codex, args.out).run()
+    print(checklist(results), end="")
+    gating = [c.id for c in CHECKS if c.gates != "none"]
+    return 0 if all(results[i]["ok"] for i in gating) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
