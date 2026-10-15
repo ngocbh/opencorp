@@ -3,6 +3,9 @@
 import json
 import shutil
 import sys
+import time
+
+import pytest
 
 from agent_corp.testing import codex_spike
 from agent_corp.testing.codex_spike import (
@@ -12,6 +15,7 @@ from agent_corp.testing.codex_spike import (
     AppServer,
     Recorder,
     Spike,
+    SpikeError,
     checklist,
     kept,
     missing_names,
@@ -94,6 +98,38 @@ def test_app_server_records_both_directions(tmp_path):
         ("out", "initialize"), ("in", "item/started"), ("in", "result")]
 
 
+def test_a_server_that_exits_fails_fast_with_its_code_and_last_stderr_lines(tmp_path):
+    stub = "import sys; print('no config under /Users/ann/x', file=sys.stderr); sys.exit(3)"
+    recorder = Recorder(tmp_path / "s.jsonl", {"/Users/ann": "/home/owner"})
+    started = time.monotonic()
+    with AppServer([sys.executable, "-c", stub], tmp_path, recorder, stderr=tmp_path / "err.log") as server:
+        with pytest.raises(SpikeError) as raised:
+            server.request("initialize", timeout=30)
+        with pytest.raises(SpikeError, match="exited"):
+            server.next(timeout=30)
+    assert time.monotonic() - started < 15
+    assert "initialize: the app-server exited (code 3)" in str(raised.value)
+    assert "no config under /home/owner/x" in str(raised.value)
+
+
+def test_a_server_line_that_isnt_json_is_skipped(tmp_path):
+    stub = "print('starting the gateway', flush=True)\n" + STUB
+    with AppServer([sys.executable, "-c", stub], tmp_path, Recorder(tmp_path / "s.jsonl", {})) as server:
+        assert server.request("initialize", {}) == {"ok": "initialize"}
+
+
+def test_waiting_ends_at_its_deadline_while_other_messages_keep_coming(tmp_path):
+    chatter = ("import json, os, sys, threading, time\n"
+               "threading.Thread(target=lambda: (sys.stdin.read(), os._exit(0)), daemon=True).start()\n"
+               "while True:\n"
+               "    print(json.dumps({'method': 'item/started', 'params': {}}), flush=True)\n    time.sleep(0.01)")
+    with AppServer([sys.executable, "-c", chatter], tmp_path, Recorder(tmp_path / "s.jsonl", {})) as server:
+        started = time.monotonic()
+        with pytest.raises(SpikeError, match="no turn/completed in 1s"):
+            server.wait("turn/completed", timeout=1)
+        assert time.monotonic() - started < 5
+
+
 def test_the_recorder_keeps_only_what_the_office_reads(tmp_path):
     log = tmp_path / "s.jsonl"
     recorder = Recorder(log, {"/Users/ann": "/home/owner"})
@@ -136,7 +172,7 @@ def test_one_failing_check_doesnt_hide_the_others(tmp_path, monkeypatch):
         raise RuntimeError(f"no login under {spike.ws}")
     monkeypatch.setattr(spike, "launch", boom, raising=False)
     results = spike.run()
-    assert results["S1"] == {"ok": False, "detail": {"error": "no login under /work/spike/ws"}}
+    assert results["S1"] == {"ok": False, "detail": {"error": "RuntimeError: no login under /work/spike/ws"}}
     assert results["S4"] == {"ok": True, "detail": {"thread": "thr_1"}}
     assert all(results[c.id]["ok"] for c in CHECKS if c.id != "S1")
     assert json.loads((tmp_path / "out" / "spike.json").read_text()) == results
@@ -159,7 +195,7 @@ def test_one_failing_scenario_doesnt_hide_the_others_and_runs_again_alone(tmp_pa
     monkeypatch.setattr(spike, "_interrupt", never_asked, raising=False)
     detail, thread = spike.sessions()
     assert (thread, detail["ok"]) == ("thr_1", True)
-    assert detail["scenarios"]["interrupt"] == {"ok": False, "error": "'turnId'"}
+    assert detail["scenarios"]["interrupt"] == {"ok": False, "error": "KeyError: 'turnId'"}
     assert detail["scenarios"]["resume"] == {"ok": True, "ran": "resume"}
     (tmp_path / "out" / "spike.json").write_text(json.dumps({"S3": {"ok": True, "detail": detail}}))
     monkeypatch.setattr(spike, "_interrupt", lambda thread: {"status": "interrupted"})

@@ -114,12 +114,21 @@ class Recorder:
 
 class AppServer:
     """One stdio JSON-RPC server (``codex app-server``) in its own process group, with ``env`` (the spike's own when
-    None); ``recorder`` keeps its messages."""
+    None); ``recorder`` keeps its messages, and ``stderr`` (when given) gets its stderr, whose last lines go into the
+    errors it raises."""
 
-    def __init__(self, command: list[str], cwd: Path, recorder: Recorder, env: dict[str, str] | None = None) -> None:
-        self.proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True)
+    def __init__(self, command: list[str], cwd: Path, recorder: Recorder, env: dict[str, str] | None = None,
+                 stderr: Path | None = None) -> None:
+        self.stderr = stderr
+        err = stderr.open("w") if stderr else subprocess.DEVNULL
+        try:
+            self.proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=err, text=True, bufsize=1, start_new_session=True)
+        finally:
+            if stderr:
+                err.close()
         self.recorder = recorder
+        self._closed = False  # its stdout ended: no answer or message will come
         self._ids = itertools.count(1)
         self._answers: dict[Any, dict[str, Any]] = {}
         self._answered = threading.Condition()
@@ -134,30 +143,61 @@ class AppServer:
         self.close()
 
     def _read(self) -> None:
-        for line in self.proc.stdout:
-            msg = json.loads(line)
-            self.recorder.write("in", msg)
-            if "id" in msg and "method" not in msg:
-                with self._answered:
-                    self._answers[msg["id"]] = msg
-                    self._answered.notify_all()
-            else:
-                self._inbox.put(msg)
-        self._inbox.put(None)
+        try:
+            for line in self.proc.stdout:
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    continue  # a launcher's banner or log line, not a message
+                if not isinstance(msg, dict):
+                    continue
+                self.recorder.write("in", msg)
+                if "id" in msg and "method" not in msg:
+                    with self._answered:
+                        self._answers[msg["id"]] = msg
+                        self._answered.notify_all()
+                else:
+                    self._inbox.put(msg)
+        finally:
+            with self._answered:
+                self._closed = True
+                self._answered.notify_all()
+            self._inbox.put(None)
+
+    def _stderr_tail(self, lines: int = 5) -> str:
+        """The last ``lines`` lines of the server's stderr, scrubbed, to add to an error ("" without any)."""
+        if self.stderr is None or not self.stderr.exists():
+            return ""
+        tail = [line for line in self.stderr.read_text(errors="replace").splitlines() if line.strip()][-lines:]
+        return f" [stderr: {' | '.join(self.recorder.scrub(tail))}]" if tail else ""
+
+    def _gone(self, what: str) -> SpikeError:
+        try:
+            code = self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            code = None
+        return SpikeError(f"{what}: the app-server exited (code {code}){self._stderr_tail()}")
 
     def send(self, msg: dict[str, Any]) -> None:
         self.recorder.write("out", msg)
-        self.proc.stdin.write(json.dumps(msg) + "\n")
-        self.proc.stdin.flush()
+        try:
+            self.proc.stdin.write(json.dumps(msg) + "\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError):  # a broken pipe, or stdin already closed
+            raise self._gone(msg.get("method") or "reply") from None
 
     def request_raw(self, method: str, params: dict[str, Any] | None = None, timeout: float = 120) -> dict[str, Any]:
         """Send a request; return its whole answer (``result`` or ``error``)."""
         request_id = next(self._ids)
         self.send({"id": request_id, "method": method, "params": params or {}})
         with self._answered:
-            if not self._answered.wait_for(lambda: request_id in self._answers, timeout):
-                raise SpikeError(f"{method} got no answer in {timeout:.0f}s")
-            return self._answers.pop(request_id)
+            self._answered.wait_for(lambda: request_id in self._answers or self._closed, timeout)
+            answer = self._answers.pop(request_id, None)
+        if answer is not None:
+            return answer
+        if self._closed:
+            raise self._gone(method)
+        raise SpikeError(f"{method} got no answer in {timeout:.0f}s{self._stderr_tail()}")
 
     def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 120) -> Any:
         answer = self.request_raw(method, params, timeout)
@@ -171,25 +211,38 @@ class AppServer:
     def reply(self, request_id: Any, result: dict[str, Any]) -> None:
         self.send({"id": request_id, "result": result})
 
-    def next(self, timeout: float = 180) -> dict[str, Any]:
-        """The next notification or server request."""
+    def _take(self, timeout: float, what: str) -> dict[str, Any]:
+        """The next message from the inbox; ``queue.Empty`` after ``timeout``, ``SpikeError`` once the server is
+        gone."""
         msg = self._inbox.get(timeout=timeout)
         if msg is None:
-            raise SpikeError("the app-server closed its stdout")
+            self._inbox.put(None)  # every later call sees the end too
+            raise self._gone(what)
         self.seen.append(msg)
         return msg
 
+    def next(self, timeout: float = 180) -> dict[str, Any]:
+        """The next notification or server request."""
+        try:
+            return self._take(timeout, "waiting for a message")
+        except queue.Empty:
+            raise SpikeError(f"nothing from the app-server in {timeout:.0f}s{self._stderr_tail()}") from None
+
     def wait(self, method: str, timeout: float = 180,
              where: Callable[[dict[str, Any]], bool] = lambda m: True) -> dict[str, Any]:
-        """The first message (seen already, or next) with ``method`` that ``where`` accepts."""
+        """The first message (seen already, or next) with ``method`` that ``where`` accepts, within ``timeout``."""
         for msg in self.seen:
             if msg.get("method") == method and where(msg):
                 return msg
         deadline = time.monotonic() + timeout
-        while True:
-            msg = self.next(max(0.1, deadline - time.monotonic()))
+        while (left := deadline - time.monotonic()) > 0:
+            try:
+                msg = self._take(left, f"waiting for {method}")
+            except queue.Empty:
+                break
             if msg.get("method") == method and where(msg):
                 return msg
+        raise SpikeError(f"no {method} in {timeout:.0f}s{self._stderr_tail()}")
 
     def close(self, timeout: float = 10) -> float:
         """Close stdin and wait; return the seconds until exit (the group is killed after ``timeout``)."""
@@ -326,11 +379,17 @@ class Spike:
         return scrub(value, self.replacements, self.words)
 
     def server(self, name: str, env: dict[str, str] | None = None) -> AppServer:
+        """A started and initialized app-server whose messages go to ``sessions/<name>.jsonl``."""
         server = AppServer([self.codex, "app-server", "--listen", "stdio://"], self.ws,
-                           Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements, self.words), env)
-        server.request("initialize", {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike",
-                                                     "version": "0"}, "capabilities": {"experimentalApi": True}})
-        server.notify("initialized")
+                           Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements, self.words), env,
+                           stderr=self.root / f"{name}.stderr")
+        try:
+            server.request("initialize", {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike",
+                                                         "version": "0"}, "capabilities": {"experimentalApi": True}})
+            server.notify("initialized")
+        except BaseException:
+            server.close(timeout=5)
+            raise
         return server
 
     def start(self, server: AppServer, sandbox: str = "read-only") -> str:
@@ -364,7 +423,7 @@ class Spike:
                         detail = getattr(self, check.name.replace("-", "_"))(thread)
                     ok = bool(detail.pop("ok", True))
                 except Exception as exc:  # one failed check mustn't hide the others
-                    ok, detail = False, {"error": self.scrubbed(str(exc))}
+                    ok, detail = False, {"error": self.scrubbed(f"{type(exc).__name__}: {exc}")}
                 results[check.id] = {"ok": ok, "detail": detail}
         finally:
             shutil.rmtree(self.root, ignore_errors=True)
@@ -457,7 +516,7 @@ class Spike:
             try:
                 result = getattr(self, "_" + name.replace("-", "_"))(thread)
             except Exception as exc:
-                result = {"ok": False, "error": self.scrubbed(str(exc))}
+                result = {"ok": False, "error": self.scrubbed(f"{type(exc).__name__}: {exc}")}
             thread = result.pop("thread", thread)
             scenarios[name] = {"ok": bool(result.pop("ok", True)), **result}
         seen = any('"item/autoApprovalReview/' in p.read_text() for p in (self.out / "sessions").glob("*.jsonl"))
