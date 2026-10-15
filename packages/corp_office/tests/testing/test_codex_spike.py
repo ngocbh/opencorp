@@ -24,6 +24,7 @@ from agent_corp.testing.codex_spike import (
     owner_load,
     pin_schema,
     scrub,
+    signed_in,
 )
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
 
@@ -231,6 +232,9 @@ def test_only_whole_tokens_make_a_dropped_variable_relevant():
 FAKE_CODEX = r'''
 import json, os, sys
 
+if sys.argv[1:] != ["app-server", "--listen", "stdio://"]:  # --version, login status
+    print("codex-cli 0.0.0-fake")
+    sys.exit(0)
 ask = os.environ.get("FAKE_CODEX_ASKS")  # the approval method a turn asks first; none when unset
 
 
@@ -251,7 +255,8 @@ for line in sys.stdin:
     if method is None:  # the answer to an approval
         ran_and_completed()
     elif "id" in msg:
-        result = {"thread/start": {"thread": {"id": "thr_1"}}, "turn/start": {"turn": {"id": "turn_1"}}}
+        result = {"thread/start": {"thread": {"id": "thr_1"}}, "turn/start": {"turn": {"id": "turn_1"}},
+                  "account/read": {"account": None, "requiresOpenaiAuth": False}}
         send({"id": msg["id"], "result": result.get(method, {})})
         if method == "turn/start" and ask:
             send({"id": 900, "method": ask, "params": {"itemId": "c1", "threadId": "thr_1", "turnId": "turn_1"}})
@@ -316,3 +321,15 @@ def test_eof_and_office_env_run_again_alone(tmp_path, monkeypatch):
     assert results == {**before, "S6": {"ok": True, "detail": {"seconds_to_exit": 0.5, "group_left": False}}}
     assert RERUN_CHECKS == ("eof", "office-env")
     assert not spike.root.exists()
+
+
+def test_signed_in_counts_an_account_or_a_login_that_needs_no_openai_auth():
+    assert signed_in({"account": {"type": "chatgpt"}, "requiresOpenaiAuth": True})["signed_in"] is True
+    assert signed_in({"account": None, "requiresOpenaiAuth": False}) == {
+        "signed_in": True, "has_account": False, "requires_openai_auth": False}
+    assert signed_in({"account": None, "requiresOpenaiAuth": True})["signed_in"] is False
+
+
+def test_launch_counts_a_gateway_login_without_an_account(fake_spike):
+    assert fake_spike.launch(None) == {"ok": True, "version": "codex-cli 0.0.0-fake", "login_status_exit": 0,
+                                       "signed_in": True, "has_account": False, "requires_openai_auth": False}

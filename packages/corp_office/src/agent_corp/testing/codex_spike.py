@@ -289,7 +289,8 @@ class Check:
 
 CHECKS = [
     Check("S1", "launch", "`codex app-server --listen stdio://` starts through the installed launcher and initializes "
-          "with experimentalApi; `codex login status` and account/read say signed in", "PR 4, PR 8, PR 11"),
+          "with experimentalApi, and account/read says signed in (an account, or a login that needs no OpenAI auth); "
+          "records `codex login status`'s exit code", "PR 4, PR 8, PR 11"),
     Check("S2", "owner-load", "an owner load (sandbox, network config, on-request, reviewer user) works on your "
           "config.toml and comes back with approvalPolicy on-request and approvalsReviewer user",
           "PR 5 (Step 22), PR 6"),
@@ -312,6 +313,15 @@ def owner_load(cwd: str, sandbox: str = "read-only", *, network: bool = False) -
     """The owner-load params the office will pass on thread/start and thread/resume."""
     return {"cwd": cwd, "sandbox": sandbox, "approvalPolicy": "on-request", "approvalsReviewer": "user",
             "config": {"sandbox_workspace_write": {"network_access": network}}}
+
+
+def signed_in(account_read: dict[str, Any]) -> dict[str, Any]:
+    """What an ``account/read`` answer says about the sign-in. An account counts, and so does a login that needs no
+    OpenAI auth (a launcher that signs in through its own gateway has no account)."""
+    has_account = account_read.get("account") is not None
+    requires = account_read.get("requiresOpenaiAuth")
+    return {"signed_in": has_account or requires is False, "has_account": has_account,
+            "requires_openai_auth": requires}
 
 
 def checklist(results: dict[str, dict[str, Any]]) -> str:
@@ -466,14 +476,12 @@ class Spike:
     # --- the checks but S3 ------------------------------------------------------------
 
     def launch(self, _thread: Any) -> dict[str, Any]:
-        version = subprocess.run([self.codex, "--version"], capture_output=True, text=True)
-        login = subprocess.run([self.codex, "login", "status"], capture_output=True, text=True)
+        version = subprocess.run([self.codex, "--version"], capture_output=True, text=True, timeout=60)
+        login = subprocess.run([self.codex, "login", "status"], capture_output=True, text=True, timeout=60)
         with self.server("launch") as server:
-            account = server.request("account/read", {"refreshToken": False})
-        return {"ok": version.returncode == 0 and account.get("account") is not None,
-                "version": version.stdout.strip(), "login_status_exit": login.returncode,
-                "signed_in": account.get("account") is not None,
-                "requires_openai_auth": account.get("requiresOpenaiAuth")}
+            account = signed_in(server.request("account/read", {"refreshToken": False}))
+        return {"ok": version.returncode == 0 and account["signed_in"], "version": version.stdout.strip(),
+                "login_status_exit": login.returncode, **account}
 
     def owner_load(self, _thread: Any) -> dict[str, Any]:
         got = {}
@@ -527,16 +535,16 @@ class Spike:
                                   "codex_home_set": "CODEX_HOME" in os.environ,
                                   "missing": missing_names(dict(os.environ), env)}
         with self.server("office-env", env=env) as server:
-            account = server.request("account/read", {"refreshToken": True})
-            detail["signed_in"] = account.get("account") is not None
+            detail |= signed_in(server.request("account/read", {"refreshToken": True}))
             done = self.turn(server, self.start(server), "Reply with the single word: hello")
             detail["turn"] = done["params"]["turn"]["status"]
         return {"ok": detail["signed_in"] and detail["turn"] == "completed", **detail}
 
     def schema(self, _thread: Any) -> dict[str, Any]:
-        version = subprocess.run([self.codex, "--version"], capture_output=True, text=True).stdout.strip()
+        version = subprocess.run([self.codex, "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
         with tempfile.TemporaryDirectory() as tmp:
-            subprocess.run([self.codex, "app-server", "generate-json-schema", "--experimental", "--out", tmp], check=True)
+            subprocess.run([self.codex, "app-server", "generate-json-schema", "--experimental", "--out", tmp],
+                           check=True, timeout=60)
             pin_schema(Path(tmp), self.out / "schema", version=version)
         return {"version": version}
 
