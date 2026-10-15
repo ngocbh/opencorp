@@ -236,6 +236,16 @@ async def test_a_default_model_that_doesnt_answer_is_named(client, office, as_ow
             "error": "model_refused",
             "message": f"The model '{model}' didn't answer: Error code: 404 - model not found; name another model"})
     assert len(calls) == 2 and not (office.paths.office / "connections").exists()
+    # Yian has no default model, so the check and the saved connection name it.
+    assert [c.llm_config["model"] for c in calls] == ["gpt-5.5", "claude-sonnet-4-5"]
+
+
+async def test_an_unlisted_provider_named_no_model_is_saved_on_its_default(client, office, as_owner, checks):
+    calls, _ = checks
+    r = await client.post("/connections", json={"provider": "anthropic", "api_key": UNREACHABLE}, headers=as_owner)
+    assert (r.status_code, r.json()["name"], r.json()["model"]) == (200, "anthropic", "claude-sonnet-4-5")
+    assert [c.llm_config["model"] for c in calls] == ["claude-sonnet-4-5"]
+    assert saved(office, "anthropic")["llm_config"]["model"] == "claude-sonnet-4-5"
 
 
 async def test_azure_that_cant_list_needs_a_model_to_check(client, office, as_owner, checks):

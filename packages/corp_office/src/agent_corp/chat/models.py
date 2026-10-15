@@ -31,6 +31,9 @@ TIMED_OUT = "timed out"
 AZURE_DEPLOYMENTS_API = "2022-12-01"
 """The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key."""
 
+DEFAULT_MODELS = {"openai": "gpt-5.5", "anthropic": "claude-sonnet-4-5"}
+"""The model a connection to these providers is saved with when the owner names none; yian has no default model."""
+
 KEYLESS = ("ollama", "vllm")
 """Providers whose runs need no key, so they are listed without one."""
 
