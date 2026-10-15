@@ -166,3 +166,19 @@ def test_one_failing_scenario_doesnt_hide_the_others_and_runs_again_alone(tmp_pa
     again = spike.rerun(["interrupt"])["S3"]["detail"]["scenarios"]
     assert again["interrupt"] == {"ok": True, "status": "interrupted"}
     assert again["resume"] == {"ok": True, "ran": "resume"}  # the others are kept
+
+
+def test_the_results_are_scrubbed_before_they_are_written(tmp_path, monkeypatch):
+    spike = Spike("codex", tmp_path / "out")
+    ws = str(spike.ws)
+    for check in CHECKS:
+        monkeypatch.setattr(spike, check.name.replace("-", "_"), lambda thread: {}, raising=False)
+    monkeypatch.setattr(spike, "sessions", lambda: ({"scenarios": {}}, "thr_1"))
+    monkeypatch.setattr(spike, "writer_lock", lambda thread: {"refused": True, "error": f"locked in {ws}/.git"})
+    results = spike.run()
+    assert results["S5"]["detail"]["error"] == "locked in /work/spike/ws/.git"
+    monkeypatch.delattr(spike, "sessions")
+    monkeypatch.setattr(spike, "_plain", lambda thread: {"error": f"again in {ws}", "thread": "thr_2"})
+    again = spike.rerun(["plain"])
+    assert again["S3"]["detail"]["scenarios"]["plain"]["error"] == "again in /work/spike/ws"
+    assert ws not in (tmp_path / "out" / "spike.json").read_text()

@@ -367,11 +367,13 @@ class Spike:
                 results[check.id] = {"ok": ok, "detail": detail}
         finally:
             shutil.rmtree(self.root, ignore_errors=True)
-        self._write(results)
-        return results
+        return self._write(results)
 
-    def _write(self, results: dict[str, dict[str, Any]]) -> None:
+    def _write(self, results: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Write ``results``, scrubbed, to ``spike.json``, and return what was written."""
+        results = self.scrubbed(results)
         (self.out / "spike.json").write_text(json.dumps(results, indent=2) + "\n")
+        return results
 
     # --- the checks but S3 ------------------------------------------------------------
 
@@ -471,8 +473,7 @@ class Spike:
         s3.setdefault("scenarios", {}).update(detail["scenarios"])
         s3["auto_review_seen"] = detail["auto_review_seen"]
         results["S3"]["ok"] = core_ok(s3["scenarios"])
-        self._write(results)
-        return results
+        return self._write(results)
 
     def _plain(self, _thread: Any) -> dict[str, Any]:
         with self.server("plain") as s:
