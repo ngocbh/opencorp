@@ -14,10 +14,18 @@ class FlowOutsideRepo(Exception):
 def _declares_system_paths(text: str) -> bool:
     """True if the flow sets ``system.paths``, which a custom child resolver would ignore."""
     try:
-        doc = yaml.safe_load(text)
+        # Composed, not loaded: a flow tags its slots with types (`!str`), which PyYAML can't build.
+        doc = yaml.compose(text, Loader=yaml.SafeLoader)
     except yaml.YAMLError:
         return False  # composer reports the syntax error with a location
-    return isinstance(doc, dict) and isinstance(doc.get("system"), dict) and "paths" in doc["system"]
+    return any(_values(system, "paths") for system in _values(doc, "system"))
+
+
+def _values(node: yaml.Node | None, key: str) -> list[yaml.Node]:
+    """The values under ``key`` in the YAML mapping ``node``; none when it isn't a mapping."""
+    if not isinstance(node, yaml.MappingNode):
+        return []
+    return [v for k, v in node.value if isinstance(k, yaml.ScalarNode) and k.value == key]
 
 
 def load_confined(root: Path, path: Path) -> ComposedFlow:

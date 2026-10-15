@@ -205,6 +205,14 @@ def test_system_paths_is_refused(make_company):
     assert "system.paths" in issue.message
 
 
+def test_system_paths_is_refused_in_a_flow_with_typed_inputs(make_company):
+    # A tag such as `!str` is a type to yian, and no value PyYAML can build.
+    flow = parent_flow("echo").replace("uses:", "input:\n  topic: !str\nsystem:\n  paths: [lib]\nuses:", 1)
+    root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert "system.paths" in issue.message
+
+
 def test_unknown_skill(make_company):
     root = make_company(**{"people/minh/person.yaml": person("minh", skills=["nope"])})
     assert ("person.unknown_skill", "people/minh/person.yaml") in issues(root)
