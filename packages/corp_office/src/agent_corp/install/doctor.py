@@ -86,7 +86,7 @@ def _company(paths: OfficePaths, running: bool) -> Check:
 def _provider(paths: OfficePaths) -> Check:
     path = paths.office / "provider.json"
     if not os.path.lexists(path):
-        return Check("provider", "warn", f"no {path}; runs use yian's defaults. `ac onboard` asks for one")
+        return Check("provider", "warn", f"no {path}; runs use the login `yian auth` saved. `ac onboard` asks for one")
     try:
         provider = check_provider(load_provider(path).model_dump(exclude_defaults=True))
     except ProviderError as exc:

@@ -47,9 +47,8 @@ def _load(root: Path, path: Path, loading: frozenset[Path]) -> ComposedFlow:
 
     Composer calls the child resolver as ``resolve(path, version)`` for
     ``<dir>/<path>.yaml``, and wraps anything else it raises in a ``LoadError`` caused by
-    it. Composer ignores ``system.paths``
-    when a child resolver is given, so such a flow is refused rather than loaded
-    differently from ``yian run``.
+    it. Composer ignores ``system.paths`` when a child resolver is given, so such a flow
+    is refused rather than loaded differently from ``yian run``.
     """
     # Compare resolved paths so /var -> /private/var on macOS and symlinked roots work.
     path = path.resolve()
