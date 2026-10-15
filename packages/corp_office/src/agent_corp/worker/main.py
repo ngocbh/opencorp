@@ -88,7 +88,11 @@ def run_job(job: Job, channel: Channel, rpc: Rpc, inbox: Inbox) -> dict[str, Any
         }
         if job.kind == "chat":
             Path(job.log).parent.mkdir(parents=True, exist_ok=True)
-            result = run_flow(flow, job.inputs, run_id=job.run_id, llm_config=job.llm_config,
+            # A company flow from before the office passed an input doesn't declare it, and composer refuses an
+            # undeclared input.
+            declared = {param.name for param in flow.input}
+            inputs = {name: value for name, value in job.inputs.items() if name in declared}
+            result = run_flow(flow, inputs, run_id=job.run_id, llm_config=job.llm_config,
                               learnable=job.learnable, **common)
         else:
             # composer never records a host key, so a resumed run (and its backward) needs it again.
