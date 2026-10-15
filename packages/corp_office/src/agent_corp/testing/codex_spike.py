@@ -40,7 +40,12 @@ SCHEMA_FILES = ("ServerRequest.json", "ServerNotification.json", "ClientRequest.
                 "PermissionsRequestApprovalResponse.json", "ToolRequestUserInputResponse.json",
                 "McpServerElicitationRequestResponse.json")
 _EMAIL_KEYS = {"email"}
-_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+# A letter-only top-level domain, so ``react@18.2.0`` and ``@openai/codex@0.130.0`` aren't taken for addresses.
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[A-Za-z]{2,}\b")
+_PROTOCOL_WORDS = {"user", "model", "status", "agent", "admin", "root", "codex", "owner", "thread", "turn", "item",
+                   "text", "error", "local", "localhost", "server", "client", "default"}
+"""Words the protocol itself uses. A user or host with one of these names stays unscrubbed, since replacing it would
+rewrite protocol keys and values."""
 KEPT_NOTIFICATIONS = ("turn/", "item/", "serverRequest/resolved", "error", "thread/started", "thread/closed",
                       "thread/status/changed", "thread/tokenUsage/updated")
 """Notification methods a recording keeps: the ones the office reads. Others (MCP server startup, config warnings,
@@ -398,9 +403,10 @@ class Spike:
                              home: "/home/owner", os.path.realpath(home): "/home/owner"}
         if codex_home := os.environ.get("CODEX_HOME"):
             self.replacements |= {codex_home: "/codex-home", os.path.realpath(codex_home): "/codex-home"}
-        self.words = {user: "owner"} if len(user) >= 3 else {}
+        self.words = {user: "owner"} if len(user) >= 3 and user.lower() not in _PROTOCOL_WORDS else {}
         host = socket.gethostname()
-        self.words |= {h: "owner-host" for h in (host, host.split(".")[0]) if len(h) >= 3}
+        self.words |= {h: "owner-host" for h in (host, host.split(".")[0])
+                       if len(h) >= 3 and h.lower() not in _PROTOCOL_WORDS}
 
     def scrubbed(self, value: Any) -> Any:
         """``value`` without the scratch paths, the home folder, ``CODEX_HOME``, the user, the host or an email."""

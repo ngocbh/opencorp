@@ -55,6 +55,21 @@ def test_scrub_replaces_dict_keys_and_emails_in_any_text():
     assert got == {"/home/owner/ws/a.py": "mail owner@example.com or owner@example.com"}
 
 
+def test_scrub_leaves_package_versions_that_look_like_emails():
+    text = "npm i react@18.2.0 and @openai/codex@0.130.0; mail ann@corp.com"
+    assert scrub(text, {}) == "npm i react@18.2.0 and @openai/codex@0.130.0; mail owner@example.com"
+
+
+def test_the_spike_never_scrubs_a_user_or_host_that_is_a_protocol_word(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex_spike.socket, "gethostname", lambda: "model.local")
+    monkeypatch.setattr(codex_spike.getpass, "getuser", lambda: "user")
+    spike = Spike("codex", tmp_path / "out")
+    shutil.rmtree(spike.root)
+    assert spike.words == {"model.local": "owner-host"}
+    assert spike.scrubbed({"user": "u", "model": "gpt", "status": "completed"}) == {
+        "user": "u", "model": "gpt", "status": "completed"}
+
+
 def test_scrub_replaces_words_only_where_they_stand_alone():
     assert scrub("dev wrote /dev/null with dev-tools as dev.", {}, {"dev": "owner"}) == (
         "owner wrote /dev/null with dev-tools as owner.")
