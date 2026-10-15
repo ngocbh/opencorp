@@ -21,6 +21,7 @@ import queue
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import threading
@@ -34,6 +35,7 @@ SCHEMA_FILES = ("ServerRequest.json", "ServerNotification.json", "ClientRequest.
                 "PermissionsRequestApprovalResponse.json", "ToolRequestUserInputResponse.json",
                 "McpServerElicitationRequestResponse.json")
 _EMAIL_KEYS = {"email"}
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 KEPT_NOTIFICATIONS = ("turn/", "item/", "serverRequest/resolved", "error", "thread/started", "thread/closed",
                       "thread/status/changed", "thread/tokenUsage/updated")
 """Notification methods a recording keeps: the ones the office reads. Others (MCP server startup, config warnings,
@@ -44,14 +46,21 @@ class SpikeError(Exception):
     """The app-server answered a request with an error, or never answered."""
 
 
-def scrub(value: Any, replacements: dict[str, str]) -> Any:
-    """``value`` with each key of ``replacements`` replaced in every string, longest first, and every ``email`` field
-    set to ``owner@example.com``."""
+def scrub(value: Any, replacements: dict[str, str], words: dict[str, str] | None = None) -> Any:
+    """``value`` with every email address set to ``owner@example.com``, each key of ``replacements`` replaced
+    anywhere, and each key of ``words`` replaced where it stands alone (not inside a path or a longer name), longest
+    first, in every string and dict key."""
     order = sorted(replacements, key=len, reverse=True)
+    # A user name like ``dev`` must not turn ``/dev/null`` or ``dev-tools`` into something else.
+    alone = [(re.compile(rf"(?<![\w/.-]){re.escape(w)}(?![\w/-])"), (words or {})[w])
+             for w in sorted(words or {}, key=len, reverse=True)]
 
     def text(s: str) -> str:
+        s = _EMAIL.sub("owner@example.com", s)
         for old in order:
             s = s.replace(old, replacements[old])
+        for pattern, new in alone:
+            s = pattern.sub(lambda _, new=new: new, s)
         return s
 
     def walk(v: Any, key: str | None = None) -> Any:
@@ -60,7 +69,7 @@ def scrub(value: Any, replacements: dict[str, str]) -> Any:
         if isinstance(v, str):
             return text(v)
         if isinstance(v, dict):
-            return {k: walk(x, k) for k, x in v.items()}
+            return {text(k): walk(x, k) for k, x in v.items()}
         if isinstance(v, list):
             return [walk(x) for x in v]
         return v
@@ -86,16 +95,19 @@ def pin_schema(generated: Path, out: Path, *, version: str) -> None:
 class Recorder:
     """Appends each message ``kept`` keeps, scrubbed, to a JSONL file as ``{"dir": "in" | "out", "msg": ...}``."""
 
-    def __init__(self, path: Path, replacements: dict[str, str]) -> None:
+    def __init__(self, path: Path, replacements: dict[str, str], words: dict[str, str] | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("")
-        self.path, self.replacements = path, replacements
+        self.path, self.replacements, self.words = path, replacements, words or {}
         self._lock = threading.Lock()
+
+    def scrub(self, value: Any) -> Any:
+        return scrub(value, self.replacements, self.words)
 
     def write(self, direction: str, msg: dict[str, Any]) -> None:
         if not kept(msg):
             return
-        line = json.dumps({"dir": direction, "msg": scrub(msg, self.replacements)})
+        line = json.dumps({"dir": direction, "msg": self.scrub(msg)})
         with self._lock, self.path.open("a") as f:
             f.write(line + "\n")
 
@@ -302,12 +314,19 @@ class Spike:
         self.replacements = {str(self.ws): "/work/spike/ws", os.path.realpath(self.ws): "/work/spike/ws",
                              str(self.root): "/work/spike", os.path.realpath(self.root): "/work/spike",
                              home: "/home/owner", os.path.realpath(home): "/home/owner"}
-        if len(user) >= 3:
-            self.replacements[user] = "owner"
+        if codex_home := os.environ.get("CODEX_HOME"):
+            self.replacements |= {codex_home: "/codex-home", os.path.realpath(codex_home): "/codex-home"}
+        self.words = {user: "owner"} if len(user) >= 3 else {}
+        host = socket.gethostname()
+        self.words |= {h: "owner-host" for h in (host, host.split(".")[0]) if len(h) >= 3}
+
+    def scrubbed(self, value: Any) -> Any:
+        """``value`` without the scratch paths, the home folder, ``CODEX_HOME``, the user, the host or an email."""
+        return scrub(value, self.replacements, self.words)
 
     def server(self, name: str, env: dict[str, str] | None = None) -> AppServer:
         server = AppServer([self.codex, "app-server", "--listen", "stdio://"], self.ws,
-                           Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements), env)
+                           Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements, self.words), env)
         server.request("initialize", {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike",
                                                      "version": "0"}, "capabilities": {"experimentalApi": True}})
         server.notify("initialized")
@@ -344,7 +363,7 @@ class Spike:
                         detail = getattr(self, check.name.replace("-", "_"))(thread)
                     ok = bool(detail.pop("ok", True))
                 except Exception as exc:  # one failed check mustn't hide the others
-                    ok, detail = False, {"error": scrub(str(exc), self.replacements)}
+                    ok, detail = False, {"error": self.scrubbed(str(exc))}
                 results[check.id] = {"ok": ok, "detail": detail}
         finally:
             shutil.rmtree(self.root, ignore_errors=True)
@@ -406,7 +425,7 @@ class Spike:
 
     def office_env(self, _thread: Any) -> dict[str, Any]:
         env = office_env(dict(os.environ))
-        detail: dict[str, Any] = {"codex": scrub(self.codex, self.replacements),
+        detail: dict[str, Any] = {"codex": self.scrubbed(self.codex),
                                   "codex_home_set": "CODEX_HOME" in os.environ,
                                   "missing": missing_names(dict(os.environ), env)}
         with self.server("office-env", env=env) as server:
@@ -435,7 +454,7 @@ class Spike:
             try:
                 result = getattr(self, "_" + name.replace("-", "_"))(thread)
             except Exception as exc:
-                result = {"ok": False, "error": scrub(str(exc), self.replacements)}
+                result = {"ok": False, "error": self.scrubbed(str(exc))}
             thread = result.pop("thread", thread)
             scenarios[name] = {"ok": bool(result.pop("ok", True)), **result}
         seen = any('"item/autoApprovalReview/' in p.read_text() for p in (self.out / "sessions").glob("*.jsonl"))

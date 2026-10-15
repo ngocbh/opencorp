@@ -1,8 +1,10 @@
 """The Codex spike's helpers: scrubbing recordings, pinning the schema, and recording a stdio server."""
 
 import json
+import shutil
 import sys
 
+from agent_corp.testing import codex_spike
 from agent_corp.testing.codex_spike import (
     CHECKS,
     SCENARIOS,
@@ -31,6 +33,26 @@ def test_scrub_replaces_paths_and_names_everywhere():
 
 def test_scrub_replaces_longer_paths_first():
     assert scrub("/a/b/c and /a/b", {"/a/b": "B", "/a/b/c": "C"}) == "C and B"
+
+
+def test_scrub_replaces_dict_keys_and_emails_in_any_text():
+    got = scrub({"/Users/ann/ws/a.py": "mail ann@corp.com or a.b+c@x.co.uk"}, {"/Users/ann": "/home/owner"})
+    assert got == {"/home/owner/ws/a.py": "mail owner@example.com or owner@example.com"}
+
+
+def test_scrub_replaces_words_only_where_they_stand_alone():
+    assert scrub("dev wrote /dev/null with dev-tools as dev.", {}, {"dev": "owner"}) == (
+        "owner wrote /dev/null with dev-tools as owner.")
+
+
+def test_the_spike_scrubs_its_host_codex_home_and_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex_spike.socket, "gethostname", lambda: "annbox.corp.example")
+    monkeypatch.setattr(codex_spike.getpass, "getuser", lambda: "ann")
+    monkeypatch.setenv("CODEX_HOME", "/opt/ann-codex")
+    spike = Spike("codex", tmp_path / "out")
+    shutil.rmtree(spike.root)
+    assert spike.scrubbed("ann on annbox.corp.example and annbox: /opt/ann-codex/auth.json, /dev/null") == (
+        "owner on owner-host and owner-host: /codex-home/auth.json, /dev/null")
 
 
 def test_kept_keeps_requests_answers_and_the_notifications_the_office_reads():
