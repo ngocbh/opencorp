@@ -355,3 +355,7 @@ def test_a_scratch_repo_that_fails_leaves_no_temp_folder(tmp_path, monkeypatch):
 def test_running_one_again_needs_a_full_run_first(tmp_path, capsys):
     assert main(["--out", str(tmp_path / "out"), "--codex", sys.executable, "--scenario", "office-env"]) == 2
     assert "run the full spike first" in capsys.readouterr().out
+
+
+def test_only_the_service_read_gates_nothing():
+    assert [c.id for c in CHECKS if not c.gates] == ["S4"]

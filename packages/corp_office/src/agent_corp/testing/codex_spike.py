@@ -1,15 +1,16 @@
-"""Owner-run spike: the installed Codex app-server against the claims step 1 of the Codex harness rests on.
+"""Owner-run spike: the installed Codex app-server against the claims the office's Codex harness rests on.
 
 Run it from a plain terminal (not under a sandbox-exec launcher, which can't nest), in a checkout:
 
     uv run python -I -m agent_corp.testing.codex_spike --out packages/corp_office/tests/harness/fixtures/codex
 
-It needs a signed-in ``codex`` on PATH, spends a few small turns of the owner's Codex login, and works only in a
-scratch git repo under a temp folder, removed when it is done. Under ``--out`` it writes ``schema/`` (the pinned
-protocol), ``sessions/<scenario>.jsonl`` (requests, answers and the notifications the office reads, both ways,
-scrubbed) and ``spike.json`` (each check's result), and it prints the checklist. ``--scenario NAME`` runs one of S3's
-scenarios again and merges it into ``spike.json``. It never reads or prints a token. It uses only the stdlib, so it
-runs before the office's Codex code exists.
+It needs a signed-in ``codex`` (``--codex PATH`` picks the binary; the default is ``codex`` on PATH), spends a few
+small turns of the owner's Codex login, and works only in a scratch git repo under a temp folder, removed when it is
+done. The threads it starts stay in the owner's Codex history (``codex resume`` lists them). Under ``--out`` it writes
+``schema/`` (the pinned protocol), ``sessions/<scenario>.jsonl`` (requests, answers and the notifications the office
+reads, both ways, scrubbed) and ``spike.json`` (each check's result), and it prints the checklist. ``--scenario NAME``
+runs one of S3's scenarios (or the eof or office-env check) again and merges it into ``spike.json``. It never reads or
+prints a token. It uses only the stdlib, so it runs before the office's Codex code exists.
 """
 
 import argparse
@@ -281,7 +282,7 @@ def missing_names(full: dict[str, str], narrow: dict[str, str]) -> dict[str, Any
 
 
 class Check:
-    """One claim the spike checks, and the PRs that wait on it."""
+    """One claim the spike checks, and the office work that waits on it (``gates``; empty when nothing does)."""
 
     def __init__(self, id: str, name: str, claim: str, gates: str) -> None:
         self.id, self.name, self.claim, self.gates = id, name, claim, gates
@@ -290,22 +291,29 @@ class Check:
 CHECKS = [
     Check("S1", "launch", "`codex app-server --listen stdio://` starts through the installed launcher and initializes "
           "with experimentalApi, and account/read says signed in (an account, or a login that needs no OpenAI auth); "
-          "records `codex login status`'s exit code", "PR 4, PR 8, PR 11"),
+          "records `codex login status`'s exit code",
+          "the app-server client's launch and initialize; the signed-out error; the doctor's Codex check"),
     Check("S2", "owner-load", "an owner load (sandbox, network config, on-request, reviewer user) works on your "
           "config.toml and comes back with approvalPolicy on-request and approvalsReviewer user",
-          "PR 5 (Step 22), PR 6"),
+          "the session's start params; whether the translator needs auto-review notes"),
     Check("S3", "sessions", "golden sessions recorded, each scenario with its own result: plain, command approve and "
           "decline, file change, interrupt with a pending approval, steer (turn/start on a busy thread answers the "
           "running turn), resume, and whether a thread that never ran a turn resumes; whether any auto-review showed "
-          "up. ok when the four core scenarios are", "PR 5, PR 6, PR 7, PR 8, PR 10 (each by scenario; see Step 3)"),
-    Check("S4", "service-read", "thread/read on a second app-server while a turn runs in the first (step 2 only)", "none"),
+          "up. ok when the four core scenarios are",
+          "by scenario: the translator's golden tests (the core four); how a message to a busy thread is sent "
+          "(steer); stale approval cards (interrupt); reloading and continuing a session (resume, resume-empty)"),
+    Check("S4", "service-read", "thread/read on a second app-server while a turn runs in the first (recorded for "
+          "later agent tools)", ""),
     Check("S5", "writer-lock", "thread/resume of a thread loaded in another app-server: Codex refuses, and with what",
-          "PR 8"),
-    Check("S6", "eof", "stdin EOF during a command: seconds until exit, and whether the command outlives it", "PR 8"),
+          "the error when another app-server holds the thread"),
+    Check("S6", "eof", "stdin EOF during a command: seconds until exit, and whether the command outlives it",
+          "killing the app-server's process group when it dies"),
     Check("S7", "office-env", "in the environment the office gives an app-server (PATH, HOME, USER, LOGNAME, LANG, "
           "TMPDIR, TZ, LC_*): account/read with refreshToken says signed in, and a plain turn completes; the names of "
-          "what that environment drops that could matter (proxies, certificates, CODEX_HOME)", "PR 6"),
-    Check("S8", "schema", "the pinned schema (generate-json-schema --experimental)", "PR 4, PR 5"),
+          "what that environment drops that could matter (proxies, certificates, CODEX_HOME)",
+          "the environment of every app-server the office starts"),
+    Check("S8", "schema", "the pinned schema (generate-json-schema --experimental)",
+          "the fake app-server's scripts; the translator's request and reply drift tests"),
 ]
 
 
@@ -652,11 +660,12 @@ class Spike:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the spike and print its checklist; exit 1 when a check that gates a PR fails, 2 without ``codex`` (or
+    """Run the spike and print its checklist; exit 1 when a check that other work waits on fails, 2 without ``codex`` (or
     without a full run's ``spike.json`` to merge ``--scenario`` into)."""
     parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--codex", default="codex", help="the codex binary (default: codex on PATH)")
+    parser.add_argument("--codex", default="codex",
+                        help="the codex binary to check, a name on PATH or a path (default: codex)")
     parser.add_argument("--scenario", action="append", choices=(*SCENARIOS, *RERUN_CHECKS),
                         help="run only this S3 scenario (or the eof or office-env check) again and merge it into "
                              "spike.json (repeatable)")
@@ -671,7 +680,7 @@ def main(argv: list[str] | None = None) -> int:
     spike = Spike(codex, args.out)
     results = spike.rerun(args.scenario) if args.scenario else spike.run()
     print(checklist(results), end="")
-    gating = [c.id for c in CHECKS if c.gates != "none"]
+    gating = [c.id for c in CHECKS if c.gates]
     return 0 if all(results[i]["ok"] for i in gating) else 1
 
 
