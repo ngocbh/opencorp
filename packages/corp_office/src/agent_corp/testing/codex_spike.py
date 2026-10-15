@@ -81,3 +81,114 @@ def pin_schema(generated: Path, out: Path, *, version: str) -> None:
     for name in SCHEMA_FILES:
         shutil.copyfile(generated / name, out / name)
     (out / "VERSION").write_text(version + "\n")
+
+
+class Recorder:
+    """Appends each message ``kept`` keeps, scrubbed, to a JSONL file as ``{"dir": "in" | "out", "msg": ...}``."""
+
+    def __init__(self, path: Path, replacements: dict[str, str]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("")
+        self.path, self.replacements = path, replacements
+        self._lock = threading.Lock()
+
+    def write(self, direction: str, msg: dict[str, Any]) -> None:
+        if not kept(msg):
+            return
+        line = json.dumps({"dir": direction, "msg": scrub(msg, self.replacements)})
+        with self._lock, self.path.open("a") as f:
+            f.write(line + "\n")
+
+
+class AppServer:
+    """One stdio JSON-RPC server (``codex app-server``) in its own process group, with ``env`` (the spike's own when
+    None); ``recorder`` keeps its messages."""
+
+    def __init__(self, command: list[str], cwd: Path, recorder: Recorder, env: dict[str, str] | None = None) -> None:
+        self.proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, text=True, bufsize=1, start_new_session=True)
+        self.recorder = recorder
+        self._ids = itertools.count(1)
+        self._answers: dict[Any, dict[str, Any]] = {}
+        self._answered = threading.Condition()
+        self._inbox: queue.Queue[dict[str, Any] | None] = queue.Queue()
+        self.seen: list[dict[str, Any]] = []  # notifications and requests taken from the inbox
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def __enter__(self) -> "AppServer":
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def _read(self) -> None:
+        for line in self.proc.stdout:
+            msg = json.loads(line)
+            self.recorder.write("in", msg)
+            if "id" in msg and "method" not in msg:
+                with self._answered:
+                    self._answers[msg["id"]] = msg
+                    self._answered.notify_all()
+            else:
+                self._inbox.put(msg)
+        self._inbox.put(None)
+
+    def send(self, msg: dict[str, Any]) -> None:
+        self.recorder.write("out", msg)
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+
+    def request_raw(self, method: str, params: dict[str, Any] | None = None, timeout: float = 120) -> dict[str, Any]:
+        """Send a request; return its whole answer (``result`` or ``error``)."""
+        request_id = next(self._ids)
+        self.send({"id": request_id, "method": method, "params": params or {}})
+        with self._answered:
+            if not self._answered.wait_for(lambda: request_id in self._answers, timeout):
+                raise SpikeError(f"{method} got no answer in {timeout:.0f}s")
+            return self._answers.pop(request_id)
+
+    def request(self, method: str, params: dict[str, Any] | None = None, timeout: float = 120) -> Any:
+        answer = self.request_raw(method, params, timeout)
+        if "error" in answer:
+            raise SpikeError(f"{method}: {answer['error']}")
+        return answer.get("result")
+
+    def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
+        self.send({"method": method, **({"params": params} if params is not None else {})})
+
+    def reply(self, request_id: Any, result: dict[str, Any]) -> None:
+        self.send({"id": request_id, "result": result})
+
+    def next(self, timeout: float = 180) -> dict[str, Any]:
+        """The next notification or server request."""
+        msg = self._inbox.get(timeout=timeout)
+        if msg is None:
+            raise SpikeError("the app-server closed its stdout")
+        self.seen.append(msg)
+        return msg
+
+    def wait(self, method: str, timeout: float = 180,
+             where: Callable[[dict[str, Any]], bool] = lambda m: True) -> dict[str, Any]:
+        """The first message (seen already, or next) with ``method`` that ``where`` accepts."""
+        for msg in self.seen:
+            if msg.get("method") == method and where(msg):
+                return msg
+        deadline = time.monotonic() + timeout
+        while True:
+            msg = self.next(max(0.1, deadline - time.monotonic()))
+            if msg.get("method") == method and where(msg):
+                return msg
+
+    def close(self, timeout: float = 10) -> float:
+        """Close stdin and wait; return the seconds until exit (the group is killed after ``timeout``)."""
+        start = time.monotonic()
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(self.proc.pid, signal.SIGKILL)
+            self.proc.wait()
+        return time.monotonic() - start

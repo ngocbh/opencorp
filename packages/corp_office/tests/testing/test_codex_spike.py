@@ -1,8 +1,9 @@
 """The Codex spike's helpers: scrubbing recordings, pinning the schema, and recording a stdio server."""
 
 import json
+import sys
 
-from agent_corp.testing.codex_spike import SCHEMA_FILES, kept, pin_schema, scrub
+from agent_corp.testing.codex_spike import SCHEMA_FILES, AppServer, Recorder, kept, pin_schema, scrub
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
 
 
@@ -35,3 +36,33 @@ def test_pin_schema_keeps_the_bundles_the_tests_read_and_the_version(tmp_path):
     pin_schema(src, out, version="codex-cli 0.130.0")
     assert sorted(p.name for p in out.iterdir()) == sorted([*SCHEMA_FILES, "VERSION"])
     assert (out / "VERSION").read_text() == "codex-cli 0.130.0\n"
+
+
+STUB = r'''
+import json, sys
+for line in sys.stdin:
+    msg = json.loads(line)
+    if "id" in msg and "method" in msg:
+        print(json.dumps({"method": "item/started", "params": {"seen": msg["method"]}}), flush=True)
+        print(json.dumps({"id": msg["id"], "result": {"ok": msg["method"]}}), flush=True)
+'''
+
+
+def test_app_server_records_both_directions(tmp_path):
+    log = tmp_path / "s.jsonl"
+    with AppServer([sys.executable, "-c", STUB], tmp_path, Recorder(log, {})) as server:
+        assert server.request("initialize", {"x": 1}) == {"ok": "initialize"}
+        assert server.wait("item/started")["params"] == {"seen": "initialize"}
+    lines = [json.loads(line) for line in log.read_text().splitlines()]
+    assert [(entry["dir"], entry["msg"].get("method", "result")) for entry in lines] == [
+        ("out", "initialize"), ("in", "item/started"), ("in", "result")]
+
+
+def test_the_recorder_keeps_only_what_the_office_reads(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/Users/ann": "/home/owner"})
+    for msg in [{"method": "configWarning", "params": {"summary": "x"}},
+                {"method": "item/started", "params": {"cwd": "/Users/ann/ws"}}]:
+        recorder.write("in", msg)
+    assert [json.loads(line) for line in log.read_text().splitlines()] == [
+        {"dir": "in", "msg": {"method": "item/started", "params": {"cwd": "/home/owner/ws"}}}]
