@@ -10,6 +10,7 @@ import pytest
 from agent_corp.testing import codex_spike
 from agent_corp.testing.codex_spike import (
     CHECKS,
+    RERUN_CHECKS,
     SCENARIOS,
     SCHEMA_FILES,
     AppServer,
@@ -280,3 +281,38 @@ def test_an_approval_scenario_is_ok_only_when_codex_asked_for_its_kind(fake_spik
     assert fake_spike._file_change(None)["ok"] is False
     monkeypatch.setenv("FAKE_CODEX_ASKS", "item/fileChange/requestApproval")
     assert fake_spike._file_change(None)["ok"] is True
+
+
+def test_waiting_for_a_command_answers_approvals_on_the_way(fake_spike, monkeypatch):
+    monkeypatch.setenv("FAKE_CODEX_ASKS", "item/commandExecution/requestApproval")
+    with fake_spike.server("ran") as server:
+        server.request("turn/start", {"threadId": "thr_1", "input": []})
+        assert fake_spike.wait_command_started(server)["params"]["item"]["type"] == "commandExecution"
+    monkeypatch.delenv("FAKE_CODEX_ASKS")
+    with fake_spike.server("ran-nothing") as server:
+        server.request("turn/start", {"threadId": "thr_1", "input": []})
+        with pytest.raises(SpikeError, match="the model ran no command"):
+            fake_spike.wait_command_started(server)
+
+
+def test_eof_kills_its_app_server_when_it_fails(fake_spike, monkeypatch):
+    monkeypatch.delenv("FAKE_CODEX_ASKS", raising=False)
+    servers = []
+    real = fake_spike.server
+    monkeypatch.setattr(fake_spike, "server", lambda name, env=None: servers.append(real(name, env)) or servers[-1])
+    with pytest.raises(SpikeError, match="the model ran no command"):
+        fake_spike.eof(None)
+    assert servers[0].proc.poll() is not None
+
+
+def test_eof_and_office_env_run_again_alone(tmp_path, monkeypatch):
+    spike = Spike("codex", tmp_path / "out")
+    before = {"S3": {"ok": True, "detail": {"scenarios": {"plain": {"ok": True}}}},
+              "S6": {"ok": False, "detail": {"error": "SpikeError: no item/started in 180s"}},
+              "S7": {"ok": True, "detail": {"turn": "completed"}}}
+    (tmp_path / "out" / "spike.json").write_text(json.dumps(before))
+    monkeypatch.setattr(spike, "eof", lambda thread: {"seconds_to_exit": 0.5, "group_left": False})
+    results = spike.rerun(["eof"])
+    assert results == {**before, "S6": {"ok": True, "detail": {"seconds_to_exit": 0.5, "group_left": False}}}
+    assert RERUN_CHECKS == ("eof", "office-env")
+    assert not spike.root.exists()

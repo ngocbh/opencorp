@@ -340,6 +340,8 @@ SCENARIOS = ("plain", "command-approve", "command-decline", "file-change", "inte
 """S3's scenarios, each on its own app-server and in its own ``sessions/<name>.jsonl``."""
 CORE = ("plain", "command-approve", "command-decline", "file-change")
 """The scenarios S3's own ok needs; each later PR's gate names the scenarios it reads."""
+RERUN_CHECKS = ("eof", "office-env")
+"""Checks that ``--scenario`` can also run again: each turns on what one model turn does."""
 
 
 def core_ok(scenarios: dict[str, dict[str, Any]]) -> bool:
@@ -417,26 +419,49 @@ class Spike:
         thread = None
         try:
             for check in CHECKS:
-                try:
-                    if check.id == "S3":
-                        detail, thread = self.sessions()
-                    elif check.id in ("S4", "S5") and thread is None:
-                        raise SpikeError("needs the thread of S3's plain scenario")
-                    else:
-                        detail = getattr(self, check.name.replace("-", "_"))(thread)
-                    ok = bool(detail.pop("ok", True))
-                except Exception as exc:  # one failed check mustn't hide the others
-                    ok, detail = False, {"error": self.scrubbed(f"{type(exc).__name__}: {exc}")}
-                results[check.id] = {"ok": ok, "detail": detail}
+                results[check.id], thread = self._one(check, thread)
         finally:
             shutil.rmtree(self.root, ignore_errors=True)
         return self._write(results)
+
+    def _one(self, check: Check, thread: str | None) -> tuple[dict[str, Any], str | None]:
+        """``check``'s result, and the thread of S3's plain scenario once S3 has run."""
+        try:
+            if check.id == "S3":
+                detail, thread = self.sessions()
+            elif check.id in ("S4", "S5") and thread is None:
+                raise SpikeError("needs the thread of S3's plain scenario")
+            else:
+                detail = getattr(self, check.name.replace("-", "_"))(thread)
+            ok = bool(detail.pop("ok", True))
+        except Exception as exc:  # one failed check mustn't hide the others
+            ok, detail = False, {"error": self.scrubbed(f"{type(exc).__name__}: {exc}")}
+        return {"ok": ok, "detail": detail}, thread
 
     def _write(self, results: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Write ``results``, scrubbed, to ``spike.json``, and return what was written."""
         results = self.scrubbed(results)
         (self.out / "spike.json").write_text(json.dumps(results, indent=2) + "\n")
         return results
+
+    def wait_command_started(self, server: AppServer) -> dict[str, Any]:
+        """The next commandExecution ``item/started``, accepting any approval on the way; ``SpikeError`` when the
+        turn completes without one."""
+        while True:
+            msg = server.next()
+            if msg.get("method") == "turn/completed":
+                raise SpikeError("the model ran no command")
+            if "id" in msg:
+                server.reply(msg["id"], _decision(msg["method"], "accept"))
+            elif msg.get("method") == "item/started" and msg["params"]["item"]["type"] == "commandExecution":
+                return msg
+
+    def wait_completed(self, server: AppServer) -> dict[str, Any]:
+        """The next ``turn/completed``, accepting any approval on the way."""
+        while (msg := server.next()).get("method") != "turn/completed":
+            if "id" in msg:
+                server.reply(msg["id"], _decision(msg["method"], "accept"))
+        return msg
 
     # --- the checks but S3 ------------------------------------------------------------
 
@@ -464,8 +489,9 @@ class Spike:
         with self.server("service-read-a") as a, self.server("service-read-b") as b:
             a.request("thread/resume", {"threadId": thread, **owner_load(str(self.ws), "workspace-write")})
             a.request("turn/start", {"threadId": thread, "input": _text("Run `sleep 5` with the shell, then say done.")})
+            self.wait_command_started(a)
             answer = b.request_raw("thread/read", {"threadId": thread, "includeTurns": True})
-            a.wait("turn/completed")
+            self.wait_completed(a)
         return {"ok": "result" in answer, "error": answer.get("error")}
 
     def writer_lock(self, thread: str) -> dict[str, Any]:
@@ -476,17 +502,24 @@ class Spike:
 
     def eof(self, _thread: Any) -> dict[str, Any]:
         s = self.server("eof")
-        t = self.start(s, "workspace-write")
-        s.request("turn/start", {"threadId": t, "input": _text("Run `sleep 120` with the shell.")})
-        s.wait("item/started", where=lambda m: m["params"]["item"]["type"] == "commandExecution")
-        seconds = s.close(timeout=90)
         try:
-            os.killpg(s.proc.pid, 0)  # anything left in the app-server's group, such as the sleep
-            left = True
-            os.killpg(s.proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            left = False
-        return {"seconds_to_exit": round(seconds, 1), "group_left": left}
+            t = self.start(s, "workspace-write")
+            s.request("turn/start", {"threadId": t, "input": _text("Run `sleep 120` with the shell.")})
+            self.wait_command_started(s)
+            seconds = s.close(timeout=90)
+            try:
+                os.killpg(s.proc.pid, 0)  # anything left in the app-server's group, such as the sleep
+                left = True
+            except (ProcessLookupError, PermissionError):
+                left = False
+            return {"seconds_to_exit": round(seconds, 1), "group_left": left}
+        finally:
+            # What is left in the group goes: the sleep, or the app-server itself when a step above failed.
+            try:
+                os.killpg(s.proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            s.proc.wait()
 
     def office_env(self, _thread: Any) -> dict[str, Any]:
         env = office_env(dict(os.environ))
@@ -525,17 +558,22 @@ class Spike:
         seen = any('"item/autoApprovalReview/' in p.read_text() for p in (self.out / "sessions").glob("*.jsonl"))
         return {"ok": core_ok(scenarios), "scenarios": scenarios, "auto_review_seen": seen}, thread
 
-    def rerun(self, scenarios: list[str]) -> dict[str, dict[str, Any]]:
-        """Run S3's ``scenarios`` again (one whose model didn't ask, say) and merge them into ``spike.json``."""
-        results = json.loads((self.out / "spike.json").read_text())
+    def rerun(self, names: list[str]) -> dict[str, dict[str, Any]]:
+        """Run the S3 scenarios and ``RERUN_CHECKS`` in ``names`` again (one whose model didn't ask, or a network
+        blip) and merge them into ``spike.json``."""
         try:
-            detail, _ = self.sessions(set(scenarios))
+            results = json.loads((self.out / "spike.json").read_text())
+            if scenarios := {n for n in names if n in SCENARIOS}:
+                detail, _ = self.sessions(scenarios)
+                s3 = results["S3"]["detail"]
+                s3.setdefault("scenarios", {}).update(detail["scenarios"])
+                s3["auto_review_seen"] = detail["auto_review_seen"]
+                results["S3"]["ok"] = core_ok(s3["scenarios"])
+            for check in CHECKS:
+                if check.name in names and check.name in RERUN_CHECKS:
+                    results[check.id], _ = self._one(check, None)
         finally:
             shutil.rmtree(self.root, ignore_errors=True)
-        s3 = results["S3"]["detail"]
-        s3.setdefault("scenarios", {}).update(detail["scenarios"])
-        s3["auto_review_seen"] = detail["auto_review_seen"]
-        results["S3"]["ok"] = core_ok(s3["scenarios"])
         return self._write(results)
 
     def _plain(self, _thread: Any) -> dict[str, Any]:
@@ -579,9 +617,9 @@ class Spike:
             t = self.start(s, "workspace-write")
             loop = "Run `for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 1; done` with the shell, then summarize it."
             first = s.request("turn/start", {"threadId": t, "input": _text(loop)})["turn"]["id"]
-            s.wait("item/started", where=lambda m: m["params"]["item"]["type"] == "commandExecution")
+            self.wait_command_started(s)
             second = s.request("turn/start", {"threadId": t, "input": _text("Also say pineapple in the summary.")})
-            status = s.wait("turn/completed")["params"]["turn"]["status"]
+            status = self.wait_completed(s)["params"]["turn"]["status"]
         return {"ok": status == "completed", "same_turn": first == second["turn"]["id"]}
 
     def _resume(self, thread: str | None) -> dict[str, Any]:
@@ -606,8 +644,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--codex", default="codex", help="the codex binary (default: codex on PATH)")
-    parser.add_argument("--scenario", action="append", choices=SCENARIOS,
-                        help="run only this S3 scenario again and merge it into spike.json (repeatable)")
+    parser.add_argument("--scenario", action="append", choices=(*SCENARIOS, *RERUN_CHECKS),
+                        help="run only this S3 scenario (or the eof or office-env check) again and merge it into "
+                             "spike.json (repeatable)")
     args = parser.parse_args(argv)
     codex = shutil.which(args.codex)
     if codex is None:
