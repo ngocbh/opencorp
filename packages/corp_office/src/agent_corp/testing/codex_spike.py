@@ -4,13 +4,17 @@ Run it from a plain terminal (not under a sandbox-exec launcher, which can't nes
 
     uv run python -I -m agent_corp.testing.codex_spike --out packages/corp_office/tests/harness/fixtures/codex
 
-It needs a signed-in ``codex`` (``--codex PATH`` picks the binary; the default is ``codex`` on PATH), spends a few
-small turns of the owner's Codex login, and works only in a scratch git repo under a temp folder, removed when it is
-done. The threads it starts stay in the owner's Codex history (``codex resume`` lists them). Under ``--out`` it writes
-``schema/`` (the pinned protocol), ``sessions/<scenario>.jsonl`` (requests, answers and the notifications the office
-reads, both ways, scrubbed) and ``spike.json`` (each check's result), and it prints the checklist. ``--scenario NAME``
-runs one of S3's scenarios (or the eof or office-env check) again and merges it into ``spike.json``. It never reads or
-prints a token. It uses only the stdlib, so it runs before the office's Codex code exists.
+It needs a signed-in ``codex`` (``--codex PATH`` picks the binary; the default is ``codex`` on PATH). For a Codex
+installed beside another ``codex``, pass ``--codex <its path>`` and export the ``CODEX_HOME`` it uses; the office will
+give its app-servers the same ``CODEX_HOME``.
+
+It spends a few small turns of the owner's Codex login, and works only in a scratch git repo under a temp folder,
+removed when it is done. The threads it starts stay in the owner's Codex history (``codex resume`` lists them). Under
+``--out`` it writes ``schema/`` (the pinned protocol), ``sessions/<scenario>.jsonl`` (requests, answers and the
+notifications the office reads, both ways, scrubbed) and ``spike.json`` (each check's result), and it prints the
+checklist. ``--scenario NAME`` runs one of S3's scenarios (or the eof or office-env check) again and merges it into
+``spike.json``. It never reads or prints a token. It uses only the stdlib, so it runs before the office's Codex code
+exists.
 """
 
 import argparse
@@ -268,9 +272,9 @@ _RELEVANT = re.compile(r"(^|_)(PROXY|SSL|CERTS?|CA_BUNDLE|CODEX|OPENAI|NODE)(_|$
 
 def office_env(environ: dict[str, str]) -> dict[str, str]:
     """The environment the office gives an app-server: ``INHERITED_ENV`` and ``LC_*`` (not ``LC_TERMINAL*``), as
-    ``daemon_env`` and then ``worker_env`` narrow it."""
+    ``daemon_env`` and then ``worker_env`` narrow it, plus ``CODEX_HOME`` when it is set."""
     return {k: v for k, v in environ.items()
-            if k in INHERITED_ENV or (k.startswith("LC_") and not k.startswith("LC_TERMINAL"))}
+            if k in INHERITED_ENV or k == "CODEX_HOME" or (k.startswith("LC_") and not k.startswith("LC_TERMINAL"))}
 
 
 def missing_names(full: dict[str, str], narrow: dict[str, str]) -> dict[str, Any]:
@@ -309,8 +313,8 @@ CHECKS = [
     Check("S6", "eof", "stdin EOF during a command: seconds until exit, and whether the command outlives it",
           "killing the app-server's process group when it dies"),
     Check("S7", "office-env", "in the environment the office gives an app-server (PATH, HOME, USER, LOGNAME, LANG, "
-          "TMPDIR, TZ, LC_*): account/read with refreshToken says signed in, and a plain turn completes; the names of "
-          "what that environment drops that could matter (proxies, certificates, CODEX_HOME)",
+          "TMPDIR, TZ, LC_*, and CODEX_HOME when set): account/read with refreshToken says signed in, and a plain turn "
+          "completes; the names of what that environment drops that could matter (proxies, certificates)",
           "the environment of every app-server the office starts"),
     Check("S8", "schema", "the pinned schema (generate-json-schema --experimental)",
           "the fake app-server's scripts; the translator's request and reply drift tests"),
@@ -666,7 +670,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--codex", default="codex",
-                        help="the codex binary to check, a name on PATH or a path (default: codex)")
+                        help="the codex binary to check, a name on PATH or a path (default: codex); for a "
+                             "non-default install, also export the CODEX_HOME it uses")
     parser.add_argument("--scenario", action="append", choices=(*SCENARIOS, *RERUN_CHECKS),
                         help="run only this S3 scenario (or the eof or office-env check) again and merge it into "
                              "spike.json (repeatable)")

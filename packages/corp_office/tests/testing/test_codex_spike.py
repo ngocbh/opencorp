@@ -158,13 +158,16 @@ def test_owner_load_routes_approvals_to_the_user():
         "config": {"sandbox_workspace_write": {"network_access": True}}}
 
 
-def test_the_office_env_is_the_workers_and_only_names_of_what_it_drops_are_kept():
+def test_the_office_env_is_the_workers_plus_codex_home_and_only_names_of_what_it_drops_are_kept():
     full = {"PATH": "/bin", "HOME": "/h", "LC_ALL": "C", "LC_TERMINAL": "iTerm2", "HTTPS_PROXY": "http://p:3128",
             "NODE_EXTRA_CA_CERTS": "/ca.pem", "CODEX_HOME": "/c", "EDITOR": "vim"}
     narrow = office_env(full)
-    assert narrow == {"PATH": "/bin", "HOME": "/h", "LC_ALL": "C"}
-    assert missing_names(full, narrow) == {"relevant": ["CODEX_HOME", "HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"],
-                                           "others": 2}
+    assert narrow == {"PATH": "/bin", "HOME": "/h", "LC_ALL": "C", "CODEX_HOME": "/c"}
+    assert missing_names(full, narrow) == {"relevant": ["HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"], "others": 2}
+
+
+def test_the_office_env_has_no_codex_home_when_none_is_set():
+    assert office_env({"PATH": "/bin", "HOME": "/h", "OPENAI_API_KEY": "x"}) == {"PATH": "/bin", "HOME": "/h"}
 
 
 def test_the_checklist_names_every_check_and_marks_failures():
