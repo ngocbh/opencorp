@@ -8,8 +8,8 @@ description: Edit a person's profile with the owner.
 defs:
   turn:
     input:
-      exited: bool
-      reply: str
+      exited: !bool
+      reply: !str
     nodes:
       ask:
         kind: human_input
@@ -30,7 +30,6 @@ defs:
           return {"exited": True}
       reply:
         kind: agent
-        mode: tool_calling
         steerable: true
         long_term_memory: session
         env:

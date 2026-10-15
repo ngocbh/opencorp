@@ -16,14 +16,14 @@ typedefs:
     company: str
     reports_to: str  # "You report to <Name> (@<handle>)." or ""
 input:
-  person: Person  # who the reply speaks as; the office passes it
+  person: !Person  # who the reply speaks as; the office passes it
 
 defs:
   turn:
     input:
-      person: Person
-      exited: bool
-      reply: str
+      person: !Person
+      exited: !bool
+      reply: !str
     nodes:
       ask:
         kind: human_input
@@ -44,7 +44,6 @@ defs:
           return {"exited": True}
       reply:
         kind: agent
-        mode: tool_calling
         steerable: true
         long_term_memory: session
         env:

@@ -14,7 +14,7 @@ SKILLS = {
 }
 
 
-CHILD = "id: echo\nname: echo\ninput:\n  text: str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
+CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
 ESCAPE = ("id: escape\nname: escape\nuses:\n  echo: ../../echo\nnodes:\n  reply:\n    kind: call\n    call: echo\n"
           "    input:\n      text: hi\noutput: ${reply.output}\n")
 

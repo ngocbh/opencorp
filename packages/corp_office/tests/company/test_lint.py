@@ -146,7 +146,7 @@ def test_flow_cycle_message_is_repo_relative(make_company):
     assert str(root.resolve()) not in issue.message and "shared/flows/chat.yaml" in issue.message
 
 
-CHILD = "id: echo\nname: echo\ninput:\n  text: str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
+CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
 
 
 def parent_flow(ref):

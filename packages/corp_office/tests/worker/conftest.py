@@ -21,18 +21,18 @@ from tests.company.conftest import CHAT
 
 def agent_flow(name: str, *, node: str = "", top: str = "") -> str:
     """A one-agent flow: input ``message``, output the agent's reply."""
-    return (f"id: {name}\nname: {name}\n{top}input:\n  message: str\nnodes:\n  reply:\n    kind: agent\n"
+    return (f"id: {name}\nname: {name}\n{top}input:\n  message: !str\nnodes:\n  reply:\n    kind: agent\n"
             f"{node}    input:\n      message: ${{input.message}}\n    output: str\n"
             f"    prompt: \"${{message}}\"\noutput: ${{reply.output}}\n")
 
 
 ECHO = agent_flow("echo")
-ASK = agent_flow("ask", node="    mode: tool_calling\n    tools: [ask_user]\n")
-TOOLS = agent_flow("tools", node="    mode: tool_calling\n    tools: [toolbox]\n")
-STEERABLE = agent_flow("steerable", node="    mode: tool_calling\n    tools: [toolbox]\n    steerable: true\n")
+ASK = agent_flow("ask", node="    tools: [ask_user]\n")
+TOOLS = agent_flow("tools", node="    tools: [toolbox]\n")
+STEERABLE = agent_flow("steerable", node="    tools: [toolbox]\n    steerable: true\n")
 PROFILED = agent_flow("profiled", top="long_term_memory: profile\n")
 SESSION = agent_flow("session", node="    long_term_memory: session\n")
-SKILLED = agent_flow("skilled", node="    mode: tool_calling\n    skills: all\n")
+SKILLED = agent_flow("skilled", node="    skills: all\n")
 
 
 def write_files(root: Path, files: dict[str, str]) -> Path:

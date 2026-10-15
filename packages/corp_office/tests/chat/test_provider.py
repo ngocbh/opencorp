@@ -143,7 +143,7 @@ class KeyedLLM(FakeLLM):
 
 def test_a_key_in_llm_config_reaches_the_model_and_nothing_else(tmp_path):
     """The key travels only in the start frame: not in the run log, the session dir, the store, or a frame."""
-    flow = agent_flow("keyed", node="    mode: tool_calling\n    tools: [toolbox]\n    long_term_memory: session\n")
+    flow = agent_flow("keyed", node="    tools: [toolbox]\n    long_term_memory: session\n")
     pin = write_files(tmp_path / "pin", {"flows/keyed.yaml": flow})
     session_dir, log = tmp_path / "sessions" / "s1", tmp_path / "sessions" / "s1" / "runs" / "r1.jsonl"
     tools = {"toolbox": {"echo": echo}}

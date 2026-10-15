@@ -5,7 +5,7 @@ name: debrief
 description: Debrief a finished session from its transcript.
 long_term_memory: profile
 input:
-  transcript: str
+  transcript: !str
 nodes:
   debrief:
     kind: agent
@@ -16,10 +16,10 @@ nodes:
     output:
       summary: str
       status: str
-      artifacts: list[str]
-      decisions: list[str]
-      follow_ups: list[str]
-      open_questions: list[str]
+      artifacts: list(str)
+      decisions: list(str)
+      follow_ups: list(str)
+      open_questions: list(str)
     prompt: |-
       You have just finished the work session below. Debrief it for the person who asked
       for the work:
