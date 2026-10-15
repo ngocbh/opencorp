@@ -368,14 +368,18 @@ class Spike:
         out.mkdir(parents=True, exist_ok=True)
         self.root = Path(tempfile.mkdtemp(prefix="ac-codex-spike-"))
         self.ws = self.root / "ws"
-        self.ws.mkdir()
         # The owner's git config may sign commits or run hooks; a scratch repo needs neither.
         git = ["git", "-c", "user.name=spike", "-c", "user.email=spike@example.com", "-c", "commit.gpgsign=false",
                "-c", f"core.hooksPath={os.devnull}"]
-        subprocess.run([*git, "init", "-q"], cwd=self.ws, check=True)
-        (self.ws / "README.md").write_text("Scratch repo for the agent-corp Codex spike.\n")
-        subprocess.run([*git, "add", "-A"], cwd=self.ws, check=True)
-        subprocess.run([*git, "commit", "-qm", "init"], cwd=self.ws, check=True)
+        try:
+            self.ws.mkdir()
+            subprocess.run([*git, "init", "-q"], cwd=self.ws, check=True)
+            (self.ws / "README.md").write_text("Scratch repo for the agent-corp Codex spike.\n")
+            subprocess.run([*git, "add", "-A"], cwd=self.ws, check=True)
+            subprocess.run([*git, "commit", "-qm", "init"], cwd=self.ws, check=True)
+        except BaseException:
+            shutil.rmtree(self.root, ignore_errors=True)
+            raise
         home, user = str(Path.home()), getpass.getuser()
         self.replacements = {str(self.ws): "/work/spike/ws", os.path.realpath(self.ws): "/work/spike/ws",
                              str(self.root): "/work/spike", os.path.realpath(self.root): "/work/spike",
@@ -648,7 +652,8 @@ class Spike:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the spike and print its checklist; exit 1 when a check that gates a PR fails, 2 without ``codex``."""
+    """Run the spike and print its checklist; exit 1 when a check that gates a PR fails, 2 without ``codex`` (or
+    without a full run's ``spike.json`` to merge ``--scenario`` into)."""
     parser = argparse.ArgumentParser(prog="codex_spike", description=__doc__.splitlines()[0])
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--codex", default="codex", help="the codex binary (default: codex on PATH)")
@@ -659,6 +664,9 @@ def main(argv: list[str] | None = None) -> int:
     codex = shutil.which(args.codex)
     if codex is None:
         print(f"{args.codex} is not on PATH")
+        return 2
+    if args.scenario and not (args.out / "spike.json").exists():
+        print(f"{args.out / 'spike.json'} is missing: run the full spike first")
         return 2
     spike = Spike(codex, args.out)
     results = spike.rerun(args.scenario) if args.scenario else spike.run()

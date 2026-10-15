@@ -2,6 +2,7 @@
 
 import json
 import shutil
+import subprocess
 import sys
 import time
 
@@ -19,6 +20,7 @@ from agent_corp.testing.codex_spike import (
     SpikeError,
     checklist,
     kept,
+    main,
     missing_names,
     office_env,
     owner_load,
@@ -333,3 +335,23 @@ def test_signed_in_counts_an_account_or_a_login_that_needs_no_openai_auth():
 def test_launch_counts_a_gateway_login_without_an_account(fake_spike):
     assert fake_spike.launch(None) == {"ok": True, "version": "codex-cli 0.0.0-fake", "login_status_exit": 0,
                                        "signed_in": True, "has_account": False, "requires_openai_auth": False}
+
+
+def test_a_scratch_repo_that_fails_leaves_no_temp_folder(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    monkeypatch.setattr(codex_spike.tempfile, "mkdtemp", lambda prefix: (scratch.mkdir(), str(scratch))[1])
+    run = subprocess.run
+
+    def no_git(command, **kwargs):
+        if command[0] == "git":
+            raise subprocess.CalledProcessError(128, command)
+        return run(command, **kwargs)
+    monkeypatch.setattr(codex_spike.subprocess, "run", no_git)
+    with pytest.raises(subprocess.CalledProcessError):
+        Spike("codex", tmp_path / "out")
+    assert not scratch.exists()
+
+
+def test_running_one_again_needs_a_full_run_first(tmp_path, capsys):
+    assert main(["--out", str(tmp_path / "out"), "--codex", sys.executable, "--scenario", "office-env"]) == 2
+    assert "run the full spike first" in capsys.readouterr().out
