@@ -208,7 +208,8 @@ class AppServer:
 
 INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ")
 """``agent_corp.worker.spawn.INHERITED_ENV``, repeated: the spike imports nothing from the office."""
-_RELEVANT = re.compile(r"PROXY|SSL|CERT|CA_BUNDLE|CODEX|OPENAI|NODE|XDG", re.I)
+_RELEVANT = re.compile(r"(^|_)(PROXY|SSL|CERTS?|CA_BUNDLE|CODEX|OPENAI|NODE)(_|$)")
+"""Whole ``_``-separated tokens of an upper-cased name (``https_proxy`` counts; ``NoDefault…`` doesn't)."""
 
 
 def office_env(environ: dict[str, str]) -> dict[str, str]:
@@ -222,7 +223,7 @@ def missing_names(full: dict[str, str], narrow: dict[str, str]) -> dict[str, Any
     """The names (never the values) of variables ``full`` has and ``narrow`` lacks that could matter to Codex
     (proxies, certificates, Codex, OpenAI, Node), and how many others it lacks."""
     gone = [k for k in full if k not in narrow]
-    relevant = sorted(k for k in gone if _RELEVANT.search(k))
+    relevant = sorted(k for k in gone if _RELEVANT.search(k.upper()))
     return {"relevant": relevant, "others": len(gone) - len(relevant)}
 
 

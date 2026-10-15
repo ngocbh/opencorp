@@ -182,3 +182,10 @@ def test_the_results_are_scrubbed_before_they_are_written(tmp_path, monkeypatch)
     again = spike.rerun(["plain"])
     assert again["S3"]["detail"]["scenarios"]["plain"]["error"] == "again in /work/spike/ws"
     assert ws not in (tmp_path / "out" / "spike.json").read_text()
+
+
+def test_only_whole_tokens_make_a_dropped_variable_relevant():
+    full = {"https_proxy": "x", "SSL_CERT_FILE": "x", "REQUESTS_CA_BUNDLE": "x", "OPENAI_BASE_URL": "x",
+            "NoDefaultCurrentDirectoryInExePath": "1", "XDG_DATA_DIRS": "x", "NODENAME": "x", "CODEXY": "x"}
+    assert missing_names(full, {}) == {
+        "relevant": ["OPENAI_BASE_URL", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "https_proxy"], "others": 4}
