@@ -395,9 +395,10 @@ class Spike:
     def start(self, server: AppServer, sandbox: str = "read-only") -> str:
         return server.request("thread/start", owner_load(str(self.ws), sandbox))["thread"]["id"]
 
-    def turn(self, server: AppServer, thread: str, text: str, decide: str | None = None) -> dict[str, Any]:
-        """Run a turn, answering each approval with ``decide``; return turn/completed, or the first request when
-        ``decide`` is None."""
+    def turn(self, server: AppServer, thread: str, text: str, decide: str | None = None,
+             asked: list[str] | None = None) -> dict[str, Any]:
+        """Run a turn, answering each approval with ``decide`` (and adding its method to ``asked``); return
+        turn/completed, or the first request when ``decide`` is None."""
         server.request("turn/start", {"threadId": thread, "input": _text(text)})
         while True:
             msg = server.next()
@@ -406,6 +407,8 @@ class Spike:
             if "id" in msg:
                 if decide is None:
                     return msg
+                if asked is not None:
+                    asked.append(msg["method"])
                 server.reply(msg["id"], _decision(msg["method"], decide))
 
     def run(self) -> dict[str, dict[str, Any]]:
@@ -541,22 +544,24 @@ class Spike:
             status = self.turn(s, thread, "Reply with the single word: hello")["params"]["turn"]["status"]
         return {"ok": status == "completed", "status": status, "thread": thread}
 
-    def _approval(self, name: str, text: str, decide: str) -> dict[str, Any]:
+    def _approval(self, name: str, text: str, decide: str, kind: str) -> dict[str, Any]:
+        """A turn that should ask for a ``kind`` approval, answered with ``decide``; ok only when Codex asked."""
+        asked: list[str] = []
         with self.server(name) as s:
-            status = self.turn(s, self.start(s), text, decide)["params"]["turn"]["status"]
-        return {"ok": status == "completed", "status": status}
+            status = self.turn(s, self.start(s), text, decide, asked)["params"]["turn"]["status"]
+        return {"ok": status == "completed" and kind in asked, "status": status, "asked": asked}
 
     def _command_approve(self, _thread: Any) -> dict[str, Any]:
         return self._approval("command-approve", "Run the shell command `touch spike-approved.txt` here. Don't use "
-                              "apply_patch.", "accept")
+                              "apply_patch.", "accept", "item/commandExecution/requestApproval")
 
     def _command_decline(self, _thread: Any) -> dict[str, Any]:
         return self._approval("command-decline", "Run the shell command `touch spike-declined.txt` here. Don't use "
-                              "apply_patch.", "decline")
+                              "apply_patch.", "decline", "item/commandExecution/requestApproval")
 
     def _file_change(self, _thread: Any) -> dict[str, Any]:
         return self._approval("file-change", "Create notes.md containing the one line `hi`, using apply_patch.",
-                              "accept")
+                              "accept", "item/fileChange/requestApproval")
 
     def _interrupt(self, _thread: Any) -> dict[str, Any]:
         with self.server("interrupt") as s:

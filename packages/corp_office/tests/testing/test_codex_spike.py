@@ -225,3 +225,58 @@ def test_only_whole_tokens_make_a_dropped_variable_relevant():
             "NoDefaultCurrentDirectoryInExePath": "1", "XDG_DATA_DIRS": "x", "NODENAME": "x", "CODEXY": "x"}
     assert missing_names(full, {}) == {
         "relevant": ["OPENAI_BASE_URL", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "https_proxy"], "others": 4}
+
+
+FAKE_CODEX = r'''
+import json, os, sys
+
+ask = os.environ.get("FAKE_CODEX_ASKS")  # the approval method a turn asks first; none when unset
+
+
+def send(msg):
+    print(json.dumps(msg), flush=True)
+
+
+def ran_and_completed():
+    send({"method": "item/started", "params": {"item": {"type": "commandExecution", "id": "c1"},
+                                               "threadId": "thr_1", "turnId": "turn_1"}})
+    send({"method": "turn/completed", "params": {"threadId": "thr_1",
+                                                 "turn": {"id": "turn_1", "status": "completed", "items": []}}})
+
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method is None:  # the answer to an approval
+        ran_and_completed()
+    elif "id" in msg:
+        result = {"thread/start": {"thread": {"id": "thr_1"}}, "turn/start": {"turn": {"id": "turn_1"}}}
+        send({"id": msg["id"], "result": result.get(method, {})})
+        if method == "turn/start" and ask:
+            send({"id": 900, "method": ask, "params": {"itemId": "c1", "threadId": "thr_1", "turnId": "turn_1"}})
+        elif method == "turn/start":
+            send({"method": "turn/completed", "params": {"threadId": "thr_1",
+                                                         "turn": {"id": "turn_1", "status": "completed"}}})
+'''
+
+
+@pytest.fixture
+def fake_spike(tmp_path):
+    """A Spike whose ``codex`` is ``FAKE_CODEX``; ``FAKE_CODEX_ASKS`` picks the approval a turn asks for."""
+    codex = tmp_path / "codex"
+    codex.write_text(f"#!{sys.executable}\n{FAKE_CODEX}")
+    codex.chmod(0o755)
+    spike = Spike(str(codex), tmp_path / "out")
+    yield spike
+    shutil.rmtree(spike.root, ignore_errors=True)
+
+
+def test_an_approval_scenario_is_ok_only_when_codex_asked_for_its_kind(fake_spike, monkeypatch):
+    monkeypatch.delenv("FAKE_CODEX_ASKS", raising=False)
+    assert fake_spike._command_approve(None) == {"ok": False, "status": "completed", "asked": []}
+    monkeypatch.setenv("FAKE_CODEX_ASKS", "item/commandExecution/requestApproval")
+    assert fake_spike._command_decline(None) == {"ok": True, "status": "completed",
+                                                 "asked": ["item/commandExecution/requestApproval"]}
+    assert fake_spike._file_change(None)["ok"] is False
+    monkeypatch.setenv("FAKE_CODEX_ASKS", "item/fileChange/requestApproval")
+    assert fake_spike._file_change(None)["ok"] is True
