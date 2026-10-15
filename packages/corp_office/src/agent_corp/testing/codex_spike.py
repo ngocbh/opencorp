@@ -342,6 +342,75 @@ class Spike:
     def _write(self, results: dict[str, dict[str, Any]]) -> None:
         (self.out / "spike.json").write_text(json.dumps(results, indent=2) + "\n")
 
+    # --- the checks but S3 ------------------------------------------------------------
+
+    def launch(self, _thread: Any) -> dict[str, Any]:
+        version = subprocess.run([self.codex, "--version"], capture_output=True, text=True)
+        login = subprocess.run([self.codex, "login", "status"], capture_output=True, text=True)
+        with self.server("launch") as server:
+            account = server.request("account/read", {"refreshToken": False})
+        return {"ok": version.returncode == 0 and account.get("account") is not None,
+                "version": version.stdout.strip(), "login_status_exit": login.returncode,
+                "signed_in": account.get("account") is not None,
+                "requires_openai_auth": account.get("requiresOpenaiAuth")}
+
+    def owner_load(self, _thread: Any) -> dict[str, Any]:
+        got = {}
+        for sandbox in ("read-only", "workspace-write"):
+            with self.server(f"owner-load-{sandbox}") as server:
+                r = server.request("thread/start", owner_load(str(self.ws), sandbox))
+                got[sandbox] = {k: r.get(k) for k in ("model", "approvalPolicy", "approvalsReviewer", "sandbox",
+                                                      "activePermissionProfile")}
+        ok = all(v["approvalPolicy"] == "on-request" and v["approvalsReviewer"] == "user" for v in got.values())
+        return {"ok": ok, **got}
+
+    def service_read(self, thread: str) -> dict[str, Any]:
+        with self.server("service-read-a") as a, self.server("service-read-b") as b:
+            a.request("thread/resume", {"threadId": thread, **owner_load(str(self.ws), "workspace-write")})
+            a.request("turn/start", {"threadId": thread, "input": _text("Run `sleep 5` with the shell, then say done.")})
+            answer = b.request_raw("thread/read", {"threadId": thread, "includeTurns": True})
+            a.wait("turn/completed")
+        return {"ok": "result" in answer, "error": answer.get("error")}
+
+    def writer_lock(self, thread: str) -> dict[str, Any]:
+        with self.server("writer-lock-a") as a, self.server("writer-lock-b") as b:
+            a.request("thread/resume", {"threadId": thread, **owner_load(str(self.ws))})
+            answer = b.request_raw("thread/resume", {"threadId": thread, **owner_load(str(self.ws))})
+        return {"refused": "error" in answer, "error": answer.get("error")}
+
+    def eof(self, _thread: Any) -> dict[str, Any]:
+        s = self.server("eof")
+        t = self.start(s, "workspace-write")
+        s.request("turn/start", {"threadId": t, "input": _text("Run `sleep 120` with the shell.")})
+        s.wait("item/started", where=lambda m: m["params"]["item"]["type"] == "commandExecution")
+        seconds = s.close(timeout=90)
+        try:
+            os.killpg(s.proc.pid, 0)  # anything left in the app-server's group, such as the sleep
+            left = True
+            os.killpg(s.proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            left = False
+        return {"seconds_to_exit": round(seconds, 1), "group_left": left}
+
+    def office_env(self, _thread: Any) -> dict[str, Any]:
+        env = office_env(dict(os.environ))
+        detail: dict[str, Any] = {"codex": scrub(self.codex, self.replacements),
+                                  "codex_home_set": "CODEX_HOME" in os.environ,
+                                  "missing": missing_names(dict(os.environ), env)}
+        with self.server("office-env", env=env) as server:
+            account = server.request("account/read", {"refreshToken": True})
+            detail["signed_in"] = account.get("account") is not None
+            done = self.turn(server, self.start(server), "Reply with the single word: hello")
+            detail["turn"] = done["params"]["turn"]["status"]
+        return {"ok": detail["signed_in"] and detail["turn"] == "completed", **detail}
+
+    def schema(self, _thread: Any) -> dict[str, Any]:
+        version = subprocess.run([self.codex, "--version"], capture_output=True, text=True).stdout.strip()
+        with tempfile.TemporaryDirectory() as tmp:
+            subprocess.run([self.codex, "app-server", "generate-json-schema", "--experimental", "--out", tmp], check=True)
+            pin_schema(Path(tmp), self.out / "schema", version=version)
+        return {"version": version}
+
 
 def main(argv: list[str] | None = None) -> int:
     """Run the spike and print its checklist; exit 1 when a check that gates a PR fails, 2 without ``codex``."""

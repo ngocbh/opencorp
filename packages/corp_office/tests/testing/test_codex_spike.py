@@ -118,3 +118,8 @@ def test_one_failing_check_doesnt_hide_the_others(tmp_path, monkeypatch):
     assert all(results[c.id]["ok"] for c in CHECKS if c.id != "S1")
     assert json.loads((tmp_path / "out" / "spike.json").read_text()) == results
     assert not spike.root.exists()  # the scratch repo goes with the run
+
+
+def test_every_check_but_s3_has_its_method():
+    assert [c.name for c in CHECKS if c.id != "S3" and not callable(getattr(Spike, c.name.replace("-", "_"), None))
+            ] == []
