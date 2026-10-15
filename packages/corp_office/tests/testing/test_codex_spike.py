@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 import pytest
@@ -29,6 +30,12 @@ from agent_corp.testing.codex_spike import (
     signed_in,
 )
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
+
+
+@pytest.fixture(autouse=True)
+def _scratch_under_tmp_path(tmp_path, monkeypatch):
+    """A Spike's scratch folder goes under the test's own tmp_path, so a test that fails early leaves none behind."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
 
 def test_scrub_replaces_paths_and_names_everywhere():
@@ -58,6 +65,7 @@ def test_the_spike_scrubs_its_host_codex_home_and_user(tmp_path, monkeypatch):
     monkeypatch.setattr(codex_spike.getpass, "getuser", lambda: "ann")
     monkeypatch.setenv("CODEX_HOME", "/opt/ann-codex")
     spike = Spike("codex", tmp_path / "out")
+    assert spike.root.parent == tmp_path
     shutil.rmtree(spike.root)
     assert spike.scrubbed("ann on annbox.corp.example and annbox: /opt/ann-codex/auth.json, /dev/null") == (
         "owner on owner-host and owner-host: /codex-home/auth.json, /dev/null")
