@@ -343,15 +343,19 @@ def _ask_key(prompter: Prompter, name: str, *, required: bool, last: str = "") -
 
 def _ask_model(prompter: Prompter, name: str, last: str = "", key: str = "") -> str:
     """The model for provider ``name``, picked from those it lists for ``key`` when it can be listed, ``last`` for an
-    empty answer; empty only for a typed blank, which without a key means the model of yian's own login."""
+    empty answer; empty, without a key, for the model of yian's own login."""
+    if not key and name not in models.KEYLESS:
+        # The runs use composer's own login, which saved its model and which the listing can't use.
+        login = f"the model `yian auth {name}` saved"
+        picked = prompter.choose("Model", [login], last or login, typed=True)
+        return "" if picked == login else picked
     listed = []
-    # Without a key the runs use composer's own login, which the listing can't.
-    if prompter.interactive and (key or name in models.KEYLESS):
+    if prompter.interactive:
         try:
             listed = provider_models(name, key)
         except OnboardError as exc:
             prompter.say(f"Couldn't list the models ({exc}).")
-    if default := models.DEFAULT_MODELS.get(name):
+    if key and (default := models.DEFAULT_MODELS.get(name)):
         first = f"{default} (the default)"
         # Typing a name picks another model; the one typed last time is the answer for nothing.
         picked = prompter.choose("Model", [first, *(m for m in listed if m != default)], last or first, typed=True)

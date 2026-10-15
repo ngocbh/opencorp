@@ -167,10 +167,14 @@ def test_azure_takes_a_typed_deployment_too(tmp_path, monkeypatch):
     assert load_provider(path).llm_config["model"] == "my-deployment"
 
 
-def test_a_model_typed_before_is_the_answer_for_nothing():
+def test_a_model_typed_before_is_the_answer_for_nothing(monkeypatch):
+    monkeypatch.setattr(onboard_module, "provider_models", lambda name, key: [])
+    ask = Script("")
+    assert onboard_module._ask_model(ask, "anthropic", "claude-opus-4-1", SENTINEL) == "claude-opus-4-1"
+    assert ask.offered == [["claude-sonnet-4-5 (the default)"]] and ask.typed == [True]
     ask = Script("")
     assert onboard_module._ask_model(ask, "anthropic", "claude-opus-4-1") == "claude-opus-4-1"
-    assert ask.offered == [["claude-sonnet-4-5 (the default)"]] and ask.typed == [True]
+    assert ask.offered == [["the model `yian auth anthropic` saved"]]
 
 
 def test_a_deployment_typed_before_is_the_answer_for_nothing(monkeypatch):
@@ -312,7 +316,7 @@ def test_an_existing_provider_that_cant_be_used_is_asked_again_on_a_terminal(tmp
     path.chmod(0o600)
     ask = Script("openai", "", "")
     assert ensure_provider(path, ask) is True
-    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai", "model": "gpt-5.5"}}
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
     assert ask.seen[0] == (f"{path}: llm_config.model is missing, and azure has no default model;"
                            " set up the model again.")
     assert all(KEY not in line for line in ask.seen)
@@ -332,8 +336,24 @@ def test_no_key_means_composers_own_login(tmp_path):
     path = tmp_path / "provider.json"
     ask = Script("openai", "", "")
     ensure_provider(path, ask)
-    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai", "model": "gpt-5.5"}}
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
     assert any("yian auth" in line for line in ask.seen)
+    assert ask.offered[-1] == ["the model `yian auth openai` saved"] and ask.typed[-1] is True
+
+
+def test_no_key_takes_a_typed_model_too(tmp_path):
+    path = tmp_path / "provider.json"
+    ensure_provider(path, Script("google", "", "gemini-2.5-pro"))
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "google", "model": "gemini-2.5-pro"}}
+
+
+def test_a_keyless_provider_without_a_key_offers_its_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_module, "provider_models", lambda name, key: ["llama3", "qwen3"])
+    path = tmp_path / "provider.json"
+    ask = Script("ollama", "", "")
+    ensure_provider(path, ask)
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "ollama", "model": "llama3"}}
+    assert ask.offered[-1] == ["llama3", "qwen3"]
 
 
 def test_a_key_in_the_environment_is_never_read(tmp_path, monkeypatch):
@@ -774,7 +794,7 @@ def test_picking_the_default_when_setting_up_again_drops_the_typed_model(tmp_pat
     # Typed, then the default; the third round's empty answers keep the default.
     ask = Script("openai", "", "gpt-x", "2", "", "", "1", "2", "", "", "")
     ensure_provider(path, ask, check_model=answers("Error code: 404", "Error code: 404", None))
-    assert load_provider(path).llm_config == {"provider": "openai", "model": "gpt-5.5"}
+    assert load_provider(path).llm_config == {"provider": "openai"}
 
 
 def test_a_model_that_never_answers_is_never_saved(tmp_path):
@@ -799,5 +819,5 @@ def test_a_key_is_never_kept_for_another_provider(tmp_path):
     check = answers("Error code: 401", None)
     ask = Script("azure", "acme", KEY, "gpt-5-4", "2", "openai", "", "1")
     ensure_provider(path, ask, check_model=check)
-    assert load_provider(path).llm_config == {"provider": "openai", "model": "gpt-5.5"}
+    assert load_provider(path).llm_config == {"provider": "openai"}
     assert "openai API key (empty to use `yian auth openai`; not shown)" in ask.seen

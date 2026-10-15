@@ -102,7 +102,7 @@ def test_the_model_is_asked_first(tmp_path, monkeypatch):
                             " readable only by you.", "Model provider"]
     provider = tmp_path / "home" / "office" / "provider.json"
     assert f"Model provider: saved to {provider}" in ask.seen
-    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "openai", "model": "gpt-5.5"}}
+    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
 def test_the_provider_from_the_first_step_is_kept_by_the_last(tmp_path, monkeypatch):
@@ -114,7 +114,7 @@ def test_the_provider_from_the_first_step_is_kept_by_the_last(tmp_path, monkeypa
     assert f"Model provider: saved to {provider}" in ask.seen
     assert f"Model provider: up to date at {provider}" in ask.seen
     assert ask.seen.count("Model provider") == 1
-    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "openai", "model": "gpt-5.5"}}
+    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
 def test_the_flow_with_a_model_makes_the_company_and_never_sends_a_secret(tmp_path, monkeypatch):
