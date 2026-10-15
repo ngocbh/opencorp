@@ -2,8 +2,8 @@ from importlib.resources import files
 
 import pytest
 
+from agent_corp.company.flow_yaml import read_flow
 from agent_corp.company.flows import load_confined
-from tests.flow_yaml import read_flow
 
 ROOT = files("agent_corp.company_template")
 CHAT = ROOT / "shared" / "flows" / "chat.yaml"

@@ -1,8 +1,8 @@
 from importlib.resources import files
 
 from agent_corp.chat.turns import MAIN_CHAT
+from agent_corp.company.flow_yaml import read_flow
 from agent_corp.company.flows import load_confined
-from tests.flow_yaml import read_flow
 
 ROOT = files("agent_corp.company_template")
 SIDE_CHAT = ROOT / "shared" / "flows" / "side_chat.yaml"

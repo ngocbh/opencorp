@@ -1,4 +1,7 @@
-"""Read a flow file's YAML in tests, where PyYAML has no constructor for yian's type tags."""
+"""Read a flow file's YAML structure, where PyYAML has no constructor for yian's type tags.
+
+For looking at a flow's shape (its keys and plain values), not for checking it: composer loads and checks flows.
+"""
 
 import yaml
 
@@ -19,5 +22,9 @@ _Loader.add_multi_constructor("!", _tagged)
 
 
 def read_flow(text: str):
-    """The flow YAML in ``text`` as plain data."""
+    """The flow YAML in ``text`` as plain data, merge keys expanded and each tagged scalar as its text.
+
+    Raises:
+        yaml.YAMLError: ``text`` isn't YAML.
+    """
     return yaml.load(text, Loader=_Loader)

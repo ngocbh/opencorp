@@ -213,6 +213,13 @@ def test_system_paths_is_refused_in_a_flow_with_typed_inputs(make_company):
     assert "system.paths" in issue.message
 
 
+def test_system_paths_through_a_merge_key_is_refused(make_company):
+    flow = parent_flow("echo").replace("uses:", "x-base: &base\n  paths: [lib]\nsystem:\n  <<: *base\nuses:", 1)
+    root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert "system.paths" in issue.message
+
+
 def test_unknown_skill(make_company):
     root = make_company(**{"people/minh/person.yaml": person("minh", skills=["nope"])})
     assert ("person.unknown_skill", "people/minh/person.yaml") in issues(root)

@@ -9,6 +9,7 @@ from yian import load_flow
 from agent_corp.auth.passwords import check_password
 from agent_corp.chat.provider import Provider
 from agent_corp.company.draft import Draft, Teammate, draft_problems
+from agent_corp.company.flow_yaml import read_flow
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
@@ -18,7 +19,6 @@ from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, WHAT_TO
                                           run_init_flow, summary)
 from agent_corp.install.onboard import TRIES, OnboardError
 from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
-from tests.flow_yaml import read_flow
 
 from .test_provider_setup import Script
 
