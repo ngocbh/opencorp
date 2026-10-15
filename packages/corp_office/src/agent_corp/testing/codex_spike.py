@@ -192,3 +192,78 @@ class AppServer:
             os.killpg(self.proc.pid, signal.SIGKILL)
             self.proc.wait()
         return time.monotonic() - start
+
+
+INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ")
+"""``agent_corp.worker.spawn.INHERITED_ENV``, repeated: the spike imports nothing from the office."""
+_RELEVANT = re.compile(r"PROXY|SSL|CERT|CA_BUNDLE|CODEX|OPENAI|NODE|XDG", re.I)
+
+
+def office_env(environ: dict[str, str]) -> dict[str, str]:
+    """The environment the office gives an app-server: ``INHERITED_ENV`` and ``LC_*`` (not ``LC_TERMINAL*``), as
+    ``daemon_env`` and then ``worker_env`` narrow it."""
+    return {k: v for k, v in environ.items()
+            if k in INHERITED_ENV or (k.startswith("LC_") and not k.startswith("LC_TERMINAL"))}
+
+
+def missing_names(full: dict[str, str], narrow: dict[str, str]) -> dict[str, Any]:
+    """The names (never the values) of variables ``full`` has and ``narrow`` lacks that could matter to Codex
+    (proxies, certificates, Codex, OpenAI, Node), and how many others it lacks."""
+    gone = [k for k in full if k not in narrow]
+    relevant = sorted(k for k in gone if _RELEVANT.search(k))
+    return {"relevant": relevant, "others": len(gone) - len(relevant)}
+
+
+class Check:
+    """One claim the spike checks, and the PRs that wait on it."""
+
+    def __init__(self, id: str, name: str, claim: str, gates: str) -> None:
+        self.id, self.name, self.claim, self.gates = id, name, claim, gates
+
+
+CHECKS = [
+    Check("S1", "launch", "`codex app-server --listen stdio://` starts through the installed launcher and initializes "
+          "with experimentalApi; `codex login status` and account/read say signed in", "PR 4, PR 8, PR 11"),
+    Check("S2", "owner-load", "an owner load (sandbox, network config, on-request, reviewer user) works on your "
+          "config.toml and comes back with approvalPolicy on-request and approvalsReviewer user",
+          "PR 5 (Step 22), PR 6"),
+    Check("S3", "sessions", "golden sessions recorded, each scenario with its own result: plain, command approve and "
+          "decline, file change, interrupt with a pending approval, steer (turn/start on a busy thread answers the "
+          "running turn), resume, and whether a thread that never ran a turn resumes; whether any auto-review showed "
+          "up. ok when the four core scenarios are", "PR 5, PR 6, PR 7, PR 8, PR 10 (each by scenario; see Step 3)"),
+    Check("S4", "service-read", "thread/read on a second app-server while a turn runs in the first (step 2 only)", "none"),
+    Check("S5", "writer-lock", "thread/resume of a thread loaded in another app-server: Codex refuses, and with what",
+          "PR 8"),
+    Check("S6", "eof", "stdin EOF during a command: seconds until exit, and whether the command outlives it", "PR 8"),
+    Check("S7", "office-env", "in the environment the office gives an app-server (PATH, HOME, USER, LOGNAME, LANG, "
+          "TMPDIR, TZ, LC_*): account/read with refreshToken says signed in, and a plain turn completes; the names of "
+          "what that environment drops that could matter (proxies, certificates, CODEX_HOME)", "PR 6"),
+    Check("S8", "schema", "the pinned schema (generate-json-schema --experimental)", "PR 4, PR 5"),
+]
+
+
+def owner_load(cwd: str, sandbox: str = "read-only", *, network: bool = False) -> dict[str, Any]:
+    """The owner-load params the office will pass on thread/start and thread/resume."""
+    return {"cwd": cwd, "sandbox": sandbox, "approvalPolicy": "on-request", "approvalsReviewer": "user",
+            "config": {"sandbox_workspace_write": {"network_access": network}}}
+
+
+def checklist(results: dict[str, dict[str, Any]]) -> str:
+    """One line per check: ``ok``/``FAIL``, its id and name, the claim, and the recorded detail."""
+    return "".join(f"{'ok  ' if results[c.id]['ok'] else 'FAIL'} {c.id} {c.name}: {c.claim} -> "
+                   f"{json.dumps(results[c.id].get('detail'))}\n" for c in CHECKS)
+
+
+def _text(text: str) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": text, "text_elements": []}]
+
+
+def _decision(method: str, choice: str) -> dict[str, Any]:
+    """The reply that makes ``choice`` (accept or decline) on any approval kind."""
+    if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+        return {"decision": choice}
+    if method == "item/permissions/requestApproval":
+        return {"permissions": {}, "scope": "turn"}
+    if method == "mcpServer/elicitation/request":
+        return {"action": "cancel"}
+    return {"answers": {}}

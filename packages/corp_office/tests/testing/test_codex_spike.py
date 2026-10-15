@@ -3,7 +3,19 @@
 import json
 import sys
 
-from agent_corp.testing.codex_spike import SCHEMA_FILES, AppServer, Recorder, kept, pin_schema, scrub
+from agent_corp.testing.codex_spike import (
+    CHECKS,
+    SCHEMA_FILES,
+    AppServer,
+    Recorder,
+    checklist,
+    kept,
+    missing_names,
+    office_env,
+    owner_load,
+    pin_schema,
+    scrub,
+)
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
 
 
@@ -66,3 +78,25 @@ def test_the_recorder_keeps_only_what_the_office_reads(tmp_path):
         recorder.write("in", msg)
     assert [json.loads(line) for line in log.read_text().splitlines()] == [
         {"dir": "in", "msg": {"method": "item/started", "params": {"cwd": "/home/owner/ws"}}}]
+
+
+def test_owner_load_routes_approvals_to_the_user():
+    assert owner_load("/w", "workspace-write", network=True) == {
+        "cwd": "/w", "sandbox": "workspace-write", "approvalPolicy": "on-request", "approvalsReviewer": "user",
+        "config": {"sandbox_workspace_write": {"network_access": True}}}
+
+
+def test_the_office_env_is_the_workers_and_only_names_of_what_it_drops_are_kept():
+    full = {"PATH": "/bin", "HOME": "/h", "LC_ALL": "C", "LC_TERMINAL": "iTerm2", "HTTPS_PROXY": "http://p:3128",
+            "NODE_EXTRA_CA_CERTS": "/ca.pem", "CODEX_HOME": "/c", "EDITOR": "vim"}
+    narrow = office_env(full)
+    assert narrow == {"PATH": "/bin", "HOME": "/h", "LC_ALL": "C"}
+    assert missing_names(full, narrow) == {"relevant": ["CODEX_HOME", "HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"],
+                                           "others": 2}
+
+
+def test_the_checklist_names_every_check_and_marks_failures():
+    results = {c.id: {"ok": c.id != "S5", "detail": "x"} for c in CHECKS}
+    text = checklist(results)
+    assert [line.split()[1] for line in text.splitlines()] == [c.id for c in CHECKS]
+    assert "FAIL S5" in text and "ok   S1" in text
