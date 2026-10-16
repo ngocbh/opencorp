@@ -180,13 +180,13 @@ def build_office(paths: OfficePaths) -> Office:
     git = CompanyGit(paths.company, paths.worktrees)
     reap(store)
     office = Office(paths=paths, store=store, git=git, bus=Bus(), profile_store=lambda handle: GitProfileStore(git, handle))
-    monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
     connections = Connections(paths.office)
     models = ModelCache(connections)
     logins = Logins(connections, models=models)
     hooks = Hooks()
-    # Built before the harness, so a Monitor kind for Codex can be built between them.
+    # The Codex sessions come before the Monitor, so the Monitor can be given a kind that acts on them.
     codex = CodexSessions(office, hooks)
+    monitor = Monitor(paths.company, store, SecretStore(paths.secrets))
     harness = Harness(office, monitor, connections=connections, models=models, hooks=hooks, codex=codex)
     office.workers = harness
     office.extras["harness"] = harness
