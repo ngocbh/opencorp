@@ -42,20 +42,21 @@ def test_requests_get_their_results_and_errors(tmp_path):
 
 
 def test_server_requests_and_notifications_reach_the_handlers_in_order(tmp_path):
-    script = {"turns": [[fc.command_approval(7, "c1", "touch a"), *fc.agent_message("m1", "ok")]]}
+    script = {"turns": [[fc.command_approval(0, "c1", "touch a"), *fc.agent_message("m1", "ok")]]}  # ids start at 0
     proc, rpc, seen, closed = connect(tmp_path, script)
     rpc.request("thread/start", {"cwd": str(tmp_path)})
     rpc.request("turn/start", {"threadId": "thr_fake", "input": []})
     request = wait_for(lambda: next((s for s in seen if isinstance(s[0], int)), None), what="the approval")
-    assert request[:2] == (7, "item/commandExecution/requestApproval")
-    rpc.reply(7, {"decision": "accept"})
+    assert request[:2] == (0, "item/commandExecution/requestApproval")
+    rpc.reply(0, {"decision": "accept"})
     wait_for(lambda: any(s[0] == "turn/completed" for s in seen), what="the turn's end")
     assert [s[0] for s in seen if isinstance(s[0], str)][:3] == ["turn/started", "serverRequest/resolved",
                                                                  "item/started"]
     log = [json.loads(line)["msg"] for line in (tmp_path / "log.jsonl").read_text().splitlines()]
-    assert {"id": 7, "result": {"decision": "accept"}} in log
+    assert {"id": 0, "result": {"decision": "accept"}} in log
     proc.stdin.close()
     proc.wait(5)
+    proc.stdout.close()
 
 
 class Server:
