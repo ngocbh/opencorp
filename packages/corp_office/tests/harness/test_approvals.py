@@ -1,7 +1,10 @@
 """Codex requests as cards: store, then reply; first answer wins; stale when Codex no longer waits."""
 
+import os
+import signal
 import threading
 
+from agent_corp.chat.harness import HarnessError
 from agent_corp.harness import session as session_module
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
@@ -118,3 +121,63 @@ def test_office_stop_makes_an_answer_waiting_for_its_reply_give_up_at_once(harne
     answering.join(5)
     release.set()
     assert results == ["stale"] and 1 not in fake_codex.replies()
+
+
+def test_two_answerers_make_one_reply(harness, fake_codex, workspace):
+    fake_codex.script([approval_turn()])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    results, go = [], threading.Barrier(2)
+
+    def answer(choice):
+        go.wait()
+        try:
+            results.append(harness.answer(q.id, choice, "option", by="ngocbh").status)
+        except HarnessError as e:
+            results.append(e.code)
+
+    threads = [threading.Thread(target=answer, args=(c,)) for c in ("Approve", "Deny and stop")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(results) == ["consumed", "not_open"]
+    wait_for(lambda: 1 in fake_codex.replies(), what="the one reply")
+    assert sum(1 for m in fake_codex.messages() if m.get("id") == 1 and "method" not in m) == 1
+    # What Codex got is what the store kept.
+    stored = harness.store.get_question(q.id).answer
+    assert fake_codex.replies()[1] == {"decision": {"Approve": "accept", "Deny and stop": "cancel"}[stored]}
+
+
+def test_an_answer_that_codex_resolved_first_goes_stale_with_no_reply(harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script([[fc.command_approval(1, "c1", "touch a", wait=False), {"sleep": 5}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    live = harness.codex._live[sid]
+    stored = harness.store.answer_question
+
+    def answer_then_resolve(*args, **kwargs):  # Codex resolves between the store and the reply
+        got = stored(*args, **kwargs)
+        live._resolved(1)
+        return got
+
+    monkeypatch.setattr(harness.store, "answer_question", answer_then_resolve)
+    assert harness.answer(q.id, "Approve", "option", by="ngocbh").status == "stale"
+    assert 1 not in fake_codex.replies()
+    assert all("approval" not in p.input for p in tool_parts(harness, sid))
+
+
+def test_an_answer_after_the_app_server_died_goes_stale(harness, fake_codex, workspace):
+    fake_codex.script([approval_turn()])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    os.kill(harness.store.list_workers()[0].pid, signal.SIGKILL)
+    wait_for(lambda: not harness.codex._live[sid].process or not harness.codex._live[sid].process.alive, what="death")
+    try:
+        assert harness.answer(q.id, "Approve", "option", by="ngocbh").status == "stale"
+    except HarnessError as e:
+        assert e.code == "not_open"  # the app-server's exit expired the card first
+    assert 1 not in fake_codex.replies()

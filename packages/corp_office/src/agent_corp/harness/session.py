@@ -15,6 +15,7 @@ from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.translate import TURNLESS, Card, Translator, Unserved
 from agent_corp.protocol.models import Session
+from agent_corp.store import InvalidTransition
 
 if TYPE_CHECKING:
     from agent_corp.harness.sessions import CodexSessions
@@ -325,6 +326,8 @@ class CodexSession:
                     self._post(self._close)
                 elif self.turn_id is None and not self.loading:
                     self._idle()
+        elif method == "serverRequest/resolved":
+            self._resolved(params["requestId"])
         else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
 
@@ -383,6 +386,21 @@ class CodexSession:
         except Exception:  # Codex has the reply and the card is consumed: a part that can't be written changes neither
             log.exception("codex session %s: the decision on %s wasn't written", self.session_id, question_id)
         return True
+
+    def _resolved(self, request_id: Any) -> None:
+        """Codex no longer waits on ``request_id``: an open card goes stale; an answer stored meanwhile is lost by
+        ``reply`` returning False."""
+        with self._lock:
+            question_id = self.by_request.pop(str(request_id), None)
+            pending = self.requests.pop(question_id, None) if question_id else None
+        if pending is not None:
+            self._expire(question_id)
+
+    def _expire(self, question_id: str) -> None:
+        try:
+            self.store.set_question_status(question_id, "stale")
+        except InvalidTransition:
+            pass  # answered meanwhile: its reply finds no pending request and loses the answer
 
     def _refuse(self, process: CodexProcess, request_id: Any, code: int, message: str) -> None:
         try:
