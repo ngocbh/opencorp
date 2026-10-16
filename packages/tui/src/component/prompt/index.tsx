@@ -688,8 +688,14 @@ export function Prompt(props: PromptProps) {
     let undo: (() => void) | void = undefined
     try {
       if (!sessionID) {
-        const pick = kv.get("start_on_last_pick", false) ? local.model.last() : undefined
-        const created = await office.client.sessions.create({ person: person!.handle, cwd: office.cwd, ...pick })
+        // A Codex chat runs on Codex's own model, so it takes no model pick; composer is the office's default.
+        const codex = local.harness.current() === "codex"
+        const pick = !codex && kv.get("start_on_last_pick", false) ? local.model.last() : undefined
+        const created = await office.client.sessions.create({
+          person: person!.handle,
+          cwd: office.cwd,
+          ...(codex ? { harness: "codex" as const } : pick),
+        })
         sessionID = created.id
         await office.syncSession(sessionID)
       }
@@ -828,6 +834,13 @@ export function Prompt(props: PromptProps) {
       }),
     }
   })
+  // The open session's model, or Codex for a new chat that will run on it.
+  const footerModel = createMemo(() => {
+    const s = session()
+    // A Codex session runs on Codex's own model, never the office connection's, which only its debrief uses.
+    if (s) return s.harness === "codex" ? (s.harness_model ?? "Codex") : sessionModel(s, office.connections()).model
+    return local.harness.current() === "codex" ? "Codex" : undefined
+  })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
 
   return (
@@ -941,7 +954,7 @@ export function Prompt(props: PromptProps) {
                     </>
                   )}
                 </Show>
-                <Show when={session() && sessionModel(session()!, office.connections()).model}>
+                <Show when={footerModel()}>
                   {(model) => (
                     <>
                       <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>

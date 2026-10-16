@@ -10,15 +10,24 @@ import { personLabel } from "../../util/transcript"
 import { getScrollAcceleration } from "../../util/scroll"
 
 const usd = (n: number) => `$${n.toFixed(2)}`
+// Millions from 999,950 on, where thousands would round up to "1000.0k".
+const tokens = (n: number) =>
+  n < 1000 ? String(n) : n < 999_950 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1_000_000).toFixed(1)}M`
 
 /**
  * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` it adds
- * `(subscription, unpriced)`: the office records that connection's tokens at $0.
+ * `(subscription, unpriced)`: the office records that connection's tokens at $0. A Codex session runs on the
+ * owner's Codex login, so it gives its token counts, unpriced.
  */
 export function costLabel(
-  session: Pick<Session, "cost" | "cost_cap_usd" | "connection" | "model">,
+  session: Pick<Session, "cost" | "cost_cap_usd" | "connection" | "model"> &
+    Partial<Pick<Session, "harness" | "harness_usage">>,
   list?: ConnectionList,
 ) {
+  if (session.harness === "codex") {
+    const u = session.harness_usage
+    return u ? `${tokens(u.input_tokens)} in · ${tokens(u.output_tokens)} out (Codex login, unpriced)` : "Codex login, unpriced"
+  }
   const { connection } = sessionModel(session, list)
   const subscription = list?.connections.find((c) => c.name === connection)?.method === "subscription"
   if (session.cost === undefined) return subscription ? "subscription, unpriced" : undefined

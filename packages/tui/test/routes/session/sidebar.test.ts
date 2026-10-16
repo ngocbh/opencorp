@@ -1,5 +1,6 @@
 import type { ConnectionList } from "@agent-corp/protocol"
 import { expect, test } from "bun:test"
+import { modelLabel } from "../../../src/office/models"
 import { costLabel } from "../../../src/routes/session/sidebar"
 
 const list: ConnectionList = {
@@ -30,4 +31,22 @@ test("on a subscription connection, costLabel says subscription, unpriced", () =
   expect(costLabel({ cost: 0.4, cost_cap_usd: 5, connection: "chatgpt" }, list)).toBe(
     "$0.40 of $5.00 (subscription, unpriced)",
   )
+})
+
+test("a Codex session shows Codex's model and its tokens as unpriced", () => {
+  const codex = {
+    harness: "codex",
+    harness_model: "gpt-5.5-codex",
+    cost: 0,
+    cost_cap_usd: null,
+    connection: "office",
+    model: null,
+    harness_usage: { input_tokens: 12300, cached_input_tokens: 8000, output_tokens: 900 },
+  } as const
+  expect(modelLabel(codex)).toBe("gpt-5.5-codex (Codex)")
+  expect(costLabel(codex)).toBe("12.3k in · 900 out (Codex login, unpriced)")
+  expect(costLabel({ ...codex, harness_usage: null })).toBe("Codex login, unpriced")
+  const long = { input_tokens: 1_234_567, cached_input_tokens: 0, output_tokens: 999_999 }
+  expect(costLabel({ ...codex, harness_usage: long })).toBe("1.2M in · 1.0M out (Codex login, unpriced)")
+  expect(modelLabel({ ...codex, harness_model: null })).toBe("Codex")
 })

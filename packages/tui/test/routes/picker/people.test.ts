@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { Person, Session } from "@agent-corp/protocol"
 import path from "node:path"
-import { HANDLE, blocks, confirmRequest, hireRequest, pickerRows } from "../../../src/routes/picker/people"
+import { HANDLE, blocks, confirmRequest, harnessesOf, hireRequest, pickerRows } from "../../../src/routes/picker/people"
 
 const person = (handle: string, kind: Person["kind"] = "agent"): Person => ({
   handle,
@@ -62,4 +62,10 @@ test("confirm resends the previewed fields, with no id", () => {
 test("HANDLE matches the protocol schema's Handle pattern", async () => {
   const schema = await Bun.file(path.join(import.meta.dir, "../../../../protocol/schema/protocol.schema.json")).json()
   expect(HANDLE.source).toBe(schema.$defs.Handle.pattern)
+})
+
+test("a person's harnesses: the list, else composer; only those the TUI can open", () => {
+  expect(harnessesOf({ ...person("minh"), harnesses: ["composer", "codex"] })).toEqual(["composer", "codex"])
+  expect(harnessesOf(person("lan"))).toEqual(["composer"])
+  expect(harnessesOf({ ...person("kai"), harnesses: ["codex", "claude"] })).toEqual(["codex"])
 })
