@@ -365,7 +365,7 @@ export function createFakeOffice(
   function setStatus(id: string, status: Session["status"]) {
     return upsertSession({ ...session(id), status, updated_at: now() })
   }
-  /** Creates a session; an idle one waits on its first turn. */
+  /** Creates a session (an idle composer one waits on its first turn), as `POST /sessions` would. */
   function newSession(fields: Partial<Session> & Pick<Session, "person" | "cwd">): Session {
     const at = now()
     const s = upsertSession(
@@ -384,16 +384,18 @@ export function createFakeOffice(
       },
       "session.created",
     )
-    if (s.status === "idle") openTurn(s.id)
+    // A Codex session has no turn questions: every message is a Codex turn.
+    if (s.status === "idle" && s.harness !== "codex") openTurn(s.id)
     return s
   }
-  function userMessage(sessionId: string, text: string) {
+  function userMessage(sessionId: string, text: string, author?: string) {
     const msg: Message = {
       id: nextId(),
       session_id: sessionId,
       role: "user",
       parts: [{ id: nextId(), type: "text", text }],
       created_at: now(),
+      ...(author ? { author } : {}),
     }
     state.messages[sessionId] = [...(state.messages[sessionId] ?? []), msg]
     live({ type: "message.updated", session_id: sessionId, data: structuredClone(msg) as unknown as LiveEvent["data"] })
@@ -415,10 +417,16 @@ export function createFakeOffice(
    * The office's prompt: answers the open turn and starts a reply; while a reply runs it is a
    * steer (written to the transcript, no new reply); otherwise it is queued for the next turn.
    */
-  function turn(id: string, body: any) {
+  function turn(id: string, body: any, actor?: string) {
     check(str(body?.text), "text must be a non-empty string")
     const s = liveSession(id)
     if (s.status === "ending") throw fail(409, "ending", `session ${id} is ending`)
+    if (s.harness === "codex") {
+      // Codex takes every message as a turn, or as a steer of the running one; the sender is its author.
+      userMessage(id, body.text, actor)
+      if (s.status !== "busy") setStatus(id, "busy")
+      return Response.json({ ok: true })
+    }
     if (s.kind === "side" && SIDE_EXIT.has(body.text.trim().toLowerCase())) throw refused()
     userMessage(id, body.text)
     if (s.kind === "side") discuss(s, body.text)
@@ -473,7 +481,8 @@ export function createFakeOffice(
   function checkAnswer(q: Question, answer: unknown, kind: string) {
     const invalid = (message: string) => fail(422, "invalid_answer", message)
     const label = (v: unknown) => typeof v === "string" && v.trim().length > 0
-    if (q.source !== "human_input") {
+    // A Codex question card (it has pages) is answered like a human_input; a Codex approval like a model question.
+    if (q.source !== "human_input" && !(q.source === "harness" && q.questions?.length)) {
       if (!label(answer)) throw invalid("the answer must be text")
       if (kind === "option" && !q.options?.includes(answer as string))
         throw invalid(`${JSON.stringify(answer)} is not one of the options`)
@@ -796,6 +805,15 @@ export function createFakeOffice(
         )
         state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         const harness = body.harness ?? "composer"
+        if (harness === "codex") {
+          const person = state.people.find((p) => p.handle === body.person)!
+          if (!person.harnesses?.includes("codex"))
+            throw fail(422, "unsupported_harness", `@${person.handle} doesn't use codex`)
+          const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting" })
+          // The office's owner load: the session goes idle with no turn question.
+          setTimeout(() => session(s.id).status === "starting" && setStatus(s.id, "idle"), 10)
+          return Response.json(s)
+        }
         const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting", ...choose(body) })
         // Like the office, the session starts its run first and goes idle when that run opens its first turn.
         setTimeout(() => session(s.id).status === "starting" && openTurn(s.id), 10)
@@ -808,8 +826,8 @@ export function createFakeOffice(
       "/sessions/:id/messages",
       ({ params }) => (session(params.id), Response.json(state.messages[params.id] ?? [])),
     ],
-    ["POST", "/sessions/:id/prompt", ({ params, body }) => turn(params.id, body)],
-    ["POST", "/sessions/:id/steer", ({ params, body }) => turn(params.id, body)],
+    ["POST", "/sessions/:id/prompt", ({ params, body, actor }) => turn(params.id, body, actor)],
+    ["POST", "/sessions/:id/steer", ({ params, body, actor }) => turn(params.id, body, actor)],
     [
       "POST",
       "/sessions/:id/interrupt",
@@ -1283,6 +1301,7 @@ export function createFakeOffice(
     emit,
     live,
     addQuestion,
+    newSession,
     openTurn,
     expire,
     setStatus,
