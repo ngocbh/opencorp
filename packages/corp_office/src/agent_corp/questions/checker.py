@@ -18,9 +18,11 @@ class InvalidAnswer(ValueError):
 def check_answer(question: Question, answer: Any, kind: str) -> Any:
     """Return the value to store for ``answer`` to ``question``, or raise ``InvalidAnswer``.
 
-    ``sent_back`` and ``interrupted`` answers are the office's own and pass unchanged. A
-    model question (``ask_user``, ``ask_manager``) takes text, and an ``option`` answer
-    must be one of its options. A ``human_input`` question with pages takes a record
+    A harness card takes one of its options, or a record for its pages, and never the
+    office's own answers. Otherwise ``sent_back`` and ``interrupted`` answers are the
+    office's own and pass unchanged. A model question (``ask_user``, ``ask_manager``)
+    takes text, and an ``option`` answer must be one of its options. A ``human_input``
+    question with pages takes a record
     keyed by each page's ``header``. A page with an ``answer_schema`` entry takes what
     that entry takes, and one without takes a label, or a list of labels for a
     multi-select page. One without pages takes what its ``answer_schema`` says; text is
@@ -29,6 +31,8 @@ def check_answer(question: Question, answer: Any, kind: str) -> Any:
     an optional one is ``None`` (omitted in a record). Nothing looser than the engine's
     own check is returned, and a converted value converts to itself.
     """
+    if question.source == "harness":
+        return _harness(question, answer, kind)
     if kind in ("sent_back", "interrupted"):
         return answer
     if question.source != "human_input":
@@ -47,6 +51,17 @@ def check_answer(question: Question, answer: Any, kind: str) -> Any:
     if len(schema) == 1 and schema[0].name == "answer":
         return _field(schema[0], answer, "answer")
     return _record(schema, answer, "answer")
+
+
+def _harness(question: Question, answer: Any, kind: str) -> Any:
+    # Codex waits on the reply an answer makes, so the office's own answers (send back, stop) never reach it.
+    if kind in ("sent_back", "interrupted"):
+        raise InvalidAnswer("a Codex card takes only an answer")
+    if question.questions:
+        return _pages(question, answer)
+    if kind != "option" or answer not in question.options:
+        raise InvalidAnswer("pick one of the options")
+    return answer
 
 
 def _pages(question: Question, answer: Any) -> dict[str, Any]:
