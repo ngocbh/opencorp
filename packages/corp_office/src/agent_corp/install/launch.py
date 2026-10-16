@@ -49,14 +49,19 @@ class Launch:
         return self.office / "office.sock"
 
 
+CODEX_ENV = ("CODEX_HOME", "AGENT_CORP_CODEX_BIN")
+"""Which Codex the office runs, when the caller's shell sets them: its home, and a binary other than ``codex``."""
+
+
 def daemon_env(environ: Mapping[str, str]) -> dict[str, str]:
-    """The daemon's environment: the worker allowlist and ``LC_*``, so no key in the caller's shell reaches it.
+    """The daemon's environment: the worker allowlist, ``LC_*`` and ``CODEX_ENV``, so no key in the caller's shell
+    reaches it.
 
     ``LC_TERMINAL*`` (iTerm's name and version) is left out: it isn't a locale, and it would
     change the service file whenever the terminal updates.
     """
     return {k: v for k, v in environ.items()
-            if k in INHERITED_ENV or (k.startswith("LC_") and not k.startswith("LC_TERMINAL"))}
+            if k in INHERITED_ENV or k in CODEX_ENV or (k.startswith("LC_") and not k.startswith("LC_TERMINAL"))}
 
 
 def launch(home: Path, *, repo: Path = REPO, environ: Mapping[str, str] = os.environ,
