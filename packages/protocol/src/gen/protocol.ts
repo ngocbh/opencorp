@@ -287,12 +287,15 @@ export interface Session {
    */
   model_note?: string | null;
   /**
-   * The model the harness runs, as it reports it (a Codex session: Codex's load response); null for composer sessions.
+   * The model the harness runs, as it reports it (a Codex session: Codex's load response); null until the harness reports it, and for composer sessions.
    */
   harness_model?: string | null;
+  /**
+   * This session's own token counts so far, as the harness reports them. A continued session counts only its own stretch: add its parent chain's counts for the thread's total. Null until the harness reports any; always null for composer sessions.
+   */
   harness_usage?: HarnessUsage | null;
   /**
-   * The session this one continues (a Codex session reopened later); null for a first stretch.
+   * The session this one directly continues, on the same harness thread; follow its parent_session_id for earlier stretches. Null for a first stretch.
    */
   parent_session_id?: Ulid | null;
   created_at: Timestamp;
@@ -306,6 +309,9 @@ export interface Session {
  */
 export interface HarnessUsage {
   input_tokens: number;
+  /**
+   * The part of input_tokens served from the cache.
+   */
   cached_input_tokens: number;
   output_tokens: number;
 }
@@ -318,7 +324,7 @@ export interface Message {
   session_id: Ulid;
   role: "user" | "assistant";
   /**
-   * The human who sent a user message; null means the session's opener. Composer sessions leave it null.
+   * The human who sent a user message. A harness session names every sender; null for assistant messages, for composer sessions, and for rows from before this field.
    */
   author?: Handle | null;
   parts: Part[];
@@ -454,7 +460,7 @@ export interface Question {
    */
   node_id: string | null;
   /**
-   * harness: a request from the session's harness (a Codex approval or question); only an answer closes it.
+   * harness: a request from the session's harness (a Codex approval or question). It takes only an `option` or `text` answer; no side chat, send back or stop. It goes `stale` when the harness stops waiting.
    */
   source: "ask_user" | "human_input" | "ask_manager" | "harness";
   asker: Handle;
