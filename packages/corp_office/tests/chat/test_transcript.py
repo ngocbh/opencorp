@@ -1,7 +1,10 @@
+from typing import get_args
+
 import pytest
 from pydantic import ValidationError
 
-from agent_corp.chat.transcript import INTERRUPTED_TEXT, Transcript
+from agent_corp.chat.transcript import INTERRUPTED_TEXT, ToolState, Transcript
+from agent_corp.protocol.models import ToolPart
 from agent_corp.store import Store
 from tests.store.conftest import session
 
@@ -227,3 +230,7 @@ def test_a_tool_update_with_a_bad_state_changes_nothing(setup):
     assert store.list_messages(s.id)[0].parts[0].state == "running"
     t.event("NodeSucceeded", {"node_id": "turn_1", "output": None, "interrupted": True})
     assert store.list_messages(s.id)[0].parts[0].state == "interrupted"
+
+
+def test_tool_states_match_the_protocol():
+    assert get_args(ToolState) == get_args(ToolPart.model_fields["state"].annotation)
