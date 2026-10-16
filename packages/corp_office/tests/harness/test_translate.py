@@ -146,6 +146,18 @@ def test_an_error_mid_turn_puts_what_follows_below_it(tr):
     assert shape(store, s.id) == [("assistant", ["One."]), ("assistant", ["error"]), ("assistant", ["Two."])]
 
 
+def test_a_long_session_keeps_nothing_from_its_finished_turns(tr):
+    store, s, t = tr
+    for n in range(1, 6):
+        turn = f"turn_{n}"
+        feed(t, [*fc.command("c", "true"), fc.command_started(f"c{n}", "sleep 9"), *fc.agent_message(f"m{n}", "Hi")[:2],
+                 fc.error("hiccup", will_retry=False)], turn=turn)
+        t.turn_completed(turn, "interrupted" if n % 2 else "failed", {"message": "hiccup"})
+        feed(t, [fc.error("late", will_retry=False)], turn=turn)  # after its turn ended: nothing to keep
+    assert (t._items, t._streamed, t._nodes, t._segments, t._shown, t._after_error) == ({}, {}, {}, {}, {}, set())
+    assert [p.message for p in parts(store, s.id) if p.type == "error"] == ["Codex: hiccup"] * 5
+
+
 # --- tool items --------------------------------------------------------------------------
 
 def test_a_command_is_a_tool_part_with_its_exit_code_and_capped_output(tr):

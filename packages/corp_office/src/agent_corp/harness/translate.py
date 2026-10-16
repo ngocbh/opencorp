@@ -9,6 +9,7 @@ on its own part. An interrupted turn ends with ``[interrupted]``.
 import json
 import logging
 import os
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -72,19 +73,23 @@ class Translator:
         self._nodes: dict[str, str] = {}  # item or request part id -> the node of the message it started in
         self._shown: dict[str, str] = {}  # turn id -> the last error message shown for it
         self._after_error: set[str] = set()  # turn ids whose next item goes below an error shown mid-turn
+        self._finished: deque[str] = deque(maxlen=16)  # the latest finished turns, whose late messages are dropped
 
     def notification(self, method: str, params: dict[str, Any]) -> bool:
         """Write an item notification into the transcript; False for a method that isn't the translator's."""
+        if method not in ("item/agentMessage/delta", "item/started", "item/completed", "error"):
+            return False
+        if params.get("turnId") in self._finished:  # its messages are closed: writing would open a new one
+            log.debug("codex: %s for turn %s, which has ended", method, params.get("turnId"))
+            return True
         if method == "item/agentMessage/delta":
             node = self._node(params["turnId"], params["itemId"])
             self._streamed[params["itemId"]] = self._streamed.get(params["itemId"], 0) + len(params["delta"])
             self.transcript.stream({"node_id": node, "exchange_id": params["itemId"], "chunk": params["delta"]})
         elif method in ("item/started", "item/completed"):
             self._item(params["turnId"], params["item"], done=method == "item/completed")
-        elif method == "error":
-            self._error(params)
         else:
-            return False
+            self._error(params)
         return True
 
     def turn_completed(self, turn_id: str, status: str, error: dict[str, Any] | None) -> None:
@@ -93,8 +98,8 @@ class Translator:
         interrupted = status == "interrupted"
         if interrupted:
             self.transcript.event("ModelCallStarted", {"node_id": self._current(turn_id)})
+        shown = self._shown.get(turn_id)
         self._finish(turn_id, interrupted)
-        shown = self._shown.pop(turn_id, None)
         why = (error or {}).get("message") or "no reason given"
         if status == "failed" and why != shown:  # Codex often sends the same message as an error first
             self.transcript.error(f"Codex's turn failed: {why}")
@@ -105,8 +110,14 @@ class Translator:
         for node in segments:
             self.transcript.event("NodeSucceeded", {"node_id": node, "output": None,
                                                     "interrupted": interrupted and node == segments[-1]})
-        self._nodes = {key: node for key, node in self._nodes.items() if node not in segments}
+        done = {key for key, node in self._nodes.items() if node in segments}
+        for key in done:
+            self._items.pop(key, None)
+            self._streamed.pop(key, None)
+            del self._nodes[key]
+        self._shown.pop(turn_id, None)
         self._after_error.discard(turn_id)
+        self._finished.append(turn_id)
 
     def _current(self, turn_id: str) -> str:
         """The node of the turn's newest message, or of a new one when there is none, or a steer or an error message
