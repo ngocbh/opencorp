@@ -144,6 +144,8 @@ def test_a_codex_session_keeps_its_model_usage_and_parent(store):
     assert got == s and got.harness_usage.output_tokens == 2 and got.parent_session_id == first.id
     more = {"input_tokens": 11, "cached_input_tokens": 4, "output_tokens": 3}
     assert store.update_session(s.id, harness_usage=more).harness_usage.input_tokens == 11
+    assert store.update_session(s.id, harness_usage=None).harness_usage is None
+    assert store.get_session(s.id).harness_usage is None
 
 
 def test_a_session_stored_before_0004_reads_back_none(tmp_path):
