@@ -9,9 +9,14 @@ on its own part. An interrupted turn ends with ``[interrupted]``.
 import json
 import logging
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from agent_corp.chat.transcript import Transcript
+from agent_corp.protocol import now
+from agent_corp.protocol.models import Question, Session
+from agent_corp.store import new_id
 
 log = logging.getLogger(__name__)
 
@@ -154,6 +159,104 @@ class Translator:
         self.transcript.tool(self._node(turn_id, call_id), call_id, tool,
                              state=_STATES.get(self._items[call_id].get("status"), "running"), input=input_,
                              output=output, error=error)
+
+    # --- cards ----------------------------------------------------------------------
+
+    def card(self, method: str, params: dict[str, Any], *, session: Session, run_id: str, node_id: str) -> "Card":
+        """The card for a server request; ``Unserved`` for a method that isn't one."""
+        t = now()
+        base = {"id": new_id(), "session_id": session.id, "run_id": run_id, "node_id": node_id, "source": "harness",
+                "asker": session.person, "work_item_id": session.work_item_id, "status": "open", "created_at": t,
+                "updated_at": t}
+        if method == "item/commandExecution/requestApproval":
+            network = params.get("networkApprovalContext")
+            if network:  # a managed-network prompt: Codex sends no command or cwd, only the host
+                title, text = "Codex wants network access", f"{network['protocol']} to {network['host']}"
+            else:
+                item = self._items.get(params["itemId"], {})
+                command, cwd = params.get("command") or item.get("command") or "?", params.get("cwd") or item.get("cwd")
+                title, text = "Codex wants to run a command", f"$ {command}\nin {cwd}"
+            return self._approval("command", base, params, title, text,
+                                  _offered(params.get("availableDecisions"), _APPROVE))
+        if method == "item/fileChange/requestApproval":
+            changes = self._items.get(params["itemId"], {}).get("changes", [])
+            text = "\n".join(f"{c['path']} ({_kind(c)}, +{a}/-{b})" for c in changes
+                             for a, b in [change_counts(_kind(c), c.get("diff"))])
+            if params.get("grantRoot"):
+                text += f"\nand write access under {params['grantRoot']} for this session"
+            return self._approval("file_change", base, params, "Codex wants to change files", text or "(no diff yet)",
+                                  _APPROVE)
+        if method == "item/permissions/requestApproval":
+            asked = {k: v for k, v in params["permissions"].items() if v is not None}
+            text = f"{json.dumps(asked)}\nin {params.get('cwd')}"
+
+            def grant(d: str) -> dict[str, Any]:
+                return {"permissions": {}, "scope": "turn"} if d == "decline" else {"permissions": asked, "scope": d}
+
+            q = Question.model_validate({**base, "title": "Codex asks for more permissions",
+                                         "question": _with_reason(text, params),
+                                         "options": [x for x, _ in _PERMISSIONS]})
+            return Card("permissions", q, params["itemId"], _choice(_PERMISSIONS, grant))
+        raise Unserved(method)
+
+    def _approval(self, kind: str, base: dict[str, Any], params: dict[str, Any], title: str, text: str,
+                  options: list[tuple[str, str]]) -> "Card":
+        q = Question.model_validate({**base, "title": title, "question": _with_reason(text, params),
+                                     "options": [label for label, _ in options]})
+        return Card(kind, q, params["itemId"], _choice(options, lambda d: {"decision": d}))
+
+
+SERVED = frozenset({"item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+                    "item/permissions/requestApproval", "item/tool/requestUserInput", "mcpServer/elicitation/request"})
+"""Server requests that become cards."""
+REFUSED = frozenset({"item/tool/call", "account/chatgptAuthTokens/refresh", "attestation/generate",
+                     "applyPatchApproval", "execCommandApproval"})
+"""Server requests the office answers with a JSON-RPC error: the pinned schema's others (the drift test checks)."""
+REPLY_SCHEMAS = {"item/commandExecution/requestApproval": "CommandExecutionRequestApprovalResponse",
+                 "item/fileChange/requestApproval": "FileChangeRequestApprovalResponse",
+                 "item/permissions/requestApproval": "PermissionsRequestApprovalResponse",
+                 "item/tool/requestUserInput": "ToolRequestUserInputResponse",
+                 "mcpServer/elicitation/request": "McpServerElicitationRequestResponse"}
+"""The pinned response schema each served request's reply must match."""
+
+_APPROVE = [("Approve", "accept"), ("Approve for this session", "acceptForSession"),
+            ("Deny so Codex continues", "decline"), ("Deny and stop", "cancel")]
+_PERMISSIONS = [("Approve for this turn", "turn"), ("Approve for this session", "session"), ("Deny", "decline")]
+
+
+class Unserved(Exception):
+    """A server request the office doesn't turn into a card; it gets a JSON-RPC error."""
+
+
+@dataclass
+class Card:
+    """A Codex server request as a question card, and the reply each answer makes."""
+
+    kind: str  # command | file_change | permissions | mcp_tool | question | elicitation
+    question: Question
+    call_id: str  # the tool part a decision is written on: the item's id, else a request part of its own
+    replies: Callable[[Any], tuple[dict[str, Any], str]]
+
+    def reply(self, answer: Any) -> tuple[dict[str, Any], str]:
+        """The JSON-RPC result for ``answer`` (as ``check_answer`` returned it), and the decision's variant name."""
+        return self.replies(answer)
+
+
+def _choice(options: list[tuple[str, str]], result: Callable[[str], dict[str, Any]]):
+    mapping = dict(options)
+    return lambda answer: (result(mapping[answer]), mapping[answer])
+
+
+def _offered(available: list[Any] | None, options: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    # Persistent decisions are objects (amendments) and write the owner's Codex config: never offered.
+    if available is None:
+        return options
+    names = {d for d in available if isinstance(d, str)}
+    return [(label, d) for label, d in options if d in names]
+
+
+def _with_reason(text: str, params: dict[str, Any]) -> str:
+    return f"{text}\n{params['reason']}" if params.get("reason") else text
 
 
 def _kind(change: dict[str, Any]) -> str | None:

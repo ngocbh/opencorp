@@ -18,7 +18,8 @@ FIXTURES = Path(__file__).parent / "fixtures" / "codex"
 @pytest.fixture
 def tr(tmp_path):
     store = Store(tmp_path / "store.sqlite")
-    s = store.create_session(session(harness="codex", work_item_id=None, cwd="/w"))  # "/w" is what feed fills {cwd} with
+    # "/w" is what feed fills {cwd} with.
+    s = store.create_session(session(harness="codex", work_item_id=None, cwd="/w"))
     yield store, s, Translator(Transcript(store, s.id, lambda e: None), s.cwd)
     store.close()
 
@@ -225,3 +226,55 @@ def test_a_running_command_from_before_a_steer_is_interrupted_with_the_turn(tr):
     t.turn_completed("turn_1", "interrupted", None)
     assert shape(store, s.id) == [("assistant", [(COMMAND, "interrupted")]), ("user", ["never mind"]),
                                   ("assistant", ["[interrupted]"])]
+
+
+# --- approval cards ----------------------------------------------------------------------
+
+def test_a_command_approval_offers_the_four_decisions_and_replies_with_the_picked_one(tr):
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "touch a")])
+    c = card(t, s, fc.command_approval(1, "c1", "touch a"))
+    q = c.question
+    assert (c.kind, q.source, q.run_id, q.node_id, q.asker) == ("command", "harness", "turn_1", "1", s.person)
+    assert q.options == ["Approve", "Approve for this session", "Deny so Codex continues", "Deny and stop"]
+    assert "$ touch a" in q.question
+    assert c.reply("Approve for this session") == ({"decision": "acceptForSession"}, "acceptForSession")
+
+
+def test_only_offered_decisions_show_and_persistent_ones_never_do(tr):
+    store, s, t = tr
+    step = fc.command_approval(1, "c1", "curl x")
+    step["params"]["availableDecisions"] = ["accept", {"acceptWithExecpolicyAmendment": {}}, "cancel"]
+    assert card(t, s, step).question.options == ["Approve", "Deny and stop"]
+
+
+@pytest.mark.parametrize(("kind", "diff", "says"), [
+    ("add", "hi\nthere\n", "notes.md (add, +2/-0)"),
+    ("delete", "a\nb\nc\n", "notes.md (delete, +0/-3)"),
+    ("update", "@@ -1 +1,2 @@\n-z\n+x\n+y\n", "notes.md (update, +2/-1)"),
+])
+def test_a_file_change_card_counts_lines_by_kind(tr, kind, diff, says):
+    store, s, t = tr
+    feed(t, [fc.file_change("f1", "{cwd}/notes.md", diff, kind=kind)[0]])  # an absolute path, as Codex sends
+    c = card(t, s, fc.file_change_approval(2, "f1"))
+    assert c.kind == "file_change" and says in c.question.question
+    assert c.reply("Deny so Codex continues") == ({"decision": "decline"}, "decline")
+
+
+def test_a_network_approval_names_the_host(tr):
+    # Codex sends a managed-network approval with no command or cwd, only networkApprovalContext.
+    store, s, t = tr
+    c = card(t, s, fc.network_approval(7, "c2", "pypi.org"))
+    assert (c.kind, c.question.title, c.question.question) == ("command", "Codex wants network access",
+                                                               "https to pypi.org")
+    assert c.reply("Approve") == ({"decision": "accept"}, "accept")
+
+
+def test_a_permissions_card_grants_what_was_asked_for_this_turn_or_session_or_nothing(tr):
+    store, s, t = tr
+    c = card(t, s, fc.permissions_approval(3, "p1"))
+    assert c.kind == "permissions"
+    assert c.question.options == ["Approve for this turn", "Approve for this session", "Deny"]
+    assert c.reply("Approve for this turn") == ({"permissions": {"network": {"enabled": True}}, "scope": "turn"},
+                                                "turn")
+    assert c.reply("Deny") == ({"permissions": {}, "scope": "turn"}, "decline")
