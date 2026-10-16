@@ -435,3 +435,17 @@ def test_a_queued_message_failing_because_the_office_stopped_stores_no_refusal(h
     assert sending.wait(10)
     harness.close_all()
     assert errors(harness, sid) == []
+
+
+def test_idle_end_is_read_once_and_never_under_the_session_lock(harness, fake_codex, workspace, monkeypatch):
+    real, held = harness.codex.idle_seconds, []
+
+    def idle_seconds(session_id):
+        held.append(any(live._lock._is_owned() for live in harness.codex._live.values()))
+        return real(session_id)
+    monkeypatch.setattr(harness.codex, "idle_seconds", idle_seconds)
+    fake_codex.script([fc.agent_message("m1", "Hi")])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
+    assert held == [False]  # it reads the company (git, the company lock): never while the lock is held

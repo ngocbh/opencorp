@@ -60,7 +60,7 @@ class CodexSession:
         self.turn_id: str | None = None
         self.pending: list[str] = []
         self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
-        self._idle_after: int | None = None  # idle_end in seconds, read once from the session's pinned company
+        self._idle_after: int | None = None  # idle_end in seconds, read once by the load from the pinned company
         self.ending = self.closed = self.stopped = False
         self._lock = threading.RLock()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -192,6 +192,7 @@ class CodexSession:
 
     def _load(self, resume: bool) -> None:
         try:
+            idle_after = self.owner.idle_seconds(self.session_id)  # here, not under the lock: it reads the company
             process = self.owner.launch(self)
             params = owner_load(self.cwd, self.owner.policy(self.session_id))
             # The office never reads past turns, so a resume needn't send them.
@@ -211,7 +212,7 @@ class CodexSession:
         if self.stopped:  # office stop came during the load: write nothing, leave nothing running
             process.kill()
             return
-        self.thread_id = result["thread"]["id"]
+        self.thread_id, self._idle_after = result["thread"]["id"], idle_after
         self.store.update_session(self.session_id, harness_session_id=self.thread_id, harness_model=result.get("model"))
         self._flush()
 
@@ -317,8 +318,8 @@ class CodexSession:
             return
         self._stop_timer()
         self.store.update_session(self.session_id, status="idle")
-        if self._idle_after is None:
-            self._idle_after = self.owner.idle_seconds(self.session_id)
+        if self._idle_after is None:  # not loaded yet
+            return
         timer = self.timer = threading.Timer(self._idle_after, self._post)
         timer.args = (self._idle_end, timer)  # the job knows its timer, so one a message stopped ends nothing
         timer.daemon = True
