@@ -31,8 +31,8 @@ def test_the_flow_output_is_a_ready_debrief():
         "follow_ups": [], "open_questions": [], "cost": 0.25}
 
 
-def _message(role, *parts):
-    return Message(id=new_id(), session_id=new_id(), role=role, parts=list(parts), created_at=now())
+def _message(role, *parts, **over):
+    return Message(id=new_id(), session_id=new_id(), role=role, parts=list(parts), created_at=now(), **over)
 
 
 def _text(text):
@@ -43,6 +43,12 @@ def test_the_transcript_is_the_text_of_each_message_and_the_tools_called():
     tool = ToolPart(id=new_id(), type="tool", call_id="c1", tool="shell", state="completed", input={"cmd": "ls"})
     text = transcript_text([_message("user", _text("fix it")), _message("assistant", tool, _text("Done."))])
     assert text == "user: fix it\n\nassistant: [called shell]\nDone."
+
+
+def test_messages_with_an_author_read_as_at_author_and_the_assistant_label_can_change():
+    text = transcript_text([_message("user", _text("fix it"), author="ngocbh"), _message("assistant", _text("On it."))],
+                           assistant="codex")
+    assert text == "@ngocbh: fix it\n\ncodex: On it."
 
 
 def test_the_transcript_says_where_a_turn_failed():

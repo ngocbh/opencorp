@@ -15,18 +15,20 @@ _CUT = "[earlier messages left out]"
 _CUT_START = "[the start of this message left out]"
 
 
-def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX_CHARS) -> str:
-    """A session's messages as plain text: ``role: text`` blocks, with ``[called <tool>]`` for tool calls
-    and ``[error: <why>]`` for failed turns.
+def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX_CHARS, *,
+                    assistant: str = "assistant") -> str:
+    """A session's messages as plain text blocks, with ``[called <tool>]`` for tool calls and ``[error: <why>]`` for
+    failed turns.
 
-    Past ``max_chars`` the oldest messages are left out, so the debrief sees how the session ended;
+    A message with an ``author`` reads ``@<author>:``; other messages read ``user:``, or ``<assistant>:`` for the
+    assistant's. Past ``max_chars`` the oldest messages are left out, so the debrief sees how the session ended;
     a newest message longer than ``max_chars`` keeps its end.
     """
     blocks = []
     for message in messages:
-        lines = [f"[called {p.tool}]" if p.type == "tool" else f"[error: {p.message}]" if p.type == "error"
-                 else p.text for p in message.parts if p.type != "file"]
-        blocks.append(f"{message.role}: " + "\n".join(lines))
+        lines = [_line(p) for p in message.parts if p.type != "file"]
+        label = f"@{message.author}" if message.author else assistant if message.role == "assistant" else "user"
+        blocks.append(f"{label}: " + "\n".join(lines))
     kept: list[str] = []
     size = 0
     for block in reversed(blocks):
@@ -39,6 +41,12 @@ def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX
             break
         kept.append(block)
     return "\n\n".join(reversed(kept))
+
+
+def _line(part: Any) -> str:
+    if part.type == "tool":
+        return f"[called {part.tool}]"
+    return f"[error: {part.message}]" if part.type == "error" else part.text
 
 
 def ready_debrief(session: Session, output: Mapping[str, Any]) -> Debrief:
