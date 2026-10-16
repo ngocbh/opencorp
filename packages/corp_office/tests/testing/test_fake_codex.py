@@ -199,3 +199,14 @@ def test_a_turn_start_once_a_turn_ends_never_starts_the_next_turn_before_the_old
     live.until(lambda m: m.get("method") == "turn/started" and m["params"]["turn"]["id"] == "turn_2")
     assert "turn/completed" in live.methods()[:-1]
     live.close()
+
+
+def test_a_codex_that_hangs_on_interrupt_never_answers_it_and_the_turn_runs_on(tmp_path):
+    live = Live(tmp_path, {"interrupt_hangs": True, "turns": [[{"sleep": 1}, *fc.agent_message("m1", "done")]]})
+    live.send(*START)
+    live.until(method("turn/started"))
+    live.send(INTERRUPT)
+    completed = live.until(method("turn/completed"))
+    assert completed["params"]["turn"]["status"] == "completed"
+    assert not any(m.get("id") == INTERRUPT["id"] for m in live.out)
+    live.close()

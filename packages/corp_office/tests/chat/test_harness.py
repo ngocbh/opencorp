@@ -6,6 +6,7 @@ from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.turns import MAIN_CHAT
 from agent_corp.secrets import write_private
 from tests.chat.conftest import errors, status, texts, wait_for
+from tests.company.conftest import person
 from tests.store.conftest import question as stored_question
 from tests.store.conftest import session as stored_session
 
@@ -892,3 +893,60 @@ def test_a_main_run_offers_toolbox_workspace_and_company_in_that_order(harness, 
         ("toolbox", ["fake__echo"]),
         ("workspace", ["read_file", "write_file", "edit_file", "list", "search", "shell"]),
         ("company", ["ask_manager", "create_work_item", "comment"])]
+
+
+CODEX_FILES = {"people/minh/person.yaml": person("minh", harnesses=["composer", "codex"])}
+
+
+class StartOnly:
+    """A stand-in for the Codex sessions: it records the sessions it is handed, or fails."""
+
+    def __init__(self, fail=None):
+        self.started, self.fail = [], fail
+
+    def start(self, session, *, resume=False):
+        if self.fail:
+            raise self.fail
+        self.started.append((session.status, session.harness, resume))
+
+    def close_all(self):
+        pass
+
+
+def test_a_codex_chat_is_stored_then_handed_to_the_codex_sessions(make_harness, workspace):
+    codex = StartOnly()
+    h = make_harness(files=CODEX_FILES, codex=lambda office, hooks: codex)
+    s = h.start_session("minh", str(workspace), "codex", opened_by="ngocbh")
+    assert codex.started == [("starting", "codex", False)]
+    assert (s.harness, s.opened_by) == ("codex", "ngocbh") and s.work_item_id and s.id not in h._live
+
+
+def test_codex_needs_the_codex_sessions(make_harness, workspace):
+    h = make_harness(files=CODEX_FILES)
+    with pytest.raises(HarnessError) as e:
+        h.start_session("minh", str(workspace), "codex")
+    assert (e.value.status, e.value.code) == (422, "unsupported_harness")
+
+
+def test_codex_needs_a_person_who_uses_it(make_harness, workspace):
+    h = make_harness(codex=lambda office, hooks: StartOnly())  # minh's harnesses: [composer]
+    with pytest.raises(HarnessError) as e:
+        h.start_session("minh", str(workspace), "codex")
+    assert (e.value.status, e.value.code) == (422, "unsupported_harness")
+
+
+def test_a_codex_chat_that_cant_be_handed_over_fails_with_its_id(make_harness, workspace):
+    h = make_harness(files=CODEX_FILES, codex=lambda office, hooks: StartOnly(RuntimeError("sentinel")))
+    ended = []
+    h.hooks.session_ended.append(lambda s: ended.append(s.status))
+    with pytest.raises(HarnessError) as e:
+        h.start_session("minh", str(workspace), "codex")
+    assert (e.value.status, e.value.code) == (500, "start_failed") and "sentinel" not in e.value.message
+    [s] = h.store.list_sessions()
+    assert (s.status, ended) == ("failed", ["failed"]) and s.id in e.value.message
+
+
+def test_the_harness_shares_its_hooks_with_the_codex_sessions(make_harness):
+    seen = []
+    h = make_harness(codex=lambda office, hooks: seen.append(hooks) or StartOnly())
+    assert seen == [h.hooks]

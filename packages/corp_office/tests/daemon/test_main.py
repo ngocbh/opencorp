@@ -349,6 +349,19 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
         office.store.close()
 
 
+def test_the_office_runs_codex_sessions_on_the_harness_hooks(home):
+    from agent_corp.daemon.main import build_office
+    from agent_corp.harness.sessions import CodexSessions
+
+    office = build_office(OfficePaths(home))
+    try:
+        harness = office.extras["harness"]
+        assert isinstance(harness.codex, CodexSessions) and harness.codex.hooks is harness.hooks
+    finally:
+        office.workers.close_all()
+        office.store.close()
+
+
 async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts(home):
     from agent_corp.daemon.main import build_office
     from agent_corp.protocol import now

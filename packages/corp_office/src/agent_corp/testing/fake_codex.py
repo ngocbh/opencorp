@@ -3,9 +3,9 @@
     python -I -m agent_corp.testing.fake_codex (--script s.json | --scenario e2e) [--log rpc.jsonl] [ignored args]
 
 A script is ``{"thread": {"id", "model"}, "account": {...} | null, "initialize_error": {...}, "initialize_delay":
-seconds, "resume_error": {...}, "stderr": "...", "turns": [[step, ...], ...]}``. Each ``turn/start`` that starts a turn
-takes the next list of steps (an unscripted turn just completes). The count is kept next to ``--log``, so a restarted
-fake goes on with the next turn. A step is one of:
+seconds, "interrupt_hangs": bool, "resume_error": {...}, "stderr": "...", "turns": [[step, ...], ...]}``. Each
+``turn/start`` that starts a turn takes the next list of steps (an unscripted turn just completes). The count is kept
+next to ``--log``, so a restarted fake goes on with the next turn. A step is one of:
 
 - ``{"notify": method, "params": {...}}`` sends a notification;
 - ``{"request": method, "params": {...}, "id": n, "wait": bool}`` sends a server request, waiting for the reply when
@@ -17,7 +17,8 @@ fake goes on with the next turn. A step is one of:
 
 ``"{thread}"``, ``"{turn}"`` and ``"{cwd}"`` in params are filled in. ``turn/start`` during a turn is a steer and
 answers with the running turn. ``turn/interrupt`` stops the steps, completes the turn ``interrupted``, and then
-resolves the requests still waiting. Every message read or written is appended to ``--log`` as ``{"dir": "in"|"out", "msg"}``.
+resolves the requests still waiting; with ``interrupt_hangs`` it gets no answer and the turn runs on. Every message
+read or written is appended to ``--log`` as ``{"dir": "in"|"out", "msg"}``.
 Stdin EOF exits 0. The builders below make steps whose messages match the pinned Codex schema.
 """
 
@@ -116,6 +117,8 @@ class Fake:
         if method == "turn/start":
             return self.turn_start(request_id)
         if method == "turn/interrupt":
+            if self.script.get("interrupt_hangs"):  # a Codex stuck on the interrupt: no answer, the turn runs on
+                return None
             with self._state:
                 if self._turn is None or params.get("turnId") != self._turn:
                     return self.reply(request_id, error={"code": -32600, "message": "no active turn to interrupt"})

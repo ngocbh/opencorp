@@ -9,6 +9,7 @@ import pytest
 from agent_corp.assets.registry import builtin_kinds
 from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.chat.harness import Harness
+from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.models import Listing, ModelCache, own_models
 from agent_corp.chat.provider import Provider
 from agent_corp.company.git import CompanyGit
@@ -75,11 +76,12 @@ def make_harness(tmp_path, fake_llm):
     office/provider.json is written from ``llm_config`` and ``prices`` on the FakeLLM; ``connections``
     (``{name: model}``) adds connections on the FakeLLM. The harness's model cache lists connections with
     ``models`` (a lister), else with ``lister(listings or {})``; ``choose_deadline`` replaces its 8 s.
+    ``codex(office, hooks)`` builds the harness's Codex sessions, on the hooks the harness gets.
     """
     made = []
 
     def make(*, defaults=None, files=None, kinds=None, prices=None, company=None, llm_config=None, connections=None,
-             listings=None, models=None, choose_deadline=None):
+             listings=None, models=None, choose_deadline=None, codex=None):
         paths = OfficePaths(tmp_path)
         if company is None and not paths.company.exists():
             repo_files = base_files() | {"shared/flows/chat.yaml": CHAT_FLOW}
@@ -98,7 +100,9 @@ def make_harness(tmp_path, fake_llm):
             conns.put(name, ConnectionFile(llm_config={**LLM_CONFIG, "model": model}, env=fake_llm.env()))
         cache = ModelCache(conns, lister=models or lister(listings or {}))
         extra = {} if choose_deadline is None else {"choose_deadline": choose_deadline}
-        harness = Harness(office, monitor, connections=conns, models=cache, **extra)
+        hooks = Hooks()
+        sessions = codex(office, hooks) if codex is not None else None
+        harness = Harness(office, monitor, connections=conns, models=cache, hooks=hooks, codex=sessions, **extra)
         made.append(harness)
         return harness
 
