@@ -62,8 +62,9 @@ class CodexSessions:
 
     def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
         """Store the answer (secret pages as ``[secret]``), then reply if Codex still waits; the store's open →
-        answered move picks the one answer that replies. An answer Codex no longer waits for leaves the card
-        ``stale`` with no decision. ``by`` is the session's opener when None, as composer credits an answer."""
+        answered move picks the one answer that replies, and a second answer is 409 ``not_open``. An answer Codex no
+        longer waits for, or that no reply can be made from, is returned with the card ``stale`` and no decision.
+        ``by`` is the session's opener when None, as composer credits an answer."""
         question = self.store.get_question(question_id)
         live = self._live.get(question.session_id)
         by = by or (live.author if live else self.opener(self.store.get_session(question.session_id)))
