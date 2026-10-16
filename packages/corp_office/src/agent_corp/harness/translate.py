@@ -107,6 +107,8 @@ class Translator:
             self._turn_completed(turn_id, status, error)
 
     def _turn_completed(self, turn_id: str, status: str, error: dict[str, Any] | None) -> None:
+        if turn_id in self._finished:  # already closed: closing again would open a message for the marker
+            return
         interrupted = status == "interrupted"
         if interrupted:
             self.transcript.event("ModelCallStarted", {"node_id": self._current(turn_id)})

@@ -167,8 +167,11 @@ def test_a_long_session_keeps_nothing_from_its_finished_turns(tr):
                  fc.error("hiccup", will_retry=False)], turn=turn)
         t.turn_completed(turn, "interrupted" if n % 2 else "failed", {"message": "hiccup"})
         feed(t, [fc.error("late", will_retry=False)], turn=turn)  # after its turn ended: nothing to keep
+        t.turn_completed(turn, "interrupted", None)  # ended twice (a turn's end, then a dead app-server)
     assert (t._items, t._streamed, t._nodes, t._segments, t._shown, t._after_error) == ({}, {}, {}, {}, {}, set())
     assert [p.message for p in parts(store, s.id) if p.type == "error"] == ["Codex: hiccup"] * 5
+    # One marker per interrupted turn, below its error; ending a turn again adds none.
+    assert [p.text for p in parts(store, s.id) if p.type == "text"].count("[interrupted]") == 3
 
 
 def test_a_turns_end_from_another_thread_waits_for_a_notification_being_written(tr):
