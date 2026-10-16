@@ -1,10 +1,11 @@
 """``ac doctor``: check the office home (there and private), company repo, provider and connections, service,
-daemon, and sandbox."""
+daemon, sandbox, and Codex."""
 
 import os
 import stat
+import subprocess
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -16,9 +17,11 @@ from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import is_new, missing_files
 from agent_corp.daemon.app import OfficePaths
+from agent_corp.harness.codex import CodexMissing, codex_command
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
 from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
+from agent_corp.worker.spawn import INHERITED_ENV
 
 _START_ERROR = "agent-corp office: "
 """How the daemon prefixes the one line it prints when it can't start."""
@@ -47,6 +50,51 @@ def sandbox_problem() -> str | None:
         except (OSError, RuntimeError, ValueError) as exc:
             return str(exc)
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
+
+
+def _codex_change_lands(mode: str | None) -> str:
+    """How a Codex install or setting made in this shell reaches an office running under ``mode``."""
+    # launchd and systemd start the office with the environment `ac onboard` wrote into its service file, which
+    # `ac restart` reuses; only a stopped office's onboard writes the file again.
+    if mode in ("launchd", "systemd"):
+        return "stop the office and run `ac onboard` again from that shell"
+    return "`ac restart` from that shell"
+
+
+def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | None = None,
+                timeout: float = 30) -> Check:
+    """Whether the office can start Codex sessions, in the environment it gives an app-server: the binary on its PATH,
+    the version, and the sign-in. Missing or signed out is a warning, not a failure: only people with ``codex`` in
+    ``harnesses`` need it. A ``codex`` that won't run or doesn't answer within ``timeout`` seconds fails.
+
+    ``environ`` is the office's environment: its ``AGENT_CORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
+    joins ``env``, as they do for an app-server. ``mode`` is the office's recorded service mode, which decides how a
+    fix reaches it."""
+    try:
+        found = codex_command(env, environ)[0]
+    except CodexMissing:
+        if override := environ.get("AGENT_CORP_CODEX_BIN"):
+            return Check("codex", "warn", f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the "
+                                          "office can find, so Codex sessions can't start (fix or unset it, then "
+                                          f"{_codex_change_lands(mode)})")
+        return Check("codex", "warn", "not on the office's PATH, so Codex sessions can't start "
+                                      f"(npm install -g @openai/codex, then {_codex_change_lands(mode)})")
+    if home := environ.get("CODEX_HOME"):
+        env = {**env, "CODEX_HOME": home}
+    try:
+        version = subprocess.run([found, "--version"], env=env, capture_output=True, text=True, timeout=timeout)
+        if version.returncode != 0:
+            why = version.stderr.strip()[:200] or f"exit {version.returncode}"
+            return Check("codex", "fail", f"{found} --version failed: {why}")
+        login = subprocess.run([found, "login", "status"], env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        return Check("codex", "fail", f"{found} {' '.join(exc.cmd[1:])} didn't answer in {timeout:g} s")
+    except OSError as exc:
+        return Check("codex", "fail", f"{found} can't run: {exc.strerror or exc}")
+    named = f"{printed} at {found}" if (printed := version.stdout.strip()) else f"{found} (no version printed)"
+    if login.returncode != 0:
+        return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
+    return Check("codex", "ok", f"{named}, signed in")
 
 
 def _home(paths: OfficePaths) -> Check:
@@ -207,7 +255,8 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
 
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
-           probe: Callable[[], str | None] = sandbox_problem) -> list[Check]:
+           probe: Callable[[], str | None] = sandbox_problem,
+           codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check) -> list[Check]:
     """Every check, in the order onboarding sets things up."""
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
@@ -230,6 +279,10 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
                            f"not answering on {run.socket} (log: {run.log}). {_next_step(run, host)}"))
     problem = probe()
     found.append(Check("sandbox", "fail", problem) if problem else Check("sandbox", "ok", "sandboxed commands run"))
+    # run.env is the environment an office set up or started from this shell gets, which can differ from the running
+    # daemon's (a launchd or systemd office keeps the one `ac onboard` wrote into its service file).
+    found.append(codex({k: v for k, v in run.env.items() if k in INHERITED_ENV or k.startswith("LC_")}, run.env,
+                       service.recorded_mode(run)))
     return found
 
 

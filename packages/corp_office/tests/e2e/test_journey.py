@@ -16,6 +16,7 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     # 1. `ac` in a fresh folder: the office is healthy, the picker offers Minh, and he edits a file.
     doctor = office.ac("doctor", cwd=workspace)
     assert not [line for line in doctor.stdout.splitlines() if line.startswith("fail")], doctor.stdout
+    assert "ok    codex        codex-cli 0.0.0-fake" in doctor.stdout
     minh = office.person("minh")
     assert office.folder_people(workspace) == []
     fake.script({"match": "Mark the README done",

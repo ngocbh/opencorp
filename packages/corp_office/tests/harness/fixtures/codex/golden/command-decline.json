@@ -1,0 +1,64 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Run the shell command `touch spike-declined.txt` here. Don't use apply_patch."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "I’ll run `touch spike-declined.txt` in the current directory.\n"
+        },
+        {
+          "type": "tool",
+          "tool": "codex.command",
+          "state": "error",
+          "input": {
+            "command": "/usr/bin/bash -lc 'touch spike-declined.txt'",
+            "cwd": "/work/spike/ws",
+            "exit_code": 1
+          },
+          "output": "touch: cannot touch 'spike-declined.txt': Read-only file system\n",
+          "error": null
+        },
+        {
+          "type": "tool",
+          "tool": "codex.command",
+          "state": "error",
+          "input": {
+            "command": "/usr/bin/bash -lc 'touch spike-declined.txt'",
+            "cwd": "/work/spike/ws",
+            "exit_code": null
+          },
+          "output": "",
+          "error": "declined"
+        },
+        {
+          "type": "text",
+          "text": "The command failed because the filesystem is read-only. The request for write access was declined, so `spike-declined.txt` was not created."
+        }
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "kind": "command",
+      "title": "Codex wants to run a command",
+      "question": "$ /usr/bin/bash -lc 'touch spike-declined.txt'\nin /work/spike/ws\nThe read-only sandbox blocked the command. Allow running `touch spike-declined.txt` here with write access?",
+      "options": [
+        "Approve",
+        "Deny and stop"
+      ],
+      "pages": []
+    }
+  ]
+}

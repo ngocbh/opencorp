@@ -1,0 +1,25 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Reply with the single word: hello"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ]
+    }
+  ],
+  "cards": []
+}

@@ -37,6 +37,13 @@ def test_the_daemon_gets_only_the_worker_allowlist_never_keys():
     assert daemon_env(environ) == {"PATH": "/usr/bin", "HOME": "/Users/owner", "LC_ALL": "C", "LANG": "en_US.UTF-8"}
 
 
+def test_the_daemon_keeps_which_codex_to_run_and_its_home():
+    environ = {"PATH": "/usr/bin", "CODEX_HOME": "/Users/owner/.codex-alt", "AGENT_CORP_CODEX_BIN": "/opt/codex",
+               "OPENAI_API_KEY": "sk-secret"}
+    assert daemon_env(environ) == {"PATH": "/usr/bin", "CODEX_HOME": "/Users/owner/.codex-alt",
+                                   "AGENT_CORP_CODEX_BIN": "/opt/codex"}
+
+
 def test_repo_is_this_checkout():
     assert (REPO / "pyproject.toml").is_file() and (REPO / "packages" / "corp_office" / "src" / "agent_corp").is_dir()
 

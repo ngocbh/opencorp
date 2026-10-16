@@ -1,0 +1,4 @@
+{"dir": "out", "msg": {"id": 1, "method": "initialize", "params": {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike", "version": "0"}, "capabilities": {"experimentalApi": true}}}}
+{"dir": "in", "msg": {"id": 1, "result": {"userAgent": "agent_corp_spike/0.162.1 (Red Hat Enterprise Linux 8.10.0; x86_64) unknown (agent_corp_spike; 0)", "codexHome": "/home/owner/.codex", "platformFamily": "unix", "platformOs": "linux"}}}
+{"dir": "out", "msg": {"id": 2, "method": "account/read", "params": {"refreshToken": false}}}
+{"dir": "in", "msg": {"id": 2, "result": {"account": {"type": "chatgpt", "email": "owner@example.com", "planType": "plus"}, "requiresOpenaiAuth": true, "workspaceRouting": {"chatgptAccountId": "[scrubbed]", "backendOrigin": "https://chatgpt.com", "accountRoutingOverride": "NO_CONSTRAINT"}}}}

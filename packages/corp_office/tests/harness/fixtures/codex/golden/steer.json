@@ -1,0 +1,57 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Run `for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 1; done` with the shell, then summarize it."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "I’ll run the loop in the shell, then summarize the output.\n"
+        },
+        {
+          "type": "tool",
+          "tool": "codex.command",
+          "state": "completed",
+          "input": {
+            "command": "/usr/bin/bash -lc 'for i in 1 2 3 4 5 6 7 8; do echo $i; sleep 1; done'",
+            "cwd": "/work/spike/ws",
+            "exit_code": 0
+          },
+          "output": "1\n2\n3\n4\n5\n6\n7\n8\n",
+          "error": null
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Also say pineapple in the summary."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "The loop printed 1 through 8, each on its own line, pausing one second after each number. It finished successfully in about 8 seconds. pineapple"
+        }
+      ]
+    }
+  ],
+  "cards": []
+}

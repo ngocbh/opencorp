@@ -1,0 +1,52 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Run the shell command `touch spike-approved.txt` here. Don't use apply_patch."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "I’ll run `touch spike-approved.txt` in the current directory.\n"
+        },
+        {
+          "type": "tool",
+          "tool": "codex.command",
+          "state": "completed",
+          "input": {
+            "command": "/usr/bin/bash -lc 'touch spike-approved.txt'",
+            "cwd": "/work/spike/ws",
+            "exit_code": 0
+          },
+          "output": "",
+          "error": null
+        },
+        {
+          "type": "text",
+          "text": "Ran `touch spike-approved.txt` successfully in the current directory."
+        }
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "kind": "command",
+      "title": "Codex wants to run a command",
+      "question": "$ /usr/bin/bash -lc 'touch spike-approved.txt'\nin /work/spike/ws\nAllow creating spike-approved.txt in the current directory? The filesystem sandbox is read-only.",
+      "options": [
+        "Approve",
+        "Deny and stop"
+      ],
+      "pages": []
+    }
+  ]
+}
