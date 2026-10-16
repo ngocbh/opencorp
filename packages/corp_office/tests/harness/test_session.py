@@ -289,3 +289,60 @@ def test_esc_on_a_codex_that_doesnt_answer_returns(harness, fake_codex, workspac
         raise TimeoutError("turn/interrupt got no answer in 60s")
     monkeypatch.setattr(harness.codex._live[sid].process.rpc, "request", hangs)
     harness.interrupt(sid)  # no 500: ending the session or office stop kills a Codex that hangs
+
+
+def test_ending_closes_the_group_and_removes_its_record_before_end_status(harness, fake_codex, workspace):
+    fake_codex.script([fc.agent_message("m1", "Hi")])
+    sid = start(harness, workspace)
+    pid = harness.store.list_workers()[0].pid
+    seen, runs = [], []
+    harness.hooks.end_status.append(lambda s: seen.append(harness.store.list_workers()) or "debriefing")
+    harness.hooks.session_ended.append(lambda s: seen.append(s.status))
+    harness.hooks.run_started.append(lambda *a: runs.append(a))
+    harness.hooks.run_finished.append(lambda *a: runs.append(a))
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "debriefing", what="the end")
+    assert seen == [[], "debriefing"] and start_time(pid) is None and runs == []  # Codex turns are not office runs
+    assert harness.store.get_work_item(harness.store.get_session(sid).work_item_id).status == "done"
+    with pytest.raises(HarnessError) as e:
+        harness.prompt(sid, "again")
+    assert e.value.code == "not_live"
+
+
+def test_ending_a_busy_session_interrupts_its_turn_first(harness, fake_codex, workspace):
+    fake_codex.script([[{"sleep": 30}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "work")
+    wait_for(lambda: status(harness, sid) == "busy", what="busy")
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    assert fake_codex.calls("turn/interrupt")
+
+
+def test_an_idle_codex_session_ends_after_idle_end(make_codex, workspace):
+    h = make_codex(defaults={"idle_end": "1s"})
+    sid = start(h, workspace)
+    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end")
+
+
+def test_a_refused_message_restarts_the_idle_timer(make_codex, fake_codex, workspace, monkeypatch):
+    h = make_codex(defaults={"idle_end": "1s"})
+    sid = start(h, workspace)
+
+    def gone(*args, **kwargs):
+        raise RpcClosed("the app-server is gone")
+    monkeypatch.setattr(h.codex._live[sid].process.rpc, "request", gone)
+    with pytest.raises(HarnessError):
+        h.prompt(sid, "hi")
+    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end after the refusal")
+
+
+def test_going_idle_twice_leaves_one_timer(harness, workspace):
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    first = wait_for(lambda: live.timer, what="the idle timer")
+    with live._lock:
+        live._idle()
+    assert live.timer is not first and first.finished.is_set()  # the first was cancelled

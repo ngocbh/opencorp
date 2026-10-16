@@ -7,10 +7,11 @@ from typing import Any
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.hooks import Hooks
+from agent_corp.chat.turns import seconds
 from agent_corp.company.loader import load_repo
 from agent_corp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
 from agent_corp.harness.session import CodexSession
-from agent_corp.protocol.models import HarnessPolicy, Session
+from agent_corp.protocol.models import CompanyDefaults, HarnessPolicy, Session
 from agent_corp.worker.spawn import worker_env
 
 log = logging.getLogger(__name__)
@@ -55,6 +56,9 @@ class CodexSessions:
     def interrupt(self, session_id: str) -> None:
         self._must(session_id).interrupt()
 
+    def end(self, session_id: str) -> None:
+        self._must(session_id).end()
+
     def close_all(self) -> None:
         """Office stop: kill every app-server and stop every session's thread; sessions keep their status for
         ``restore``. Once it returns, no Codex session touches the store."""
@@ -96,6 +100,12 @@ class CodexSessions:
         session = self.store.get_session(session_id)
         person = load_repo(self.office.git.pin(session.repo_commit)).people.get(session.person)
         return person.harness_policy if person else None
+
+    def idle_seconds(self, session_id: str) -> int:
+        """How long the session may sit idle before it ends: ``idle_end`` of its pinned company."""
+        session = self.store.get_session(session_id)
+        repo = load_repo(self.office.git.pin(session.repo_commit))
+        return seconds(((repo.company.defaults if repo.company else None) or CompanyDefaults()).idle_end)
 
     def opener(self, session: Session) -> str | None:
         """Who a message with no named sender is from: the session's opener, else the pinned company's CEO."""

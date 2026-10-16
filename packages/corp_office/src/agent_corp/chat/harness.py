@@ -608,6 +608,8 @@ class Harness:
 
     def end(self, session_id: str) -> None:
         """End the session through the flow's exit, interrupting a busy reply first."""
+        if self._codex_session(session_id):
+            return self.codex.end(session_id)
         with self._lock:
             live = self._must(session_id)
             if live.ending:

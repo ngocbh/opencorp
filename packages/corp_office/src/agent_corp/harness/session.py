@@ -20,6 +20,8 @@ log = logging.getLogger(__name__)
 
 STOP_WAIT = 10.0
 """Seconds office stop waits for the session's thread to finish the job it is in."""
+END_WAIT = 10.0
+"""Seconds an ending session waits for its interrupted turn to complete before it closes the app-server anyway."""
 
 
 def why(exc: Exception) -> str:
@@ -57,6 +59,8 @@ class CodexSession:
         self.loading = False
         self.turn_id: str | None = None
         self.pending: list[str] = []
+        self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
+        self._idle_after: int | None = None  # idle_end in seconds, read once from the session's pinned company
         self.ending = self.closed = self.stopped = False
         self._lock = threading.RLock()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -80,6 +84,7 @@ class CodexSession:
             if self.ending:
                 raise HarnessError(409, "ending", f"session {self.session_id} is ending")
             self.transcript.user(text, author=by or self.author)
+            self._stop_timer()
             if self.loading or self.process is None:
                 self.pending.append(text)
                 return "queued"
@@ -102,6 +107,28 @@ class CodexSession:
             except (RpcError, RpcClosed, TimeoutError):
                 pass  # the turn ended meanwhile, the app-server is gone, or it hangs (its end or stop kills it)
 
+    def end(self) -> None:
+        """End the session: interrupt a running turn, close the app-server, then end through the hooks."""
+        with self._lock:
+            if self.stopped:
+                raise HarnessError(409, "not_live", f"session {self.session_id} has no live Codex app-server")
+            if self.ending:
+                return
+            self.ending = True
+            self.pending.clear()
+            self._stop_timer()
+            busy = self.turn_id is not None
+            self.store.update_session(self.session_id, status="ending")
+        if not busy:
+            self._post(self._close)
+            return
+        self.interrupt()  # turn/completed closes it; END_WAIT closes it if that never comes
+        with self._lock:
+            if not self.closed and not self.stopped:
+                self.timer = threading.Timer(END_WAIT, self._post, (self._close,))
+                self.timer.daemon = True
+                self.timer.start()
+
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
         status stays for ``restore``. Text still streaming and tools still running are stored as interrupted, as
@@ -111,6 +138,7 @@ class CodexSession:
         """
         with self._lock:
             self.stopped = True
+            self._stop_timer()
             doomed = [p for p in (self.process, self.launching) if p is not None]
             self.process = None
         for process in doomed:  # a load or a turn/start waiting on Codex fails at once
@@ -235,6 +263,7 @@ class CodexSession:
         if method == "turn/started":
             with self._lock:
                 self.turn_id = params["turn"]["id"]
+                self._stop_timer()
                 if not self.ending:
                     self.store.update_session(self.session_id, status="busy")
         elif method == "turn/completed":
@@ -243,7 +272,9 @@ class CodexSession:
             with self._lock:
                 if turn["id"] == self.turn_id:
                     self.turn_id = None
-                if self.turn_id is None and not self.loading and not self.ending:
+                if self.ending:
+                    self._post(self._close)
+                elif self.turn_id is None and not self.loading:
                     self._idle()
         else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
@@ -259,8 +290,44 @@ class CodexSession:
             return
         log.warning("codex app-server of session %s exited unexpectedly", self.session_id)
 
+    def _close(self) -> None:
+        with self._lock:
+            if self.closed:
+                return
+            self.closed = True
+            self._stop_timer()
+            process = self.process
+        if process is not None:
+            process.close(self.owner.close_grace)  # stdin, grace, group kill, record removed: before end_status
+        if self.stopped:
+            return  # office stop came during the close: the session stays ending, for restore
+        self.transcript.abort()
+        self.owner.finished(self, "ended")
+        self._jobs.put(None)  # nothing more to do: let the session's thread end after this job
+
     def _idle(self) -> None:
-        """(Under the lock.) Go idle. Nothing once the office stops."""
+        """(Under the lock.) Go idle; ``idle_end`` later, the session ends. Nothing once the office stops."""
         if self.stopped:
             return
+        self._stop_timer()
         self.store.update_session(self.session_id, status="idle")
+        if self._idle_after is None:
+            self._idle_after = self.owner.idle_seconds(self.session_id)
+        self.timer = threading.Timer(self._idle_after, self._post, (self._idle_end,))
+        self.timer.daemon = True
+        self.timer.start()
+
+    def _idle_end(self) -> None:
+        with self._lock:
+            still_idle = self.turn_id is None and not self.pending and not self.loading and not self.ending
+        if still_idle:
+            try:
+                self.end()
+            except HarnessError:
+                pass  # the office stopped meanwhile: restore decides
+
+    def _stop_timer(self) -> None:
+        """(Under the lock.) Cancel the idle or end timer."""
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
