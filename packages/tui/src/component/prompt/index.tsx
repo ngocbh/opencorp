@@ -828,6 +828,12 @@ export function Prompt(props: PromptProps) {
       }),
     }
   })
+  // The open session's model, or Codex for a new chat that will run on it.
+  const footerModel = createMemo(() => {
+    const s = session()
+    if (s) return sessionModel(s, office.connections()).model
+    return local.harness.current() === "codex" ? "Codex" : undefined
+  })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
 
   return (
@@ -941,7 +947,7 @@ export function Prompt(props: PromptProps) {
                     </>
                   )}
                 </Show>
-                <Show when={session() && sessionModel(session()!, office.connections()).model}>
+                <Show when={footerModel()}>
                   {(model) => (
                     <>
                       <text fg={fadeColor(theme.textMuted, titleMetaAlpha())}>·</text>

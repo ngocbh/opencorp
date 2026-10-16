@@ -1,4 +1,5 @@
 import { createEffect, createMemo } from "solid-js"
+import { isDeepEqual } from "remeda"
 import { useArgs } from "../../context/args"
 import { useRoute } from "../../context/route"
 import { useOffice } from "../../context/office"
@@ -6,32 +7,48 @@ import { useLocal } from "../../context/local"
 import { DialogSelect, type DialogSelectOption } from "../../ui/dialog-select"
 import { useDialog } from "../../ui/dialog"
 import { DialogHire } from "./dialog-hire"
-import { pickerRows } from "./people"
+import { harnessesOf, pickerRows, type Harness } from "./people"
 
-/** Picks the person to talk to; the last row opens the hire form. */
+/** A picker row's value: a person and the harness a chat with them runs on. */
+type PickerRow = { handle: string; harness: Harness }
+
+/** Picks the person to talk to, and the harness when they use more than one; the last row opens the hire form. */
 export function DialogPeople() {
   const office = useOffice()
   const local = useLocal()
   const dialog = useDialog()
-  // `null` is the hire row, so it can never collide with a handle.
-  const options = createMemo<DialogSelectOption<string | null>[]>(() => [
-    ...pickerRows(office.state).map(({ person, group }) => ({
-      title: `@${person.handle}`,
-      description: `${person.name} · ${person.title}`,
-      value: person.handle,
-      category: group,
-    })),
+  // `null` is the hire row, so it can never collide with a person.
+  const options = createMemo<DialogSelectOption<PickerRow | null>[]>(() => [
+    ...pickerRows(office.state).flatMap(({ person, group }) =>
+      harnessesOf(person).map((harness) => ({
+        title: harness === "codex" ? `@${person.handle} · Codex` : `@${person.handle}`,
+        description: `${person.name} · ${person.title}`,
+        value: { handle: person.handle, harness },
+        category: group,
+      })),
+    ),
     { title: "Hire new…", value: null },
   ])
+  // DialogSelect finds the current row by deep equality, so this is a value like the rows'. An equal value
+  // keeps its identity, so an office refresh that rebuilds the people list doesn't move the highlight back.
+  const current = createMemo(
+    () => {
+      const person = local.person.current()
+      return person ? { handle: person.handle, harness: local.harness.current() } : undefined
+    },
+    undefined,
+    { equals: isDeepEqual },
+  )
   return (
     <DialogSelect
       title="Who do you want to talk to?"
       placeholder="Search people"
       options={options()}
-      current={local.person.current()?.handle}
+      current={current()}
       onSelect={(option) => {
         if (option.value === null) return dialog.replace(() => <DialogHire />)
-        local.person.set(option.value)
+        local.person.set(option.value.handle)
+        local.harness.set(option.value.harness)
         dialog.clear()
       }}
     />

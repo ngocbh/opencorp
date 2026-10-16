@@ -11,6 +11,7 @@ import { readJson, writeJsonAtomic } from "../util/persistence"
 import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
+import { harnessesOf, type Harness } from "../routes/picker/people"
 
 export type LocalTheme = {
   secondary: RGBA
@@ -194,6 +195,27 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const person = createPerson()
 
+    /** The harness a new chat with the current person starts on: the one picked for them, else their first. */
+    function createHarness() {
+      const [picked, setPicked] = createSignal<{ handle: string; harness: Harness }>()
+      return {
+        current(): Harness {
+          const p = person.current()
+          if (!p) return "composer"
+          const options = harnessesOf(p)
+          const pick = picked()
+          return pick?.handle === p.handle && options.includes(pick.harness) ? pick.harness : (options[0] ?? "composer")
+        },
+        /** Picks `harness` for the current person; picking another person goes back to their first. */
+        set(harness: Harness) {
+          const p = person.current()
+          if (p) setPicked({ handle: p.handle, harness })
+        },
+      }
+    }
+
+    const harness = createHarness()
+
     function createSession() {
       const [sessionStore, setSessionStore] = createStore<{
         ready: boolean
@@ -278,6 +300,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const result = {
       person,
+      harness,
       session,
       model,
     }
