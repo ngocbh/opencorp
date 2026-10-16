@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+STOP_WAIT = 10.0
+"""Seconds office stop waits for the session's thread to finish the job it is in."""
+
 
 def why(exc: Exception) -> str:
     """What an error part says about a failed load: what to do, then the stderr tail."""
@@ -72,6 +75,8 @@ class CodexSession:
         """A message from ``by`` (the opener when None): ``turn``, ``steer`` (a turn was running), or ``queued``
         (until the thread is loaded)."""
         with self._lock:
+            if self.stopped:
+                raise HarnessError(409, "not_live", f"session {self.session_id} has no live Codex app-server")
             if self.ending:
                 raise HarnessError(409, "ending", f"session {self.session_id} is ending")
             self.transcript.user(text, author=by or self.author)
@@ -89,7 +94,8 @@ class CodexSession:
 
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
-        status stays for ``restore``.
+        status stays for ``restore``. Text still streaming and tools still running are stored as interrupted, as
+        composer's ``close_all`` stores them.
 
         Once it returns the session no longer touches the store.
         """
@@ -100,10 +106,15 @@ class CodexSession:
         for process in doomed:  # a load or a turn/start waiting on Codex fails at once
             process.kill()
         self._jobs.put(None)
+        busy = False
         if threading.current_thread() is not self._thread:
-            self._thread.join(10)
-            if self._thread.is_alive():
-                log.warning("codex session %s: its thread is still busy at office stop", self.session_id)
+            self._thread.join(STOP_WAIT)
+            busy = self._thread.is_alive()
+        if busy:  # it may be writing to the transcript now; abort would race it, and it writes nothing after this job
+            log.warning("codex session %s: its thread is still busy at office stop; its open text stays as it was",
+                        self.session_id)
+            return
+        self.transcript.abort()
 
     def launching_as(self, process: CodexProcess) -> bool:
         """Record ``process`` as the app-server being started, so office stop kills it; False once stopped."""

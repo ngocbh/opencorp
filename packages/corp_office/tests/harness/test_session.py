@@ -6,6 +6,7 @@ import time
 import pytest
 
 from agent_corp.chat.harness import HarnessError
+from agent_corp.harness import session as session_module
 from agent_corp.harness.codex import CodexStartError, owner_load
 from agent_corp.harness.rpc import JsonRpc, RpcClosed
 from agent_corp.protocol.models import HarnessPolicy
@@ -226,3 +227,33 @@ def test_a_queued_message_codex_never_answers_leaves_the_session_idle(harness, f
     assert harness.prompt(sid, "early") == "queued"
     wait_for(lambda: status(harness, sid) == "idle" and errors(harness, sid), what="the refusal")
     assert "didn't take the message" in errors(harness, sid)[0]
+
+
+def test_office_stop_mid_reply_stores_all_its_text_with_the_marker(harness, fake_codex, workspace):
+    fake_codex.script([[fc.agent_message("m1", "Hello there, friend")[0], fc.agent_message_delta("m1", "Hello "),
+                        fc.agent_message_delta("m1", "there, "), fc.agent_message_delta("m1", "friend"),
+                        {"sleep": 30}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go", by="ngocbh")
+    wait_for(lambda: [e.data["text"] for e in harness.office.bus.events if e.type == "part.delta"][-1:] == ["friend"],
+             what="the third delta")
+    harness.close_all()
+    assert texts(harness, sid) == ["Hello there, friend\n\n[interrupted]"] and status(harness, sid) == "busy"
+
+
+def test_office_stop_leaves_the_transcript_to_a_thread_still_busy(harness, fake_codex, workspace, monkeypatch):
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    monkeypatch.setattr(session_module, "STOP_WAIT", 0.2)
+    aborted, began, release = [], threading.Event(), threading.Event()
+    monkeypatch.setattr(live.transcript, "abort", lambda: aborted.append(True))
+
+    def hold():  # a job that outlasts the stop's wait
+        began.set()
+        release.wait(5)
+    live._post(hold)
+    assert began.wait(5)  # running, so the stop can't skip it
+    harness.close_all()
+    release.set()
+    live._thread.join(5)
+    assert aborted == [] and not live._thread.is_alive()
