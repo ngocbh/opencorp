@@ -4,8 +4,8 @@ import pytest
 
 from agent_corp.company.flows import load_confined
 from agent_corp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, REQUEST
-from agent_corp.profile.debrief import (DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief,
-                                        transcript_text)
+from agent_corp.profile.debrief import (DEBRIEF_FLOW, apprentice_header, confirm_follow_ups, pending_debrief,
+                                        ready_debrief, transcript_text)
 from agent_corp.protocol import now
 from agent_corp.protocol.models import ErrorPart, Message, TextPart, ToolPart
 from agent_corp.store import new_id
@@ -100,6 +100,21 @@ def test_a_last_message_longer_than_the_budget_keeps_its_end():
     assert text == "[earlier messages left out]\n\n[the start of this message left out]" + ("x" * 50 + "the end")[-20:]
     alone = transcript_text([_message("assistant", _text(last))], max_chars=20)
     assert alone == "[the start of this message left out]" + last[-20:]
+
+
+def test_the_apprentice_header_names_driver_employee_and_folder():
+    header = apprentice_header(owner="ngocbh", employee="minh", cwd="/w/app")
+    assert header.startswith("In this session @ngocbh drove Codex (an AI coding agent) in `/w/app`; you, @minh, "
+                             "watched as an apprentice.")
+    assert "instructions above" in header and "their approvals" in header
+
+
+def test_the_header_survives_the_cut_and_counts_against_the_budget():
+    header = apprentice_header(owner="ngocbh", employee="minh", cwd="/w")
+    messages = [_message("user", _text(f"message {i}"), author="ngocbh") for i in range(200)]
+    text = transcript_text(messages, max_chars=len(header) + 80, assistant="codex", header=header)
+    assert text.startswith(header + "\n\n[earlier messages left out]") and text.endswith("@ngocbh: message 199")
+    assert len(text) <= len(header) + 80 + len("\n\n[earlier messages left out]")
 
 
 def test_confirming_follow_ups_makes_one_work_item_each_once(store):
