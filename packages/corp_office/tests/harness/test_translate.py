@@ -72,6 +72,18 @@ def test_a_message_completed_without_deltas_still_shows(tr):
     assert [p.text for p in parts(store, s.id)] == ["Hi"]
 
 
+def test_a_completed_message_adds_only_what_the_deltas_left_out(tr):
+    store, s, t = tr
+    feed(t, [fc.agent_message_delta("m1", "Hello w")])
+    t.notification("item/completed", {"turnId": "turn_1", "item": {"type": "agentMessage", "id": "m1",
+                                                                    "text": "Hello world, done."}})
+    feed(t, [fc.agent_message_delta("m2", "Hello wrld")])  # deltas that don't lead to the final text
+    t.notification("item/completed", {"turnId": "turn_1", "item": {"type": "agentMessage", "id": "m2",
+                                                                    "text": "Hello world, done."}})
+    t.turn_completed("turn_1", "completed", None)
+    assert [p.text for p in parts(store, s.id)] == ["Hello world, done.", "Hello wrld"]
+
+
 def test_reasoning_summaries_show_as_thinking_text(tr):
     store, s, t = tr
     t.notification("item/completed", {"turnId": "turn_1", "item": {"type": "reasoning", "id": "r1",

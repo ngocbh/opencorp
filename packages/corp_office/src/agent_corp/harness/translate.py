@@ -70,7 +70,7 @@ class Translator:
     def __init__(self, transcript: Transcript, cwd: str | None = None) -> None:
         self.transcript, self.cwd = transcript, cwd
         self._lock = threading.Lock()
-        self._streamed: dict[str, int] = {}  # agent message item id -> characters streamed so far
+        self._streamed: dict[str, str] = {}  # agent message item id -> the text its deltas streamed so far
         self._items: dict[str, dict[str, Any]] = {}  # tool item id -> its latest item, for cards and decisions
         self._segments: dict[str, list[str]] = {}  # turn id -> the transcript node of each of its messages
         self._nodes: dict[str, str] = {}  # item or request part id -> the node of the message it started in
@@ -91,7 +91,7 @@ class Translator:
             return True
         if method == "item/agentMessage/delta":
             node = self._node(params["turnId"], params["itemId"])
-            self._streamed[params["itemId"]] = self._streamed.get(params["itemId"], 0) + len(params["delta"])
+            self._streamed[params["itemId"]] = self._streamed.get(params["itemId"], "") + params["delta"]
             self.transcript.stream({"node_id": node, "exchange_id": params["itemId"], "chunk": params["delta"]})
         elif method in ("item/started", "item/completed"):
             self._item(params["turnId"], params["item"], done=method == "item/completed")
@@ -153,9 +153,11 @@ class Translator:
             return
         node = self._node(turn_id, item["id"])
         if kind == "agentMessage" and done:
-            sent = self._streamed.pop(item["id"], 0)
-            self.transcript.stream({"node_id": node, "exchange_id": item["id"], "chunk": item["text"][sent:],
-                                    "final": True})
+            sent, text = self._streamed.pop(item["id"], ""), item["text"]
+            rest = text[len(sent):] if text.startswith(sent) else ""
+            if not text.startswith(sent):  # the part already shows what streamed, so only an ending can be added
+                log.warning("codex: message %s completed with text its deltas didn't lead to", item["id"])
+            self.transcript.stream({"node_id": node, "exchange_id": item["id"], "chunk": rest, "final": True})
         elif kind == "reasoning" and done and item.get("summary"):
             self.transcript.stream({"node_id": node, "exchange_id": item["id"], "final": True,
                                     "chunk": "(thinking) " + "\n".join(item["summary"])})
