@@ -24,6 +24,15 @@ export function pickerRows(input: {
   return rows
 }
 
+export type Harness = "composer" | "codex"
+const OPENABLE: readonly Harness[] = ["composer", "codex"]
+
+/** The harnesses a chat with `person` can run on here: their `harnesses` list (composer when empty), in its order. */
+export function harnessesOf(person: Person): Harness[] {
+  const listed = person.harnesses?.length ? person.harnesses : ["composer"]
+  return listed.filter((h): h is Harness => (OPENABLE as readonly string[]).includes(h))
+}
+
 export type HireForm = { name: string; handle: string; title: string; manager: string }
 
 // The protocol's `Handle` pattern; a test keeps it equal to the schema's.
