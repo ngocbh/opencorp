@@ -243,6 +243,7 @@ def test_a_moved_file_keeps_where_it_moved_to_on_its_part_and_card(tr):
     ("delete", "one\n+two\n-three\n", (0, 3)),            # and a deleted file's content
     ("update", "@@ -1,2 +1,2 @@\n-z\n+x\n+y\n keep\n", (2, 1)),
     ("update", "@@ -1 +1 @@\n-a\n+b\n\n\nMoved to: b.py", (1, 1)),
+    ("update", "--- a/f\n+++ b/f\n@@ -1 +1 @@\n--- x\n+++ y\n", (1, 1)),  # headers, then lines "-- x" and "++ y"
 ])
 def test_a_file_changes_lines_are_counted_by_its_kind(kind, diff, counts):
     assert change_counts(kind, diff) == counts

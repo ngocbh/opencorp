@@ -56,8 +56,9 @@ def change_counts(kind: str | None, diff: str | None) -> tuple[int, int]:
         return len(lines), 0
     if kind == "delete":
         return 0, len(lines)
-    return (sum(1 for x in lines if x.startswith("+") and not x.startswith("+++")),
-            sum(1 for x in lines if x.startswith("-") and not x.startswith("---")))
+    hunks = next((n for n, x in enumerate(lines) if x.startswith("@@")), len(lines))
+    body = lines[hunks:]  # what comes before the first hunk is the ---/+++ header, not changed lines
+    return sum(1 for x in body if x.startswith("+")), sum(1 for x in body if x.startswith("-"))
 
 
 class Translator:
