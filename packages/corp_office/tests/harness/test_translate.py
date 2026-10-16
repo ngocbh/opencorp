@@ -415,6 +415,17 @@ def test_other_elicitations_are_cards_too(tr):
         {"action": "accept", "content": {"priority": "high", "points": 3, "urgent": True}}, "accept")
 
 
+@pytest.mark.parametrize("properties", [
+    {f"f{i}": {"type": "string"} for i in range(5)},  # more fields than a card has pages
+    {"tags": {"type": "array", "items": {"type": "string", "enum": ["a", "b"]}}},  # a list, which a page can't give
+    {"env": {"type": "string", "oneOf": [{"const": "p", "title": "Prod"}]}},  # titled choices, whose values differ
+])
+def test_a_form_a_card_cannot_answer_in_full_is_unserved(tr, properties):
+    store, s, t = tr
+    with pytest.raises(Unserved):
+        card(t, s, fc.form_elicitation(7, "jira", "Ticket", properties))
+
+
 def test_more_than_four_questions_or_an_unknown_method_is_unserved(tr):
     store, s, t = tr
     many = fc.user_input(8, "u3", [fc.question(f"q{i}", f"Q{i}", "?") for i in range(5)])

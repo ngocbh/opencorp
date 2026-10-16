@@ -307,8 +307,13 @@ class Translator:
                                          "question": f"{title}\n{params['url']}" if url else title,
                                          "options": [x for x, _ in options]})
             return Card("elicitation", q, call_id, _choice(options, lambda d: {"action": d}))
+        # A reply must hold every field, typed as the schema says: a form a card can't answer in full is refused.
+        if len(props) > _MAX_PAGES:
+            raise Unserved("mcpServer/elicitation/request with more than four fields")
+        if any(spec.get("type") == "array" or "oneOf" in spec or "anyOf" in spec for spec in props.values()):
+            raise Unserved("mcpServer/elicitation/request with a list or titled-choice field")
         pages, schema = [], []
-        for name, spec in list(props.items())[:_MAX_PAGES]:
+        for name, spec in props.items():
             labels = spec.get("enum") or (["Yes", "No"] if spec.get("type") == "boolean" else [])
             pages.append(QuestionPage(question=spec.get("description") or spec.get("title") or name, header=name,
                                       options=[QuestionOption(label=x) for x in labels]))
