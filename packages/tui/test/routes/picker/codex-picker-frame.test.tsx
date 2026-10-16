@@ -36,3 +36,25 @@ test("a person who uses Codex has a Codex row, and picking it picks the harness"
     fake.stop()
   }
 })
+
+test("a chat started on Codex asks the office for a Codex session, without a model pick", async () => {
+  const fake = codexOffice()
+  const app = await bootFrame(createStub(fake))
+  try {
+    await pickCodex(app)
+    await app.input.typeText("make hello.txt")
+    app.input.pressEnter()
+    await app.until(() => fake.requests.some((r) => r.path === "/sessions" && r.method === "POST"))
+    const body = fake.requests.find((r) => r.path === "/sessions" && r.method === "POST")!.body as Record<string, unknown>
+    expect(body).toEqual({ person: "minh", cwd: "/tmp/proj", harness: "codex" })
+    // In the Codex session (its header shows the status) the footer still names Codex, not the office
+    // connection's model.
+    const f = await app.until(
+      (f) => /@minh · (idle|busy)/.test(f) && f.includes("make hello.txt") && f.includes("@minh · Software engineer · Codex"),
+    )
+    expect(f).not.toContain("Software engineer · gpt-4o")
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
