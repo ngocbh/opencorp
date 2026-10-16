@@ -25,7 +25,7 @@ from .test_onboard import _stop
 KEY = "sk-ant-sentinel-a7d93c10e5b2"
 
 
-def _no_codex(env, environ):
+def _no_codex(env, environ, mode):
     """Stands in for the Codex check, so a test never runs whatever ``codex`` is on the developer's PATH."""
     return doctor.Check("codex", "ok", "stand-in")
 

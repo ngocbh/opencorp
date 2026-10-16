@@ -38,7 +38,7 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
-                         codex=lambda env, environ: Check("codex", "ok", "stand-in"))
+                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"))
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -281,7 +281,7 @@ def test_checks_run_the_codex_check_they_are_given_in_the_app_servers_environmen
     seen = []
     host = make_host(tmp_path, Runner(), answers=lambda s: False)
     found = doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
-                          codex=lambda env, environ: seen.append(env) or Check("codex", "ok", "stand-in"))
+                          codex=lambda env, environ, mode: seen.append(env) or Check("codex", "ok", "stand-in"))
     assert found[-1] == Check("codex", "ok", "stand-in")
     assert seen and all(k in ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ") or k.startswith("LC_")
                         for k in seen[0])
@@ -319,7 +319,29 @@ def test_checks_give_the_codex_check_the_offices_environment_to_find_codex(tmp_p
     seen = []
     host = make_host(tmp_path, Runner(), answers=lambda s: False)
     doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
-                  codex=lambda env, environ: seen.append((env, environ)) or Check("codex", "ok", "stand-in"))
+                  codex=lambda env, environ, mode: seen.append((env, environ)) or Check("codex", "ok", "stand-in"))
     env, environ = seen[0]
     assert environ["CODEX_HOME"] == "/x/home" and environ["AGENT_CORP_CODEX_BIN"] == "/x/codex"
     assert "CODEX_HOME" not in env and "AGENT_CORP_CODEX_BIN" not in env
+
+
+def test_codex_advice_says_how_the_office_picks_up_a_change_under_its_service(tmp_path):
+    missing = {"PATH": str(tmp_path / "nowhere")}
+    for mode in ("launchd", "systemd"):
+        managed = codex_check(missing, {}, mode)
+        assert "stop the office and run `ac onboard` again from that shell" in managed.detail
+        assert "ac restart" not in managed.detail
+        override = codex_check(missing, {"AGENT_CORP_CODEX_BIN": "/nowhere/codex"}, mode)
+        assert "stop the office and run `ac onboard` again from that shell" in override.detail
+    for mode in ("tmux", "background", None):
+        assert "then `ac restart` from that shell" in codex_check(missing, {}, mode).detail
+
+
+def test_checks_give_the_codex_check_the_offices_recorded_service_mode(tmp_path):
+    paths = onboarded(tmp_path, mode="systemd")
+    modes = []
+    host = make_host(tmp_path, Runner([(["loginctl"], 0, "", "Linger=yes\n")]), answers=lambda s: False,
+                     platform="linux")
+    doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=lambda: None,
+                  codex=lambda env, environ, mode: modes.append(mode) or Check("codex", "ok", "stand-in"))
+    assert modes == ["systemd"]
