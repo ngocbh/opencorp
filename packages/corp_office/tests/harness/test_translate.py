@@ -447,11 +447,20 @@ def test_more_than_four_questions_or_an_unknown_method_is_unserved(tr):
         card(t, s, many)
     with pytest.raises(Unserved):
         t.card("item/tool/call", {}, session=s, run_id="turn_1", node_id="9")
+
+
+@pytest.mark.parametrize("params", [
     # A device verification wants a proof in its reply, which no answer on a card makes.
-    verify = {"serverName": "gh", "threadId": "thr_1", "turnId": None, "mode": "openai/userVerification",
-              "title": "Verify", "description": "Confirm it's you", "challenge": "c1"}
-    with pytest.raises(Unserved):
-        t.card("mcpServer/elicitation/request", verify, session=s, run_id="codex-1", node_id="10")
+    {"mode": "openai/userVerification", "title": "Verify", "description": "Confirm it's you", "challenge": "c1"},
+    # OpenAI's own forms have a schema the pinned protocol leaves open, so a card can't type their reply.
+    {"mode": "openai/form", "message": "Pick", "requestedSchema": {"anything": True}},
+    {"mode": "openaiForm", "message": "Pick", "requestedSchema": {"anything": True}},
+], ids=lambda p: p["mode"])
+def test_an_elicitation_in_a_mode_a_card_cannot_answer_is_unserved(tr, params):
+    store, s, t = tr
+    params = {"serverName": "gh", "threadId": "thr_1", "turnId": None, **params}
+    with pytest.raises(Unserved, match=f"in mode {params['mode']}"):
+        t.card("mcpServer/elicitation/request", params, session=s, run_id="codex-1", node_id="10")
 
 
 # --- the pinned schema -------------------------------------------------------------------
@@ -531,14 +540,14 @@ def test_recorded_sessions_translate_as_their_golden_files(recorded, path):
     assert got == json.loads(golden.read_text())
 
 
-def test_the_recordings_include_the_step_one_scenarios():
+def test_the_recordings_include_the_core_scenarios():
     assert {"plain", "command-approve", "command-decline", "file-change", "interrupt", "steer", "resume"} <= {
         p.stem for p in RECORDED}
 
 
 def test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in(recorded):
-    if not SPIKE["S3"]["detail"]["scenarios"]["steer"]["ok"]:
-        pytest.skip("S3's steer scenario failed in the spike; rerun it with --scenario steer")
+    if not SPIKE["S3"]["detail"]["scenarios"]["steer"]["ok"]:  # the key spike.json records its sessions under
+        pytest.skip("the spike's steer scenario failed; rerun it with --scenario steer")
     got = replay(recorded, FIXTURES / "sessions" / "steer.jsonl")
     roles = [m["role"] for m in got["messages"]]
     assert roles[:3] == ["user", "assistant", "user"]  # the steer comes after the message the command started in

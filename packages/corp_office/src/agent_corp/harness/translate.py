@@ -255,7 +255,10 @@ class Translator:
                             _choice(options, lambda d: {"answers": {mcp["id"]: {"answers": [_label(options, d)]}}}))
             return self._pages(base, params, questions)
         if method == "mcpServer/elicitation/request":
-            if params.get("mode") not in ("form", "url"):  # e.g. a device verification, which needs a proof
+            # Only MCP's own modes can be answered from a card. A device verification (openai/userVerification)
+            # wants a proof Codex's client makes, and OpenAI's forms (openai/form, openaiForm) have a schema the
+            # pinned protocol leaves open, so no reply could be checked; Codex takes the error as a refusal.
+            if params.get("mode") not in ("form", "url"):
                 raise Unserved(f"{method} in mode {params.get('mode')}")
             meta = params.get("_meta") or {}
             title = f"{params['serverName']}: {params['message']}"
