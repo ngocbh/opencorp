@@ -15,7 +15,7 @@ from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.translate import TURNLESS, Card, Translator, Unserved
 from agent_corp.protocol.models import Session
-from agent_corp.store import InvalidTransition, NotFound
+from agent_corp.store import InvalidTransition, NotFound, new_id
 
 if TYPE_CHECKING:
     from agent_corp.harness.sessions import CodexSessions
@@ -75,6 +75,7 @@ class CodexSession:
         self.pending: list[str] = []
         self.requests: dict[str, Pending] = {}  # question id -> the request Codex waits on
         self.by_request: dict[str, str] = {}  # str(request id) -> question id
+        self._turnless: tuple[CodexProcess, str] | None = None  # an app-server and its turnless requests' run id
         self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
         self._idle_after: int | None = None  # idle_end in seconds, read once by the load from the pinned company
         self.ending = self.closed = self.stopped = False
@@ -338,8 +339,7 @@ class CodexSession:
         if process is None:
             return
         session = self.store.get_session(self.session_id)
-        # Request ids restart with each app-server, so a request with no turn is keyed by the process.
-        run_id = params.get("turnId") or f"{TURNLESS}{process.pid}"
+        run_id = params.get("turnId") or self._turnless_run(process)
         try:
             card = self.translator.card(method, params, session=session, run_id=run_id, node_id=str(request_id))
         except Unserved:
@@ -359,6 +359,13 @@ class CodexSession:
         with self._lock:
             self.requests[card.question.id] = Pending(request_id, card)
             self.by_request[str(request_id)] = card.question.id
+
+    def _turnless_run(self, process: CodexProcess) -> str:
+        """The run id of ``process``'s requests with no turn. Request ids restart with each app-server and a pid can
+        come back, so each app-server gets one of its own."""
+        if self._turnless is None or self._turnless[0] is not process:
+            self._turnless = (process, f"{TURNLESS}{process.pid}-{new_id()}")
+        return self._turnless[1]
 
     def _reply(self, question_id: str, answer: Any, by: str | None, done: "Future[bool]") -> None:
         if not done.set_running_or_notify_cancel():

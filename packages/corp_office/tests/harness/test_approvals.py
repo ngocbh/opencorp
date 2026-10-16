@@ -3,6 +3,7 @@
 import os
 import signal
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -63,6 +64,32 @@ def test_a_card_the_store_refuses_is_an_error_reply_and_the_turn_still_ends(harn
     wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
     assert live.requests == {} and live.by_request == {}
     live._expire("no-such-question")  # a card that is gone expires quietly
+
+
+def test_turnless_cards_of_two_app_servers_with_one_pid_dont_collide(harness, fake_codex, workspace):
+    step = fc.url_elicitation(8, "gh", "Sign in", "https://e.com/l", wait=False)
+    fake_codex.script([[step, {"sleep": 5}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "sign in")
+    first = open_card(harness, sid)
+    live = harness.codex._live[sid]
+    real, errors = live.process, []
+    # A later app-server of this session that got the same pid, and numbers its requests from the same start.
+    twin = SimpleNamespace(pid=real.pid, alive=True, rpc=SimpleNamespace(
+        reply_error=lambda request_id, code, message: errors.append((request_id, code))))
+    ran = threading.Event()
+    with live._lock:
+        live.process = twin
+    try:
+        live._post(live._request, 8, step["request"], fc.fill(step["params"], "", str(workspace), "thr_1"))
+        live._post(ran.set)
+        assert ran.wait(5)
+    finally:
+        with live._lock:
+            live.process = real
+    cards = harness.store.list_questions(session_id=sid, status="open")
+    assert errors == [] and len(cards) == 2 and len({q.run_id for q in cards}) == 2
+    assert all(q.run_id.startswith("codex-") for q in cards) and first in cards
 
 
 def tool_parts(harness, sid):

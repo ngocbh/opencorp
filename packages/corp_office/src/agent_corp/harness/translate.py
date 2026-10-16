@@ -386,7 +386,7 @@ _COMMAND_TITLES = {"command": "Codex wants to run a command",
 _PERMISSIONS = [("Approve for this turn", "turn"), ("Approve for this session", "session"), ("Deny", "decline")]
 MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
 TURNLESS = "codex-"
-"""Run id prefix of a request with no turn (``codex-<app-server pid>``)."""
+"""Run id prefix of a request with no turn (``codex-<app-server pid>-<id made per app-server>``)."""
 _MCP = [("Allow", "accept"), ("Allow for this session", "acceptForSession"), ("Cancel", "cancel")]
 _REMEMBER = "Allow and don't ask me again"  # writes the owner's Codex config: never offered
 _APPROVAL_TITLES = {"mcp_tool_call": "Codex wants to use an MCP tool",
