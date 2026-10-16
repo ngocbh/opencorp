@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from importlib.metadata import version
 from pathlib import Path
 from typing import Any
@@ -41,11 +41,16 @@ class CodexSignedOut(CodexStartError):
     """Codex runs but has no account signed in."""
 
 
-def codex_command(env: dict[str, str]) -> list[str]:
-    """``codex app-server --listen stdio://`` with ``codex`` found on ``env``'s PATH (the office's own)."""
-    found = shutil.which("codex", path=env.get("PATH"))
+def codex_command(env: Mapping[str, str], environ: Mapping[str, str] = os.environ) -> list[str]:
+    """``codex app-server --listen stdio://`` with ``codex`` found on ``env``'s PATH (the office's own).
+
+    ``AGENT_CORP_CODEX_BIN`` in the office's ``environ`` names another binary (a path, or a name on that PATH).
+    """
+    binary = environ.get("AGENT_CORP_CODEX_BIN") or "codex"
+    found = shutil.which(binary, path=env.get("PATH"))
     if found is None:
-        raise CodexMissing("Codex isn't installed where the office can find it (on its PATH). Install it "
+        name = "Codex" if binary == "codex" else f"Codex ({binary}, from AGENT_CORP_CODEX_BIN)"
+        raise CodexMissing(f"{name} isn't installed where the office can find it (on its PATH). Install it "
                            "(npm install -g @openai/codex), sign in with `codex login`, then run `ac doctor`.")
     return [found, *APP_SERVER_ARGS]
 
@@ -70,7 +75,10 @@ class CodexProcess:
     def __init__(self, store: Store, key: str, *, command: list[str], cwd: str, env: dict[str, str], log: Path,
                  on_notification: Callable[[str, dict], None], on_request: Callable[[Any, str, dict], None],
                  on_exit: Callable[["CodexProcess"], None]) -> None:
-        self.store, self.key, self.command, self.cwd, self.env, self.log = store, key, command, cwd, env, log
+        self.store, self.key, self.command, self.cwd, self.log = store, key, command, cwd, log
+        # Codex finds its config and sign-in through CODEX_HOME when the owner sets one, and ~/.codex otherwise.
+        home = os.environ.get("CODEX_HOME")
+        self.env = {**env, "CODEX_HOME": home} if home else dict(env)
         self._on_notification, self._on_request, self._on_exit = on_notification, on_request, on_exit
         self.proc: subprocess.Popen[bytes] | None = None
         self.rpc: JsonRpc | None = None
