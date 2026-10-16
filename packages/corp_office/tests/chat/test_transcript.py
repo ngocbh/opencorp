@@ -1,4 +1,5 @@
 import pytest
+from pydantic import ValidationError
 
 from agent_corp.chat.transcript import INTERRUPTED_TEXT, Transcript
 from agent_corp.store import Store
@@ -215,3 +216,14 @@ def test_steered_says_whether_a_user_message_came_after_a_nodes_message(setup):
     assert t.steered("turn_1") and not t.steered("turn_2")  # a node with no message yet isn't steered
     t.event("NodeSucceeded", {"node_id": "turn_1", "output": None})
     assert not t.steered("turn_1")
+
+
+def test_a_tool_update_with_a_bad_state_changes_nothing(setup):
+    store, s, t, live = setup
+    t.event("ModelCallStarted", {"node_id": "turn_1"})
+    t.tool("turn_1", "item_1", "codex.command", state="running", input={"command": "ls"})
+    with pytest.raises(ValidationError):
+        t.tool("turn_1", "item_1", "codex.command", state="done", input={"command": "ls"})
+    assert store.list_messages(s.id)[0].parts[0].state == "running"
+    t.event("NodeSucceeded", {"node_id": "turn_1", "output": None, "interrupted": True})
+    assert store.list_messages(s.id)[0].parts[0].state == "interrupted"

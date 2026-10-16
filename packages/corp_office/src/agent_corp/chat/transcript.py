@@ -2,7 +2,7 @@
 
 import threading
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from agent_corp.protocol import now
 from agent_corp.protocol.models import ErrorPart, LiveEvent, Message, TextPart, ToolPart
@@ -11,6 +11,9 @@ from agent_corp.store import Store, new_id
 _ENDED = ("NodeSucceeded", "NodeSkipped", "NodeFailed")
 INTERRUPTED_TEXT = "\n\n[interrupted]"
 """Ends a reply that was stopped short, on its last text part: a text part has no state to mark."""
+
+ToolState = Literal["pending", "running", "completed", "error", "interrupted"]
+"""A tool part's states, as ``ToolPart.state`` takes them."""
 
 
 class Transcript:
@@ -82,16 +85,19 @@ class Transcript:
                     self._end(node_id, data.get("output") if name == "NodeSucceeded" else None,
                               data.get("interrupted", False))
 
-    def tool(self, node_id: str, call_id: str, tool: str, *, state: str, input: dict[str, Any],
+    def tool(self, node_id: str, call_id: str, tool: str, *, state: ToolState, input: dict[str, Any],
              output: Any = None, error: str | None = None) -> ToolPart:
         """Add the tool part ``call_id`` to ``node_id``'s message, or replace it in place: a harness's own tool items,
-        which arrive as updates rather than composer's start and finish events."""
+        which arrive as updates rather than composer's start and finish events.
+
+        The part is validated before anything is kept or stored, so a bad one changes nothing. Once ``node_id``
+        has ended, an update starts a new message, so callers send none after their turn ends. The returned part
+        is the one the transcript keeps; don't change it.
+        """
         with self._lock:
-            fields = {"tool": tool, "state": state, "input": input, "output": {} if output is None else output,
-                      "error": error}
-            part = self._tools.get((node_id, call_id))
-            part = (part.model_copy(update=fields) if part is not None
-                    else ToolPart(id=new_id(), type="tool", call_id=call_id, **fields))
+            existing = self._tools.get((node_id, call_id))
+            part = ToolPart(id=existing.id if existing else new_id(), type="tool", call_id=call_id, tool=tool,
+                            state=state, input=input, output={} if output is None else output, error=error)
             self._tool(node_id, part)
             return part
 
