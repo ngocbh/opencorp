@@ -6,6 +6,7 @@ import threading
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcError
@@ -27,6 +28,10 @@ def why(exc: Exception) -> str:
     if isinstance(exc, TimeoutError):
         return f"Codex didn't answer in time: {exc}"
     return "Codex couldn't start; see the office log."
+
+
+def _input(text: str) -> list[dict[str, Any]]:
+    return [{"type": "text", "text": text, "text_elements": []}]
 
 
 class CodexSession:
@@ -62,6 +67,19 @@ class CodexSession:
         with self._lock:
             self.loading = True
         self._post(self._load, resume)
+
+    def prompt(self, text: str, *, by: str | None) -> str:
+        """A message from ``by`` (the opener when None): ``turn``, ``steer`` (a turn was running), or ``queued``
+        (until the thread is loaded)."""
+        with self._lock:
+            if self.ending:
+                raise HarnessError(409, "ending", f"session {self.session_id} is ending")
+            self.transcript.user(text, author=by or self.author)
+            if self.loading or self.process is None:
+                self.pending.append(text)
+                return "queued"
+            process, busy = self.process, self.turn_id is not None
+        return self._send(process, text, busy)
 
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
@@ -161,8 +179,28 @@ class CodexSession:
             self.loading = False
             self._idle()
 
+    def _send(self, process: CodexProcess, text: str, busy: bool) -> str:
+        """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which)."""
+        process.rpc.request("turn/start", {"threadId": self.thread_id, "input": _input(text)})
+        return "steer" if busy else "turn"
+
     def _notification(self, method: str, params: dict[str, Any]) -> None:
-        if not self.translator.notification(method, params):
+        if self.translator.notification(method, params):
+            return
+        if method == "turn/started":
+            with self._lock:
+                self.turn_id = params["turn"]["id"]
+                if not self.ending:
+                    self.store.update_session(self.session_id, status="busy")
+        elif method == "turn/completed":
+            turn = params["turn"]
+            self.translator.turn_completed(turn["id"], turn["status"], turn.get("error"))
+            with self._lock:
+                if turn["id"] == self.turn_id:
+                    self.turn_id = None
+                if self.turn_id is None and not self.loading and not self.ending:
+                    self._idle()
+        else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
 
     def _request(self, request_id: Any, method: str, params: dict[str, Any]) -> None:

@@ -7,8 +7,9 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.harness.codex import CodexStartError, owner_load
 from agent_corp.protocol.models import HarnessPolicy
+from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
-from tests.harness.conftest import errors, requests_valid, start, status, wait_for
+from tests.harness.conftest import errors, requests_valid, start, status, texts, wait_for
 
 
 class Live:
@@ -97,3 +98,55 @@ def test_a_codex_chat_started_after_office_stop_starts_nothing(harness, fake_cod
     sid = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
     time.sleep(1)
     assert (status(harness, sid), harness.store.list_workers(), fake_codex.messages()) == ("starting", [], [])
+
+
+def test_a_message_is_a_turn_whose_reply_streams_into_the_transcript(harness, fake_codex, workspace):
+    fake_codex.script([fc.agent_message("m1", "Hello there")])
+    sid = start(harness, workspace)
+    assert harness.prompt(sid, "hi", by="ngocbh") == "turn"
+    wait_for(lambda: texts(harness, sid) == ["Hello there"] and status(harness, sid) == "idle", what="the reply")
+    [user] = [m for m in harness.store.list_messages(sid) if m.role == "user"]
+    assert user.author == "ngocbh"
+    assert fake_codex.calls("turn/start")[0]["input"] == [{"type": "text", "text": "hi", "text_elements": []}]
+    requests_valid(fake_codex)
+
+
+def test_a_message_with_no_sender_is_the_openers(harness, fake_codex, workspace):
+    sid = start(harness, workspace, by="lan")
+    harness.prompt(sid, "hi")
+    [user] = [m for m in harness.store.list_messages(sid) if m.role == "user"]
+    assert user.author == "lan"
+
+
+def test_a_message_during_a_turn_steers_it(harness, fake_codex, workspace):
+    fake_codex.script([[{"sleep": 1}, *fc.agent_message("m1", "Done")]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "count")
+    wait_for(lambda: status(harness, sid) == "busy", what="the turn to start")
+    assert harness.steer(sid, "and stop at 5") == "steer"
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    assert len(fake_codex.calls("turn/start")) == 2
+    assert sum(1 for m in fake_codex.messages("out") if m.get("method") == "turn/started") == 1
+
+
+def test_a_steer_while_a_command_runs_keeps_the_command_in_its_message(harness, fake_codex, workspace):
+    fake_codex.script([[fc.command_started("c1", "sleep 1"), {"sleep": 1}, fc.command("c1", "sleep 1")[1],
+                        *fc.agent_message("m1", "Slept, and stopping.")]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "sleep", by="ngocbh")
+    wait_for(lambda: any(p.type == "tool" for m in harness.store.list_messages(sid) for p in m.parts),
+             what="the running command")
+    assert harness.prompt(sid, "then stop", by="ngocbh") == "steer"
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    got = [(m.role, [p.text if p.type == "text" else p.state for p in m.parts])
+           for m in harness.store.list_messages(sid)]
+    assert got == [("user", ["sleep"]), ("assistant", ["completed"]), ("user", ["then stop"]),
+                   ("assistant", ["Slept, and stopping."])]
+
+
+def test_a_message_a_prompt_check_refuses_is_422(harness, fake_codex, workspace):
+    sid = start(harness, workspace)
+    harness.hooks.prompt_check.append(lambda session, text: "no secrets" if "sk-" in text else None)
+    with pytest.raises(HarnessError) as e:
+        harness.prompt(sid, "sk-123")
+    assert (e.value.status, e.value.code) == (422, "refused") and fake_codex.calls("turn/start") == []

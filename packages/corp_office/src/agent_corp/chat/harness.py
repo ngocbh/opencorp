@@ -541,6 +541,8 @@ class Harness:
         takes it; so do messages while the session is over its cost cap). ``by`` is the
         human who sent it (the session's owner when None).
         """
+        if self._codex_session(session_id):
+            return self.codex.prompt(session_id, text, by=by)
         with self._lock:
             live = self._must(session_id)
             if live.ending:
@@ -570,6 +572,8 @@ class Harness:
 
     def steer(self, session_id: str, text: str, *, by: str | None = None) -> str:
         """Steer the running reply as ``by``; a message with no reply running is a ``prompt``."""
+        if self._codex_session(session_id):
+            return self.codex.prompt(session_id, text, by=by)  # Codex steers a running turn by itself
         with self._lock:
             live = self._must(session_id)
             if live.reply_node is not None and live.worker is not None and not live.ending:
@@ -1111,6 +1115,13 @@ class Harness:
             with self._calls_idle:
                 self._calls -= 1
                 self._calls_idle.notify_all()
+
+    def _codex_session(self, session_id: str) -> bool:
+        """Whether ``session_id`` is a Codex session, whose calls go to ``self.codex``."""
+        if self.codex is None or session_id in self._live:
+            return False
+        session = self.store.get_session(session_id)
+        return session is not None and session.harness == "codex"
 
     def _current(self, live: _Live) -> bool:
         return self._live.get(live.session_id) is live

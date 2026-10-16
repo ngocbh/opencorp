@@ -5,6 +5,7 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.hooks import Hooks
 from agent_corp.company.loader import load_repo
 from agent_corp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
@@ -42,6 +43,14 @@ class CodexSessions:
                 return
             live = self._live[session.id] = CodexSession(self, session, author=author)
         live.start(resume=resume)
+
+    def prompt(self, session_id: str, text: str, *, by: str | None = None) -> str:
+        """A message: ``turn``, ``steer`` (a turn was running), or ``queued`` (until the thread is loaded)."""
+        session = self.store.get_session(session_id)
+        for refusal in self.hooks.fire("prompt_check", session, text):
+            if refusal:
+                raise HarnessError(422, "refused", str(refusal))
+        return self._must(session_id).prompt(text, by=by)
 
     def close_all(self) -> None:
         """Office stop: kill every app-server and stop every session's thread; sessions keep their status for
@@ -91,3 +100,11 @@ class CodexSessions:
             return session.opened_by
         repo = load_repo(self.office.git.pin(session.repo_commit))
         return repo.company.ceo if repo.company else None
+
+    def _must(self, session_id: str) -> CodexSession:
+        live = self._live.get(session_id)
+        if live is None:
+            if self.store.get_session(session_id) is None:
+                raise HarnessError(404, "not_found", f"no session {session_id}")
+            raise HarnessError(409, "not_live", f"session {session_id} has no live Codex app-server")
+        return live
