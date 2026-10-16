@@ -7,7 +7,7 @@ import pytest
 
 from agent_corp.chat.transcript import Transcript
 from agent_corp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, Translator,
-                                          change_counts, relative)
+                                          Unserved, change_counts, relative)
 from agent_corp.store import Store
 from agent_corp.testing import fake_codex as fc
 from tests.store.conftest import session
@@ -278,3 +278,75 @@ def test_a_permissions_card_grants_what_was_asked_for_this_turn_or_session_or_no
     assert c.reply("Approve for this turn") == ({"permissions": {"network": {"enabled": True}}, "scope": "turn"},
                                                 "turn")
     assert c.reply("Deny") == ({"permissions": {}, "scope": "turn"}, "decline")
+
+
+# --- question, MCP and elicitation cards -------------------------------------------------
+
+def test_codex_questions_are_pages_with_secret_ones_marked(tr):
+    store, s, t = tr
+    step = fc.user_input(4, "u1", [fc.question("token", "Token", "Paste it", secret=True),
+                                   fc.question("env", "Env", "Where?", options=["prod", "dev"])])
+    c = card(t, s, step)
+    assert c.kind == "question" and [p.header for p in c.question.questions] == ["Token", "Env"]
+    assert [p.secret for p in c.question.questions] == [True, False] and c.secret == {"Token"}
+    assert [f.name for f in c.question.answer_schema] == ["Env"]  # no "other": only its options
+    assert c.reply({"Token": "s3cret", "Env": "dev"}) == (
+        {"answers": {"token": {"answers": ["s3cret"]}, "env": {"answers": ["dev"]}}}, "answer")
+
+
+@pytest.mark.parametrize("form", ["elicitation", "user_input"])
+def test_an_mcp_tool_approval_is_one_card_in_either_wire_form(tr, form):
+    store, s, t = tr
+    step = (fc.mcp_approval(5, "docs", "search") if form == "elicitation"
+            else fc.mcp_approval_question(5, "u2", "docs", "search"))
+    c = card(t, s, step)
+    assert c.kind == "mcp_tool" and c.question.options == ["Allow", "Allow for this session", "Cancel"]
+    if form == "elicitation":
+        assert c.question.title == "Codex wants to use an MCP tool"
+        assert c.reply("Allow for this session") == ({"action": "accept", "_meta": {"persist": "session"}},
+                                                     "acceptForSession")
+        assert c.reply("Cancel") == ({"action": "cancel"}, "cancel")
+    else:
+        assert c.reply("Allow") == ({"answers": {"mcp_tool_call_approval_1": {"answers": ["Allow"]}}}, "accept")
+
+
+def test_an_mcp_approval_without_a_session_choice_offers_two(tr):
+    store, s, t = tr
+    step = fc.mcp_approval(5, "docs", "search", session_option=False)
+    assert card(t, s, step).question.options == ["Allow", "Cancel"]
+
+
+def test_other_elicitations_are_cards_too(tr):
+    store, s, t = tr
+    url = {"request": "mcpServer/elicitation/request", "id": 6, "params": {
+        "serverName": "gh", "threadId": "{thread}", "turnId": None, "mode": "url", "elicitationId": "e1",
+        "message": "Sign in to GitHub", "url": "https://example.com/login"}}
+    c = card(t, s, url, run_id="codex-123")
+    assert c.kind == "elicitation" and "https://example.com/login" in c.question.question
+    assert c.question.options == ["Done", "Decline", "Cancel"] and c.reply("Done") == ({"action": "accept"}, "accept")
+    form = {"request": "mcpServer/elicitation/request", "id": 7, "params": {
+        "serverName": "jira", "threadId": "{thread}", "turnId": "{turn}", "mode": "form", "message": "Ticket details",
+        "requestedSchema": {"type": "object", "properties": {
+            "priority": {"type": "string", "enum": ["low", "high"]}, "points": {"type": "integer"},
+            "urgent": {"type": "boolean"}}}}}
+    c = card(t, s, form)
+    assert [p.header for p in c.question.questions] == ["priority", "points", "urgent"]
+    # A number field is typed, so check_answer converts "3" or refuses "x" before the store or Codex sees it.
+    assert [(f.name, f.type, f.enum) for f in c.question.answer_schema] == [
+        ("priority", "str", ["low", "high"]), ("points", "int", None), ("urgent", "str", ["Yes", "No"])]
+    assert c.reply({"priority": "high", "points": 3, "urgent": "Yes"}) == (
+        {"action": "accept", "content": {"priority": "high", "points": 3, "urgent": True}}, "accept")
+
+
+def test_more_than_four_questions_or_an_unknown_method_is_unserved(tr):
+    store, s, t = tr
+    many = fc.user_input(8, "u3", [fc.question(f"q{i}", f"Q{i}", "?") for i in range(5)])
+    with pytest.raises(Unserved):
+        card(t, s, many)
+    with pytest.raises(Unserved):
+        t.card("item/tool/call", {}, session=s, run_id="turn_1", node_id="9")
+    # A device verification wants a proof in its reply, which no answer on a card makes.
+    verify = {"serverName": "gh", "threadId": "thr_1", "turnId": None, "mode": "openai/userVerification",
+              "title": "Verify", "description": "Confirm it's you", "challenge": "c1"}
+    with pytest.raises(Unserved):
+        t.card("mcpServer/elicitation/request", verify, session=s, run_id="codex-1", node_id="10")

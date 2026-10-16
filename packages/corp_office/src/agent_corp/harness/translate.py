@@ -15,7 +15,7 @@ from typing import Any
 
 from agent_corp.chat.transcript import Transcript
 from agent_corp.protocol import now
-from agent_corp.protocol.models import Question, Session
+from agent_corp.protocol.models import AnswerField, Question, QuestionOption, QuestionPage, Session
 from agent_corp.store import new_id
 
 log = logging.getLogger(__name__)
@@ -197,13 +197,101 @@ class Translator:
                                          "question": _with_reason(text, params),
                                          "options": [x for x, _ in _PERMISSIONS]})
             return Card("permissions", q, params["itemId"], _choice(_PERMISSIONS, grant))
-        raise Unserved(method)
+        return self._other(method, params, base)
 
     def _approval(self, kind: str, base: dict[str, Any], params: dict[str, Any], title: str, text: str,
                   options: list[tuple[str, str]]) -> "Card":
         q = Question.model_validate({**base, "title": title, "question": _with_reason(text, params),
                                      "options": [label for label, _ in options]})
         return Card(kind, q, params["itemId"], _choice(options, lambda d: {"decision": d}))
+
+    def _other(self, method: str, params: dict[str, Any], base: dict[str, Any]) -> "Card":
+        if method == "item/tool/requestUserInput":
+            questions = params["questions"]
+            mcp = next((q for q in questions if q["id"].startswith(MCP_APPROVAL_PREFIX)), None)
+            if mcp is not None:
+                labels = [o["label"] for o in mcp.get("options") or [] if o["label"] != _REMEMBER]
+                options = [(label, d) for label, d in _MCP if label in labels]
+                q = Question.model_validate({**base, "title": mcp["header"], "question": mcp["question"],
+                                             "options": [x for x, _ in options]})
+                return Card("mcp_tool", q, params["itemId"],
+                            _choice(options, lambda d: {"answers": {mcp["id"]: {"answers": [_label(options, d)]}}}))
+            return self._pages(base, params, questions)
+        if method == "mcpServer/elicitation/request":
+            if params.get("mode") not in ("form", "url"):  # e.g. a device verification, which needs a proof
+                raise Unserved(f"{method} in mode {params.get('mode')}")
+            meta = params.get("_meta") or {}
+            title = f"{params['serverName']}: {params['message']}"
+            if meta.get("codex_approval_kind"):
+                persist = meta.get("persist")
+                offers_session = persist == "session" or (isinstance(persist, list) and "session" in persist)
+                options = [(x, d) for x, d in _MCP if d != "acceptForSession" or offers_session]
+                q = Question.model_validate({**base, "title": _APPROVAL_TITLES.get(meta["codex_approval_kind"],
+                                                                                   "Codex asks about an MCP server"),
+                                             "question": title, "options": [x for x, _ in options]})
+
+                def mcp_reply(d: str) -> dict[str, Any]:
+                    if d == "cancel":
+                        return {"action": "cancel"}
+                    session_wide = {"_meta": {"persist": "session"}} if d == "acceptForSession" else {}
+                    return {"action": "accept", **session_wide}
+
+                return Card("mcp_tool", q, f"request-{base['node_id']}", _choice(options, mcp_reply))
+            return self._elicitation(base, params, title)
+        raise Unserved(method)
+
+    def _pages(self, base: dict[str, Any], params: dict[str, Any], questions: list[dict[str, Any]]) -> "Card":
+        if len(questions) > _MAX_PAGES:
+            raise Unserved("item/tool/requestUserInput with more than four questions")
+        headers: dict[str, str] = {}  # page header -> Codex question id
+        pages, schema = [], []
+        for q in questions:
+            header = q["header"] or q["id"]
+            while header in headers:  # headers key the answer record, so they must differ
+                header += "'"
+            headers[header] = q["id"]
+            options = [QuestionOption(label=o["label"], description=o.get("description") or "")
+                       for o in q.get("options") or []]
+            pages.append(QuestionPage(question=q["question"], header=header, options=options,
+                                      secret=bool(q.get("isSecret"))))
+            if options and not q.get("isOther"):
+                schema.append(AnswerField(name=header, type="str", required=True, enum=[o.label for o in options]))
+        question = Question.model_validate({**base, "title": "Codex asks", "question": pages[0].question,
+                                            "questions": pages, "answer_schema": schema})
+
+        def reply(answer: dict[str, Any]) -> tuple[dict[str, Any], str]:
+            return {"answers": {headers[h]: {"answers": v if isinstance(v, list) else [v]}
+                                for h, v in answer.items()}}, "answer"
+
+        secret = frozenset(p.header for p in pages if p.secret)
+        return Card("question", question, params["itemId"], reply, secret)
+
+    def _elicitation(self, base: dict[str, Any], params: dict[str, Any], title: str) -> "Card":
+        call_id = f"request-{base['node_id']}"
+        url = params["mode"] == "url"
+        props = {} if url else (params.get("requestedSchema") or {}).get("properties") or {}
+        if not props:
+            options = [("Done" if url else "Accept", "accept"), ("Decline", "decline"), ("Cancel", "cancel")]
+            q = Question.model_validate({**base, "title": "An MCP server asks",
+                                         "question": f"{title}\n{params['url']}" if url else title,
+                                         "options": [x for x, _ in options]})
+            return Card("elicitation", q, call_id, _choice(options, lambda d: {"action": d}))
+        pages, schema = [], []
+        for name, spec in list(props.items())[:_MAX_PAGES]:
+            labels = spec.get("enum") or (["Yes", "No"] if spec.get("type") == "boolean" else [])
+            pages.append(QuestionPage(question=spec.get("description") or spec.get("title") or name, header=name,
+                                      options=[QuestionOption(label=x) for x in labels]))
+            if labels:  # a field with choices takes only them
+                schema.append(AnswerField(name=name, type="str", required=True, enum=labels))
+            elif spec.get("type") in _NUMBERS:  # check_answer converts typed text, or refuses it before Codex sees it
+                schema.append(AnswerField(name=name, type=_NUMBERS[spec["type"]], required=True))
+        q = Question.model_validate({**base, "title": "An MCP server asks", "question": title, "questions": pages,
+                                     "answer_schema": schema})
+
+        def reply(answer: dict[str, Any]) -> tuple[dict[str, Any], str]:
+            return {"action": "accept", "content": {k: _typed(props[k], v) for k, v in answer.items()}}, "accept"
+
+        return Card("elicitation", q, call_id, reply)
 
 
 SERVED = frozenset({"item/commandExecution/requestApproval", "item/fileChange/requestApproval",
@@ -222,6 +310,14 @@ REPLY_SCHEMAS = {"item/commandExecution/requestApproval": "CommandExecutionReque
 _APPROVE = [("Approve", "accept"), ("Approve for this session", "acceptForSession"),
             ("Deny so Codex continues", "decline"), ("Deny and stop", "cancel")]
 _PERMISSIONS = [("Approve for this turn", "turn"), ("Approve for this session", "session"), ("Deny", "decline")]
+MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
+_MCP = [("Allow", "accept"), ("Allow for this session", "acceptForSession"), ("Cancel", "cancel")]
+_REMEMBER = "Allow and don't ask me again"  # writes the owner's Codex config: never offered
+_APPROVAL_TITLES = {"mcp_tool_call": "Codex wants to use an MCP tool",
+                    "browser_auth": "An MCP server wants to sign in through your browser",
+                    "tool_suggestion": "Codex suggests an MCP tool"}
+_MAX_PAGES = 4  # Question.questions holds at most four pages
+_NUMBERS = {"integer": "int", "number": "float"}
 
 
 class Unserved(Exception):
@@ -236,6 +332,7 @@ class Card:
     question: Question
     call_id: str  # the tool part a decision is written on: the item's id, else a request part of its own
     replies: Callable[[Any], tuple[dict[str, Any], str]]
+    secret: frozenset[str] = frozenset()  # headers of pages whose answers are stored as [secret]
 
     def reply(self, answer: Any) -> tuple[dict[str, Any], str]:
         """The JSON-RPC result for ``answer`` (as ``check_answer`` returned it), and the decision's variant name."""
@@ -257,6 +354,20 @@ def _offered(available: list[Any] | None, options: list[tuple[str, str]]) -> lis
 
 def _with_reason(text: str, params: dict[str, Any]) -> str:
     return f"{text}\n{params['reason']}" if params.get("reason") else text
+
+
+def _label(options: list[tuple[str, str]], decision: str) -> str:
+    return next(label for label, d in options if d == decision)
+
+
+def _typed(spec: dict[str, Any], value: Any) -> Any:
+    """A typed form answer as the elicitation's schema wants it."""
+    kind = spec.get("type")
+    if kind == "boolean":
+        return value == "Yes"
+    if kind in _NUMBERS:
+        return int(value) if kind == "integer" else float(value)
+    return value
 
 
 def _kind(change: dict[str, Any]) -> str | None:
