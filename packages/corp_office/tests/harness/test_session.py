@@ -401,3 +401,17 @@ def test_an_idle_timer_that_fired_as_a_message_came_ends_nothing(harness, fake_c
     live._idle_end(fired)  # the timer's job, run after the message stopped that timer
     release.set()
     wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
+
+
+def test_a_session_whose_load_failed_takes_no_message_or_end_before_it_is_dropped(harness, fake_codex, workspace,
+                                                                                  monkeypatch):
+    fake_codex.script(initialize_error={"code": -32600, "message": "nope"})
+    monkeypatch.setattr(harness.codex, "finished", lambda live, status: None)  # the moment before it is dropped
+    sid = harness.start_session("minh", str(workspace), "codex").id
+    live = harness.codex._live[sid]
+    wait_for(lambda: live.closed, what="the failed load")
+    for call in (lambda: harness.prompt(sid, "hi"), lambda: harness.end(sid)):
+        with pytest.raises(HarnessError) as e:
+            call()
+        assert e.value.code == "not_live"
+    assert [m.role for m in harness.store.list_messages(sid)] == ["assistant"]  # only the error part

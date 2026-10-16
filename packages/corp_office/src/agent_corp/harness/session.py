@@ -79,7 +79,7 @@ class CodexSession:
         """A message from ``by`` (the opener when None): ``turn``, ``steer`` (a turn was running), or ``queued``
         (until the thread is loaded)."""
         with self._lock:
-            if self.stopped:
+            if self.stopped or self.closed:  # office stop, or a failed load not dropped yet
                 raise HarnessError(409, "not_live", f"session {self.session_id} has no live Codex app-server")
             if self.ending:
                 raise HarnessError(409, "ending", f"session {self.session_id} is ending")
@@ -113,7 +113,9 @@ class CodexSession:
             if self.stopped:
                 raise HarnessError(409, "not_live", f"session {self.session_id} has no live Codex app-server")
             if self.ending:
-                return
+                return  # already ending (or closing): ending it again is a no-op
+            if self.closed:  # a failed load not dropped yet
+                raise HarnessError(409, "not_live", f"session {self.session_id} has no live Codex app-server")
             self.ending = True
             self.pending.clear()
             self._stop_timer()
