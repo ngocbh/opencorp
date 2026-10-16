@@ -286,8 +286,28 @@ export interface Session {
    * Why the chat isn't on the model it was asked to start on, or why it moved.
    */
   model_note?: string | null;
+  /**
+   * The model the harness runs, as it reports it (a Codex session: Codex's load response); null for composer sessions.
+   */
+  harness_model?: string | null;
+  harness_usage?: HarnessUsage | null;
+  /**
+   * The session this one continues (a Codex session reopened later); null for a first stretch.
+   */
+  parent_session_id?: Ulid | null;
   created_at: Timestamp;
   updated_at: Timestamp;
+}
+/**
+ * A harness session's token counts as the harness reports them, on the harness's own login; the office doesn't price them.
+ *
+ * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * via the `definition` "HarnessUsage".
+ */
+export interface HarnessUsage {
+  input_tokens: number;
+  cached_input_tokens: number;
+  output_tokens: number;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -297,6 +317,10 @@ export interface Message {
   id: Ulid;
   session_id: Ulid;
   role: "user" | "assistant";
+  /**
+   * The human who sent a user message; null means the session's opener. Composer sessions leave it null.
+   */
+  author?: Handle | null;
   parts: Part[];
   created_at: Timestamp;
 }
@@ -378,6 +402,10 @@ export interface QuestionPage {
   header: string;
   options: QuestionOption[];
   multi_select?: boolean;
+  /**
+   * The answer is a secret: clients mask it, and the office stores `[secret]` in its place.
+   */
+  secret?: boolean;
 }
 /**
  * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
@@ -425,7 +453,10 @@ export interface Question {
    * null for a model ask_user call.
    */
   node_id: string | null;
-  source: "ask_user" | "human_input" | "ask_manager";
+  /**
+   * harness: a request from the session's harness (a Codex approval or question); only an answer closes it.
+   */
+  source: "ask_user" | "human_input" | "ask_manager" | "harness";
   asker: Handle;
   work_item_id?: Ulid | null;
   title?: string | null;

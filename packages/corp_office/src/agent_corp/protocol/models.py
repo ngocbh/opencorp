@@ -301,74 +301,17 @@ type CostCapUsd = Annotated[
 ]
 
 
-class Session(BaseModel):
+class HarnessUsage(BaseModel):
+    """
+    A harness session's token counts as the harness reports them, on the harness's own login; the office doesn't price them.
+    """
+
     model_config = ConfigDict(
         extra='forbid',
     )
-    id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
-    person: Annotated[
-        str,
-        Field(
-            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
-            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
-        ),
-    ]
-    harness: Literal['composer', 'codex', 'claude']
-    office: str
-    cwd: str
-    repo_commit: Annotated[
-        str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
-    ]
-    status: Literal['starting', 'idle', 'busy', 'ending', 'debriefing', 'ended', 'failed', 'interrupted']
-    kind: Literal['main', 'side', 'profile_manager']
-    harness_session_id: str | None = None
-    work_item_id: Ulid | None = None
-    run_ids: list[str] = []
-    question_id: Ulid | None = None
-    seed: str | None = None
-    cost: Annotated[float, Field(ge=0.0)] = 0
-    cost_cap_usd: Annotated[
-        CostCapUsd | None,
-        Field(description='null means company.defaults.cost_cap_usd.'),
-    ] = None
-    opened_by: Annotated[
-        Handle | None,
-        Field(
-            description='The human who opened the session; null for sessions from before this field or opened by the office itself.'
-        ),
-    ] = None
-    connection: Annotated[
-        ConnectionName | None,
-        Field(
-            description="The chat's connection on its office. Null: `office`, for sessions from before this field; every new session sets it."
-        ),
-    ] = None
-    model: Annotated[
-        str | None,
-        Field(
-            description="Null: the connection's own model. For Azure, a deployment name."
-        ),
-    ] = None
-    model_note: Annotated[
-        str | None,
-        Field(
-            description="Why the chat isn't on the model it was asked to start on, or why it moved."
-        ),
-    ] = None
-    created_at: Annotated[
-        str,
-        Field(
-            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
-        ),
-    ]
-    updated_at: Annotated[
-        str,
-        Field(
-            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
-            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
-        ),
-    ]
+    input_tokens: Annotated[int, Field(ge=0)]
+    cached_input_tokens: Annotated[int, Field(ge=0)]
+    output_tokens: Annotated[int, Field(ge=0)]
 
 
 class TextPart(BaseModel):
@@ -452,6 +395,12 @@ class QuestionPage(BaseModel):
     header: str
     options: list[QuestionOption]
     multi_select: bool = False
+    secret: Annotated[
+        bool,
+        Field(
+            description='The answer is a secret: clients mask it, and the office stores `[secret]` in its place.'
+        ),
+    ] = False
 
 
 class AnswerField(BaseModel):
@@ -484,7 +433,12 @@ class Question(BaseModel):
     session_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     run_id: str
     node_id: Annotated[str | None, Field(description='null for a model ask_user call.')]
-    source: Literal['ask_user', 'human_input', 'ask_manager']
+    source: Annotated[
+        Literal['ask_user', 'human_input', 'ask_manager', 'harness'],
+        Field(
+            description="harness: a request from the session's harness (a Codex approval or question); only an answer closes it."
+        ),
+    ]
     asker: Annotated[
         str,
         Field(
@@ -1158,6 +1112,89 @@ class SetupAnswer(BaseModel):
     answer: str
 
 
+class Session(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    person: Annotated[
+        str,
+        Field(
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    harness: Literal['composer', 'codex', 'claude']
+    office: str
+    cwd: str
+    repo_commit: Annotated[
+        str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
+    ]
+    status: Literal['starting', 'idle', 'busy', 'ending', 'debriefing', 'ended', 'failed', 'interrupted']
+    kind: Literal['main', 'side', 'profile_manager']
+    harness_session_id: str | None = None
+    work_item_id: Ulid | None = None
+    run_ids: list[str] = []
+    question_id: Ulid | None = None
+    seed: str | None = None
+    cost: Annotated[float, Field(ge=0.0)] = 0
+    cost_cap_usd: Annotated[
+        CostCapUsd | None,
+        Field(description='null means company.defaults.cost_cap_usd.'),
+    ] = None
+    opened_by: Annotated[
+        Handle | None,
+        Field(
+            description='The human who opened the session; null for sessions from before this field or opened by the office itself.'
+        ),
+    ] = None
+    connection: Annotated[
+        ConnectionName | None,
+        Field(
+            description="The chat's connection on its office. Null: `office`, for sessions from before this field; every new session sets it."
+        ),
+    ] = None
+    model: Annotated[
+        str | None,
+        Field(
+            description="Null: the connection's own model. For Azure, a deployment name."
+        ),
+    ] = None
+    model_note: Annotated[
+        str | None,
+        Field(
+            description="Why the chat isn't on the model it was asked to start on, or why it moved."
+        ),
+    ] = None
+    harness_model: Annotated[
+        str | None,
+        Field(
+            description="The model the harness runs, as it reports it (a Codex session: Codex's load response); null for composer sessions."
+        ),
+    ] = None
+    harness_usage: HarnessUsage | None = None
+    parent_session_id: Annotated[
+        Ulid | None,
+        Field(
+            description='The session this one continues (a Codex session reopened later); null for a first stretch.'
+        ),
+    ] = None
+    created_at: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+    updated_at: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+
+
 type SetupPrompt = Annotated[
     SetupAsk | SetupChoose | SetupSecret | SetupSay | SetupStep,
     Field(
@@ -1174,6 +1211,12 @@ class Message(BaseModel):
     id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     session_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
     role: Literal['user', 'assistant']
+    author: Annotated[
+        Handle | None,
+        Field(
+            description="The human who sent a user message; null means the session's opener. Composer sessions leave it null."
+        ),
+    ] = None
     parts: list[
         Annotated[
             TextPart | FilePart | ToolPart | ErrorPart, Field(discriminator='type')

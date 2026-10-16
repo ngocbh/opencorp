@@ -193,7 +193,7 @@ class _Table:
 
 WORK_ITEMS = _Table("work_items", WorkItem, json=frozenset({"groups"}))
 COMMENTS = _Table("comments", Comment)
-SESSIONS = _Table("sessions", Session, derived=frozenset({"run_ids"}))
+SESSIONS = _Table("sessions", Session, json=frozenset({"harness_usage"}), derived=frozenset({"run_ids"}))
 QUESTIONS = _Table(
     "questions", Question, json=frozenset({"options", "questions", "answer_schema", "discussion", "answer"})
 )

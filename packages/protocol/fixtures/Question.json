@@ -9,7 +9,7 @@
   "title": "Project setup",
   "question": "Project setup",
   "questions": [
-    { "question": "Which database?", "header": "Database",
+    { "question": "Which database?", "header": "Database", "secret": false,
       "options": [{ "label": "Postgres", "description": "Managed, in the cluster" }, { "label": "SQLite" }] },
     { "question": "Which features?", "header": "Features", "multi_select": true,
       "options": [{ "label": "auth" }, { "label": "search" }] }
