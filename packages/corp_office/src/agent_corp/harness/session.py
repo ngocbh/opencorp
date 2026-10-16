@@ -4,13 +4,14 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcClosed, RpcError
-from agent_corp.harness.translate import Translator
+from agent_corp.harness.translate import TURNLESS, Card, Translator, Unserved
 from agent_corp.protocol.models import Session
 
 if TYPE_CHECKING:
@@ -39,6 +40,14 @@ def _input(text: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": text, "text_elements": []}]
 
 
+@dataclass
+class Pending:
+    """A server request Codex waits on: its JSON-RPC id and its card."""
+
+    request_id: Any
+    card: Card
+
+
 class CodexSession:
     """One Codex session's app-server, thread, transcript and turns.
 
@@ -59,6 +68,8 @@ class CodexSession:
         self.loading = False
         self.turn_id: str | None = None
         self.pending: list[str] = []
+        self.requests: dict[str, Pending] = {}  # question id -> the request Codex waits on
+        self.by_request: dict[str, str] = {}  # str(request id) -> question id
         self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
         self._idle_after: int | None = None  # idle_end in seconds, read once by the load from the pinned company
         self.ending = self.closed = self.stopped = False
@@ -286,10 +297,32 @@ class CodexSession:
             log.debug("codex session %s: ignored %s", self.session_id, method)
 
     def _request(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
-        # Until approvals come to cards, Codex hears that the office serves no requests.
+        """A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve."""
         process = self.process
-        if process is not None:
-            process.rpc.reply_error(request_id, -32601, f"agent-corp doesn't serve {method} yet")
+        if process is None:
+            return
+        session = self.store.get_session(self.session_id)
+        # Request ids restart with each app-server, so a request with no turn is keyed by the process.
+        run_id = params.get("turnId") or f"{TURNLESS}{process.pid}"
+        try:
+            card = self.translator.card(method, params, session=session, run_id=run_id, node_id=str(request_id))
+        except Unserved:
+            self._refuse(process, request_id, -32601, f"agent-corp doesn't serve {method}")
+            return
+        except Exception:  # a request shaped other than the pinned schema says: Codex would wait on it until Esc
+            log.exception("codex session %s: no card can be made for %s", self.session_id, method)
+            self._refuse(process, request_id, -32603, f"agent-corp couldn't read {method}")
+            return
+        with self._lock:
+            self.requests[card.question.id] = Pending(request_id, card)
+            self.by_request[str(request_id)] = card.question.id
+        self.store.add_question(card.question)
+
+    def _refuse(self, process: CodexProcess, request_id: Any, code: int, message: str) -> None:
+        try:
+            process.rpc.reply_error(request_id, code, message)
+        except RpcClosed:
+            pass  # the app-server is gone: nothing waits on the answer
 
     def _exited(self, process: CodexProcess) -> None:
         if process is not self.process or process.closing:
