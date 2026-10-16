@@ -19,7 +19,8 @@ from agent_corp.chat.provider import Provider
 from agent_corp.company.loader import load_repo
 from agent_corp.perm.monitor import redact
 from agent_corp.profile import GitProfileStore
-from agent_corp.profile.debrief import DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief, transcript_text
+from agent_corp.profile.debrief import (DEBRIEF_FLOW, apprentice_header, confirm_follow_ups, pending_debrief,
+                                        ready_debrief, transcript_text)
 from agent_corp.profile.feedback import FeedbackHandlers, find_committed, next_status, read_commit_log
 from agent_corp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_proposal, manager_spec
 from agent_corp.protocol import now
@@ -404,11 +405,19 @@ class Learning:
         self._remember(provider)
         memory = {"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars,
                                                llm_config=provider.llm_config)}
-        transcript = transcript_text(self.store.list_messages(session.id)) if kind == "chat" else ""
+        transcript = self._transcript(session) if kind == "chat" else ""
         job = Job(kind=kind, session_id=session.id, run_id=run_id, person=session.person, pin=str(pin),
                   flow=DEBRIEF_FLOW, log=self._log(session.id, run_id), inputs={"transcript": transcript},
                   llm_config=provider.llm_config, learnable=True, memory=memory, env=provider.env, feedback=feedback)
         return job, {"profile": GitProfileStore(self.git, session.person)}
+
+    def _transcript(self, session: Session) -> str:
+        """What the debrief reads: a Codex session as its apprentice watched it, else the plain transcript."""
+        messages = self.store.list_messages(session.id)
+        if session.harness != "codex":
+            return transcript_text(messages)
+        header = apprentice_header(owner=session.opened_by or self._owner(), employee=session.person, cwd=session.cwd)
+        return transcript_text(messages, assistant="codex", header=header)
 
     def _backward_job(self, session: Session, feedback: Feedback,
                       provider: Provider) -> tuple[Job, FeedbackHandlers]:
