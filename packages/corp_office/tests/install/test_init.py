@@ -192,7 +192,8 @@ def test_a_failed_interview_can_set_up_the_model_again(tmp_path, monkeypatch):
     with pytest.raises(OnboardError, match="stop"):
         init(tmp_path / "home", ask, host=make_host(tmp_path, Runner()))
     provider = tmp_path / "home" / "office" / "provider.json"
-    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "anthropic", "api_key": KEY}}
+    assert json.loads(provider.read_text()) == {"llm_config": {"provider": "anthropic", "api_key": KEY,
+                                                               "model": "claude-sonnet-4-5"}}
     assert all(KEY not in line for line in ask.seen)
 
 

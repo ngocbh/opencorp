@@ -1,8 +1,8 @@
 from importlib.resources import files
 
 import pytest
-import yaml
 
+from agent_corp.company.flow_yaml import read_flow
 from agent_corp.company.flows import load_confined
 
 ROOT = files("agent_corp.company_template")
@@ -16,7 +16,7 @@ def test_chat_template_loads():
 
 
 def test_chat_template_takes_the_person_into_the_replys_system_prompt():
-    flow = yaml.safe_load(CHAT.read_text())
+    flow = read_flow(CHAT.read_text())
     assert "person" in flow["input"]
     reply = flow["defs"]["turn"]["nodes"]["reply"]
     assert reply["system_prompt"].startswith("You are ${person.name} (@${person.handle})")
@@ -24,10 +24,10 @@ def test_chat_template_takes_the_person_into_the_replys_system_prompt():
 
 @pytest.mark.parametrize("path", [CHAT, SIDE])
 def test_chat_templates_say_who_the_person_is_talking_with(path):
-    flow = yaml.safe_load(path.read_text())
+    flow = read_flow(path.read_text())
     turn = flow["defs"]["turn"]
     reply = turn["nodes"]["reply"]
-    assert flow["input"]["talking_to"] == turn["input"]["talking_to"] == "str"
+    assert flow["input"]["talking_to"] == turn["input"]["talking_to"] == "!str"
     assert reply["input"]["talking_to"] == turn["output"]["talking_to"] == "${input.talking_to}"
     assert flow["nodes"]["chat"]["input"]["talking_to"] == "${input.talking_to}"
     assert reply["system_prompt"].splitlines()[0].endswith("${person.reports_to} ${talking_to}")

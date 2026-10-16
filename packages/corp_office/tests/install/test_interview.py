@@ -4,12 +4,12 @@ import warnings
 from types import SimpleNamespace
 
 import pytest
-import yaml
 from yian import load_flow
 
 from agent_corp.auth.passwords import check_password
 from agent_corp.chat.provider import Provider
 from agent_corp.company.draft import Draft, Teammate, draft_problems
+from agent_corp.company.flow_yaml import read_flow
 from agent_corp.company_template import Owner
 from agent_corp.install import interview as interview_module
 from agent_corp.install import onboard as onboard_module
@@ -71,7 +71,7 @@ def run(provider, prompter, known=Known()):
     return run_init_flow(provider, prompter, known)
 
 
-MAX = yaml.safe_load(FLOW.read_text())["nodes"]["rounds"]["max"]
+MAX = read_flow(FLOW.read_text())["nodes"]["rounds"]["max"]
 
 
 def contents(request):
@@ -373,7 +373,7 @@ def test_an_onboard_error_inside_owner_prompter_is_kept_for_the_caller():
 
 
 def test_the_interview_offers_a_handle_made_from_the_name_as_an_option():
-    prompt = yaml.safe_load(FLOW.read_text())["nodes"]["rounds"]["nodes"]["interview"]["prompt"]
+    prompt = read_flow(FLOW.read_text())["nodes"]["rounds"]["nodes"]["interview"]["prompt"]
     assert "Offer one made from the person's name as an option, such as" in " ".join(prompt.split())
 
 
@@ -384,7 +384,7 @@ def test_no_agent_node_reads_the_password_or_the_remote():
                 yield node
             yield from agents(node.get("nodes", {}))
 
-    for node in agents(yaml.safe_load(FLOW.read_text())["nodes"]):
+    for node in agents(read_flow(FLOW.read_text())["nodes"]):
         inputs = json.dumps(node["input"])
         assert "password" not in inputs and "remote" not in inputs
 

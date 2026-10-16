@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from yian._settings import PROVIDER_DEFAULT_MODELS
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -127,15 +126,13 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
     if listed.refused and label != "custom":
         raise HTTPError(422, "key_refused", f"The key didn't work ({listed.error})")
     if listed.error and label == "azure" and not body.model:
-        # The one-reply check would ask for composer's OpenAI default, which isn't a deployment, and so report a
-        # problem that isn't the real one.
+        # A deployment is named by its owner, so there is no default to check.
         raise HTTPError(422, "models_unlisted",
                         f"Couldn't list the deployments ({listed.error}); name a model to check it with one reply")
     needs_check = True
+    default = None if label == "azure" else models.DEFAULT_MODELS.get(llm["provider"])
     if listed.listed:
         ids = [m.id for m in listed.models]
-        # An Azure deployment is named by its owner, so composer's OpenAI default is none of them.
-        default = None if label == "azure" else PROVIDER_DEFAULT_MODELS.get(llm["provider"])
         model = body.model or default or (ids[0] if ids else None)
         if model is None:
             raise HTTPError(422, "invalid_connection", f"{label} lists no model to use; give one")
@@ -143,11 +140,15 @@ def _build_and_check(conns: Connections, cache: ModelCache, body: AddConnectionR
         # A host may not list a model it serves, such as an alias of a dated id, so one reply decides.
         needs_check = model not in ids
         provider = provider.model_copy(update={"llm_config": llm})
+    elif not body.model and default:
+        # Yian has no default model, so the connection is saved with the one it is checked on.
+        llm["model"] = default
+        provider = provider.model_copy(update={"llm_config": llm})
     if needs_check and (problem := check.one_reply_problem(provider)):
         if body.model:
             raise HTTPError(422, "model_refused", f"The model didn't answer: {problem}")
-        tried = llm.get("model") or PROVIDER_DEFAULT_MODELS[llm["provider"]]
-        raise HTTPError(422, "model_refused", f"The model '{tried}' didn't answer: {problem}; name another model")
+        raise HTTPError(422, "model_refused",
+                        f"The model '{llm['model']}' didn't answer: {problem}; name another model")
     try:
         name = conns.add(label, ConnectionFile(llm_config=llm))
     except ProviderError as exc:

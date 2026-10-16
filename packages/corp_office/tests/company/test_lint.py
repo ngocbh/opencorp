@@ -146,7 +146,7 @@ def test_flow_cycle_message_is_repo_relative(make_company):
     assert str(root.resolve()) not in issue.message and "shared/flows/chat.yaml" in issue.message
 
 
-CHILD = "id: echo\nname: echo\ninput:\n  text: str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
+CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
 
 
 def parent_flow(ref):
@@ -200,6 +200,21 @@ def test_agent_needs_a_main_flow(make_company):
 
 def test_system_paths_is_refused(make_company):
     flow = parent_flow("echo").replace("uses:", "system:\n  paths: [lib]\nuses:", 1)
+    root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert "system.paths" in issue.message
+
+
+def test_system_paths_is_refused_in_a_flow_with_typed_inputs(make_company):
+    # A tag such as `!str` is a type to yian, and no value PyYAML can build.
+    flow = parent_flow("echo").replace("uses:", "input:\n  topic: !str\nsystem:\n  paths: [lib]\nuses:", 1)
+    root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
+    assert "system.paths" in issue.message
+
+
+def test_system_paths_through_a_merge_key_is_refused(make_company):
+    flow = parent_flow("echo").replace("uses:", "x-base: &base\n  paths: [lib]\nsystem:\n  <<: *base\nuses:", 1)
     root = make_company(**{"shared/flows/chat.yaml": flow, "shared/flows/lib/echo.yaml": CHILD})
     [issue] = [i for i in lint(load_repo(root)) if i.code == "person.flow_invalid"]
     assert "system.paths" in issue.message

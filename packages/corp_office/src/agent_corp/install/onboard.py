@@ -13,7 +13,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TextIO
 
-from yian._settings import PROVIDER_DEFAULT_MODELS
 from yian.llm_clients.config import SUPPORTED_LLM_PROVIDERS, LLMConfig
 from pydantic import ValidationError
 
@@ -250,10 +249,29 @@ def check_provider(data: object) -> Provider:
         # Composer refuses a key without a provider at run time; say so now.
         raise OnboardError("llm_config.api_key needs llm_config.provider, so the key goes only to that provider")
     name = llm.get("provider")
-    if name and not llm.get("model") and name not in PROVIDER_DEFAULT_MODELS:
+    # Without a key, runs use the login `yian auth <name>` saved, which names its model.
+    if name and not llm.get("model") and "api_key" in llm and name not in models.DEFAULT_MODELS:
         # Composer finds this out only when a run starts; say so before the provider is saved.
         raise OnboardError(f"llm_config.model is missing, and {name} has no default model")
     return provider
+
+
+def with_default_model(provider: Provider) -> Provider:
+    """``provider`` naming its default model when it has a key and names none.
+
+    Yian has no default model. Without a key, runs use ``yian auth``'s login, which names one.
+
+    Raises:
+        OnboardError: ``provider`` has a key for an endpoint of the owner's own and names no model, since that
+            endpoint has no default.
+    """
+    llm = provider.llm_config or {}
+    if llm.get("model") or "api_key" not in llm:
+        return provider
+    if "base_url" in llm:
+        raise OnboardError("llm_config.model is missing, and an endpoint of your own has no default model")
+    default = models.DEFAULT_MODELS.get(llm.get("provider"))
+    return provider if default is None else provider.model_copy(update={"llm_config": {**llm, "model": default}})
 
 
 _azure_base_url = azure_base_url
@@ -331,19 +349,23 @@ def _ask_key(prompter: Prompter, name: str, *, required: bool, last: str = "") -
 
 def _ask_model(prompter: Prompter, name: str, last: str = "", key: str = "") -> str:
     """The model for provider ``name``, picked from those it lists for ``key`` when it can be listed, ``last`` for an
-    empty answer; empty for composer's default."""
+    empty answer; empty, without a key, for the model of yian's own login."""
+    if not key and name not in models.KEYLESS:
+        # The runs use composer's own login, which saved its model and which the listing can't use.
+        login = f"the model `yian auth {name}` saved"
+        picked = prompter.choose("Model", [login], last or login, typed=True)
+        return "" if picked == login else picked
     listed = []
-    # Without a key the runs use composer's own login, which the listing can't.
-    if prompter.interactive and (key or name in models.KEYLESS):
+    if prompter.interactive:
         try:
             listed = provider_models(name, key)
         except OnboardError as exc:
             prompter.say(f"Couldn't list the models ({exc}).")
-    if default := PROVIDER_DEFAULT_MODELS.get(name):
+    if key and (default := models.DEFAULT_MODELS.get(name)):
         first = f"{default} (the default)"
         # Typing a name picks another model; the one typed last time is the answer for nothing.
         picked = prompter.choose("Model", [first, *(m for m in listed if m != default)], last or first, typed=True)
-        return "" if picked == first else picked
+        return default if picked == first else picked
     if listed:
         return prompter.choose("Model", listed, last or listed[0], typed=True)
     return ask_until(prompter, f"Model name ({name} has no default model)", last,
@@ -452,7 +474,8 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None,
     """Make sure ``path`` holds a usable provider; return whether it was written.
 
     A provider on ``stdin`` (JSON) is checked and replaces the file, so a key can be rotated. Without one, an
-    existing file is checked and kept (on a terminal, one composer can't use is asked for again), and a missing one
+    existing file is checked and kept (written again if it lacks the default model a key needs; on a terminal, one
+    composer can't use is asked for again), and a missing one
     is asked of the owner, the key read without echo, until its model answers ``check_model``. Nothing is written
     before the model answers. The key never goes through argv or the environment. ``last`` is as for
     :func:`ask_provider`.
@@ -465,8 +488,13 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None,
         if os.path.lexists(path):
             again = "fix it or remove it and run `ac onboard` again"
             try:
-                check_provider(load_provider(path).model_dump(exclude_defaults=True))
-                return False
+                saved = load_provider(path).model_dump(exclude_defaults=True)
+                checked = with_default_model(check_provider(saved))
+                if checked.model_dump(exclude_defaults=True) == saved:
+                    return False
+                # A file from when yian had a default model gets the one it now needs.
+                _save_provider(path, checked)
+                return True
             except ProviderError as exc:  # its message names the file
                 raise OnboardError(f"{exc}; {again}") from None
             except OnboardError as exc:
@@ -479,7 +507,7 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None,
         data = json.loads(stdin.read())
     except ValueError:
         raise OnboardError("the provider on stdin is not valid JSON") from None
-    provider = check_provider(data)
+    provider = with_default_model(check_provider(data))
     if check_model is not None and (problem := check_model(provider)) is not None:
         raise OnboardError(f"the model didn't answer: {problem}")
     _save_provider(path, provider)

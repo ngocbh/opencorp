@@ -94,16 +94,34 @@ def test_the_key_is_asked_without_echo_and_written_private(tmp_path):
     assert ask.typed == [False, True]
 
 
-def test_no_model_name_means_the_providers_default(tmp_path):
+def test_no_key_and_no_model_name_means_the_model_yians_login_saved(tmp_path):
     path = tmp_path / "provider.json"
     ensure_provider(path, Script("openai", "", "  "))
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
 
 
-def test_picking_the_default_saves_no_model(tmp_path):
+def test_picking_the_default_saves_its_name(tmp_path):
+    # Yian has no default model, so the file names it.
     path = tmp_path / "provider.json"
     ensure_provider(path, Script("openai", KEY, "1"))
-    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai", "api_key": KEY}}
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai", "api_key": KEY, "model": "gpt-5.5"}}
+
+
+def test_a_provider_on_stdin_with_a_key_and_no_model_is_saved_with_the_default(tmp_path):
+    path = tmp_path / "provider.json"
+    data = {"llm_config": {"provider": "anthropic", "api_key": KEY}}
+    assert ensure_provider(path, Script(), stdin=io.StringIO(json.dumps(data))) is True
+    assert json.loads(path.read_text())["llm_config"]["model"] == "claude-sonnet-4-5"
+
+
+def test_an_existing_provider_with_a_key_and_no_model_gets_the_default_written(tmp_path):
+    path = tmp_path / "provider.json"
+    path.write_text(json.dumps({"llm_config": {"provider": "openai", "api_key": KEY}}))
+    path.chmod(0o600)
+    assert ensure_provider(path, Script(interactive=False)) is True
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai", "api_key": KEY, "model": "gpt-5.5"}}
+    assert mode(path) == 0o600
+    assert ensure_provider(path, Script(interactive=False)) is False
 
 
 def test_a_provider_without_a_default_model_asks_for_one_until_it_has_it(tmp_path):
@@ -149,10 +167,14 @@ def test_azure_takes_a_typed_deployment_too(tmp_path, monkeypatch):
     assert load_provider(path).llm_config["model"] == "my-deployment"
 
 
-def test_a_model_typed_before_is_the_answer_for_nothing():
+def test_a_model_typed_before_is_the_answer_for_nothing(monkeypatch):
+    monkeypatch.setattr(onboard_module, "provider_models", lambda name, key: [])
+    ask = Script("")
+    assert onboard_module._ask_model(ask, "anthropic", "claude-opus-4-1", SENTINEL) == "claude-opus-4-1"
+    assert ask.offered == [["claude-sonnet-4-5 (the default)"]] and ask.typed == [True]
     ask = Script("")
     assert onboard_module._ask_model(ask, "anthropic", "claude-opus-4-1") == "claude-opus-4-1"
-    assert ask.offered == [["claude-sonnet-4-5 (the default)"]] and ask.typed == [True]
+    assert ask.offered == [["the model `yian auth anthropic` saved"]]
 
 
 def test_a_deployment_typed_before_is_the_answer_for_nothing(monkeypatch):
@@ -249,7 +271,7 @@ def test_nothing_is_listed_without_a_key_or_someone_to_ask(tmp_path, monkeypatch
 
     monkeypatch.setattr(onboard_module, "provider_models", never)
     ensure_provider(tmp_path / "provider.json", Script("anthropic", "", ""))
-    assert onboard_module._ask_model(Script("", interactive=False), "anthropic", key=SENTINEL) == ""
+    assert onboard_module._ask_model(Script("", interactive=False), "anthropic", key=SENTINEL) == "claude-sonnet-4-5"
 
 
 def test_provider_models_waits_fifteen_seconds_and_says_why_it_cant_list_them(monkeypatch):
@@ -280,12 +302,33 @@ def test_azure_needs_a_key_and_a_usable_endpoint(tmp_path):
     assert "That doesn't work: azure needs a key" in ask.seen
 
 
-@pytest.mark.parametrize("llm", [{"provider": "azure", "api_key": KEY}, {"provider": "google"}])
+@pytest.mark.parametrize("llm", [{"provider": "azure", "api_key": KEY}, {"provider": "google", "api_key": KEY}])
 def test_a_provider_with_no_model_and_no_default_is_refused(tmp_path, llm):
     with pytest.raises(OnboardError, match=f"llm_config.model is missing, and {llm['provider']} has no default model") \
             as info:
         ensure_provider(tmp_path / "provider.json", Script(), stdin=io.StringIO(json.dumps({"llm_config": llm})))
     assert KEY not in str(info.value) and not (tmp_path / "provider.json").exists()
+
+
+@pytest.mark.parametrize("name", ["google", "ollama"])
+def test_a_provider_with_no_key_and_no_model_takes_the_model_yians_login_saved(tmp_path, name):
+    path = tmp_path / "provider.json"
+    data = {"llm_config": {"provider": name}}
+    assert ensure_provider(path, Script(), stdin=io.StringIO(json.dumps(data))) is True
+    assert json.loads(path.read_text()) == data
+
+
+def test_an_endpoint_of_ones_own_with_no_model_is_refused(tmp_path):
+    path = tmp_path / "provider.json"
+    llm = {"provider": "openai", "base_url": "https://gateway.example.com/v1", "api_key": KEY}
+    with pytest.raises(OnboardError, match="^llm_config.model is missing, and an endpoint of your own has no default "
+                                           "model$"):
+        ensure_provider(path, Script(), stdin=io.StringIO(json.dumps({"llm_config": llm})))
+    assert not path.exists()
+    path.write_text(json.dumps({"llm_config": llm}))
+    path.chmod(0o600)
+    with pytest.raises(OnboardError, match="an endpoint of your own has no default model; fix it or remove it"):
+        ensure_provider(path, Script(interactive=False))
 
 
 def test_an_existing_provider_that_cant_be_used_is_asked_again_on_a_terminal(tmp_path):
@@ -316,6 +359,22 @@ def test_no_key_means_composers_own_login(tmp_path):
     ensure_provider(path, ask)
     assert json.loads(path.read_text()) == {"llm_config": {"provider": "openai"}}
     assert any("yian auth" in line for line in ask.seen)
+    assert ask.offered[-1] == ["the model `yian auth openai` saved"] and ask.typed[-1] is True
+
+
+def test_no_key_takes_a_typed_model_too(tmp_path):
+    path = tmp_path / "provider.json"
+    ensure_provider(path, Script("google", "", "gemini-2.5-pro"))
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "google", "model": "gemini-2.5-pro"}}
+
+
+def test_a_keyless_provider_without_a_key_offers_its_models(tmp_path, monkeypatch):
+    monkeypatch.setattr(onboard_module, "provider_models", lambda name, key: ["llama3", "qwen3"])
+    path = tmp_path / "provider.json"
+    ask = Script("ollama", "", "")
+    ensure_provider(path, ask)
+    assert json.loads(path.read_text()) == {"llm_config": {"provider": "ollama", "model": "llama3"}}
+    assert ask.offered[-1] == ["llama3", "qwen3"]
 
 
 def test_a_key_in_the_environment_is_never_read(tmp_path, monkeypatch):
@@ -364,8 +423,8 @@ def test_a_base_url_beside_the_key_is_saved(tmp_path):
 @pytest.mark.parametrize("llm, error", [
     ({"provider": "openai", "base_url": "http://gateway.example.com/v1", "api_key": KEY}, "must use https"),
     ({"provider": "openai", "base_url": "https://gateway.example.com/v1"}, "base_url needs llm_config.api_key"),
-    ({"provider": "azure", "base_url": "https://gateway.example.com/v1", "api_key": KEY},
-     "azure does not take llm_config.base_url"),
+    ({"provider": "ollama", "base_url": "https://gateway.example.com/v1", "api_key": KEY, "model": "llama3"},
+     "ollama does not take llm_config.base_url"),
 ])
 def test_a_base_url_composer_refuses_is_refused_without_echoing_it_or_the_key(tmp_path, llm, error):
     with pytest.raises(OnboardError, match=error) as info:
@@ -719,9 +778,9 @@ def test_the_provider_is_saved_only_once_the_model_answers(tmp_path):
     check = answers(None)
     ask = Script("openai", KEY, "")
     assert ensure_provider(path, ask, check_model=check) is True
-    assert check.checked == [{"provider": "openai", "api_key": KEY}]
+    assert check.checked == [{"provider": "openai", "api_key": KEY, "model": "gpt-5.5"}]
     assert ask.seen[-1] == "Checking that the model answers..."
-    assert load_provider(path).llm_config == {"provider": "openai", "api_key": KEY}
+    assert load_provider(path).llm_config == {"provider": "openai", "api_key": KEY, "model": "gpt-5.5"}
 
 
 def test_trying_again_checks_the_same_answers_and_nothing_is_saved_until_it_works(tmp_path):
@@ -736,7 +795,7 @@ def test_trying_again_checks_the_same_answers_and_nothing_is_saved_until_it_work
     ensure_provider(path, ask, check_model=check)
     assert ask.seen.count("The model didn't answer: Connection error") == 2
     assert ask.offered[-2:] == [[TRY_AGAIN, SET_UP_AGAIN]] * 2
-    assert load_provider(path).llm_config == {"provider": "openai", "api_key": KEY}
+    assert load_provider(path).llm_config == {"provider": "openai", "api_key": KEY, "model": "gpt-5.5"}
 
 
 def test_setting_up_again_starts_from_the_last_answers_and_keeps_the_key(tmp_path):

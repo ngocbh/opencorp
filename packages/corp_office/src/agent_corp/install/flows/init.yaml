@@ -9,10 +9,10 @@ typedefs:
   Answers:
     company: str
     owner: Owner
-    teammates: list[Teammate]
+    teammates: list(Teammate)
 input:
-  known: str    # JSON: facts the owner already gave (flags) and suggestions (login name)
-  remote: str   # the --remote flag, or ""
+  known: !str    # JSON: facts the owner already gave (flags) and suggestions (login name)
+  remote: !str   # the --remote flag, or ""
 nodes:
   rounds:
     kind: loop
@@ -26,7 +26,6 @@ nodes:
     nodes:
       interview:
         kind: agent
-        mode: tool_calling
         tools: [ask_user, check_company]
         input:
           known: ${input.known}
@@ -94,7 +93,7 @@ nodes:
     kind: code
     depends_on: [answers]  # without it, the password is asked before the interview
     input: {}
-    output: Optional[str]
+    output: Optional(str)
     code: agent_corp.install.init:password
   remote:
     kind: code

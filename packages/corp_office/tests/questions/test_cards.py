@@ -6,7 +6,6 @@ import signal
 import stat
 import threading
 from importlib.resources import files
-from pathlib import Path
 
 import pytest
 
@@ -19,7 +18,6 @@ from tests.chat.conftest import fake_llm, make_harness, status, texts, wait_for,
 from tests.company.conftest import _isolate_git, person  # noqa: F401
 
 SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
-SIDE_WITHOUT_TALKING_TO = (Path(__file__).parent / "fixtures" / "side_chat_without_talking_to.yaml").read_text()
 ASK = {"tool_calls": [{"name": "ask_user", "arguments": {"question": "Retry or back off?",
                                                          "options": ["Retry", "Back off"]}}]}
 LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
@@ -27,6 +25,9 @@ LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human
 GATE = """\
 id: gate
 name: gate
+input:  # what the office passes a person's main flow
+  person: !object
+  talking_to: !str
 nodes:
   setup:
     kind: human_input
@@ -292,6 +293,9 @@ def test_a_gate_takes_a_record_keyed_by_header_and_offers_no_send_back_or_stop(m
 TYPED_GATE = """\
 id: gate
 name: gate
+input:  # what the office passes a person's main flow
+  person: !object
+  talking_to: !str
 nodes:
   setup:
     kind: human_input
@@ -397,21 +401,6 @@ def test_the_seed_goes_once_when_no_ceo_answers_for_the_human(make_harness, fake
         assert last_user(fake_llm, 2).startswith(FRAMING)
         chat(office, q, "how often?", 2)
         assert last_user(fake_llm, 3) == "how often?"
-    finally:
-        stop(office)
-
-
-def test_a_side_chat_flow_from_before_talking_to_still_speaks_as_the_asker(make_harness, fake_llm,  # noqa: F811
-                                                                          workspace):
-    office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_WITHOUT_TALKING_TO}))
-    try:
-        fake_llm.script(ASK, {"content": "Quota."})
-        _, q = ask(office, fake_llm, workspace)
-        chat(office, q, "why?", 1)
-        prompt = fake_llm.wait_for_requests(2)[1]["messages"][0]["content"]
-        assert prompt.startswith(
-            "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
-        assert "talking with" not in prompt
     finally:
         stop(office)
 

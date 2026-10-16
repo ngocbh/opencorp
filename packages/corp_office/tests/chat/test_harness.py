@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 import pytest
 
@@ -10,8 +9,6 @@ from tests.chat.conftest import errors, status, texts, wait_for
 from tests.store.conftest import question as stored_question
 from tests.store.conftest import session as stored_session
 
-CHAT_WITHOUT_PERSON = (Path(__file__).parent / "fixtures" / "chat_without_person.yaml").read_text()
-CHAT_WITHOUT_TALKING_TO = (Path(__file__).parent / "fixtures" / "chat_without_talking_to.yaml").read_text()
 MINH = {"name": "Minh", "handle": "minh", "title": "Engineer", "company": "test-corp",
         "reports_to": "You report to Hong Ngoc Bui (@ngocbh)."}
 LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",
@@ -84,26 +81,6 @@ def test_the_reply_speaks_as_the_person(harness, fake_llm, workspace):
     assert system_prompt(fake_llm, 1).startswith(
         "You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh). " + TALKING_TO_CEO + "\n")
     wait_for(lambda: texts(harness, sid) == ["I'm Minh."], what="the reply")
-
-
-def test_a_chat_flow_that_does_not_take_the_person_still_runs(make_harness, fake_llm, workspace):
-    harness = make_harness(files={"shared/flows/chat.yaml": CHAT_WITHOUT_PERSON})
-    fake_llm.script({"content": "Hello."})
-    sid = start(harness, workspace)
-    harness.prompt(sid, "hi")
-    wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
-    assert not system_prompt(fake_llm, 1).startswith("You are Minh")
-
-
-def test_a_chat_flow_from_before_talking_to_still_speaks_as_the_person(make_harness, fake_llm, workspace):
-    harness = make_harness(files={"shared/flows/chat.yaml": CHAT_WITHOUT_TALKING_TO})
-    fake_llm.script({"content": "Hello."})
-    sid = start(harness, workspace)
-    harness.prompt(sid, "hi")
-    wait_for(lambda: texts(harness, sid) == ["Hello."], what="the reply")
-    prompt = system_prompt(fake_llm, 1)
-    assert prompt.startswith("You are Minh (@minh), Engineer at test-corp. You report to Hong Ngoc Bui (@ngocbh).\n")
-    assert "talking with" not in prompt
 
 
 def asked(fake_llm, n):
