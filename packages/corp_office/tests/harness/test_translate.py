@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from agent_corp.chat.transcript import Transcript
-from agent_corp.harness.translate import Translator
+from agent_corp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, Translator,
+                                          change_counts, relative)
 from agent_corp.store import Store
 from agent_corp.testing import fake_codex as fc
 from tests.store.conftest import session
@@ -134,3 +135,93 @@ def test_an_error_mid_turn_puts_what_follows_below_it(tr):
     feed(t, [*fc.agent_message("m1", "One."), fc.error("hiccup", will_retry=False), *fc.agent_message("m2", "Two.")])
     t.turn_completed("turn_1", "completed", None)
     assert shape(store, s.id) == [("assistant", ["One."]), ("assistant", ["error"]), ("assistant", ["Two."])]
+
+
+# --- tool items --------------------------------------------------------------------------
+
+def test_a_command_is_a_tool_part_with_its_exit_code_and_capped_output(tr):
+    store, s, t = tr
+    feed(t, fc.command("c1", "pytest -q", output="x" * (OUTPUT_MAX_CHARS + 10), exit_code=1))
+    t.turn_completed("turn_1", "completed", None)
+    [part] = parts(store, s.id)
+    assert (part.tool, part.state, part.input["command"], part.input["exit_code"]) == (COMMAND, "completed",
+                                                                                        "pytest -q", 1)
+    assert part.output.endswith(OUTPUT_CUT) and len(part.output) == OUTPUT_MAX_CHARS + len(OUTPUT_CUT)
+
+
+def test_a_file_change_keeps_paths_kinds_and_diffs(tr):
+    store, s, t = tr
+    feed(t, fc.file_change("f1", "notes.md", "hi\n"))
+    t.turn_completed("turn_1", "completed", None)
+    [part] = parts(store, s.id)
+    assert part.tool == FILE_CHANGE and part.input["changes"] == [{"path": "notes.md", "kind": "add", "diff": "hi\n"}]
+
+
+def test_a_file_change_under_the_cwd_is_named_relative_to_it(tr):
+    # Codex sends absolute paths; the owner reads them as the project's.
+    store, s, t = tr
+    feed(t, [*fc.file_change("f1", "{cwd}/docs/notes.md", "hi\n"), *fc.file_change("f2", "/etc/hosts", "x\n")])
+    t.turn_completed("turn_1", "completed", None)
+    assert [p.input["changes"][0]["path"] for p in parts(store, s.id)] == ["docs/notes.md", "/etc/hosts"]
+    assert relative("/w", "/w") == "/w" and relative("/wx/a", "/w") == "/wx/a" and relative("a.py", "/w") == "a.py"
+
+
+@pytest.mark.parametrize(("kind", "diff", "counts"), [
+    ("add", "one\ntwo\n", (2, 0)),                       # Codex sends a new file's content
+    ("delete", "one\n+two\n-three\n", (0, 3)),            # and a deleted file's content
+    ("update", "@@ -1,2 +1,2 @@\n-z\n+x\n+y\n keep\n", (2, 1)),
+    ("update", "@@ -1 +1 @@\n-a\n+b\n\n\nMoved to: b.py", (1, 1)),
+])
+def test_a_file_changes_lines_are_counted_by_its_kind(kind, diff, counts):
+    assert change_counts(kind, diff) == counts
+
+
+def test_a_declined_command_is_an_error_part_and_a_running_one_is_interrupted_at_turn_end(tr):
+    store, s, t = tr
+    feed(t, [fc.command("c1", "rm -rf build", status="declined", exit_code=None)[1]])
+    feed(t, [fc.command_started("c2", "sleep 9")])
+    t.turn_completed("turn_1", "interrupted", None)
+    states = {p.input["command"]: (p.state, p.error) for p in parts(store, s.id) if p.type == "tool"}
+    assert states == {"rm -rf build": ("error", "declined"), "sleep 9": ("interrupted", None)}
+
+
+def test_an_mcp_call_names_server_and_tool(tr):
+    store, s, t = tr
+    t.notification("item/completed", {"turnId": "turn_1", "item": {
+        "type": "mcpToolCall", "id": "x1", "server": "docs", "tool": "search", "status": "completed",
+        "arguments": {"q": "launchd"}, "result": {"content": [{"type": "text", "text": "3 hits"}]}, "error": None}})
+    t.turn_completed("turn_1", "completed", None)
+    [part] = parts(store, s.id)
+    assert part.tool == MCP_TOOL and part.input == {"server": "docs", "tool": "search", "arguments": {"q": "launchd"}}
+    assert "3 hits" in part.output
+
+
+def test_a_steer_while_a_command_runs_completes_its_part_in_place(tr):
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "sleep 3")])
+    t.transcript.user("also b", author="ngocbh")
+    feed(t, [fc.command("c1", "sleep 3")[1], *fc.agent_message("m1", "Slept.")])
+    t.turn_completed("turn_1", "completed", None)
+    assert shape(store, s.id) == [("assistant", [(COMMAND, "completed")]), ("user", ["also b"]),
+                                  ("assistant", ["Slept."])]
+
+
+def test_two_steers_around_a_running_command_keep_it_in_its_message(tr):
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "sleep 3")])
+    t.transcript.user("a", author="ngocbh")
+    feed(t, fc.agent_message("m1", "One."))
+    t.transcript.user("b", author="ngocbh")
+    feed(t, [fc.command("c1", "sleep 3")[1], *fc.agent_message("m2", "Two.")])
+    t.turn_completed("turn_1", "completed", None)
+    assert shape(store, s.id) == [("assistant", [(COMMAND, "completed")]), ("user", ["a"]), ("assistant", ["One."]),
+                                  ("user", ["b"]), ("assistant", ["Two."])]
+
+
+def test_a_running_command_from_before_a_steer_is_interrupted_with_the_turn(tr):
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "sleep 30")])
+    t.transcript.user("never mind", author="ngocbh")
+    t.turn_completed("turn_1", "interrupted", None)
+    assert shape(store, s.id) == [("assistant", [(COMMAND, "interrupted")]), ("user", ["never mind"]),
+                                  ("assistant", ["[interrupted]"])]
