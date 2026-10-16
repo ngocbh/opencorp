@@ -46,5 +46,7 @@ test("a Codex session shows Codex's model and its tokens as unpriced", () => {
   expect(modelLabel(codex)).toBe("gpt-5.5-codex (Codex)")
   expect(costLabel(codex)).toBe("12.3k in · 900 out (Codex login, unpriced)")
   expect(costLabel({ ...codex, harness_usage: null })).toBe("Codex login, unpriced")
+  const long = { input_tokens: 1_234_567, cached_input_tokens: 0, output_tokens: 999_999 }
+  expect(costLabel({ ...codex, harness_usage: long })).toBe("1.2M in · 1.0M out (Codex login, unpriced)")
   expect(modelLabel({ ...codex, harness_model: null })).toBe("Codex")
 })

@@ -10,7 +10,9 @@ import { personLabel } from "../../util/transcript"
 import { getScrollAcceleration } from "../../util/scroll"
 
 const usd = (n: number) => `$${n.toFixed(2)}`
-const tokens = (n: number) => (n < 1000 ? String(n) : `${(n / 1000).toFixed(1)}k`)
+// Millions from 999,950 on, where thousands would round up to "1000.0k".
+const tokens = (n: number) =>
+  n < 1000 ? String(n) : n < 999_950 ? `${(n / 1000).toFixed(1)}k` : `${(n / 1_000_000).toFixed(1)}M`
 
 /**
  * The session's cost against its cap, as `$0.12` or `$0.12 of $5.00`. On a subscription connection in `list` it adds
