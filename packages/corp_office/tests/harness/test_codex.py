@@ -1,9 +1,11 @@
 """Starting and stopping one app-server: command, environment, process group, worker record."""
 
+import gc
 import json
 import os
 import sys
 import threading
+import warnings
 from pathlib import Path
 
 import psutil
@@ -185,3 +187,47 @@ def test_the_app_server_gets_the_offices_codex_home_when_it_is_set(tmp_path):
             p.start()
             assert seen.read_text() == expected
             p.close(grace=1)
+
+
+def test_a_kill_during_the_handshake_says_codex_was_stopped(tmp_path):
+    with Store(tmp_path / "store.sqlite") as store:
+        p, _ = process(tmp_path, store, {"initialize_delay": 2})
+        raised = []
+
+        def start():
+            try:
+                p.start()
+            except CodexStartError as exc:
+                raised.append(str(exc))
+
+        thread = threading.Thread(target=start)
+        thread.start()
+        wait_for(lambda: p.proc is not None, timeout=5, what="the spawn")
+        p.kill()
+        thread.join(10)
+        assert raised == ["Codex was stopped before it started."] and store.list_workers() == []
+
+
+def test_only_the_first_kill_signals_the_group(tmp_path, monkeypatch):
+    import agent_corp.harness.codex as codex
+    signalled = []
+    monkeypatch.setattr(codex, "kill_group", lambda pgid: signalled.append(pgid) or True)
+    with Store(tmp_path / "store.sqlite") as store:
+        p, _ = process(tmp_path, store)
+        p.start()
+        p.close(grace=1)  # stdin closed: the fake exits by itself
+        p.kill()
+        assert signalled == [p.pid]
+
+
+def test_a_closed_app_server_leaves_no_open_pipes(tmp_path):
+    with Store(tmp_path / "store.sqlite") as store, warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        p, exits = process(tmp_path, store)
+        p.start()
+        p.close(grace=1)
+        assert exits.wait(5)
+        p.rpc._reader.join(5)
+        del p
+        gc.collect()
+    assert [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)] == []

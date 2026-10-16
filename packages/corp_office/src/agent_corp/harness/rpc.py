@@ -56,7 +56,7 @@ class JsonRpc:
         done, box = threading.Event(), []
         with self._lock:
             if self._closed:
-                raise RpcClosed(method)
+                raise RpcClosed(f"the app-server closed before answering {method}")
             self._waiting[request_id] = (done, box)
         try:
             self._send({"id": request_id, "method": method, "params": params or {}})
@@ -66,7 +66,7 @@ class JsonRpc:
             with self._lock:
                 self._waiting.pop(request_id, None)
         if not box:
-            raise RpcClosed(method)
+            raise RpcClosed(f"the app-server closed before answering {method}")
         if "error" in box[0]:
             e = box[0]["error"] or {}
             raise RpcError(e.get("code", 0), e.get("message", ""), e.get("data"))

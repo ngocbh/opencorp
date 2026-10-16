@@ -127,7 +127,10 @@ class CodexProcess:
             self.rpc.notify("initialized")
             account = self.rpc.request("account/read", {"refreshToken": False}, timeout=START_TIMEOUT)
         except (RpcError, RpcClosed, TimeoutError) as exc:
+            stopped = self.closing  # office stop killed it mid-handshake
             self.kill()
+            if stopped:
+                raise CodexStartError("Codex was stopped before it started.") from exc
             raise CodexStartError(f"Codex didn't start: {exc}", self.stderr_tail()) from exc
         if account.get("account") is None and account.get("requiresOpenaiAuth"):
             self.kill()
@@ -161,6 +164,10 @@ class CodexProcess:
         if signal_group:
             kill_group(proc.pid)
             try:
+                proc.stdin.close()
+            except OSError:
+                pass
+            try:
                 proc.wait(5)
             except subprocess.TimeoutExpired:
                 log.warning("codex app-server %s outlived SIGKILL", proc.pid)
@@ -178,6 +185,7 @@ class CodexProcess:
 
     def _closed(self) -> None:
         if self.proc is not None:
+            self.proc.stdout.close()  # the reader has finished with it
             try:
                 self.proc.wait(5)
             except subprocess.TimeoutExpired:

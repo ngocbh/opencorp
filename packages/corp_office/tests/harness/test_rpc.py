@@ -35,8 +35,10 @@ def test_requests_get_their_results_and_errors(tmp_path):
     assert e.value.code == -32601
     proc.stdin.close()
     assert closed.wait(5)
-    with pytest.raises(RpcClosed):
+    with pytest.raises(RpcClosed, match="the app-server closed before answering initialize"):
         rpc.request("initialize", {})
+    proc.wait(5)
+    proc.stdout.close()
 
 
 def test_server_requests_and_notifications_reach_the_handlers_in_order(tmp_path):
