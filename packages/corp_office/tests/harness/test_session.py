@@ -7,7 +7,7 @@ import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.harness.codex import CodexStartError, owner_load
-from agent_corp.harness.rpc import RpcClosed
+from agent_corp.harness.rpc import JsonRpc, RpcClosed
 from agent_corp.protocol.models import HarnessPolicy
 from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
@@ -190,3 +190,39 @@ def test_office_stop_never_waits_on_a_message_codex_is_slow_to_take(harness, fak
     release.set()
     sender.join(5)
     assert not sender.is_alive() and refused == ["codex_refused"]
+
+
+def test_a_message_while_loading_waits_for_the_load(harness, fake_codex, workspace):
+    fake_codex.script([fc.agent_message("m1", "Got it")], initialize_delay=1)
+    sid = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
+    assert harness.prompt(sid, "early") == "queued"
+    assert harness.prompt(sid, "and then") == "queued"
+    wait_for(lambda: texts(harness, sid) == ["Got it"], what="the queued message's reply")
+    assert [p["input"][0]["text"] for p in fake_codex.calls("turn/start")] == ["early\n\nand then"]
+
+
+def test_a_message_codex_never_answers_is_refused_and_leaves_the_session_idle(harness, fake_codex, workspace,
+                                                                              monkeypatch):
+    sid = start(harness, workspace)
+
+    def hangs(*args, **kwargs):
+        raise TimeoutError("turn/start got no answer in 60s")
+    monkeypatch.setattr(harness.codex._live[sid].process.rpc, "request", hangs)
+    with pytest.raises(HarnessError) as e:
+        harness.prompt(sid, "hi")
+    assert e.value.code == "codex_refused" and status(harness, sid) == "idle"
+
+
+def test_a_queued_message_codex_never_answers_leaves_the_session_idle(harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script(initialize_delay=0.5)
+    real = JsonRpc.request
+
+    def hangs(self, method, params=None, **kwargs):
+        if method == "turn/start":
+            raise TimeoutError("turn/start got no answer in 60s")
+        return real(self, method, params, **kwargs)
+    monkeypatch.setattr(JsonRpc, "request", hangs)
+    sid = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
+    assert harness.prompt(sid, "early") == "queued"
+    wait_for(lambda: status(harness, sid) == "idle" and errors(harness, sid), what="the refusal")
+    assert "didn't take the message" in errors(harness, sid)[0]

@@ -180,16 +180,31 @@ class CodexSession:
         self._jobs.put(None)
 
     def _flush(self) -> None:
-        """Go idle once loaded."""
-        with self._lock:
-            self.loading = False
-            self._idle()
+        """Send what waited for the load, in order, then go idle if nothing was sent. ``loading`` stays set until
+        the queue is empty, so a message that comes meanwhile waits behind the queue instead of overtaking it."""
+        sent = False
+        while True:
+            with self._lock:
+                if self.stopped or self.ending:
+                    return
+                if not self.pending:
+                    self.loading = False
+                    if not sent and self.turn_id is None:
+                        self._idle()
+                    return
+                text, process = "\n\n".join(self.pending), self.process
+                self.pending.clear()
+            try:
+                self._send(process, text, sent)
+                sent = True
+            except HarnessError as exc:
+                self.transcript.error(exc.message)
 
     def _send(self, process: CodexProcess, text: str, busy: bool) -> str:
         """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which)."""
         try:
             process.rpc.request("turn/start", {"threadId": self.thread_id, "input": _input(text)})
-        except (RpcError, RpcClosed) as exc:
+        except (RpcError, RpcClosed, TimeoutError) as exc:
             raise HarnessError(409, "codex_refused", f"Codex didn't take the message: {exc}") from exc
         return "steer" if busy else "turn"
 
