@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from yian.memory.storage.markdown import MarkdownStore
 
@@ -38,6 +38,9 @@ from agent_corp.tools.workspace import WorkspaceTools
 from agent_corp.worker import (BaseHandlers, Job, ProfileMemorySpec, SessionMemorySpec, Worker, WorkerRegistry,
                                group_specs, person_flow)
 from agent_corp.worker.job import MemorySpec
+
+if TYPE_CHECKING:
+    from agent_corp.harness.sessions import CodexSessions
 
 log = logging.getLogger(__name__)
 
@@ -177,11 +180,13 @@ class Harness:
     ``prompt``, ``steer``, ``interrupt``, ``end``, ``answer``, ``set_cost_cap``, and ``set_model``
     are called from request threads. Worker frames and store events are handled on one
     dispatcher thread, in order. ``connections`` are read at each spawn. ``models`` tells which connections
-    offer a person's model when a chat starts, within ``choose_deadline`` seconds.
+    offer a person's model when a chat starts, within ``choose_deadline`` seconds. ``hooks`` are shared with
+    ``codex``, the Codex sessions, which take every call on a session whose harness is ``codex``.
     """
 
     def __init__(self, office: Any, monitor: Monitor, *, connections: Connections, models: ModelCache | None = None,
-                 choose_deadline: float = DEADLINE) -> None:
+                 choose_deadline: float = DEADLINE, hooks: Hooks | None = None,
+                 codex: "CodexSessions | None" = None) -> None:
         self.office = office
         self.store = office.store
         self.git = office.git
@@ -189,7 +194,8 @@ class Harness:
         self.connections = connections
         self.models = models if models is not None else ModelCache(connections)
         self.choose_deadline = choose_deadline
-        self.hooks = Hooks()
+        self.hooks = hooks if hooks is not None else Hooks()
+        self.codex = codex
         self.registry = WorkerRegistry(self.store)
         self.answers = Answers(self.store)
         self.restorers: dict[str, Callable[[Session], RunSpec]] = {"main": self.main_spec}
@@ -211,11 +217,14 @@ class Harness:
                       connection: str | None = None, model: str | None = None) -> Session:
         """Start a person's main chat in ``cwd``: work item, session, worked folder, then its run.
 
+        ``harness`` is ``composer`` or, for a person whose ``harnesses`` list it, ``codex`` (handed to the Codex
+        sessions, which load its thread).
+
         ``opened_by`` is the human who opened it; the work item is theirs (the CEO's when None).
         ``connection`` and ``model`` are their pick, which ``_choose`` may pass over.
         A run that can't start leaves the session ``failed`` and raises ``500 start_failed`` naming it.
         """
-        if harness != "composer":
+        if harness not in ("composer", "codex") or (harness == "codex" and self.codex is None):
             raise HarnessError(422, "unsupported_harness", f"the {harness} harness is not supported yet")
         self.git.commit_hand_edits()
         head = self.git.head()
@@ -223,10 +232,10 @@ class Harness:
         person = repo.people.get(handle)
         if person is None:
             raise HarnessError(404, "not_found", f"no person {handle}")
-        if person.kind != "agent" or not person.main:
+        if person.kind != "agent" or (harness == "composer" and not person.main):
             raise HarnessError(422, "not_an_agent", f"{handle} has no main flow to chat with")
-        if person.harnesses and "composer" not in person.harnesses:
-            raise HarnessError(422, "unsupported_harness", f"{handle} doesn't use the composer harness")
+        if harness not in (person.harnesses or ["composer"]):
+            raise HarnessError(422, "unsupported_harness", f"{handle} doesn't use the {harness} harness")
         if not Path(cwd).is_absolute():
             raise HarnessError(422, "invalid_body", f"cwd {cwd!r} is not an absolute path")
         cwd = os.path.realpath(cwd)  # clients match folders by their resolved path (/tmp is /private/tmp on macOS)
@@ -239,11 +248,15 @@ class Harness:
             status="in_progress", requester=opened_by or (repo.company.ceo if repo.company else handle),
             assignee=handle, created_at=t, updated_at=t))
         session = self.store.create_session(Session(
-            id=session_id, person=handle, harness="composer", office=socket.gethostname(), cwd=cwd,
+            id=session_id, person=handle, harness=harness, office=socket.gethostname(), cwd=cwd,
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, opened_by=opened_by,
             connection=connection, model=model, model_note=note, created_at=t, updated_at=t))
         self.store.touch_worked_folder(handle, cwd)
         try:
+            if harness == "codex":
+                # The app-server starts on the session's own thread; a failure there fails the session with why.
+                self.codex.start(session)
+                return self.store.get_session(session_id)
             spec = self.main_spec(session)
             self.start_run(session, spec)
         except Exception as exc:
