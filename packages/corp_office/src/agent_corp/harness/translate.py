@@ -297,7 +297,7 @@ class Translator:
 SERVED = frozenset({"item/commandExecution/requestApproval", "item/fileChange/requestApproval",
                     "item/permissions/requestApproval", "item/tool/requestUserInput", "mcpServer/elicitation/request"})
 """Server requests that become cards."""
-REFUSED = frozenset({"item/tool/call", "account/chatgptAuthTokens/refresh", "attestation/generate",
+REFUSED = frozenset({"item/tool/call", "account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read",
                      "applyPatchApproval", "execCommandApproval"})
 """Server requests the office answers with a JSON-RPC error: the pinned schema's others (the drift test checks)."""
 REPLY_SCHEMAS = {"item/commandExecution/requestApproval": "CommandExecutionRequestApprovalResponse",

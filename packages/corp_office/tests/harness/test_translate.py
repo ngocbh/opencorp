@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft7Validator
 
 from agent_corp.chat.transcript import Transcript
-from agent_corp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, Translator,
-                                          Unserved, change_counts, relative)
+from agent_corp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED,
+                                          REPLY_SCHEMAS, SERVED, Translator, Unserved, change_counts, relative)
 from agent_corp.store import Store
 from agent_corp.testing import fake_codex as fc
 from tests.store.conftest import session
@@ -44,6 +45,10 @@ def shape(store, sid):
 def card(t, s, step, run_id="turn_1"):
     params = fc.fill(step["params"], run_id, "/w", "thr_1")
     return t.card(step["request"], params, session=s, run_id=run_id, node_id=str(step["id"]))
+
+
+def reply_validator(method):
+    return Draft7Validator(json.loads((FIXTURES / "schema" / f"{REPLY_SCHEMAS[method]}.json").read_text()))
 
 
 # --- text, deltas, reasoning, turn ends and errors ---------------------------------------
@@ -350,3 +355,28 @@ def test_more_than_four_questions_or_an_unknown_method_is_unserved(tr):
               "title": "Verify", "description": "Confirm it's you", "challenge": "c1"}
     with pytest.raises(Unserved):
         t.card("mcpServer/elicitation/request", verify, session=s, run_id="codex-1", node_id="10")
+
+
+# --- the pinned schema -------------------------------------------------------------------
+
+def test_every_server_request_in_the_pinned_schema_is_served_or_refused():
+    schema = json.loads((FIXTURES / "schema" / "ServerRequest.json").read_text())
+    methods = {m for branch in schema["oneOf"] for m in branch["properties"]["method"]["enum"]}
+    assert methods == SERVED | REFUSED, (
+        f"new: {sorted(methods - SERVED - REFUSED)}; gone: {sorted((SERVED | REFUSED) - methods)}")
+
+
+def test_every_reply_a_card_makes_matches_codexs_response_schema(tr):
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "touch a"), fc.file_change("f1", "a.md", "a\n")[0]])
+    steps = [fc.command_approval(1, "c1", "touch a"), fc.file_change_approval(2, "f1"),
+             fc.permissions_approval(3, "p1"),
+             fc.user_input(4, "u1", [fc.question("env", "Env", "Where?", options=["prod", "dev"])]),
+             fc.mcp_approval(5, "docs", "search"), fc.mcp_approval_question(6, "u2", "docs", "search"),
+             fc.network_approval(7, "c2", "example.com"), fc.url_elicitation(8, "gh", "Sign in", "https://e.com/l"),
+             fc.form_elicitation(9, "jira", "Ticket", {"points": {"type": "integer"}, "urgent": {"type": "boolean"}})]
+    answers = {4: [{"Env": "dev"}], 9: [{"points": 3, "urgent": "No"}]}  # a form's answer as check_answer returns it
+    for step in steps:
+        c = card(t, s, step)
+        for answer in answers.get(step["id"], c.question.options):
+            reply_validator(step["request"]).validate(c.reply(answer)[0])
