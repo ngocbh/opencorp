@@ -161,9 +161,8 @@ class CodexProcess:
                 proc.wait(5)
             except subprocess.TimeoutExpired:
                 log.warning("codex app-server %s outlived SIGKILL", proc.pid)
-        # Only its own record: a later app-server of the same session has the same key.
-        if recorded and any(r.session_id == self.key and r.pid == proc.pid for r in self.store.list_workers()):
-            self.store.remove_worker(self.key)
+        if recorded:  # only its own record: a later app-server of the same session has the same key
+            self.store.remove_worker(self.key, pid=proc.pid)
 
     def stderr_tail(self) -> str:
         """The end of the app-server's stderr, for an error part."""

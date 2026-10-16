@@ -28,3 +28,7 @@ def test_worker_rows(store):
     store.remove_worker("s1")
     store.remove_worker("s1")
     assert [w.session_id for w in store.list_workers()] == ["s2"]
+    store.remove_worker("s2", pid=999)  # another process's record under the same key stays
+    assert [w.session_id for w in store.list_workers()] == ["s2"]
+    store.remove_worker("s2", pid=200)
+    assert store.list_workers() == []
