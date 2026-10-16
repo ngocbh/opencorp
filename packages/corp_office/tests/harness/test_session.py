@@ -415,3 +415,23 @@ def test_a_session_whose_load_failed_takes_no_message_or_end_before_it_is_droppe
             call()
         assert e.value.code == "not_live"
     assert [m.role for m in harness.store.list_messages(sid)] == ["assistant"]  # only the error part
+
+
+def test_a_queued_message_failing_because_the_office_stopped_stores_no_refusal(harness, fake_codex, workspace,
+                                                                               monkeypatch):
+    fake_codex.script(initialize_delay=0.5)
+    real, sending = JsonRpc.request, threading.Event()
+
+    def stopped_meanwhile(self, method, params=None, **kwargs):
+        if method != "turn/start":
+            return real(self, method, params, **kwargs)
+        sending.set()
+        wait_for(lambda: live.stopped, timeout=5, what="office stop")
+        raise RpcClosed("the app-server closed before answering turn/start")
+    monkeypatch.setattr(JsonRpc, "request", stopped_meanwhile)
+    sid = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
+    live = harness.codex._live[sid]
+    assert harness.prompt(sid, "early") == "queued"
+    assert sending.wait(10)
+    harness.close_all()
+    assert errors(harness, sid) == []

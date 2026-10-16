@@ -249,6 +249,9 @@ class CodexSession:
                 self._send(process, text, sent)
                 sent = True
             except HarnessError as exc:
+                with self._lock:
+                    if self.stopped:  # office stop killed the app-server: nothing refused it, and nothing is stored
+                        return
                 self.transcript.error(exc.message)
 
     def _send(self, process: CodexProcess, text: str, busy: bool) -> str:
