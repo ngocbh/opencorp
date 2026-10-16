@@ -63,7 +63,7 @@ def test_a_codex_session_that_cant_be_set_up_fails_at_once(harness, workspace, m
         harness.start_session("minh", str(workspace), "codex")  # opened_by None: the opener is looked up
     assert (e.value.status, e.value.code) == (500, "start_failed")
     [s] = harness.store.list_sessions()
-    assert s.status == "failed"
+    assert (s.status, harness.codex._live, harness.store.list_workers()) == ("failed", {}, [])
 
 
 def test_a_load_codex_refuses_fails_the_session_with_why(harness, fake_codex, workspace):
@@ -122,7 +122,7 @@ def test_a_message_with_no_sender_is_the_openers(harness, fake_codex, workspace)
 
 
 def test_a_message_during_a_turn_steers_it(harness, fake_codex, workspace):
-    fake_codex.script([[{"sleep": 1}, *fc.agent_message("m1", "Done")]])
+    fake_codex.script([[{"sleep": 3}, *fc.agent_message("m1", "Done")]])
     sid = start(harness, workspace)
     harness.prompt(sid, "count")
     wait_for(lambda: status(harness, sid) == "busy", what="the turn to start")
@@ -133,7 +133,7 @@ def test_a_message_during_a_turn_steers_it(harness, fake_codex, workspace):
 
 
 def test_a_steer_while_a_command_runs_keeps_the_command_in_its_message(harness, fake_codex, workspace):
-    fake_codex.script([[fc.command_started("c1", "sleep 1"), {"sleep": 1}, fc.command("c1", "sleep 1")[1],
+    fake_codex.script([[fc.command_started("c1", "sleep 3"), {"sleep": 3}, fc.command("c1", "sleep 3")[1],
                         *fc.agent_message("m1", "Slept, and stopping.")]])
     sid = start(harness, workspace)
     harness.prompt(sid, "sleep", by="ngocbh")
