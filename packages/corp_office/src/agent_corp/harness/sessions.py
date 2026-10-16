@@ -3,16 +3,14 @@
 import logging
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from agent_corp.chat.hooks import Hooks
 from agent_corp.company.loader import load_repo
 from agent_corp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
+from agent_corp.harness.session import CodexSession
 from agent_corp.protocol.models import HarnessPolicy, Session
 from agent_corp.worker.spawn import worker_env
-
-if TYPE_CHECKING:
-    from agent_corp.harness.session import CodexSession
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +32,14 @@ class CodexSessions:
 
     # --- calls from Harness ----------------------------------------------------------
 
+    def start(self, session: Session, *, resume: bool = False) -> None:
+        """Load ``session``'s thread in a new app-server on the session's own thread; a failure there fails the
+        session. Raises only if the session can't be set up at all, before anything runs."""
+        live = CodexSession(self, session, author=self.opener(session))
+        with self._lock:
+            self._live[session.id] = live
+        live.start(resume=resume)
+
     def close_all(self) -> None:
         """Office stop: kill every app-server and stop every session's thread; sessions keep their status for
         ``restore``. Once it returns, no Codex session touches the store."""
@@ -44,7 +50,7 @@ class CodexSessions:
 
     # --- calls from CodexSession -----------------------------------------------------
 
-    def launch(self, live: "CodexSession") -> CodexProcess:
+    def launch(self, live: CodexSession) -> CodexProcess:
         """A started, initialized app-server for ``live``, in its cwd, with the worker environment."""
         env = self.env()
         process = CodexProcess(self.store, f"harness:{live.session_id}",
