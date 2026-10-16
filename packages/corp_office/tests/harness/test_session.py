@@ -354,3 +354,18 @@ def test_model_and_cost_cap_are_refused_on_a_codex_session(harness, workspace):
         with pytest.raises(HarnessError) as e:
             call()
         assert (e.value.status, e.value.code) == (422, "not_supported")
+
+
+def test_a_message_refused_because_the_session_ended_meanwhile_leaves_it_ended(harness, fake_codex, workspace,
+                                                                               monkeypatch):
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+
+    def ended_meanwhile(*args, **kwargs):
+        live.end()
+        wait_for(lambda: status(harness, sid) == "ended", what="the end")
+        raise RpcClosed("the app-server closed before answering turn/start")
+    monkeypatch.setattr(live.process.rpc, "request", ended_meanwhile)
+    with pytest.raises(HarnessError):
+        harness.prompt(sid, "hi")
+    assert status(harness, sid) == "ended" and live.timer is None

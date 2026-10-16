@@ -181,7 +181,7 @@ class CodexSession:
     def _run(self) -> None:
         while (job := self._jobs.get()) is not None:
             fn, args = job
-            if self.stopped:  # office stop: no job touches the store any more
+            if self.stopped or self.closed:  # office stop, or the session ended: no job touches the store any more
                 continue
             try:
                 fn(*args)
@@ -306,8 +306,9 @@ class CodexSession:
         self._jobs.put(None)  # nothing more to do: let the session's thread end after this job
 
     def _idle(self) -> None:
-        """(Under the lock.) Go idle; ``idle_end`` later, the session ends. Nothing once the office stops."""
-        if self.stopped:
+        """(Under the lock.) Go idle; ``idle_end`` later, the session ends. Nothing once the office stops or the
+        session is ending."""
+        if self.stopped or self.ending or self.closed:
             return
         self._stop_timer()
         self.store.update_session(self.session_id, status="idle")

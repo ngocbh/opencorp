@@ -47,11 +47,11 @@ class CodexSessions:
 
     def prompt(self, session_id: str, text: str, *, by: str | None = None) -> str:
         """A message: ``turn``, ``steer`` (a turn was running), or ``queued`` (until the thread is loaded)."""
-        session = self.store.get_session(session_id)
-        for refusal in self.hooks.fire("prompt_check", session, text):
+        live = self._must(session_id)
+        for refusal in self.hooks.fire("prompt_check", self.store.get_session(session_id), text):
             if refusal:
                 raise HarnessError(422, "refused", str(refusal))
-        return self._must(session_id).prompt(text, by=by)
+        return live.prompt(text, by=by)
 
     def interrupt(self, session_id: str) -> None:
         self._must(session_id).interrupt()
