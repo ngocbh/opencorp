@@ -1,7 +1,27 @@
 import { expect, test } from "bun:test"
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import path from "node:path"
 import { createFakeOffice, createStub, seed } from "../../../script/stub"
+import { Global } from "../../../src/core/global"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
+
+// The app keeps both files under the preload's AGENT_CORP_HOME, which every test file shares.
+const modelFile = () => path.join(Global.Path.state, "model.json")
+const kvFile = () => path.join(Global.Path.state, "kv.json")
+const kv = (): Record<string, unknown> => (existsSync(kvFile()) ? JSON.parse(readFileSync(kvFile(), "utf8")) : {})
+
+/** Turns on starting new chats on the last pick, with azure-2/gpt-4o-mini picked; returns the undo. */
+function lastPickOn() {
+  mkdirSync(Global.Path.state, { recursive: true })
+  writeFileSync(modelFile(), JSON.stringify({ recent: [{ connection: "azure-2", model: "gpt-4o-mini" }], favorite: [] }))
+  writeFileSync(kvFile(), JSON.stringify({ ...kv(), start_on_last_pick: true }))
+  return () => {
+    rmSync(modelFile(), { force: true })
+    const { start_on_last_pick: _, ...rest } = kv()
+    writeFileSync(kvFile(), JSON.stringify(rest))
+  }
+}
 
 /** The fake office, with minh using Codex as well as composer. */
 function codexOffice() {
@@ -38,6 +58,8 @@ test("a person who uses Codex has a Codex row, and picking it picks the harness"
 })
 
 test("a chat started on Codex asks the office for a Codex session, without a model pick", async () => {
+  // A composer chat would start on this pick; a Codex chat runs on Codex's own model.
+  const undo = lastPickOn()
   const fake = codexOffice()
   const app = await bootFrame(createStub(fake))
   try {
@@ -56,5 +78,6 @@ test("a chat started on Codex asks the office for a Codex session, without a mod
   } finally {
     await app.stop()
     fake.stop()
+    undo()
   }
 })
