@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 from agent_corp.chat.harness import HarnessError
 from agent_corp.chat.transcript import Transcript
 from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
-from agent_corp.harness.rpc import RpcError
+from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.translate import Translator
 from agent_corp.protocol.models import Session
 
@@ -79,7 +79,13 @@ class CodexSession:
                 self.pending.append(text)
                 return "queued"
             process, busy = self.process, self.turn_id is not None
-        return self._send(process, text, busy)
+        try:
+            return self._send(process, text, busy)
+        except HarnessError:
+            with self._lock:
+                if self.turn_id is None:
+                    self._idle()  # a refused message leaves the session idle
+            raise
 
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
@@ -181,7 +187,10 @@ class CodexSession:
 
     def _send(self, process: CodexProcess, text: str, busy: bool) -> str:
         """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which)."""
-        process.rpc.request("turn/start", {"threadId": self.thread_id, "input": _input(text)})
+        try:
+            process.rpc.request("turn/start", {"threadId": self.thread_id, "input": _input(text)})
+        except (RpcError, RpcClosed) as exc:
+            raise HarnessError(409, "codex_refused", f"Codex didn't take the message: {exc}") from exc
         return "steer" if busy else "turn"
 
     def _notification(self, method: str, params: dict[str, Any]) -> None:

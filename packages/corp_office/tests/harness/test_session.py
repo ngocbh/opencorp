@@ -1,11 +1,13 @@
 """A Codex session the owner drives: load, turns, steers, interrupts, end, office stop."""
 
+import threading
 import time
 
 import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.harness.codex import CodexStartError, owner_load
+from agent_corp.harness.rpc import RpcClosed
 from agent_corp.protocol.models import HarnessPolicy
 from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
@@ -150,3 +152,41 @@ def test_a_message_a_prompt_check_refuses_is_422(harness, fake_codex, workspace)
     with pytest.raises(HarnessError) as e:
         harness.prompt(sid, "sk-123")
     assert (e.value.status, e.value.code) == (422, "refused") and fake_codex.calls("turn/start") == []
+
+
+def test_a_message_codex_refuses_leaves_the_session_idle(harness, fake_codex, workspace, monkeypatch):
+    sid = start(harness, workspace)
+
+    def gone(*args, **kwargs):
+        raise RpcClosed("the app-server is gone")
+    monkeypatch.setattr(harness.codex._live[sid].process.rpc, "request", gone)
+    with pytest.raises(HarnessError) as e:
+        harness.prompt(sid, "hi")
+    assert e.value.code == "codex_refused" and status(harness, sid) == "idle"
+
+
+def test_office_stop_never_waits_on_a_message_codex_is_slow_to_take(harness, fake_codex, workspace, monkeypatch):
+    sid = start(harness, workspace)
+    release = threading.Event()
+
+    def slow(*args, **kwargs):
+        release.wait(30)
+        raise RpcClosed("the app-server was killed")  # what office stop does to a request in flight
+    monkeypatch.setattr(harness.codex._live[sid].process.rpc, "request", slow)
+    refused = []  # a failure on the sender's thread would only warn, so the thread hands its outcome back
+
+    def send():
+        try:
+            harness.prompt(sid, "hi")
+            refused.append("sent")
+        except HarnessError as e:
+            refused.append(e.code)
+    sender = threading.Thread(target=send)
+    sender.start()
+    wait_for(lambda: len([m for m in harness.store.list_messages(sid) if m.role == "user"]) == 1, what="the message")
+    began = time.monotonic()
+    harness.close_all()
+    assert time.monotonic() - began < 5 and harness.store.list_workers() == []
+    release.set()
+    sender.join(5)
+    assert not sender.is_alive() and refused == ["codex_refused"]
