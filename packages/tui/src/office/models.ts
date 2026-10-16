@@ -13,8 +13,12 @@ export function sessionModel(session: Pick<Session, "connection" | "model">, lis
   return { connection, model }
 }
 
-/** `model (connection)`, or the connection alone while its model is unknown. */
-export function modelLabel(session: Pick<Session, "connection" | "model">, list?: ConnectionList) {
+/** `model (connection)`, or the connection alone while its model is unknown; a Codex session names Codex's model. */
+export function modelLabel(
+  session: Pick<Session, "connection" | "model"> & Partial<Pick<Session, "harness" | "harness_model">>,
+  list?: ConnectionList,
+) {
+  if (session.harness === "codex") return session.harness_model ? `${session.harness_model} (Codex)` : "Codex"
   const { connection, model } = sessionModel(session, list)
   return model ? `${model} (${connection})` : connection
 }
