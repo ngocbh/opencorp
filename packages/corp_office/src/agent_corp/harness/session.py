@@ -15,7 +15,7 @@ from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.translate import TURNLESS, Card, Translator, Unserved
 from agent_corp.protocol.models import Session
-from agent_corp.store import InvalidTransition
+from agent_corp.store import InvalidTransition, NotFound
 
 if TYPE_CHECKING:
     from agent_corp.harness.sessions import CodexSessions
@@ -349,10 +349,16 @@ class CodexSession:
             log.exception("codex session %s: no card can be made for %s", self.session_id, method)
             self._refuse(process, request_id, -32603, f"agent-corp couldn't read {method}")
             return
+        try:
+            self.store.add_question(card.question)
+        except Exception:  # no card to answer: Codex hears so now rather than waiting until Esc
+            log.exception("codex session %s: the card for %s wasn't stored", self.session_id, method)
+            self._refuse(process, request_id, -32603, f"agent-corp couldn't show {method}")
+            return
+        # Registered once the card exists; an answer to it runs on this thread, so it can't come before this.
         with self._lock:
             self.requests[card.question.id] = Pending(request_id, card)
             self.by_request[str(request_id)] = card.question.id
-        self.store.add_question(card.question)
 
     def _reply(self, question_id: str, answer: Any, by: str | None, done: "Future[bool]") -> None:
         if not done.set_running_or_notify_cancel():
@@ -411,6 +417,8 @@ class CodexSession:
             self.store.set_question_status(question_id, "stale")
         except InvalidTransition:
             pass  # answered meanwhile: its reply finds no pending request and loses the answer
+        except NotFound:
+            log.warning("codex session %s: card %s is gone", self.session_id, question_id)
 
     def _refuse(self, process: CodexProcess, request_id: Any, code: int, message: str) -> None:
         try:

@@ -9,6 +9,7 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.extensions.questions import register
 from agent_corp.harness import session as session_module
+from agent_corp.store import DuplicateKey
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
 
@@ -44,6 +45,24 @@ def test_a_request_no_card_can_be_made_from_gets_a_json_rpc_error(harness, fake_
     assert fake_codex.replies()[3]["code"] == -32603
     wait_for(lambda: status(harness, sid) == "idle", what="Codex going on")
     assert harness.store.list_questions(session_id=sid) == []
+
+
+def test_a_card_the_store_refuses_is_an_error_reply_and_the_turn_still_ends(harness, fake_codex, workspace,
+                                                                           monkeypatch):
+    fake_codex.script([[fc.command_approval(1, "c1", "touch a", wait=False), {"sleep": 0.3}]])
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+
+    def refuse(question):
+        raise DuplicateKey(f"question {question.run_id}/{question.node_id} exists")
+
+    monkeypatch.setattr(harness.store, "add_question", refuse)
+    harness.prompt(sid, "make a")
+    wait_for(lambda: 1 in fake_codex.replies(), what="the error reply")
+    assert fake_codex.replies()[1]["code"] == -32603
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    assert live.requests == {} and live.by_request == {}
+    live._expire("no-such-question")  # a card that is gone expires quietly
 
 
 def tool_parts(harness, sid):
