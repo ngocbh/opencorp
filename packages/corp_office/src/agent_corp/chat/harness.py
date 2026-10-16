@@ -659,6 +659,8 @@ class Harness:
         session = self.store.get_session(session_id)
         if session is None:
             raise HarnessError(404, "not_found", f"no session {session_id}")
+        if session.harness == "codex":
+            raise HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
         if usd <= session.cost:
             raise HarnessError(422, "cap_too_low", f"the cap must be above the cost so far (${session.cost:.4f})")
         item = self._cap_item(session)
@@ -680,6 +682,8 @@ class Harness:
         session = self.store.get_session(session_id)
         if session is None:
             raise HarnessError(404, "not_found", f"no session {session_id}")
+        if session.harness == "codex":
+            raise HarnessError(422, "not_supported", "a Codex session runs on Codex's own model and login")
         if session.status not in LIVE:
             raise HarnessError(409, "not_live", f"session {session_id} has ended")
         if session.status == "ending":

@@ -18,12 +18,14 @@ import uvicorn
 from agent_corp.chat.connections import Connections
 from agent_corp.chat.harness import Harness
 from agent_corp.chat.hire import Hiring
+from agent_corp.chat.hooks import Hooks
 from agent_corp.chat.logins import Logins
 from agent_corp.chat.models import ModelCache
 from agent_corp.company.git import CompanyGit
 from agent_corp.daemon.app import Office, OfficePaths, create_app
 from agent_corp.daemon.bus import Bus
 from agent_corp.extensions import ExtensionError, load_extensions
+from agent_corp.harness.sessions import CodexSessions
 from agent_corp.perm.monitor import Monitor
 from agent_corp.profile import GitProfileStore
 from agent_corp.secrets import SecretStore
@@ -167,7 +169,8 @@ class OfficeServer(uvicorn.Server):
 
 
 def build_office(paths: OfficePaths) -> Office:
-    """Open the store and the company clone and assemble the office, with the composer harness as its workers.
+    """Open the store and the company clone and assemble the office, with the composer harness as its workers
+    and the Codex sessions behind it.
 
     Workers left by an earlier office are killed first; the harness resumes their sessions on start.
     ``POST /people`` gets one ``Hiring`` for the office's life. On start, each connection's models are listed in the
@@ -181,7 +184,10 @@ def build_office(paths: OfficePaths) -> Office:
     connections = Connections(paths.office)
     models = ModelCache(connections)
     logins = Logins(connections, models=models)
-    harness = Harness(office, monitor, connections=connections, models=models)
+    hooks = Hooks()
+    # Built before the harness, so a Monitor kind for Codex can be built between them.
+    codex = CodexSessions(office, hooks)
+    harness = Harness(office, monitor, connections=connections, models=models, hooks=hooks, codex=codex)
     office.workers = harness
     office.extras["harness"] = harness
     office.extras["hiring"] = Hiring(git)

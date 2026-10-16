@@ -346,3 +346,11 @@ def test_going_idle_twice_leaves_one_timer(harness, workspace):
     with live._lock:
         live._idle()
     assert live.timer is not first and first.finished.is_set()  # the first was cancelled
+
+
+def test_model_and_cost_cap_are_refused_on_a_codex_session(harness, workspace):
+    sid = start(harness, workspace)
+    for call in (lambda: harness.set_model(sid, "office", "gpt-4o"), lambda: harness.set_cost_cap(sid, 50)):
+        with pytest.raises(HarnessError) as e:
+            call()
+        assert (e.value.status, e.value.code) == (422, "not_supported")
