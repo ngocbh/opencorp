@@ -1168,7 +1168,11 @@ class Store:
         rows = self._conn().execute("SELECT * FROM workers ORDER BY rowid").fetchall()
         return [WorkerRecord(r["session_id"], r["pid"], r["pgid"], r["start_time"]) for r in rows]
 
-    def remove_worker(self, session_id: str) -> None:
-        """Forget a session's worker (a no-op when none is recorded)."""
+    def remove_worker(self, session_id: str, pid: int | None = None) -> None:
+        """Forget a session's worker (a no-op when none is recorded); with ``pid``, only if the record is that
+        process's."""
         with self.transaction() as tx:
-            tx.execute("DELETE FROM workers WHERE session_id = ?", (session_id,))
+            if pid is None:
+                tx.execute("DELETE FROM workers WHERE session_id = ?", (session_id,))
+            else:
+                tx.execute("DELETE FROM workers WHERE session_id = ? AND pid = ?", (session_id, pid))
