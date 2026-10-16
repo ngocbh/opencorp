@@ -2,11 +2,10 @@
 daemon, sandbox, and Codex."""
 
 import os
-import shutil
 import stat
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -18,6 +17,7 @@ from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company_template import is_new, missing_files
 from agent_corp.daemon.app import OfficePaths
+from agent_corp.harness.codex import CodexMissing, codex_command
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
 from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
@@ -52,14 +52,24 @@ def sandbox_problem() -> str | None:
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
 
 
-def codex_check(env: dict[str, str], timeout: float = 30) -> Check:
+def codex_check(env: dict[str, str], environ: Mapping[str, str], timeout: float = 30) -> Check:
     """Whether the office can start Codex sessions, in the environment it gives an app-server: the binary on its PATH,
     the version, and the sign-in. Missing or signed out is a warning, not a failure: only people with ``codex`` in
-    ``harnesses`` need it. A ``codex`` that won't run or doesn't answer within ``timeout`` seconds fails."""
-    found = shutil.which("codex", path=env.get("PATH"))
-    if found is None:
+    ``harnesses`` need it. A ``codex`` that won't run or doesn't answer within ``timeout`` seconds fails.
+
+    ``environ`` is the office's environment: its ``AGENT_CORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
+    joins ``env``, as they do for an app-server."""
+    try:
+        found = codex_command(env, environ)[0]
+    except CodexMissing:
+        if override := environ.get("AGENT_CORP_CODEX_BIN"):
+            return Check("codex", "warn", f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable on the "
+                                          "office's PATH, so Codex sessions can't start (fix or unset it, then "
+                                          "`ac restart` from that shell)")
         return Check("codex", "warn", "not on the office's PATH, so Codex sessions can't start "
                                       "(npm install -g @openai/codex, then `ac restart` from that shell)")
+    if home := environ.get("CODEX_HOME"):
+        env = {**env, "CODEX_HOME": home}
     try:
         version = subprocess.run([found, "--version"], env=env, capture_output=True, text=True, timeout=timeout)
         if version.returncode != 0:
@@ -233,7 +243,7 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
-           codex: Callable[[dict[str, str]], Check] = codex_check) -> list[Check]:
+           codex: Callable[[dict[str, str], Mapping[str, str]], Check] = codex_check) -> list[Check]:
     """Every check, in the order onboarding sets things up."""
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
@@ -257,7 +267,7 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
     problem = probe()
     found.append(Check("sandbox", "fail", problem) if problem else Check("sandbox", "ok", "sandboxed commands run"))
     # run.env is what `ac restart` from this shell would give the office, not the running daemon's environment.
-    found.append(codex({k: v for k, v in run.env.items() if k in INHERITED_ENV or k.startswith("LC_")}))
+    found.append(codex({k: v for k, v in run.env.items() if k in INHERITED_ENV or k.startswith("LC_")}, run.env))
     return found
 
 

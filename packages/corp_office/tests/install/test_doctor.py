@@ -38,7 +38,7 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
-                         codex=lambda env: Check("codex", "ok", "stand-in"))
+                         codex=lambda env, environ: Check("codex", "ok", "stand-in"))
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -255,14 +255,14 @@ def _codex(tmp_path, login_exit):
 
 
 def test_codex_on_the_office_path_and_signed_in_is_ok(tmp_path):
-    check = codex_check(_codex(tmp_path, 0))
+    check = codex_check(_codex(tmp_path, 0), {})
     assert check.status == "ok" and "codex-cli 0.130.0" in check.detail
 
 
 def test_codex_signed_out_or_missing_is_a_warning(tmp_path):
-    signed_out = codex_check(_codex(tmp_path, 1))
+    signed_out = codex_check(_codex(tmp_path, 1), {})
     assert signed_out.status == "warn" and "codex login" in signed_out.detail
-    missing = codex_check({"PATH": str(tmp_path / "nowhere")})
+    missing = codex_check({"PATH": str(tmp_path / "nowhere")}, {})
     assert missing.status == "warn" and "not on the office's PATH" in missing.detail
 
 
@@ -270,10 +270,10 @@ def test_a_codex_that_hangs_or_cant_run_fails_the_check(tmp_path):
     env = _codex(tmp_path, 0)
     codex = tmp_path / "bin" / "codex"
     codex.write_text("#!/bin/sh\nsleep 5\n")
-    hung = codex_check(env, timeout=0.5)
+    hung = codex_check(env, {}, timeout=0.5)
     assert hung == Check("codex", "fail", f"{codex} --version didn't answer in 0.5 s")
     codex.write_text("#!/nonexistent/sh\n")
-    broken = codex_check(env)
+    broken = codex_check(env, {})
     assert broken.status == "fail" and broken.detail.startswith(f"{codex} can't run")
 
 
@@ -281,7 +281,45 @@ def test_checks_run_the_codex_check_they_are_given_in_the_app_servers_environmen
     seen = []
     host = make_host(tmp_path, Runner(), answers=lambda s: False)
     found = doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
-                          codex=lambda env: seen.append(env) or Check("codex", "ok", "stand-in"))
+                          codex=lambda env, environ: seen.append(env) or Check("codex", "ok", "stand-in"))
     assert found[-1] == Check("codex", "ok", "stand-in")
     assert seen and all(k in ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ") or k.startswith("LC_")
                         for k in seen[0])
+
+
+def test_agent_corp_codex_bin_names_the_codex_the_check_runs(tmp_path):
+    env = _codex(tmp_path, 0)
+    other = tmp_path / "codex-dev"
+    other.write_text('#!/bin/sh\ncase "$1" in --version) echo "codex-cli 9.9.9";; login) exit 0;; esac\n')
+    other.chmod(0o755)
+    by_path = codex_check(env, {"AGENT_CORP_CODEX_BIN": str(other)})
+    assert by_path == Check("codex", "ok", f"codex-cli 9.9.9 at {other}, signed in")
+    (tmp_path / "bin" / "codex-dev").symlink_to(other)
+    by_name = codex_check(env, {"AGENT_CORP_CODEX_BIN": "codex-dev"})
+    assert by_name == Check("codex", "ok", f"codex-cli 9.9.9 at {tmp_path / 'bin' / 'codex-dev'}, signed in")
+
+
+def test_an_agent_corp_codex_bin_the_office_cant_find_is_a_warning_even_with_codex_on_the_path(tmp_path):
+    check = codex_check(_codex(tmp_path, 0), {"AGENT_CORP_CODEX_BIN": "/nowhere/codex"})
+    assert check.status == "warn" and "AGENT_CORP_CODEX_BIN names /nowhere/codex" in check.detail
+
+
+def test_the_check_runs_codex_with_the_offices_codex_home_when_set(tmp_path):
+    env = _codex(tmp_path, 0)
+    (tmp_path / "bin" / "codex").write_text(
+        '#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";; login) [ "$CODEX_HOME" = /x/home ];; esac\n')
+    assert codex_check(env, {"CODEX_HOME": "/x/home"}).status == "ok"
+    assert codex_check(env, {}).status == "warn"
+    assert "CODEX_HOME" not in env
+
+
+def test_checks_give_the_codex_check_the_offices_environment_to_find_codex(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", "/x/home")
+    monkeypatch.setenv("AGENT_CORP_CODEX_BIN", "/x/codex")
+    seen = []
+    host = make_host(tmp_path, Runner(), answers=lambda s: False)
+    doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
+                  codex=lambda env, environ: seen.append((env, environ)) or Check("codex", "ok", "stand-in"))
+    env, environ = seen[0]
+    assert environ["CODEX_HOME"] == "/x/home" and environ["AGENT_CORP_CODEX_BIN"] == "/x/codex"
+    assert "CODEX_HOME" not in env and "AGENT_CORP_CODEX_BIN" not in env
