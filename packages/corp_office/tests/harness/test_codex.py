@@ -49,8 +49,9 @@ def test_agent_corp_codex_bin_names_another_codex(tmp_path):
     empty = {"PATH": str(tmp_path / "empty")}
     assert codex_command(empty, {"AGENT_CORP_CODEX_BIN": str(other)})[0] == str(other)
     assert codex_command({"PATH": str(tmp_path / "bin")}, {"AGENT_CORP_CODEX_BIN": "codex-dev"})[0] == str(other)
-    with pytest.raises(CodexMissing, match="codex-dev"):
+    with pytest.raises(CodexMissing, match="AGENT_CORP_CODEX_BIN names codex-dev, which isn't an executable") as e:
         codex_command(empty, {"AGENT_CORP_CODEX_BIN": "codex-dev"})
+    assert "unset it" in str(e.value) and "npm" not in str(e.value)
 
 
 def fake(tmp_path, script=None):
@@ -171,19 +172,16 @@ def test_reaping_a_session_never_touches_its_app_server(tmp_path):
         p.close(grace=1)
 
 
-def test_the_app_server_gets_the_offices_codex_home_when_it_is_set(tmp_path, monkeypatch):
+def test_the_app_server_gets_the_offices_codex_home_when_it_is_set(tmp_path):
     seen = tmp_path / "codex_home.txt"
     # A shell in front of the fake writes down the CODEX_HOME the app-server was given.
-    command = ["/bin/sh", "-c", f'printf %s "${{CODEX_HOME-unset}}" > {seen}; exec "$0" "$@"', *fake(tmp_path)]
+    command = ["/bin/sh", "-c", f'printf %s "${{CODEX_HOME-unset}}" > "{seen}"; exec "$0" "$@"', *fake(tmp_path)]
     with Store(tmp_path / "store.sqlite") as store:
-        for home, expected in ((str(tmp_path / "codex-home"), str(tmp_path / "codex-home")), (None, "unset")):
-            if home:
-                monkeypatch.setenv("CODEX_HOME", home)
-            else:
-                monkeypatch.delenv("CODEX_HOME", raising=False)
+        for environ, expected in (({"CODEX_HOME": str(tmp_path / "codex-home")}, str(tmp_path / "codex-home")),
+                                  ({}, "unset")):
             p = CodexProcess(store, "harness:S1", command=command, cwd=str(tmp_path), env={"PATH": os.environ["PATH"]},
                              log=tmp_path / "codex.log", on_notification=lambda m, p: None,
-                             on_request=lambda i, m, p: None, on_exit=lambda p: None)
+                             on_request=lambda i, m, p: None, on_exit=lambda p: None, environ=environ)
             p.start()
             assert seen.read_text() == expected
             p.close(grace=1)

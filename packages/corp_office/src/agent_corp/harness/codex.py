@@ -46,11 +46,13 @@ def codex_command(env: Mapping[str, str], environ: Mapping[str, str] = os.enviro
 
     ``AGENT_CORP_CODEX_BIN`` in the office's ``environ`` names another binary (a path, or a name on that PATH).
     """
-    binary = environ.get("AGENT_CORP_CODEX_BIN") or "codex"
-    found = shutil.which(binary, path=env.get("PATH"))
+    override = environ.get("AGENT_CORP_CODEX_BIN")
+    found = shutil.which(override or "codex", path=env.get("PATH"))
+    if found is None and override:
+        raise CodexMissing(f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the office can find; "
+                           "fix or unset it, then run `ac doctor`.")
     if found is None:
-        name = "Codex" if binary == "codex" else f"Codex ({binary}, from AGENT_CORP_CODEX_BIN)"
-        raise CodexMissing(f"{name} isn't installed where the office can find it (on its PATH). Install it "
+        raise CodexMissing("Codex isn't installed where the office can find it (on its PATH). Install it "
                            "(npm install -g @openai/codex), sign in with `codex login`, then run `ac doctor`.")
     return [found, *APP_SERVER_ARGS]
 
@@ -69,15 +71,16 @@ def owner_load(cwd: str, policy: HarnessPolicy | None) -> dict[str, Any]:
 class CodexProcess:
     """One app-server in its own process group, recorded in the store's workers under ``key`` for ``reap``.
 
-    ``on_exit(process)`` runs once when its stdout ends, whoever ended it.
+    ``on_exit(process)`` runs once when its stdout ends, whoever ended it. The app-server runs with ``env`` and the
+    office's ``CODEX_HOME`` (from ``environ``) when it is set.
     """
 
     def __init__(self, store: Store, key: str, *, command: list[str], cwd: str, env: dict[str, str], log: Path,
                  on_notification: Callable[[str, dict], None], on_request: Callable[[Any, str, dict], None],
-                 on_exit: Callable[["CodexProcess"], None]) -> None:
+                 on_exit: Callable[["CodexProcess"], None], environ: Mapping[str, str] = os.environ) -> None:
         self.store, self.key, self.command, self.cwd, self.log = store, key, command, cwd, log
         # Codex finds its config and sign-in through CODEX_HOME when the owner sets one, and ~/.codex otherwise.
-        home = os.environ.get("CODEX_HOME")
+        home = environ.get("CODEX_HOME")
         self.env = {**env, "CODEX_HOME": home} if home else dict(env)
         self._on_notification, self._on_request, self._on_exit = on_notification, on_request, on_exit
         self.proc: subprocess.Popen[bytes] | None = None
