@@ -314,13 +314,15 @@ class CodexSession:
         self.store.update_session(self.session_id, status="idle")
         if self._idle_after is None:
             self._idle_after = self.owner.idle_seconds(self.session_id)
-        self.timer = threading.Timer(self._idle_after, self._post, (self._idle_end,))
-        self.timer.daemon = True
-        self.timer.start()
+        timer = self.timer = threading.Timer(self._idle_after, self._post)
+        timer.args = (self._idle_end, timer)  # the job knows its timer, so one a message stopped ends nothing
+        timer.daemon = True
+        timer.start()
 
-    def _idle_end(self) -> None:
+    def _idle_end(self, timer: threading.Timer) -> None:
         with self._lock:
-            still_idle = self.turn_id is None and not self.pending and not self.loading and not self.ending
+            still_idle = self.timer is timer and self.turn_id is None and not self.pending and not self.loading \
+                and not self.ending
         if still_idle:
             try:
                 self.end()

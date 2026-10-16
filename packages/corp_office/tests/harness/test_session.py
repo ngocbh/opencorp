@@ -383,3 +383,21 @@ def test_ending_on_a_codex_that_never_answers_the_interrupt_returns_and_ends_aft
     assert time.monotonic() - began < 5
     wait_for(lambda: status(harness, sid) == "ended", timeout=5, what="the end after END_WAIT")
     assert harness.store.list_workers() == []
+
+
+def test_an_idle_timer_that_fired_as_a_message_came_ends_nothing(harness, fake_codex, workspace):
+    fake_codex.script([fc.agent_message("m1", "Hi")])
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    fired = wait_for(lambda: live.timer, what="the idle timer")
+    began, release = threading.Event(), threading.Event()
+
+    def hold():  # keeps turn/started waiting, as a busy session thread would
+        began.set()
+        release.wait(5)
+    live._post(hold)
+    assert began.wait(5)
+    harness.prompt(sid, "hi")
+    live._idle_end(fired)  # the timer's job, run after the message stopped that timer
+    release.set()
+    wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
