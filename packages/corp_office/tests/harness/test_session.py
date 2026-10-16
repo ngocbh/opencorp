@@ -5,7 +5,7 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.harness.codex import CodexStartError, owner_load
 from agent_corp.protocol.models import HarnessPolicy
-from tests.harness.conftest import requests_valid, start, status, wait_for
+from tests.harness.conftest import errors, requests_valid, start, status, wait_for
 
 
 class Live:
@@ -57,3 +57,13 @@ def test_a_codex_session_that_cant_be_set_up_fails_at_once(harness, workspace, m
     assert (e.value.status, e.value.code) == (500, "start_failed")
     [s] = harness.store.list_sessions()
     assert s.status == "failed"
+
+
+def test_a_load_codex_refuses_fails_the_session_with_why(harness, fake_codex, workspace):
+    fake_codex.script(initialize_error={"code": -32600, "message": "nope"}, stderr="config.toml: bad key")
+    ended = []
+    harness.hooks.session_ended.append(lambda s: ended.append(s.status))
+    sid = harness.start_session("minh", str(workspace), "codex").id
+    wait_for(lambda: status(harness, sid) == "failed", what="failed")
+    assert "config.toml: bad key" in errors(harness, sid)[0] and harness.store.list_workers() == []
+    assert ended == ["failed"]

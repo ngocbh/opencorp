@@ -62,6 +62,19 @@ class CodexSessions:
         process.start()
         return process
 
+    def finished(self, live: CodexSession, status: str) -> None:
+        """Drop ``live`` and end its session: ``ended`` (or the first ``end_status``, such as ``debriefing``) or
+        ``failed``. ``session_ended`` fires once."""
+        with self._lock:
+            if self._live.get(live.session_id) is live:
+                del self._live[live.session_id]
+        session = self.store.get_session(live.session_id)
+        if status == "ended":
+            status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
+            if session.work_item_id:  # first, so no client sees an ended session with its work still open
+                self.store.update_work_item(session.work_item_id, status="done")
+        self.hooks.fire("session_ended", self.store.update_session(live.session_id, status=status))
+
     def policy(self, session_id: str) -> HarnessPolicy | None:
         """The session's person's harness policy at the session's pinned commit."""
         session = self.store.get_session(session_id)

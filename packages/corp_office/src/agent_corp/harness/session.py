@@ -7,7 +7,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from agent_corp.chat.transcript import Transcript
-from agent_corp.harness.codex import CodexProcess, owner_load
+from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
+from agent_corp.harness.rpc import RpcError
 from agent_corp.harness.translate import Translator
 from agent_corp.protocol.models import Session
 
@@ -15,6 +16,17 @@ if TYPE_CHECKING:
     from agent_corp.harness.sessions import CodexSessions
 
 log = logging.getLogger(__name__)
+
+
+def why(exc: Exception) -> str:
+    """What an error part says about a failed load: what to do, then the stderr tail."""
+    if isinstance(exc, CodexStartError):
+        return f"{exc}\n{exc.tail}".strip()
+    if isinstance(exc, RpcError):
+        return f"Codex refused to load the thread: {exc.message}"
+    if isinstance(exc, TimeoutError):
+        return f"Codex didn't answer in time: {exc}"
+    return "Codex couldn't start; see the office log."
 
 
 class CodexSession:
@@ -90,18 +102,31 @@ class CodexSession:
             # The office never reads past turns, so a resume needn't send them.
             result = (process.rpc.request("thread/resume", {"threadId": self.thread_id, "excludeTurns": True, **params})
                       if resume else process.rpc.request("thread/start", params))
-        except Exception:
+        except Exception as exc:
             with self._lock:
                 process, self.launching = self.launching, None
             if process is not None:
                 process.kill()
-            log.exception("codex session %s can't load its thread", self.session_id)
+            self._cant_load(exc)
             return
         with self._lock:
             self.launching, self.process = None, process
         self.thread_id = result["thread"]["id"]
         self.store.update_session(self.session_id, harness_session_id=self.thread_id, harness_model=result.get("model"))
         self._flush()
+
+    def _cant_load(self, exc: Exception) -> None:
+        if not isinstance(exc, (CodexStartError, RpcError)):
+            log.exception("codex session %s can't load its thread", self.session_id)
+        self.transcript.error(why(exc))
+        with self._lock:
+            self.loading = False
+            self.pending.clear()
+            if self.ending:
+                return  # the end posted meanwhile closes it
+            self.closed = True
+        self.owner.finished(self, "failed")
+        self._jobs.put(None)
 
     def _flush(self) -> None:
         """Go idle once loaded."""
