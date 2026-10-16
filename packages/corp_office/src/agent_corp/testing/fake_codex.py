@@ -82,7 +82,15 @@ class Fake:
             msg = json.loads(line)
             with self._io:
                 self._write_log({"dir": "in", "msg": msg})
-            if "id" in msg and "method" in msg:
+            if "method" not in msg:  # the office's reply to one of our requests
+                with self._state:
+                    known = msg["id"] in self._waiting
+                if known:  # as Codex does, say the request is resolved before the turn goes on
+                    self.resolve(msg["id"])
+                with self._state:
+                    self._replies[msg["id"]] = msg
+                    self._state.notify_all()
+            elif "id" in msg:
                 self.answer(msg["id"], msg["method"], msg.get("params") or {})
         return 0
 
@@ -105,10 +113,93 @@ class Fake:
                 "thread": {"id": self.thread["id"], "turns": []}, "model": self.thread.get("model"),
                 "modelProvider": "openai", "cwd": self.cwd, "approvalPolicy": params.get("approvalPolicy"),
                 "approvalsReviewer": params.get("approvalsReviewer", "user"), "sandbox": {"type": "readOnly"}})
+        if method == "turn/start":
+            return self.turn_start(request_id)
+        if method == "turn/interrupt":
+            with self._state:
+                if self._turn is None or params.get("turnId") != self._turn:
+                    return self.reply(request_id, error={"code": -32600, "message": "no active turn to interrupt"})
+                self._interrupted = True
+                self._state.notify_all()
+            return self.reply(request_id, {})
         if method == "fake/wait":
             time.sleep(params.get("seconds", 0))
             return self.reply(request_id, {})
         self.reply(request_id, error={"code": -32601, "message": f"fake codex doesn't serve {method}"})
+
+    def next_steps(self) -> list[dict[str, Any]]:
+        if self._count_file and self._count_file.exists():
+            self._count = int(self._count_file.read_text())
+        turns = self.script.get("turns", [])
+        steps = turns[self._count] if self._count < len(turns) else []
+        self._count += 1
+        if self._count_file:
+            self._count_file.write_text(str(self._count))
+        return steps
+
+    def turn_start(self, request_id: Any) -> None:
+        with self._state:
+            if self._turn is not None:  # Codex steers the running turn
+                return self.reply(request_id, {"turn": {"id": self._turn, "items": [], "status": "inProgress"}})
+            steps = self.next_steps()
+            turn = self._turn = f"turn_{self._count}"
+            self._interrupted = False
+        started = {"id": turn, "items": [], "status": "inProgress"}
+        self.reply(request_id, {"turn": started})
+        self.send({"method": "turn/started", "params": {"threadId": self.thread["id"], "turn": started}})
+        threading.Thread(target=self.run, args=(turn, steps), daemon=True).start()
+
+    def run(self, turn: str, steps: list[dict[str, Any]]) -> None:
+        status, error = "completed", None
+        for step in steps:
+            if self._interrupted:
+                break
+            params = fill(step.get("params", {}), turn, self.cwd, self.thread["id"])
+            if "notify" in step:
+                self.send({"method": step["notify"], "params": params})
+            elif "request" in step:
+                with self._state:
+                    self._waiting.add(step["id"])
+                self.send({"id": step["id"], "method": step["request"], "params": params})
+                if step.get("wait"):
+                    self.wait_reply(step["id"])
+            elif "wait_reply" in step:
+                self.wait_reply(step["wait_reply"])
+            elif "resolve" in step:
+                self.resolve(step["resolve"])
+            elif "sleep" in step:
+                with self._state:
+                    self._state.wait_for(lambda: self._interrupted, step["sleep"])
+            elif "spawn" in step:
+                # Codex gives a command its own pipes, so it never holds the app-server's stdout open.
+                child = subprocess.Popen(["sleep", str(step["spawn"])], stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with self._io:
+                    self._write_log({"dir": "spawn", "pid": child.pid})
+            elif "exit" in step:
+                os._exit(step["exit"])
+            elif "end" in step:
+                status, error = step["end"], step.get("error")
+                break
+        with self._state:
+            interrupted, self._turn = self._interrupted, None
+            waiting = list(self._waiting)
+        if interrupted:
+            for request_id in waiting:
+                self.resolve(request_id)
+            status = "interrupted"
+        self.send({"method": "turn/completed", "params": {"threadId": self.thread["id"], "turn": {
+            "id": turn, "items": [], "status": status, "error": error}}})
+
+    def wait_reply(self, request_id: Any) -> None:
+        with self._state:
+            self._state.wait_for(lambda: request_id in self._replies or self._interrupted)
+
+    def resolve(self, request_id: Any) -> None:
+        with self._state:
+            self._waiting.discard(request_id)
+        self.send({"method": "serverRequest/resolved", "params": {"threadId": self.thread["id"],
+                                                                  "requestId": request_id}})
 
 
 # --- step builders: messages shaped as the pinned schema says --------------------------------

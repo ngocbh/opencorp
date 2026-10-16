@@ -84,3 +84,40 @@ def test_doctor_questions_get_fake_answers():
     version = subprocess.run([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--version"],
                              capture_output=True, text=True, timeout=20)
     assert version.stdout.strip() == "codex-cli 0.0.0-fake"
+
+
+def test_a_turn_runs_its_steps_and_completes(tmp_path):
+    out = run(tmp_path, {"turns": [fc.agent_message("m1", "hello")]}, *START,
+              {"id": 4, "method": "fake/wait", "params": {"seconds": 1}})
+    methods = [m.get("method", "result") for m in out]
+    assert methods[:4] == ["result", "result", "result", "turn/started"]
+    completed = next(m for m in out if m.get("method") == "turn/completed")
+    assert completed["params"]["turn"]["status"] == "completed"
+
+
+def test_a_turn_start_during_a_turn_answers_with_the_running_turn(tmp_path):
+    out = run(tmp_path, {"turns": [[{"sleep": 0.5}]]}, *START,
+              {"id": 4, "method": "turn/start", "params": {"threadId": "thr_fake", "input": []}},
+              {"id": 5, "method": "fake/wait", "params": {"seconds": 1}})
+    answers = {m["id"]: m["result"] for m in out if "result" in m}
+    assert answers[3]["turn"]["id"] == answers[4]["turn"]["id"] == "turn_1"
+    assert sum(1 for m in out if m.get("method") == "turn/started") == 1
+
+
+def test_a_reply_is_followed_by_server_request_resolved_before_the_turn_goes_on(tmp_path):
+    out = run(tmp_path, {"turns": [[fc.command_approval(7, "c1", "touch a"), *fc.agent_message("m1", "ok")]]}, *START,
+              {"id": 4, "method": "fake/wait", "params": {"seconds": 0.5}}, {"id": 7, "result": {"decision": "accept"}},
+              {"id": 5, "method": "fake/wait", "params": {"seconds": 0.5}})
+    methods = [m.get("method") for m in out if "method" in m]
+    assert methods.count("serverRequest/resolved") == 1
+    assert methods.index("serverRequest/resolved") < methods.index("item/agentMessage/delta")
+    assert next(m for m in out if m.get("method") == "serverRequest/resolved")["params"]["requestId"] == 7
+    notes, requests = validator("ServerNotification"), validator("ServerRequest")
+    for m in (m for m in out if "method" in m):  # what the fake makes itself is Codex's shape too
+        (requests if "id" in m else notes).validate(m)
+
+
+def test_a_spawn_step_logs_its_childs_pid(tmp_path):
+    run(tmp_path, {"turns": [[{"spawn": 1}]]}, *START, {"id": 4, "method": "fake/wait", "params": {"seconds": 0.5}})
+    [entry] = [e for e in log(tmp_path) if e["dir"] == "spawn"]
+    assert entry["pid"] > 0
