@@ -129,6 +129,18 @@ def test_feedback_on_the_debrief_run_learns_through_the_debrief_flow(harness, fa
     assert profile_text(harness).endswith("- Shorter debriefs.\n")
 
 
+def test_feedback_on_a_session_without_runs_goes_to_its_debrief_run(harness, fake_llm, workspace, learning):
+    sid = ended(harness, fake_llm, workspace)
+    record = harness.store.get_debrief_record(sid)
+    # A Codex session has no office runs: only its debrief is one.
+    with harness.store.transaction() as tx:
+        tx.execute("DELETE FROM session_runs WHERE session_id = ?", (sid,))
+    fake_llm.script(review_reply(), learner_reply(PROFILE + "\n- Smaller diffs.\n"))
+    fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Smaller diffs."))
+    assert fb.run_id == record.run_id
+    wait_for(lambda: feedback_status(harness, fb.id) == "applied", what="applied")
+
+
 def test_feedback_needs_a_finished_run_of_the_session(harness, fake_llm, workspace, learning):
     fake_llm.script({"content": "hi"})
     live = harness.start_session("minh", str(workspace))
