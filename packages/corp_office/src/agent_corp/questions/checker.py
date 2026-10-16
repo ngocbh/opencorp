@@ -22,14 +22,14 @@ def check_answer(question: Question, answer: Any, kind: str) -> Any:
     office's own answers. Otherwise ``sent_back`` and ``interrupted`` answers are the
     office's own and pass unchanged. A model question (``ask_user``, ``ask_manager``)
     takes text, and an ``option`` answer must be one of its options. A ``human_input``
-    question with pages takes a record
-    keyed by each page's ``header``. A page with an ``answer_schema`` entry takes what
-    that entry takes, and one without takes a label, or a list of labels for a
-    multi-select page. One without pages takes what its ``answer_schema`` says; text is
-    converted to the field's type (numbers, ISO dates, yes/no, one list item per line).
-    Blank text is no answer: a required field refuses it unless its type is ``None``, and
-    an optional one is ``None`` (omitted in a record). Nothing looser than the engine's
-    own check is returned, and a converted value converts to itself.
+    question with pages takes a record keyed by each page's ``header``. A page with an
+    ``answer_schema`` entry takes what that entry takes, and one without takes a label,
+    or a list of labels for a multi-select page. One without pages takes what its
+    ``answer_schema`` says; text is converted to the field's type (numbers, ISO dates,
+    yes/no, one list item per line). Blank text is no answer: a required field refuses
+    it unless its type is ``None``, and an optional one is ``None`` (omitted in a
+    record). Nothing looser than the engine's own check is returned, and a converted
+    value converts to itself.
     """
     if question.source == "harness":
         return _harness(question, answer, kind)
