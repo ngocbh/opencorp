@@ -1,8 +1,10 @@
 """``ac doctor``: check the office home (there and private), company repo, provider and connections, service,
-daemon, and sandbox."""
+daemon, sandbox, and Codex."""
 
 import os
+import shutil
 import stat
+import subprocess
 import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
 from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
+from agent_corp.worker.spawn import INHERITED_ENV
 
 _START_ERROR = "agent-corp office: "
 """How the daemon prefixes the one line it prints when it can't start."""
@@ -47,6 +50,28 @@ def sandbox_problem() -> str | None:
         except (OSError, RuntimeError, ValueError) as exc:
             return str(exc)
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
+
+
+def codex_check(env: dict[str, str], timeout: float = 30) -> Check:
+    """Whether the office can start Codex sessions, in the environment it gives an app-server: the binary on its PATH,
+    the version, and the sign-in. Missing or signed out is a warning, not a failure: only people with ``codex`` in
+    ``harnesses`` need it. A ``codex`` that won't run or doesn't answer within ``timeout`` seconds fails."""
+    found = shutil.which("codex", path=env.get("PATH"))
+    if found is None:
+        return Check("codex", "warn", "not on the office's PATH, so Codex sessions can't start "
+                                      "(npm install -g @openai/codex, then `ac restart` from that shell)")
+    try:
+        version = subprocess.run([found, "--version"], env=env, capture_output=True, text=True, timeout=timeout)
+        if version.returncode != 0:
+            return Check("codex", "fail", f"{found} --version failed: {version.stderr.strip()[:200]}")
+        login = subprocess.run([found, "login", "status"], env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        return Check("codex", "fail", f"{found} {' '.join(exc.cmd[1:])} didn't answer in {timeout:g} s")
+    except OSError as exc:
+        return Check("codex", "fail", f"{found} can't run: {exc.strerror or exc}")
+    if login.returncode != 0:
+        return Check("codex", "warn", f"{version.stdout.strip()} is signed out; run `codex login`")
+    return Check("codex", "ok", f"{version.stdout.strip()} at {found}, signed in")
 
 
 def _home(paths: OfficePaths) -> Check:
@@ -207,7 +232,8 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
 
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
-           probe: Callable[[], str | None] = sandbox_problem) -> list[Check]:
+           probe: Callable[[], str | None] = sandbox_problem,
+           codex: Callable[[dict[str, str]], Check] = codex_check) -> list[Check]:
     """Every check, in the order onboarding sets things up."""
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
@@ -230,6 +256,8 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
                            f"not answering on {run.socket} (log: {run.log}). {_next_step(run, host)}"))
     problem = probe()
     found.append(Check("sandbox", "fail", problem) if problem else Check("sandbox", "ok", "sandboxed commands run"))
+    # run.env is what `ac restart` from this shell would give the office, not the running daemon's environment.
+    found.append(codex({k: v for k, v in run.env.items() if k in INHERITED_ENV or k.startswith("LC_")}))
     return found
 
 

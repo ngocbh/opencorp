@@ -109,7 +109,7 @@ def _offboard(args: argparse.Namespace) -> int:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    found = doctor.checks(_home(args.home), probe=doctor.sandbox_problem)
+    found = doctor.checks(_home(args.home), probe=doctor.sandbox_problem, codex=doctor.codex_check)
     print(doctor.report(found), end="")
     return doctor.exit_code(found)
 

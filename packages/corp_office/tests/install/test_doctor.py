@@ -9,7 +9,7 @@ from agent_corp.chat.connections import ConnectionFile, Connections
 from agent_corp.company_template import Owner, write_company
 from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import doctor, launchd, systemd
-from agent_corp.install.doctor import Check
+from agent_corp.install.doctor import Check, codex_check
 from agent_corp.install.launch import Launch, launch
 from agent_corp.install.onboard import SET_UP, write_private
 from agent_corp.profile.debrief import DEBRIEF_FLOW
@@ -37,7 +37,8 @@ def by_name(checks):
 
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
-    return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe)
+    return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
+                         codex=lambda env: Check("codex", "ok", "stand-in"))
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -242,3 +243,45 @@ def test_the_newest_source_covers_the_office_and_composer(tmp_path):
         path.write_text("")
         os.utime(path, (when, when))
     assert doctor.newest_source(tmp_path) == 200
+
+
+def _codex(tmp_path, login_exit):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "codex").write_text(
+        f'#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";; login) exit {login_exit};; esac\n')
+    (bin_dir / "codex").chmod(0o755)
+    return {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
+
+
+def test_codex_on_the_office_path_and_signed_in_is_ok(tmp_path):
+    check = codex_check(_codex(tmp_path, 0))
+    assert check.status == "ok" and "codex-cli 0.130.0" in check.detail
+
+
+def test_codex_signed_out_or_missing_is_a_warning(tmp_path):
+    signed_out = codex_check(_codex(tmp_path, 1))
+    assert signed_out.status == "warn" and "codex login" in signed_out.detail
+    missing = codex_check({"PATH": str(tmp_path / "nowhere")})
+    assert missing.status == "warn" and "not on the office's PATH" in missing.detail
+
+
+def test_a_codex_that_hangs_or_cant_run_fails_the_check(tmp_path):
+    env = _codex(tmp_path, 0)
+    codex = tmp_path / "bin" / "codex"
+    codex.write_text("#!/bin/sh\nsleep 5\n")
+    hung = codex_check(env, timeout=0.5)
+    assert hung == Check("codex", "fail", f"{codex} --version didn't answer in 0.5 s")
+    codex.write_text("#!/nonexistent/sh\n")
+    broken = codex_check(env)
+    assert broken.status == "fail" and broken.detail.startswith(f"{codex} can't run")
+
+
+def test_checks_run_the_codex_check_they_are_given_in_the_app_servers_environment(tmp_path):
+    seen = []
+    host = make_host(tmp_path, Runner(), answers=lambda s: False)
+    found = doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
+                          codex=lambda env: seen.append(env) or Check("codex", "ok", "stand-in"))
+    assert found[-1] == Check("codex", "ok", "stand-in")
+    assert seen and all(k in ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ") or k.startswith("LC_")
+                        for k in seen[0])

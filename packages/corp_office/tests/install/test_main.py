@@ -25,14 +25,28 @@ from .test_onboard import _stop
 KEY = "sk-ant-sentinel-a7d93c10e5b2"
 
 
+def _no_codex(env):
+    """Stands in for the Codex check, so a test never runs whatever ``codex`` is on the developer's PATH."""
+    return doctor.Check("codex", "ok", "stand-in")
+
+
+def test_doctor_runs_the_codex_check_doctor_has_when_it_runs(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    monkeypatch.setattr(doctor, "codex_check", _no_codex)
+    main(["doctor", "--home", str(tmp_path / "home")])
+    assert "ok    codex        stand-in" in capsys.readouterr().out
+
+
 def test_doctor_on_a_fresh_machine_fails_and_says_to_onboard(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    monkeypatch.setattr(doctor, "codex_check", _no_codex)
     assert main(["doctor", "--home", str(tmp_path / "home")]) == 1
     assert "fail  company      no company repo" in capsys.readouterr().out
 
 
 def test_the_home_defaults_to_agent_corp_home(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    monkeypatch.setattr(doctor, "codex_check", _no_codex)
     monkeypatch.setenv("AGENT_CORP_HOME", str(tmp_path / "elsewhere"))
     main(["doctor"])
     assert f"no company repo at {os.path.realpath(tmp_path / 'elsewhere')}/company" in capsys.readouterr().out
@@ -40,6 +54,7 @@ def test_the_home_defaults_to_agent_corp_home(tmp_path, monkeypatch, capsys):
 
 def test_an_empty_agent_corp_home_means_the_default(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    monkeypatch.setattr(doctor, "codex_check", _no_codex)
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("AGENT_CORP_HOME", "")
     main(["doctor"])
