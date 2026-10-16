@@ -69,7 +69,7 @@ def test_optional_fields_default():
                 assert "default" in prop, f"{name}.{field}"
 
 
-def test_codex_step_one_fields_exist():
+def test_harness_session_fields_exist():
     defs = _schema()["$defs"]
     assert "harness" in defs["Question"]["properties"]["source"]["enum"]
     assert {"harness_model", "harness_usage", "parent_session_id"} <= defs["Session"]["properties"].keys()
