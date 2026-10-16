@@ -2,6 +2,7 @@
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -156,6 +157,31 @@ def test_a_long_session_keeps_nothing_from_its_finished_turns(tr):
         feed(t, [fc.error("late", will_retry=False)], turn=turn)  # after its turn ended: nothing to keep
     assert (t._items, t._streamed, t._nodes, t._segments, t._shown, t._after_error) == ({}, {}, {}, {}, {}, set())
     assert [p.message for p in parts(store, s.id) if p.type == "error"] == ["Codex: hiccup"] * 5
+
+
+def test_a_turns_end_from_another_thread_waits_for_a_notification_being_written(tr):
+    # The session hands notifications over on Codex's reader thread and ends turns from others.
+    store, s, _ = tr
+    writing, release = threading.Event(), threading.Event()
+
+    class Slow(Transcript):
+        def stream(self, frame):
+            writing.set()
+            release.wait(5)
+            super().stream(frame)
+
+    t = Translator(Slow(store, s.id, lambda e: None), s.cwd)
+    delta = threading.Thread(target=feed, args=(t, [fc.agent_message_delta("m1", "Hi")]))
+    end = threading.Thread(target=t.turn_completed, args=("turn_1", "interrupted", None))
+    delta.start()
+    assert writing.wait(5)
+    end.start()
+    end.join(0.2)
+    assert end.is_alive()  # it waits for the delta, so the delta never lands in a closed message
+    release.set()
+    delta.join(5)
+    end.join(5)
+    assert shape(store, s.id) == [("assistant", ["Hi\n\n[interrupted]"])]
 
 
 # --- tool items --------------------------------------------------------------------------

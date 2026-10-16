@@ -9,6 +9,7 @@ on its own part. An interrupted turn ends with ``[interrupted]``.
 import json
 import logging
 import os
+import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -60,13 +61,15 @@ def change_counts(kind: str | None, diff: str | None) -> tuple[int, int]:
 
 
 class Translator:
-    """Write one Codex thread's items into a session's transcript. Methods run on the session's own thread.
+    """Write one Codex thread's items into a session's transcript.
 
-    ``cwd`` is the session's: file changes under it are named relative to it.
+    The public methods may be called from any thread (Codex's reader thread, an answer, a turn's end); one lock
+    runs them one at a time. ``cwd`` is the session's: file changes under it are named relative to it.
     """
 
     def __init__(self, transcript: Transcript, cwd: str | None = None) -> None:
         self.transcript, self.cwd = transcript, cwd
+        self._lock = threading.Lock()
         self._streamed: dict[str, int] = {}  # agent message item id -> characters streamed so far
         self._items: dict[str, dict[str, Any]] = {}  # tool item id -> its latest item, for cards and decisions
         self._segments: dict[str, list[str]] = {}  # turn id -> the transcript node of each of its messages
@@ -77,6 +80,10 @@ class Translator:
 
     def notification(self, method: str, params: dict[str, Any]) -> bool:
         """Write an item notification into the transcript; False for a method that isn't the translator's."""
+        with self._lock:
+            return self._notification(method, params)
+
+    def _notification(self, method: str, params: dict[str, Any]) -> bool:
         if method not in ("item/agentMessage/delta", "item/started", "item/completed", "error"):
             return False
         if params.get("turnId") in self._finished:  # its messages are closed: writing would open a new one
@@ -95,6 +102,10 @@ class Translator:
     def turn_completed(self, turn_id: str, status: str, error: dict[str, Any] | None) -> None:
         """Close the turn's messages: running tools become interrupted, and an interrupted turn gets the marker on its
         newest message (a new one when nothing ran, or when a steer came after the newest)."""
+        with self._lock:
+            self._turn_completed(turn_id, status, error)
+
+    def _turn_completed(self, turn_id: str, status: str, error: dict[str, Any] | None) -> None:
         interrupted = status == "interrupted"
         if interrupted:
             self.transcript.event("ModelCallStarted", {"node_id": self._current(turn_id)})
@@ -175,6 +186,10 @@ class Translator:
 
     def card(self, method: str, params: dict[str, Any], *, session: Session, run_id: str, node_id: str) -> "Card":
         """The card for a server request; ``Unserved`` for a method that isn't one."""
+        with self._lock:
+            return self._card(method, params, session=session, run_id=run_id, node_id=node_id)
+
+    def _card(self, method: str, params: dict[str, Any], *, session: Session, run_id: str, node_id: str) -> "Card":
         t = now()
         base = {"id": new_id(), "session_id": session.id, "run_id": run_id, "node_id": node_id, "source": "harness",
                 "asker": session.person, "work_item_id": session.work_item_id, "status": "open", "created_at": t,
