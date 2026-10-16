@@ -281,6 +281,25 @@ def test_a_file_change_card_counts_lines_by_kind(tr, kind, diff, says):
     assert c.reply("Deny so Codex continues") == ({"decision": "decline"}, "decline")
 
 
+def test_a_command_approval_names_the_permissions_it_asks_for(tr):
+    store, s, t = tr
+    step = fc.command_approval(1, "c1", "make out")
+    step["params"]["additionalPermissions"] = {"network": {"enabled": True},
+                                               "fileSystem": {"write": ["/w/out"], "read": None, "entries": None}}
+    lines = card(t, s, step).question.question.splitlines()
+    assert lines == ["$ make out", "in /w",
+                     'and asks for {"network": {"enabled": true}, "fileSystem": {"write": ["/w/out"]}}']
+
+
+def test_input_to_a_running_command_is_titled_as_such(tr):
+    store, s, t = tr
+    step = fc.command_approval(1, "c1", "python3")
+    step["params"]["kind"] = "writeStdin"
+    assert card(t, s, step).question.title == "Codex wants to send input to a running command"
+    step["params"]["kind"] = "command"
+    assert card(t, s, step).question.title == "Codex wants to run a command"
+
+
 def test_a_network_approval_names_the_host(tr):
     # Codex sends a managed-network approval with no command or cwd, only networkApprovalContext.
     store, s, t = tr

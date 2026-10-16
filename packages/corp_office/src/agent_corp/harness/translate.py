@@ -186,7 +186,10 @@ class Translator:
             else:
                 item = self._items.get(params["itemId"], {})
                 command, cwd = params.get("command") or item.get("command") or "?", params.get("cwd") or item.get("cwd")
-                title, text = "Codex wants to run a command", f"$ {command}\nin {cwd}"
+                title = _COMMAND_TITLES.get(params.get("kind"), _COMMAND_TITLES["command"])
+                text = f"$ {command}\nin {cwd}"
+                if asked := _pruned(params.get("additionalPermissions")):
+                    text += f"\nand asks for {json.dumps(asked)}"
             return self._approval("command", base, params, title, text,
                                   _offered(params.get("availableDecisions"), _APPROVE))
         if method == "item/fileChange/requestApproval":
@@ -320,6 +323,8 @@ REPLY_SCHEMAS = {"item/commandExecution/requestApproval": "CommandExecutionReque
 
 _APPROVE = [("Approve", "accept"), ("Approve for this session", "acceptForSession"),
             ("Deny so Codex continues", "decline"), ("Deny and stop", "cancel")]
+_COMMAND_TITLES = {"command": "Codex wants to run a command",
+                   "writeStdin": "Codex wants to send input to a running command"}
 _PERMISSIONS = [("Approve for this turn", "turn"), ("Approve for this session", "session"), ("Deny", "decline")]
 MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
 _MCP = [("Allow", "accept"), ("Allow for this session", "acceptForSession"), ("Cancel", "cancel")]
@@ -365,6 +370,13 @@ def _offered(available: list[Any] | None, options: list[tuple[str, str]]) -> lis
 
 def _with_reason(text: str, params: dict[str, Any]) -> str:
     return f"{text}\n{params['reason']}" if params.get("reason") else text
+
+
+def _pruned(value: Any) -> Any:
+    """``value`` without its null entries, at any depth: Codex sends every field it could have asked for."""
+    if isinstance(value, dict):
+        return {k: v for k, v in ((k, _pruned(v)) for k, v in value.items()) if v is not None and v != {}}
+    return value
 
 
 def _label(options: list[tuple[str, str]], decision: str) -> str:
