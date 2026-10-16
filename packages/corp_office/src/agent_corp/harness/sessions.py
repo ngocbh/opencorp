@@ -11,7 +11,8 @@ from agent_corp.chat.turns import seconds
 from agent_corp.company.loader import load_repo
 from agent_corp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
 from agent_corp.harness.session import CodexSession
-from agent_corp.protocol.models import CompanyDefaults, HarnessPolicy, Session
+from agent_corp.protocol.models import CompanyDefaults, HarnessPolicy, Question, Session
+from agent_corp.store import InvalidTransition
 from agent_corp.worker.spawn import worker_env
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,21 @@ class CodexSessions:
 
     def end(self, session_id: str) -> None:
         self._must(session_id).end()
+
+    def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
+        """Store the answer, then reply if Codex still waits; the store's open → answered move picks the one answer
+        that replies. An answer Codex no longer waits for leaves the card ``stale`` with no decision. ``by`` is the
+        session's opener when None, as composer credits an answer."""
+        question = self.store.get_question(question_id)
+        live = self._live.get(question.session_id)
+        by = by or (live.author if live else self.opener(self.store.get_session(question.session_id)))
+        try:
+            self.store.answer_question(question_id, answer, kind, answered_by=by)
+        except InvalidTransition as exc:
+            raise HarnessError(409, "not_open", str(exc)) from exc
+        if live is None or not live.reply(question_id, answer, by):
+            self.store.lose_answer(question_id)
+        return self.store.get_question(question_id)
 
     def close_all(self) -> None:
         """Office stop: kill every app-server and stop every session's thread; sessions keep their status for

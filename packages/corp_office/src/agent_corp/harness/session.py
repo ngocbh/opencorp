@@ -4,6 +4,8 @@ import logging
 import queue
 import threading
 from collections.abc import Callable
+from concurrent.futures import CancelledError, Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +25,8 @@ STOP_WAIT = 10.0
 """Seconds office stop waits for the session's thread to finish the job it is in."""
 END_WAIT = 10.0
 """Seconds an ending session waits for its interrupted turn to complete before it closes the app-server anyway."""
+REPLY_WAIT = 30.0
+"""Seconds an answer waits for the session's thread to write its reply."""
 
 
 def why(exc: Exception) -> str:
@@ -142,10 +146,30 @@ class CodexSession:
         else:
             self._post(self._close)
 
+    def reply(self, question_id: str, answer: Any, by: str | None) -> bool:
+        """Write Codex's reply to a stored answer while Codex still waits for it; False if it doesn't any more.
+
+        The reply is written on the session's thread, so the decision is on the tool part before any message the
+        reply causes (the item's end, the turn's end) is handled.
+        """
+        done: Future[bool] = Future()
+        # Stop and close set their flag under the lock before the thread ends, so this job either runs or is
+        # cancelled; it is never left in a queue no one reads.
+        with self._lock:
+            if self.stopped or self.closed:
+                return False
+            self._post(self._reply, question_id, answer, by, done)
+        try:
+            return done.result(timeout=REPLY_WAIT)
+        except CancelledError:
+            return False  # the office stopped first
+        except FutureTimeout:
+            return False if done.cancel() else done.result()
+
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
         status stays for ``restore``. Text still streaming and tools still running are stored as interrupted, as
-        composer's ``close_all`` stores them.
+        composer's ``close_all`` stores them. Answers still waiting for their reply give up at once.
 
         Once it returns the session no longer touches the store.
         """
@@ -161,6 +185,13 @@ class CodexSession:
         if threading.current_thread() is not self._thread:
             self._thread.join(STOP_WAIT)
             busy = self._thread.is_alive()
+        while True:  # jobs behind the stop never run: an answer waiting on one stops waiting
+            try:
+                job = self._jobs.get_nowait()
+            except queue.Empty:
+                break
+            _cancel(job[1] if job else ())
+        self._jobs.put(None)  # the drain took the stop too: put it back, so a thread still in its job ends after it
         if busy:  # it may be writing to the transcript now; abort would race it, and it writes nothing after this job
             log.warning("codex session %s: its thread is still busy at office stop; its open text stays as it was",
                         self.session_id)
@@ -195,6 +226,7 @@ class CodexSession:
         while (job := self._jobs.get()) is not None:
             fn, args = job
             if self.stopped or self.closed:  # office stop, or the session ended: no job touches the store any more
+                _cancel(args)
                 continue
             try:
                 fn(*args)
@@ -318,6 +350,40 @@ class CodexSession:
             self.by_request[str(request_id)] = card.question.id
         self.store.add_question(card.question)
 
+    def _reply(self, question_id: str, answer: Any, by: str | None, done: "Future[bool]") -> None:
+        if not done.set_running_or_notify_cancel():
+            return  # the answerer gave up waiting and has already expired the answer
+        try:
+            done.set_result(self._write_reply(question_id, answer, by))
+        except Exception as exc:  # the answerer waits on this future: it must hear of the failure
+            done.set_exception(exc)
+
+    def _write_reply(self, question_id: str, answer: Any, by: str | None) -> bool:
+        with self._lock:  # only the bookkeeping: the write to Codex is outside it, as every request is
+            pending, process = self.requests.pop(question_id, None), self.process
+            if pending is not None:
+                self.by_request.pop(str(pending.request_id), None)
+        if pending is None or process is None or not process.alive:
+            return False
+        try:
+            result, decision = pending.card.reply(answer)
+        except Exception as exc:
+            # Codex treats an error reply as a refusal and goes on; with no reply it would wait until Esc.
+            log.warning("codex session %s: no reply can be made from the answer to %s: %s", self.session_id,
+                        question_id, exc)
+            self._refuse(process, pending.request_id, -32602, f"agent-corp couldn't use the answer: {exc}")
+            return False
+        try:
+            process.rpc.reply(pending.request_id, result)
+        except RpcClosed:
+            return False
+        self.store.set_question_status(question_id, "consumed")
+        try:
+            self.translator.decided(pending.card, decision, by or self.author)
+        except Exception:  # Codex has the reply and the card is consumed: a part that can't be written changes neither
+            log.exception("codex session %s: the decision on %s wasn't written", self.session_id, question_id)
+        return True
+
     def _refuse(self, process: CodexProcess, request_id: Any, code: int, message: str) -> None:
         try:
             process.rpc.reply_error(request_id, code, message)
@@ -373,3 +439,10 @@ class CodexSession:
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None
+
+
+def _cancel(args: tuple[Any, ...]) -> None:
+    """Cancel the answer waiting on a job that will never run, so it gives up at once."""
+    for arg in args:
+        if isinstance(arg, Future):
+            arg.cancel()
