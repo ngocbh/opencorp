@@ -51,3 +51,15 @@ test("a Codex question card takes one answer per page header", async () => {
   const ok = await post(`/questions/${q.id}/answer`, { answer: { Token: "x" }, answer_kind: "text" })
   expect(ok.status).toBe(200)
 })
+
+test("POST /sessions refuses a harness the person doesn't use before recording the folder", async () => {
+  office = createFakeOffice()
+  office.state.people = office.state.people.map((p) => (p.handle === "minh" ? { ...p, harnesses: ["codex"] } : p))
+  for (const harness of [undefined, "composer", "claude"]) {
+    const res = await post("/sessions", { person: "minh", cwd: "/tmp/elsewhere", harness })
+    expect([res.status, (await res.json()).error]).toEqual([422, "unsupported_harness"])
+  }
+  expect(office.state.folders["/tmp/elsewhere"]).toBeUndefined()
+  expect((await post("/sessions", { person: "minh", cwd: "/tmp/elsewhere", harness: "codex" })).status).toBe(200)
+  expect(office.state.folders["/tmp/elsewhere"]).toEqual(["minh"])
+})

@@ -28,7 +28,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
 import { isTurn } from "../src/office/turn"
-import { HANDLE } from "../src/routes/picker/people"
+import { HANDLE, harnessesOf } from "../src/routes/picker/people"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 
 /** Returns `run()` input (minus `args`) wired to `office`, or to a socket nothing listens on. */
@@ -799,16 +799,16 @@ export function createFakeOffice(
       "/sessions",
       ({ body }) => {
         check(str(body?.person) && str(body?.cwd), "person and cwd must be non-empty strings")
-        need(
+        const person = need(
           state.people.find((p) => p.handle === body.person),
           `person ${body.person}`,
         )
-        state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         const harness = body.harness ?? "composer"
+        // Like the office, refuse a harness the person doesn't use before recording the folder.
+        if (!(harnessesOf(person) as string[]).includes(harness))
+          throw fail(422, "unsupported_harness", `@${person.handle} doesn't use the ${harness} harness`)
+        state.folders[body.cwd] = [body.person, ...(state.folders[body.cwd] ?? []).filter((p) => p !== body.person)]
         if (harness === "codex") {
-          const person = state.people.find((p) => p.handle === body.person)!
-          if (!person.harnesses?.includes("codex"))
-            throw fail(422, "unsupported_harness", `@${person.handle} doesn't use codex`)
           const s = newSession({ person: body.person, cwd: body.cwd, harness, status: "starting" })
           // The office's owner load: the session goes idle with no turn question.
           setTimeout(() => session(s.id).status === "starting" && setStatus(s.id, "idle"), 10)
