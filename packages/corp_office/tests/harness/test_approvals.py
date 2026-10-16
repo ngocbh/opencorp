@@ -338,3 +338,26 @@ def test_cards_answer_a_codex_card_and_refuse_its_other_actions(harness, fake_co
         wait_for(lambda: fake_codex.replies().get(1) == {"decision": "accept"}, what="the reply")
     finally:
         cards.close()
+
+
+def test_an_answer_that_waited_too_long_for_its_reply_tells_codex_it_came_too_late(harness, fake_codex, workspace,
+                                                                                   monkeypatch):
+    fake_codex.script([approval_turn()])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    live = harness.codex._live[sid]
+    monkeypatch.setattr(session_module, "REPLY_WAIT", 0.2)
+    began, release = threading.Event(), threading.Event()
+
+    def hold():  # the session's thread is busy past the answer's wait
+        began.set()
+        release.wait(10)
+    live._post(hold)
+    assert began.wait(5)
+    assert harness.answer(q.id, "Approve", "option", by="ngocbh").status == "stale"
+    release.set()
+    wait_for(lambda: 1 in fake_codex.replies(), what="the error reply")
+    assert fake_codex.replies()[1]["code"] == -32603  # with no card left, Codex mustn't wait on one
+    wait_for(lambda: status(harness, sid) == "idle", what="Codex going on")
+    assert live.requests == {} and harness.store.get_question(q.id).status == "stale"

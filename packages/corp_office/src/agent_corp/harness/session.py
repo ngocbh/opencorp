@@ -369,17 +369,26 @@ class CodexSession:
 
     def _reply(self, question_id: str, answer: Any, by: str | None, done: "Future[bool]") -> None:
         if not done.set_running_or_notify_cancel():
-            return  # the answerer gave up waiting and has already expired the answer
+            # The answerer gave up waiting and expired the card, so no answer can come: tell Codex now.
+            pending, process = self._take(question_id)
+            if pending is not None and process is not None:
+                self._refuse(process, pending.request_id, -32603, "the answer came too late")
+            return
         try:
             done.set_result(self._write_reply(question_id, answer, by))
         except Exception as exc:  # the answerer waits on this future: it must hear of the failure
             done.set_exception(exc)
 
-    def _write_reply(self, question_id: str, answer: Any, by: str | None) -> bool:
+    def _take(self, question_id: str) -> tuple[Pending | None, CodexProcess | None]:
+        """Take the request a card stands for off the waiting ones, with the app-server to answer it on."""
         with self._lock:  # only the bookkeeping: the write to Codex is outside it, as every request is
             pending, process = self.requests.pop(question_id, None), self.process
             if pending is not None:
                 self.by_request.pop(str(pending.request_id), None)
+        return pending, process
+
+    def _write_reply(self, question_id: str, answer: Any, by: str | None) -> bool:
+        pending, process = self._take(question_id)
         if pending is None or process is None or not process.alive:
             return False
         try:
