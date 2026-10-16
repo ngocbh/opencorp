@@ -369,3 +369,17 @@ def test_a_message_refused_because_the_session_ended_meanwhile_leaves_it_ended(h
     with pytest.raises(HarnessError):
         harness.prompt(sid, "hi")
     assert status(harness, sid) == "ended" and live.timer is None
+
+
+def test_ending_on_a_codex_that_never_answers_the_interrupt_returns_and_ends_after_end_wait(harness, fake_codex,
+                                                                                              workspace, monkeypatch):
+    fake_codex.script([[{"sleep": 30}]], interrupt_hangs=True)
+    monkeypatch.setattr(session_module, "END_WAIT", 1.0)
+    sid = start(harness, workspace)
+    harness.prompt(sid, "work")
+    wait_for(lambda: status(harness, sid) == "busy", what="busy")
+    began = time.monotonic()
+    harness.end(sid)  # the interrupt Codex never answers fails once END_WAIT closes the app-server
+    assert time.monotonic() - began < 5
+    wait_for(lambda: status(harness, sid) == "ended", timeout=5, what="the end after END_WAIT")
+    assert harness.store.list_workers() == []

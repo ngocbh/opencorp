@@ -119,15 +119,15 @@ class CodexSession:
             self._stop_timer()
             busy = self.turn_id is not None
             self.store.update_session(self.session_id, status="ending")
-        if not busy:
-            self._post(self._close)
-            return
-        self.interrupt()  # turn/completed closes it; END_WAIT closes it if that never comes
-        with self._lock:
-            if not self.closed and not self.stopped:
+            if busy:
+                # Armed first: an interrupt Codex never answers fails at once when this closes the app-server.
                 self.timer = threading.Timer(END_WAIT, self._post, (self._close,))
                 self.timer.daemon = True
                 self.timer.start()
+        if busy:
+            self.interrupt()  # turn/completed closes it; END_WAIT closes it if that never comes
+        else:
+            self._post(self._close)
 
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
