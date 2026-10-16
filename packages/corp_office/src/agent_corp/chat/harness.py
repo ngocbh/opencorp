@@ -589,6 +589,8 @@ class Harness:
 
     def interrupt(self, session_id: str) -> None:
         """Esc: answer the model's open questions, kill workspace calls, answer office calls, stop the reply."""
+        if self._codex_session(session_id):
+            return self.codex.interrupt(session_id)
         with self._lock:
             live = self._must(session_id)
             for q in self.store.list_questions(run_id=live.run_id, status="open", source="ask_user"):

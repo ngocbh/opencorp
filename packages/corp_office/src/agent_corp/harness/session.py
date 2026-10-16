@@ -92,6 +92,16 @@ class CodexSession:
                     self._idle()  # a refused message leaves the session idle
             raise
 
+    def interrupt(self) -> None:
+        """Esc: ask Codex to interrupt the running turn; its ``turn/completed`` marks it."""
+        with self._lock:
+            turn, process = self.turn_id, self.process
+        if turn is not None and process is not None:
+            try:
+                process.rpc.request("turn/interrupt", {"threadId": self.thread_id, "turnId": turn})
+            except (RpcError, RpcClosed, TimeoutError):
+                pass  # the turn ended meanwhile, the app-server is gone, or it hangs (its end or stop kills it)
+
     def shutdown(self) -> None:
         """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
         status stays for ``restore``. Text still streaming and tools still running are stored as interrupted, as

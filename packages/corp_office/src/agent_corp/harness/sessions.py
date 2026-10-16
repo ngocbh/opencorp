@@ -52,6 +52,9 @@ class CodexSessions:
                 raise HarnessError(422, "refused", str(refusal))
         return self._must(session_id).prompt(text, by=by)
 
+    def interrupt(self, session_id: str) -> None:
+        self._must(session_id).interrupt()
+
     def close_all(self) -> None:
         """Office stop: kill every app-server and stop every session's thread; sessions keep their status for
         ``restore``. Once it returns, no Codex session touches the store."""

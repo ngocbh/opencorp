@@ -257,3 +257,35 @@ def test_office_stop_leaves_the_transcript_to_a_thread_still_busy(harness, fake_
     release.set()
     live._thread.join(5)
     assert aborted == [] and not live._thread.is_alive()
+
+
+def test_esc_interrupts_the_turn_and_marks_it(harness, fake_codex, workspace):
+    fake_codex.script([[fc.command_started("c1", "sleep 30"), {"sleep": 30}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "sleep")
+    wait_for(lambda: status(harness, sid) == "busy", what="the turn to start")
+    wait_for(lambda: any(p.type == "tool" for m in harness.store.list_messages(sid) for p in m.parts),
+             what="the running command")
+    harness.interrupt(sid)
+    wait_for(lambda: status(harness, sid) == "idle", what="the interrupted turn's end")
+    assert fake_codex.calls("turn/interrupt") == [{"threadId": "thr_1", "turnId": "turn_1"}]
+    parts = [p for m in harness.store.list_messages(sid) for p in m.parts]
+    assert parts[1].state == "interrupted" and parts[-1].text.endswith("[interrupted]")  # parts[0] is "sleep"
+
+
+def test_esc_with_no_turn_running_asks_codex_nothing(harness, fake_codex, workspace):
+    sid = start(harness, workspace)
+    harness.interrupt(sid)
+    assert fake_codex.calls("turn/interrupt") == [] and status(harness, sid) == "idle"
+
+
+def test_esc_on_a_codex_that_doesnt_answer_returns(harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script([[{"sleep": 30}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "work")
+    wait_for(lambda: status(harness, sid) == "busy", what="the turn to start")
+
+    def hangs(*args, **kwargs):
+        raise TimeoutError("turn/interrupt got no answer in 60s")
+    monkeypatch.setattr(harness.codex._live[sid].process.rpc, "request", hangs)
+    harness.interrupt(sid)  # no 500: ending the session or office stop kills a Codex that hangs
