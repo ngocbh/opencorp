@@ -43,7 +43,12 @@ async def get_question(request: Request) -> JSONResponse:
 
 
 async def answer_question(request: Request) -> JSONResponse:
-    """Answer an open question as the request's person; the first answer wins."""
+    """Answer an open question as the request's person; the first answer wins.
+
+    A second answer gets 409 ``not_open``. On a Codex card the answer is Codex's reply: one Codex no longer waits for
+    (it resolved the request, the turn ended, the app-server died, the office stopped, or the reply waited too long)
+    or that no reply can be made from gets 200 with the question ``stale``, and Codex gets nothing from it.
+    """
     body = await parse(request, AnswerRequest)
     office = get_office(request)
     by = acting_person(request)

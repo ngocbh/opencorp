@@ -626,7 +626,7 @@ class Harness:
     def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
         """Answer a question for ``by`` (the session's owner when None), after the ``answer_check`` hooks.
 
-        A chat turn is answered as ``prompt`` would.
+        A chat turn is answered as ``prompt`` would; a Codex card goes to the Codex sessions, which reply to Codex.
         """
         question = self.store.get_question(question_id)
         if question is None:
@@ -636,6 +636,8 @@ class Harness:
         for refusal in self.hooks.fire("answer_check", question, answer, kind):
             if refusal:
                 raise HarnessError(422, "invalid_answer", str(refusal))
+        if question.session_id and self._codex_session(question.session_id):
+            return self.codex.answer(question_id, answer, kind, by=by)
         live = self._live.get(question.session_id)
         if live is not None and live.run_id == question.run_id and live.spec.chat is not None \
                 and live.spec.chat.is_turn(question.node_id):
