@@ -177,3 +177,41 @@ def test_a_reply_interrupted_before_it_streamed_text_gets_its_output_and_the_mar
     t.event("NodeSucceeded", {"node_id": n, "output": "Working", "interrupted": True})
     [message] = store.list_messages(s.id)
     assert [p.text for p in message.parts] == ["Working" + INTERRUPTED_TEXT]
+
+
+def test_a_user_message_can_name_its_author(setup):
+    store, s, t, live = setup
+    t.user("approve it", author="ngocbh")
+    t.user("composer message")
+    assert [m.author for m in store.list_messages(s.id)] == ["ngocbh", None]
+
+
+def test_tool_adds_a_part_then_replaces_it_in_place(setup):
+    store, s, t, live = setup
+    t.event("ModelCallStarted", {"node_id": "turn_1"})
+    first = t.tool("turn_1", "item_1", "codex.command", state="running", input={"command": "ls"})
+    t.tool("turn_1", "item_1", "codex.command", state="completed", input={"command": "ls", "exit_code": 0},
+           output="a\nb")
+    [message] = store.list_messages(s.id)
+    [part] = message.parts
+    assert part.id == first.id and (part.state, part.output, part.input["exit_code"]) == ("completed", "a\nb", 0)
+    assert [e.type for e in live][-1] == "part.updated"
+
+
+def test_a_running_harness_tool_is_interrupted_when_its_turn_ends_interrupted(setup):
+    store, s, t, live = setup
+    t.event("ModelCallStarted", {"node_id": "turn_1"})
+    t.tool("turn_1", "item_1", "codex.command", state="running", input={"command": "sleep 9"})
+    t.event("NodeSucceeded", {"node_id": "turn_1", "output": None, "interrupted": True})
+    [message] = store.list_messages(s.id)
+    assert message.parts[0].state == "interrupted" and message.parts[-1].text.endswith("[interrupted]")
+
+
+def test_steered_says_whether_a_user_message_came_after_a_nodes_message(setup):
+    store, s, t, live = setup
+    t.tool("turn_1", "item_1", "codex.command", state="running", input={"command": "ls"})
+    assert not t.steered("turn_1")
+    t.user("also b", author="ngocbh")
+    assert t.steered("turn_1") and not t.steered("turn_2")  # a node with no message yet isn't steered
+    t.event("NodeSucceeded", {"node_id": "turn_1", "output": None})
+    assert not t.steered("turn_1")

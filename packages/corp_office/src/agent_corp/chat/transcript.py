@@ -39,12 +39,12 @@ class Transcript:
         self._steered: set[str] = set()  # node ids with a user message after their message
         self._tails: dict[str, TextPart | ToolPart] = {}  # node id -> its message's last part
 
-    def user(self, text: str) -> Message:
-        """Add a user message."""
+    def user(self, text: str, *, author: str | None = None) -> Message:
+        """Add a user message; ``author`` is the human who sent it (a harness session names every sender)."""
         with self._lock:
             message = self.store.add_message(Message(id=new_id(), session_id=self.session_id, role="user",
                                                      parts=[TextPart(id=new_id(), type="text", text=text)],
-                                                     created_at=now()))
+                                                     author=author, created_at=now()))
             self._steered.update(self._messages)
         self._live("message.updated", message.model_dump(mode="json"))
         return message
@@ -81,6 +81,24 @@ class Transcript:
                 if node_id is not None:
                     self._end(node_id, data.get("output") if name == "NodeSucceeded" else None,
                               data.get("interrupted", False))
+
+    def tool(self, node_id: str, call_id: str, tool: str, *, state: str, input: dict[str, Any],
+             output: Any = None, error: str | None = None) -> ToolPart:
+        """Add the tool part ``call_id`` to ``node_id``'s message, or replace it in place: a harness's own tool items,
+        which arrive as updates rather than composer's start and finish events."""
+        with self._lock:
+            fields = {"tool": tool, "state": state, "input": input, "output": {} if output is None else output,
+                      "error": error}
+            part = self._tools.get((node_id, call_id))
+            part = (part.model_copy(update=fields) if part is not None
+                    else ToolPart(id=new_id(), type="tool", call_id=call_id, **fields))
+            self._tool(node_id, part)
+            return part
+
+    def steered(self, node_id: str) -> bool:
+        """Whether a user message came in after ``node_id``'s message: a harness puts what it does next in a new one."""
+        with self._lock:
+            return node_id in self._steered
 
     def stream(self, frame: dict[str, Any]) -> None:
         """Record a ``StreamChunk`` (a worker ``stream`` frame); chunks without an exchange id are skipped."""
