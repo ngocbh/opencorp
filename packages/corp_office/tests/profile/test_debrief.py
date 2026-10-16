@@ -3,6 +3,7 @@ from importlib.resources import files
 import pytest
 
 from agent_corp.company.flows import load_confined
+from agent_corp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, REQUEST
 from agent_corp.profile.debrief import (DEBRIEF_FLOW, confirm_follow_ups, pending_debrief, ready_debrief,
                                         transcript_text)
 from agent_corp.protocol import now
@@ -49,6 +50,35 @@ def test_messages_with_an_author_read_as_at_author_and_the_assistant_label_can_c
     text = transcript_text([_message("user", _text("fix it"), author="ngocbh"), _message("assistant", _text("On it."))],
                            assistant="codex")
     assert text == "@ngocbh: fix it\n\ncodex: On it."
+
+
+def _codex(name, **input):
+    return ToolPart(id=new_id(), type="tool", call_id="c", tool=name, state="completed", input=input)
+
+
+def test_codex_tool_parts_are_summarized_with_who_decided():
+    approved = {"decision": "accept", "by": "ngocbh"}
+    parts = [_codex(COMMAND, command="pytest -q", exit_code=1, approval=approved),
+             _codex(FILE_CHANGE, changes=[{"path": "a.py", "kind": "update", "diff": "@@ -1 +1,2 @@\n+x\n+y\n-z\n"}]),
+             _codex(MCP_TOOL, server="docs", tool="search", arguments={}),
+             _codex(REQUEST, kind="permissions", summary="network", approval={"decision": "decline", "by": "ngocbh"})]
+    assert transcript_text([_message("assistant", *parts)], assistant="codex").splitlines() == [
+        "codex: $ pytest -q (exit 1) [accept by @ngocbh]", "edited a.py (+2/-1)", "[mcp docs/search]",
+        "[asked: permissions: network] [decline by @ngocbh]"]
+
+
+def test_codex_new_deleted_and_moved_files_say_so():
+    # Codex sends a new or deleted file's content as its diff, with no +/- markers.
+    part = _codex(FILE_CHANGE, changes=[{"path": "new.md", "kind": "add", "diff": "one\ntwo\n"},
+                                        {"path": "old.md", "kind": "delete", "diff": "gone\n"},
+                                        {"path": "a.py", "kind": "update", "move_path": "b.py", "diff": ""}])
+    assert transcript_text([_message("assistant", part)], assistant="codex") == (
+        "codex: edited new.md (added, +2/-0), old.md (deleted, +0/-1), a.py → b.py (+0/-0)")
+
+
+def test_a_long_codex_command_summary_is_capped():
+    line = transcript_text([_message("assistant", _codex(COMMAND, command="x" * 1000, exit_code=0))])
+    assert len(line) < 400 and line.endswith("…")
 
 
 def test_the_transcript_says_where_a_turn_failed():

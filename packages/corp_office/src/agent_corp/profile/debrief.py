@@ -3,6 +3,7 @@
 from collections.abc import Iterable, Mapping
 from typing import Any
 
+from agent_corp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, change_counts
 from agent_corp.protocol import now
 from agent_corp.protocol.models import Debrief, FollowUp, Message, Session, WorkItem
 from agent_corp.store import Store, new_id
@@ -13,12 +14,15 @@ TRANSCRIPT_MAX_CHARS = 100_000
 """How much of a transcript a debrief reads; the end of the session is kept."""
 _CUT = "[earlier messages left out]"
 _CUT_START = "[the start of this message left out]"
+SUMMARY_MAX_CHARS = 300
+"""How long one Codex tool summary may be in a debrief transcript."""
+_KINDS = {"add": "added, ", "delete": "deleted, "}
 
 
 def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX_CHARS, *,
                     assistant: str = "assistant") -> str:
-    """A session's messages as plain text blocks, with ``[called <tool>]`` for tool calls and ``[error: <why>]`` for
-    failed turns.
+    """A session's messages as plain text blocks, with ``[called <tool>]`` for tool calls (Codex's summarized) and
+    ``[error: <why>]`` for failed turns.
 
     A message with an ``author`` reads ``@<author>:``; other messages read ``user:``, or ``<assistant>:`` for the
     assistant's. Past ``max_chars`` the oldest messages are left out, so the debrief sees how the session ended;
@@ -45,8 +49,33 @@ def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX
 
 def _line(part: Any) -> str:
     if part.type == "tool":
-        return f"[called {part.tool}]"
+        return _codex_line(part) if part.tool.startswith("codex.") else f"[called {part.tool}]"
     return f"[error: {part.message}]" if part.type == "error" else part.text
+
+
+def _codex_line(part: Any) -> str:
+    """One line for a Codex tool part: the command and its exit code, files with +/- lines, the MCP server and tool,
+    or what Codex asked; then the decision on it and who made it."""
+    i = part.input
+    if part.tool == COMMAND:
+        line = f"$ {i.get('command')}" + (f" (exit {i['exit_code']})" if i.get("exit_code") is not None else "")
+    elif part.tool == FILE_CHANGE:
+        line = "edited " + ", ".join(_change(c) for c in i.get("changes", []))
+    elif part.tool == MCP_TOOL:
+        line = f"[mcp {i.get('server')}/{i.get('tool')}]"
+    else:
+        line = f"[asked: {i.get('kind')}: {i.get('summary')}]"
+    if len(line) > SUMMARY_MAX_CHARS:
+        line = line[:SUMMARY_MAX_CHARS - 1] + "…"
+    approval = i.get("approval")
+    return f"{line} [{approval['decision']} by @{approval['by']}]" if approval else line
+
+
+def _change(change: Mapping[str, Any]) -> str:
+    """One file change: ``a.py (+2/-1)``, ``a.py → b.py (+0/-0)``, or ``new.md (added, +2/-0)``."""
+    added, removed = change_counts(change.get("kind"), change.get("diff"))
+    moved = f" → {change['move_path']}" if change.get("move_path") else ""
+    return f"{change['path']}{moved} ({_KINDS.get(change.get('kind'), '')}+{added}/-{removed})"
 
 
 def ready_debrief(session: Session, output: Mapping[str, Any]) -> Debrief:
