@@ -74,8 +74,8 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
         found = codex_command(env, environ)[0]
     except CodexMissing:
         if override := environ.get("AGENT_CORP_CODEX_BIN"):
-            return Check("codex", "warn", f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable on the "
-                                          "office's PATH, so Codex sessions can't start (fix or unset it, then "
+            return Check("codex", "warn", f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the "
+                                          "office can find, so Codex sessions can't start (fix or unset it, then "
                                           f"{_codex_change_lands(mode)})")
         return Check("codex", "warn", "not on the office's PATH, so Codex sessions can't start "
                                       f"(npm install -g @openai/codex, then {_codex_change_lands(mode)})")
@@ -84,15 +84,17 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     try:
         version = subprocess.run([found, "--version"], env=env, capture_output=True, text=True, timeout=timeout)
         if version.returncode != 0:
-            return Check("codex", "fail", f"{found} --version failed: {version.stderr.strip()[:200]}")
+            why = version.stderr.strip()[:200] or f"exit {version.returncode}"
+            return Check("codex", "fail", f"{found} --version failed: {why}")
         login = subprocess.run([found, "login", "status"], env=env, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
         return Check("codex", "fail", f"{found} {' '.join(exc.cmd[1:])} didn't answer in {timeout:g} s")
     except OSError as exc:
         return Check("codex", "fail", f"{found} can't run: {exc.strerror or exc}")
+    named = f"{printed} at {found}" if (printed := version.stdout.strip()) else f"{found} (no version printed)"
     if login.returncode != 0:
-        return Check("codex", "warn", f"{version.stdout.strip()} is signed out; run `codex login`")
-    return Check("codex", "ok", f"{version.stdout.strip()} at {found}, signed in")
+        return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
+    return Check("codex", "ok", f"{named}, signed in")
 
 
 def _home(paths: OfficePaths) -> Check:

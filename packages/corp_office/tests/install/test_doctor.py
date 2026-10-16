@@ -261,7 +261,8 @@ def test_codex_on_the_office_path_and_signed_in_is_ok(tmp_path):
 
 def test_codex_signed_out_or_missing_is_a_warning(tmp_path):
     signed_out = codex_check(_codex(tmp_path, 1), {})
-    assert signed_out.status == "warn" and "codex login" in signed_out.detail
+    codex = tmp_path / "bin" / "codex"
+    assert signed_out == Check("codex", "warn", f"codex-cli 0.130.0 at {codex} is signed out; run `{codex} login`")
     missing = codex_check({"PATH": str(tmp_path / "nowhere")}, {})
     assert missing.status == "warn" and "not on the office's PATH" in missing.detail
 
@@ -301,7 +302,8 @@ def test_agent_corp_codex_bin_names_the_codex_the_check_runs(tmp_path):
 
 def test_an_agent_corp_codex_bin_the_office_cant_find_is_a_warning_even_with_codex_on_the_path(tmp_path):
     check = codex_check(_codex(tmp_path, 0), {"AGENT_CORP_CODEX_BIN": "/nowhere/codex"})
-    assert check.status == "warn" and "AGENT_CORP_CODEX_BIN names /nowhere/codex" in check.detail
+    assert check.status == "warn"
+    assert "AGENT_CORP_CODEX_BIN names /nowhere/codex, which isn't an executable the office can find" in check.detail
 
 
 def test_the_check_runs_codex_with_the_offices_codex_home_when_set(tmp_path):
@@ -345,3 +347,12 @@ def test_checks_give_the_codex_check_the_offices_recorded_service_mode(tmp_path)
     doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=lambda: None,
                   codex=lambda env, environ, mode: modes.append(mode) or Check("codex", "ok", "stand-in"))
     assert modes == ["systemd"]
+
+
+def test_a_codex_that_says_nothing_is_still_described(tmp_path):
+    env = _codex(tmp_path, 0)
+    codex = tmp_path / "bin" / "codex"
+    codex.write_text('#!/bin/sh\ncase "$1" in --version) exit 3;; esac\n')
+    assert codex_check(env, {}) == Check("codex", "fail", f"{codex} --version failed: exit 3")
+    codex.write_text('#!/bin/sh\nexit 0\n')
+    assert codex_check(env, {}) == Check("codex", "ok", f"{codex} (no version printed), signed in")
