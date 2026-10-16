@@ -691,10 +691,10 @@ class Harness:
                                          model=None if model == own else model, model_note=None)
 
     def close_all(self) -> None:
-        """Stop every worker, leaving their sessions to ``restore``, and stop the dispatcher.
+        """Stop every worker and Codex app-server, leaving their sessions to ``restore``, and stop the dispatcher.
 
-        No new worker spawns from the start. Once the workers' channels are closed, no new
-        worker request is admitted, workspace calls are killed, and office calls are
+        No new worker spawns from the start, and the Codex sessions close first. Once the workers'
+        channels are closed, no new worker request is admitted, workspace calls are killed, and office calls are
         answered; a request arriving before then still runs, so a worker is never told its
         ``ask_user`` failed because the office is stopping. Waits up to 10 seconds for worker
         requests still running to finish. Once it returns, the caller may close the store: worker frames, dispatcher
@@ -707,6 +707,8 @@ class Harness:
             for live in self._live.values():
                 if live.timer is not None:
                     live.timer.cancel()
+        if self.codex is not None:
+            self.codex.close_all()
         self.registry.close_all()
         with self._lock:
             with self._calls_idle:

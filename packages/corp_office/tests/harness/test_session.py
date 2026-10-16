@@ -1,10 +1,13 @@
 """A Codex session the owner drives: load, turns, steers, interrupts, end, office stop."""
 
+import time
+
 import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.harness.codex import CodexStartError, owner_load
 from agent_corp.protocol.models import HarnessPolicy
+from agent_corp.worker.reaper import start_time
 from tests.harness.conftest import errors, requests_valid, start, status, wait_for
 
 
@@ -67,3 +70,30 @@ def test_a_load_codex_refuses_fails_the_session_with_why(harness, fake_codex, wo
     wait_for(lambda: status(harness, sid) == "failed", what="failed")
     assert "config.toml: bad key" in errors(harness, sid)[0] and harness.store.list_workers() == []
     assert ended == ["failed"]
+
+
+def test_office_stop_kills_app_servers_stops_their_threads_and_keeps_statuses(harness, fake_codex, workspace):
+    sid = start(harness, workspace)
+    pid = harness.store.list_workers()[0].pid
+    live = harness.codex._live[sid]
+    harness.close_all()
+    assert start_time(pid) is None and harness.store.list_workers() == [] and status(harness, sid) == "idle"
+    assert not live._thread.is_alive()
+
+
+def test_office_stop_during_a_load_kills_the_starting_app_server_and_writes_nothing(harness, fake_codex,
+                                                                                    workspace):
+    fake_codex.script(initialize_delay=1.5)
+    sid = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
+    [record] = wait_for(lambda: harness.store.list_workers(), what="the app-server to spawn")
+    harness.close_all()
+    assert harness.store.list_workers() == [] and start_time(record.pid) is None
+    time.sleep(2)  # past the end of the handshake the fake was holding
+    assert (status(harness, sid), harness.store.list_workers(), errors(harness, sid)) == ("starting", [], [])
+
+
+def test_a_codex_chat_started_after_office_stop_starts_nothing(harness, fake_codex, workspace):
+    harness.close_all()
+    sid = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
+    time.sleep(1)
+    assert (status(harness, sid), harness.store.list_workers(), fake_codex.messages()) == ("starting", [], [])

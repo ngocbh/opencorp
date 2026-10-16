@@ -63,6 +63,24 @@ class CodexSession:
             self.loading = True
         self._post(self._load, resume)
 
+    def shutdown(self) -> None:
+        """Office stop: kill the app-server (or the one still starting) and stop the session's thread; the stored
+        status stays for ``restore``.
+
+        Once it returns the session no longer touches the store.
+        """
+        with self._lock:
+            self.stopped = True
+            doomed = [p for p in (self.process, self.launching) if p is not None]
+            self.process = None
+        for process in doomed:  # a load or a turn/start waiting on Codex fails at once
+            process.kill()
+        self._jobs.put(None)
+        if threading.current_thread() is not self._thread:
+            self._thread.join(10)
+            if self._thread.is_alive():
+                log.warning("codex session %s: its thread is still busy at office stop", self.session_id)
+
     def launching_as(self, process: CodexProcess) -> bool:
         """Record ``process`` as the app-server being started, so office stop kills it; False once stopped."""
         with self._lock:
@@ -90,6 +108,8 @@ class CodexSession:
     def _run(self) -> None:
         while (job := self._jobs.get()) is not None:
             fn, args = job
+            if self.stopped:  # office stop: no job touches the store any more
+                continue
             try:
                 fn(*args)
             except Exception:
@@ -110,12 +130,19 @@ class CodexSession:
             self._cant_load(exc)
             return
         with self._lock:
-            self.launching, self.process = None, process
+            self.launching = None
+            if not self.stopped:
+                self.process = process
+        if self.stopped:  # office stop came during the load: write nothing, leave nothing running
+            process.kill()
+            return
         self.thread_id = result["thread"]["id"]
         self.store.update_session(self.session_id, harness_session_id=self.thread_id, harness_model=result.get("model"))
         self._flush()
 
     def _cant_load(self, exc: Exception) -> None:
+        if self.stopped:
+            return  # office stop: the session keeps its status for restore
         if not isinstance(exc, (CodexStartError, RpcError)):
             log.exception("codex session %s can't load its thread", self.session_id)
         self.transcript.error(why(exc))
@@ -150,5 +177,7 @@ class CodexSession:
         log.warning("codex app-server of session %s exited unexpectedly", self.session_id)
 
     def _idle(self) -> None:
-        """(Under the lock.) Go idle."""
+        """(Under the lock.) Go idle. Nothing once the office stops."""
+        if self.stopped:
+            return
         self.store.update_session(self.session_id, status="idle")

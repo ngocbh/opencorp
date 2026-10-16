@@ -29,21 +29,25 @@ class CodexSessions:
         self.command, self.env, self.close_grace = command, env, close_grace
         self._lock = threading.Lock()
         self._live: dict[str, CodexSession] = {}
+        self._closed = False  # set by close_all: no session starts after office stop
 
     # --- calls from Harness ----------------------------------------------------------
 
     def start(self, session: Session, *, resume: bool = False) -> None:
         """Load ``session``'s thread in a new app-server on the session's own thread; a failure there fails the
         session. Raises only if the session can't be set up at all, before anything runs."""
-        live = CodexSession(self, session, author=self.opener(session))
+        author = self.opener(session)
         with self._lock:
-            self._live[session.id] = live
+            if self._closed:  # the office is stopping: the session stays as it is, for restore
+                return
+            live = self._live[session.id] = CodexSession(self, session, author=author)
         live.start(resume=resume)
 
     def close_all(self) -> None:
         """Office stop: kill every app-server and stop every session's thread; sessions keep their status for
         ``restore``. Once it returns, no Codex session touches the store."""
         with self._lock:
+            self._closed = True
             live, self._live = list(self._live.values()), {}
         for session in live:
             session.shutdown()
