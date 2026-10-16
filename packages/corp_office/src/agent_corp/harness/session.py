@@ -403,10 +403,14 @@ class CodexSession:
             process.rpc.reply(pending.request_id, result)
         except RpcClosed:
             return False
-        self.store.set_question_status(question_id, "consumed")
+        # Codex has the reply, so the answer stands whatever is left to write; a failure is logged, not raised.
+        try:
+            self.store.set_question_status(question_id, "consumed")
+        except Exception:
+            log.exception("codex session %s: card %s wasn't marked consumed", self.session_id, question_id)
         try:
             self.translator.decided(pending.card, decision, by or self.author)
-        except Exception:  # Codex has the reply and the card is consumed: a part that can't be written changes neither
+        except Exception:
             log.exception("codex session %s: the decision on %s wasn't written", self.session_id, question_id)
         return True
 

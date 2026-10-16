@@ -12,7 +12,7 @@ from agent_corp.extensions.questions import register
 from agent_corp.harness import session as session_module
 from agent_corp.harness.sessions import _masked
 from agent_corp.protocol.models import QuestionPage
-from agent_corp.store import DuplicateKey
+from agent_corp.store import DuplicateKey, StoreError
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
 from tests.store.conftest import question
@@ -378,3 +378,25 @@ def test_on_a_card_with_a_secret_only_what_is_known_to_be_safe_is_stored():
     plain = question(SID, source="harness", questions=[pages[1]])
     assert _masked(plain, {"Env": "dev", "Other": "x"}) == {"Env": "dev", "Other": "x"}
     assert _masked(question(SID, source="harness", options=["Approve"]), "Approve") == "Approve"
+
+
+def test_a_card_that_cant_be_marked_consumed_after_the_reply_still_answers(harness, fake_codex, workspace,
+                                                                          monkeypatch):
+    fake_codex.script([approval_turn()])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    moved = harness.store.set_question_status
+
+    def failing(question_id, to):
+        if to == "consumed":
+            raise StoreError("the disk is full")
+        return moved(question_id, to)
+
+    monkeypatch.setattr(harness.store, "set_question_status", failing)
+    # Codex has the reply: the answer stands, as answered, rather than failing the request.
+    assert harness.answer(q.id, "Approve", "option", by="ngocbh").status == "answered"
+    wait_for(lambda: fake_codex.replies().get(1) == {"decision": "accept"}, what="the reply")
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    [part] = tool_parts(harness, sid)
+    assert part.input["approval"] == {"decision": "accept", "by": "ngocbh"}
