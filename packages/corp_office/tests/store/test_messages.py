@@ -56,3 +56,9 @@ def test_list_messages_in_order(store, sid):
     b = store.add_message(message(sid, [_text("2")]))
     store.add_message(message(store.create_session(session()).id))
     assert store.list_messages(sid) == [a, b]
+
+
+def test_a_user_message_keeps_its_author(store, sid):
+    m = store.add_message(message(sid, [_text()], role="user", author="ngocbh"))
+    assert store.get_message(m.id).author == "ngocbh"
+    assert store.add_message(message(sid, [_text()])).author is None

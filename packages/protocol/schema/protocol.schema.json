@@ -223,8 +223,33 @@
           "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
           "description": "Why the chat isn't on the model it was asked to start on, or why it moved."
         },
+        "harness_model": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "The model the harness runs, as it reports it (a Codex session: Codex's load response); null until the harness reports it, and for composer sessions."
+        },
+        "harness_usage": {
+          "anyOf": [{ "$ref": "#/$defs/HarnessUsage" }, { "type": "null" }], "default": null,
+          "description": "This session's own token counts so far, as the harness reports them. A continued session counts only its own stretch: add its parent chain's counts for the thread's total. Null until the harness reports any; always null for composer sessions."
+        },
+        "parent_session_id": {
+          "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null,
+          "description": "The session this one directly continues, on the same harness thread; follow its parent_session_id for earlier stretches. Null for a first stretch."
+        },
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "updated_at": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "HarnessUsage": {
+      "type": "object", "additionalProperties": false,
+      "required": ["input_tokens", "cached_input_tokens", "output_tokens"],
+      "description": "A harness session's token counts as the harness reports them, on the harness's own login; the office doesn't price them.",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "cached_input_tokens": {
+          "type": "integer", "minimum": 0,
+          "description": "The part of input_tokens served from the cache."
+        },
+        "output_tokens": { "type": "integer", "minimum": 0 }
       }
     },
     "Message": {
@@ -234,6 +259,10 @@
         "id": { "$ref": "#/$defs/Ulid" },
         "session_id": { "$ref": "#/$defs/Ulid" },
         "role": { "enum": ["user", "assistant"] },
+        "author": {
+          "anyOf": [{ "$ref": "#/$defs/Handle" }, { "type": "null" }], "default": null,
+          "description": "The human who sent a user message. A harness session names every sender; null for assistant messages, for composer sessions, and for rows from before this field."
+        },
         "parts": { "type": "array", "items": { "$ref": "#/$defs/Part" } },
         "created_at": { "$ref": "#/$defs/Timestamp" }
       }
@@ -317,7 +346,11 @@
         "question": { "type": "string" },
         "header": { "type": "string" },
         "options": { "type": "array", "items": { "$ref": "#/$defs/QuestionOption" } },
-        "multi_select": { "type": "boolean", "default": false }
+        "multi_select": { "type": "boolean", "default": false },
+        "secret": {
+          "type": "boolean", "default": false,
+          "description": "The answer is a secret: clients mask it, and the office stores `[secret]` in its place."
+        }
       }
     },
     "AnswerField": {
@@ -351,7 +384,10 @@
           "anyOf": [{ "type": "string" }, { "type": "null" }],
           "description": "null for a model ask_user call."
         },
-        "source": { "enum": ["ask_user", "human_input", "ask_manager"] },
+        "source": {
+          "enum": ["ask_user", "human_input", "ask_manager", "harness"],
+          "description": "harness: a request from the session's harness (a Codex approval or question). It takes only an `option` or `text` answer; no side chat, send back or stop. It goes `stale` when the harness stops waiting."
+        },
         "asker": { "$ref": "#/$defs/Handle" },
         "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
         "title": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },

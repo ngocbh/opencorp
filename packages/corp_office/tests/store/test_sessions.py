@@ -133,3 +133,36 @@ def test_a_session_stored_before_0003_reads_back_none(tmp_path):
     with Store(path) as store:
         got = store.get_session(s.id)
         assert got == s and (got.connection, got.model, got.model_note) == (None, None, None)
+
+
+def test_a_codex_session_keeps_its_model_usage_and_parent(store):
+    first = store.create_session(session(harness="codex", harness_session_id="thr_1"))
+    usage = {"input_tokens": 10, "cached_input_tokens": 4, "output_tokens": 2}
+    s = store.create_session(session(harness="codex", harness_session_id="thr_1", harness_model="gpt-5.5-codex",
+                                     harness_usage=usage, parent_session_id=first.id))
+    got = store.get_session(s.id)
+    assert got == s and got.harness_usage.output_tokens == 2 and got.parent_session_id == first.id
+    more = {"input_tokens": 11, "cached_input_tokens": 4, "output_tokens": 3}
+    assert store.update_session(s.id, harness_usage=more).harness_usage.input_tokens == 11
+    assert store.update_session(s.id, harness_usage=None).harness_usage is None
+    assert store.get_session(s.id).harness_usage is None
+
+
+def test_a_session_stored_before_0004_reads_back_none(tmp_path):
+    path = tmp_path / "store.sqlite"
+    conn = sqlite3.connect(path, isolation_level=None)
+    first = tmp_path / "m"
+    first.mkdir()
+    for name in ("0001_initial.sql", "0002_session_opened_by.sql", "0003_session_model.sql"):
+        (first / name).write_text((MIGRATIONS / name).read_text())
+    migrate(conn, first)
+    s = session()
+    conn.execute(
+        "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (s.id, s.person, s.harness, s.office, s.cwd, s.repo_commit, s.status, s.kind, s.created_at, s.updated_at),
+    )
+    conn.close()
+    with Store(path) as store:
+        got = store.get_session(s.id)
+        assert got == s and (got.harness_model, got.harness_usage, got.parent_session_id) == (None, None, None)

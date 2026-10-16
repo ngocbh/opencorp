@@ -2,6 +2,7 @@
   "id": "01JA1M0000000000000000000A",
   "session_id": "01JA1S0000000000000000000A",
   "role": "assistant",
+  "author": null,
   "parts": [
     { "id": "01JA1P0000000000000000000A", "type": "text", "text": "Running the tests." },
     { "id": "01JA1P0000000000000000000B", "type": "tool", "call_id": "call_1", "tool": "shell",

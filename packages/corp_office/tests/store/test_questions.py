@@ -152,3 +152,12 @@ def test_answered_question_keeps_its_answer_fields(store, sid):
     q = make_question(sid, status="consumed", answer="x", answer_kind="text", answered_by="minh")
     got = store.add_question(q)
     assert (got.answer, got.answer_kind, got.answered_by) == ("x", "text", "minh")
+
+
+def test_a_harness_question_keeps_its_secret_page(store):
+    sid = store.create_session(session(harness="codex")).id
+    page = {"question": "Paste the API key", "header": "Key", "options": [], "secret": True}
+    q = store.add_question(make_question(sid, source="harness", run_id="turn-1", node_id="7", questions=[page]))
+    store.add_question(make_question(sid))
+    assert store.get_question(q.id) == q and q.questions[0].secret is True
+    assert [x.id for x in store.list_questions(source="harness")] == [q.id]
