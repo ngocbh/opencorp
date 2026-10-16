@@ -61,16 +61,17 @@ class CodexSessions:
         self._must(session_id).end()
 
     def answer(self, question_id: str, answer: Any, kind: str, *, by: str | None = None) -> Question:
-        """Store the answer, then reply if Codex still waits; the store's open → answered move picks the one answer
-        that replies. An answer Codex no longer waits for leaves the card ``stale`` with no decision. ``by`` is the
-        session's opener when None, as composer credits an answer."""
+        """Store the answer (secret pages as ``[secret]``), then reply if Codex still waits; the store's open →
+        answered move picks the one answer that replies. An answer Codex no longer waits for leaves the card
+        ``stale`` with no decision. ``by`` is the session's opener when None, as composer credits an answer."""
         question = self.store.get_question(question_id)
         live = self._live.get(question.session_id)
         by = by or (live.author if live else self.opener(self.store.get_session(question.session_id)))
         try:
-            self.store.answer_question(question_id, answer, kind, answered_by=by)
+            self.store.answer_question(question_id, _masked(question, answer), kind, answered_by=by)
         except InvalidTransition as exc:
             raise HarnessError(409, "not_open", str(exc)) from exc
+        # The secret itself is only ever in this call's arguments, until the reply.
         if live is None or not live.reply(question_id, answer, by):
             self.store.lose_answer(question_id)
         return self.store.get_question(question_id)
@@ -137,3 +138,11 @@ class CodexSessions:
                 raise HarnessError(404, "not_found", f"no session {session_id}")
             raise HarnessError(409, "not_live", f"session {session_id} has no live Codex app-server")
         return live
+
+
+def _masked(question: Question, answer: Any) -> Any:
+    """``answer`` with each secret page's value replaced by ``[secret]``."""
+    secret = {p.header for p in question.questions or [] if p.secret}
+    if not secret or not isinstance(answer, dict):
+        return answer
+    return {k: "[secret]" if k in secret else v for k, v in answer.items()}

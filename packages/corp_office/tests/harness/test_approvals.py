@@ -7,9 +7,12 @@ import threading
 import pytest
 
 from agent_corp.chat.harness import HarnessError
+from agent_corp.extensions.questions import register
 from agent_corp.harness import session as session_module
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
+
+SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
 
 
 def open_card(harness, sid):
@@ -233,3 +236,59 @@ def test_esc_makes_open_cards_stale_though_codex_never_resolves_them(harness, fa
     with pytest.raises(HarnessError) as refused:
         harness.answer(q.id, "Approve", "option", by="ngocbh")
     assert refused.value.code == "not_open" and 1 not in fake_codex.replies()
+
+
+def test_a_secret_answer_reaches_codex_and_never_the_store(harness, fake_codex, workspace):
+    fake_codex.script([[fc.user_input(4, "u1", [fc.question("token", "Token", "Paste it", secret=True),
+                                                fc.question("env", "Env", "Where?", options=["prod", "dev"])])]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "deploy")
+    q = open_card(harness, sid)
+    assert [p.secret for p in q.questions] == [True, False]
+    got = harness.answer(q.id, {"Token": SENTINEL, "Env": "dev"}, "text", by="ngocbh")
+    assert got.status == "consumed" and got.answer == {"Token": "[secret]", "Env": "dev"}
+    wait_for(lambda: fake_codex.replies().get(4) == {"answers": {"token": {"answers": [SENTINEL]},
+                                                                 "env": {"answers": ["dev"]}}}, what="the reply")
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    assert harness.store.get_question(q.id).answer == {"Token": "[secret]", "Env": "dev"}
+    paths = harness.office.paths
+    # The store runs in WAL mode: the secret could sit in store.sqlite-wal before a checkpoint.
+    stores = sorted(paths.store.parent.glob(paths.store.name + "*"))
+    assert len(stores) >= 2 and all(SENTINEL.encode() not in p.read_bytes() for p in stores)
+    assert SENTINEL not in (paths.run_dir(sid) / "codex.log").read_text()
+    assert all(SENTINEL not in str(e.data) for e in harness.store.events_after())
+    assert all(SENTINEL not in str(e) for e in harness.office.bus.events)
+
+
+def test_an_unserved_request_gets_a_json_rpc_error(harness, fake_codex, workspace):
+    fake_codex.script([[{"request": "item/tool/call", "id": 9, "wait": True, "params": {
+        "threadId": "{thread}", "turnId": "{turn}", "callId": "x", "namespace": None, "tool": "t", "arguments": {}}}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    wait_for(lambda: 9 in fake_codex.replies(), what="the error reply")
+    assert fake_codex.replies()[9]["code"] == -32601
+    wait_for(lambda: status(harness, sid) == "idle", what="Codex going on")
+    assert harness.store.list_questions(session_id=sid) == []
+
+
+def test_cards_answer_a_codex_card_and_refuse_its_other_actions(harness, fake_codex, workspace):
+    harness.office.extras, harness.office.on_start, harness.office.on_stop = {"harness": harness}, [], []
+    register(harness.office)
+    cards = harness.office.extras["cards"]
+    try:
+        fake_codex.script([approval_turn()])
+        sid = start(harness, workspace)
+        harness.prompt(sid, "make a")
+        q = open_card(harness, sid)
+        with pytest.raises(HarnessError):
+            cards.answer(q.id, "approve it please", "text", by="ngocbh")  # an approval takes an option
+        for refused in (lambda: cards.open_side(q.id, "why?", by="ngocbh"),
+                        lambda: cards.send_back(q.id, "", by="ngocbh"), lambda: cards.stop(q.id, by="ngocbh")):
+            with pytest.raises(HarnessError) as e:
+                refused()
+            assert e.value.code == "harness_card"
+        assert harness.store.get_question(q.id).status == "open"
+        assert cards.answer(q.id, "Approve", "option", by="ngocbh").status == "consumed"
+        wait_for(lambda: fake_codex.replies().get(1) == {"decision": "accept"}, what="the reply")
+    finally:
+        cards.close()
