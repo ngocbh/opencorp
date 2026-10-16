@@ -29,8 +29,10 @@ class JsonRpc:
     """Requests with answers, notifications, and the server's own requests and notifications.
 
     ``on_notification(method, params)`` and ``on_request(request_id, method, params)`` run on the reader thread, in
-    arrival order, and must hand work off rather than block it: a human-paced approval would stall every event.
-    ``on_closed()`` runs once, when stdout ends. Writes are serialized, so any thread may call ``request``, ``notify``,
+    arrival order, and must hand work off rather than block it: a human-paced approval would stall every event. A
+    handler that raises is logged and the reading goes on; a request whose handler raised is answered with a
+    JSON-RPC internal error (-32603). Lines that aren't JSON objects are logged and skipped. ``on_closed()`` runs
+    once, when stdout ends. Writes are serialized, so any thread may call ``request``, ``notify``,
     ``reply`` and ``reply_error``.
     """
 
@@ -88,18 +90,33 @@ class JsonRpc:
             except (BrokenPipeError, ValueError, OSError) as exc:
                 raise RpcClosed(str(exc)) from exc
 
+    def _handle_request(self, request_id: Any, method: str, params: dict) -> None:
+        try:
+            self._on_request(request_id, method, params)
+        except Exception:
+            log.exception("codex: the %s handler failed", method)
+            try:  # Codex would wait for this answer forever
+                self.reply_error(request_id, -32603, f"the office couldn't handle {method}")
+            except RpcClosed:
+                pass
+
     def _read(self) -> None:
         try:
             for raw in self._out:
                 try:
                     msg = json.loads(raw)
                 except ValueError:
-                    log.warning("codex: a line that isn't JSON: %r", raw[:200])
+                    msg = None
+                if not isinstance(msg, dict):
+                    log.warning("codex: a line that isn't a JSON object: %r", raw[:200])
                     continue
                 if "method" in msg and "id" in msg:
-                    self._on_request(msg["id"], msg["method"], msg.get("params") or {})
+                    self._handle_request(msg["id"], msg["method"], msg.get("params") or {})
                 elif "method" in msg:
-                    self._on_notification(msg["method"], msg.get("params") or {})
+                    try:
+                        self._on_notification(msg["method"], msg.get("params") or {})
+                    except Exception:
+                        log.exception("codex: the %s handler failed", msg["method"])
                 else:
                     with self._lock:
                         waiter = self._waiting.get(msg.get("id"))
