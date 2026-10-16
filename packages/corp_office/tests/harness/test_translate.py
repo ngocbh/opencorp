@@ -10,7 +10,8 @@ from jsonschema import Draft7Validator
 
 from agent_corp.chat.transcript import Transcript
 from agent_corp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED,
-                                          REPLY_SCHEMAS, SERVED, Translator, Unserved, change_counts, relative)
+                                          REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, change_counts,
+                                          relative)
 from agent_corp.store import Store
 from agent_corp.testing import fake_codex as fc
 from tests.store.conftest import session
@@ -464,6 +465,65 @@ def test_an_elicitation_in_a_mode_a_card_cannot_answer_is_unserved(tr, params):
     params = {"serverName": "gh", "threadId": "thr_1", "turnId": None, **params}
     with pytest.raises(Unserved, match=f"in mode {params['mode']}"):
         t.card("mcpServer/elicitation/request", params, session=s, run_id="codex-1", node_id="10")
+
+
+# --- decisions on tool parts --------------------------------------------------------------
+
+def test_a_decision_written_after_a_steer_lands_on_the_items_own_part(tr):
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "touch a")])
+    c = card(t, s, fc.command_approval(1, "c1", "touch a"))
+    t.transcript.user("also b", author="ngocbh")
+    result, decision = c.reply("Approve")
+    t.decided(c, decision, "ngocbh")
+    feed(t, [fc.command("c1", "touch a")[1]])
+    t.turn_completed("turn_1", "completed", None)
+    assert shape(store, s.id) == [("assistant", [(COMMAND, "completed")]), ("user", ["also b"])]
+    [part] = [p for p in parts(store, s.id) if p.type == "tool"]
+    assert part.input["approval"] == {"decision": "accept", "by": "ngocbh"}
+
+
+def test_a_decision_on_a_request_with_no_item_is_a_part_of_its_own(tr):
+    store, s, t = tr
+    c = card(t, s, fc.mcp_approval(5, "docs", "search"))
+    t.decided(c, "accept", "ngocbh")
+    t.turn_completed("turn_1", "completed", None)
+    [part] = parts(store, s.id)
+    assert part.tool == REQUEST and part.input["approval"] == {"decision": "accept", "by": "ngocbh"}
+
+
+def test_a_request_part_is_replaced_in_place_when_its_item_shows_up(tr):
+    store, s, t = tr
+    c = card(t, s, fc.file_change_approval(2, "f1"))  # asked before Codex sent the item
+    t.decided(c, "accept", "ngocbh")
+    feed(t, fc.file_change("f1", "notes.md", "hi\n"))
+    t.turn_completed("turn_1", "completed", None)
+    [part] = parts(store, s.id)
+    assert (part.tool, part.state, part.input["approval"]["by"]) == (FILE_CHANGE, "completed", "ngocbh")
+
+
+def test_a_decision_on_a_request_with_no_turn_closes_its_message(tr):
+    # No turn/completed ever names a turnless request's run, so a later message mustn't find its node open.
+    store, s, t = tr
+    c = card(t, s, fc.url_elicitation(8, "gh", "Sign in", "https://e.com/l"), run_id="codex-1")
+    t.decided(c, "accept", "ngocbh")
+    t.transcript.user("thanks", author="ngocbh")
+    assert not t.transcript.steered("codex-1")
+    feed(t, fc.agent_message("m1", "Signed in."))
+    t.turn_completed("turn_1", "completed", None)
+    assert shape(store, s.id) == [("assistant", [(REQUEST, "completed")]), ("user", ["thanks"]),
+                                  ("assistant", ["Signed in."])]
+
+
+def test_a_decision_after_its_turn_ended_writes_nothing(tr):
+    # The turn's messages are closed: writing would open a new one below whatever came after.
+    store, s, t = tr
+    feed(t, [fc.command_started("c1", "touch a")])
+    c = card(t, s, fc.command_approval(1, "c1", "touch a"))
+    t.turn_completed("turn_1", "interrupted", None)
+    before = shape(store, s.id)
+    t.decided(c, "accept", "ngocbh")
+    assert shape(store, s.id) == before
 
 
 # --- the pinned schema -------------------------------------------------------------------

@@ -73,6 +73,7 @@ class Translator:
         self._lock = threading.Lock()
         self._streamed: dict[str, str] = {}  # agent message item id -> the text its deltas streamed so far
         self._items: dict[str, dict[str, Any]] = {}  # tool item id -> its latest item, for cards and decisions
+        self._approvals: dict[str, dict[str, Any]] = {}  # tool part id -> the decision on it and who made it
         self._segments: dict[str, list[str]] = {}  # turn id -> the transcript node of each of its messages
         self._nodes: dict[str, str] = {}  # item or request part id -> the node of the message it started in
         self._shown: dict[str, str] = {}  # turn id -> the last error message shown for it
@@ -128,6 +129,7 @@ class Translator:
         for key in done:
             self._items.pop(key, None)
             self._streamed.pop(key, None)
+            self._approvals.pop(key, None)
             del self._nodes[key]
         self._shown.pop(turn_id, None)
         self._after_error.discard(turn_id)
@@ -186,11 +188,34 @@ class Translator:
         return {**change, "path": relative(change["path"], self.cwd), "kind": kind}
 
     def _put(self, turn_id: str, call_id: str) -> None:
-        """(Re)write ``call_id``'s tool part from its item."""
+        """(Re)write ``call_id``'s tool part from its item, with the decision on it."""
         tool, input_, output, error = _view(self._items[call_id])
+        if call_id in self._approvals:
+            input_ = {**input_, "approval": self._approvals[call_id]}
         self.transcript.tool(self._node(turn_id, call_id), call_id, tool,
                              state=_STATES.get(self._items[call_id].get("status"), "running"), input=input_,
                              output=output, error=error)
+
+    def decided(self, card: "Card", decision: str, by: str | None) -> None:
+        """Write a card's decision onto its tool part: the item's part, or a request part of its own."""
+        with self._lock:
+            self._decided(card, decision, by)
+
+    def _decided(self, card: "Card", decision: str, by: str | None) -> None:
+        turn = card.question.run_id
+        if turn in self._finished and not turn.startswith(TURNLESS):  # its messages are closed
+            log.debug("codex: a decision on %s for turn %s, which has ended", card.call_id, turn)
+            return
+        self._approvals[card.call_id] = {"decision": decision, "by": by}
+        if card.call_id in self._items:
+            self._put(turn, card.call_id)
+            return
+        # A request part whose item starts later is replaced in place: both use the item id as the call id.
+        self.transcript.tool(self._node(turn, card.call_id), card.call_id, REQUEST, state="completed",
+                             input={"kind": card.kind, "summary": card.question.question,
+                                    "approval": self._approvals[card.call_id]})
+        if turn.startswith(TURNLESS):  # no turn/completed will close this message, so close it now
+            self._finish(turn, False)
 
     # --- cards ----------------------------------------------------------------------
 
@@ -360,6 +385,8 @@ _COMMAND_TITLES = {"command": "Codex wants to run a command",
                    "writeStdin": "Codex wants to send input to a running command"}
 _PERMISSIONS = [("Approve for this turn", "turn"), ("Approve for this session", "session"), ("Deny", "decline")]
 MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
+TURNLESS = "codex-"
+"""Run id prefix of a request with no turn (``codex-<app-server pid>``)."""
 _MCP = [("Allow", "accept"), ("Allow for this session", "acceptForSession"), ("Cancel", "cancel")]
 _REMEMBER = "Allow and don't ask me again"  # writes the owner's Codex config: never offered
 _APPROVAL_TITLES = {"mcp_tool_call": "Codex wants to use an MCP tool",
