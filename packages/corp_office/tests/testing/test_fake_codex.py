@@ -121,3 +121,72 @@ def test_a_spawn_step_logs_its_childs_pid(tmp_path):
     run(tmp_path, {"turns": [[{"spawn": 1}]]}, *START, {"id": 4, "method": "fake/wait", "params": {"seconds": 0.5}})
     [entry] = [e for e in log(tmp_path) if e["dir"] == "spawn"]
     assert entry["pid"] > 0
+
+
+class Live:
+    """A fake app-server driven line by line: each read waits for what the fake actually sent."""
+
+    def __init__(self, tmp_path, script):
+        path = tmp_path / "s.json"
+        path.write_text(json.dumps(script))
+        self.proc = subprocess.Popen([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script",
+                                      str(path), "--log", str(tmp_path / "log.jsonl")],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.out = []
+
+    def send(self, *msgs):
+        self.proc.stdin.write("".join(json.dumps(m) + "\n" for m in msgs))
+        self.proc.stdin.flush()
+
+    def until(self, predicate):
+        """Read what the fake sends until a message ``predicate`` takes; return it."""
+        while True:
+            line = self.proc.stdout.readline()
+            assert line, "the fake exited"
+            self.out.append(json.loads(line))
+            if predicate(self.out[-1]):
+                return self.out[-1]
+
+    def methods(self):
+        return [m.get("method") for m in self.out]
+
+    def close(self):
+        self.proc.stdin.close()
+        self.proc.wait(5)
+        self.proc.stdout.close()
+
+
+def method(name):
+    return lambda m: m.get("method") == name
+
+
+INTERRUPT = {"id": 4, "method": "turn/interrupt", "params": {"threadId": "thr_fake", "turnId": "turn_1"}}
+
+
+def test_an_interrupt_completes_the_turn_before_it_resolves_the_waiting_requests(tmp_path):
+    # Real Codex (sessions/interrupt.jsonl) sends turn/completed, then serverRequest/resolved; its ids start at 0.
+    live = Live(tmp_path, {"turns": [[fc.command_approval(0, "c1", "touch a")]]})
+    live.send(*START)
+    live.until(method("item/commandExecution/requestApproval"))
+    live.send(INTERRUPT)
+    resolved = live.until(method("serverRequest/resolved"))
+    assert resolved["params"]["requestId"] == 0
+    completed = next(m for m in live.out if m.get("method") == "turn/completed")
+    assert completed["params"]["turn"]["status"] == "interrupted"
+    assert live.methods().index("turn/completed") < live.methods().index("serverRequest/resolved")
+    live.close()
+
+
+def test_a_turn_start_once_a_turn_ends_never_starts_the_next_turn_before_the_old_one_completes(tmp_path):
+    # Many requests still waiting make the end of the interrupted turn long, and the first serverRequest/resolved
+    # says it has ended: a turn/start sent then must not have turn_2 start before turn_1 completes.
+    waiting = [fc.command_approval(n, f"c{n}", "touch a", wait=False) for n in range(200)]
+    live = Live(tmp_path, {"turns": [[*waiting, {"sleep": 30}], [{"sleep": 30}]]})
+    live.send(*START)
+    live.until(lambda m: m.get("id") == 199 and "method" in m)
+    live.send(INTERRUPT)
+    live.until(method("serverRequest/resolved"))
+    live.send({"id": 5, "method": "turn/start", "params": {"threadId": "thr_fake", "input": []}})
+    live.until(lambda m: m.get("method") == "turn/started" and m["params"]["turn"]["id"] == "turn_2")
+    assert "turn/completed" in live.methods()[:-1]
+    live.close()

@@ -16,8 +16,8 @@ fake goes on with the next turn. A step is one of:
   and logs its pid as ``{"dir": "spawn", "pid": n}``.
 
 ``"{thread}"``, ``"{turn}"`` and ``"{cwd}"`` in params are filled in. ``turn/start`` during a turn is a steer and
-answers with the running turn. ``turn/interrupt`` stops the steps, resolves the requests still waiting, and completes
-the turn ``interrupted``. Every message read or written is appended to ``--log`` as ``{"dir": "in"|"out", "msg"}``.
+answers with the running turn. ``turn/interrupt`` stops the steps, completes the turn ``interrupted``, and then
+resolves the requests still waiting. Every message read or written is appended to ``--log`` as ``{"dir": "in"|"out", "msg"}``.
 Stdin EOF exits 0. The builders below make steps whose messages match the pinned Codex schema.
 """
 
@@ -181,15 +181,18 @@ class Fake:
             elif "end" in step:
                 status, error = step["end"], step.get("error")
                 break
+        # As Codex does: turn/completed first, then serverRequest/resolved for what an interrupt left waiting.
+        # It is sent before the turn is cleared, under the lock turn/start takes, so a turn/start that comes as the
+        # turn ends never sends the next turn/started ahead of it.
         with self._state:
-            interrupted, self._turn = self._interrupted, None
-            waiting = list(self._waiting)
-        if interrupted:
-            for request_id in waiting:
-                self.resolve(request_id)
-            status = "interrupted"
-        self.send({"method": "turn/completed", "params": {"threadId": self.thread["id"], "turn": {
-            "id": turn, "items": [], "status": status, "error": error}}})
+            waiting = list(self._waiting) if self._interrupted else []
+            if self._interrupted:
+                status = "interrupted"
+            self.send({"method": "turn/completed", "params": {"threadId": self.thread["id"], "turn": {
+                "id": turn, "items": [], "status": status, "error": error}}})
+            self._turn = None
+        for request_id in waiting:
+            self.resolve(request_id)
 
     def wait_reply(self, request_id: Any) -> None:
         with self._state:
