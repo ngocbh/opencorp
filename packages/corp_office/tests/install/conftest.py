@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from agent_corp.install.doctor import Check
 from agent_corp.install.launch import Host, Launch, launch
 
 SERVICE_TOOLS = ("launchctl", "systemctl", "loginctl", "tmux")
@@ -35,6 +36,9 @@ def no_real_services(tmp_path_factory, monkeypatch):
     monkeypatch.setattr("agent_corp.install.onboard.azure_deployments", lambda base_url, key: [])
     # Listing a provider's models would reach the provider; an empty list means the model is asked as before.
     monkeypatch.setattr("agent_corp.install.onboard.provider_models", lambda name, key: [])
+    # `ac doctor` would run whatever codex is on the developer's PATH; tests of the check itself call it directly.
+    monkeypatch.setattr("agent_corp.install.doctor.codex_check",
+                        lambda env, environ, mode=None: Check("codex", "ok", "stand-in"))
     yield
     assert not calls.exists(), f"a test ran a real service tool:\n{calls.read_text()}"
 

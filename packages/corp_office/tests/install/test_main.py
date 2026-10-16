@@ -13,6 +13,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.install import __main__ as install_main
 from agent_corp.install import doctor
 from agent_corp.install.__main__ import main
+from agent_corp.install.doctor import codex_check as real_codex_check
 from agent_corp.install.interview import Known
 from agent_corp.install.launch import REPO, office_answers
 from agent_corp.protocol import models
@@ -23,6 +24,16 @@ from tests.daemon.conftest import short_dir  # noqa: F401
 from .test_onboard import _stop
 
 KEY = "sk-ant-sentinel-a7d93c10e5b2"
+
+
+def test_install_tests_get_a_stand_in_codex_check():
+    assert doctor.codex_check is not real_codex_check
+
+
+def test_doctor_runs_the_codex_check_doctor_has_when_it_runs(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    main(["doctor", "--home", str(tmp_path / "home")])
+    assert "ok    codex        stand-in" in capsys.readouterr().out
 
 
 def test_doctor_on_a_fresh_machine_fails_and_says_to_onboard(tmp_path, monkeypatch, capsys):
