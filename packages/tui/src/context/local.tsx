@@ -127,6 +127,27 @@ export function createModelState(file: string, connections: () => readonly strin
   }
 }
 
+/**
+ * The harness a new chat with `person()` starts on: the one last picked, when it was picked for them, else their
+ * first.
+ */
+export function createHarnessPick(person: () => Person | undefined) {
+  const [picked, setPicked] = createSignal<{ handle: string; harness: Harness }>()
+  return {
+    current(): Harness {
+      const p = person()
+      if (!p) return "composer"
+      const options = harnessesOf(p)
+      const pick = picked()
+      return pick?.handle === p.handle && options.includes(pick.harness) ? pick.harness : (options[0] ?? "composer")
+    },
+    /** Picks `harness` for `handle`, named rather than read, so a refused switch to them picks nothing for anyone. */
+    set(handle: string, harness: Harness) {
+      setPicked({ handle, harness })
+    },
+  }
+}
+
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
   init: () => {
@@ -195,26 +216,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
 
     const person = createPerson()
 
-    /** The harness a new chat with the current person starts on: the one picked for them, else their first. */
-    function createHarness() {
-      const [picked, setPicked] = createSignal<{ handle: string; harness: Harness }>()
-      return {
-        current(): Harness {
-          const p = person.current()
-          if (!p) return "composer"
-          const options = harnessesOf(p)
-          const pick = picked()
-          return pick?.handle === p.handle && options.includes(pick.harness) ? pick.harness : (options[0] ?? "composer")
-        },
-        /** Picks `harness` for the current person; picking another person goes back to their first. */
-        set(harness: Harness) {
-          const p = person.current()
-          if (p) setPicked({ handle: p.handle, harness })
-        },
-      }
-    }
-
-    const harness = createHarness()
+    const harness = createHarnessPick(person.current)
 
     function createSession() {
       const [sessionStore, setSessionStore] = createStore<{

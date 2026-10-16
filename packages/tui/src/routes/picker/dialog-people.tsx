@@ -48,7 +48,7 @@ export function DialogPeople() {
       onSelect={(option) => {
         if (option.value === null) return dialog.replace(() => <DialogHire />)
         local.person.set(option.value.handle)
-        local.harness.set(option.value.harness)
+        local.harness.set(option.value.handle, option.value.harness)
         dialog.clear()
       }}
     />
