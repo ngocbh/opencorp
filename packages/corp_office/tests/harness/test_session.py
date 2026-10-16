@@ -449,3 +449,20 @@ def test_idle_end_is_read_once_and_never_under_the_session_lock(harness, fake_co
     harness.prompt(sid, "hi")
     wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
     assert held == [False]  # it reads the company (git, the company lock): never while the lock is held
+
+
+def test_a_turn_starting_after_the_end_leaves_the_end_timer_running(harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script([[{"sleep": 30}]], interrupt_hangs=True)
+    monkeypatch.setattr(session_module, "END_WAIT", 1.0)
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    harness.prompt(sid, "work")
+    wait_for(lambda: status(harness, sid) == "busy", what="busy")
+    ender = threading.Thread(target=harness.end, args=(sid,))  # waits on the interrupt Codex never answers
+    ender.start()
+    wait_for(lambda: status(harness, sid) == "ending" and live.timer, what="the end timer")
+    # A message's turn that Codex starts after the end, as a queued message's would.
+    live.notified("turn/started", {"threadId": "thr_1", "turn": {"id": "turn_2", "items": [], "status": "inProgress"}})
+    wait_for(lambda: status(harness, sid) == "ended", timeout=5, what="the end after END_WAIT")
+    ender.join(5)
+    assert not ender.is_alive()

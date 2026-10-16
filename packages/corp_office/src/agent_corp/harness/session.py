@@ -269,8 +269,8 @@ class CodexSession:
         if method == "turn/started":
             with self._lock:
                 self.turn_id = params["turn"]["id"]
-                self._stop_timer()
-                if not self.ending:
+                if not self.ending:  # while ending, the timer is END_WAIT's, which must still close the session
+                    self._stop_timer()
                     self.store.update_session(self.session_id, status="busy")
         elif method == "turn/completed":
             turn = params["turn"]
