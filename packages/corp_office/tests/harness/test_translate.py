@@ -225,6 +225,19 @@ def test_a_file_change_under_the_cwd_is_named_relative_to_it(tr):
     assert relative("/w", "/w") == "/w" and relative("/wx/a", "/w") == "/wx/a" and relative("a.py", "/w") == "a.py"
 
 
+def test_a_moved_file_keeps_where_it_moved_to_on_its_part_and_card(tr):
+    store, s, t = tr
+    steps = fc.file_change("f1", "{cwd}/a.py", "@@ -1 +1 @@\n-a\n+b\n\n\nMoved to: {cwd}/b.py", kind="update")
+    for step in steps:
+        step["params"]["item"]["changes"][0]["kind"]["move_path"] = "{cwd}/b.py"
+    feed(t, steps[:1])
+    assert "a.py → b.py (update, +1/-1)" in card(t, s, fc.file_change_approval(2, "f1")).question.question
+    feed(t, steps[1:])
+    t.turn_completed("turn_1", "completed", None)
+    [change] = parts(store, s.id)[0].input["changes"]
+    assert (change["path"], change["move_path"], change["kind"]) == ("a.py", "b.py", "update")
+
+
 @pytest.mark.parametrize(("kind", "diff", "counts"), [
     ("add", "one\ntwo\n", (2, 0)),                       # Codex sends a new file's content
     ("delete", "one\n+two\n-three\n", (0, 3)),            # and a deleted file's content

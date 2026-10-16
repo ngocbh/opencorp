@@ -163,8 +163,7 @@ class Translator:
                                     "chunk": "(thinking) " + "\n".join(item["summary"])})
         elif kind in TOOL_ITEMS:
             if kind == "fileChange":  # named once here, so the card, the part, the debrief and the TUI all agree
-                item = {**item, "changes": [{**c, "path": relative(c["path"], self.cwd)}
-                                            for c in item.get("changes", [])]}
+                item = {**item, "changes": [self._relative(c) for c in item.get("changes", [])]}
             self._items[item["id"]] = item
             self._put(turn_id, item["id"])
 
@@ -176,6 +175,12 @@ class Translator:
         self._shown[params["turnId"]] = message
         self.transcript.error(f"Codex: {message}")
         self._after_error.add(params["turnId"])  # what Codex does next goes below the error, not above it
+
+    def _relative(self, change: dict[str, Any]) -> dict[str, Any]:
+        """``change`` with its path, and where it moved to, relative to the session's cwd."""
+        moved = _moved(change)
+        kind = {**change["kind"], "move_path": relative(moved, self.cwd)} if moved else change.get("kind")
+        return {**change, "path": relative(change["path"], self.cwd), "kind": kind}
 
     def _put(self, turn_id: str, call_id: str) -> None:
         """(Re)write ``call_id``'s tool part from its item."""
@@ -211,7 +216,7 @@ class Translator:
                                   _offered(params.get("availableDecisions"), _APPROVE))
         if method == "item/fileChange/requestApproval":
             changes = self._items.get(params["itemId"], {}).get("changes", [])
-            text = "\n".join(f"{c['path']} ({_kind(c)}, +{a}/-{b})" for c in changes
+            text = "\n".join(f"{_named(c)} ({_kind(c)}, +{a}/-{b})" for c in changes
                              for a, b in [change_counts(_kind(c), c.get("diff"))])
             if params.get("grantRoot"):
                 text += f"\nand write access under {params['grantRoot']} for this session"
@@ -419,6 +424,15 @@ def _kind(change: dict[str, Any]) -> str | None:
     return (change.get("kind") or {}).get("type")
 
 
+def _moved(change: dict[str, Any]) -> str | None:
+    return (change.get("kind") or {}).get("move_path")
+
+
+def _named(change: dict[str, Any]) -> str:
+    """A change's path, with where it moved to: ``a.py → b.py``."""
+    return f"{change['path']} → {_moved(change)}" if _moved(change) else change["path"]
+
+
 def _view(item: dict[str, Any]) -> tuple[str, dict[str, Any], Any, str | None]:
     """A tool item's part fields: tool, input, output, error."""
     kind, status = item["type"], item.get("status")
@@ -427,7 +441,8 @@ def _view(item: dict[str, Any]) -> tuple[str, dict[str, Any], Any, str | None]:
         return (COMMAND, {"command": item["command"], "cwd": item.get("cwd"), "exit_code": item.get("exitCode")},
                 cap(item.get("aggregatedOutput")), error)
     if kind == "fileChange":
-        changes = [{"path": c["path"], "kind": _kind(c), "diff": cap(c.get("diff"))} for c in item.get("changes", [])]
+        changes = [{"path": c["path"], "kind": _kind(c), **({"move_path": _moved(c)} if _moved(c) else {}),
+                    "diff": cap(c.get("diff"))} for c in item.get("changes", [])]
         return FILE_CHANGE, {"changes": changes}, "", error
     result, failure = item.get("result"), item.get("error")
     output = cap(json.dumps(result.get("content"), ensure_ascii=False)) if result else ""
