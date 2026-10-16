@@ -14,7 +14,7 @@ from agent_corp.harness.codex import (CodexMissing, CodexProcess, CodexSignedOut
                                      owner_load)
 from agent_corp.protocol.models import HarnessPolicy
 from agent_corp.store import Store
-from agent_corp.worker.reaper import start_time
+from agent_corp.worker.reaper import reap, start_time
 from tests.chat.conftest import wait_for
 
 CLIENT = Draft7Validator(json.loads(
@@ -146,3 +146,13 @@ def gone(pid):
         return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
         return True
+
+
+def test_reaping_a_session_never_touches_its_app_server(tmp_path):
+    with Store(tmp_path / "store.sqlite") as store:
+        p, _ = process(tmp_path, store)
+        p.start()
+        store.record_worker("S1", pid=os.getpid(), pgid=os.getpgid(0), start_time=0.0)  # a stale debrief record
+        reap(store, "S1")  # what WorkerRegistry.spawn does before the debrief worker starts
+        assert [r.session_id for r in store.list_workers()] == ["harness:S1"] and p.alive
+        p.close(grace=1)
