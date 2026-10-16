@@ -1,6 +1,8 @@
 """The fake Codex app-server: scripted turns over stdio, every message it sends valid against the pinned schema."""
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,3 +48,39 @@ def test_a_new_file_is_sent_as_its_content_and_an_update_as_a_diff():
     updated = fc.file_change("f2", "a.py", "@@ -1 +1 @@\n-a\n+b\n", kind="update")[1]["params"]["item"]["changes"][0]
     assert (added["kind"], added["diff"]) == ({"type": "add"}, "hi\n")
     assert updated["kind"] == {"type": "update", "move_path": None}
+
+
+def run(tmp_path, script, *lines):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps(script))
+    proc = subprocess.run([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script", str(path),
+                           "--log", str(tmp_path / "log.jsonl")],
+                          input="".join(json.dumps(m) + "\n" for m in lines), capture_output=True, text=True, timeout=20)
+    return [json.loads(line) for line in proc.stdout.splitlines()]
+
+
+def log(tmp_path):
+    return [json.loads(line) for line in (tmp_path / "log.jsonl").read_text().splitlines()]
+
+
+START = [{"id": 1, "method": "initialize", "params": {}}, {"id": 2, "method": "thread/start", "params": {"cwd": "/w"}},
+         {"id": 3, "method": "turn/start", "params": {"threadId": "thr_fake", "input": []}}]
+
+
+def test_it_answers_the_handshake_and_a_load_and_refuses_the_rest(tmp_path):
+    out = run(tmp_path, {"thread": {"id": "thr_9", "model": "gpt-x"}}, START[0],
+              {"id": 2, "method": "account/read", "params": {}},
+              {"id": 3, "method": "thread/resume", "params": {"threadId": "thr_7", "cwd": "/w"}},
+              {"id": 4, "method": "no/such", "params": {}})
+    answers = {m["id"]: m for m in out}
+    assert answers[1]["result"] == {"userAgent": "fake-codex/0.0.0"}
+    assert answers[2]["result"]["account"] == {"type": "chatgpt"}
+    assert (answers[3]["result"]["thread"]["id"], answers[3]["result"]["model"]) == ("thr_7", "gpt-x")
+    assert answers[4]["error"]["code"] == -32601
+    assert {e["dir"] for e in log(tmp_path)} == {"in", "out"}
+
+
+def test_doctor_questions_get_fake_answers():
+    version = subprocess.run([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--version"],
+                             capture_output=True, text=True, timeout=20)
+    assert version.stdout.strip() == "codex-cli 0.0.0-fake"
