@@ -1,6 +1,7 @@
 """Codex items as transcript parts, and server requests as cards with their replies."""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from agent_corp.testing import fake_codex as fc
 from tests.store.conftest import session
 
 FIXTURES = Path(__file__).parent / "fixtures" / "codex"
+RECORDED = sorted((FIXTURES / "sessions").glob("*.jsonl"))
+SPIKE = json.loads((FIXTURES / "spike.json").read_text())
 
 
 @pytest.fixture
@@ -380,3 +383,71 @@ def test_every_reply_a_card_makes_matches_codexs_response_schema(tr):
         c = card(t, s, step)
         for answer in answers.get(step["id"], c.question.options):
             reply_validator(step["request"]).validate(c.reply(answer)[0])
+
+
+# --- the recorded real sessions ----------------------------------------------------------
+
+@pytest.fixture
+def recorded(tmp_path):
+    """A translator for replaying: its session's cwd is the spike's scratch repo as the recordings name it."""
+    store = Store(tmp_path / "store.sqlite")
+    s = store.create_session(session(harness="codex", work_item_id=None, cwd="/work/spike/ws"))
+    yield store, s, Translator(Transcript(store, s.id, lambda e: None), s.cwd)
+    store.close()
+
+
+def replay(tr, path):
+    """Feed one recorded session to the translator as the session would: each message the owner sent (every
+    ``turn/start``) as a user message, and Codex's messages; return what the owner would see."""
+    store, s, t = tr
+    cards = []
+    for line in path.read_text().splitlines():
+        entry = json.loads(line)
+        msg = entry["msg"]
+        if entry["dir"] == "out":
+            if msg.get("method") == "turn/start":  # a new turn or a steer: the office writes both the same way
+                t.transcript.user("".join(i.get("text", "") for i in msg["params"]["input"]), author="owner")
+            continue
+        if "method" not in msg:
+            continue
+        if "id" in msg and msg["method"] in SERVED:
+            params = msg["params"]
+            c = t.card(msg["method"], params, session=s, run_id=params.get("turnId") or "codex-0",
+                       node_id=str(msg["id"]))
+            cards.append({"kind": c.kind, "title": c.question.title, "question": c.question.question,
+                          "options": c.question.options, "pages": [p.header for p in c.question.questions or []]})
+        elif msg["method"] == "turn/completed":
+            turn = msg["params"]["turn"]
+            t.turn_completed(turn["id"], turn["status"], turn.get("error"))
+        else:
+            t.notification(msg["method"], msg["params"])
+    messages = [{"role": m.role, "author": m.author,
+                 "parts": [{k: v for k, v in p.model_dump(mode="json").items() if k not in ("id", "call_id")}
+                           for p in m.parts]} for m in store.list_messages(s.id)]
+    return {"messages": messages, "cards": cards}
+
+
+@pytest.mark.parametrize("path", RECORDED, ids=lambda p: p.stem)
+def test_recorded_sessions_translate_as_their_golden_files(recorded, path):
+    got = replay(recorded, path)
+    golden = FIXTURES / "golden" / f"{path.stem}.json"
+    if os.environ.get("AC_UPDATE_GOLDEN") == "1":
+        golden.parent.mkdir(exist_ok=True)
+        golden.write_text(json.dumps(got, indent=2, ensure_ascii=False) + "\n")
+    assert got == json.loads(golden.read_text())
+
+
+def test_the_recordings_include_the_step_one_scenarios():
+    assert {"plain", "command-approve", "command-decline", "file-change", "interrupt", "steer", "resume"} <= {
+        p.stem for p in RECORDED}
+
+
+def test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in(recorded):
+    if not SPIKE["S3"]["detail"]["scenarios"]["steer"]["ok"]:
+        pytest.skip("S3's steer scenario failed in the spike; rerun it with --scenario steer")
+    got = replay(recorded, FIXTURES / "sessions" / "steer.jsonl")
+    roles = [m["role"] for m in got["messages"]]
+    assert roles[:3] == ["user", "assistant", "user"]  # the steer comes after the message the command started in
+    [command] = [p for p in got["messages"][1]["parts"] if p.get("tool") == COMMAND]
+    assert command["state"] == "completed"
+    assert "assistant" in roles[3:]  # what Codex did after reading the steer follows it
