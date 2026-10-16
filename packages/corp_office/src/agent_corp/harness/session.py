@@ -322,6 +322,7 @@ class CodexSession:
             with self._lock:
                 if turn["id"] == self.turn_id:
                     self.turn_id = None
+                self._expire_turn(turn["id"])
                 if self.ending:
                     self._post(self._close)
                 elif self.turn_id is None and not self.loading:
@@ -395,6 +396,15 @@ class CodexSession:
             pending = self.requests.pop(question_id, None) if question_id else None
         if pending is not None:
             self._expire(question_id)
+
+    def _expire_turn(self, turn_id: str) -> None:
+        """(Under the lock.) Cards of a finished turn that Codex didn't resolve go stale: it waits on them no more.
+        Codex sends no ``serverRequest/resolved`` for a request an interrupt leaves waiting."""
+        for question_id, pending in list(self.requests.items()):
+            if pending.card.question.run_id == turn_id:
+                del self.requests[question_id]
+                self.by_request.pop(str(pending.request_id), None)
+                self._expire(question_id)
 
     def _expire(self, question_id: str) -> None:
         try:

@@ -4,6 +4,8 @@ import os
 import signal
 import threading
 
+import pytest
+
 from agent_corp.chat.harness import HarnessError
 from agent_corp.harness import session as session_module
 from agent_corp.testing import fake_codex as fc
@@ -181,3 +183,53 @@ def test_an_answer_after_the_app_server_died_goes_stale(harness, fake_codex, wor
     except HarnessError as e:
         assert e.code == "not_open"  # the app-server's exit expired the card first
     assert 1 not in fake_codex.replies()
+
+
+def test_an_unanswered_card_goes_stale_when_codex_resolves_it(harness, fake_codex, workspace):
+    fake_codex.script([[fc.command_approval(1, "c1", "touch a", wait=False), {"sleep": 0.3}, {"resolve": 1},
+                        {"sleep": 5}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    wait_for(lambda: harness.store.get_question(q.id).status == "stale", what="stale")
+    assert status(harness, sid) == "busy"  # the turn goes on
+
+
+def test_a_card_codex_left_waiting_at_its_turns_end_goes_stale(harness, fake_codex, workspace):
+    fake_codex.script([[fc.command_approval(1, "c1", "touch a", wait=False), {"sleep": 0.3}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    assert not any(m.get("method") == "serverRequest/resolved" for m in fake_codex.messages("out"))
+    wait_for(lambda: harness.store.get_question(q.id).status == "stale", what="stale")
+
+
+def test_two_cards_open_and_close_independently_and_a_message_leaves_them_alone(harness, fake_codex, workspace):
+    fake_codex.script([[fc.command_approval(1, "c1", "touch a", wait=False),
+                        fc.permissions_approval(2, "p1", wait=False), {"wait_reply": 1}, {"wait_reply": 2}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    wait_for(lambda: len(harness.store.list_questions(session_id=sid, status="open")) == 2, what="two cards")
+    assert harness.prompt(sid, "also do b") == "steer"
+    by_node = {q.node_id: q for q in harness.store.list_questions(session_id=sid, status="open")}
+    assert harness.answer(by_node["2"].id, "Approve for this session", "option", by="ngocbh").status == "consumed"
+    assert harness.store.get_question(by_node["1"].id).status == "open"
+    assert harness.answer(by_node["1"].id, "Approve", "option", by="ngocbh").status == "consumed"
+    wait_for(lambda: status(harness, sid) == "idle", what="the turn's end")
+    assert fake_codex.replies()[2]["scope"] == "session" and fake_codex.replies()[1] == {"decision": "accept"}
+
+
+def test_esc_makes_open_cards_stale_though_codex_never_resolves_them(harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script([approval_turn()])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "make a")
+    q = open_card(harness, sid)
+    # Real Codex sends no serverRequest/resolved for a request an interrupt leaves waiting; the fake does.
+    monkeypatch.setattr(harness.codex._live[sid], "_resolved", lambda request_id: None)
+    harness.interrupt(sid)
+    wait_for(lambda: harness.store.get_question(q.id).status == "stale" and status(harness, sid) == "idle",
+             what="stale card, idle session")
+    with pytest.raises(HarnessError) as refused:
+        harness.answer(q.id, "Approve", "option", by="ngocbh")
+    assert refused.value.code == "not_open" and 1 not in fake_codex.replies()
