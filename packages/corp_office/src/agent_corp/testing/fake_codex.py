@@ -119,9 +119,11 @@ class Fake:
             with self._state:
                 if self._turn is None or params.get("turnId") != self._turn:
                     return self.reply(request_id, error={"code": -32600, "message": "no active turn to interrupt"})
+                # Codex answers the interrupt before the turn's turn/completed, so reply under the lock the run waits on.
+                self.reply(request_id, {})
                 self._interrupted = True
                 self._state.notify_all()
-            return self.reply(request_id, {})
+            return None
         if method == "fake/wait":
             time.sleep(params.get("seconds", 0))
             return self.reply(request_id, {})

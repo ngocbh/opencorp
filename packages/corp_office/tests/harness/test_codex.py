@@ -93,6 +93,7 @@ def test_a_server_that_dies_calls_on_exit_with_its_stderr(tmp_path):
         p.rpc.request("thread/start", {"cwd": str(tmp_path)})
         p.rpc.request("turn/start", {"threadId": "thr_fake", "input": []})
         assert exits.wait(10) and "boom: bad config" in p.stderr_tail()
+        p.kill()
 
 
 def test_a_refused_handshake_or_sign_in_raises_and_leaves_nothing(tmp_path):
