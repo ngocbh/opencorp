@@ -875,6 +875,19 @@ class Store:
             question = current.model_copy(update={"status": status, "updated_at": now()})
             return self._write_question(tx, question)
 
+    def lose_answer(self, question_id: str) -> Question:
+        """Move an answered question to ``stale``: its answer never reached the asker (a harness request that
+        resolved, or whose process died, before the reply). Emits ``question.updated``.
+
+        Only this move leaves ``answered`` for ``stale``. ``set_question_status`` never does, so a run that ends
+        can't expire an answer that has just landed.
+        """
+        with self.transaction() as tx:
+            current = self._must(QUESTIONS, Question, question_id)
+            if current.status != "answered":
+                raise InvalidTransition(f"question {question_id} is {current.status}, not answered")
+            return self._write_question(tx, current.model_copy(update={"status": "stale", "updated_at": now()}))
+
     def update_question(self, question_id: str, **changes: Any) -> Question:
         """Change non-status fields (discussion, side_session_id, ...) and emit ``question.updated``."""
         frozen = {"id", "session_id", "run_id", "node_id", "status", "answer", "answer_kind", "answered_by", "created_at"}

@@ -21,6 +21,8 @@ from agent_corp.store import InvalidTransition, new_id
 
 log = logging.getLogger(__name__)
 
+_HARNESS_ONLY_ANSWER = "a Codex card takes only an answer; press Esc in the chat to interrupt Codex's turn"
+
 
 class Cards:
     """What a question card can do, and the side sessions behind "Chat about this".
@@ -63,6 +65,7 @@ class Cards:
         ``by`` is the human sending it; one who opens or reopens the side session is in it now.
         """
         question = self._open(question_id)
+        self._not_harness(question)
         if self._is_turn(question):
             raise HarnessError(422, "not_a_card", "a chat turn is not a question card; reply in the chat")
         refusal = self.refuse_exit(None, text)
@@ -91,6 +94,7 @@ class Cards:
     def send_back(self, question_id: str, note: str, *, by: str | None = None) -> Question:
         """Send the discussion back undecided as ``by``; a non-blank ``note`` is the human's last message in it."""
         question = self._open(question_id)
+        self._not_harness(question)
         if question.source == "human_input":
             raise HarnessError(422, "cannot_send_back", "a flow's own question can't be sent back")
         with self._discussion:
@@ -109,6 +113,7 @@ class Cards:
         one's; any other model question is answered as ``by`` and its run carries on.
         """
         question = self._open(question_id)
+        self._not_harness(question)
         if question.source == "human_input":
             raise HarnessError(422, "cannot_stop", "a flow's own question can't be stopped")
         self.snapshot(question)
@@ -262,6 +267,11 @@ class Cards:
         if question.status != "open":
             raise HarnessError(409, "not_open", f"question {question_id} is {question.status}")
         return question
+
+    def _not_harness(self, question: Question) -> None:
+        """Raise ``422 harness_card`` for a harness card, which a side chat, send back or stop can't reach."""
+        if question.source == "harness":
+            raise HarnessError(422, "harness_card", _HARNESS_ONLY_ANSWER)
 
     def _is_turn(self, question: Question) -> bool:
         # Both chat flows the office runs share the turn path chat/ask.

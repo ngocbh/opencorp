@@ -178,3 +178,28 @@ def test_a_required_none_field_in_a_record_takes_blank():
     assert check_answer(gate, {"done": ""}, "text") == {"done": None}
     with pytest.raises(InvalidAnswer, match=r"answer.done must be empty"):
         check_answer(gate, {"done": "x"}, "text")
+
+
+def test_a_harness_approval_takes_one_of_its_options_only():
+    card = q("harness", options=["Approve", "Deny and stop"])
+    assert check_answer(card, "Approve", "option") == "Approve"
+    # The office's own answers never reach Codex either: it waits on the reply an answer makes.
+    for answer, kind in [("Approve", "text"), ("yes please", "text"), ("Maybe", "option"),
+                         ("Approve", "interrupted"), ("", "sent_back")]:
+        with pytest.raises(InvalidAnswer):
+            check_answer(card, answer, kind)
+
+
+def test_a_harness_card_with_pages_takes_a_record_with_typed_numbers():
+    pages = [{"question": "Token?", "header": "Token", "options": [], "secret": True},
+             {"question": "Env?", "header": "Env", "options": [{"label": "prod"}, {"label": "dev"}]},
+             {"question": "Points?", "header": "points", "options": []}]
+    card = q("harness", questions=pages, answer_schema=fields(("Env", "str", True, {"enum": ["prod", "dev"]}),
+                                                              ("points", "int", True)))
+    assert check_answer(card, {"Token": "s3cret", "Env": "dev", "points": "3"}, "text") == {
+        "Token": "s3cret", "Env": "dev", "points": 3}
+    for bad in ({"Token": "s3cret", "Env": "staging", "points": "3"}, {"Token": "s3cret", "Env": "dev", "points": "x"}):
+        with pytest.raises(InvalidAnswer):
+            check_answer(card, bad, "text")
+    with pytest.raises(InvalidAnswer):
+        check_answer(card, {"Token": "s3cret", "Env": "dev", "points": "3"}, "interrupted")

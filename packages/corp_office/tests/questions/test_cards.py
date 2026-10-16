@@ -11,11 +11,15 @@ import pytest
 
 from agent_corp.chat.harness import HarnessError
 from agent_corp.extensions.questions import register
+from agent_corp.protocol import now
+from agent_corp.protocol.models import Question
 from agent_corp.questions.format import CARRIED_NOTE, INTERRUPTED, SENT_BACK
 from agent_corp.questions.seed import FRAMING
 from agent_corp.questions.side import BACK_HINT, SEED_FILE, SIDE_CHAT_FLOW
+from agent_corp.store import new_id
 from tests.chat.conftest import fake_llm, make_harness, status, texts, wait_for, workspace  # noqa: F401
 from tests.company.conftest import _isolate_git, person  # noqa: F401
+from tests.store.conftest import session as make_session
 
 SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
 ASK = {"tool_calls": [{"name": "ask_user", "arguments": {"question": "Retry or back off?",
@@ -538,3 +542,17 @@ def test_a_side_chat_uses_its_askers_model(make_harness, fake_llm, workspace):  
         assert fake_llm.wait_for_requests(2)[1]["model"] == "stub-5"
     finally:
         stop(office)
+
+
+def test_a_harness_card_takes_only_an_answer(office, workspace):  # noqa: F811
+    s = office.store.create_session(make_session(harness="codex", cwd=str(workspace)))
+    t = now()
+    q = office.store.add_question(Question(id=new_id(), session_id=s.id, run_id="turn_1", node_id="1",
+                                           source="harness", asker="minh", question="$ touch a", status="open",
+                                           options=["Approve", "Deny and stop"], created_at=t, updated_at=t))
+    cards = office.extras["cards"]
+    for act in (lambda: cards.open_side(q.id, "why?"), lambda: cards.send_back(q.id, ""), lambda: cards.stop(q.id)):
+        with pytest.raises(HarnessError) as e:
+            act()
+        assert (e.value.status, e.value.code) == (422, "harness_card")
+    assert office.store.get_question(q.id).status == "open"

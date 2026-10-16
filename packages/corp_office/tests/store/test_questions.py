@@ -94,6 +94,23 @@ def test_status_happy_paths(store, sid):
         store.set_question_status(b.id, "answered")
 
 
+def test_lose_answer_moves_an_answered_question_to_stale_and_drops_the_answer(store, sid):
+    q = store.add_question(make_question(sid))
+    store.answer_question(q.id, "Approve", "option", answered_by="ngocbh")
+    lost = store.lose_answer(q.id)
+    assert lost.status == "stale" and (lost.answer, lost.answer_kind, lost.answered_by) == (None, None, None)
+    assert store.events_after()[-1].type == "question.updated"
+
+
+@pytest.mark.parametrize("path", [[], ["stale"], ["answer", "consumed"]])
+def test_lose_answer_takes_only_an_answered_question(store, sid, path):
+    q = store.add_question(make_question(sid))
+    for step in path:
+        store.answer_question(q.id, "x", "text") if step == "answer" else store.set_question_status(q.id, step)
+    with pytest.raises(InvalidTransition):
+        store.lose_answer(q.id)
+
+
 def test_first_answer_wins(store, sid):
     q = store.add_question(make_question(sid))
     barrier = threading.Barrier(2)

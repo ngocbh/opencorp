@@ -113,16 +113,19 @@ class Learning:
     # --- routes ----------------------------------------------------------------------
 
     def add_feedback(self, request: FeedbackRequest, *, by: str | None = None) -> Feedback:
-        """Queue feedback on a finished run of a session (its latest run by default).
+        """Queue feedback on a finished run of a session (its latest run by default, or its debrief run when it
+        has no runs).
 
         ``by`` is the human giving it (the CEO when None).
         """
         session = self._session(request.session_id)
         if session.kind != "main":
             raise HarnessError(422, "not_learnable", f"session {session.id} is a {session.kind} session")
-        run_id = request.run_id or (session.run_ids[-1] if session.run_ids else None)
         record = self.store.get_debrief_record(session.id)
-        runs = set(session.run_ids) | ({record.run_id} if record and record.debrief.state == "ready" else set())
+        debrief_run = record.run_id if record and record.debrief.state == "ready" else None
+        # A harness session (Codex) has no office runs; its debrief run is the one feedback can teach.
+        run_id = request.run_id or (session.run_ids[-1] if session.run_ids else debrief_run)
+        runs = set(session.run_ids) | ({debrief_run} if debrief_run else set())
         if run_id is None or run_id not in runs:
             raise HarnessError(422, "invalid_body", f"session {session.id} has no run {run_id}")
         if not self._finished(session.id, run_id):
