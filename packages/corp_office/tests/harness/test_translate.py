@@ -383,7 +383,7 @@ def test_codex_questions_are_pages_with_secret_ones_marked(tr):
                                    fc.question("env", "Env", "Where?", options=["prod", "dev"])])
     c = card(t, s, step)
     assert c.kind == "question" and [p.header for p in c.question.questions] == ["Token", "Env"]
-    assert [p.secret for p in c.question.questions] == [True, False] and c.secret == {"Token"}
+    assert [p.secret for p in c.question.questions] == [True, False]
     assert [f.name for f in c.question.answer_schema] == ["Env"]  # no "other": only its options
     assert c.reply({"Token": "s3cret", "Env": "dev"}) == (
         {"answers": {"token": {"answers": ["s3cret"]}, "env": {"answers": ["dev"]}}}, "answer")

@@ -330,8 +330,7 @@ class Translator:
             return {"answers": {headers[h]: {"answers": v if isinstance(v, list) else [v]}
                                 for h, v in answer.items()}}, "answer"
 
-        secret = frozenset(p.header for p in pages if p.secret)
-        return Card("question", question, params["itemId"], reply, secret)
+        return Card("question", question, params["itemId"], reply)
 
     def _elicitation(self, base: dict[str, Any], params: dict[str, Any], title: str) -> "Card":
         call_id = f"request-{base['node_id']}"
@@ -408,7 +407,6 @@ class Card:
     question: Question
     call_id: str  # the tool part a decision is written on: the item's id, else a request part of its own
     replies: Callable[[Any], tuple[dict[str, Any], str]]
-    secret: frozenset[str] = frozenset()  # headers of pages whose answers are stored as [secret]
 
     def reply(self, answer: Any) -> tuple[dict[str, Any], str]:
         """The JSON-RPC result for ``answer`` (as ``check_answer`` returned it), and the decision's variant name."""

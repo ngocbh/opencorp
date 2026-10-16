@@ -10,11 +10,15 @@ import pytest
 from agent_corp.chat.harness import HarnessError
 from agent_corp.extensions.questions import register
 from agent_corp.harness import session as session_module
+from agent_corp.harness.sessions import _masked
+from agent_corp.protocol.models import QuestionPage
 from agent_corp.store import DuplicateKey
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
+from tests.store.conftest import question
 
 SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
+SID = "01M53FTBYV710JBB471KEBQDVC"
 
 
 def open_card(harness, sid):
@@ -361,3 +365,16 @@ def test_an_answer_that_waited_too_long_for_its_reply_tells_codex_it_came_too_la
     assert fake_codex.replies()[1]["code"] == -32603  # with no card left, Codex mustn't wait on one
     wait_for(lambda: status(harness, sid) == "idle", what="Codex going on")
     assert live.requests == {} and harness.store.get_question(q.id).status == "stale"
+
+
+def test_on_a_card_with_a_secret_only_what_is_known_to_be_safe_is_stored():
+    pages = [QuestionPage(question="Paste it", header="Token", options=[], secret=True),
+             QuestionPage(question="Where?", header="Env", options=[])]
+    secret_card = question(SID, source="harness", questions=pages)
+    assert _masked(secret_card, {"Token": SENTINEL, "Env": "dev"}) == {"Token": "[secret]", "Env": "dev"}
+    assert _masked(secret_card, {"Env": "dev", "Tokn": SENTINEL}) == {"Env": "dev", "Tokn": "[secret]"}
+    assert _masked(secret_card, SENTINEL) == "[secret]"
+    assert _masked(secret_card, [SENTINEL]) == "[secret]"
+    plain = question(SID, source="harness", questions=[pages[1]])
+    assert _masked(plain, {"Env": "dev", "Other": "x"}) == {"Env": "dev", "Other": "x"}
+    assert _masked(question(SID, source="harness", options=["Approve"]), "Approve") == "Approve"

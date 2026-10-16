@@ -141,8 +141,12 @@ class CodexSessions:
 
 
 def _masked(question: Question, answer: Any) -> Any:
-    """``answer`` with each secret page's value replaced by ``[secret]``."""
-    secret = {p.header for p in question.questions or [] if p.secret}
-    if not secret or not isinstance(answer, dict):
+    """``answer`` as stored: on a card with a secret page, only the values of its other pages are kept, and anything
+    else (a secret page's value, an unknown key, an answer that isn't a record) is ``[secret]``."""
+    pages = question.questions or []
+    if not any(p.secret for p in pages):
         return answer
-    return {k: "[secret]" if k in secret else v for k, v in answer.items()}
+    if not isinstance(answer, dict):
+        return "[secret]"
+    safe = {p.header for p in pages if not p.secret}
+    return {k: v if k in safe else "[secret]" for k, v in answer.items()}
