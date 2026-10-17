@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
-import { onCleanup, type JSX } from "solid-js"
+import { createSignal, onCleanup, type JSX } from "solid-js"
 import { resolve, TuiConfigProvider } from "../../src/config"
 import { AgentCorpKeymapProvider, registerAgentCorpBaseKeymap } from "../../src/keymap"
 import { SecretInput } from "../../src/setup/secret"
@@ -88,6 +88,40 @@ test("Ctrl+C or Esc empties the box: the dots go, and Enter then hands over only
     await app.mockInput.typeText("xyz")
     app.mockInput.pressEnter()
     expect(got).toEqual(["xyz"])
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("a disabled box takes no keys and no paste, and enabling it takes them again", async () => {
+  const got: string[] = []
+  const changes: string[] = []
+  const [enabled, setEnabled] = createSignal(false)
+  const app = await testRender(
+    () => (
+      <Keys>
+        <SecretInput
+          placeholder="Paste or type it here; it isn't shown"
+          enabled={enabled()}
+          onChange={(v) => changes.push(v)}
+          onSubmit={(v) => got.push(v)}
+        />
+      </Keys>
+    ),
+    { width: 80, height: 5, exitOnCtrlC: false },
+  )
+  try {
+    await app.mockInput.typeText("steer")
+    await app.mockInput.pasteBracketedText("pasted")
+    app.mockInput.pressEnter()
+    await app.renderOnce()
+    expect(app.captureCharFrame()).toContain("Paste or type it here; it isn't shown")
+    expect([got, changes]).toEqual([[], []])
+    setEnabled(true)
+    await app.mockInput.typeText("ab")
+    app.mockInput.pressEnter()
+    expect(got).toEqual(["ab"])
+    expect(changes).toEqual(["a", "ab", ""])
   } finally {
     app.renderer.destroy()
   }
