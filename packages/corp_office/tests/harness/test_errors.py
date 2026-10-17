@@ -108,9 +108,11 @@ def test_a_reload_codex_refuses_leaves_the_session_idle_with_why(harness, fake_c
 def test_an_unloaded_thread_is_reloaded_by_the_next_message(harness, fake_codex, workspace):
     fake_codex.script([[fc.thread_closed()], fc.agent_message("m1", "Reloaded")])
     sid = start(harness, workspace)
+    old = harness.codex._live[sid].process
     harness.prompt(sid, "go")
     wait_for(lambda: status(harness, sid) == "idle" and not harness.store.list_workers(), what="the unload")
     assert errors(harness, sid) == []
+    assert old.proc.returncode == 0  # closed through its stdin, as Codex exits then; not killed
     assert harness.prompt(sid, "again") == "queued"
     wait_for(lambda: "Reloaded" in texts(harness, sid), what="the reloaded turn")
     assert fake_codex.calls("thread/resume")[0]["threadId"] == "thr_1"

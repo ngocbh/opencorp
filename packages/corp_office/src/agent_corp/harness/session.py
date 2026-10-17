@@ -559,6 +559,8 @@ class CodexSession:
         close its group now; the next message reloads the thread. ``said`` is the error part, with the stderr tail."""
         with self._lock:
             self.process = None
+            if said is None:
+                self.retiring = process  # office stop kills it while it is being closed
             turn, self.turn_id = self.turn_id, None
             for question_id in list(self.requests):  # Codex waits on none of them any more
                 self.requests.pop(question_id)
@@ -566,8 +568,15 @@ class CodexSession:
             self.by_request.clear()
         tail = process.stderr_tail() if said else ""
         # A dead leader leaves its group to whatever it started (command children, #57): kill it now, which also
-        # removes the record, so an end or idle_end that comes before any reload never finds them.
-        process.kill()
+        # removes the record, so an end or idle_end that comes before any reload never finds them. An app-server
+        # that only unloaded the thread is alive: close it through its stdin, which kills its group after.
+        if said is None:
+            process.close(self.owner.close_grace)
+            with self._lock:
+                if self.retiring is process:
+                    self.retiring = None
+        else:
+            process.kill()
         if self.stopped:
             return  # office stop came meanwhile: restore marks the turn, and nothing is written after the stop
         if turn is not None:
