@@ -339,3 +339,41 @@ test("create sends the pick and waits 30 s; a timeout says the chat may have sta
   expect(err.message).toContain("the chat may have started")
   expect(err.message).toContain("session list")
 })
+
+test("continue posts no body with the create limit; the office refuses a live or composer session", async () => {
+  office = createFakeOffice()
+  const old = office.newSession({
+    person: "minh",
+    cwd: "/tmp/proj",
+    harness: "codex",
+    status: "ended",
+    harness_session_id: "thr_1",
+  })
+  const timeout = AbortSignal.timeout.bind(AbortSignal)
+  const asked: number[] = []
+  const spy = spyOn(AbortSignal, "timeout").mockImplementation((ms) => (asked.push(ms), timeout(ms)))
+  const next = await client().sessions.continue(old.id).finally(() => spy.mockRestore())
+  expect(asked).toEqual([CREATE_TIMEOUT_MS])
+  expect(office.requests.at(-1)).toMatchObject({ method: "POST", path: `/sessions/${old.id}/continue`, body: undefined })
+  expect([next.harness, next.parent_session_id, next.harness_session_id]).toEqual(["codex", old.id, "thr_1"])
+  const live = await failure(client().sessions.continue(next.id))
+  expect([live.status, live.code]).toEqual([409, "live"])
+  const composer = office.state.sessions.find((s) => s.harness === "composer")!
+  const refused = await failure(client().sessions.continue(composer.id))
+  expect([refused.status, refused.code]).toEqual([422, "not_continuable"])
+})
+
+test("continue, as the office does it: from the newest stretch, with its connection and model, by the requester", async () => {
+  office = createFakeOffice()
+  const codex = { person: "minh", cwd: "/tmp/proj", harness: "codex" as const, status: "ended" as const }
+  const first = office.newSession({ ...codex, harness_session_id: "thr_1", connection: "azure-2", model: "o3-mini" })
+  const second = office.newSession({ ...codex, harness_session_id: "thr_1", parent_session_id: first.id })
+  // A Codex session whose first load failed has no thread: it neither continues nor holds one.
+  const unloaded = office.newSession({ ...codex, status: "idle", harness_session_id: null })
+  const next = await client().sessions.continue(first.id)
+  expect(next.parent_session_id).toBe(second.id)
+  expect([next.connection, next.model, next.opened_by]).toEqual(["azure-2", "o3-mini", "ngocbh"])
+  office.setStatus(unloaded.id, "ended")
+  const never = await failure(client().sessions.continue(unloaded.id))
+  expect([never.status, never.code]).toEqual([422, "not_continuable"])
+})

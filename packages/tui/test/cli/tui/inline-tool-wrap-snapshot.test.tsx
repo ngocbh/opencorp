@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { createSignal, For, Show } from "solid-js"
 import type { BoxRenderable, ScrollBoxRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
-import { InlineToolRow, alwaysSeparate, editStartLine, toolView } from "../../../src/routes/session"
+import { InlineToolRow, alwaysSeparate, approvalNote, codexPatch, editStartLine, toolView } from "../../../src/routes/session"
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
 
@@ -224,6 +224,35 @@ describe("TUI inline tool wrapping", () => {
       newString: "y",
     })
     expect(toolView("search", { pattern: "p", glob: "*.py" }).input).toEqual({ pattern: "p", include: "*.py" })
+  })
+
+  test("a Codex file change is a patch: a new file all added, a deleted one all removed, an update as sent", () => {
+    expect(codexPatch([{ path: "notes.md", kind: "add", diff: "hello\n" }])).toContain("\n+hello")
+    expect(codexPatch([{ path: "old.md", kind: "delete", diff: "bye\n" }])).toContain("\n-bye")
+    const update = codexPatch([{ path: "a.py", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b\n\n\nMoved to: b.py" }])
+    expect(update).toBe("--- a.py\n+++ a.py\n@@ -1 +1 @@\n-a\n+b\n")
+  })
+
+  test("a Codex request's title is its summary's first line; missing fields never read undefined", () => {
+    const summary = 'Codex asks for more permissions\n{"network": {"enabled": true}}\nneeds the network'
+    expect(toolView("codex.request", { kind: "permissions", summary }).title).toBe(
+      "permissions: Codex asks for more permissions",
+    )
+    expect(toolView("codex.request", { kind: "command", summary: "Codex wants to run:\n$ ls" }).title).toBe(
+      "command: Codex wants to run",
+    )
+    expect(toolView("codex.request", {}).title).toBe("?: ?")
+    expect(toolView("codex.mcp_tool_call", { server: "docs" }).title).toBe("docs/?")
+  })
+
+  test("a Codex decision names who made it", () => {
+    expect(approvalNote({ approval: { decision: "accept", by: "ngocbh" } })).toBe("approved by @ngocbh")
+    expect(approvalNote({ approval: { decision: "acceptForSession", by: "ngocbh" } })).toBe("approved by @ngocbh")
+    expect(approvalNote({ approval: { decision: "session", by: "ngocbh" } })).toBe("approved by @ngocbh")
+    expect(approvalNote({ approval: { decision: "decline", by: "ngocbh" } })).toBe("denied by @ngocbh")
+    expect(approvalNote({ approval: { decision: "cancel", by: "ngocbh" } })).toBe("denied by @ngocbh")
+    expect(approvalNote({ approval: { decision: "Postgres", by: "ngocbh" } })).toBe("answered by @ngocbh")
+    expect(approvalNote({ command: "ls" })).toBeUndefined()
   })
 
   test("reads the line an edit starts on from edit_file's reply", () => {

@@ -815,7 +815,7 @@ function ErrorPartView(props: { last: boolean; part: ErrorPart }) {
   )
 }
 
-export type ToolView = "shell" | "read" | "write" | "edit" | "list" | "search" | "question" | "generic"
+export type ToolView = "shell" | "read" | "write" | "edit" | "patch" | "list" | "search" | "question" | "generic"
 
 const pick = (input: Record<string, unknown>, map: Record<string, string>) =>
   Object.fromEntries(
@@ -826,7 +826,7 @@ const pick = (input: Record<string, unknown>, map: Record<string, string>) =>
 export function toolView(
   tool: string,
   input: Record<string, unknown> = {},
-): { view: ToolView; input: Record<string, unknown> } {
+): { view: ToolView; input: Record<string, unknown>; title?: string } {
   switch (tool) {
     case "read_file":
       return { view: "read", input: pick(input, { filePath: "path", offset: "offset", limit: "limit" }) }
@@ -847,6 +847,17 @@ export function toolView(
       return { view: "shell", input }
     case "ask_user":
       return { view: "question", input }
+    case "codex.command":
+      return { view: "shell", input }
+    case "codex.file_change":
+      return { view: "patch", input }
+    case "codex.mcp_tool_call":
+      return { view: "generic", input, title: `${stringValue(input.server) ?? "?"}/${stringValue(input.tool) ?? "?"}` }
+    case "codex.request": {
+      // The summary is the card's whole text (a command, JSON, a reason); its first line names the request.
+      const head = stringValue(input.summary)?.split("\n")[0].replace(/:\s*$/, "")
+      return { view: "generic", input, title: `${stringValue(input.kind) ?? "?"}: ${head || "?"}` }
+    }
   }
   return { view: "generic", input }
 }
@@ -864,6 +875,38 @@ function editPatch(file: string, oldString: string, newString: string, line = 1)
     /^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@/gm,
     (_, a, aLen = "", b, bLen = "") => `@@ -${+a + line - 1}${aLen} +${+b + line - 1}${bLen} @@`,
   )
+}
+
+/**
+ * One unified diff per change of a Codex file change. Codex sends a new or deleted file's whole content as its
+ * `diff`, so those become a patch against an empty side; an update's diff is already unified (a move's
+ * "Moved to: …" line is dropped).
+ */
+export function codexPatch(changes: { path: string; kind?: string | null; diff?: string }[]): string {
+  return changes
+    .map((c) => {
+      const body = c.diff ?? ""
+      if (c.kind === "add") return createTwoFilesPatch(c.path, c.path, "", body)
+      if (c.kind === "delete") return createTwoFilesPatch(c.path, c.path, body, "")
+      const diff = body.replace(/\n\nMoved to: .*$/s, "")
+      return diff.startsWith("--- ") ? diff : `--- ${c.path}\n+++ ${c.path}\n${diff}`
+    })
+    .join("\n")
+}
+
+const APPROVED = new Set(["turn", "session"])
+const DENIED = new Set(["decline", "cancel"])
+
+/** Who decided on a Codex tool part and how ("approved by @x"), or nothing when no one did. */
+export function approvalNote(input: Record<string, unknown>): string | undefined {
+  const approval = input.approval as { decision?: unknown; by?: unknown } | undefined
+  if (!approval || typeof approval !== "object") return undefined
+  const decision = stringValue(approval.decision) ?? ""
+  const by = stringValue(approval.by)
+  const who = by ? ` by @${by}` : ""
+  if (decision.startsWith("accept") || APPROVED.has(decision)) return `approved${who}`
+  if (DENIED.has(decision)) return `denied${who}`
+  return `answered${who}`
 }
 
 const PART_MAPPING = {
@@ -889,6 +932,9 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
     },
     get tool() {
       return props.part.tool
+    },
+    get title() {
+      return view().title
     },
     get part() {
       return props.part
@@ -916,6 +962,9 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
         <Match when={view().view === "edit"}>
           <Edit {...toolprops} />
         </Match>
+        <Match when={view().view === "patch"}>
+          <Patch {...toolprops} />
+        </Match>
         <Match when={view().view === "question"}>
           <Question {...toolprops} />
         </Match>
@@ -930,6 +979,8 @@ function ToolPartView(props: { last: boolean; part: ToolPart }) {
 type ToolProps = {
   input: Record<string, unknown>
   tool: string
+  /** A generic tool's title in place of its name and input, such as a Codex MCP call's `server/tool`. */
+  title?: string
   output?: string
   part: ToolPart
 }
@@ -954,12 +1005,12 @@ function GenericTool(props: ToolProps) {
       when={props.output && ctx.showGenericToolOutput()}
       fallback={
         <InlineTool icon="⚙" pending="Writing command…" complete={true} part={props.part}>
-          {props.tool} {input(props.input)}
+          {props.title ?? `${props.tool} ${input(props.input)}`}
         </InlineTool>
       }
     >
       <BlockTool
-        title={`# ${props.tool} ${input(props.input)}`}
+        title={`# ${props.title ?? `${props.tool} ${input(props.input)}`}`}
         part={props.part}
         onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
       >
@@ -993,6 +1044,7 @@ function InlineTool(props: {
   const [errorExpanded, setErrorExpanded] = createSignal(false)
 
   const error = createMemo(() => (props.part.state === "error" ? (props.part.error ?? "failed") : undefined))
+  const note = createMemo(() => approvalNote(props.part.input ?? {}))
   const interrupted = createMemo(() => props.part.state === "interrupted")
   const failed = createMemo(() => Boolean(error()))
   const clickable = createMemo(() => Boolean(props.onClick || failed()))
@@ -1031,6 +1083,7 @@ function InlineTool(props: {
       }}
     >
       {props.children}
+      {note() ? ` · ${note()}` : ""}
     </InlineToolRow>
   )
 }
@@ -1126,6 +1179,7 @@ function BlockTool(props: {
   const renderer = useRenderer()
   const [hover, setHover] = createSignal(false)
   const error = createMemo(() => (props.part?.state === "error" ? props.part.error : undefined))
+  const note = createMemo(() => (props.part ? approvalNote(props.part.input ?? {}) : undefined))
   return (
     <box
       ref={(el: BoxRenderable) => alwaysSeparate.add(el)}
@@ -1160,11 +1214,20 @@ function BlockTool(props: {
         )}
       </Show>
       {props.children}
+      <Show when={note()}>
+        <text fg={theme.textMuted}>{note()}</text>
+      </Show>
       <Show when={error()}>
         <text fg={theme.error}>{error()}</text>
       </Show>
     </box>
   )
+}
+
+/** " (exit N)" for a command that exited non-zero, as a Codex command's part records; else nothing. */
+function exitNote(input: Record<string, unknown>) {
+  const code = input.exit_code
+  return typeof code === "number" && code !== 0 ? ` (exit ${code})` : ""
 }
 
 function Shell(props: ToolProps) {
@@ -1187,7 +1250,12 @@ function Shell(props: ToolProps) {
           <box gap={1}>
             <Show
               when={running(props.part)}
-              fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}
+              fallback={
+                <text fg={theme.text}>
+                  $ {stringValue(props.input.command)}
+                  {exitNote(props.input)}
+                </text>
+              }
             >
               <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
             </Show>
@@ -1207,6 +1275,7 @@ function Shell(props: ToolProps) {
           part={props.part}
         >
           {stringValue(props.input.command)}
+          {exitNote(props.input)}
         </InlineTool>
       </Match>
     </Switch>
@@ -1305,6 +1374,64 @@ function Edit(props: ToolProps) {
       <Match when={true}>
         <InlineTool icon="←" pending="Preparing edit…" complete={file()} part={props.part}>
           Edit {pathFormatter.format(file())} {input({ replaceAll: props.input.replaceAll })}
+        </InlineTool>
+      </Match>
+    </Switch>
+  )
+}
+
+type CodexChange = { path: string; kind?: string | null; move_path?: string; diff?: string }
+
+function Patch(props: ToolProps) {
+  const ctx = use()
+  const { theme, syntax } = useTheme()
+  const pathFormatter = usePathFormatter()
+  const view = createMemo(() => {
+    if (ctx.tui.diff_style === "stacked") return "unified"
+    return ctx.width > 120 ? "split" : "unified"
+  })
+  const changes = createMemo(() => (Array.isArray(props.input.changes) ? (props.input.changes as CodexChange[]) : []))
+  const paths = createMemo(() =>
+    changes()
+      .map((c) => pathFormatter.format(c.path) + (c.move_path ? ` → ${pathFormatter.format(c.move_path)}` : ""))
+      .join(", "),
+  )
+
+  return (
+    <Switch>
+      <Match when={changes().length > 0}>
+        <BlockTool title={"← Edit " + paths()} part={props.part}>
+          {/* The diff renderer shows only a patch's first file, so each file gets its own. */}
+          <For each={changes()}>
+            {(change) => (
+              <box paddingLeft={1}>
+                <diff
+                  diff={codexPatch([change])}
+                  view={view()}
+                  filetype={filetype(change.path)}
+                  syntaxStyle={syntax()}
+                  showLineNumbers={false}
+                  width="100%"
+                  wrapMode={ctx.diffWrapMode()}
+                  fg={theme.text}
+                  addedBg={theme.diffAddedBg}
+                  removedBg={theme.diffRemovedBg}
+                  contextBg={theme.diffContextBg}
+                  addedSignColor={theme.diffHighlightAdded}
+                  removedSignColor={theme.diffHighlightRemoved}
+                  lineNumberFg={theme.diffLineNumber}
+                  lineNumberBg={theme.diffContextBg}
+                  addedLineNumberBg={theme.diffAddedLineNumberBg}
+                  removedLineNumberBg={theme.diffRemovedLineNumberBg}
+                />
+              </box>
+            )}
+          </For>
+        </BlockTool>
+      </Match>
+      <Match when={true}>
+        <InlineTool icon="←" pending="Preparing edit…" complete={!running(props.part)} part={props.part}>
+          Edit (no changes)
         </InlineTool>
       </Match>
     </Switch>
