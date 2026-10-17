@@ -2,8 +2,10 @@
 
 import threading
 
+import pytest
+
 from agent_corp.protocol import now
-from agent_corp.protocol.models import Message, TextPart
+from agent_corp.protocol.models import Message, TextPart, ToolPart
 from agent_corp.store import new_id
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
@@ -155,3 +157,14 @@ def test_a_restored_session_whose_first_reload_fails_still_ends_after_idle_end(m
     asked.set()
     wait_for(lambda: errors(h, sid), what="the refused reload")
     wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end")
+
+
+@pytest.mark.parametrize("left", ["starting", "ending", "idle"])
+def test_restore_interrupts_tool_parts_left_running_whatever_the_status(make_codex, fake_codex, workspace, left):
+    old = make_codex()
+    sid = start(old, workspace)
+    old.store.add_message(Message(id=new_id(), session_id=sid, role="assistant", created_at=now(), parts=[
+        ToolPart(id=new_id(), type="tool", call_id="c1", tool="codex.command", state="running", input={})]))
+    old.store.update_session(sid, status=left)
+    h = restarted(make_codex, old)
+    assert [p.state for m in h.store.list_messages(sid) for p in m.parts if p.type == "tool"] == ["interrupted"]

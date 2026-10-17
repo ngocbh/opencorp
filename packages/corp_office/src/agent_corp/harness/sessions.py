@@ -105,6 +105,10 @@ class CodexSessions:
                 self.store.set_question_status(q.id, "stale")
             except InvalidTransition:
                 pass  # answered meanwhile: no app-server waits on its answer
+        for message in self.store.list_messages(session.id):  # their commands died with the app-server
+            for part in message.parts:
+                if part.type == "tool" and part.state == "running":
+                    self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
         live = CodexSession(self, session, author=self.opener(session))
         with self._lock:
             self._live[session.id] = live
@@ -116,13 +120,8 @@ class CodexSessions:
             live.stop()
             self.finished(live, "ended")
         else:
-            if session.status == "busy":
-                for message in self.store.list_messages(session.id):
-                    for part in message.parts:
-                        if part.type == "tool" and part.state == "running":
-                            self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
-                if not _ends_interrupted(self.store.list_messages(session.id)):  # office stop stored the marker
-                    live.translator.turn_completed("restored", "interrupted", None)
+            if session.status == "busy" and not _ends_interrupted(self.store.list_messages(session.id)):
+                live.translator.turn_completed("restored", "interrupted", None)  # unless office stop stored it
             live.idle_after_restore()
 
     # --- calls from CodexSession -----------------------------------------------------
