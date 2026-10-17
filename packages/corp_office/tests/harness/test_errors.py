@@ -1,6 +1,7 @@
 """Codex that can't start, errors, a dead app-server, an unloaded thread, token counts."""
 
 import threading
+import time
 
 from agent_corp.harness import session as session_module
 from agent_corp.harness.rpc import RpcError
@@ -282,3 +283,31 @@ def test_a_message_codex_says_has_no_thread_while_the_session_ends_starts_no_loa
     steer.join(10)
     wait_for(lambda: status(harness, sid) == "ended", timeout=10, what="the end")
     assert len(fake_codex.calls("initialize")) == 1 and harness.store.list_workers() == []
+
+
+def test_closing_the_app_server_of_an_unloaded_thread_never_holds_the_message_or_outlives_office_stop(
+        harness, fake_codex, workspace, monkeypatch):
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    old, closing, release = live.process, threading.Event(), threading.Event()
+    real_close = old.close
+
+    def slow_close(grace):
+        closing.set()
+        release.wait(5)
+        real_close(grace)
+
+    def unloaded(method, params=None, **kwargs):
+        raise RpcError(-32600, "thread not found: thr_1")
+    monkeypatch.setattr(old, "close", slow_close)
+    monkeypatch.setattr(old.rpc, "request", unloaded)
+    monkeypatch.setattr(session_module, "STOP_WAIT", 0.2)
+    began = time.monotonic()
+    assert harness.prompt(sid, "again") == "queued"
+    assert time.monotonic() - began < 2  # the close runs on the session's thread, not the request's
+    assert closing.wait(5)
+    harness.close_all()  # while the old app-server is still being closed
+    assert harness.store.list_workers() == [] and start_time(old.pid) is None
+    release.set()
+    live._thread.join(10)
+    assert harness.store.list_workers() == [] and len(fake_codex.calls("initialize")) == 1

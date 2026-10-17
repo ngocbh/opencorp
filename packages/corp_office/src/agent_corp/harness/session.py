@@ -93,6 +93,7 @@ class CodexSession:
         self.translator = Translator(self.transcript, session.cwd)
         self.process: CodexProcess | None = None
         self.launching: CodexProcess | None = None  # the app-server being started, which office stop kills too
+        self.retiring: CodexProcess | None = None  # the app-server being closed for a reload, which it kills too
         self.loading = False
         self.turn_id: str | None = None
         self.pending: list[str] = []
@@ -203,7 +204,7 @@ class CodexSession:
         with self._lock:
             self.stopped = True
             self._stop_timer()
-            doomed = [p for p in (self.process, self.launching) if p is not None]
+            doomed = [p for p in (self.process, self.launching, self.retiring) if p is not None]
             self.process = None
         for process in doomed:  # a load or a turn/start waiting on Codex fails at once
             process.kill()
@@ -379,9 +380,18 @@ class CodexSession:
                     else:
                         self._post(self._flush)
                 return
-            self.process, self.loading = None, True
+            self.process, self.loading, self.retiring = None, True, process
+        self._post(self._reopen, process)
+
+    def _reopen(self, process: CodexProcess) -> None:
+        """Close the app-server whose thread Codex unloaded, then load the thread in a new one."""
         process.close(self.owner.close_grace)  # its record goes before the reload writes the new one
-        self._post(self._load, True)
+        with self._lock:
+            if self.retiring is process:
+                self.retiring = None
+            if self.stopped:
+                return
+        self._load(True)
 
     def _notification(self, method: str, params: dict[str, Any]) -> None:
         if self.translator.notification(method, params):
@@ -570,9 +580,9 @@ class CodexSession:
                 return
             self.closed = True
             self._stop_timer()
-            process = self.process
-        if process is not None:
-            process.close(self.owner.close_grace)  # stdin, grace, group kill, record removed: before end_status
+            doomed = [p for p in (self.process, self.retiring) if p is not None]
+        for process in doomed:  # stdin, grace, group kill, record removed: before end_status
+            process.close(self.owner.close_grace)
         if self.stopped:
             return  # office stop came during the close: the session stays ending, for restore
         self.transcript.abort()
