@@ -51,6 +51,7 @@ import { modelLabel } from "../../office/models"
 import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
+import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
 import { cardQuestions } from "../chat/turn"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
@@ -127,6 +128,7 @@ export function Session() {
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
   const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
+  const codex = createMemo(() => session()?.harness === "codex")
   // The card whose side chat is showing; the view shows the side session in place of the chat.
   const [sideOf, setSideOf] = createSignal<string>()
   const sideQuestion = createMemo(() => {
@@ -585,28 +587,35 @@ export function Session() {
                     }
                   >
                     {(_id) => (
-                      <>
-                        <QuestionCard
-                          question={question()}
-                          hidden={!!sideOf()}
-                          onChat={() => setSideOf(question()?.id)}
-                        />
-                        <Show when={sideQuestion()}>
-                          {(q) => (
-                            <SideChat
-                              question={q()}
-                              session={sideSession()}
-                              onBack={() => setSideOf(undefined)}
-                              onSend={() => {
-                                const undo = lift()
-                                toBottom()
-                                return undo
-                              }}
-                              onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                      <Show
+                        when={codex()}
+                        fallback={
+                          <>
+                            <QuestionCard
+                              question={question()}
+                              hidden={!!sideOf()}
+                              onChat={() => setSideOf(question()?.id)}
                             />
-                          )}
-                        </Show>
-                      </>
+                            <Show when={sideQuestion()}>
+                              {(q) => (
+                                <SideChat
+                                  question={q()}
+                                  session={sideSession()}
+                                  onBack={() => setSideOf(undefined)}
+                                  onSend={() => {
+                                    const undo = lift()
+                                    toBottom()
+                                    return undo
+                                  }}
+                                  onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                                />
+                              )}
+                            </Show>
+                          </>
+                        }
+                      >
+                        <HarnessCard question={question()!} />
+                      </Show>
                     )}
                   </Show>
                 </box>
