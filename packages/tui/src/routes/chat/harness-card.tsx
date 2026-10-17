@@ -18,7 +18,13 @@ import { QuestionView } from "./question-view"
  * card; any other is one line (`waiting` behind the first), which mounts no keys and holds no typed or secret text
  * while the prompt or another card has the keys.
  */
-export function HarnessCard(props: { question: Question; active: boolean; waiting: boolean }) {
+export function HarnessCard(props: {
+  question: Question
+  active: boolean
+  waiting: boolean
+  /** Called when Esc interrupts the session, before the office is asked to. */
+  onInterrupt?: () => void
+}) {
   const office = useOffice()
   const toast = useToast()
   const { theme } = useTheme()
@@ -27,6 +33,11 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
   const model = createMemo(() => cardModel(props.question))
   const title = () => props.question.title ?? props.question.question
   const focusKey = useCommandShortcut("session.card.focus")
+  // Esc interrupts only while a turn is starting or running, as in the prompt.
+  const working = createMemo(() => {
+    const status = office.state.sessions.find((s) => s.id === props.question.session_id)?.status
+    return status === "starting" || status === "busy"
+  })
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
 
@@ -53,6 +64,7 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
   }
 
   function interrupt() {
+    props.onInterrupt?.()
     office.client.sessions
       .interrupt(props.question.session_id)
       .catch((error) => toast.show({ title: "Interrupting failed", message: errorMessage(error), variant: "error" }))
@@ -75,14 +87,11 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
         // A dialog over the card has the keys: its secret box reads the whole app's keyboard, not a focused box.
         enabled={dialog.stack.length === 0}
         bindings={[
-          { key: "escape", desc: "Interrupt Codex", group: "Question", cmd: () => interrupt() },
+          ...(working() ? [{ key: "escape", desc: "Interrupt Codex", group: "Question", cmd: () => interrupt() }] : []),
           // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
           ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
         ]}
-        hints={[
-          { key: "esc", label: "interrupt Codex" },
-          { key: focusKey(), label: "prompt" },
-        ]}
+        hints={[...(working() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: "prompt" }]}
         onSubmit={(answers) => {
           const m = model()
           const req = m && buildAnswer(m, answers)

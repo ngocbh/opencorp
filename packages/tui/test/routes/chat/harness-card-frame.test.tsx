@@ -1,5 +1,7 @@
+import type { Message } from "@agent-corp/protocol"
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../../../script/stub"
+import { INTERRUPTED_TEXT } from "../../../src/routes/chat/freeze"
 import { bootFrame } from "../../fixture/frame"
 import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 
@@ -289,6 +291,54 @@ test("keys typed into a dialog over a secret card never reach the secret", async
     await app.until(() => office.state.questions[q.id].status !== "open")
     expect(sent(office, `/questions/${q.id}/answer`)).toEqual([{ answer: { Token: "ab" }, answer_kind: "text" }])
     // The Esc that closed the dialog didn't interrupt Codex.
+    expect(sent(office, `/sessions/${s.id}/interrupt`)).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Esc on a Codex card freezes the transcript, as Esc in the prompt does", async () => {
+  const { office, s } = codexOffice()
+  const reply: Message = {
+    id: office.nextId(),
+    session_id: s.id,
+    role: "assistant",
+    created_at: new Date().toISOString(),
+    parts: [{ id: office.nextId(), type: "text", text: "Looking" }],
+  }
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    office.live({ type: "message.updated", session_id: s.id, data: reply as never })
+    office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    await app.until((f) => f.includes("Looking") && f.includes("$ touch a"))
+    app.input.pressEscape()
+    await app.until(() => sent(office, `/sessions/${s.id}/interrupt`).length === 1)
+    // What Codex streams before it stops is hidden; its interrupted marker shows.
+    const part = { ...reply.parts[0], text: "Looking at it" + INTERRUPTED_TEXT }
+    office.live({ type: "part.updated", session_id: s.id, data: { message_id: reply.id, part } as never })
+    await app.until((f) => f.includes("[interrupted]"))
+    expect(app.frame()).not.toContain("at it")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Esc on a Codex card while no turn runs does nothing", async () => {
+  const office = createFakeOffice()
+  const s = office.newSession({ person: "minh", cwd: "/tmp/proj", harness: "codex", status: "idle" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    office.addQuestion({ ...approval(s.id, "1", "docs: Allow docs to run search?", ["Allow", "Cancel"]), run_id: "codex-1" })
+    const f = await app.until((f) => f.includes("docs: Allow docs to run search?"))
+    expect(f).not.toContain("interrupt Codex")
+    app.input.pressEscape()
+    // An interrupt, or its failure, would be on its way by now.
+    await Bun.sleep(200)
+    expect(await app.until(() => true)).not.toContain("Interrupting failed")
     expect(sent(office, `/sessions/${s.id}/interrupt`)).toEqual([])
   } finally {
     await app.stop()

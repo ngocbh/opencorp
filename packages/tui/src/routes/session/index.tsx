@@ -647,7 +647,14 @@ export function Session() {
                     <For each={cards().map((q) => q.id)}>
                       {(id, i) => (
                         <Show when={office.state.questions[id]}>
-                          {(q) => <HarnessCard question={q()} active={i() === 0 && cardFocused()} waiting={i() > 0} />}
+                          {(q) => (
+                            <HarnessCard
+                              question={q()}
+                              active={i() === 0 && cardFocused()}
+                              waiting={i() > 0}
+                              onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                            />
+                          )}
                         </Show>
                       )}
                     </For>
