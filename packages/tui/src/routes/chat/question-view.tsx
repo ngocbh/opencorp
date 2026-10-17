@@ -17,6 +17,7 @@ import { tint, useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
 import { clearFirst, useBindings, useAgentCorpModeStack } from "../../keymap"
+import { SecretInput } from "../../setup/secret"
 import type { CardPage, PageAnswer } from "./answer"
 
 export const QUESTION_MODE = "question"
@@ -44,9 +45,9 @@ export interface QuestionViewHandle {
 
 /**
  * A question card: a page per question with options to pick (several when `multi`) and, when `typed`, a last row
- * that is a box to type the answer in. Enter on the last page hands every page's answer to `onSubmit` once each
- * single-pick page has one. Ctrl+C or Esc in the box with text clears it. It takes no office: callers supply the
- * header, actions, extra key bindings, hints and a notice.
+ * that is a box to type the answer in (showing only dots on a `secret` page). Enter on the last page hands every
+ * page's answer to `onSubmit` once each single-pick page has one. Ctrl+C or Esc in the box with text clears it. It
+ * takes no office: callers supply the header, actions, extra key bindings, hints and a notice.
  */
 export function QuestionView(
   props: ParentProps<{
@@ -359,7 +360,18 @@ export function QuestionView(
                           {`${options().length + 1}.`}
                         </text>
                       </box>
-                      {props.singleLine ? (
+                      {page()?.secret ? (
+                        // Masked, and only while the cursor is on this row and the view's keys work: SecretInput
+                        // reads the whole app's keyboard, not a focused box. The view's Enter submits the answer.
+                        <SecretInput
+                          placeholder="Type your answer here; it isn't shown"
+                          fg={theme.text}
+                          placeholderFg={theme.textMuted}
+                          enabled={onTyped() && active()}
+                          onChange={(text) => setAnswer((a) => ({ ...a, text }))}
+                          onSubmit={() => {}}
+                        />
+                      ) : props.singleLine ? (
                         // An input drops line breaks typed or pasted; Enter reaches the view's keys first.
                         <input
                           flexGrow={1}
