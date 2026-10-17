@@ -5,6 +5,7 @@ import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
 import { useCommandShortcut } from "../../keymap"
 import { OfficeError } from "../../office/errors"
+import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
 import { buildAnswer, cardModel } from "./answer"
@@ -22,6 +23,7 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
   const toast = useToast()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
+  const dialog = useDialog()
   const model = createMemo(() => cardModel(props.question))
   const title = () => props.question.title ?? props.question.question
   const focusKey = useCommandShortcut("session.card.focus")
@@ -70,6 +72,8 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
       <QuestionView
         header="Codex asks"
         pages={model()?.pages ?? []}
+        // A dialog over the card has the keys: its secret box reads the whole app's keyboard, not a focused box.
+        enabled={dialog.stack.length === 0}
         bindings={[
           { key: "escape", desc: "Interrupt Codex", group: "Question", cmd: () => interrupt() },
           // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.

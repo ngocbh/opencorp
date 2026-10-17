@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../../../script/stub"
 import { bootFrame } from "../../fixture/frame"
+import { createTuiResolvedConfig } from "../../fixture/tui-runtime"
 
 const SECRET = "sk-ant-sentinel-a7d93c10e5b2"
 
@@ -261,6 +262,34 @@ test("an answer Codex takes closes the card without a toast", async () => {
     const f = await app.until((f) => !f.includes("$ touch a") && f.includes("@minh · Software engineer"))
     expect(office.state.questions[a.id].status).toBe("consumed")
     expect(f).not.toContain("Codex stopped waiting")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("keys typed into a dialog over a secret card never reach the secret", async () => {
+  const { office, s } = codexOffice()
+  // The session list on one key: its binding has no mode, so it opens over the card.
+  const config = createTuiResolvedConfig({ keybinds: { session_list: "ctrl+l" } })
+  const app = await bootFrame({ ...createStub(office), config }, { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const q = office.addQuestion(secret(s.id, "3"))
+    await app.until((f) => f.includes("Paste the deploy token"))
+    await app.input.typeText("ab")
+    await app.until((f) => f.includes("••") && !f.includes("•••"))
+    app.input.pressKey("l", { ctrl: true })
+    await app.until((f) => f.includes("Sessions"))
+    await app.input.typeText("zzz")
+    expect(await app.until(() => true)).not.toContain("•••")
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("Sessions") && f.includes("Paste the deploy token"))
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status !== "open")
+    expect(sent(office, `/questions/${q.id}/answer`)).toEqual([{ answer: { Token: "ab" }, answer_kind: "text" }])
+    // The Esc that closed the dialog didn't interrupt Codex.
+    expect(sent(office, `/sessions/${s.id}/interrupt`)).toEqual([])
   } finally {
     await app.stop()
     office.stop()
