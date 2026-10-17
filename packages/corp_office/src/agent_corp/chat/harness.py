@@ -200,6 +200,9 @@ class Harness:
         self.answers = Answers(self.store)
         self.restorers: dict[str, Callable[[Session], RunSpec]] = {"main": self.main_spec}
         self._lock = threading.RLock()
+        # One continuation at a time, held across _open (a git commit, a repo load, _choose), so continuations
+        # wait on each other office-wide; they are rare enough for that.
+        self._continuing = threading.Lock()
         self._live: dict[str, _Live] = {}
         self._stopping = False  # set when close_all starts: no new worker spawns
         self._refusing = False  # set once the channels are closed: no new worker request is admitted
@@ -226,6 +229,78 @@ class Harness:
         """
         if harness not in ("composer", "codex") or (harness == "codex" and self.codex is None):
             raise HarnessError(422, "unsupported_harness", f"the {harness} harness is not supported yet")
+        session = self._open(handle, cwd, harness, opened_by=opened_by, connection=connection, model=model)
+        session_id = session.id
+        try:
+            if harness == "codex":
+                # The app-server starts on the session's own thread; a failure there fails the session with why.
+                self.codex.start(session)
+                return self.store.get_session(session_id)
+            spec = self.main_spec(session)
+            self.start_run(session, spec)
+        except Exception as exc:
+            # start_run fails the session itself; a spec that couldn't be built leaves it starting.
+            if session_id not in self._live and self.store.get_session(session_id).status == "starting":
+                if not isinstance(exc, HarnessError):
+                    log.exception("can't build the run spec for session %s", session_id)
+                self._fail(session_id)
+            if isinstance(exc, HarnessError):
+                raise
+            # The client needs the failed session's id. A provider error never echoes the file;
+            # anything else may hold anything, so it stays in the log.
+            why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
+            raise HarnessError(500, "start_failed", f"session {session_id} failed to start{why}") from exc
+        return self.store.get_session(session_id)
+
+    def continue_session(self, session_id: str, *, by: str | None = None) -> Session:
+        """Continue an ended Codex session: a new session on the same Codex thread, which it resumes.
+
+        The new session is ``by``'s, in the same person and folder, at the company's current commit, with its own
+        work item, token counts and, later, its own debrief. A resume Codex refuses fails the new session with why.
+        """
+        old = self.store.get_session(session_id)
+        if old is None:
+            raise HarnessError(404, "not_found", f"no session {session_id}")
+        if old.harness != "codex":
+            raise HarnessError(422, "not_continuable", "only a Codex session can be continued")
+        if self.codex is None:
+            raise HarnessError(422, "unsupported_harness", "the codex harness is not supported yet")
+        if not old.harness_session_id:  # its first load failed
+            raise HarnessError(422, "not_continuable",
+                               "this Codex session never loaded its thread, so there is nothing to continue")
+        if old.status in LIVE:
+            raise HarnessError(409, "live", f"session {session_id} is still open")
+        with self._continuing:  # so two continuations can't both find the thread free
+            thread = [s for s in self.store.list_sessions(limit=None)
+                      if s.harness == "codex" and s.harness_session_id == old.harness_session_id]
+            holder = next((s for s in thread if s.status in LIVE), None)
+            if holder is not None:
+                raise HarnessError(409, "live", f"this Codex thread is open in session {holder.id}")
+            # The newest stretch on the thread is the parent, whichever one was asked for: the chain stays one line,
+            # so each stretch's token counts start after every earlier one's.
+            newest = max(thread, key=lambda s: (s.created_at, s.id))
+            # The continued session's connection and model, so this stretch's debrief runs on the same office model;
+            # _choose falls back when they're gone.
+            session = self._open(old.person, old.cwd, "codex", opened_by=by, connection=old.connection, model=old.model,
+                                 harness_session_id=old.harness_session_id, parent_session_id=newest.id)
+        try:
+            self.codex.start(session, resume=True)
+        except Exception as exc:
+            if self.store.get_session(session.id).status == "starting":
+                if not isinstance(exc, HarnessError):
+                    log.exception("can't continue session %s", session_id)
+                self._fail(session.id)
+            if isinstance(exc, HarnessError):
+                raise
+            why = f"session {session.id} failed to start; see the office log"
+            raise HarnessError(500, "start_failed", why) from exc
+        return self.store.get_session(session.id)
+
+    def _open(self, handle: str, cwd: str, harness: str, *, opened_by: str | None, connection: str | None,
+              model: str | None, harness_session_id: str | None = None,
+              parent_session_id: str | None = None) -> Session:
+        """Check ``handle`` and ``cwd`` at the company's current commit, then store the session ``starting`` with its
+        work item and worked folder; nothing runs yet. Returns the stored session."""
         self.git.commit_hand_edits()
         head = self.git.head()
         repo = load_repo(self.git.pin(head))
@@ -250,28 +325,10 @@ class Harness:
         session = self.store.create_session(Session(
             id=session_id, person=handle, harness=harness, office=socket.gethostname(), cwd=cwd,
             repo_commit=head, status="starting", kind="main", work_item_id=item.id, opened_by=opened_by,
-            connection=connection, model=model, model_note=note, created_at=t, updated_at=t))
+            connection=connection, model=model, model_note=note, harness_session_id=harness_session_id,
+            parent_session_id=parent_session_id, created_at=t, updated_at=t))
         self.store.touch_worked_folder(handle, cwd)
-        try:
-            if harness == "codex":
-                # The app-server starts on the session's own thread; a failure there fails the session with why.
-                self.codex.start(session)
-                return self.store.get_session(session_id)
-            spec = self.main_spec(session)
-            self.start_run(session, spec)
-        except Exception as exc:
-            # start_run fails the session itself; a spec that couldn't be built leaves it starting.
-            if session_id not in self._live and self.store.get_session(session_id).status == "starting":
-                if not isinstance(exc, HarnessError):
-                    log.exception("can't build the run spec for session %s", session_id)
-                self._fail(session_id)
-            if isinstance(exc, HarnessError):
-                raise
-            # The client needs the failed session's id. A provider error never echoes the file;
-            # anything else may hold anything, so it stays in the log.
-            why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
-            raise HarnessError(500, "start_failed", f"session {session_id} failed to start{why}") from exc
-        return self.store.get_session(session_id)
+        return session
 
     def _choose(self, person: Any, connection: str | None, model: str | None) -> tuple[str, str | None, str | None]:
         """The connection and model a new chat of ``person`` starts on, and a note when it isn't what was asked for.
