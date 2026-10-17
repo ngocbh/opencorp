@@ -2,6 +2,7 @@
 
 import pytest
 
+from agent_corp.chat.connections import read_run_record
 from agent_corp.extensions.learning import Learning
 from agent_corp.protocol.models import FeedbackRequest
 from agent_corp.testing import fake_codex as fc
@@ -37,7 +38,11 @@ def test_a_codex_session_is_debriefed_as_an_apprentice_and_its_feedback_is_learn
     assert "drove Codex (an AI coding agent)" in sent and "@ngocbh: make a" in sent
     assert "codex: $ touch a (exit 0)" in sent and "edited a.md (added, +1/-0)" in sent  # relative to the cwd
     assert h.store.get_debrief(sid).state == "ready"
+    run_id = h.store.get_debrief_record(sid).run_id
+    assert read_run_record(h.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json").connection == "office"
     fake_llm.script(review_reply(), learner_reply(PROFILE + "\n- Ask before touching files.\n"))
     fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Ask before touching files."))
-    assert fb.run_id == h.store.get_debrief_record(sid).run_id
+    assert fb.run_id == run_id
     wait_for(lambda: h.store.get_feedback(fb.id).status == "applied", what="applied")
+    assert (h.git.root / "people/minh/profile.md").read_text() == PROFILE + "\n- Ask before touching files.\n"
+
