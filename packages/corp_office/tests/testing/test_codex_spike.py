@@ -185,6 +185,13 @@ def test_the_office_env_has_no_codex_home_when_none_is_set():
     assert office_env({"PATH": "/bin", "HOME": "/h", "OPENAI_API_KEY": "x"}) == {"PATH": "/bin", "HOME": "/h"}
 
 
+def test_the_office_env_keeps_where_tls_finds_ca_certificates():
+    full = {"PATH": "/bin", "SSL_CERT_FILE": "/ca.pem", "SSL_CERT_DIR": "/certs", "REQUESTS_CA_BUNDLE": "/ca.pem"}
+    narrow = office_env(full)
+    assert narrow == {"PATH": "/bin", "SSL_CERT_FILE": "/ca.pem", "SSL_CERT_DIR": "/certs"}
+    assert missing_names(full, narrow) == {"relevant": ["REQUESTS_CA_BUNDLE"], "others": 0}
+
+
 def test_the_checklist_names_every_check_and_marks_failures():
     results = {c.id: {"ok": c.id != "S5", "detail": "x"} for c in CHECKS}
     text = checklist(results)
