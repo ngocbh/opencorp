@@ -271,3 +271,36 @@ test("the chat's own turn question is the prompt, not a card", async () => {
     office.stop()
   }
 })
+
+test("a secret page on a Codex card masks what is typed, and sends it only as the answer", async () => {
+  const office = createFakeOffice()
+  const s = office.newSession({ person: "minh", cwd: "/tmp/proj", harness: "codex", status: "busy" })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const q = office.addQuestion({
+      session_id: s.id,
+      source: "harness",
+      run_id: "turn_1",
+      node_id: "4",
+      question: "Token?",
+      questions: [{ question: "Paste the deploy token", header: "Token", options: [], secret: true }],
+    })
+    await app.until((f) => f.includes("Paste the deploy token"))
+    await app.input.typeText("sk-ant-sentinel-a7d93c10e5b2")
+    const f = await app.until((f) => f.includes("•".repeat(28)))
+    expect(f).not.toContain("sentinel")
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status !== "open")
+    expect(office.requests.find((r) => r.path === `/questions/${q.id}/answer`)?.body).toEqual({
+      answer: { Token: "sk-ant-sentinel-a7d93c10e5b2" },
+      answer_kind: "text",
+    })
+    expect(
+      office.requests.filter((r) => JSON.stringify(r.body ?? null).includes("sentinel")).map((r) => r.path),
+    ).toEqual([`/questions/${q.id}/answer`])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

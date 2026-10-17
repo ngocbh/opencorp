@@ -204,6 +204,7 @@ export function createFakeOffice(
   const notImplemented = new Set(opts.notImplemented ?? [])
   const broken = new Set<string>()
   const missing = new Set(opts.missing ?? [])
+  const staleOnAnswer = new Set<string>()
   const requests: { method: string; path: string; raw: string; body: unknown; at: number; authorization?: string }[] = []
   // Humans' passwords by handle, kept as given: the office keeps only a hash, and never serves it.
   const passwords = new Map<string, string>()
@@ -501,6 +502,17 @@ export function createFakeOffice(
       const shape = page.multi_select ? "a list of labels" : "one label"
       if (!ok) throw invalid(`${JSON.stringify(page.header)} takes ${shape}`)
     }
+  }
+  /**
+   * An answer as the office stores it: on a card with a secret page, only its other pages' values are kept, and
+   * anything else is `[secret]`.
+   */
+  function masked(q: Question, answer: unknown) {
+    const pages = q.questions ?? []
+    if (!pages.some((p) => p.secret)) return answer
+    if (!answer || typeof answer !== "object" || Array.isArray(answer)) return "[secret]"
+    const safe = new Set(pages.filter((p) => !p.secret).map((p) => p.header))
+    return Object.fromEntries(Object.entries(answer).map(([k, v]) => [k, safe.has(k) ? v : "[secret]"]))
   }
   /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
   function openModelQuestion(id: string, code: string) {
@@ -960,7 +972,18 @@ export function createFakeOffice(
           body && "answer" in body && ["option", "text"].includes(body.answer_kind),
           "answer_kind must be option or text",
         )
-        checkAnswer(question(params.id), body.answer, body.answer_kind)
+        const q = question(params.id)
+        checkAnswer(q, body.answer, body.answer_kind)
+        if (q.source === "harness") {
+          // Like the office: the answer becomes Codex's reply and the card is consumed, or Codex no longer waits
+          // and the card goes stale, keeping no answer.
+          if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
+          const answered = { answer: masked(q, body.answer), answer_kind: body.answer_kind, answered_by: human() }
+          const fields = staleOnAnswer.has(q.id)
+            ? { status: "stale" as const }
+            : { ...answered, status: "consumed" as const }
+          return Response.json(updateQuestion({ ...q, ...fields, updated_at: now() }))
+        }
         return Response.json(close(params.id, { answer: body.answer, answer_kind: body.answer_kind }))
       },
     ],
@@ -1284,6 +1307,8 @@ export function createFakeOffice(
     passwords,
     /** Route keys (`"POST /sessions/:id/prompt"`) or exact paths (`"GET /sessions/S2/messages"`) answered with 501. */
     notImplemented,
+    /** Codex card ids whose answer comes back stale, as when Codex no longer waits for the card. */
+    staleOnAnswer,
     /** Route keys (`"GET /connections"`) answered with 500, as an office that hit an error. */
     broken,
     /** How the office refuses the next `POST /connections`, in order: each is sent as a 422 with that code. */

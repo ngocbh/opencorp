@@ -51,6 +51,7 @@ import { modelLabel } from "../../office/models"
 import { OfficeError, OfficeUnavailable, isNotImplemented } from "../../office/errors"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
+import { HarnessCard } from "../chat/harness-card"
 import { SideChat, SideHeader } from "../chat/side"
 import { cardQuestions } from "../chat/turn"
 import { freeze, frozenView, unfreeze, type Freeze } from "../chat/freeze"
@@ -126,7 +127,20 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
-  const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
+  const cards = createMemo(() => cardQuestions(office.state, route.sessionID))
+  const question = createMemo(() => cards()[0])
+  // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
+  const codex = createMemo(() => session()?.harness === "codex")
+  const [focus, setFocus] = createSignal<"card" | "prompt">("card")
+  const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
+  // Cards opening when none were open take the keys, unless the prompt holds a draft: keys typed for the prompt must
+  // never land on a card, where a digit or Enter picks an option.
+  createEffect(
+    on(
+      () => cards().length > 0,
+      (open) => open && setFocus(promptRef.current?.current.input ? "prompt" : "card"),
+    ),
+  )
   // The card whose side chat is showing; the view shows the side session in place of the chat.
   const [sideOf, setSideOf] = createSignal<string>()
   const sideQuestion = createMemo(() => {
@@ -474,6 +488,21 @@ export function Session() {
     commands: sessionCommands(),
   }))
 
+  // No mode: it must work from a card (question mode) and from the prompt (base mode).
+  useBindings(() => ({
+    commands: [
+      {
+        name: "session.card.focus",
+        title: "Move between the open card and the prompt",
+        category: "Session",
+        hidden: true,
+        enabled: codex() && cards().length > 0 && dialog.stack.length === 0,
+        run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
+      },
+    ],
+    bindings: tuiConfig.keybinds.gather("session.card", ["session.card.focus"]),
+  }))
+
   useBindings(() => ({
     bindings: tuiConfig.keybinds.gather("session.global", sessionGlobalBindingCommands),
   }))
@@ -571,43 +600,73 @@ export function Session() {
                 </scrollbox>
                 <box flexShrink={0}>
                   <Show
-                    when={question()?.id}
-                    keyed
+                    when={codex()}
                     fallback={
-                      <Prompt
-                        visible={true}
-                        ref={bind}
-                        onSend={lift}
-                        onSubmit={() => toBottom()}
-                        onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
-                        sessionID={route.sessionID}
-                      />
+                      <Show
+                        when={question()?.id}
+                        keyed
+                        fallback={
+                          <Prompt
+                            visible={true}
+                            ref={bind}
+                            onSend={lift}
+                            onSubmit={() => toBottom()}
+                            onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                            sessionID={route.sessionID}
+                          />
+                        }
+                      >
+                        {(_id) => (
+                          <>
+                            <QuestionCard
+                              question={question()}
+                              hidden={!!sideOf()}
+                              onChat={() => setSideOf(question()?.id)}
+                            />
+                            <Show when={sideQuestion()}>
+                              {(q) => (
+                                <SideChat
+                                  question={q()}
+                                  session={sideSession()}
+                                  onBack={() => setSideOf(undefined)}
+                                  onSend={() => {
+                                    const undo = lift()
+                                    toBottom()
+                                    return undo
+                                  }}
+                                  onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                                />
+                              )}
+                            </Show>
+                          </>
+                        )}
+                      </Show>
                     }
                   >
-                    {(_id) => (
-                      <>
-                        <QuestionCard
-                          question={question()}
-                          hidden={!!sideOf()}
-                          onChat={() => setSideOf(question()?.id)}
-                        />
-                        <Show when={sideQuestion()}>
+                    {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
+                    <For each={cards().map((q) => q.id)}>
+                      {(id, i) => (
+                        <Show when={office.state.questions[id]}>
                           {(q) => (
-                            <SideChat
+                            <HarnessCard
                               question={q()}
-                              session={sideSession()}
-                              onBack={() => setSideOf(undefined)}
-                              onSend={() => {
-                                const undo = lift()
-                                toBottom()
-                                return undo
-                              }}
+                              active={i() === 0 && cardFocused()}
+                              waiting={i() > 0}
                               onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
                             />
                           )}
                         </Show>
-                      </>
-                    )}
+                      )}
+                    </For>
+                    <Prompt
+                      visible={true}
+                      inactive={cardFocused()}
+                      ref={bind}
+                      onSend={lift}
+                      onSubmit={() => toBottom()}
+                      onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                      sessionID={route.sessionID}
+                    />
                   </Show>
                 </box>
               </>

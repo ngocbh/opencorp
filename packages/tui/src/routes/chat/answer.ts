@@ -7,13 +7,17 @@ export interface CardOption {
   value: unknown
 }
 
-/** One page of a card: options to pick (several when `multi`), and whether a typed answer is allowed. */
+/**
+ * One page of a card: options to pick (several when `multi`), whether a typed answer is allowed, and whether that
+ * answer is a secret to mask.
+ */
 export interface CardPage {
   header: string
   question: string
   options: CardOption[]
   multi: boolean
   typed: boolean
+  secret?: boolean
 }
 
 /** What a card asks: its pages, and whether the answer is a record keyed by page header. */
@@ -66,6 +70,7 @@ export function cardModel(q: Question): CardModel | undefined {
             .map((o) => ({ ...o, value: o.label })),
           multi: p.multi_select === true,
           typed: !only,
+          secret: p.secret === true,
         }
       }),
     }
@@ -73,6 +78,20 @@ export function cardModel(q: Question): CardModel | undefined {
     const page = schema.length === 1 && schema[0].name === "answer" ? fieldPage(q, schema[0]) : undefined
     return page && { record: false, pages: [page] }
   }
+  // A Codex approval: its decisions are its options, and the office refuses typed text.
+  if (q.source === "harness")
+    return {
+      record: false,
+      pages: [
+        {
+          header: q.title ?? "Codex asks",
+          question: q.question,
+          options: (q.options ?? []).map(label),
+          multi: false,
+          typed: false,
+        },
+      ],
+    }
   return {
     record: false,
     pages: [

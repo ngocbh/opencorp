@@ -49,6 +49,8 @@ export type PromptProps = {
   sessionID?: string
   visible?: boolean
   disabled?: boolean
+  /** While true the prompt stays visible but gives up the keys, even to a click, as a card above it has them. */
+  inactive?: boolean
   onSubmit?: () => void
   /** Called just before the text goes to the office; returns an undo for a send that fails. */
   onSend?: () => (() => void) | void
@@ -366,7 +368,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || props.inactive || dialog.stack.length > 0) {
       if (input.focused) input.blur()
       return
     }
@@ -933,7 +935,7 @@ export function Prompt(props: PromptProps) {
                   if (tuiConfig.cursor) input.cursorStyle = tuiConfig.cursor
                 }, 0)
               }}
-              onMouseDown={(r: MouseEvent) => r.target?.focus()}
+              onMouseDown={(r: MouseEvent) => !props.inactive && r.target?.focus()}
               focusedBackgroundColor={theme.backgroundElement}
               cursorColor={props.disabled ? theme.backgroundElement : theme.text}
               cursorStyle={tuiConfig.cursor}
@@ -1033,6 +1035,7 @@ export function Prompt(props: PromptProps) {
       </box>
       <Autocomplete
         sessionID={props.sessionID}
+        inactive={props.inactive}
         ref={(r) => {
           setAuto(() => r)
         }}
