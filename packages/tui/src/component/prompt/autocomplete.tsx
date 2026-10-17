@@ -76,6 +76,8 @@ export function Autocomplete(props: {
   ref: (ref: AutocompleteRef) => void
   fileStyleId: number
   promptPartTypeId: () => number
+  /** While true the menu stays closed, leaving the typed text, as the prompt has given up the keys. */
+  inactive?: boolean
 }) {
   const editor = useEditorContext()
   const office = useOffice()
@@ -93,6 +95,10 @@ export function Autocomplete(props: {
   })
 
   const [positionTick, setPositionTick] = createSignal(0)
+
+  createEffect(() => {
+    if (props.inactive) setStore("visible", false)
+  })
 
   createEffect(() => {
     if (!store.visible) return

@@ -1035,6 +1035,7 @@ export function Prompt(props: PromptProps) {
       </box>
       <Autocomplete
         sessionID={props.sessionID}
+        inactive={props.inactive}
         ref={(r) => {
           setAuto(() => r)
         }}

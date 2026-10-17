@@ -370,3 +370,27 @@ test("an answer that finds the card already stale says Codex stopped waiting, no
     office.stop()
   }
 })
+
+test("ctrl+t back to the card closes the prompt's command menu and leaves the typed text", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const a = office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("ctrl+t to answer"))
+    await app.input.typeText("/edi")
+    await app.until((f) => f.includes("/editor"))
+    app.input.pressKey("t", { ctrl: true })
+    const f = await app.until((f) => f.includes("Deny and stop"))
+    expect(f).not.toContain("/editor")
+    expect(f).toContain("/edi")
+    app.input.pressKey("1")
+    await app.until(() => office.state.questions[a.id].status !== "open")
+    expect(sent(office, `/questions/${a.id}/answer`)).toEqual([{ answer: "Approve", answer_kind: "option" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
