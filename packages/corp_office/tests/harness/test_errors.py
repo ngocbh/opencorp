@@ -1,5 +1,8 @@
 """Codex that can't start, errors, a dead app-server, an unloaded thread, token counts."""
 
+import threading
+
+from agent_corp.harness.rpc import RpcError
 from agent_corp.harness.sessions import CodexSessions
 from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
@@ -91,3 +94,56 @@ def test_a_reload_codex_refuses_leaves_the_session_idle_with_why(harness, fake_c
     fake_codex.script([[], fc.agent_message("m1", "Third time")])  # the fake's turn count goes on: this is turn 2
     assert harness.prompt(sid, "and again") == "queued"
     wait_for(lambda: "Third time" in texts(harness, sid), what="the next reload's turn")
+
+
+def test_an_unloaded_thread_is_reloaded_by_the_next_message(harness, fake_codex, workspace):
+    fake_codex.script([[fc.thread_closed()], fc.agent_message("m1", "Reloaded")])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    wait_for(lambda: status(harness, sid) == "idle" and not harness.store.list_workers(), what="the unload")
+    assert errors(harness, sid) == []
+    assert harness.prompt(sid, "again") == "queued"
+    wait_for(lambda: "Reloaded" in texts(harness, sid), what="the reloaded turn")
+    assert fake_codex.calls("thread/resume")[0]["threadId"] == "thr_1"
+
+
+def test_a_message_codex_says_has_no_thread_reloads_it_first(harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script([fc.agent_message("m1", "Reloaded")])
+    sid = start(harness, workspace)
+    old = harness.codex._live[sid].process
+
+    def unloaded(method, params=None, **kwargs):
+        raise RpcError(-32600, "thread not found: thr_1")
+    monkeypatch.setattr(old.rpc, "request", unloaded)
+    assert harness.prompt(sid, "again") == "queued"
+    wait_for(lambda: "Reloaded" in texts(harness, sid), what="the reloaded turn")
+    assert fake_codex.calls("thread/resume")[0]["threadId"] == "thr_1"
+    assert [r.session_id for r in harness.store.list_workers()] == [f"harness:{sid}"]
+    assert start_time(old.pid) is None and errors(harness, sid) == []
+    assert [m.parts[0].text for m in harness.store.list_messages(sid) if m.role == "user"] == ["again"]
+
+
+def test_a_message_another_message_is_reloading_for_waits_for_that_reload(harness, fake_codex, workspace,
+                                                                         monkeypatch):
+    fake_codex.script([fc.agent_message("m1", "Both read")])
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    old, gate, entered = live.process, threading.Event(), []
+
+    def unloaded(method, params=None, **kwargs):
+        entered.append(method)
+        gate.wait(10)  # both messages are inside turn/start on the old app-server before either hears back
+        raise RpcError(-32600, "thread not found: thr_1")
+    monkeypatch.setattr(old.rpc, "request", unloaded)
+    got = []
+    threads = [threading.Thread(target=lambda t=t: got.append(harness.prompt(sid, t))) for t in ("one", "two")]
+    for t in threads:
+        t.start()
+    wait_for(lambda: len(entered) == 2, what="both messages sent")
+    gate.set()
+    for t in threads:
+        t.join(10)
+    assert got == ["queued", "queued"]
+    wait_for(lambda: "Both read" in texts(harness, sid) and status(harness, sid) == "idle", what="the reloaded turn")
+    [turn] = fake_codex.calls("turn/start")
+    assert sorted(turn["input"][0]["text"].split("\n\n")) == ["one", "two"]

@@ -2,6 +2,7 @@
 
 import logging
 import queue
+import re
 import threading
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
@@ -28,6 +29,8 @@ END_WAIT = 10.0
 """Seconds an ending session waits for its interrupted turn to complete before it closes the app-server anyway."""
 REPLY_WAIT = 30.0
 """Seconds an answer waits for the session's thread to write its reply."""
+_NOT_LOADED = re.compile(r"^thread not (found|loaded)\b")
+"""Codex's turn/start error for a thread it has unloaded."""
 
 
 def why(exc: Exception) -> str:
@@ -298,7 +301,8 @@ class CodexSession:
                 text, process = "\n\n".join(self.pending), self.process
                 self.pending.clear()
             try:
-                self._send(process, text, sent)
+                if self._send(process, text, sent) == "queued":
+                    return  # Codex had unloaded the thread: the reload sends it
                 sent = True
             except HarnessError as exc:
                 with self._lock:
@@ -307,12 +311,36 @@ class CodexSession:
                 self.transcript.error(exc.message)
 
     def _send(self, process: CodexProcess, text: str, busy: bool) -> str:
-        """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which)."""
+        """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which).
+        ``queued`` when Codex had unloaded the thread: the message waits for the reload."""
         try:
             process.rpc.request("turn/start", {"threadId": self.thread_id, "input": _input(text)})
-        except (RpcError, RpcClosed, TimeoutError) as exc:
+        except RpcError as exc:
+            if not _NOT_LOADED.match(exc.message):
+                raise HarnessError(409, "codex_refused", f"Codex didn't take the message: {exc}") from exc
+            self._reload(process, text)
+            return "queued"
+        except (RpcClosed, TimeoutError) as exc:
             raise HarnessError(409, "codex_refused", f"Codex didn't take the message: {exc}") from exc
         return "steer" if busy else "turn"
+
+    def _reload(self, process: CodexProcess, text: str) -> None:
+        """Codex unloaded the thread: close its app-server, then load the thread again; ``text`` waits for it."""
+        with self._lock:
+            if self.stopped or self.ending:
+                return  # office stop keeps the session for restore; an end closes it
+            self.pending.append(text)
+            if self.process is not process:  # another message got there first, or the app-server died meanwhile
+                if not self.loading:  # and nothing is loading now: send it on the new app-server, or load one
+                    self.loading = True
+                    if self.process is None:
+                        self._post(self._load, True)
+                    else:
+                        self._post(self._flush)
+                return
+            self.process, self.loading = None, True
+        process.close(self.owner.close_grace)  # its record goes before the reload writes the new one
+        self._post(self._load, True)
 
     def _notification(self, method: str, params: dict[str, Any]) -> None:
         if self.translator.notification(method, params):
@@ -336,6 +364,8 @@ class CodexSession:
                     self._idle()
         elif method == "serverRequest/resolved":
             self._resolved(params["requestId"])
+        elif method == "thread/closed" and self.process is not None:
+            self._lost(self.process, None)
         else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
 
