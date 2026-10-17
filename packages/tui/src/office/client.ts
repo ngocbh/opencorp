@@ -105,6 +105,9 @@ export function createOfficeClient(opts: { socket: string; timeoutMs?: number; t
       steer: (id: string, req: PromptRequest) => post<Ack>(`${s(id)}/steer`, req),
       interrupt: (id: string) => post<Ack>(`${s(id)}/interrupt`),
       end: (id: string) => post<Ack>(`${s(id)}/end`),
+      /** Continues an ended Codex session on its thread, as a new session. */
+      continue: (id: string) =>
+        request<Session>(socket, "POST", `${s(id)}/continue`, undefined, { timeoutMs: CREATE_TIMEOUT_MS, token }),
       costCap: (id: string, req: CostCapRequest) => post<Session>(`${s(id)}/cost-cap`, req),
       /** Switches a live chat's connection and model; its next reply runs on them. */
       setModel: (id: string, req: SetModelRequest) => post<Session>(`${s(id)}/model`, req),

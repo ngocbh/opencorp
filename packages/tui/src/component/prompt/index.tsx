@@ -113,6 +113,11 @@ export function Prompt(props: PromptProps) {
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
   // A session is interruptible while its run is starting or working.
   const working = createMemo(() => ["starting", "busy"].includes(session()?.status ?? ""))
+  /** An ended Codex session, which a message continues in a new session on the same thread. */
+  const continues = createMemo(() => {
+    const s = session()
+    return s?.harness === "codex" && ["ended", "failed", "debriefing"].includes(s.status)
+  })
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useAgentCorpKeymap()
@@ -700,6 +705,11 @@ export function Prompt(props: PromptProps) {
         })
         sessionID = created.id
         await office.syncSession(sessionID)
+      } else if (continues()) {
+        // An ended Codex session takes no message; its thread goes on in a new session, which gets it instead.
+        const next = await office.client.sessions.continue(sessionID)
+        sessionID = next.id
+        await office.syncSession(sessionID)
       }
       undo = props.onSend?.()
       await office.client.sessions.prompt(sessionID, { text })
@@ -707,7 +717,7 @@ export function Prompt(props: PromptProps) {
       undo?.()
       showError(sessionID ? "Failed to send prompt" : "Creating a session failed")(error)
       // A new session opens even if its prompt failed; the unsent text follows it there.
-      if (sessionID && !props.sessionID) route.navigate({ type: "session", sessionID })
+      if (sessionID && sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
       return true
     }
 
@@ -720,7 +730,7 @@ export function Prompt(props: PromptProps) {
     setStore("extmarkToPartIndex", new Map())
     props.onSubmit?.()
     input.clear()
-    if (!props.sessionID) route.navigate({ type: "session", sessionID })
+    if (sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
     return true
   }
 
