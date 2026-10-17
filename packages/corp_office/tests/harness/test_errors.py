@@ -2,6 +2,7 @@
 
 import threading
 
+from agent_corp.harness import session as session_module
 from agent_corp.harness.rpc import RpcError
 from agent_corp.harness.session import usage_base
 from agent_corp.harness.sessions import CodexSessions
@@ -226,3 +227,58 @@ def test_an_office_stop_while_a_crash_is_handled_writes_nothing_after_it(harness
     live._thread.join(5)
     assert errors(harness, sid) == [] and status(harness, sid) == "busy"  # left for restore
     assert [p.state for m in harness.store.list_messages(sid) for p in m.parts if p.type == "tool"] == ["running"]
+
+
+def test_a_message_codex_says_has_no_thread_after_another_reloaded_it_goes_to_the_new_app_server(
+        harness, fake_codex, workspace, monkeypatch):
+    fake_codex.script([fc.agent_message("m1", "First"), fc.agent_message("m2", "Second")])
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    old, entered, gate = live.process, threading.Event(), threading.Event()
+
+    def unloaded(method, params=None, **kwargs):
+        if params["input"][0]["text"] == "two":
+            entered.set()
+            gate.wait(10)  # Codex answers this one only after the reload the other message started is done
+        raise RpcError(-32600, "thread not found: thr_1")
+    monkeypatch.setattr(old.rpc, "request", unloaded)
+    late = threading.Thread(target=harness.prompt, args=(sid, "two"))
+    late.start()
+    assert entered.wait(10)
+    assert harness.prompt(sid, "one") == "queued"
+    wait_for(lambda: "First" in texts(harness, sid) and status(harness, sid) == "idle" and not live.loading,
+             what="the reload and its turn")
+    gate.set()
+    late.join(10)
+    wait_for(lambda: "Second" in texts(harness, sid), what="the late message's turn")
+    assert [c["input"][0]["text"] for c in fake_codex.calls("turn/start")] == ["one", "two"]
+    assert len(fake_codex.calls("initialize")) == 2
+
+
+def test_a_message_codex_says_has_no_thread_while_the_session_ends_starts_no_load(harness, fake_codex, workspace,
+                                                                                 monkeypatch):
+    fake_codex.script([[{"sleep": 30}]])
+    monkeypatch.setattr(session_module, "END_WAIT", 1.0)
+    sid = start(harness, workspace)
+    harness.prompt(sid, "work")
+    wait_for(lambda: status(harness, sid) == "busy", what="busy")
+    old, entered, gate = harness.codex._live[sid].process, threading.Event(), threading.Event()
+    real = old.rpc.request
+
+    def unloaded(method, params=None, **kwargs):
+        if method == "turn/interrupt":
+            return {}  # taken, but the turn runs on until END_WAIT closes the app-server
+        if method != "turn/start":
+            return real(method, params, **kwargs)
+        entered.set()
+        gate.wait(10)
+        raise RpcError(-32600, "thread not found: thr_1")
+    monkeypatch.setattr(old.rpc, "request", unloaded)
+    steer = threading.Thread(target=harness.prompt, args=(sid, "steer"))
+    steer.start()
+    assert entered.wait(10)
+    harness.end(sid)
+    gate.set()
+    steer.join(10)
+    wait_for(lambda: status(harness, sid) == "ended", timeout=10, what="the end")
+    assert len(fake_codex.calls("initialize")) == 1 and harness.store.list_workers() == []

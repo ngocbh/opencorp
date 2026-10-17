@@ -1,5 +1,8 @@
 """After an office restart: idle stays idle, busy becomes idle and interrupted, starting fails, cards go stale."""
 
+from agent_corp.protocol import now
+from agent_corp.protocol.models import Message, TextPart
+from agent_corp.store import new_id
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
 
@@ -124,3 +127,13 @@ def test_office_stop_mid_reply_keeps_all_its_text_and_marks_it_once(make_codex, 
     got = [(m.role, [p.text for p in m.parts]) for m in h.store.list_messages(sid)]
     assert got == [("user", ["go"]), ("assistant", ["Hello there, friend\n\n[interrupted]"])]
     assert status(h, sid) == "idle"
+
+
+def test_a_busy_session_whose_newest_message_is_only_the_marker_keeps_one(make_codex, fake_codex, workspace):
+    old = make_codex()
+    sid = start(old, workspace)
+    old.store.add_message(Message(id=new_id(), session_id=sid, role="assistant", created_at=now(),
+                                  parts=[TextPart(id=new_id(), type="text", text="[interrupted]")]))
+    old.store.update_session(sid, status="busy")
+    h = restarted(make_codex, old)
+    assert texts(h, sid) == ["[interrupted]"] and status(h, sid) == "idle"
