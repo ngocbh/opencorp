@@ -5,13 +5,14 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from agent_corp.chat.harness import HarnessError
+from agent_corp.chat.harness import LIVE, HarnessError
 from agent_corp.chat.hooks import Hooks
+from agent_corp.chat.transcript import INTERRUPTED_TEXT
 from agent_corp.chat.turns import seconds
 from agent_corp.company.loader import load_repo
 from agent_corp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
 from agent_corp.harness.session import CodexSession
-from agent_corp.protocol.models import CompanyDefaults, HarnessPolicy, Question, Session
+from agent_corp.protocol.models import CompanyDefaults, HarnessPolicy, Message, Question, Session
 from agent_corp.store import InvalidTransition
 from agent_corp.worker.spawn import worker_env
 
@@ -86,15 +87,61 @@ class CodexSessions:
         for session in live:
             session.shutdown()
 
+    def restore(self) -> None:
+        """After an office restart, for each Codex session that was live. Idle stays idle with no app-server (its
+        next message reloads the thread). Busy becomes idle with ``[interrupted]``: Codex reports that turn
+        interrupted on resume and never reruns it. Starting fails. Ending finishes ending. Open cards go stale."""
+        for session in self.store.list_sessions(status=LIVE, limit=None):
+            if self._closed:  # the office is stopping: what is left stays as it is, for the next restore
+                return
+            if session.harness != "codex" or session.id in self._live:
+                continue
+            try:  # one session that can't be restored mustn't stop the others, or the office
+                self._restore(session)
+            except Exception:
+                log.exception("can't restore Codex session %s", session.id)
+
+    def _restore(self, session: Session) -> None:
+        for q in self.store.list_questions(session_id=session.id, status="open"):
+            try:
+                self.store.set_question_status(q.id, "stale")
+            except InvalidTransition:
+                pass  # answered meanwhile: no app-server waits on its answer
+        for message in self.store.list_messages(session.id):  # their commands died with the app-server
+            for part in message.parts:
+                if part.type == "tool" and part.state == "running":
+                    self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
+        live = CodexSession(self, session, author=self.opener(session))
+        with self._lock:
+            if self._closed:  # office stop came meanwhile
+                live.release()
+                return
+            self._live[session.id] = live
+        if session.status == "starting" or not session.harness_session_id:
+            live.transcript.error("The office restarted before Codex started. Start a new chat.")
+            live.release()
+            self.finished(live, "failed")
+        elif session.status == "ending":
+            live.release()
+            self.finished(live, "ended")
+        else:
+            if session.status == "busy" and not _ends_interrupted(self.store.list_messages(session.id)):
+                live.translator.turn_completed("restored", "interrupted", None)  # unless office stop stored it
+            live.idle_after_restore(session.status)
+
     # --- calls from CodexSession -----------------------------------------------------
 
     def launch(self, live: CodexSession) -> CodexProcess:
         """A started, initialized app-server for ``live``, in its cwd, with the worker environment."""
         env = self.env()
+        # Each callback says which app-server it came from, so the session drops what an earlier one still sends.
         process = CodexProcess(self.store, f"harness:{live.session_id}",
                                command=self.command() if self.command else codex_command(env), cwd=live.cwd, env=env,
                                log=self.office.paths.run_dir(live.session_id) / "codex.log",
-                               on_notification=live.notified, on_request=live.requested, on_exit=live.exited)
+                               on_notification=lambda method, params: live.notified(process, method, params),
+                               on_request=lambda request_id, method, params: live.requested(process, request_id,
+                                                                                            method, params),
+                               on_exit=live.exited)
         if not live.launching_as(process):  # before it spawns, so office stop can kill it mid-handshake
             raise CodexStartError("The office is stopping.")
         process.start()
@@ -139,6 +186,14 @@ class CodexSessions:
                 raise HarnessError(404, "not_found", f"no session {session_id}")
             raise HarnessError(409, "not_live", f"session {session_id} has no live Codex app-server")
         return live
+
+
+def _ends_interrupted(messages: list[Message]) -> bool:
+    """Whether the newest message is an assistant one whose last part already ends with the marker."""
+    last = messages[-1] if messages else None
+    tail = last.parts[-1] if last is not None and last.role == "assistant" and last.parts else None
+    # A marker with nothing before it is stored without the leading blank line.
+    return tail is not None and tail.type == "text" and tail.text.endswith(INTERRUPTED_TEXT.lstrip())
 
 
 def _masked(question: Question, answer: Any) -> Any:

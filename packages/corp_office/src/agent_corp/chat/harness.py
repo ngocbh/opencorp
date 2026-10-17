@@ -447,6 +447,8 @@ class Harness:
                 self._resume(live)
             except Exception:
                 pass  # it logged why and failed the session
+        if self.codex is not None:
+            self.codex.restore()
 
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""

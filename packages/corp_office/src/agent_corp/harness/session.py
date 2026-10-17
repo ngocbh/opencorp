@@ -2,6 +2,7 @@
 
 import logging
 import queue
+import re
 import threading
 from collections.abc import Callable
 from concurrent.futures import CancelledError, Future
@@ -15,7 +16,7 @@ from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.translate import TURNLESS, Card, Translator, Unserved
 from agent_corp.protocol.models import Session
-from agent_corp.store import InvalidTransition, NotFound, new_id
+from agent_corp.store import InvalidTransition, NotFound, Store, new_id
 
 if TYPE_CHECKING:
     from agent_corp.harness.sessions import CodexSessions
@@ -28,17 +29,38 @@ END_WAIT = 10.0
 """Seconds an ending session waits for its interrupted turn to complete before it closes the app-server anyway."""
 REPLY_WAIT = 30.0
 """Seconds an answer waits for the session's thread to write its reply."""
+_NOT_LOADED = re.compile(r"^thread not (found|loaded)\b")
+"""Codex's turn/start error for a thread it has unloaded."""
+_WRITER_LOCK = re.compile(r"\balready has an active writer\b", re.I)
+"""Codex's thread/resume error for a thread another app-server (a Codex window, ``codex exec``) has loaded."""
+OPEN_ELSEWHERE = "This Codex session is open in another Codex window or process; close it there and try again."
 
 
 def why(exc: Exception) -> str:
     """What an error part says about a failed load: what to do, then the stderr tail."""
     if isinstance(exc, CodexStartError):
         return f"{exc}\n{exc.tail}".strip()
+    if isinstance(exc, RpcError) and _WRITER_LOCK.search(exc.message):
+        return OPEN_ELSEWHERE
     if isinstance(exc, RpcError):
         return f"Codex refused to load the thread: {exc.message}"
     if isinstance(exc, TimeoutError):
         return f"Codex didn't answer in time: {exc}"
     return "Codex couldn't start; see the office log."
+
+
+_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+
+def usage_base(store: Store, session: Session) -> dict[str, int]:
+    """The thread's token counts before ``session`` began: every earlier stretch's own counts, summed."""
+    base = dict.fromkeys(_USAGE, 0)
+    parent = store.get_session(session.parent_session_id) if session.parent_session_id else None
+    while parent is not None:
+        for key, value in (parent.harness_usage.model_dump() if parent.harness_usage else {}).items():
+            base[key] += value
+        parent = store.get_session(parent.parent_session_id) if parent.parent_session_id else None
+    return base
 
 
 def _input(text: str) -> list[dict[str, Any]]:
@@ -66,10 +88,12 @@ class CodexSession:
         self.owner, self.store = owner, owner.store
         self.session_id, self.cwd, self.thread_id = session.id, session.cwd, session.harness_session_id
         self.author = author
+        self.base = usage_base(self.store, session)  # the thread's token counts before this stretch
         self.transcript = Transcript(self.store, session.id, owner.office.bus.publish_live)
         self.translator = Translator(self.transcript, session.cwd)
         self.process: CodexProcess | None = None
         self.launching: CodexProcess | None = None  # the app-server being started, which office stop kills too
+        self.retiring: CodexProcess | None = None  # closing: Codex unloaded its thread; office stop kills it too
         self.loading = False
         self.turn_id: str | None = None
         self.pending: list[str] = []
@@ -77,7 +101,7 @@ class CodexSession:
         self.by_request: dict[str, str] = {}  # str(request id) -> question id
         self._turnless: tuple[CodexProcess, str] | None = None  # an app-server and its turnless requests' run id
         self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
-        self._idle_after: int | None = None  # idle_end in seconds, read once by the load from the pinned company
+        self._idle_after: int | None = None  # idle_end in seconds, read by each load from the pinned company
         self.ending = self.closed = self.stopped = False
         self._lock = threading.RLock()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -104,6 +128,8 @@ class CodexSession:
             self._stop_timer()
             if self.loading or self.process is None:
                 self.pending.append(text)
+                if not self.loading:
+                    self.start(resume=True)  # a restarted office, a dead app-server, or an unloaded thread
                 return "queued"
             process, busy = self.process, self.turn_id is not None
         try:
@@ -178,7 +204,7 @@ class CodexSession:
         with self._lock:
             self.stopped = True
             self._stop_timer()
-            doomed = [p for p in (self.process, self.launching) if p is not None]
+            doomed = [p for p in (self.process, self.launching, self.retiring) if p is not None]
             self.process = None
         for process in doomed:  # a load or a turn/start waiting on Codex fails at once
             process.kill()
@@ -200,6 +226,19 @@ class CodexSession:
             return
         self.transcript.abort()
 
+    def release(self) -> None:
+        """Let the session's thread end, for a session restored only to be finished (or not at all)."""
+        with self._lock:
+            self.closed = True
+            self._jobs.put(None)
+
+    def idle_after_restore(self, status: str) -> None:
+        """Go idle with no app-server, as a restarted office finds the session (stored as ``status``): its next
+        message reloads the thread, and ``idle_end`` (read on the session's thread) ends it if none comes."""
+        with self._lock:
+            self._idle(write=status != "idle")
+        self._post(self._idle_end_after_restore)
+
     def launching_as(self, process: CodexProcess) -> bool:
         """Record ``process`` as the app-server being started, so office stop kills it; False once stopped."""
         with self._lock:
@@ -210,11 +249,11 @@ class CodexSession:
 
     # --- app-server callbacks (reader thread): hand off ------------------------------
 
-    def notified(self, method: str, params: dict[str, Any]) -> None:
-        self._post(self._notification, method, params)
+    def notified(self, process: CodexProcess, method: str, params: dict[str, Any]) -> None:
+        self._post(self._notification, process, method, params)
 
-    def requested(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
-        self._post(self._request, request_id, method, params)
+    def requested(self, process: CodexProcess, request_id: Any, method: str, params: dict[str, Any]) -> None:
+        self._post(self._request, process, request_id, method, params)
 
     def exited(self, process: CodexProcess) -> None:
         self._post(self._exited, process)
@@ -238,6 +277,8 @@ class CodexSession:
     def _load(self, resume: bool) -> None:
         try:
             idle_after = self.owner.idle_seconds(self.session_id)  # here, not under the lock: it reads the company
+            with self._lock:  # before the launch, so a reload that fails still ends after idle_end
+                self._idle_after = idle_after
             process = self.owner.launch(self)
             params = owner_load(self.cwd, self.owner.policy(self.session_id))
             # The office never reads past turns, so a resume needn't send them.
@@ -257,7 +298,7 @@ class CodexSession:
         if self.stopped:  # office stop came during the load: write nothing, leave nothing running
             process.kill()
             return
-        self.thread_id, self._idle_after = result["thread"]["id"], idle_after
+        self.thread_id = result["thread"]["id"]
         self.store.update_session(self.session_id, harness_session_id=self.thread_id, harness_model=result.get("model"))
         self._flush()
 
@@ -267,14 +308,26 @@ class CodexSession:
         if not isinstance(exc, (CodexStartError, RpcError)):
             log.exception("codex session %s can't load its thread", self.session_id)
         self.transcript.error(why(exc))
+        session = self.store.get_session(self.session_id)
         with self._lock:
             self.loading = False
             self.pending.clear()
             if self.ending:
                 return  # the end posted meanwhile closes it
+            if session.status != "starting":  # a reload: say why and wait for the next message
+                self._idle()
+                return
             self.closed = True
         self.owner.finished(self, "failed")
         self._jobs.put(None)
+
+    def _idle_end_after_restore(self) -> None:
+        idle_after = self.owner.idle_seconds(self.session_id)  # not under the lock: it reads the company
+        with self._lock:
+            if self._idle_after is not None or self.loading or self.process is not None or self.turn_id is not None:
+                return  # a message came first: its load reads idle_end
+            self._idle_after = idle_after
+            self._idle(write=False)  # stored idle already: this only arms the timer
 
     def _flush(self) -> None:
         """Send what waited for the load, in order, then go idle if nothing was sent. ``loading`` stays set until
@@ -292,23 +345,62 @@ class CodexSession:
                 text, process = "\n\n".join(self.pending), self.process
                 self.pending.clear()
             try:
-                self._send(process, text, sent)
+                if self._send(process, text, sent) == "queued":
+                    return  # Codex had unloaded the thread: the reload sends it
                 sent = True
             except HarnessError as exc:
                 with self._lock:
                     if self.stopped:  # office stop killed the app-server: nothing refused it, and nothing is stored
                         return
+                if not process.alive and not process.closing:
+                    continue  # it died: its exit says so, and the next message reloads it
                 self.transcript.error(exc.message)
 
     def _send(self, process: CodexProcess, text: str, busy: bool) -> str:
-        """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which)."""
+        """turn/start: a new turn, or a steer of the running one (Codex decides; turn/started says which).
+        ``queued`` when Codex had unloaded the thread: the message waits for the reload."""
         try:
             process.rpc.request("turn/start", {"threadId": self.thread_id, "input": _input(text)})
-        except (RpcError, RpcClosed, TimeoutError) as exc:
+        except RpcError as exc:
+            if not _NOT_LOADED.match(exc.message):
+                raise HarnessError(409, "codex_refused", f"Codex didn't take the message: {exc}") from exc
+            self._reload(process, text)
+            return "queued"
+        except (RpcClosed, TimeoutError) as exc:
             raise HarnessError(409, "codex_refused", f"Codex didn't take the message: {exc}") from exc
         return "steer" if busy else "turn"
 
-    def _notification(self, method: str, params: dict[str, Any]) -> None:
+    def _reload(self, process: CodexProcess, text: str) -> None:
+        """Codex unloaded the thread: close its app-server, then load the thread again; ``text`` waits for it."""
+        with self._lock:
+            if self.stopped or self.ending:
+                return  # office stop keeps the session for restore; an end closes it
+            self.pending.append(text)
+            if self.process is not process:  # another message got there first, or the app-server died meanwhile
+                if not self.loading:  # and nothing is loading now: send it on the new app-server, or load one
+                    self.loading = True
+                    if self.process is None:
+                        self._post(self._load, True)
+                    else:
+                        self._post(self._flush)
+                return
+            self.process, self.loading, self.retiring = None, True, process
+        self._post(self._reopen, process)
+
+    def _reopen(self, process: CodexProcess) -> None:
+        """Close the app-server whose thread Codex unloaded, then load the thread in a new one."""
+        process.close(self.owner.close_grace)  # its record goes before the reload writes the new one
+        with self._lock:
+            if self.retiring is process:
+                self.retiring = None
+            if self.stopped:
+                return
+        self._load(True)
+
+    def _notification(self, process: CodexProcess, method: str, params: dict[str, Any]) -> None:
+        if process is not self.process:  # an app-server that died, or was closed for a reload, still being read
+            log.debug("codex session %s: %s from an earlier app-server", self.session_id, method)
+            return
         if self.translator.notification(method, params):
             return
         if method == "turn/started":
@@ -330,13 +422,23 @@ class CodexSession:
                     self._idle()
         elif method == "serverRequest/resolved":
             self._resolved(params["requestId"])
+        elif method == "thread/tokenUsage/updated":
+            self._usage(params["tokenUsage"]["total"])
+        elif method == "thread/closed":
+            self._lost(process, None)
         else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
 
-    def _request(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
+    def _usage(self, total: dict[str, Any]) -> None:
+        # Codex counts the whole thread; a continued session keeps only its own stretch's tokens.
+        got = {"input_tokens": total["inputTokens"], "cached_input_tokens": total["cachedInputTokens"],
+               "output_tokens": total["outputTokens"]}
+        self.store.update_session(self.session_id,
+                                  harness_usage={k: max(0, v - self.base[k]) for k, v in got.items()})
+
+    def _request(self, process: CodexProcess, request_id: Any, method: str, params: dict[str, Any]) -> None:
         """A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve."""
-        process = self.process
-        if process is None:
+        if process is not self.process:  # its app-server is gone: no one would read the reply
             return
         session = self.store.get_session(self.session_id)
         run_id = params.get("turnId") or self._turnless_run(process)
@@ -450,6 +552,42 @@ class CodexSession:
         if process is not self.process or process.closing:
             return
         log.warning("codex app-server of session %s exited unexpectedly", self.session_id)
+        self._lost(process, "Codex stopped unexpectedly. Send a message to start it again.")
+
+    def _lost(self, process: CodexProcess, said: str | None) -> None:
+        """The app-server died, or Codex unloaded the thread: finish its turn as interrupted, expire its cards, and
+        close its group now; the next message reloads the thread. ``said`` is the error part, with the stderr tail."""
+        with self._lock:
+            self.process = None
+            if said is None:
+                self.retiring = process  # office stop kills it while it is being closed
+            turn, self.turn_id = self.turn_id, None
+            for question_id in list(self.requests):  # Codex waits on none of them any more
+                self.requests.pop(question_id)
+                self._expire(question_id)
+            self.by_request.clear()
+        tail = process.stderr_tail() if said else ""
+        # A dead leader leaves its group to whatever it started (command children, #57): kill it now, which also
+        # removes the record, so an end or idle_end that comes before any reload never finds them. An app-server
+        # that only unloaded the thread is alive: close it through its stdin, which kills its group after.
+        if said is None:
+            process.close(self.owner.close_grace)
+            with self._lock:
+                if self.retiring is process:
+                    self.retiring = None
+        else:
+            process.kill()
+        if self.stopped:
+            return  # office stop came meanwhile: restore marks the turn, and nothing is written after the stop
+        if turn is not None:
+            self.translator.turn_completed(turn, "interrupted", None)
+        if said:
+            self.transcript.error(said + (f"\n{tail}" if tail else ""))
+        with self._lock:
+            if self.ending:
+                self._post(self._close)
+            else:
+                self._idle()
 
     def _close(self) -> None:
         with self._lock:
@@ -457,23 +595,24 @@ class CodexSession:
                 return
             self.closed = True
             self._stop_timer()
-            process = self.process
-        if process is not None:
-            process.close(self.owner.close_grace)  # stdin, grace, group kill, record removed: before end_status
+            doomed = [p for p in (self.process, self.retiring) if p is not None]
+        for process in doomed:  # stdin, grace, group kill, record removed: before end_status
+            process.close(self.owner.close_grace)
         if self.stopped:
             return  # office stop came during the close: the session stays ending, for restore
         self.transcript.abort()
         self.owner.finished(self, "ended")
         self._jobs.put(None)  # nothing more to do: let the session's thread end after this job
 
-    def _idle(self) -> None:
-        """(Under the lock.) Go idle; ``idle_end`` later, the session ends. Nothing once the office stops or the
-        session is ending."""
+    def _idle(self, *, write: bool = True) -> None:
+        """(Under the lock.) Go idle (``write`` stores the status); ``idle_end`` later, the session ends. Nothing once
+        the office stops or the session is ending."""
         if self.stopped or self.ending or self.closed:
             return
         self._stop_timer()
-        self.store.update_session(self.session_id, status="idle")
-        if self._idle_after is None:  # not loaded yet
+        if write:
+            self.store.update_session(self.session_id, status="idle")
+        if self._idle_after is None:  # not read yet: the first load reads it
             return
         timer = self.timer = threading.Timer(self._idle_after, self._post)
         timer.args = (self._idle_end, timer)  # the job knows its timer, so one a message stopped ends nothing

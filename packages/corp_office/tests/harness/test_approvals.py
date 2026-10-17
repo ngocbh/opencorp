@@ -85,7 +85,7 @@ def test_turnless_cards_of_two_app_servers_with_one_pid_dont_collide(harness, fa
     with live._lock:
         live.process = twin
     try:
-        live._post(live._request, 8, step["request"], fc.fill(step["params"], "", str(workspace), "thr_1"))
+        live._post(live._request, twin, 8, step["request"], fc.fill(step["params"], "", str(workspace), "thr_1"))
         live._post(ran.set)
         assert ran.wait(5)
     finally:

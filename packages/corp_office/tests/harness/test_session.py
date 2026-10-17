@@ -462,7 +462,7 @@ def test_a_turn_starting_after_the_end_leaves_the_end_timer_running(harness, fak
     ender.start()
     wait_for(lambda: status(harness, sid) == "ending" and live.timer, what="the end timer")
     # A message's turn that Codex starts after the end, as a queued message's would.
-    live.notified("turn/started", {"threadId": "thr_1", "turn": {"id": "turn_2", "items": [], "status": "inProgress"}})
+    live.notified(live.process, "turn/started", {"threadId": "thr_1", "turn": {"id": "turn_2", "items": [], "status": "inProgress"}})
     wait_for(lambda: status(harness, sid) == "ended", timeout=5, what="the end after END_WAIT")
     ender.join(5)
     assert not ender.is_alive()
