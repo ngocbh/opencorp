@@ -362,3 +362,18 @@ test("continue posts no body with the create limit; the office refuses a live or
   const refused = await failure(client().sessions.continue(composer.id))
   expect([refused.status, refused.code]).toEqual([422, "not_continuable"])
 })
+
+test("continue, as the office does it: from the newest stretch, with its connection and model, by the requester", async () => {
+  office = createFakeOffice()
+  const codex = { person: "minh", cwd: "/tmp/proj", harness: "codex" as const, status: "ended" as const }
+  const first = office.newSession({ ...codex, harness_session_id: "thr_1", connection: "azure-2", model: "o3-mini" })
+  const second = office.newSession({ ...codex, harness_session_id: "thr_1", parent_session_id: first.id })
+  // A Codex session whose first load failed has no thread: it neither continues nor holds one.
+  const unloaded = office.newSession({ ...codex, status: "idle", harness_session_id: null })
+  const next = await client().sessions.continue(first.id)
+  expect(next.parent_session_id).toBe(second.id)
+  expect([next.connection, next.model, next.opened_by]).toEqual(["azure-2", "o3-mini", "ngocbh"])
+  office.setStatus(unloaded.id, "ended")
+  const never = await failure(client().sessions.continue(unloaded.id))
+  expect([never.status, never.code]).toEqual([422, "not_continuable"])
+})

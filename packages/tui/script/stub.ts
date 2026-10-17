@@ -835,21 +835,35 @@ export function createFakeOffice(
     [
       "POST",
       "/sessions/:id/continue",
-      ({ params }) => {
+      ({ params, actor }) => {
         const old = session(params.id)
         if (old.harness !== "codex") throw fail(422, "not_continuable", "only a Codex session can be continued")
+        if (!old.harness_session_id)
+          throw fail(
+            422,
+            "not_continuable",
+            "this Codex session never loaded its thread, so there is nothing to continue",
+          )
         if (LIVE.includes(old.status)) throw fail(409, "live", `session ${old.id} is still open`)
-        const holder = state.sessions.find(
-          (s) => s.harness === "codex" && s.harness_session_id === old.harness_session_id && LIVE.includes(s.status),
+        const thread = state.sessions.filter(
+          (s) => s.harness === "codex" && s.harness_session_id === old.harness_session_id,
         )
+        const holder = thread.find((s) => LIVE.includes(s.status))
         if (holder) throw fail(409, "live", `this Codex thread is open in session ${holder.id}`)
+        // Like the office, the newest stretch on the thread is the parent, whichever one was asked for.
+        const newest = thread.reduce((a, b) =>
+          (b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id)) > 0 ? b : a,
+        )
         const s = newSession({
           person: old.person,
           cwd: old.cwd,
           harness: "codex",
           status: "starting",
+          opened_by: actor,
+          connection: old.connection,
+          model: old.model,
           harness_session_id: old.harness_session_id,
-          parent_session_id: old.id,
+          parent_session_id: newest.id,
         })
         // Like the office, the session resumes the thread and goes idle.
         setTimeout(() => session(s.id).status === "starting" && setStatus(s.id, "idle"), 10)
