@@ -9,6 +9,9 @@ from agent_corp.worker.reaper import start_time
 from agent_corp.worker.spawn import worker_env
 from tests.harness.conftest import CODEX_PERSON, errors, requests_valid, start, status, texts, wait_for
 
+WRITER_LOCK = {"code": -32600, "message": "thread 01a1456b-695d-7440-bc59-6b401d4bb3ea already has an active writer"}
+"""What Codex answered the spike's thread/resume of a thread another app-server had loaded."""
+
 
 def test_codex_missing_fails_the_session_and_says_what_to_do(make_harness, workspace, tmp_path):
     # Only the app-server's environment lacks codex: the office's own PATH, and its git, stay as they are.
@@ -147,3 +150,13 @@ def test_a_message_another_message_is_reloading_for_waits_for_that_reload(harnes
     wait_for(lambda: "Both read" in texts(harness, sid) and status(harness, sid) == "idle", what="the reloaded turn")
     [turn] = fake_codex.calls("turn/start")
     assert sorted(turn["input"][0]["text"].split("\n\n")) == ["one", "two"]
+
+
+def test_a_thread_open_elsewhere_says_so_and_stays_idle(harness, fake_codex, workspace):
+    fake_codex.script([[{"exit": 1}]], resume_error=WRITER_LOCK)
+    sid = start(harness, workspace)
+    harness.prompt(sid, "crash")
+    wait_for(lambda: status(harness, sid) == "idle" and errors(harness, sid), what="crashed")
+    harness.prompt(sid, "again")
+    wait_for(lambda: any("open in another Codex window" in e for e in errors(harness, sid)), what="the lock message")
+    assert status(harness, sid) == "idle" and harness.store.list_workers() == []

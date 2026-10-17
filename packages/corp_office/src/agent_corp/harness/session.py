@@ -31,12 +31,17 @@ REPLY_WAIT = 30.0
 """Seconds an answer waits for the session's thread to write its reply."""
 _NOT_LOADED = re.compile(r"^thread not (found|loaded)\b")
 """Codex's turn/start error for a thread it has unloaded."""
+_WRITER_LOCK = re.compile(r"\balready has an active writer\b", re.I)
+"""Codex's thread/resume error for a thread another app-server (a Codex window, ``codex exec``) has loaded."""
+OPEN_ELSEWHERE = "This Codex session is open in another Codex window or process; close it there and try again."
 
 
 def why(exc: Exception) -> str:
     """What an error part says about a failed load: what to do, then the stderr tail."""
     if isinstance(exc, CodexStartError):
         return f"{exc}\n{exc.tail}".strip()
+    if isinstance(exc, RpcError) and _WRITER_LOCK.search(exc.message):
+        return OPEN_ELSEWHERE
     if isinstance(exc, RpcError):
         return f"Codex refused to load the thread: {exc.message}"
     if isinstance(exc, TimeoutError):
