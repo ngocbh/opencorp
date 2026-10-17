@@ -233,6 +233,18 @@ describe("TUI inline tool wrapping", () => {
     expect(update).toBe("--- a.py\n+++ a.py\n@@ -1 +1 @@\n-a\n+b\n")
   })
 
+  test("a Codex request's title is its summary's first line; missing fields never read undefined", () => {
+    const summary = 'Codex asks for more permissions\n{"network": {"enabled": true}}\nneeds the network'
+    expect(toolView("codex.request", { kind: "permissions", summary }).title).toBe(
+      "permissions: Codex asks for more permissions",
+    )
+    expect(toolView("codex.request", { kind: "command", summary: "Codex wants to run:\n$ ls" }).title).toBe(
+      "command: Codex wants to run",
+    )
+    expect(toolView("codex.request", {}).title).toBe("?: ?")
+    expect(toolView("codex.mcp_tool_call", { server: "docs" }).title).toBe("docs/?")
+  })
+
   test("a Codex decision names who made it", () => {
     expect(approvalNote({ approval: { decision: "accept", by: "ngocbh" } })).toBe("approved by @ngocbh")
     expect(approvalNote({ approval: { decision: "acceptForSession", by: "ngocbh" } })).toBe("approved by @ngocbh")

@@ -852,9 +852,12 @@ export function toolView(
     case "codex.file_change":
       return { view: "patch", input }
     case "codex.mcp_tool_call":
-      return { view: "generic", input, title: `${stringValue(input.server)}/${stringValue(input.tool)}` }
-    case "codex.request":
-      return { view: "generic", input, title: `${stringValue(input.kind)}: ${stringValue(input.summary)}` }
+      return { view: "generic", input, title: `${stringValue(input.server) ?? "?"}/${stringValue(input.tool) ?? "?"}` }
+    case "codex.request": {
+      // The summary is the card's whole text (a command, JSON, a reason); its first line names the request.
+      const head = stringValue(input.summary)?.split("\n")[0].replace(/:\s*$/, "")
+      return { view: "generic", input, title: `${stringValue(input.kind) ?? "?"}: ${head || "?"}` }
+    }
   }
   return { view: "generic", input }
 }
@@ -1221,6 +1224,12 @@ function BlockTool(props: {
   )
 }
 
+/** " (exit N)" for a command that exited non-zero, as a Codex command's part records; else nothing. */
+function exitNote(input: Record<string, unknown>) {
+  const code = input.exit_code
+  return typeof code === "number" && code !== 0 ? ` (exit ${code})` : ""
+}
+
 function Shell(props: ToolProps) {
   const { theme } = useTheme()
   const ctx = use()
@@ -1241,7 +1250,12 @@ function Shell(props: ToolProps) {
           <box gap={1}>
             <Show
               when={running(props.part)}
-              fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}
+              fallback={
+                <text fg={theme.text}>
+                  $ {stringValue(props.input.command)}
+                  {exitNote(props.input)}
+                </text>
+              }
             >
               <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
             </Show>
@@ -1261,6 +1275,7 @@ function Shell(props: ToolProps) {
           part={props.part}
         >
           {stringValue(props.input.command)}
+          {exitNote(props.input)}
         </InlineTool>
       </Match>
     </Switch>
@@ -1386,32 +1401,37 @@ function Patch(props: ToolProps) {
     <Switch>
       <Match when={changes().length > 0}>
         <BlockTool title={"← Edit " + paths()} part={props.part}>
-          <box paddingLeft={1}>
-            <diff
-              diff={codexPatch(changes())}
-              view={view()}
-              filetype={filetype(changes()[0]?.path ?? "")}
-              syntaxStyle={syntax()}
-              showLineNumbers={false}
-              width="100%"
-              wrapMode={ctx.diffWrapMode()}
-              fg={theme.text}
-              addedBg={theme.diffAddedBg}
-              removedBg={theme.diffRemovedBg}
-              contextBg={theme.diffContextBg}
-              addedSignColor={theme.diffHighlightAdded}
-              removedSignColor={theme.diffHighlightRemoved}
-              lineNumberFg={theme.diffLineNumber}
-              lineNumberBg={theme.diffContextBg}
-              addedLineNumberBg={theme.diffAddedLineNumberBg}
-              removedLineNumberBg={theme.diffRemovedLineNumberBg}
-            />
-          </box>
+          {/* The diff renderer shows only a patch's first file, so each file gets its own. */}
+          <For each={changes()}>
+            {(change) => (
+              <box paddingLeft={1}>
+                <diff
+                  diff={codexPatch([change])}
+                  view={view()}
+                  filetype={filetype(change.path)}
+                  syntaxStyle={syntax()}
+                  showLineNumbers={false}
+                  width="100%"
+                  wrapMode={ctx.diffWrapMode()}
+                  fg={theme.text}
+                  addedBg={theme.diffAddedBg}
+                  removedBg={theme.diffRemovedBg}
+                  contextBg={theme.diffContextBg}
+                  addedSignColor={theme.diffHighlightAdded}
+                  removedSignColor={theme.diffHighlightRemoved}
+                  lineNumberFg={theme.diffLineNumber}
+                  lineNumberBg={theme.diffContextBg}
+                  addedLineNumberBg={theme.diffAddedLineNumberBg}
+                  removedLineNumberBg={theme.diffRemovedLineNumberBg}
+                />
+              </box>
+            )}
+          </For>
         </BlockTool>
       </Match>
       <Match when={true}>
-        <InlineTool icon="←" pending="Preparing edit…" complete={false} part={props.part}>
-          Edit
+        <InlineTool icon="←" pending="Preparing edit…" complete={!running(props.part)} part={props.part}>
+          Edit (no changes)
         </InlineTool>
       </Match>
     </Switch>
