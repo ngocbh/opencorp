@@ -116,6 +116,9 @@ test("a secret typed into a Codex card shows nowhere, not in the prompt under it
     expect(
       office.requests.filter((r) => JSON.stringify(r.body ?? null).includes("sentinel")).map((r) => r.path),
     ).toEqual([`/questions/${q.id}/answer`])
+    // The office keeps `[secret]` in its place, so the closed card and what follows show it nowhere either.
+    expect(office.state.questions[q.id].answer).toEqual({ Token: "[secret]" })
+    expect(await app.until((f) => !f.includes("Paste the deploy token"))).not.toContain("sentinel")
   } finally {
     await app.stop()
     office.stop()

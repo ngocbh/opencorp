@@ -503,6 +503,17 @@ export function createFakeOffice(
       if (!ok) throw invalid(`${JSON.stringify(page.header)} takes ${shape}`)
     }
   }
+  /**
+   * An answer as the office stores it: on a card with a secret page, only its other pages' values are kept, and
+   * anything else is `[secret]`.
+   */
+  function masked(q: Question, answer: unknown) {
+    const pages = q.questions ?? []
+    if (!pages.some((p) => p.secret)) return answer
+    if (!answer || typeof answer !== "object" || Array.isArray(answer)) return "[secret]"
+    const safe = new Set(pages.filter((p) => !p.secret).map((p) => p.header))
+    return Object.fromEntries(Object.entries(answer).map(([k, v]) => [k, safe.has(k) ? v : "[secret]"]))
+  }
   /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
   function openModelQuestion(id: string, code: string) {
     const q = question(id)
@@ -967,7 +978,7 @@ export function createFakeOffice(
           // Like the office: the answer becomes Codex's reply and the card is consumed, or Codex no longer waits
           // and the card goes stale, keeping no answer.
           if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
-          const answered = { answer: body.answer, answer_kind: body.answer_kind, answered_by: human() }
+          const answered = { answer: masked(q, body.answer), answer_kind: body.answer_kind, answered_by: human() }
           const fields = staleOnAnswer.has(q.id)
             ? { status: "stale" as const }
             : { ...answered, status: "consumed" as const }
