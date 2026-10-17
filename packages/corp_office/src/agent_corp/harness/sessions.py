@@ -129,10 +129,14 @@ class CodexSessions:
     def launch(self, live: CodexSession) -> CodexProcess:
         """A started, initialized app-server for ``live``, in its cwd, with the worker environment."""
         env = self.env()
+        # Each callback says which app-server it came from, so the session drops what an earlier one still sends.
         process = CodexProcess(self.store, f"harness:{live.session_id}",
                                command=self.command() if self.command else codex_command(env), cwd=live.cwd, env=env,
                                log=self.office.paths.run_dir(live.session_id) / "codex.log",
-                               on_notification=live.notified, on_request=live.requested, on_exit=live.exited)
+                               on_notification=lambda method, params: live.notified(process, method, params),
+                               on_request=lambda request_id, method, params: live.requested(process, request_id,
+                                                                                            method, params),
+                               on_exit=live.exited)
         if not live.launching_as(process):  # before it spawns, so office stop can kill it mid-handshake
             raise CodexStartError("The office is stopping.")
         process.start()

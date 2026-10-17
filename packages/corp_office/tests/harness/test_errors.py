@@ -338,3 +338,20 @@ def test_a_reload_whose_app_server_dies_before_taking_the_message_says_so_once(h
     wait_for(lambda: len(errors(harness, sid)) == 2 and status(harness, sid) == "idle", what="the second crash")
     time.sleep(0.3)  # an error part written late would show here
     assert len(errors(harness, sid)) == 2 and all("Codex stopped unexpectedly" in e for e in errors(harness, sid))
+
+
+def test_what_an_earlier_app_server_sent_is_dropped(harness, fake_codex, workspace):
+    fake_codex.script([[{"exit": 1}]])
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    old = live.process
+    harness.prompt(sid, "go")
+    wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the crash handled")
+    harness.prompt(sid, "again")
+    new = wait_for(lambda: live.process, what="the reload")
+    live.notified(old, "thread/closed", {"threadId": "thr_1"})  # late, from the app-server that died
+    handled = threading.Event()
+    live._post(handled.set)
+    assert handled.wait(5)
+    assert live.process is new and new.alive
+    assert [r.session_id for r in harness.store.list_workers()] == [f"harness:{sid}"]

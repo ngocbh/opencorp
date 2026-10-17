@@ -249,11 +249,11 @@ class CodexSession:
 
     # --- app-server callbacks (reader thread): hand off ------------------------------
 
-    def notified(self, method: str, params: dict[str, Any]) -> None:
-        self._post(self._notification, method, params)
+    def notified(self, process: CodexProcess, method: str, params: dict[str, Any]) -> None:
+        self._post(self._notification, process, method, params)
 
-    def requested(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
-        self._post(self._request, request_id, method, params)
+    def requested(self, process: CodexProcess, request_id: Any, method: str, params: dict[str, Any]) -> None:
+        self._post(self._request, process, request_id, method, params)
 
     def exited(self, process: CodexProcess) -> None:
         self._post(self._exited, process)
@@ -397,7 +397,10 @@ class CodexSession:
                 return
         self._load(True)
 
-    def _notification(self, method: str, params: dict[str, Any]) -> None:
+    def _notification(self, process: CodexProcess, method: str, params: dict[str, Any]) -> None:
+        if process is not self.process:  # an app-server that died, or was closed for a reload, still being read
+            log.debug("codex session %s: %s from an earlier app-server", self.session_id, method)
+            return
         if self.translator.notification(method, params):
             return
         if method == "turn/started":
@@ -421,8 +424,8 @@ class CodexSession:
             self._resolved(params["requestId"])
         elif method == "thread/tokenUsage/updated":
             self._usage(params["tokenUsage"]["total"])
-        elif method == "thread/closed" and self.process is not None:
-            self._lost(self.process, None)
+        elif method == "thread/closed":
+            self._lost(process, None)
         else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
 
@@ -433,10 +436,9 @@ class CodexSession:
         self.store.update_session(self.session_id,
                                   harness_usage={k: max(0, v - self.base[k]) for k, v in got.items()})
 
-    def _request(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
+    def _request(self, process: CodexProcess, request_id: Any, method: str, params: dict[str, Any]) -> None:
         """A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve."""
-        process = self.process
-        if process is None:
+        if process is not self.process:  # its app-server is gone: no one would read the reply
             return
         session = self.store.get_session(self.session_id)
         run_id = params.get("turnId") or self._turnless_run(process)
