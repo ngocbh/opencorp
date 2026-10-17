@@ -2,8 +2,9 @@
 
 from agent_corp.harness.sessions import CodexSessions
 from agent_corp.testing import fake_codex as fc
+from agent_corp.worker.reaper import start_time
 from agent_corp.worker.spawn import worker_env
-from tests.harness.conftest import CODEX_PERSON, errors, start, status, wait_for
+from tests.harness.conftest import CODEX_PERSON, errors, requests_valid, start, status, texts, wait_for
 
 
 def test_codex_missing_fails_the_session_and_says_what_to_do(make_harness, workspace, tmp_path):
@@ -38,3 +39,55 @@ def test_a_failed_turn_repeating_the_error_shown_shows_it_once(harness, fake_cod
     harness.prompt(sid, "go")
     wait_for(lambda: status(harness, sid) == "idle" and errors(harness, sid), what="the error")
     assert errors(harness, sid) == ["Codex: usage limit reached"]
+
+
+def test_a_dead_app_server_leaves_the_session_idle_and_the_next_message_reloads_the_thread(harness, fake_codex,
+                                                                                          workspace):
+    fake_codex.script([[*fc.agent_message("m1", "Working")[:2], fc.command_approval(1, "c1", "x", wait=False),
+                        {"sleep": 0.3}, {"spawn": 300}, {"exit": 1}], fc.agent_message("m2", "Back again")],
+                      stderr="panic: oops")
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    wait_for(lambda: any("Codex stopped" in e for e in errors(harness, sid)) and status(harness, sid) == "idle",
+             what="the crash handled")
+    assert "panic: oops" in errors(harness, sid)[0]
+    assert [q.status for q in harness.store.list_questions(session_id=sid)] == ["stale"]
+    assert texts(harness, sid)[-1].endswith("[interrupted]")
+    [child] = fake_codex.spawned()  # a command the dead app-server left running
+    wait_for(lambda: start_time(child) is None, what="the command child killed with the group")
+    assert harness.store.list_workers() == []
+    assert harness.prompt(sid, "again") == "queued"
+    wait_for(lambda: "Back again" in texts(harness, sid), what="the reloaded turn")
+    [resume] = fake_codex.calls("thread/resume")
+    assert resume["threadId"] == "thr_1" and resume["approvalPolicy"] == "on-request" and resume["excludeTurns"]
+    assert len(fake_codex.calls("initialize")) == 2
+    assert [r.session_id for r in harness.store.list_workers()] == [f"harness:{sid}"]  # the new one's record
+    requests_valid(fake_codex)
+
+
+def test_ending_after_a_crash_without_a_reload_leaves_no_record_or_children(harness, fake_codex, workspace):
+    fake_codex.script([[{"spawn": 300}, {"exit": 1}]])
+    sid = start(harness, workspace)
+    seen = []
+    harness.hooks.end_status.append(lambda s: seen.append(harness.store.list_workers()) or None)
+    harness.prompt(sid, "go")
+    wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the crash handled")
+    harness.end(sid)
+    wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    [child] = fake_codex.spawned()
+    assert seen == [[]] and harness.store.list_workers() == [] and start_time(child) is None
+
+
+def test_a_reload_codex_refuses_leaves_the_session_idle_with_why(harness, fake_codex, workspace):
+    fake_codex.script([[{"exit": 1}]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the crash handled")
+    fake_codex.script(resume_error={"code": -32600, "message": "no rollout found"})
+    assert harness.prompt(sid, "again") == "queued"
+    wait_for(lambda: len(errors(harness, sid)) == 2, what="the refused reload")
+    assert "no rollout found" in errors(harness, sid)[1] and status(harness, sid) == "idle"
+    assert harness.store.list_workers() == []
+    fake_codex.script([[], fc.agent_message("m1", "Third time")])  # the fake's turn count goes on: this is turn 2
+    assert harness.prompt(sid, "and again") == "queued"
+    wait_for(lambda: "Third time" in texts(harness, sid), what="the next reload's turn")

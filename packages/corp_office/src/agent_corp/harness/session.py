@@ -104,6 +104,8 @@ class CodexSession:
             self._stop_timer()
             if self.loading or self.process is None:
                 self.pending.append(text)
+                if not self.loading:
+                    self.start(resume=True)  # a restarted office, a dead app-server, or an unloaded thread
                 return "queued"
             process, busy = self.process, self.turn_id is not None
         try:
@@ -267,11 +269,15 @@ class CodexSession:
         if not isinstance(exc, (CodexStartError, RpcError)):
             log.exception("codex session %s can't load its thread", self.session_id)
         self.transcript.error(why(exc))
+        session = self.store.get_session(self.session_id)
         with self._lock:
             self.loading = False
             self.pending.clear()
             if self.ending:
                 return  # the end posted meanwhile closes it
+            if session.status != "starting":  # a reload: say why and wait for the next message
+                self._idle()
+                return
             self.closed = True
         self.owner.finished(self, "failed")
         self._jobs.put(None)
@@ -450,6 +456,31 @@ class CodexSession:
         if process is not self.process or process.closing:
             return
         log.warning("codex app-server of session %s exited unexpectedly", self.session_id)
+        self._lost(process, "Codex stopped unexpectedly. Send a message to start it again.")
+
+    def _lost(self, process: CodexProcess, said: str | None) -> None:
+        """The app-server died, or Codex unloaded the thread: finish its turn as interrupted, expire its cards, and
+        close its group now; the next message reloads the thread. ``said`` is the error part, with the stderr tail."""
+        with self._lock:
+            self.process = None
+            turn, self.turn_id = self.turn_id, None
+            for question_id in list(self.requests):  # Codex waits on none of them any more
+                self.requests.pop(question_id)
+                self._expire(question_id)
+            self.by_request.clear()
+        tail = process.stderr_tail() if said else ""
+        # A dead leader leaves its group to whatever it started (command children, #57): kill it now, which also
+        # removes the record, so an end or idle_end that comes before any reload never finds them.
+        process.kill()
+        if turn is not None:
+            self.translator.turn_completed(turn, "interrupted", None)
+        if said:
+            self.transcript.error(said + (f"\n{tail}" if tail else ""))
+        with self._lock:
+            if self.ending:
+                self._post(self._close)
+            else:
+                self._idle()
 
     def _close(self) -> None:
         with self._lock:
