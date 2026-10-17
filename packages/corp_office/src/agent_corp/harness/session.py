@@ -226,8 +226,8 @@ class CodexSession:
             return
         self.transcript.abort()
 
-    def stop(self) -> None:
-        """Let the session's thread end, for a session restored only to be finished."""
+    def release(self) -> None:
+        """Let the session's thread end, for a session restored only to be finished (or not at all)."""
         with self._lock:
             self.closed = True
             self._jobs.put(None)

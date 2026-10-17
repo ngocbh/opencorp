@@ -114,15 +114,15 @@ class CodexSessions:
         live = CodexSession(self, session, author=self.opener(session))
         with self._lock:
             if self._closed:  # office stop came meanwhile
-                live.stop()
+                live.release()
                 return
             self._live[session.id] = live
         if session.status == "starting" or not session.harness_session_id:
             live.transcript.error("The office restarted before Codex started. Start a new chat.")
-            live.stop()
+            live.release()
             self.finished(live, "failed")
         elif session.status == "ending":
-            live.stop()
+            live.release()
             self.finished(live, "ended")
         else:
             if session.status == "busy" and not _ends_interrupted(self.store.list_messages(session.id)):
