@@ -188,3 +188,55 @@ test("a failed turn shows why", async () => {
     office.stop()
   }
 })
+
+test("Codex parts: a command with output, a file change as a diff, an MCP call, and who approved", async () => {
+  const office = createFakeOffice()
+  const s = office.newSession({ person: "minh", cwd: "/tmp/proj", harness: "codex" })
+  office.state.messages[s.id] = [
+    {
+      id: "M1",
+      session_id: s.id,
+      role: "assistant",
+      created_at: new Date().toISOString(),
+      parts: [
+        {
+          id: "p1",
+          type: "tool",
+          call_id: "c1",
+          tool: "codex.command",
+          state: "completed",
+          input: { command: "pytest -q", exit_code: 0, approval: { decision: "accept", by: "ngocbh" } },
+          output: "3 passed",
+        },
+        {
+          id: "p2",
+          type: "tool",
+          call_id: "f1",
+          tool: "codex.file_change",
+          state: "completed",
+          input: { changes: [{ path: "notes.md", kind: "add", diff: "hello\n" }] },
+          output: "",
+        },
+        {
+          id: "p3",
+          type: "tool",
+          call_id: "x1",
+          tool: "codex.mcp_tool_call",
+          state: "completed",
+          input: { server: "docs", tool: "search", arguments: { q: "launchd" } },
+          output: "3 hits",
+        },
+      ],
+    },
+  ] satisfies Message[]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    const f = await app.until((f) => f.includes("pytest -q") && f.includes("notes.md") && f.includes("docs/search"))
+    expect(f).toContain("3 passed")
+    expect(f).toContain("hello") // a new file's content, which Codex sends as its "diff"
+    expect(f).toContain("approved by @ngocbh")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
