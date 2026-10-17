@@ -101,7 +101,7 @@ class CodexSession:
         self.by_request: dict[str, str] = {}  # str(request id) -> question id
         self._turnless: tuple[CodexProcess, str] | None = None  # an app-server and its turnless requests' run id
         self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
-        self._idle_after: int | None = None  # idle_end in seconds, read once by the load from the pinned company
+        self._idle_after: int | None = None  # idle_end in seconds, read by each load from the pinned company
         self.ending = self.closed = self.stopped = False
         self._lock = threading.RLock()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -277,6 +277,8 @@ class CodexSession:
     def _load(self, resume: bool) -> None:
         try:
             idle_after = self.owner.idle_seconds(self.session_id)  # here, not under the lock: it reads the company
+            with self._lock:  # before the launch, so a reload that fails still ends after idle_end
+                self._idle_after = idle_after
             process = self.owner.launch(self)
             params = owner_load(self.cwd, self.owner.policy(self.session_id))
             # The office never reads past turns, so a resume needn't send them.
@@ -296,7 +298,7 @@ class CodexSession:
         if self.stopped:  # office stop came during the load: write nothing, leave nothing running
             process.kill()
             return
-        self.thread_id, self._idle_after = result["thread"]["id"], idle_after
+        self.thread_id = result["thread"]["id"]
         self.store.update_session(self.session_id, harness_session_id=self.thread_id, harness_model=result.get("model"))
         self._flush()
 
@@ -596,7 +598,7 @@ class CodexSession:
             return
         self._stop_timer()
         self.store.update_session(self.session_id, status="idle")
-        if self._idle_after is None:  # not loaded yet
+        if self._idle_after is None:  # not read yet: the first load reads it
             return
         timer = self.timer = threading.Timer(self._idle_after, self._post)
         timer.args = (self._idle_end, timer)  # the job knows its timer, so one a message stopped ends nothing

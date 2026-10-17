@@ -1,5 +1,7 @@
 """After an office restart: idle stays idle, busy becomes idle and interrupted, starting fails, cards go stale."""
 
+import threading
+
 from agent_corp.protocol import now
 from agent_corp.protocol.models import Message, TextPart
 from agent_corp.store import new_id
@@ -137,3 +139,19 @@ def test_a_busy_session_whose_newest_message_is_only_the_marker_keeps_one(make_c
     old.store.update_session(sid, status="busy")
     h = restarted(make_codex, old)
     assert texts(h, sid) == ["[interrupted]"] and status(h, sid) == "idle"
+
+
+def test_a_restored_session_whose_first_reload_fails_still_ends_after_idle_end(make_codex, fake_codex, workspace):
+    old = make_codex()
+    sid = start(old, workspace)
+    fake_codex.script(resume_error={"code": -32600, "message": "no rollout found"})
+    asked = threading.Event()
+
+    def idle_seconds(session_id):
+        asked.wait(5)  # the restore's own read waits until the message's reload is under way
+        return 1
+    h = restarted(make_codex, old, idle_seconds=idle_seconds)
+    assert h.prompt(sid, "hello") == "queued"
+    asked.set()
+    wait_for(lambda: errors(h, sid), what="the refused reload")
+    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end")
