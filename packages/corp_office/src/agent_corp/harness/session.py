@@ -16,7 +16,7 @@ from agent_corp.harness.codex import CodexProcess, CodexStartError, owner_load
 from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.translate import TURNLESS, Card, Translator, Unserved
 from agent_corp.protocol.models import Session
-from agent_corp.store import InvalidTransition, NotFound, new_id
+from agent_corp.store import InvalidTransition, NotFound, Store, new_id
 
 if TYPE_CHECKING:
     from agent_corp.harness.sessions import CodexSessions
@@ -49,6 +49,20 @@ def why(exc: Exception) -> str:
     return "Codex couldn't start; see the office log."
 
 
+_USAGE = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+
+def usage_base(store: Store, session: Session) -> dict[str, int]:
+    """The thread's token counts before ``session`` began: every earlier stretch's own counts, summed."""
+    base = dict.fromkeys(_USAGE, 0)
+    parent = store.get_session(session.parent_session_id) if session.parent_session_id else None
+    while parent is not None:
+        for key, value in (parent.harness_usage.model_dump() if parent.harness_usage else {}).items():
+            base[key] += value
+        parent = store.get_session(parent.parent_session_id) if parent.parent_session_id else None
+    return base
+
+
 def _input(text: str) -> list[dict[str, Any]]:
     return [{"type": "text", "text": text, "text_elements": []}]
 
@@ -74,6 +88,7 @@ class CodexSession:
         self.owner, self.store = owner, owner.store
         self.session_id, self.cwd, self.thread_id = session.id, session.cwd, session.harness_session_id
         self.author = author
+        self.base = usage_base(self.store, session)  # the thread's token counts before this stretch
         self.transcript = Transcript(self.store, session.id, owner.office.bus.publish_live)
         self.translator = Translator(self.transcript, session.cwd)
         self.process: CodexProcess | None = None
@@ -390,10 +405,19 @@ class CodexSession:
                     self._idle()
         elif method == "serverRequest/resolved":
             self._resolved(params["requestId"])
+        elif method == "thread/tokenUsage/updated":
+            self._usage(params["tokenUsage"]["total"])
         elif method == "thread/closed" and self.process is not None:
             self._lost(self.process, None)
         else:
             log.debug("codex session %s: ignored %s", self.session_id, method)
+
+    def _usage(self, total: dict[str, Any]) -> None:
+        # Codex counts the whole thread; a continued session keeps only its own stretch's tokens.
+        got = {"input_tokens": total["inputTokens"], "cached_input_tokens": total["cachedInputTokens"],
+               "output_tokens": total["outputTokens"]}
+        self.store.update_session(self.session_id,
+                                  harness_usage={k: max(0, v - self.base[k]) for k, v in got.items()})
 
     def _request(self, request_id: Any, method: str, params: dict[str, Any]) -> None:
         """A server request: a card the owner answers, or a JSON-RPC error for a method the office doesn't serve."""

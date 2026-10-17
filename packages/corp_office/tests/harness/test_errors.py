@@ -3,11 +3,13 @@
 import threading
 
 from agent_corp.harness.rpc import RpcError
+from agent_corp.harness.session import usage_base
 from agent_corp.harness.sessions import CodexSessions
 from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
 from agent_corp.worker.spawn import worker_env
 from tests.harness.conftest import CODEX_PERSON, errors, requests_valid, start, status, texts, wait_for
+from tests.store.conftest import session
 
 WRITER_LOCK = {"code": -32600, "message": "thread 01a1456b-695d-7440-bc59-6b401d4bb3ea already has an active writer"}
 """What Codex answered the spike's thread/resume of a thread another app-server had loaded."""
@@ -160,3 +162,48 @@ def test_a_thread_open_elsewhere_says_so_and_stays_idle(harness, fake_codex, wor
     harness.prompt(sid, "again")
     wait_for(lambda: any("open in another Codex window" in e for e in errors(harness, sid)), what="the lock message")
     assert status(harness, sid) == "idle" and harness.store.list_workers() == []
+
+
+def test_token_counts_are_kept_on_the_session_and_never_priced(harness, fake_codex, workspace):
+    fake_codex.script([[fc.token_usage(1200, 800, 90)]])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "go")
+    wait_for(lambda: harness.store.get_session(sid).harness_usage is not None, what="usage")
+    s = harness.store.get_session(sid)
+    assert s.harness_usage.model_dump() == {"input_tokens": 1200, "cached_input_tokens": 800, "output_tokens": 90}
+    assert s.cost == 0 and harness.store.list_usage(sid) == []
+
+
+def test_a_continued_session_counts_only_its_own_stretch(harness, fake_codex, workspace):
+    fake_codex.script([[fc.token_usage(2000, 1000, 150)]])
+    first = start(harness, workspace)
+    harness.store.update_session(first, harness_usage={"input_tokens": 1200, "cached_input_tokens": 800,
+                                                       "output_tokens": 90})
+    harness.end(first)
+    wait_for(lambda: status(harness, first) == "ended", what="ended")
+    s = harness.store.get_session(first)
+    # A continued stretch: a new row on the same thread, with the first as its parent.
+    second = harness.store.create_session(session(person="minh", harness="codex", cwd=s.cwd, status="idle",
+                                                  harness_session_id="thr_1", parent_session_id=first,
+                                                  repo_commit=s.repo_commit))
+    harness.codex.start(second, resume=True)
+    wait_for(lambda: status(harness, second.id) == "idle", what="resumed")
+    harness.prompt(second.id, "go")
+    wait_for(lambda: harness.store.get_session(second.id).harness_usage is not None, what="usage")
+    assert harness.store.get_session(second.id).harness_usage.model_dump() == {
+        "input_tokens": 800, "cached_input_tokens": 200, "output_tokens": 60}
+
+
+def test_the_usage_before_a_stretch_sums_every_earlier_stretch(harness):
+    used = [{"input_tokens": 100, "cached_input_tokens": 10, "output_tokens": 1},
+            None,  # a stretch Codex reported nothing for
+            {"input_tokens": 200, "cached_input_tokens": 20, "output_tokens": 2}]
+    parent = None
+    for usage in used:
+        parent = harness.store.create_session(session(harness="codex", harness_session_id="thr_1",
+                                                      parent_session_id=parent and parent.id, harness_usage=usage))
+    last = harness.store.create_session(session(harness="codex", harness_session_id="thr_1",
+                                                parent_session_id=parent.id))
+    assert usage_base(harness.store, last) == {"input_tokens": 300, "cached_input_tokens": 30, "output_tokens": 3}
+    assert usage_base(harness.store, session(harness="codex")) == {"input_tokens": 0, "cached_input_tokens": 0,
+                                                                   "output_tokens": 0}
