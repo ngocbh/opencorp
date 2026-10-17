@@ -321,7 +321,8 @@ test("Esc on a Codex card freezes the transcript, as Esc in the prompt does", as
     // What Codex streams before it stops is hidden; its interrupted marker shows.
     const part = { ...reply.parts[0], text: "Looking at it" + INTERRUPTED_TEXT }
     office.live({ type: "part.updated", session_id: s.id, data: { message_id: reply.id, part } as never })
-    await app.until((f) => f.includes("[interrupted]"))
+    // The marker shows as "[interrupted]" or, styled, as "interrupted".
+    await app.until((f) => f.includes("interrupted"))
     expect(app.frame()).not.toContain("at it")
   } finally {
     await app.stop()
