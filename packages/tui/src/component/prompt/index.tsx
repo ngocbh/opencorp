@@ -693,6 +693,7 @@ export function Prompt(props: PromptProps) {
 
     let sessionID = props.sessionID
     let undo: (() => void) | void = undefined
+    let continuing = false
     try {
       if (!sessionID) {
         // A Codex chat runs on Codex's own model, so it takes no model pick; composer is the office's default.
@@ -707,7 +708,9 @@ export function Prompt(props: PromptProps) {
         await office.syncSession(sessionID)
       } else if (continues()) {
         // An ended Codex session takes no message; its thread goes on in a new session, which gets it instead.
+        continuing = true
         const next = await office.client.sessions.continue(sessionID)
+        continuing = false
         sessionID = next.id
         await office.syncSession(sessionID)
       }
@@ -715,7 +718,12 @@ export function Prompt(props: PromptProps) {
       await office.client.sessions.prompt(sessionID, { text })
     } catch (error) {
       undo?.()
-      showError(sessionID ? "Failed to send prompt" : "Creating a session failed")(error)
+      const title = continuing
+        ? "Couldn't continue this session"
+        : sessionID
+          ? "Failed to send prompt"
+          : "Creating a session failed"
+      showError(title)(error)
       // A new session opens even if its prompt failed; the unsent text follows it there.
       if (sessionID && sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
       return true

@@ -30,3 +30,25 @@ test("typing in an ended Codex session continues it in a new session on the same
     office.stop()
   }
 })
+
+test("a refused continue says so, with the office's reason, and keeps the message", async () => {
+  const office = createFakeOffice()
+  const codex = { person: "minh", cwd: "/tmp/proj", harness: "codex" as const, harness_session_id: "thr_1" }
+  const old = office.newSession({ ...codex, status: "ended" })
+  const holder = office.newSession({ ...codex, status: "idle", parent_session_id: old.id })
+  const app = await bootFrame(createStub(office), { sessionID: old.id })
+  try {
+    await app.until((f) => f.includes("@minh") && f.includes("ended"))
+    await app.input.typeText("pick up where we left off")
+    app.input.pressEnter()
+    const f = await app.until((f) => f.includes("Couldn't continue this session"))
+    // The toast wraps the office's reason, so its words and the holder's id are found apart.
+    expect(f).toContain("this Codex thread is open in session")
+    expect(f).toContain(holder.id)
+    expect(f).toContain("pick up where we left off")
+    expect(office.requests.some((r) => r.path.endsWith("/prompt"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
