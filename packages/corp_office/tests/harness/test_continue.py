@@ -59,6 +59,26 @@ def test_only_an_ended_codex_session_with_no_live_continuation_continues(harness
     assert e.value.status == {"live": 409, "composer": 422, "missing": 404, "continued": 409}[case]
 
 
+def test_continuing_an_older_stretch_counts_only_its_own_tokens(harness, fake_codex, workspace):
+    fake_codex.script([[*fc.agent_message("m1", "A"), fc.token_usage(1000, 0, 10)],
+                       [*fc.agent_message("m2", "B"), fc.token_usage(3000, 0, 30)],
+                       [*fc.agent_message("m3", "C"), fc.token_usage(3500, 0, 35)]])
+    a = ended(harness, workspace)
+    for prompt in ("b", "c"):  # both continue a, the first stretch; the second comes after b on the thread
+        s = harness.continue_session(a, by="ngocbh")
+        wait_for(lambda: status(harness, s.id) == "idle", what="the resume")
+        harness.prompt(s.id, prompt)
+        wait_for(lambda: harness.store.get_session(s.id).harness_usage is not None and status(harness, s.id) == "idle",
+                 what="the stretch")
+        harness.end(s.id)
+        wait_for(lambda: status(harness, s.id) == "ended", what="ended")
+        if prompt == "b":
+            b = s.id
+    assert harness.store.get_session(s.id).parent_session_id == b  # the thread's chain stays one line
+    assert harness.store.get_session(s.id).harness_usage.model_dump() == {
+        "input_tokens": 500, "cached_input_tokens": 0, "output_tokens": 5}
+
+
 def test_a_resume_codex_refuses_fails_the_new_row_and_leaves_the_old_one(harness, fake_codex, workspace):
     fake_codex.script([fc.agent_message("m1", "First")])
     old = ended(harness, workspace)

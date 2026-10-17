@@ -264,12 +264,16 @@ class Harness:
         if old.status in LIVE:
             raise HarnessError(409, "live", f"session {session_id} is still open")
         with self._continuing:  # so two continuations can't both find the thread free
-            holder = next((s for s in self.store.list_sessions(status=LIVE, limit=None)
-                           if s.harness == "codex" and s.harness_session_id == old.harness_session_id), None)
+            thread = [s for s in self.store.list_sessions(limit=None)
+                      if s.harness == "codex" and s.harness_session_id == old.harness_session_id]
+            holder = next((s for s in thread if s.status in LIVE), None)
             if holder is not None:
                 raise HarnessError(409, "live", f"this Codex thread is open in session {holder.id}")
+            # The newest stretch on the thread is the parent, whichever one was asked for: the chain stays one line,
+            # so each stretch's token counts start after every earlier one's.
+            newest = max(thread, key=lambda s: (s.created_at, s.id))
             session = self._open(old.person, old.cwd, "codex", opened_by=by, connection=None, model=None,
-                                 harness_session_id=old.harness_session_id, parent_session_id=old.id)
+                                 harness_session_id=old.harness_session_id, parent_session_id=newest.id)
         try:
             self.codex.start(session, resume=True)
         except Exception as exc:
