@@ -127,8 +127,20 @@ export function Session() {
   const { theme } = useTheme()
   const promptRef = usePromptRef()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === route.sessionID))
-  const question = createMemo(() => cardQuestions(office.state, route.sessionID)[0])
+  const cards = createMemo(() => cardQuestions(office.state, route.sessionID))
+  const question = createMemo(() => cards()[0])
+  // A Codex session shows every open card above a prompt that stays; the first card or the prompt has the keys.
   const codex = createMemo(() => session()?.harness === "codex")
+  const [focus, setFocus] = createSignal<"card" | "prompt">("card")
+  const cardFocused = createMemo(() => codex() && cards().length > 0 && focus() === "card")
+  // Cards opening when none were open take the keys, unless the prompt holds a draft: keys typed for the prompt must
+  // never land on a card, where a digit or Enter picks an option.
+  createEffect(
+    on(
+      () => cards().length > 0,
+      (open) => open && setFocus(promptRef.current?.current.input ? "prompt" : "card"),
+    ),
+  )
   // The card whose side chat is showing; the view shows the side session in place of the chat.
   const [sideOf, setSideOf] = createSignal<string>()
   const sideQuestion = createMemo(() => {
@@ -573,23 +585,23 @@ export function Session() {
                 </scrollbox>
                 <box flexShrink={0}>
                   <Show
-                    when={question()?.id}
-                    keyed
+                    when={codex()}
                     fallback={
-                      <Prompt
-                        visible={true}
-                        ref={bind}
-                        onSend={lift}
-                        onSubmit={() => toBottom()}
-                        onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
-                        sessionID={route.sessionID}
-                      />
-                    }
-                  >
-                    {(_id) => (
                       <Show
-                        when={codex()}
+                        when={question()?.id}
+                        keyed
                         fallback={
+                          <Prompt
+                            visible={true}
+                            ref={bind}
+                            onSend={lift}
+                            onSubmit={() => toBottom()}
+                            onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                            sessionID={route.sessionID}
+                          />
+                        }
+                      >
+                        {(_id) => (
                           <>
                             <QuestionCard
                               question={question()}
@@ -612,11 +624,27 @@ export function Session() {
                               )}
                             </Show>
                           </>
-                        }
-                      >
-                        <HarnessCard question={question()!} />
+                        )}
                       </Show>
-                    )}
+                    }
+                  >
+                    {/* Keyed by id, so a card whose question is re-read (a reconnect) keeps its state. */}
+                    <For each={cards().map((q) => q.id)}>
+                      {(id, i) => (
+                        <Show when={office.state.questions[id]}>
+                          {(q) => <HarnessCard question={q()} active={i() === 0 && cardFocused()} waiting={i() > 0} />}
+                        </Show>
+                      )}
+                    </For>
+                    <Prompt
+                      visible={true}
+                      inactive={cardFocused()}
+                      ref={bind}
+                      onSend={lift}
+                      onSubmit={() => toBottom()}
+                      onInterrupt={() => setFrozen(freeze(messages(), frozen()))}
+                      sessionID={route.sessionID}
+                    />
                   </Show>
                 </box>
               </>
