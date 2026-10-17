@@ -29,7 +29,7 @@ def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX
     a newest message longer than ``max_chars`` keeps its end. ``header`` comes first, and its length counts against
     ``max_chars``, so the cut never drops it.
     """
-    budget = max_chars - (len(header) + 2 if header else 0)
+    budget = max(0, max_chars - (len(header) + 2 if header else 0))
     blocks = []
     for message in messages:
         lines = [_line(p) for p in message.parts if p.type != "file"]
@@ -41,7 +41,7 @@ def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX
         size += len(block) + 2
         if size - 2 > budget:
             if not kept:
-                kept.append(_CUT_START + block[-budget:])
+                kept.append(_CUT_START + (block[-budget:] if budget else ""))  # [-0:] would keep it all
             if len(kept) < len(blocks):
                 kept.append(_CUT)
             break

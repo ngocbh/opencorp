@@ -134,6 +134,13 @@ def test_the_header_survives_the_cut_and_counts_against_the_budget():
     assert len(text) <= len(header) + 80 + len("\n\n[earlier messages left out]")
 
 
+def test_a_header_longer_than_the_budget_leaves_no_message_text():
+    header = "h" * 50
+    text = transcript_text([_message("user", _text("fix it")), _message("assistant", _text("x" * 100))], max_chars=10,
+                           header=header)
+    assert text == header + "\n\n[earlier messages left out]\n\n[the start of this message left out]"
+
+
 def test_confirming_follow_ups_makes_one_work_item_each_once(store):
     s = store.create_session(session(status="ended", work_item_id=store.create_work_item(work_item()).id))
     store.save_debrief(ready_debrief(s, OUTPUT))
