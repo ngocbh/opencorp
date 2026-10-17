@@ -56,12 +56,39 @@ async def until(predicate, timeout=30):
     (f"/sessions/{ULID}/steer", {"text": "hi"}),
     (f"/sessions/{ULID}/interrupt", None),
     (f"/sessions/{ULID}/end", None),
+    (f"/sessions/{ULID}/continue", None),
     (f"/sessions/{ULID}/cost-cap", {"cost_cap_usd": 10}),
     (f"/sessions/{ULID}/model", {"connection": "office", "model": "stub"}),
 ])
 async def test_session_actions_need_a_harness(client, path, body):
     r = await client.post(path, json=body)
     assert r.status_code == 501 and r.json()["error"] == "not_implemented"
+
+
+async def test_continue_answers_with_the_new_session_opened_by_the_caller(client, office, company):
+    calls = []
+
+    class FakeHarness:
+        def continue_session(self, session_id, *, by=None):
+            calls.append((session_id, by))
+            return session(harness="codex", parent_session_id=session_id, opened_by=by)
+
+    office.extras["harness"] = FakeHarness()
+    add_human(company, "ava")
+    token = new_token()
+    give_device(company, "ava", "pc", token)
+    r = await client.post(f"/sessions/{ULID}/continue", headers=bearer(token))
+    assert r.status_code == 200 and r.json()["parent_session_id"] == ULID and calls == [(ULID, "ava")]
+
+
+async def test_a_refused_continue_is_its_api_error(client, office):
+    class FakeHarness:
+        def continue_session(self, session_id, *, by=None):
+            raise HarnessError(409, "live", f"session {session_id} is still open")
+
+    office.extras["harness"] = FakeHarness()
+    r = await client.post(f"/sessions/{ULID}/continue")
+    assert (r.status_code, r.json()["error"]) == (409, "live")
 
 
 async def test_list_sessions_filters_and_limits(client, office):

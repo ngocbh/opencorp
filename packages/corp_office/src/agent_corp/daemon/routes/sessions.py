@@ -104,6 +104,12 @@ async def end(request: Request) -> JSONResponse:
     return ok(Ack(ok=True))
 
 
+async def continue_session(request: Request) -> JSONResponse:
+    """Continue an ended Codex session on its thread, as a new session opened by the request's person."""
+    return ok(await harness_call(harness(request).continue_session, request.path_params["id"],
+                                 by=acting_person(request)))
+
+
 async def cost_cap(request: Request) -> JSONResponse:
     """Set the session's cost cap; it must be above the cost so far. Held turns go on."""
     body = await parse(request, CostCapRequest)
@@ -125,6 +131,7 @@ ROUTES = [
     Route("/sessions/{id}/steer", steer, methods=["POST"]),
     Route("/sessions/{id}/interrupt", interrupt, methods=["POST"]),
     Route("/sessions/{id}/end", end, methods=["POST"]),
+    Route("/sessions/{id}/continue", continue_session, methods=["POST"]),
     Route("/sessions/{id}/cost-cap", cost_cap, methods=["POST"]),
     Route("/sessions/{id}/model", set_model, methods=["POST"]),
 ]

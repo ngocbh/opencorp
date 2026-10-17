@@ -133,6 +133,7 @@ TABLE = [
     ("POST", f"/sessions/{ULID}/steer", {"text": "hi"}),
     ("POST", f"/sessions/{ULID}/interrupt", None),
     ("POST", f"/sessions/{ULID}/end", None),
+    ("POST", f"/sessions/{ULID}/continue", None),
     ("POST", f"/sessions/{ULID}/cost-cap", {"cost_cap_usd": 10}),
     ("POST", f"/sessions/{ULID}/model", {"connection": "office", "model": "stub"}),
     ("GET", f"/work-items/{ULID}", None),
