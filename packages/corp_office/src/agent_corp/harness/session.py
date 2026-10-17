@@ -232,11 +232,11 @@ class CodexSession:
             self.closed = True
             self._jobs.put(None)
 
-    def idle_after_restore(self) -> None:
-        """Go idle with no app-server, as a restarted office finds the session: its next message reloads the thread,
-        and ``idle_end`` (read on the session's thread) ends it if none comes."""
+    def idle_after_restore(self, status: str) -> None:
+        """Go idle with no app-server, as a restarted office finds the session (stored as ``status``): its next
+        message reloads the thread, and ``idle_end`` (read on the session's thread) ends it if none comes."""
         with self._lock:
-            self._idle()
+            self._idle(write=status != "idle")
         self._post(self._idle_end_after_restore)
 
     def launching_as(self, process: CodexProcess) -> bool:
@@ -327,7 +327,7 @@ class CodexSession:
             if self._idle_after is not None or self.loading or self.process is not None or self.turn_id is not None:
                 return  # a message came first: its load reads idle_end
             self._idle_after = idle_after
-            self._idle()
+            self._idle(write=False)  # stored idle already: this only arms the timer
 
     def _flush(self) -> None:
         """Send what waited for the load, in order, then go idle if nothing was sent. ``loading`` stays set until
@@ -604,13 +604,14 @@ class CodexSession:
         self.owner.finished(self, "ended")
         self._jobs.put(None)  # nothing more to do: let the session's thread end after this job
 
-    def _idle(self) -> None:
-        """(Under the lock.) Go idle; ``idle_end`` later, the session ends. Nothing once the office stops or the
-        session is ending."""
+    def _idle(self, *, write: bool = True) -> None:
+        """(Under the lock.) Go idle (``write`` stores the status); ``idle_end`` later, the session ends. Nothing once
+        the office stops or the session is ending."""
         if self.stopped or self.ending or self.closed:
             return
         self._stop_timer()
-        self.store.update_session(self.session_id, status="idle")
+        if write:
+            self.store.update_session(self.session_id, status="idle")
         if self._idle_after is None:  # not read yet: the first load reads it
             return
         timer = self.timer = threading.Timer(self._idle_after, self._post)

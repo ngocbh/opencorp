@@ -127,7 +127,7 @@ class CodexSessions:
         else:
             if session.status == "busy" and not _ends_interrupted(self.store.list_messages(session.id)):
                 live.translator.turn_completed("restored", "interrupted", None)  # unless office stop stored it
-            live.idle_after_restore()
+            live.idle_after_restore(session.status)
 
     # --- calls from CodexSession -----------------------------------------------------
 

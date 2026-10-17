@@ -182,3 +182,14 @@ def test_a_restore_after_office_stop_restores_nothing(make_codex, fake_codex, wo
     h.codex.restore()
     assert h.codex._live == {} and status(h, sid) == "busy"
     assert [q.status for q in h.store.list_questions(session_id=sid)] == ["open"]
+
+
+def test_restoring_an_idle_session_leaves_its_row_alone(make_codex, fake_codex, workspace):
+    old = make_codex()
+    sid = start(old, workspace)
+    old.close_all()
+    before = old.store.get_session(sid)
+    h = make_codex()
+    h.restore()
+    wait_for(lambda: h.codex._live[sid].timer, what="the idle timer")
+    assert h.store.get_session(sid) == before  # its updated_at too: a restart doesn't re-sort the sessions
