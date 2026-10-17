@@ -3,6 +3,7 @@ import type { AnswerRequest, Question } from "@agent-corp/protocol"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
+import { useCommandShortcut } from "../../keymap"
 import { OfficeError } from "../../office/errors"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
@@ -22,6 +23,7 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
   const tuiConfig = useTuiConfig()
   const model = createMemo(() => cardModel(props.question))
   const title = () => props.question.title ?? props.question.question
+  const focusKey = useCommandShortcut("session.card.focus")
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
 
@@ -48,7 +50,7 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
       fallback={
         <box paddingLeft={2}>
           <text fg={theme.textMuted} wrapMode="none">
-            {props.waiting ? `Codex asks: ${title()} (waiting)` : `Codex asks: ${title()}`}
+            {props.waiting ? `Codex asks: ${title()} (waiting)` : `Codex asks: ${title()} · ${focusKey()} to answer`}
           </text>
         </box>
       }
@@ -58,6 +60,7 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
         pages={model()?.pages ?? []}
         // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
         bindings={leaveBindings(tuiConfig.keybinds.get("app.exit"))}
+        hints={[{ key: focusKey(), label: "prompt" }]}
         onSubmit={(answers) => {
           const m = model()
           const req = m && buildAnswer(m, answers)

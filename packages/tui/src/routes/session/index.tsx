@@ -488,6 +488,21 @@ export function Session() {
     commands: sessionCommands(),
   }))
 
+  // No mode: it must work from a card (question mode) and from the prompt (base mode).
+  useBindings(() => ({
+    commands: [
+      {
+        name: "session.card.focus",
+        title: "Move between the open card and the prompt",
+        category: "Session",
+        hidden: true,
+        enabled: codex() && cards().length > 0 && dialog.stack.length === 0,
+        run: () => setFocus((f) => (f === "card" ? "prompt" : "card")),
+      },
+    ],
+    bindings: tuiConfig.keybinds.gather("session.card", ["session.card.focus"]),
+  }))
+
   useBindings(() => ({
     bindings: tuiConfig.keybinds.gather("session.global", sessionGlobalBindingCommands),
   }))

@@ -138,3 +138,56 @@ test("a card that opens while the prompt holds a draft leaves the keys with the 
     office.stop()
   }
 })
+
+test("ctrl+t moves to the prompt, where a message steers, leaves the cards open and never reaches a secret", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const q = office.addQuestion(secret(s.id, "3"))
+    await app.until((f) => f.includes("Paste the deploy token"))
+    app.input.pressKey("t", { ctrl: true })
+    // On the prompt the card is one line, with the key back to it.
+    await app.until((f) => f.includes("Codex asks: Token? · ctrl+t to answer") && !f.includes("Paste the deploy token"))
+    await app.input.typeText("also add b")
+    app.input.pressEnter()
+    await app.until(() => sent(office, `/sessions/${s.id}/prompt`).length === 1)
+    expect(sent(office, `/sessions/${s.id}/prompt`)).toEqual([{ text: "also add b" }])
+    expect(office.state.questions[q.id].status).toBe("open")
+    expect(sent(office, `/questions/${q.id}/answer`)).toEqual([])
+    // Back on the card, the secret holds only what is typed there.
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("Paste the deploy token"))
+    await app.input.typeText(SECRET)
+    await app.until((f) => f.includes("•".repeat(28)) && !f.includes("•".repeat(29)))
+    app.input.pressEnter()
+    await app.until(() => office.state.questions[q.id].status !== "open")
+    expect(sent(office, `/questions/${q.id}/answer`)).toEqual([{ answer: { Token: SECRET }, answer_kind: "text" }])
+    expect(sent(office, `/sessions/${s.id}/prompt`)).toEqual([{ text: "also add b" }])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("from the prompt under an open card, Esc clears a draft, then interrupts the turn", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressKey("t", { ctrl: true })
+    await app.until((f) => f.includes("ctrl+t to answer"))
+    await app.input.typeText("draft")
+    await app.until((f) => f.includes("draft"))
+    app.input.pressEscape()
+    await app.until((f) => !f.includes("draft"))
+    expect(sent(office, `/sessions/${s.id}/interrupt`)).toEqual([])
+    app.input.pressEscape()
+    await app.until(() => sent(office, `/sessions/${s.id}/interrupt`).length === 1, 2000)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
