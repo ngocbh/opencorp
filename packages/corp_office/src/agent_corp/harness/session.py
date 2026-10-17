@@ -210,6 +210,19 @@ class CodexSession:
             return
         self.transcript.abort()
 
+    def stop(self) -> None:
+        """Let the session's thread end, for a session restored only to be finished."""
+        with self._lock:
+            self.closed = True
+            self._jobs.put(None)
+
+    def idle_after_restore(self) -> None:
+        """Go idle with no app-server, as a restarted office finds the session: its next message reloads the thread,
+        and ``idle_end`` (read on the session's thread) ends it if none comes."""
+        with self._lock:
+            self._idle()
+        self._post(self._idle_end_after_restore)
+
     def launching_as(self, process: CodexProcess) -> bool:
         """Record ``process`` as the app-server being started, so office stop kills it; False once stopped."""
         with self._lock:
@@ -289,6 +302,14 @@ class CodexSession:
             self.closed = True
         self.owner.finished(self, "failed")
         self._jobs.put(None)
+
+    def _idle_end_after_restore(self) -> None:
+        idle_after = self.owner.idle_seconds(self.session_id)  # not under the lock: it reads the company
+        with self._lock:
+            if self._idle_after is not None or self.loading or self.process is not None or self.turn_id is not None:
+                return  # a message came first: its load reads idle_end
+            self._idle_after = idle_after
+            self._idle()
 
     def _flush(self) -> None:
         """Send what waited for the load, in order, then go idle if nothing was sent. ``loading`` stays set until
