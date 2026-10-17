@@ -21,7 +21,7 @@ from agent_corp.harness.codex import CodexMissing, codex_command
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
 from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
-from agent_corp.worker.spawn import INHERITED_ENV
+from agent_corp.worker.spawn import worker_env
 
 _START_ERROR = "agent-corp office: "
 """How the daemon prefixes the one line it prints when it can't start."""
@@ -281,8 +281,7 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
     found.append(Check("sandbox", "fail", problem) if problem else Check("sandbox", "ok", "sandboxed commands run"))
     # run.env is the environment an office set up or started from this shell gets, which can differ from the running
     # daemon's (a launchd or systemd office keeps the one `ac onboard` wrote into its service file).
-    found.append(codex({k: v for k, v in run.env.items() if k in INHERITED_ENV or k.startswith("LC_")}, run.env,
-                       service.recorded_mode(run)))
+    found.append(codex(worker_env(run.env), run.env, service.recorded_mode(run)))
     return found
 
 
