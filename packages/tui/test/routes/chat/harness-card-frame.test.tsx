@@ -345,3 +345,24 @@ test("Esc on a Codex card while no turn runs does nothing", async () => {
     office.stop()
   }
 })
+
+test("an answer that finds the card already stale says Codex stopped waiting, not that it was answered", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const a = office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    await app.until((f) => f.includes("$ touch a"))
+    // The turn ends while the answer is on its way, so the office answers 409.
+    const release = office.hold("POST /questions/:id/answer")
+    app.input.pressKey("1")
+    await app.until(() => sent(office, `/questions/${a.id}/answer`).length === 1)
+    office.expire(a.id)
+    release()
+    const f = await app.until((f) => f.includes("Codex stopped waiting") && f.includes("answer wasn't used"))
+    expect(f).not.toContain("already answered")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

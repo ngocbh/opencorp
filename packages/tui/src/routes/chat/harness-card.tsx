@@ -41,6 +41,11 @@ export function HarnessCard(props: {
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
 
+  /** Says the answer never reached Codex, which stopped waiting for the card. */
+  function unused() {
+    toast.show({ message: "Codex stopped waiting; your answer wasn't used", variant: "warning", duration: 5000 })
+  }
+
   function send(req: AnswerRequest) {
     if (sending) return
     sending = true
@@ -49,15 +54,18 @@ export function HarnessCard(props: {
       .answer(id, req)
       .then((q) => {
         // The card closes on any status but open; a stale one means Codex never got the answer.
-        if (q.status === "stale")
-          toast.show({ message: "Codex stopped waiting; your answer wasn't used", variant: "warning", duration: 5000 })
+        if (q.status === "stale") unused()
         office.putQuestion(q)
       })
       .catch((error) => {
-        if (error instanceof OfficeError && error.status === 409) {
-          toast.show({ message: "This card was already answered", variant: "warning" })
-          return office.refreshQuestion(id).catch(() => {})
-        }
+        if (error instanceof OfficeError && error.status === 409)
+          return office
+            .refreshQuestion(id)
+            .catch(() => {})
+            .then(() => {
+              if (office.state.questions[id]?.status === "stale") return unused()
+              toast.show({ message: "This card was already answered", variant: "warning" })
+            })
         toast.show({ title: "Answering failed", message: errorMessage(error), variant: "error" })
       })
       .finally(() => (sending = false))
