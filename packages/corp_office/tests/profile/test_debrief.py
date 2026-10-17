@@ -76,6 +76,23 @@ def test_codex_new_deleted_and_moved_files_say_so():
         "codex: edited new.md (added, +2/-0), old.md (deleted, +0/-1), a.py → b.py (+0/-0)")
 
 
+def test_a_multi_line_codex_command_reads_as_one_line_with_its_decision():
+    command = "cat > a.md <<'EOF'\none\ntwo\nEOF"
+    part = _codex(COMMAND, command=command, exit_code=0, approval={"decision": "accept", "by": "ngocbh"})
+    assert transcript_text([_message("assistant", part)], assistant="codex") == (
+        "codex: $ cat > a.md <<'EOF' one two EOF (exit 0) [accept by @ngocbh]")
+
+
+def test_a_codex_decision_with_no_one_named_reads_without_a_name():
+    part = _codex(COMMAND, command="ls", exit_code=0, approval={"decision": "accept", "by": None})
+    assert transcript_text([_message("assistant", part)], assistant="codex") == "codex: $ ls (exit 0) [accept]"
+
+
+def test_an_unknown_codex_tool_reads_as_called():
+    part = _codex("codex.web_search", query="sqlite")
+    assert transcript_text([_message("assistant", part)], assistant="codex") == "codex: [called codex.web_search]"
+
+
 def test_a_long_codex_command_summary_is_capped():
     line = transcript_text([_message("assistant", _codex(COMMAND, command="x" * 1000, exit_code=0))])
     assert len(line) < 400 and line.endswith("…")

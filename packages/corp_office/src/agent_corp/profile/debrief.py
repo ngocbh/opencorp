@@ -3,7 +3,7 @@
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-from agent_corp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, change_counts
+from agent_corp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, REQUEST, change_counts
 from agent_corp.protocol import now
 from agent_corp.protocol.models import Debrief, FollowUp, Message, Session, WorkItem
 from agent_corp.store import Store, new_id
@@ -71,17 +71,22 @@ def _codex_line(part: Any) -> str:
     or what Codex asked; then the decision on it and who made it."""
     i = part.input
     if part.tool == COMMAND:
-        line = f"$ {i.get('command')}" + (f" (exit {i['exit_code']})" if i.get("exit_code") is not None else "")
+        command = " ".join(str(i.get("command")).splitlines())  # a heredoc stays on its summary's one line
+        line = f"$ {command}" + (f" (exit {i['exit_code']})" if i.get("exit_code") is not None else "")
     elif part.tool == FILE_CHANGE:
         line = "edited " + ", ".join(_change(c) for c in i.get("changes", []))
     elif part.tool == MCP_TOOL:
         line = f"[mcp {i.get('server')}/{i.get('tool')}]"
-    else:
+    elif part.tool == REQUEST:
         line = f"[asked: {i.get('kind')}: {i.get('summary')}]"
+    else:
+        return f"[called {part.tool}]"
     if len(line) > SUMMARY_MAX_CHARS:
         line = line[:SUMMARY_MAX_CHARS - 1] + "…"
     approval = i.get("approval")
-    return f"{line} [{approval['decision']} by @{approval['by']}]" if approval else line
+    if not approval:
+        return line
+    return f"{line} [{approval['decision']}" + (f" by @{approval['by']}]" if approval.get("by") else "]")
 
 
 def _change(change: Mapping[str, Any]) -> str:
