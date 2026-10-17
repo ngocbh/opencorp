@@ -229,3 +229,40 @@ test("Esc in a secret box with text clears it, and only then interrupts", async 
     office.stop()
   }
 })
+
+test("an answer Codex no longer waits for closes the card and says the answer wasn't used", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const a = office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    office.staleOnAnswer.add(a.id)
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressKey("1")
+    // The toast may wrap, so look for its two halves.
+    await app.until(
+      (f) => f.includes("Codex stopped waiting") && f.includes("answer wasn't used") && !f.includes("$ touch a"),
+    )
+    expect(office.state.questions[a.id].status).toBe("stale")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("an answer Codex takes closes the card without a toast", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    const a = office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressKey("1")
+    const f = await app.until((f) => !f.includes("$ touch a") && f.includes("@minh · Software engineer"))
+    expect(office.state.questions[a.id].status).toBe("consumed")
+    expect(f).not.toContain("Codex stopped waiting")
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

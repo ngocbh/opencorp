@@ -34,7 +34,12 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
     const id = props.question.id
     office.client.questions
       .answer(id, req)
-      .then((q) => office.putQuestion(q))
+      .then((q) => {
+        // The card closes on any status but open; a stale one means Codex never got the answer.
+        if (q.status === "stale")
+          toast.show({ message: "Codex stopped waiting; your answer wasn't used", variant: "warning", duration: 5000 })
+        office.putQuestion(q)
+      })
       .catch((error) => {
         if (error instanceof OfficeError && error.status === 409) {
           toast.show({ message: "This card was already answered", variant: "warning" })
