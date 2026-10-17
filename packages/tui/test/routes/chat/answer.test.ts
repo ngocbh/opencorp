@@ -162,3 +162,20 @@ test("a sent-back, interrupted or unknown answer text shows as it is, without th
   expect(answerShown("[interrupted by the user]")).toBe("[interrupted by the user]")
   expect(answerShown("something else")).toBe("something else")
 })
+
+test("a harness approval offers only its options; a harness page can be secret", () => {
+  const base = { source: "harness", run_id: "turn_1", node_id: "1" } as const
+  const approval = cardModel(
+    q({ ...base, title: "Codex wants to run a command", question: "$ touch a", options: ["Approve", "Deny and stop"] }),
+  )!
+  expect(approval.pages[0]).toMatchObject({ header: "Codex wants to run a command", typed: false, multi: false })
+  expect(buildAnswer(approval, [{ picked: [0], text: "" }])).toEqual({ answer: "Approve", answer_kind: "option" })
+  const secret = cardModel(
+    q({ ...base, question: "Token?", questions: [{ question: "Token?", header: "Token", options: [], secret: true }] }),
+  )!
+  expect(secret.pages[0]).toMatchObject({ secret: true, typed: true })
+  expect(buildAnswer(secret, [{ picked: [], text: "s3cret" }])).toEqual({
+    answer: { Token: "s3cret" },
+    answer_kind: "text",
+  })
+})
