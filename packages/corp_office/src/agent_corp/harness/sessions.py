@@ -92,6 +92,8 @@ class CodexSessions:
         next message reloads the thread). Busy becomes idle with ``[interrupted]``: Codex reports that turn
         interrupted on resume and never reruns it. Starting fails. Ending finishes ending. Open cards go stale."""
         for session in self.store.list_sessions(status=LIVE, limit=None):
+            if self._closed:  # the office is stopping: what is left stays as it is, for the next restore
+                return
             if session.harness != "codex" or session.id in self._live:
                 continue
             try:  # one session that can't be restored mustn't stop the others, or the office
@@ -111,6 +113,9 @@ class CodexSessions:
                     self.store.put_part(message.id, part.model_copy(update={"state": "interrupted"}))
         live = CodexSession(self, session, author=self.opener(session))
         with self._lock:
+            if self._closed:  # office stop came meanwhile
+                live.stop()
+                return
             self._live[session.id] = live
         if session.status == "starting" or not session.harness_session_id:
             live.transcript.error("The office restarted before Codex started. Start a new chat.")

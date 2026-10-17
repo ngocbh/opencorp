@@ -168,3 +168,17 @@ def test_restore_interrupts_tool_parts_left_running_whatever_the_status(make_cod
     old.store.update_session(sid, status=left)
     h = restarted(make_codex, old)
     assert [p.state for m in h.store.list_messages(sid) for p in m.parts if p.type == "tool"] == ["interrupted"]
+
+
+def test_a_restore_after_office_stop_restores_nothing(make_codex, fake_codex, workspace):
+    fake_codex.script([[fc.command_started("c1", "sleep 60"), fc.command_approval(1, "c1", "sleep 60")]])
+    old = make_codex()
+    sid = start(old, workspace)
+    old.prompt(sid, "go")
+    wait_for(lambda: old.store.list_questions(session_id=sid, status="open"), what="the card")
+    old.close_all()
+    h = make_codex()
+    h.codex.close_all()
+    h.codex.restore()
+    assert h.codex._live == {} and status(h, sid) == "busy"
+    assert [q.status for q in h.store.list_questions(session_id=sid)] == ["open"]
