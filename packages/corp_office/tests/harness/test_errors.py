@@ -207,3 +207,22 @@ def test_the_usage_before_a_stretch_sums_every_earlier_stretch(harness):
     assert usage_base(harness.store, last) == {"input_tokens": 300, "cached_input_tokens": 30, "output_tokens": 3}
     assert usage_base(harness.store, session(harness="codex")) == {"input_tokens": 0, "cached_input_tokens": 0,
                                                                    "output_tokens": 0}
+
+
+def test_an_office_stop_while_a_crash_is_handled_writes_nothing_after_it(harness, fake_codex, workspace):
+    fake_codex.script([[fc.command_started("c1", "sleep 60"), {"sleep": 0.5}, {"exit": 1}]])
+    sid = start(harness, workspace)
+    live = harness.codex._live[sid]
+    process = live.process
+    kill = process.kill
+
+    def stopped_meanwhile():
+        live.stopped = True  # as office stop sets it, before this job's writes
+        kill()
+    process.kill = stopped_meanwhile
+    harness.prompt(sid, "go")
+    wait_for(lambda: live.stopped, what="the crash")
+    live._jobs.put(None)
+    live._thread.join(5)
+    assert errors(harness, sid) == [] and status(harness, sid) == "busy"  # left for restore
+    assert [p.state for m in harness.store.list_messages(sid) for p in m.parts if p.type == "tool"] == ["running"]

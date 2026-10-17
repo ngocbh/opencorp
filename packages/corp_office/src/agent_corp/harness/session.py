@@ -552,6 +552,8 @@ class CodexSession:
         # A dead leader leaves its group to whatever it started (command children, #57): kill it now, which also
         # removes the record, so an end or idle_end that comes before any reload never finds them.
         process.kill()
+        if self.stopped:
+            return  # office stop came meanwhile: restore marks the turn, and nothing is written after the stop
         if turn is not None:
             self.translator.turn_completed(turn, "interrupted", None)
         if said:
