@@ -13,8 +13,9 @@ import { QuestionView } from "./question-view"
 
 /**
  * An open card for a Codex request: Codex asks, and the only action is an answer. No side chat, send back or stop:
- * the office refuses them. Only the `active` card is a full card; any other is one line (`waiting` behind the
- * first), which mounts no keys and holds no typed or secret text while the prompt or another card has the keys.
+ * the office refuses them. Esc interrupts Codex's turn, as it does in the prompt. Only the `active` card is a full
+ * card; any other is one line (`waiting` behind the first), which mounts no keys and holds no typed or secret text
+ * while the prompt or another card has the keys.
  */
 export function HarnessCard(props: { question: Question; active: boolean; waiting: boolean }) {
   const office = useOffice()
@@ -44,6 +45,12 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
       .finally(() => (sending = false))
   }
 
+  function interrupt() {
+    office.client.sessions
+      .interrupt(props.question.session_id)
+      .catch((error) => toast.show({ title: "Interrupting failed", message: errorMessage(error), variant: "error" }))
+  }
+
   return (
     <Show
       when={props.active}
@@ -58,9 +65,15 @@ export function HarnessCard(props: { question: Question; active: boolean; waitin
       <QuestionView
         header="Codex asks"
         pages={model()?.pages ?? []}
-        // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
-        bindings={leaveBindings(tuiConfig.keybinds.get("app.exit"))}
-        hints={[{ key: focusKey(), label: "prompt" }]}
+        bindings={[
+          { key: "escape", desc: "Interrupt Codex", group: "Question", cmd: () => interrupt() },
+          // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
+          ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
+        ]}
+        hints={[
+          { key: "esc", label: "interrupt Codex" },
+          { key: focusKey(), label: "prompt" },
+        ]}
         onSubmit={(answers) => {
           const m = model()
           const req = m && buildAnswer(m, answers)

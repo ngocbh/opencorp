@@ -191,3 +191,41 @@ test("from the prompt under an open card, Esc clears a draft, then interrupts th
     office.stop()
   }
 })
+
+test("Esc on a Codex card interrupts the turn instead of stopping an asker", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    office.addQuestion(approval(s.id, "1", "$ touch a", ["Approve", "Deny and stop"]))
+    await app.until((f) => f.includes("$ touch a"))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${s.id}/interrupt`))
+    expect(office.requests.some((r) => r.path.endsWith("/stop"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("Esc in a secret box with text clears it, and only then interrupts", async () => {
+  const { office, s } = codexOffice()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · busy"))
+    office.addQuestion(secret(s.id, "3"))
+    await app.until((f) => f.includes("Paste the deploy token"))
+    await app.input.typeText("ab")
+    await app.until((f) => f.includes("••"))
+    app.input.pressEscape()
+    await app.until((f) => f.includes("Type your answer here; it isn't shown"))
+    // An interrupt would be on its way by now.
+    await Bun.sleep(100)
+    expect(sent(office, `/sessions/${s.id}/interrupt`)).toEqual([])
+    app.input.pressEscape()
+    await app.until(() => sent(office, `/sessions/${s.id}/interrupt`).length === 1)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
