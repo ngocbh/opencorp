@@ -352,6 +352,8 @@ class CodexSession:
                 with self._lock:
                     if self.stopped:  # office stop killed the app-server: nothing refused it, and nothing is stored
                         return
+                if not process.alive and not process.closing:
+                    continue  # it died: its exit says so, and the next message reloads it
                 self.transcript.error(exc.message)
 
     def _send(self, process: CodexProcess, text: str, busy: bool) -> str:

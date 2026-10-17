@@ -1,10 +1,12 @@
 """Codex that can't start, errors, a dead app-server, an unloaded thread, token counts."""
 
+import os
+import signal
 import threading
 import time
 
 from agent_corp.harness import session as session_module
-from agent_corp.harness.rpc import RpcError
+from agent_corp.harness.rpc import RpcClosed, RpcError
 from agent_corp.harness.session import usage_base
 from agent_corp.harness.sessions import CodexSessions
 from agent_corp.testing import fake_codex as fc
@@ -311,3 +313,28 @@ def test_closing_the_app_server_of_an_unloaded_thread_never_holds_the_message_or
     release.set()
     live._thread.join(10)
     assert harness.store.list_workers() == [] and len(fake_codex.calls("initialize")) == 1
+
+
+def test_a_reload_whose_app_server_dies_before_taking_the_message_says_so_once(harness, fake_codex, workspace):
+    sid = start(harness, workspace)
+    os.kill(harness.store.list_workers()[0].pid, signal.SIGKILL)
+    wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the first crash handled")
+    real_launch = harness.codex.launch
+
+    def launch(live):  # the reloaded app-server dies as the queued message reaches it
+        process = real_launch(live)
+        real_request = process.rpc.request
+
+        def request(method, params=None, **kwargs):
+            if method != "turn/start":
+                return real_request(method, params, **kwargs)
+            os.killpg(process.pid, signal.SIGKILL)
+            process.proc.wait(5)
+            raise RpcClosed("the app-server closed before answering turn/start")
+        process.rpc.request = request
+        return process
+    harness.codex.launch = launch
+    assert harness.prompt(sid, "again") == "queued"
+    wait_for(lambda: len(errors(harness, sid)) == 2 and status(harness, sid) == "idle", what="the second crash")
+    time.sleep(0.3)  # an error part written late would show here
+    assert len(errors(harness, sid)) == 2 and all("Codex stopped unexpectedly" in e for e in errors(harness, sid))
