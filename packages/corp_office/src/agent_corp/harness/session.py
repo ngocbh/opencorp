@@ -93,7 +93,7 @@ class CodexSession:
         self.translator = Translator(self.transcript, session.cwd)
         self.process: CodexProcess | None = None
         self.launching: CodexProcess | None = None  # the app-server being started, which office stop kills too
-        self.retiring: CodexProcess | None = None  # the app-server being closed for a reload, which it kills too
+        self.retiring: CodexProcess | None = None  # closing: Codex unloaded its thread; office stop kills it too
         self.loading = False
         self.turn_id: str | None = None
         self.pending: list[str] = []
