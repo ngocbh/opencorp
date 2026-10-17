@@ -96,7 +96,8 @@ test("after Esc, the stopped reply's interrupted marker shows, and nothing else 
     const part = { ...first.parts[0], text: "Looking at it" + INTERRUPTED_TEXT }
     office.live({ type: "part.updated", session_id: id, data: { message_id: first.id, part } as never })
     office.openTurn(id)
-    await app.until((f) => f.includes("[interrupted]") && f.includes("@minh · idle"))
+    // The marker shows as "[interrupted]" until markdown highlighting conceals a link's brackets, then as "interrupted".
+    await app.until((f) => /^\s*\[?interrupted\]?\s*$/m.test(f) && f.includes("@minh · idle"))
     expect(app.frame()).not.toContain("at it")
   } finally {
     await app.stop()
