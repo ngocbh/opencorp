@@ -397,7 +397,8 @@ class Learning:
                      feedback: str | None = None) -> tuple[Job, dict[str, Any]]:
         """A debrief job on ``provider``; with None, a new run on the session's connection, recorded here."""
         pin = self.git.pin(session.repo_commit)
-        defaults = self._defaults(load_repo(pin))
+        repo = load_repo(pin)
+        defaults = self._defaults(repo)
         if provider is None:
             name, model, _ = self.harness.connections.choice(session.connection, session.model)
             provider = self.harness.connections.resolve(name, model)
@@ -405,18 +406,23 @@ class Learning:
         self._remember(provider)
         memory = {"profile": ProfileMemorySpec(store="profile", max_chars=defaults.profile_max_chars,
                                                llm_config=provider.llm_config)}
-        transcript = self._transcript(session) if kind == "chat" else ""
+        transcript = self._transcript(session, repo) if kind == "chat" else ""
         job = Job(kind=kind, session_id=session.id, run_id=run_id, person=session.person, pin=str(pin),
                   flow=DEBRIEF_FLOW, log=self._log(session.id, run_id), inputs={"transcript": transcript},
                   llm_config=provider.llm_config, learnable=True, memory=memory, env=provider.env, feedback=feedback)
         return job, {"profile": GitProfileStore(self.git, session.person)}
 
-    def _transcript(self, session: Session) -> str:
-        """What the debrief reads: a Codex session as its apprentice watched it, else the plain transcript."""
+    def _transcript(self, session: Session, repo: Any) -> str:
+        """What the debrief reads: a Codex session as its apprentice watched it, else the plain transcript.
+
+        The driver is the session's opener, else the CEO of ``repo`` (the session's pinned company), as Codex
+        sessions credit messages with no named sender.
+        """
         messages = self.store.list_messages(session.id)
         if session.harness != "codex":
             return transcript_text(messages)
-        header = apprentice_header(owner=session.opened_by or self._owner(), employee=session.person, cwd=session.cwd)
+        owner = session.opened_by or (repo.company.ceo if repo.company else None)
+        header = apprentice_header(owner=owner, employee=session.person, cwd=session.cwd)
         return transcript_text(messages, assistant="codex", header=header)
 
     def _backward_job(self, session: Session, feedback: Feedback,

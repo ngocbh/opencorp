@@ -50,14 +50,16 @@ def transcript_text(messages: Iterable[Message], max_chars: int = TRANSCRIPT_MAX
     return f"{header}\n\n{text}" if header else text
 
 
-def apprentice_header(*, owner: str, employee: str, cwd: str) -> str:
+def apprentice_header(*, owner: str | None, employee: str, cwd: str) -> str:
     """What a Codex session's debrief transcript starts with: who drove, who watched, and what "you" means there.
 
-    It says "above" because ``debrief.yaml`` puts the transcript after its instructions.
+    It says "above" because ``debrief.yaml`` puts the transcript after its instructions. With no known ``owner`` the
+    driver reads "the owner".
     """
-    return (f"In this session @{owner} drove Codex (an AI coding agent) in `{cwd}`; you, @{employee}, watched as an "
+    driver = f"@{owner}" if owner else "the owner"
+    return (f"In this session {driver} drove Codex (an AI coding agent) in `{cwd}`; you, @{employee}, watched as an "
             f"apprentice. \"You\" and \"your work\" in the instructions above mean this session: list what was made or "
-            f"changed in it, and record how @{owner} worked and decided, including their approvals.")
+            f"changed in it, and record how {driver} worked and decided, including their approvals.")
 
 
 def _line(part: Any) -> str:

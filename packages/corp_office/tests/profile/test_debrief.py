@@ -126,6 +126,12 @@ def test_the_apprentice_header_names_driver_employee_and_folder():
     assert "instructions above" in header and "their approvals" in header
 
 
+def test_the_apprentice_header_with_no_known_owner_names_none():
+    header = apprentice_header(owner=None, employee="minh", cwd="/w")
+    assert header.startswith("In this session the owner drove Codex (an AI coding agent) in `/w`; you, @minh, ")
+    assert "@None" not in header and "how the owner worked" in header
+
+
 def test_the_header_survives_the_cut_and_counts_against_the_budget():
     header = apprentice_header(owner="ngocbh", employee="minh", cwd="/w")
     messages = [_message("user", _text(f"message {i}"), author="ngocbh") for i in range(200)]

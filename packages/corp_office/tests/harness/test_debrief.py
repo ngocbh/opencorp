@@ -1,5 +1,7 @@
 """A Codex session's debrief: the employee learns as an apprentice, on the office model."""
 
+import subprocess
+
 import pytest
 
 from agent_corp.chat.connections import read_run_record
@@ -46,3 +48,21 @@ def test_a_codex_session_is_debriefed_as_an_apprentice_and_its_feedback_is_learn
     wait_for(lambda: h.store.get_feedback(fb.id).status == "applied", what="applied")
     assert (h.git.root / "people/minh/profile.md").read_text() == PROFILE + "\n- Ask before touching files.\n"
 
+
+def test_a_session_with_no_opener_names_its_pinned_ceo_as_the_driver(learning, fake_codex, fake_llm, workspace):
+    h, _ = learning
+    fake_codex.script([fc.agent_message("m1", "Hi.")])
+    fake_llm.script(debrief_reply())
+    sid = start(h, workspace, by=None)
+    h.prompt(sid, "hi")
+    wait_for(lambda: status(h, sid) == "idle" and h.store.list_messages(sid)[-1].role == "assistant",
+             what="the turn's end")
+    # The company at HEAD has no company.yaml now; the session's pinned commit still names its CEO.
+    for args in (["rm", "-q", "company.yaml"], ["commit", "-q", "-m", "no company"]):
+        subprocess.run(["git", "-C", str(h.git.root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+                       check=True, capture_output=True)
+    h.end(sid)
+    wait_for(lambda: status(h, sid) == "ended", what="the debrief")
+    assert h.store.get_debrief(sid).state == "ready"
+    sent = str(fake_llm.requests()[-1])
+    assert "In this session @ngocbh drove Codex" in sent and "@ngocbh: hi" in sent
