@@ -200,7 +200,9 @@ class Harness:
         self.answers = Answers(self.store)
         self.restorers: dict[str, Callable[[Session], RunSpec]] = {"main": self.main_spec}
         self._lock = threading.RLock()
-        self._continuing = threading.Lock()  # one continuation of a Codex thread at a time
+        # One continuation at a time, held across _open (a git commit, a repo load, _choose), so continuations
+        # wait on each other office-wide; they are rare enough for that.
+        self._continuing = threading.Lock()
         self._live: dict[str, _Live] = {}
         self._stopping = False  # set when close_all starts: no new worker spawns
         self._refusing = False  # set once the channels are closed: no new worker request is admitted
@@ -259,8 +261,13 @@ class Harness:
         old = self.store.get_session(session_id)
         if old is None:
             raise HarnessError(404, "not_found", f"no session {session_id}")
-        if old.harness != "codex" or self.codex is None or not old.harness_session_id:
+        if old.harness != "codex":
             raise HarnessError(422, "not_continuable", "only a Codex session can be continued")
+        if self.codex is None:
+            raise HarnessError(422, "unsupported_harness", "the codex harness is not supported yet")
+        if not old.harness_session_id:  # its first load failed
+            raise HarnessError(422, "not_continuable",
+                               "this Codex session never loaded its thread, so there is nothing to continue")
         if old.status in LIVE:
             raise HarnessError(409, "live", f"session {session_id} is still open")
         with self._continuing:  # so two continuations can't both find the thread free
@@ -272,13 +279,19 @@ class Harness:
             # The newest stretch on the thread is the parent, whichever one was asked for: the chain stays one line,
             # so each stretch's token counts start after every earlier one's.
             newest = max(thread, key=lambda s: (s.created_at, s.id))
-            session = self._open(old.person, old.cwd, "codex", opened_by=by, connection=None, model=None,
+            # The continued session's connection and model, so this stretch's debrief runs on the same office model;
+            # _choose falls back when they're gone.
+            session = self._open(old.person, old.cwd, "codex", opened_by=by, connection=old.connection, model=old.model,
                                  harness_session_id=old.harness_session_id, parent_session_id=newest.id)
         try:
             self.codex.start(session, resume=True)
         except Exception as exc:
-            log.exception("can't continue session %s", session_id)
-            self._fail(session.id)
+            if self.store.get_session(session.id).status == "starting":
+                if not isinstance(exc, HarnessError):
+                    log.exception("can't continue session %s", session_id)
+                self._fail(session.id)
+            if isinstance(exc, HarnessError):
+                raise
             why = f"session {session.id} failed to start; see the office log"
             raise HarnessError(500, "start_failed", why) from exc
         return self.store.get_session(session.id)

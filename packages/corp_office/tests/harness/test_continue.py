@@ -7,6 +7,7 @@ from agent_corp.extensions.learning import Learning
 from agent_corp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
 from tests.profile.conftest import LEARNING_FILES, debrief_reply
+from tests.store.conftest import session
 
 
 def ended(harness, workspace, prompt="one", by="ngocbh"):
@@ -77,6 +78,50 @@ def test_continuing_an_older_stretch_counts_only_its_own_tokens(harness, fake_co
     assert harness.store.get_session(s.id).parent_session_id == b  # the thread's chain stays one line
     assert harness.store.get_session(s.id).harness_usage.model_dump() == {
         "input_tokens": 500, "cached_input_tokens": 0, "output_tokens": 5}
+
+
+def test_a_continued_session_keeps_the_connection_its_debrief_runs_on(make_codex, fake_codex, workspace):
+    h = make_codex(connections={"second": "stub-2"})
+    old = h.start_session("minh", str(workspace), "codex", opened_by="ngocbh", connection="second").id
+    wait_for(lambda: status(h, old) == "idle", what="the load")
+    assert h.store.get_session(old).connection == "second"
+    h.end(old)
+    wait_for(lambda: status(h, old) == "ended", what="ended")
+    new = h.continue_session(old, by="ngocbh")
+    assert (new.connection, new.model) == ("second", None)
+
+
+def test_why_a_session_can_not_continue(make_harness, harness, fake_codex, workspace):
+    plain = make_harness()
+    stored = plain.store.create_session(session(harness="codex", harness_session_id="thr_1", status="ended"))
+    with pytest.raises(HarnessError) as e:
+        plain.continue_session(stored.id, by="ngocbh")
+    assert (e.value.status, e.value.code, e.value.message) == (
+        422, "unsupported_harness", "the codex harness is not supported yet")
+    fake_codex.script(initialize_error={"code": -32600, "message": "nope"})
+    never = harness.start_session("minh", str(workspace), "codex", opened_by="ngocbh").id
+    wait_for(lambda: status(harness, never) == "failed", what="failed")
+    composer = harness.store.create_session(session(status="ended"))
+    for sid, why in ((never, "this Codex session never loaded its thread, so there is nothing to continue"),
+                     (composer.id, "only a Codex session can be continued")):
+        with pytest.raises(HarnessError) as e:
+            harness.continue_session(sid, by="ngocbh")
+        assert (e.value.status, e.value.code, e.value.message) == (422, "not_continuable", why)
+
+
+def test_a_refusal_from_the_codex_sessions_passes_through(harness, fake_codex, workspace):
+    fake_codex.script([fc.agent_message("m1", "First")])
+    old = ended(harness, workspace)
+
+    def refuse(session, *, resume=False):
+        raise HarnessError(409, "busy", "not now")
+
+    harness.codex.start = refuse
+    with pytest.raises(HarnessError) as e:
+        harness.continue_session(old, by="ngocbh")
+    assert (e.value.status, e.value.code, e.value.message) == (409, "busy", "not now")
+    new = next(s for s in harness.store.list_sessions(limit=None) if s.parent_session_id == old)
+    assert new.status == "failed"
 
 
 def test_a_resume_codex_refuses_fails_the_new_row_and_leaves_the_old_one(harness, fake_codex, workspace):
