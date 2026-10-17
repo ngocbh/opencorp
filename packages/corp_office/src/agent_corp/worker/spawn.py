@@ -29,8 +29,10 @@ class WorkerExists(RuntimeError):
 
 
 # The only parts of the office's environment a worker inherits; anything else it needs
-# (provider keys, endpoints, proxies) arrives in ``Job.env``.
-INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ")
+# (provider keys, endpoints, proxies) arrives in ``Job.env``. SSL_CERT_FILE and SSL_CERT_DIR
+# say where TLS finds CA certificates: uv's standalone Python looks in /etc/ssl, which some
+# Linuxes (RHEL) don't fill, so the owner points them at the system bundle.
+INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
 def worker_env() -> dict[str, str]:

@@ -327,6 +327,18 @@ def test_checks_give_the_codex_check_the_offices_environment_to_find_codex(tmp_p
     assert "CODEX_HOME" not in env and "AGENT_CORP_CODEX_BIN" not in env
 
 
+def test_the_codex_check_runs_with_where_tls_finds_ca_certificates_when_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/pki/tls/certs/ca-bundle.crt")
+    monkeypatch.setenv("SSL_CERT_DIR", "/etc/pki/tls/certs")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
+    seen = []
+    host = make_host(tmp_path, Runner(), answers=lambda s: False)
+    doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
+                  codex=lambda env, environ, mode: seen.append(env) or Check("codex", "ok", "stand-in"))
+    assert seen[0]["SSL_CERT_FILE"] == "/etc/pki/tls/certs/ca-bundle.crt"
+    assert seen[0]["SSL_CERT_DIR"] == "/etc/pki/tls/certs" and "OPENAI_API_KEY" not in seen[0]
+
+
 def test_codex_advice_says_how_the_office_picks_up_a_change_under_its_service(tmp_path):
     missing = {"PATH": str(tmp_path / "nowhere")}
     for mode in ("launchd", "systemd"):

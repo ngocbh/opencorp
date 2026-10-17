@@ -61,6 +61,16 @@ def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, ma
     assert worker.wait(30) == 0 and rec.outcome["output"] == "slow"
 
 
+def test_a_worker_keeps_where_tls_finds_ca_certificates_when_the_office_has_it(monkeypatch):
+    monkeypatch.setenv("SSL_CERT_FILE", "/etc/pki/tls/certs/ca-bundle.crt")
+    monkeypatch.setenv("SSL_CERT_DIR", "/etc/pki/tls/certs")
+    env = spawn_module.worker_env()
+    assert env["SSL_CERT_FILE"] == "/etc/pki/tls/certs/ca-bundle.crt" and env["SSL_CERT_DIR"] == "/etc/pki/tls/certs"
+    monkeypatch.delenv("SSL_CERT_FILE")
+    monkeypatch.delenv("SSL_CERT_DIR")
+    assert "SSL_CERT_FILE" not in spawn_module.worker_env() and "SSL_CERT_DIR" not in spawn_module.worker_env()
+
+
 def test_a_model_ask_user_call_reaches_the_office(fake_llm, registry, make_job, session_dir):
     fake_llm.script({"tool_calls": [{"name": "ask_user", "arguments": {"question": "Which city?",
                                                                       "options": ["Paris", "Rome"]}}]},

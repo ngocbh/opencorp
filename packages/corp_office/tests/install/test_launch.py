@@ -44,6 +44,14 @@ def test_the_daemon_keeps_which_codex_to_run_and_its_home():
                                    "AGENT_CORP_CODEX_BIN": "/opt/codex"}
 
 
+def test_the_daemon_keeps_where_tls_finds_ca_certificates_when_set():
+    environ = {"PATH": "/usr/bin", "SSL_CERT_FILE": "/etc/pki/tls/certs/ca-bundle.crt",
+               "SSL_CERT_DIR": "/etc/pki/tls/certs", "REQUESTS_CA_BUNDLE": "/ca.pem"}
+    assert daemon_env(environ) == {"PATH": "/usr/bin", "SSL_CERT_FILE": "/etc/pki/tls/certs/ca-bundle.crt",
+                                   "SSL_CERT_DIR": "/etc/pki/tls/certs"}
+    assert daemon_env({"PATH": "/usr/bin"}) == {"PATH": "/usr/bin"}
+
+
 def test_repo_is_this_checkout():
     assert (REPO / "pyproject.toml").is_file() and (REPO / "packages" / "corp_office" / "src" / "agent_corp").is_dir()
 
