@@ -369,3 +369,12 @@ def test_another_home_is_not_held_up_by_the_old_one(tmp_path, monkeypatch, capsy
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / legacy.OLD_HOME).mkdir()
     assert main(["start", "--home", str(tmp_path / "elsewhere")]) == install_main.NOT_ONBOARDED
+
+
+def test_doctor_looks_for_leftovers_once(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    calls = []
+    real = legacy.find
+    monkeypatch.setattr(legacy, "find", lambda *a, **k: calls.append(a) or real(*a, **k))
+    main(["doctor", "--home", str(tmp_path / "home")])
+    assert len(calls) == 1

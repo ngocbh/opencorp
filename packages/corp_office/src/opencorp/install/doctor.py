@@ -294,8 +294,11 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
            codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check,
-           environ: Mapping[str, str] = os.environ) -> list[Check]:
-    """Every check, in the order onboarding sets things up, with what an install from before the rename left."""
+           environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None) -> list[Check]:
+    """Every check, in the order onboarding sets things up, with what an install from before the rename left.
+
+    ``leftovers`` is what ``legacy.find`` already found for ``environ`` and ``repo``; it is looked for when None.
+    """
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
     paths = OfficePaths(run.home)
@@ -303,7 +306,9 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
     # launch() names only the default home `office`: only that one stands in for the old default home.
     old = legacy.old_home_only(host.user_home) if run.name == "office" else None
     found = [_home(paths, old)]
-    if leftovers := legacy.find(host, environ, repo):
+    if leftovers is None:
+        leftovers = legacy.find(host, environ, repo)
+    if leftovers:
         found.append(Check("leftovers", "warn", leftovers.summary()))
     found += [_company(paths, running), _provider(paths)]
     if (added := _connections(paths)) is not None:

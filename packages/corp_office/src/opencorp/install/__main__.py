@@ -125,9 +125,11 @@ def _offboard(args: argparse.Namespace) -> int:
 
 def _doctor(args: argparse.Namespace) -> int:
     host = Host()
-    found = doctor.checks(_home(args.home), host=host, probe=doctor.sandbox_problem, codex=doctor.codex_check)
+    leftovers = legacy.find(host, os.environ, REPO)
+    found = doctor.checks(_home(args.home), host=host, probe=doctor.sandbox_problem, codex=doctor.codex_check,
+                          leftovers=leftovers)
     print(doctor.report(found), end="")
-    print(legacy.instructions(legacy.find(host, os.environ, REPO), host.uid, REPO), end="")
+    print(legacy.instructions(leftovers, host.uid, REPO), end="")
     return doctor.exit_code(found)
 
 
