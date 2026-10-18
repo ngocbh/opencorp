@@ -7,7 +7,7 @@ import { offboard } from "../src/commands/offboard"
 import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
-import { type Deps, REPO, officeAnswers, syncThenInstall, venvPython } from "../src/office"
+import { type Deps, REPO, officeAnswers, realDeps, syncThenInstall, venvPython } from "../src/office"
 import { createFakeOffice } from "../../tui/script/stub"
 
 const saved = { ...process.env }
@@ -110,6 +110,11 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
   expect(await doctor([], bare.deps)).toBe(1)
   expect(bare.calls).toEqual([])
   expect(bare.errors.join("\n")).toContain("run `opencorp onboard`")
+})
+
+test("what the CLI sets in process.env reaches the programs it runs", async () => {
+  process.env.OPENCORP_SPAWN_TEST = "set"
+  expect(await realDeps.spawn(["/bin/sh", "-c", 'test "$OPENCORP_SPAWN_TEST" = set'])).toBe(0)
 })
 
 test("doctor tells the Python checks which bun runs it, for the commands it prints", async () => {

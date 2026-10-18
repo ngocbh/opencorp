@@ -25,7 +25,8 @@ export const realDeps: Deps = {
   exists: (file) => fs.existsSync(file),
   which: (command) => Bun.which(command),
   spawn: async (argv, cwd) => {
-    const proc = Bun.spawn(argv, { cwd, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
+    // Bun.spawn's default is the environment bun started with; changes made since (the doctor's OPENCORP_BUN) count.
+    const proc = Bun.spawn(argv, { cwd, env: process.env, stdin: "inherit", stdout: "inherit", stderr: "inherit" })
     return await proc.exited
   },
   error: (message) => console.error(message),
