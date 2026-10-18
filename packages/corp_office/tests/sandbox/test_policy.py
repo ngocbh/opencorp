@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from opencorp.install.legacy import OLD_HOME
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace
 
 
@@ -60,8 +61,8 @@ def test_home_and_its_ancestors_are_not_workspaces(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("rel", [
-    ".opencorp", ".opencorp/office/runs", ".ssh", ".aws", ".gnupg", ".config/yian",
-    "Library/Keychains", ".claude", ".codex", ".docker", ".kube", ".netrc",
+    ".opencorp", ".opencorp/office/runs", OLD_HOME, f"{OLD_HOME}/office/runs", ".ssh", ".aws", ".gnupg",
+    ".config/yian", "Library/Keychains", ".claude", ".codex", ".docker", ".kube", ".netrc",
 ])
 def test_sensitive_home_paths_are_not_workspaces(tmp_path, monkeypatch, rel):
     home = tmp_path / "home"
