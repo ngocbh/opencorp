@@ -15,24 +15,24 @@
 		<false/>
 	</dict>
 	<key>Label</key>
-	<string>com.agent-corp.office</string>
+	<string>com.opencorp.office</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/opt/agent-corp/.venv/bin/python</string>
+		<string>/opt/opencorp/.venv/bin/python</string>
 		<string>-m</string>
 		<string>opencorp.daemon.main</string>
 		<string>--home</string>
-		<string>/Users/owner/.agent-corp</string>
+		<string>/Users/owner/.opencorp</string>
 	</array>
 	<key>RunAtLoad</key>
 	<true/>
 	<key>StandardErrorPath</key>
-	<string>/Users/owner/.agent-corp/office/office.log</string>
+	<string>/Users/owner/.opencorp/office/office.log</string>
 	<key>StandardOutPath</key>
-	<string>/Users/owner/.agent-corp/office/office.log</string>
+	<string>/Users/owner/.opencorp/office/office.log</string>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>WorkingDirectory</key>
-	<string>/opt/agent-corp</string>
+	<string>/opt/opencorp</string>
 </dict>
 </plist>

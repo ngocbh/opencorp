@@ -36,10 +36,10 @@ def office(short_dir, monkeypatch):
         ".config/yian/auth.json": '{"key": "sk-decoy-auth"}',
         ".ssh/id_ed25519": "decoy-ssh-key",
         ".aws/credentials": "decoy-aws",
-        ".agent-corp/office/store.sqlite": "decoy-store",
-        ".agent-corp/office/runs/r1/log.jsonl": "decoy-run-log",
-        ".agent-corp/office/secrets/cluster-a": "decoy-asset-secret",
-        ".agent-corp/company/people/minh/person.yaml": "decoy-repo",
+        ".opencorp/office/store.sqlite": "decoy-store",
+        ".opencorp/office/runs/r1/log.jsonl": "decoy-run-log",
+        ".opencorp/office/secrets/cluster-a": "decoy-asset-secret",
+        ".opencorp/company/people/minh/person.yaml": "decoy-repo",
     }
     for rel, text in files.items():
         (home / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -80,10 +80,10 @@ except OSError as e:
     ".config/yian/auth.json",
     ".ssh/id_ed25519",
     ".aws/credentials",
-    ".agent-corp/office/store.sqlite",
-    ".agent-corp/office/runs/r1/log.jsonl",
-    ".agent-corp/office/secrets/cluster-a",
-    ".agent-corp/company/people/minh/person.yaml",
+    ".opencorp/office/store.sqlite",
+    ".opencorp/office/runs/r1/log.jsonl",
+    ".opencorp/office/secrets/cluster-a",
+    ".opencorp/company/people/minh/person.yaml",
 ])
 def test_cannot_read_owner_or_office_files(make_policy, office, rel):
     tools = WorkspaceTools(make_policy())
@@ -191,10 +191,10 @@ def test_background_process_is_dead_after_the_call(make_policy):
 
 
 def test_no_environment_secrets(make_policy, monkeypatch):
-    monkeypatch.setenv("AGENT_CORP_API_KEY", "sk-office-secret")
+    monkeypatch.setenv("OPENCORP_API_KEY", "sk-office-secret")
     tools = WorkspaceTools(make_policy())
     out = tools.shell("env").output
-    assert "sk-office-secret" not in out and "AGENT_CORP_API_KEY" not in out
+    assert "sk-office-secret" not in out and "OPENCORP_API_KEY" not in out
 
 
 def secret_process():
@@ -242,9 +242,9 @@ def test_macos_other_process_environ_is_hidden(make_policy):
 def test_macos_launch_services_and_launchd_are_unreachable(make_policy, short_dir):
     tools = WorkspaceTools(make_policy())
     marker = short_dir / "escaped"
-    out = tools.shell(f"launchctl submit -l dev.agent-corp.sandbox-test -- /usr/bin/touch {marker}").output
+    out = tools.shell(f"launchctl submit -l dev.opencorp.sandbox-test -- /usr/bin/touch {marker}").output
     time.sleep(1)
-    subprocess.run(["launchctl", "remove", "dev.agent-corp.sandbox-test"], capture_output=True)
+    subprocess.run(["launchctl", "remove", "dev.opencorp.sandbox-test"], capture_output=True)
     assert not marker.exists(), out
     assert not tools.shell("/usr/bin/open -g -a Finder").output.endswith("[exit 0]")
     assert not tools.shell("echo x | /usr/bin/pbcopy").output.endswith("[exit 0]")

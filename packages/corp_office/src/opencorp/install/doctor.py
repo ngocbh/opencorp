@@ -19,7 +19,7 @@ from opencorp.company.loader import load_repo
 from opencorp.company_template import is_new, missing_files
 from opencorp.daemon.app import OfficePaths
 from opencorp.harness.codex import CodexMissing, codex_command
-from opencorp.install import launchd, service, systemd
+from opencorp.install import launchd, legacy, service, systemd
 from opencorp.install.launch import REPO, Host, Launch, launch
 from opencorp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
 from opencorp.worker.spawn import worker_env
@@ -85,14 +85,14 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     line it printed) is a warning, not a failure: only people with ``codex`` in ``harnesses`` need it. A ``codex`` that
     won't run or doesn't answer within ``timeout`` seconds fails.
 
-    ``environ`` is the office's environment: its ``AGENT_CORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
+    ``environ`` is the office's environment: its ``OPENCORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
     joins ``env``, as they do for an app-server. ``mode`` is the office's recorded service mode, which decides how a
     fix reaches it."""
     try:
         found = codex_command(env, environ)[0]
     except CodexMissing:
-        if override := environ.get("AGENT_CORP_CODEX_BIN"):
-            return Check("codex", "warn", f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the "
+        if override := environ.get("OPENCORP_CODEX_BIN"):
+            return Check("codex", "warn", f"OPENCORP_CODEX_BIN names {override}, which isn't an executable the "
                                           "office can find, so Codex sessions can't start (fix or unset it, then "
                                           f"{_codex_change_lands(mode)})")
         return Check("codex", "warn", "not on the office's PATH, so Codex sessions can't start "
@@ -122,10 +122,13 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     return Check("codex", "ok", f"{named}, signed in")
 
 
-def _home(paths: OfficePaths) -> Check:
+def _home(paths: OfficePaths, old: Path | None = None) -> Check:
     try:
         st = os.stat(paths.home)
     except FileNotFoundError:
+        if old is not None:
+            return Check("home", "fail", f"no office home at {paths.home}; the office from before the rename is at"
+                                         f" {old} (see leftovers)")
         return Check("home", "fail", f"no office home at {paths.home}; {SET_UP}")
     except OSError as exc:
         return Check("home", "fail", f"can't read {paths.home}: {exc.strerror}")
@@ -290,13 +293,24 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
-           codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check) -> list[Check]:
-    """Every check, in the order onboarding sets things up."""
+           codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check,
+           environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None) -> list[Check]:
+    """Every check, in the order onboarding sets things up, with what an install from before the rename left.
+
+    ``leftovers`` is what ``legacy.find`` already found for ``environ`` and ``repo``; it is looked for when None.
+    """
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
     paths = OfficePaths(run.home)
     running = host.answers(run.socket)
-    found = [_home(paths), _company(paths, running), _provider(paths)]
+    # launch() names only the default home `office`: only that one stands in for the old default home.
+    old = legacy.old_home_only(host.user_home) if run.name == "office" else None
+    found = [_home(paths, old)]
+    if leftovers is None:
+        leftovers = legacy.find(host, environ, repo)
+    if leftovers:
+        found.append(Check("leftovers", "warn", leftovers.summary()))
+    found += [_company(paths, running), _provider(paths)]
     if (added := _connections(paths)) is not None:
         found.append(added)
     found.append(_service(run, host))

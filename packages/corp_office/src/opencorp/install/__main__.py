@@ -17,17 +17,28 @@ from opencorp.company.naming import handle_problem
 from opencorp.company_template import is_new
 from opencorp.daemon.app import OfficePaths
 from opencorp.daemon.main import OfficeStartError
-from opencorp.install import doctor, init, offboard, service
+from opencorp.install import doctor, init, legacy, offboard, service
 from opencorp.install.interview import Known
 from opencorp.install.json_prompts import JsonPrompter
-from opencorp.install.launch import Host, Launch, ServiceError, launch
+from opencorp.install.launch import REPO, Host, Launch, ServiceError, launch
 from opencorp.install.onboard import SET_UP, WHO, OnboardError, Prompter, TtyPrompter, onboard
 
 NOT_ONBOARDED = 3
 
 
 def _home(value: str | None) -> Path:
-    return Path(value or os.environ.get("AGENT_CORP_HOME") or "~/.agent-corp").expanduser()
+    return Path(value or os.environ.get("OPENCORP_HOME") or "~/.opencorp").expanduser()
+
+
+def _waits_for_old_home(command: str, home: Path) -> bool:
+    """Whether ``home`` is the default one while the office from before the rename is still in the old one; says so."""
+    user_home = Path.home()
+    new = user_home / legacy.NEW_HOME
+    if os.path.realpath(home) != os.path.realpath(new) or (old := legacy.old_home_only(user_home)) is None:
+        return False
+    print(f"opencorp {command}: the office from before the rename is at {old}; `opencorp doctor` prints the"
+          f" commands that move it to {new}", file=sys.stderr)
+    return True
 
 
 def _provider_stdin(args: argparse.Namespace) -> io.StringIO | None:
@@ -53,6 +64,8 @@ def _prompter(args: argparse.Namespace, stdin: io.StringIO | None, preset: dict[
 
 
 def _init(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("init", _home(args.home)):
+        return 1
     # Handles from flags are checked before anything is asked, so a bad one doesn't cost the owner an interview.
     for flag, handle in (("--handle", args.handle), ("--agent-handle", args.agent_handle)):
         if handle and (problem := handle_problem(handle)):
@@ -79,6 +92,8 @@ def _init(args: argparse.Namespace) -> int:
 
 
 def _onboard(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("onboard", _home(args.home)):
+        return 1
     stdin = _provider_stdin(args)
     try:
         onboard(_home(args.home), _prompter(args, stdin, {WHO: args.handle}), mode=args.service,
@@ -109,8 +124,12 @@ def _offboard(args: argparse.Namespace) -> int:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    found = doctor.checks(_home(args.home), probe=doctor.sandbox_problem, codex=doctor.codex_check)
+    host = Host()
+    leftovers = legacy.find(host, os.environ, REPO)
+    found = doctor.checks(_home(args.home), host=host, probe=doctor.sandbox_problem, codex=doctor.codex_check,
+                          leftovers=leftovers)
     print(doctor.report(found), end="")
+    print(legacy.instructions(leftovers, host.uid, REPO), end="")
     return doctor.exit_code(found)
 
 
@@ -128,6 +147,8 @@ def _came_up(run: Launch, host: Host, how) -> bool:
 
 
 def _start(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("start", _home(args.home)):
+        return 1
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
     if host.answers(run.socket):
@@ -143,6 +164,8 @@ def _start(args: argparse.Namespace) -> int:
 
 
 def _restart(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("restart", _home(args.home)):
+        return 1
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
     if is_new(OfficePaths(run.home).company):
@@ -168,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                        ("start", "start the office if it isn't running"),
                        ("restart", "stop the office and start it again")):
         sub = commands.add_parser(name, help=text)
-        sub.add_argument("--home", help="agent-corp home (default: $AGENT_CORP_HOME or ~/.agent-corp)")
+        sub.add_argument("--home", help="OpenCorp home (default: $OPENCORP_HOME or ~/.opencorp)")
     for name in ("init", "onboard"):
         sub = commands.choices[name]
         sub.add_argument("--service", choices=("auto", *service.MODES), default="auto",

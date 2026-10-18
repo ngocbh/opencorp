@@ -17,7 +17,7 @@ beforeEach(() => {
   home = mkdtempSync(path.join(os.tmpdir(), "acpe-"))
   mkdirSync(path.join(home, "office"))
   socket = path.join(home, "office", "office.sock")
-  process.env.AGENT_CORP_HOME = home
+  process.env.OPENCORP_HOME = home
   delete process.env.VISUAL
   delete process.env.EDITOR
   office = createFakeOffice({ socket })

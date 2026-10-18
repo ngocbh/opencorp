@@ -16,7 +16,7 @@ EIO = 5
 
 
 def label(launch: Launch) -> str:
-    return f"com.agent-corp.{launch.name}"
+    return f"com.opencorp.{launch.name}"
 
 
 def plist_path(launch: Launch, host: Host) -> Path:

@@ -1,16 +1,16 @@
 [Unit]
-Description=agent-corp office at /Users/owner/.agent-corp
+Description=OpenCorp office at /Users/owner/.opencorp
 StartLimitIntervalSec=120
 StartLimitBurst=5
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/agent-corp
+WorkingDirectory=/opt/opencorp
 Environment="HOME=/Users/owner"
 Environment="PATH=/usr/bin:/bin"
-ExecStart=/opt/agent-corp/.venv/bin/python -m opencorp.daemon.main --home /Users/owner/.agent-corp
-StandardOutput=append:/Users/owner/.agent-corp/office/office.log
-StandardError=append:/Users/owner/.agent-corp/office/office.log
+ExecStart=/opt/opencorp/.venv/bin/python -m opencorp.daemon.main --home /Users/owner/.opencorp
+StandardOutput=append:/Users/owner/.opencorp/office/office.log
+StandardError=append:/Users/owner/.opencorp/office/office.log
 Restart=on-failure
 RestartSec=5
 

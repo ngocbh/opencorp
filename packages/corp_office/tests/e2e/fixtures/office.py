@@ -178,7 +178,7 @@ class RunningOffice:
         return wait_for(ready, f"session {sid}'s debrief")
 
     def _cli_env(self) -> dict[str, str]:
-        return dict(os.environ, AGENT_CORP_HOME=str(self.home))
+        return dict(os.environ, OPENCORP_HOME=str(self.home))
 
     def opencorp(self, *args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run `opencorp <args>` in ``cwd`` against this office and wait for it."""

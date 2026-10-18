@@ -7,7 +7,7 @@ import { offboard } from "../src/commands/offboard"
 import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
-import { type Deps, REPO, officeAnswers, syncThenInstall, venvPython } from "../src/office"
+import { type Deps, REPO, officeAnswers, realDeps, syncThenInstall, venvPython } from "../src/office"
 import { createFakeOffice } from "../../tui/script/stub"
 
 const saved = { ...process.env }
@@ -112,6 +112,23 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
   expect(bare.errors.join("\n")).toContain("run `opencorp onboard`")
 })
 
+test("what the CLI sets in process.env reaches the programs it runs", async () => {
+  process.env.OPENCORP_SPAWN_TEST = "set"
+  expect(await realDeps.spawn(["/bin/sh", "-c", 'test "$OPENCORP_SPAWN_TEST" = set'])).toBe(0)
+})
+
+test("doctor tells the Python checks which bun runs it, for the commands it prints", async () => {
+  delete process.env.OPENCORP_BUN
+  let seen: string | undefined
+  const { deps } = fake()
+  deps.spawn = async () => {
+    seen = process.env.OPENCORP_BUN
+    return 0
+  }
+  expect(await doctor([], deps)).toBe(0)
+  expect(seen).toBe(process.execPath)
+})
+
 test("start runs the Python start with its flags", async () => {
   const { deps, calls } = fake({ python: 3 })
   expect(await start(["--home", "/h"], deps)).toBe(3)
@@ -131,12 +148,12 @@ test("restart syncs the venv, then runs the Python restart with its flags", asyn
 
 // CI's ts job has no venv; the office job tests `start` itself.
 test.skipIf(!fs.existsSync(venvPython()))(
-  "`opencorp start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python",
+  "`opencorp start` on an OPENCORP_HOME with no office exits 3 with the onboarding hint from the real Python",
   async () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-home-")))
     try {
       const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "cli", "src", "main.ts"), "start"], {
-        env: { ...process.env, AGENT_CORP_HOME: home },
+        env: { ...process.env, OPENCORP_HOME: home },
         stdin: "ignore",
         stdout: "ignore",
         stderr: "pipe",
@@ -171,7 +188,7 @@ test("a running office answers the probe with one request; no socket is no offic
 
 test("`opencorp` with no office says so and exits 3 before loading the TUI", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
-  process.env.AGENT_CORP_HOME = home
+  process.env.OPENCORP_HOME = home
   const err: string[] = []
   const error = console.error
   console.error = (...a: unknown[]) => void err.push(a.join(" "))

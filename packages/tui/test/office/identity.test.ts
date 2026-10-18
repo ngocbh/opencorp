@@ -19,10 +19,10 @@ const tmp = () => {
   dirs.push(d)
   return d
 }
-const saved = process.env.AGENT_CORP_HOME
+const saved = process.env.OPENCORP_HOME
 afterEach(() => {
-  if (saved === undefined) delete process.env.AGENT_CORP_HOME
-  else process.env.AGENT_CORP_HOME = saved
+  if (saved === undefined) delete process.env.OPENCORP_HOME
+  else process.env.OPENCORP_HOME = saved
 })
 
 test("a token is act_ and 32 random bytes in base64url, and its hash is the hex sha256", () => {
@@ -48,8 +48,8 @@ test("a device name is the sanitized short hostname, as onboarding makes it", ()
   }
 })
 
-test("the identity lives under AGENT_CORP_HOME", () => {
-  process.env.AGENT_CORP_HOME = "/tmp/ach"
+test("the identity lives under OPENCORP_HOME", () => {
+  process.env.OPENCORP_HOME = "/tmp/ach"
   expect(identityPath()).toBe("/tmp/ach/identity.json")
 })
 

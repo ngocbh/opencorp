@@ -44,16 +44,16 @@ def test_codex_command_finds_codex_on_the_office_path(tmp_path):
         codex_command({"PATH": str(tmp_path / "empty")}, {})
 
 
-def test_agent_corp_codex_bin_names_another_codex(tmp_path):
+def test_opencorp_codex_bin_names_another_codex(tmp_path):
     (tmp_path / "bin").mkdir()
     other = tmp_path / "bin" / "codex-dev"
     other.write_text("#!/bin/sh\n")
     other.chmod(0o755)
     empty = {"PATH": str(tmp_path / "empty")}
-    assert codex_command(empty, {"AGENT_CORP_CODEX_BIN": str(other)})[0] == str(other)
-    assert codex_command({"PATH": str(tmp_path / "bin")}, {"AGENT_CORP_CODEX_BIN": "codex-dev"})[0] == str(other)
-    with pytest.raises(CodexMissing, match="AGENT_CORP_CODEX_BIN names codex-dev, which isn't an executable") as e:
-        codex_command(empty, {"AGENT_CORP_CODEX_BIN": "codex-dev"})
+    assert codex_command(empty, {"OPENCORP_CODEX_BIN": str(other)})[0] == str(other)
+    assert codex_command({"PATH": str(tmp_path / "bin")}, {"OPENCORP_CODEX_BIN": "codex-dev"})[0] == str(other)
+    with pytest.raises(CodexMissing, match="OPENCORP_CODEX_BIN names codex-dev, which isn't an executable") as e:
+        codex_command(empty, {"OPENCORP_CODEX_BIN": "codex-dev"})
     assert "unset it" in str(e.value) and "npm" not in str(e.value)
 
 

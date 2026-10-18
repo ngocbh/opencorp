@@ -11,7 +11,7 @@ type App = Awaited<ReturnType<typeof bootFrame>>
 type Office = ReturnType<typeof createFakeOffice>
 
 const KEY = "start_on_last_pick"
-// The app keeps both files under the preload's AGENT_CORP_HOME, which every test file shares.
+// The app keeps both files under the preload's OPENCORP_HOME, which every test file shares.
 const modelFile = () => path.join(Global.Path.state, "model.json")
 const kvFile = () => path.join(Global.Path.state, "kv.json")
 const kv = (): Record<string, unknown> => (existsSync(kvFile()) ? JSON.parse(readFileSync(kvFile(), "utf8")) : {})

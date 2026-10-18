@@ -1,4 +1,4 @@
-"""The office daemon entry point: ``python -m opencorp.daemon.main --home ~/.agent-corp``."""
+"""The office daemon entry point: ``python -m opencorp.daemon.main --home ~/.opencorp``."""
 
 import argparse
 import asyncio
@@ -237,7 +237,7 @@ async def run(paths: OfficePaths, *, extensions: str = "opencorp.extensions") ->
 def main(argv: list[str] | None = None, *, extensions: str = "opencorp.extensions") -> int:
     """Parse arguments and run the daemon; returns the exit code (0 when this home's office is already running)."""
     parser = argparse.ArgumentParser(prog="opencorp-office")
-    parser.add_argument("--home", default="~/.agent-corp", help="agent-corp home directory")
+    parser.add_argument("--home", default="~/.opencorp", help="OpenCorp home directory")
     args = parser.parse_args(argv)
     paths = OfficePaths(Path(args.home).expanduser().resolve())
     try:

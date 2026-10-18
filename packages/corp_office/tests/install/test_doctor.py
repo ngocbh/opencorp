@@ -8,7 +8,7 @@ import psutil
 from opencorp.chat.connections import ConnectionFile, Connections
 from opencorp.company_template import Owner, write_company
 from opencorp.daemon.app import OfficePaths
-from opencorp.install import doctor, launchd, systemd
+from opencorp.install import doctor, launchd, legacy, systemd
 from opencorp.install.doctor import Check, codex_check
 from opencorp.install.launch import Launch, launch
 from opencorp.install.onboard import SET_UP, write_private
@@ -39,7 +39,7 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
-                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"))
+                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={})
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -362,22 +362,22 @@ def test_checks_run_the_codex_check_they_are_given_in_the_app_servers_environmen
     assert "OPENAI_API_KEY" not in seen[0]
 
 
-def test_agent_corp_codex_bin_names_the_codex_the_check_runs(tmp_path):
+def test_opencorp_codex_bin_names_the_codex_the_check_runs(tmp_path):
     env = _codex(tmp_path, 0)
     other = tmp_path / "codex-dev"
     other.write_text('#!/bin/sh\ncase "$1" in --version) echo "codex-cli 9.9.9";; login) exit 0;; esac\n')
     other.chmod(0o755)
-    by_path = codex_check(env, {"AGENT_CORP_CODEX_BIN": str(other)})
+    by_path = codex_check(env, {"OPENCORP_CODEX_BIN": str(other)})
     assert by_path == Check("codex", "ok", f"codex-cli 9.9.9 at {other}, signed in")
     (tmp_path / "bin" / "codex-dev").symlink_to(other)
-    by_name = codex_check(env, {"AGENT_CORP_CODEX_BIN": "codex-dev"})
+    by_name = codex_check(env, {"OPENCORP_CODEX_BIN": "codex-dev"})
     assert by_name == Check("codex", "ok", f"codex-cli 9.9.9 at {tmp_path / 'bin' / 'codex-dev'}, signed in")
 
 
-def test_an_agent_corp_codex_bin_the_office_cant_find_is_a_warning_even_with_codex_on_the_path(tmp_path):
-    check = codex_check(_codex(tmp_path, 0), {"AGENT_CORP_CODEX_BIN": "/nowhere/codex"})
+def test_an_opencorp_codex_bin_the_office_cant_find_is_a_warning_even_with_codex_on_the_path(tmp_path):
+    check = codex_check(_codex(tmp_path, 0), {"OPENCORP_CODEX_BIN": "/nowhere/codex"})
     assert check.status == "warn"
-    assert "AGENT_CORP_CODEX_BIN names /nowhere/codex, which isn't an executable the office can find" in check.detail
+    assert "OPENCORP_CODEX_BIN names /nowhere/codex, which isn't an executable the office can find" in check.detail
 
 
 def test_the_check_runs_codex_with_the_offices_codex_home_when_set(tmp_path):
@@ -391,14 +391,14 @@ def test_the_check_runs_codex_with_the_offices_codex_home_when_set(tmp_path):
 
 def test_checks_give_the_codex_check_the_offices_environment_to_find_codex(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", "/x/home")
-    monkeypatch.setenv("AGENT_CORP_CODEX_BIN", "/x/codex")
+    monkeypatch.setenv("OPENCORP_CODEX_BIN", "/x/codex")
     seen = []
     host = make_host(tmp_path, Runner(), answers=lambda s: False)
     doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
                   codex=lambda env, environ, mode: seen.append((env, environ)) or Check("codex", "ok", "stand-in"))
     env, environ = seen[0]
-    assert environ["CODEX_HOME"] == "/x/home" and environ["AGENT_CORP_CODEX_BIN"] == "/x/codex"
-    assert "CODEX_HOME" not in env and "AGENT_CORP_CODEX_BIN" not in env
+    assert environ["CODEX_HOME"] == "/x/home" and environ["OPENCORP_CODEX_BIN"] == "/x/codex"
+    assert "CODEX_HOME" not in env and "OPENCORP_CODEX_BIN" not in env
 
 
 def test_the_codex_check_runs_with_where_tls_finds_ca_certificates_when_set(tmp_path, monkeypatch):
@@ -419,7 +419,7 @@ def test_codex_advice_says_how_the_office_picks_up_a_change_under_its_service(tm
         managed = codex_check(missing, {}, mode)
         assert "stop the office and run `opencorp onboard` again from that shell" in managed.detail
         assert "opencorp restart" not in managed.detail
-        override = codex_check(missing, {"AGENT_CORP_CODEX_BIN": "/nowhere/codex"}, mode)
+        override = codex_check(missing, {"OPENCORP_CODEX_BIN": "/nowhere/codex"}, mode)
         assert "stop the office and run `opencorp onboard` again from that shell" in override.detail
     for mode in ("tmux", "background", None):
         assert "then `opencorp restart` from that shell" in codex_check(missing, {}, mode).detail
@@ -442,3 +442,24 @@ def test_a_codex_that_says_nothing_is_still_described(tmp_path):
     assert codex_check(env, {}) == Check("codex", "fail", f"{codex} --version failed: exit 3")
     codex.write_text('#!/bin/sh\nexit 0\n')
     assert codex_check(env, {}) == Check("codex", "ok", f"{codex} (no version printed), signed in")
+
+
+def test_leftovers_from_before_the_rename_warn_right_after_the_home(tmp_path):
+    old = tmp_path / legacy.OLD_HOME
+    old.mkdir()
+    found = run_checks(tmp_path, onboarded(tmp_path))
+    assert [c.name for c in found][:2] == ["home", "leftovers"]
+    assert found[1].status == "warn" and f"the old home {old}" in found[1].detail
+    assert doctor.exit_code(found) == 0
+
+
+def test_no_leftovers_no_line(tmp_path):
+    assert "leftovers" not in by_name(run_checks(tmp_path, onboarded(tmp_path)))
+
+
+def test_a_missing_default_home_next_to_the_old_one_says_where_the_office_is(tmp_path):
+    old = tmp_path / legacy.OLD_HOME
+    (old / "office").mkdir(parents=True)
+    got = by_name(run_checks(tmp_path, OfficePaths(tmp_path / legacy.NEW_HOME)))
+    assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / legacy.NEW_HOME}; the office from"
+                                f" before the rename is at {old} (see leftovers)")

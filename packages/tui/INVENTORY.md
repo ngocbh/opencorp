@@ -54,9 +54,9 @@ Classification:
 
 | Module and symbols | Importing files | Class | Replacement |
 | --- | --- | --- | --- |
-| `@opencode-ai/core/global` `Global` | `app.tsx`, `context/{kv,theme}.tsx`; test `app-lifecycle.test.tsx` | stand-in | `src/core/global.ts`: the same `Global.Path` getters and `Global.Service`/`layer`, rooted at `$AGENT_CORP_HOME` or `~/.agent-corp`, then `tui/`. |
+| `@opencode-ai/core/global` `Global` | `app.tsx`, `context/{kv,theme}.tsx`; test `app-lifecycle.test.tsx` | stand-in | `src/core/global.ts`: the same `Global.Path` getters and `Global.Service`/`layer`, rooted at `$OPENCORP_HOME` or `~/.opencorp`, then `tui/`. |
 | `@opencode-ai/core/flag/flag` `Flag` | `app.tsx`, `ui/dialog.tsx`, `context/sdk.tsx`, `component/prompt/index.tsx` | stand-in | `src/core/flag.ts`: only the flags the TUI reads, same env names and parsing. |
-| `@opencode-ai/core/installation/version` `InstallationVersion`, `InstallationChannel` | `app.tsx`, `component/{dialog-debug,error-component}.tsx`, `routes/session/sidebar.tsx` | stand-in | `src/core/version.ts`: a build-time `AGENT_CORP_VERSION`, else `local`. |
+| `@opencode-ai/core/installation/version` `InstallationVersion`, `InstallationChannel` | `app.tsx`, `component/{dialog-debug,error-component}.tsx`, `routes/session/sidebar.tsx` | stand-in | `src/core/version.ts`: a build-time `OPENCORP_VERSION`, else `local`. |
 | `@opencode-ai/core/open` `openUrl` | `app.tsx`, `ui/link.tsx`, `component/dialog-retry-action.tsx` | stand-in | `src/core/open.ts`: the same function (http and https only) on the `open` package. |
 | `@opencode-ai/core/util/which` `which` | `clipboard.ts` | stand-in | `Bun.which`. |
 | `@opencode-ai/core/util/glob` `Glob` | `context/theme.tsx` | stand-in | `Bun.Glob`. |
@@ -119,4 +119,4 @@ Removed rather than ported, because the office has no counterpart:
 
 ## Rebranded
 
-The logo spells OpenCorp; the default theme is `opencorp` (a theme saved under an older default name still loads); custom themes come from `.agent-corp/themes`; environment switches are `AGENT_CORP_*`. The OpenCode Go upsell art (`component/bg-pulse*.tsx`) was dropped.
+The logo spells OpenCorp; the default theme is `opencorp` (a theme saved under an older default name still loads); custom themes come from `.opencorp/themes`; environment switches are `OPENCORP_*`. The OpenCode Go upsell art (`component/bg-pulse*.tsx`) was dropped.

@@ -2,13 +2,13 @@
 import os from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer } from "effect"
-import { agentCorpHome } from "../office/paths"
+import { opencorpHome } from "../office/paths"
 
 function root() {
-  return path.join(agentCorpHome(), "tui")
+  return path.join(opencorpHome(), "tui")
 }
 
-/** Paths for TUI state, resolved from `AGENT_CORP_HOME` (default `~/.agent-corp`) on each read. */
+/** Paths for TUI state, resolved from `OPENCORP_HOME` (default `~/.opencorp`) on each read. */
 export const Path = {
   get home() {
     return os.homedir()

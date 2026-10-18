@@ -11,7 +11,7 @@ from pathlib import Path
 _IDENTITY = ["-c", "user.name=OpenCorp office", "-c", "user.email=office@opencorp.local"]
 # Repo-local config and hooks still apply after the env is cleaned; never sign or run hooks.
 _NO_HOOKS = ["-c", "commit.gpgsign=false", "-c", f"core.hooksPath={os.devnull}"]
-_PIN_MARKER = ".agent-corp-pin"
+_PIN_MARKER = ".opencorp-pin"
 _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 # `:(glob)` makes `*` match one path segment, so only people/<handle>/profile.md matches.
 _PROFILES = ":(glob)people/*/profile.md"

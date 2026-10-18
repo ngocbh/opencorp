@@ -1238,7 +1238,7 @@ class Harness:
             check_workspace(real)
         except UnsafeWorkspace as exc:
             raise HarnessError(422, "unsafe_workspace", str(exc)) from exc
-        # The sandbox guards ~/.agent-corp; this office's home may be elsewhere.
+        # The sandbox guards ~/.opencorp; this office's home may be elsewhere.
         for kept in (self.office.paths.company, self.office.paths.office):
             kept = Path(os.path.realpath(kept))
             if real.is_relative_to(kept) or kept.is_relative_to(real):

@@ -136,7 +136,7 @@ def test_pin_rebuilds_a_deleted_dir(g):
 
 def test_pin_rebuilds_a_dir_without_marker(g):
     pinned = g.pin("HEAD")
-    (pinned / ".agent-corp-pin").unlink()
+    (pinned / ".opencorp-pin").unlink()
     (pinned / PROFILE).chmod(0o644)  # as if the crash came before chmod
     pinned = g.pin("HEAD")
     assert not os.stat(pinned / PROFILE).st_mode & stat.S_IWUSR

@@ -6,7 +6,7 @@ import { Global } from "../../../src/core/global"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "./type"
 
-// The app keeps both files under the preload's AGENT_CORP_HOME, which every test file shares.
+// The app keeps both files under the preload's OPENCORP_HOME, which every test file shares.
 const modelFile = () => path.join(Global.Path.state, "model.json")
 const kvFile = () => path.join(Global.Path.state, "kv.json")
 const kv = (): Record<string, unknown> => (existsSync(kvFile()) ? JSON.parse(readFileSync(kvFile(), "utf8")) : {})
