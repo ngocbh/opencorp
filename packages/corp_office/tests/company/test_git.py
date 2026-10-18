@@ -1,5 +1,6 @@
 import os
 import stat
+import subprocess
 import threading
 import time
 
@@ -15,6 +16,21 @@ OFFICE = "agent-corp office <office@agent-corp.local>"
 @pytest.fixture
 def g(company, tmp_path):
     return CompanyGit(company, tmp_path / "worktrees")
+
+
+def test_git_never_reads_the_daemons_stdin(g, monkeypatch):
+    # Under tmux the daemon's stdin is the pane, and a git that read it would block holding the lock.
+    run, calls = subprocess.run, []
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs)
+        return run(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", recording)
+    g.read_blob(g.blob_id(PROFILE))
+    g.read_blobs([g.blob_id(PROFILE)])
+    assert len(calls) == 4
+    assert all(c.get("stdin") == subprocess.DEVNULL or "input" in c for c in calls)
 
 
 def test_blob_id_ignores_other_files(g, company):

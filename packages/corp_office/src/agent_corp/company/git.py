@@ -50,7 +50,7 @@ class CompanyGit:
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run git in the clone; with ``check``, a non-zero exit raises ``CompanyGitError``."""
         out = subprocess.run(["git", "-C", str(self.root), *_IDENTITY, *_NO_HOOKS, *args],
-                             capture_output=True, env=_env(),
+                             stdin=subprocess.DEVNULL, capture_output=True, env=_env(),
                              # surrogateescape round-trips non-UTF-8 paths back into git args.
                              encoding="utf-8", errors="surrogateescape")
         if check and out.returncode != 0:
@@ -112,7 +112,7 @@ class CompanyGit:
             return None
         # Bytes, not _git's text mode, which turns \r\n into \n.
         out = subprocess.run(["git", "-C", str(self.root), "cat-file", "blob", blob_id],
-                             capture_output=True, env=_env())
+                             stdin=subprocess.DEVNULL, capture_output=True, env=_env())
         return out.stdout if out.returncode == 0 else None
 
     def read_blobs(self, blob_ids: list[str]) -> dict[str, bytes]:
