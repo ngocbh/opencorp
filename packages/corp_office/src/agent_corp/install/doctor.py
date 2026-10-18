@@ -20,7 +20,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.harness.codex import CodexMissing, codex_command
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
-from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
+from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
 from agent_corp.worker.spawn import worker_env
 
 _START_ERROR = "agent-corp office: "
@@ -142,8 +142,17 @@ def _provider(paths: OfficePaths) -> Check:
     except OnboardError as exc:
         return Check("provider", "fail", f"{path}: {exc}")
     llm = provider.llm_config or {}
+    name = llm.get("provider") or "default provider"
     login = "key saved" if "api_key" in llm else "yian's own login"
-    return Check("provider", "ok", f"{llm.get('provider') or 'default provider'}, {login}")
+    # Yian has no default model, so a key that names none fails every run; onboard saves the provider's default.
+    try:
+        saved = with_default_model(provider)
+    except OnboardError as exc:
+        return Check("provider", "fail", f"{path}: {exc}; run `ac onboard`")
+    if saved != provider:
+        return Check("provider", "warn", f"{name}, {login}, but no model, so runs fail;"
+                                         f" `ac onboard` saves {(saved.llm_config or {}).get('model')}")
+    return Check("provider", "ok", f"{name}, {login}")
 
 
 def _connections(paths: OfficePaths) -> Check | None:

@@ -178,9 +178,27 @@ def test_a_provider_composer_wont_take_fails_without_showing_the_key(tmp_path):
 
 
 def test_a_saved_key_is_reported_but_not_shown(tmp_path):
-    paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
+    paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY, "model": "claude-x"}})
     got = by_name(run_checks(tmp_path, paths))
     assert got["provider"] == Check("provider", "ok", "anthropic, key saved")
+
+
+def test_a_key_with_no_model_warns_and_names_the_model_onboard_saves(tmp_path):
+    paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
+    got = by_name(run_checks(tmp_path, paths))
+    assert got["provider"] == Check("provider", "warn", "anthropic, key saved, but no model, so runs fail;"
+                                                        " `ac onboard` saves claude-sonnet-4-5")
+    assert all(KEY not in c.detail for c in got.values())
+
+
+def test_a_key_for_an_endpoint_of_your_own_with_no_model_fails(tmp_path):
+    paths = onboarded(tmp_path, {"llm_config": {"provider": "openai", "base_url": "https://llm.example/v1",
+                                                "api_key": KEY}})
+    got = by_name(run_checks(tmp_path, paths))
+    path = paths.office / "provider.json"
+    assert got["provider"] == Check("provider", "fail", f"{path}: llm_config.model is missing, and an endpoint of"
+                                                        " your own has no default model; run `ac onboard`")
+    assert all(KEY not in c.detail for c in got.values())
 
 
 def test_an_unloaded_launch_agent_fails(tmp_path):
