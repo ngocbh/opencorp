@@ -8,6 +8,7 @@ import json
 import os
 import plistlib
 import shlex
+import shutil
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,8 @@ OLD_LAUNCHER = "ac"
 NEW_LAUNCHER = "opencorp"
 OLD_ENTRY = Path("packages") / "ac" / "src" / "main.ts"
 NEW_ENTRY = Path("packages") / "cli" / "src" / "main.ts"
+BUN_ENV = "OPENCORP_BUN"
+"""Set by the ``opencorp`` CLI to the bun running it, so a printed ``bun`` line runs where bun isn't on ``PATH``."""
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,8 @@ class Leftovers:
     """Other homes an old launchd job or systemd unit ran an office for, which still exist."""
     on_path: bool = False
     """An ``opencorp`` launcher for this checkout is already on ``PATH``."""
+    bun: str = "bun"
+    """The bun that runs the CLI's entry when no ``opencorp`` launcher will exist."""
 
     def __bool__(self) -> bool:
         return any((self.home, self.plists, self.units, self.sessions, self.pid, self.env, self.launchers))
@@ -64,6 +69,53 @@ class Leftovers:
         found += [f"${name}" for name in self.env]
         found += [f"the `{OLD_LAUNCHER}` launcher {p}" for p in self.launchers]
         return f"from before the rename to OpenCorp: {', '.join(found)}; what to run is below the report"
+
+    def commands(self, uid: int, repo: Path) -> list[str]:
+        """What to run, in order: stop the old office, move its home, swap the launcher, set the office up again."""
+        def q(path: Path) -> str:
+            return shlex.quote(str(path))
+
+        out: list[str] = []
+        for plist in self.plists:
+            out += [f"launchctl bootout gui/{uid}/{plist.stem}", f"rm {q(plist)}"]
+        for unit in self.units:
+            out += [f"systemctl --user disable --now {unit.name}", f"rm {q(unit)}"]
+        if self.units:
+            out.append("systemctl --user daemon-reload")
+        out += [f"tmux kill-session -t ={s}" for s in self.sessions]
+        if self.pid:
+            out.append(f"kill {self.pid}")
+        if self.home and not self.both:
+            out.append(f"mv {q(self.home)} {q(self.home.parent / NEW_HOME)}")
+        for old in self.launchers:
+            new = old.with_name(NEW_LAUNCHER)
+            if old.is_symlink():
+                out.append(f"ln -s {q(repo / NEW_ENTRY)} {q(new)} && rm {q(old)}")
+            else:
+                out.append(f"sed 's#{OLD_ENTRY}#{NEW_ENTRY}#' {q(old)} > {q(new)} && chmod +x {q(new)} && rm {q(old)}")
+        # The launcher lines above come first so `opencorp` exists by now; with no launcher, bun runs the entry.
+        cli = NEW_LAUNCHER if self.launchers or self.on_path else shlex.join([self.bun, str(repo / NEW_ENTRY)])
+        if self.default:
+            out.append(f"{cli} onboard")
+        out += [f"{cli} onboard --home {q(home)}" for home in self.elsewhere]
+        return out
+
+    def choice(self) -> list[str]:
+        """With both homes, the note to keep one of them, which the owner settles before setting the office up."""
+        if not (self.both and self.home):
+            return []
+        new = self.home.parent / NEW_HOME
+        return [f"both {self.home} and {new} exist: keep the one with your company and remove the other yourself"
+                f" (if you keep {self.home}, move it to {new})"]
+
+    def renames(self) -> list[str]:
+        """A note for each old env var still set."""
+        return [f"{name} is set, but OpenCorp reads {NEW_ENV}{name[len(OLD_ENV):]} now; rename it where you set it"
+                for name in self.env]
+
+    def notes(self) -> list[str]:
+        """What to do by hand: two homes to choose between, and old env vars."""
+        return self.choice() + self.renames()
 
 
 def _recorded(home: Path) -> tuple[str | None, str]:
@@ -124,10 +176,24 @@ def find(host: Host, environ: Mapping[str, str], repo: Path) -> Leftovers:
         default=home is not None or len(others) < len(homes),
         elsewhere=tuple(sorted({h for h in others if h.is_dir()})),
         # Only this checkout's launcher counts: another `opencorp` on PATH may run a different checkout.
-        on_path=bool(launchers(environ, repo)))
+        on_path=bool(launchers(environ, repo)),
+        bun=environ.get(BUN_ENV) or shutil.which("bun", path=environ.get("PATH", "")) or "bun")
 
 
 def old_home_only(user_home: Path) -> Path | None:
     """``~/.agent-corp`` when it exists and ``~/.opencorp`` doesn't, else None."""
     old = user_home / OLD_HOME
     return old if old.is_dir() and not (user_home / NEW_HOME).exists() else None
+
+
+def instructions(found: Leftovers, uid: int, repo: Path) -> str:
+    """The commands and notes, printed after the doctor's report; empty when nothing is left.
+
+    With two homes, the note to keep one comes first: the ``onboard`` line sets the office up in whichever stays.
+    """
+    text = "".join(f"\n{n}\n" for n in found.choice())
+    if commands := found.commands(uid, repo):
+        text += "\nTo finish moving to OpenCorp, run these in order:\n" + "".join(f"  {c}\n" for c in commands)
+    if renames := found.renames():
+        text += "\n" + "".join(f"{n}\n" for n in renames)
+    return text

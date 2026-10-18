@@ -112,6 +112,18 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
   expect(bare.errors.join("\n")).toContain("run `opencorp onboard`")
 })
 
+test("doctor tells the Python checks which bun runs it, for the commands it prints", async () => {
+  delete process.env.OPENCORP_BUN
+  let seen: string | undefined
+  const { deps } = fake()
+  deps.spawn = async () => {
+    seen = process.env.OPENCORP_BUN
+    return 0
+  }
+  expect(await doctor([], deps)).toBe(0)
+  expect(seen).toBe(process.execPath)
+})
+
 test("start runs the Python start with its flags", async () => {
   const { deps, calls } = fake({ python: 3 })
   expect(await start(["--home", "/h"], deps)).toBe(3)
