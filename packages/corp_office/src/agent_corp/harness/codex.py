@@ -25,7 +25,8 @@ START_TIMEOUT = 30.0
 
 
 class CodexStartError(Exception):
-    """The app-server didn't start or refused the handshake; the message says what to do, never its stderr."""
+    """Codex couldn't be run, didn't start, refused the handshake, or died loading the thread. The message says what
+    went wrong and what to do; it never holds Codex's stderr, which stays in the session's codex.log."""
 
 
 class CodexMissing(CodexStartError):
@@ -127,8 +128,7 @@ class CodexProcess:
             self.kill()
             if stopped:
                 raise CodexStartError("Codex was stopped before it started.") from exc
-            raise CodexStartError(f"Codex didn't start: {exc}. Run `ac doctor` to check it; its output is in "
-                                  f"{self.log}.") from exc
+            raise self.start_error(exc) from exc
         if account.get("account") is None and account.get("requiresOpenaiAuth"):
             self.kill()
             raise CodexSignedOut("Codex is signed out. Run `codex login` in a terminal, then send your message again.")
@@ -170,6 +170,12 @@ class CodexProcess:
                 log.warning("codex app-server %s outlived SIGKILL", proc.pid)
         if recorded:  # only its own record: a later app-server of the same session has the same key
             self.store.remove_worker(self.key, pid=proc.pid)
+
+    def start_error(self, exc: Exception) -> CodexStartError:
+        """The error for an app-server that failed or died while starting: what went wrong, to run ``ac doctor``, and
+        where Codex's output (its stderr, with the reason) is."""
+        return CodexStartError(f"Codex didn't start: {exc}. Run `ac doctor` to check it; Codex's output is in "
+                               f"{self.log}.")
 
     def _closed(self) -> None:
         if self.proc is not None:

@@ -91,7 +91,8 @@ def test_a_crash_leaves_codex_stderr_in_its_codex_log_and_the_office_log_points_
         wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the crash handled")
     assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
     [note] = [r.getMessage() for r in caplog.records if "exited unexpectedly" in r.getMessage()]
-    assert sid in note and str(harness.office.paths.run_dir(sid) / "codex.log") in note and STDERR not in note
+    assert sid in note and f"Codex's output is in {harness.office.paths.run_dir(sid) / 'codex.log'}" in note
+    assert STDERR not in note
 
 
 def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_output_is(make_harness, workspace,
@@ -104,10 +105,26 @@ def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_outp
         wait_for(lambda: status(h, sid) == "failed", what="failed")
     log = str(h.office.paths.run_dir(sid) / "codex.log")
     [error] = errors(h, sid)
-    assert "Codex didn't start" in error and "ac doctor" in error and log in error
+    assert "Codex didn't start" in error and "ac doctor" in error and f"Codex's output is in {log}" in error
     assert STDERR not in stored(h, sid) and STDERR in codex_log(h, sid)
-    assert any(sid in r.getMessage() and log in r.getMessage() and STDERR not in r.getMessage()
-               for r in caplog.records)
+    [note] = [r.getMessage() for r in caplog.records if sid in r.getMessage()]
+    assert note.count(log) == 1 and STDERR not in note
+
+
+def test_codex_that_dies_while_loading_the_thread_says_what_to_do_and_where_its_output_is(harness, fake_codex,
+                                                                                          workspace, caplog):
+    fake_codex.script(load_exit=1, stderr=STDERR)
+    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+        sid = harness.start_session("minh", str(workspace), "codex").id
+        wait_for(lambda: status(harness, sid) == "failed", what="failed")
+    log = str(harness.office.paths.run_dir(sid) / "codex.log")
+    [error] = errors(harness, sid)
+    assert "Codex didn't start" in error and "ac doctor" in error and f"Codex's output is in {log}" in error
+    assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
+    [note] = [r for r in caplog.records if sid in r.getMessage()]
+    assert note.levelno == logging.WARNING and note.exc_info is None  # an expected failure, not a traceback
+    assert note.getMessage().count(log) == 1 and STDERR not in note.getMessage()
+    assert harness.store.list_workers() == []
 
 
 def test_ending_after_a_crash_without_a_reload_leaves_no_record_or_children(harness, fake_codex, workspace):

@@ -289,6 +289,8 @@ class CodexSession:
                 process, self.launching = self.launching, None
             if process is not None:
                 process.kill()
+                if isinstance(exc, RpcClosed):  # it died loading the thread: its output says why
+                    exc = process.start_error(exc)
             self._cant_load(exc, process)
             return
         with self._lock:
@@ -305,8 +307,9 @@ class CodexSession:
     def _cant_load(self, exc: Exception, process: CodexProcess | None) -> None:
         if self.stopped:
             return  # office stop: the session keeps its status for restore
-        where = f" (Codex's stderr is in {process.log})" if process is not None else ""
-        if isinstance(exc, (CodexStartError, RpcError)):
+        named = process is None or isinstance(exc, CodexStartError)  # a start error names codex.log already
+        where = "" if named else f"; Codex's output is in {process.log}"
+        if isinstance(exc, (CodexStartError, RpcError, TimeoutError)):
             log.warning("codex session %s can't load its thread: %s%s", self.session_id, exc, where)
         else:
             log.exception("codex session %s can't load its thread%s", self.session_id, where)
@@ -554,13 +557,13 @@ class CodexSession:
     def _exited(self, process: CodexProcess) -> None:
         if process is not self.process or process.closing:
             return
-        log.warning("codex app-server of session %s exited unexpectedly (code %s); its stderr is in %s",
+        log.warning("codex app-server of session %s exited unexpectedly (code %s); Codex's output is in %s",
                     self.session_id, process.proc.returncode, process.log)
         self._lost(process, "Codex stopped unexpectedly. Send a message to start it again.")
 
     def _lost(self, process: CodexProcess, said: str | None) -> None:
         """The app-server died, or Codex unloaded the thread: finish its turn as interrupted, expire its cards, and
-        close its group now; the next message reloads the thread. ``said`` is the error part; Codex's stderr stays in
+        close its group now; the next message reloads the thread. ``said`` is the error part; Codex's output stays in
         its codex.log, which the office log names."""
         with self._lock:
             self.process = None
