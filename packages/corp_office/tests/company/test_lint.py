@@ -1,11 +1,13 @@
 import dataclasses
 
 import pytest
+import yaml
 
 from agent_corp.company.lint import lint
 from agent_corp.company.loader import load_repo
 from agent_corp.company.naming import asset_tool_name
-from tests.company.conftest import base_files, person
+from agent_corp.company_template import Owner, write_company
+from tests.company.conftest import CHAT, MAIN_INPUTS, base_files, person
 
 
 def issues(root, severity="error"):
@@ -156,7 +158,8 @@ def parent_flow(ref):
 
 
 def test_child_flow_inside_repo_is_fine(make_company):
-    root = make_company(**{"shared/flows/chat.yaml": parent_flow("echo"), "shared/flows/echo.yaml": CHILD})
+    root = make_company(**{"shared/flows/chat.yaml": parent_flow("echo") + MAIN_INPUTS,
+                           "shared/flows/echo.yaml": CHILD})
     assert codes(root) == set()
 
 
@@ -196,6 +199,41 @@ def test_agent_needs_a_main_flow(make_company):
     minh = person("minh")
     del minh["main"]
     assert ("person.no_main", "people/minh/person.yaml") in issues(make_company(**{"people/minh/person.yaml": minh}))
+
+
+def test_a_main_flow_must_declare_person_and_talking_to(make_company):
+    root = make_company(**{"shared/flows/chat.yaml": CHAT})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.main_inputs_missing"]
+    assert (issue.path, issue.severity) == ("people/minh/person.yaml", "error")
+    assert issue.message == ("../../shared/flows/chat.yaml doesn't declare the person and talking_to inputs; the office"
+                             " passes both to a main flow and Yian refuses inputs a flow doesn't declare, so declare"
+                             " person and talking_to under input: (as the template's shared/flows/chat.yaml does)")
+
+
+def test_a_main_flow_missing_one_input_names_only_that_one(make_company):
+    flow = CHAT.replace("name: chat\n", "name: chat\ninput:\n  person: !str\n", 1)
+    root = make_company(**{"shared/flows/chat.yaml": flow})
+    [issue] = [i for i in lint(load_repo(root)) if i.code == "person.main_inputs_missing"]
+    assert issue.message.startswith("../../shared/flows/chat.yaml doesn't declare the talking_to input;")
+
+
+def test_only_the_main_flow_needs_the_office_inputs(make_company):
+    sops = [{"flow": "../../shared/flows/plain.yaml"}]
+    routines = [{"name": "daily", "flow": "../../shared/flows/plain.yaml"}]
+    root = make_company(**{"shared/flows/plain.yaml": CHAT.replace("id: chat\nname: chat", "id: p\nname: p"),
+                           "people/minh/person.yaml": person("minh", sops=sops, routines=routines)})
+    assert codes(root) == set()
+
+
+def test_the_template_flows_pass_lint(tmp_path):
+    root = tmp_path / "company"
+    write_company(root, tmp_path / "worktrees", company="Acme", owner=Owner("ngocbh", "Ngoc"))
+    agent = {"handle": "minh", "name": "Minh", "kind": "agent", "title": "Engineer", "manager": "ngocbh",
+             "main": "../../shared/flows/chat.yaml", "harnesses": ["composer"]}
+    (root / "people/minh").mkdir()
+    (root / "people/minh/person.yaml").write_text(yaml.safe_dump(agent))
+    (root / "people/minh/profile.md").write_text("# Minh, Engineer\n")
+    assert lint(load_repo(root)) == []
 
 
 def test_system_paths_is_refused(make_company):
