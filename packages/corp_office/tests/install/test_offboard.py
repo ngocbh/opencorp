@@ -1,5 +1,6 @@
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -264,3 +265,13 @@ def test_a_device_named_like_another_doesnt_hide_this_ones_commits(tmp_path):
     ask = Script()
     offboard(paths.home, ask, yes=True, host=make_host(tmp_path, Runner()), environ=no_launchers())
     assert "it has 1 commit not pushed to its remote" in "\n".join(ask.seen)
+
+
+def test_launchers_finds_another_name_and_entry(tmp_path):
+    repo = tmp_path / "repo"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "old").write_text(f'#!/bin/bash\nexec bun {repo}/packages/old/main.ts "$@"\n')
+    (bin_dir / "opencorp").write_text(f'#!/bin/bash\nexec bun {repo}/packages/cli/src/main.ts "$@"\n')
+    found = launchers({"PATH": str(bin_dir)}, repo, name="old", entry=Path("packages") / "old" / "main.ts")
+    assert found == [bin_dir / "old"]

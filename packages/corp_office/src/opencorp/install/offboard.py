@@ -159,21 +159,20 @@ def _remove_offline(paths: OfficePaths, me: Identity) -> str:
     return f"Removed this device ({me.device}) from @{me.handle} in the company repo."
 
 
-def launchers(environ: Mapping[str, str], repo: Path) -> list[Path]:
-    """The ``opencorp`` files on ``PATH`` that run this checkout's ``opencorp``: links into it, or scripts naming its entry."""
+def launchers(environ: Mapping[str, str], repo: Path, name: str = "opencorp", entry: Path = LAUNCHER) -> list[Path]:
+    """The ``name`` files on ``PATH`` that run this checkout: links into it, or scripts naming its ``entry``."""
     found: list[Path] = []
-    entry = repo / LAUNCHER
     for folder in environ.get("PATH", "").split(os.pathsep):
         if not folder:
             continue
-        path = Path(folder) / "opencorp"
+        path = Path(folder) / name
         try:
             if path.is_symlink():
                 target = Path(os.path.realpath(path))
                 ours = target.is_relative_to(os.path.realpath(repo))
             elif path.is_file() and path.stat().st_size < 4096:
                 text = path.read_bytes().decode(errors="replace")
-                ours = str(entry) in text or str(Path(os.path.realpath(repo)) / LAUNCHER) in text
+                ours = str(repo / entry) in text or str(Path(os.path.realpath(repo)) / entry) in text
             else:
                 ours = False
         except OSError:
