@@ -30,7 +30,7 @@ def test_stdin_is_passed(make_policy):
 
 
 def test_environment_is_scrubbed(make_policy, monkeypatch):
-    monkeypatch.setenv("AGENT_CORP_TEST_SECRET", "s3cr3t-value")
+    monkeypatch.setenv("OPENCORP_TEST_SECRET", "s3cr3t-value")
     policy = make_policy()
     out = sh(policy, "env").stdout.decode()
     assert "s3cr3t-value" not in out

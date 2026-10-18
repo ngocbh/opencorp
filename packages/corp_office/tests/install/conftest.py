@@ -13,7 +13,7 @@ SERVICE_TOOLS = ("launchctl", "systemctl", "loginctl", "tmux")
 
 @pytest.fixture(autouse=True)
 def no_real_services(tmp_path_factory, monkeypatch):
-    """Keep every test off the real machine: a temp ``HOME`` and ``AGENT_CORP_HOME``, and stand-ins for the service tools.
+    """Keep every test off the real machine: a temp ``HOME`` and ``OPENCORP_HOME``, and stand-ins for the service tools.
 
     The stand-ins come first on ``PATH``, refuse, and log their argv, so a code path that
     reaches the real host by mistake fails the test instead of registering a service.
@@ -27,7 +27,7 @@ def no_real_services(tmp_path_factory, monkeypatch):
         tool.chmod(tool.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("HOME", str(root / "user"))
-    monkeypatch.setenv("AGENT_CORP_HOME", str(root / "user" / ".agent-corp"))
+    monkeypatch.setenv("OPENCORP_HOME", str(root / "user" / ".opencorp"))
     (root / "user").mkdir()
     # A model check would reach the provider; tests of the check itself call it directly.
     monkeypatch.setattr("opencorp.install.init.model_problem", lambda provider: None)
@@ -64,7 +64,7 @@ class Runner:
 @pytest.fixture
 def owner_launch() -> Launch:
     """The owner's default office, with fixed paths so service files can be compared to goldens."""
-    return launch(Path("/Users/owner/.agent-corp"), repo=Path("/opt/agent-corp"),
+    return launch(Path("/Users/owner/.opencorp"), repo=Path("/opt/opencorp"),
                   environ={"PATH": "/usr/bin:/bin", "HOME": "/Users/owner"}, user_home=Path("/Users/owner"))
 
 

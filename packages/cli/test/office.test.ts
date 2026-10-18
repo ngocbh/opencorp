@@ -131,12 +131,12 @@ test("restart syncs the venv, then runs the Python restart with its flags", asyn
 
 // CI's ts job has no venv; the office job tests `start` itself.
 test.skipIf(!fs.existsSync(venvPython()))(
-  "`opencorp start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python",
+  "`opencorp start` on an OPENCORP_HOME with no office exits 3 with the onboarding hint from the real Python",
   async () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-home-")))
     try {
       const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "cli", "src", "main.ts"), "start"], {
-        env: { ...process.env, AGENT_CORP_HOME: home },
+        env: { ...process.env, OPENCORP_HOME: home },
         stdin: "ignore",
         stdout: "ignore",
         stderr: "pipe",
@@ -171,7 +171,7 @@ test("a running office answers the probe with one request; no socket is no offic
 
 test("`opencorp` with no office says so and exits 3 before loading the TUI", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
-  process.env.AGENT_CORP_HOME = home
+  process.env.OPENCORP_HOME = home
   const err: string[] = []
   const error = console.error
   console.error = (...a: unknown[]) => void err.push(a.join(" "))

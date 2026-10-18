@@ -9,22 +9,22 @@ from opencorp.install.launch import ServiceError, launch
 
 from .conftest import Runner, make_host
 
-SESSION = "agent-corp-office"
+SESSION = "opencorp-office"
 
 
 def test_the_tmux_command_runs_the_daemon_with_only_its_env_its_output_to_the_log_and_its_stdin_on_the_pane(
         owner_launch):
     assert fallback.shell_command(owner_launch) == (
         "exec env -i HOME=/Users/owner PATH=/usr/bin:/bin"
-        " /opt/agent-corp/.venv/bin/python -m opencorp.daemon.main --home /Users/owner/.agent-corp"
-        " >>/Users/owner/.agent-corp/office/office.log 2>&1")
+        " /opt/opencorp/.venv/bin/python -m opencorp.daemon.main --home /Users/owner/.opencorp"
+        " >>/Users/owner/.opencorp/office/office.log 2>&1")
 
 
 def test_tmux_starts_a_detached_session_in_the_repo(tmp_path, owner_launch):
     run = Runner([(["tmux", "has-session"], 1, "can't find session")])
     fallback.start_tmux(owner_launch, make_host(tmp_path, run))
     assert run.calls == [["tmux", "has-session", "-t", f"={SESSION}"],
-                         ["tmux", "new-session", "-d", "-s", SESSION, "-c", "/opt/agent-corp",
+                         ["tmux", "new-session", "-d", "-s", SESSION, "-c", "/opt/opencorp",
                           fallback.shell_command(owner_launch)]]
 
 

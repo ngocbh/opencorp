@@ -11,7 +11,7 @@ import { usePrompter, type Prompter } from "../src/prompt"
 const root = fs.mkdtempSync("/tmp/acd-")
 const trusted = path.join(root, "a")
 const other = path.join(root, "b")
-const saved = process.env.AGENT_CORP_HOME
+const saved = process.env.OPENCORP_HOME
 let office: FakeOffice
 // Every line opencorp printed in this file, checked at the end for any token it wrote.
 const printed: string[] = []
@@ -63,12 +63,12 @@ afterEach(() => {
   issued.length = 0
   fs.rmSync(trusted, { recursive: true, force: true })
   fs.rmSync(other, { recursive: true, force: true })
-  process.env.AGENT_CORP_HOME = saved
+  process.env.OPENCORP_HOME = saved
 })
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }))
 /** Runs `opencorp argv` as the device whose home is `home`, capturing stdout and stderr. */
 async function opencorp(home: string, ...argv: string[]) {
-  process.env.AGENT_CORP_HOME = home
+  process.env.OPENCORP_HOME = home
   const out: string[] = []
   const err: string[] = []
   const log = console.log

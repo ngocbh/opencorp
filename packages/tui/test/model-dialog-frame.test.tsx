@@ -10,7 +10,7 @@ import { typeInto } from "./routes/picker/type"
 type App = Awaited<ReturnType<typeof bootFrame>>
 type Office = ReturnType<typeof createFakeOffice>
 
-// The app keeps model.json under the preload's AGENT_CORP_HOME; each test starts without one.
+// The app keeps model.json under the preload's OPENCORP_HOME; each test starts without one.
 const modelFile = () => path.join(Global.Path.state, "model.json")
 const saved = () => (existsSync(modelFile()) ? readFileSync(modelFile(), "utf8") : "")
 beforeEach(() => rmSync(modelFile(), { force: true }))

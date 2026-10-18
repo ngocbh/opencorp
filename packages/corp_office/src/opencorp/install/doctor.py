@@ -85,14 +85,14 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     line it printed) is a warning, not a failure: only people with ``codex`` in ``harnesses`` need it. A ``codex`` that
     won't run or doesn't answer within ``timeout`` seconds fails.
 
-    ``environ`` is the office's environment: its ``AGENT_CORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
+    ``environ`` is the office's environment: its ``OPENCORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
     joins ``env``, as they do for an app-server. ``mode`` is the office's recorded service mode, which decides how a
     fix reaches it."""
     try:
         found = codex_command(env, environ)[0]
     except CodexMissing:
-        if override := environ.get("AGENT_CORP_CODEX_BIN"):
-            return Check("codex", "warn", f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the "
+        if override := environ.get("OPENCORP_CODEX_BIN"):
+            return Check("codex", "warn", f"OPENCORP_CODEX_BIN names {override}, which isn't an executable the "
                                           "office can find, so Codex sessions can't start (fix or unset it, then "
                                           f"{_codex_change_lands(mode)})")
         return Check("codex", "warn", "not on the office's PATH, so Codex sessions can't start "

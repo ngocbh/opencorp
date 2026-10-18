@@ -6,7 +6,7 @@ import { createModelState } from "../../src/context/local"
 import { Global } from "../../src/core/global"
 import { until } from "../fixture/until"
 
-// Under the preload's AGENT_CORP_HOME, one file per test, so a write still queued by one test
+// Under the preload's OPENCORP_HOME, one file per test, so a write still queued by one test
 // can't land in the next.
 let n = 0
 beforeEach(() => n++)

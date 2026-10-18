@@ -7,7 +7,7 @@ from opencorp.install.launch import Host, Launch, ServiceError
 
 
 def unit_name(launch: Launch) -> str:
-    return f"agent-corp-{launch.name}.service"
+    return f"opencorp-{launch.name}.service"
 
 
 def unit_path(launch: Launch, host: Host) -> Path:
@@ -41,7 +41,7 @@ def unit(launch: Launch) -> str:
     log = _plain(str(launch.log))
     return (
         "[Unit]\n"
-        f"Description=agent-corp office at {_plain(str(launch.home))}\n"
+        f"Description=OpenCorp office at {_plain(str(launch.home))}\n"
         "StartLimitIntervalSec=120\n"
         "StartLimitBurst=5\n"
         "\n"

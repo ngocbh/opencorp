@@ -11,7 +11,7 @@ from pathlib import Path
 # Home paths holding credentials or office state; a workspace may not be one of them or
 # lie inside one, since the workspace is readable (and maybe writable) by model code.
 SENSITIVE_HOME_PATHS = (
-    ".agent-corp",
+    ".opencorp",
     ".ssh",
     ".aws",
     ".gnupg",

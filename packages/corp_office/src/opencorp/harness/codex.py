@@ -40,12 +40,12 @@ class CodexSignedOut(CodexStartError):
 def codex_command(env: Mapping[str, str], environ: Mapping[str, str] = os.environ) -> list[str]:
     """``codex app-server --listen stdio://`` with ``codex`` found on ``env``'s PATH (the office's own).
 
-    ``AGENT_CORP_CODEX_BIN`` in the office's ``environ`` names another binary (a path, or a name on that PATH).
+    ``OPENCORP_CODEX_BIN`` in the office's ``environ`` names another binary (a path, or a name on that PATH).
     """
-    override = environ.get("AGENT_CORP_CODEX_BIN")
+    override = environ.get("OPENCORP_CODEX_BIN")
     found = shutil.which(override or "codex", path=env.get("PATH"))
     if found is None and override:
-        raise CodexMissing(f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the office can find; "
+        raise CodexMissing(f"OPENCORP_CODEX_BIN names {override}, which isn't an executable the office can find; "
                            "fix or unset it, then run `opencorp doctor`.")
     if found is None:
         raise CodexMissing("Codex isn't installed where the office can find it (on its PATH). Install it "

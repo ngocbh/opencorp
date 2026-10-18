@@ -54,7 +54,7 @@ export async function setUp(
   // The office that opens after must be the one the install set up, which --home names. The value is kept as
   // given: Python and the TUI's paths both expand a leading `~` and resolve it against the cwd they share.
   const home = homeFlag(argv)
-  if (home) process.env.AGENT_CORP_HOME = home
+  if (home) process.env.OPENCORP_HOME = home
   const synced = await syncVenv(command, deps)
   if (synced !== 0) return synced
   let code: number

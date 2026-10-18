@@ -14,7 +14,7 @@ from opencorp.install.launch import Host, Launch, ServiceError
 
 
 def session(launch: Launch) -> str:
-    return f"agent-corp-{launch.name}"
+    return f"opencorp-{launch.name}"
 
 
 def shell_command(launch: Launch) -> str:

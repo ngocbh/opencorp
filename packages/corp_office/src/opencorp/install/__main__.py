@@ -27,7 +27,7 @@ NOT_ONBOARDED = 3
 
 
 def _home(value: str | None) -> Path:
-    return Path(value or os.environ.get("AGENT_CORP_HOME") or "~/.agent-corp").expanduser()
+    return Path(value or os.environ.get("OPENCORP_HOME") or "~/.opencorp").expanduser()
 
 
 def _provider_stdin(args: argparse.Namespace) -> io.StringIO | None:
@@ -168,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                        ("start", "start the office if it isn't running"),
                        ("restart", "stop the office and start it again")):
         sub = commands.add_parser(name, help=text)
-        sub.add_argument("--home", help="agent-corp home (default: $AGENT_CORP_HOME or ~/.agent-corp)")
+        sub.add_argument("--home", help="OpenCorp home (default: $OPENCORP_HOME or ~/.opencorp)")
     for name in ("init", "onboard"):
         sub = commands.choices[name]
         sub.add_argument("--service", choices=("auto", *service.MODES), default="auto",

@@ -43,18 +43,18 @@ def fake_codex_on_path(tmp_path_factory, monkeypatch):
     codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I -m opencorp.testing.fake_codex "$@"\n')
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{root}{os.pathsep}{os.environ.get('PATH', '')}")
-    monkeypatch.delenv("AGENT_CORP_CODEX_BIN", raising=False)
+    monkeypatch.delenv("OPENCORP_CODEX_BIN", raising=False)
 
 
 @pytest.fixture(scope="session")
 def cli_ready():
-    """Skip when asked to (``AGENT_CORP_SKIP_E2E=1``) or when `opencorp` can't run here (no bun, or no `bun install`); fail instead on CI."""
+    """Skip when asked to (``OPENCORP_SKIP_E2E=1``) or when `opencorp` can't run here (no bun, or no `bun install`); fail instead on CI."""
     on_ci = bool(os.environ.get("CI"))
-    if os.environ.get("AGENT_CORP_SKIP_E2E") == "1":
+    if os.environ.get("OPENCORP_SKIP_E2E") == "1":
         # A CI job that inherits the variable must not pass by skipping the whole suite.
         if on_ci:
-            pytest.fail("AGENT_CORP_SKIP_E2E=1 is set on CI")
-        pytest.skip("AGENT_CORP_SKIP_E2E=1 is set")
+            pytest.fail("OPENCORP_SKIP_E2E=1 is set on CI")
+        pytest.skip("OPENCORP_SKIP_E2E=1 is set")
     problem = None
     if shutil.which("bun") is None:
         problem = "bun is not on PATH"

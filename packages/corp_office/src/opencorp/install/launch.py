@@ -49,7 +49,7 @@ class Launch:
         return self.office / "office.sock"
 
 
-CODEX_ENV = ("CODEX_HOME", "AGENT_CORP_CODEX_BIN")
+CODEX_ENV = ("CODEX_HOME", "OPENCORP_CODEX_BIN")
 """Which Codex the office runs, when the caller's shell sets them: its home, and a binary other than ``codex``."""
 
 
@@ -74,7 +74,7 @@ def launch(home: Path, *, repo: Path = REPO, environ: Mapping[str, str] = os.env
     """
     # Resolved the way the daemon resolves ``--home``, so both agree on the socket and pidfile.
     home = Path(os.path.realpath(os.path.expanduser(home)))
-    default = Path(os.path.realpath((user_home or Path.home()) / ".agent-corp"))
+    default = Path(os.path.realpath((user_home or Path.home()) / ".opencorp"))
     name = "office" if home == default else f"office-{hashlib.sha256(str(home).encode()).hexdigest()[:8]}"
     argv = (str(repo / ".venv" / "bin" / "python"), "-m", "opencorp.daemon.main", "--home", str(home))
     return Launch(argv=argv, env=daemon_env(environ), cwd=repo, home=home, name=name)

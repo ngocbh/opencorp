@@ -44,7 +44,7 @@ def test_a_loaded_agent_that_wont_kickstart_is_removed_before_falling_back(tmp_p
     run = Runner([(["launchctl", "kickstart"], 1, "Operation not permitted"), (["tmux", "has-session"], 1, "")])
     got = service.install(one, make_host(tmp_path, run, which=lambda name: f"/usr/bin/{name}"))
     assert got.mode == "tmux" and "Operation not permitted" in got.notes[0]
-    assert ["launchctl", "bootout", f"gui/501/com.agent-corp.{one.name}"] in run.calls
+    assert ["launchctl", "bootout", f"gui/501/com.opencorp.{one.name}"] in run.calls
     assert not list((tmp_path / "Library" / "LaunchAgents").iterdir())
 
 
@@ -84,25 +84,25 @@ def test_a_chosen_mode_that_fails_is_an_error_not_a_fallback(tmp_path, one):
 
 def test_a_running_office_under_launchd_is_only_checked_not_reinstalled(tmp_path, one):
     service.install(one, make_host(tmp_path, Runner([(["launchctl", "print"], 113, "")])))
-    plist = tmp_path / "Library" / "LaunchAgents" / f"com.agent-corp.{one.name}.plist"
+    plist = tmp_path / "Library" / "LaunchAgents" / f"com.opencorp.{one.name}.plist"
     before = plist.read_bytes()
     moved = launch(one.home, repo=one.cwd, environ={"PATH": "/opt/bin", "LC_CTYPE": "C"}, user_home=tmp_path)
     again = Runner()
     got = service.install(moved, make_host(tmp_path, again, answers=lambda s: True, which=lambda n: "/usr/bin/tmux"))
     assert got == service.Installed("launchd", [])
-    assert again.calls == [["launchctl", "print", f"gui/501/com.agent-corp.{one.name}"]]
+    assert again.calls == [["launchctl", "print", f"gui/501/com.opencorp.{one.name}"]]
     assert plist.read_bytes() == before
 
 
 def test_a_running_office_under_systemd_is_only_checked_not_restarted(tmp_path, one):
     service.install(one, make_host(tmp_path, Runner(), platform="linux"))
-    unit = tmp_path / ".config" / "systemd" / "user" / f"agent-corp-{one.name}.service"
+    unit = tmp_path / ".config" / "systemd" / "user" / f"opencorp-{one.name}.service"
     before = unit.read_text()
     moved = launch(one.home, repo=one.cwd, environ={"PATH": "/opt/bin"}, user_home=tmp_path)
     again = Runner()
     got = service.install(moved, make_host(tmp_path, again, platform="linux", answers=lambda s: True))
     assert got == service.Installed("systemd", [])
-    assert again.calls == [["systemctl", "--user", "is-enabled", f"agent-corp-{one.name}.service"]]
+    assert again.calls == [["systemctl", "--user", "is-enabled", f"opencorp-{one.name}.service"]]
     assert unit.read_text() == before
 
 
@@ -139,7 +139,7 @@ def test_start_uses_the_recorded_service(tmp_path, one):
     run = Runner([(["systemctl", "--user", "start"], 0, "")])
     service.install(one, make_host(tmp_path, Runner(), platform="linux"))
     assert service.start(one, make_host(tmp_path, run, platform="linux")) == service.Installed("systemd", [])
-    assert run.calls == [["systemctl", "--user", "start", f"agent-corp-{one.name}.service"]]
+    assert run.calls == [["systemctl", "--user", "start", f"opencorp-{one.name}.service"]]
 
 
 def test_start_falls_back_to_the_background_when_the_service_wont_start(tmp_path, one):
@@ -157,7 +157,7 @@ def test_start_removes_a_launch_agent_that_wont_kickstart_before_falling_back(tm
     got = service.start(one, make_host(tmp_path, run, popen=lambda argv, **kw: None))
     assert got.mode == "background" and "Operation not permitted" in got.notes[0]
     # Left loaded, RunAtLoad would start it under launchd at the next login while the record says background.
-    assert ["launchctl", "bootout", f"gui/501/com.agent-corp.{one.name}"] in run.calls
+    assert ["launchctl", "bootout", f"gui/501/com.opencorp.{one.name}"] in run.calls
     assert not list((tmp_path / "Library" / "LaunchAgents").iterdir())
     assert recorded(one)["mode"] == "background"
 
@@ -165,7 +165,7 @@ def test_start_removes_a_launch_agent_that_wont_kickstart_before_falling_back(tm
 def test_start_removes_a_systemd_unit_that_wont_start_before_falling_back(tmp_path, one):
     service.install(one, make_host(tmp_path, Runner(), platform="linux"))
     units = tmp_path / ".config" / "systemd" / "user"
-    name = f"agent-corp-{one.name}.service"
+    name = f"opencorp-{one.name}.service"
     (units / "default.target.wants").mkdir()
     (units / "default.target.wants" / name).symlink_to(units / name)  # what `systemctl enable` makes
     run = Runner([(["systemctl", "--user", "start"], 1, "Unit is masked")])

@@ -32,7 +32,7 @@ function fake(opts: { codes?: Record<string, number>; terminal?: boolean; screen
       return opts.screenCode ?? 0
     },
     openOffice: async () => {
-      offices.push(process.env.AGENT_CORP_HOME)
+      offices.push(process.env.OPENCORP_HOME)
       return 7
     },
   }
@@ -101,7 +101,7 @@ for (const command of ["init", "onboard"] as const) {
 
     for (const argv of [["--home", "/tmp/h"], ["--home=/tmp/h"]]) {
       test(`${argv.join(" ")} is passed to the screen and names the office that opens`, async () => {
-        process.env.AGENT_CORP_HOME = "/tmp/elsewhere"
+        process.env.OPENCORP_HOME = "/tmp/elsewhere"
         const { deps, screens, offices } = fake()
         expect(await setUp(command, argv, deps)).toBe(7)
         expect(screens).toEqual([install("--json-prompts", ...argv)])
@@ -109,12 +109,12 @@ for (const command of ["init", "onboard"] as const) {
       })
     }
 
-    test("without --home, AGENT_CORP_HOME is left as it was", async () => {
-      process.env.AGENT_CORP_HOME = "/tmp/elsewhere"
+    test("without --home, OPENCORP_HOME is left as it was", async () => {
+      process.env.OPENCORP_HOME = "/tmp/elsewhere"
       const set = fake()
       await setUp(command, ["--service", "tmux"], set.deps)
       expect(set.offices).toEqual(["/tmp/elsewhere"])
-      delete process.env.AGENT_CORP_HOME
+      delete process.env.OPENCORP_HOME
       const unset = fake()
       await setUp(command, [], unset.deps)
       expect(unset.offices).toEqual([undefined])

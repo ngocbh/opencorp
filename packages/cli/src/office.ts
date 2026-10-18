@@ -1,6 +1,6 @@
 // Running the Python side of `opencorp`, and checking that the office is up. Onboarding, the doctor,
 // and starting the office live in `python -m opencorp.install`, run with this checkout's venv;
-// it reads the home from $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed
+// it reads the home from $OPENCORP_HOME, which it inherits, or from a `--home` flag passed
 // through. `opencorp` never starts the office on its own: the service `opencorp init` or `opencorp onboard` installed does.
 import { createOfficeClient } from "@opencorp/tui/office/client"
 import { readIdentity, type Identity } from "@opencorp/tui/office/identity"
@@ -39,7 +39,7 @@ export function venvPython(repo = REPO) {
 /**
  * Runs `python -m opencorp.install <command> ...args` from the venv and resolves to its exit
  * code; without a venv, says to run `opencorp onboard` and resolves to 1. It runs in the caller's
- * folder, so a relative `--home` or $AGENT_CORP_HOME means the same as it does to the TUI.
+ * folder, so a relative `--home` or $OPENCORP_HOME means the same as it does to the TUI.
  */
 export async function runInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
   const python = venvPython()

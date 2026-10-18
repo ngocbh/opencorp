@@ -139,7 +139,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
               useKittyKeyboard: {},
               autoFocus: false,
               openConsoleOnError: false,
-              useMouse: !Flag.AGENT_CORP_DISABLE_MOUSE && input.config.mouse,
+              useMouse: !Flag.OPENCORP_DISABLE_MOUSE && input.config.mouse,
               consoleOptions: {
                 keyBindings: [{ name: "y", ctrl: true, action: "copy-selection" }],
               },
@@ -203,8 +203,8 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                     >
                       <TuiStartupProvider
                         value={{
-                          initialRoute: process.env.AGENT_CORP_ROUTE ? JSON.parse(process.env.AGENT_CORP_ROUTE) : undefined,
-                          skipInitialLoading: Boolean(process.env.AGENT_CORP_FAST_BOOT),
+                          initialRoute: process.env.OPENCORP_ROUTE ? JSON.parse(process.env.OPENCORP_ROUTE) : undefined,
+                          skipInitialLoading: Boolean(process.env.OPENCORP_FAST_BOOT),
                         }}
                       >
                         <ClipboardProvider>
@@ -288,7 +288,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const offSelectionKeys = keymap.intercept(
     "key",
     ({ event }) => {
-      if (!Flag.AGENT_CORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
+      if (!Flag.OPENCORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
       Selection.handleSelectionKey(renderer, toast, event, clipboard)
     },
     { priority: 1 },
@@ -314,7 +314,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   // Update terminal window title based on current route and session
   createEffect(() => {
-    if (!terminalTitleEnabled() || Flag.AGENT_CORP_DISABLE_TERMINAL_TITLE) return
+    if (!terminalTitleEnabled() || Flag.OPENCORP_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "session") {
       const sessionID = route.data.sessionID
@@ -665,7 +665,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       flexDirection="column"
       backgroundColor={theme.background}
       onMouseDown={(evt) => {
-        if (!Flag.AGENT_CORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
+        if (!Flag.OPENCORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) return
         if (evt.button !== MouseButton.RIGHT) return
 
         if (!Selection.copy(renderer, toast, clipboard)) return
@@ -673,12 +673,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         evt.stopPropagation()
       }}
       onMouseUp={
-        !Flag.AGENT_CORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT
+        !Flag.OPENCORP_EXPERIMENTAL_DISABLE_COPY_ON_SELECT
           ? () => Selection.copy(renderer, toast, clipboard)
           : undefined
       }
     >
-      <Show when={Flag.AGENT_CORP_SHOW_TTFD}>
+      <Show when={Flag.OPENCORP_SHOW_TTFD}>
         <TimeToFirstDraw />
       </Show>
       <box flexGrow={1} minHeight={0} flexDirection="column">
