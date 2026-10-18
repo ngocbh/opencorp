@@ -608,6 +608,20 @@ def test_the_recordings_include_the_core_scenarios():
         p.stem for p in RECORDED}
 
 
+@pytest.mark.parametrize("path", RECORDED, ids=lambda p: p.stem)
+def test_each_recorded_agent_messages_deltas_add_up_to_its_completed_text(path):
+    # Only agent messages: real Codex can leave a command's first output line out of its deltas (steer.jsonl).
+    deltas, texts = {}, {}
+    for line in path.read_text().splitlines():
+        msg = json.loads(line)["msg"]
+        if msg.get("method") == "item/agentMessage/delta":
+            deltas[msg["params"]["itemId"]] = deltas.get(msg["params"]["itemId"], "") + msg["params"]["delta"]
+        elif msg.get("method") == "item/completed" and msg["params"]["item"]["type"] == "agentMessage":
+            texts[msg["params"]["item"]["id"]] = msg["params"]["item"]["text"]
+    assert set(deltas) <= set(texts)
+    assert deltas == {i: texts[i] for i in deltas}
+
+
 def test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in(recorded):
     if not SPIKE["S3"]["detail"]["scenarios"]["steer"]["ok"]:  # the key spike.json records its sessions under
         pytest.skip("the spike's steer scenario failed; rerun it with --scenario steer")
