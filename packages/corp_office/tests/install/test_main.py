@@ -349,3 +349,21 @@ def test_doctor_prints_the_commands_that_finish_the_move(tmp_path, monkeypatch, 
     assert "warn  leftovers" in out
     bun = shlex.join(["bun", str(REPO / legacy.NEW_ENTRY)])
     assert f"To finish moving to OpenCorp, run these in order:\n  mv {old} {new}\n  {bun} onboard\n" in out
+
+
+@pytest.mark.parametrize("command", ["init", "onboard", "start", "restart"])
+def test_the_default_home_waits_for_the_old_one_to_be_moved(tmp_path, monkeypatch, capsys, command):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("OPENCORP_HOME")
+    old, new = tmp_path / legacy.OLD_HOME, tmp_path / legacy.NEW_HOME
+    (old / "office").mkdir(parents=True)
+    assert main([command]) == 1
+    assert (f"opencorp {command}: the office from before the rename is at {old}; `opencorp doctor` prints the"
+            f" commands that move it to {new}") in capsys.readouterr().err
+    assert not new.exists()
+
+
+def test_another_home_is_not_held_up_by_the_old_one(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / legacy.OLD_HOME).mkdir()
+    assert main(["start", "--home", str(tmp_path / "elsewhere")]) == install_main.NOT_ONBOARDED

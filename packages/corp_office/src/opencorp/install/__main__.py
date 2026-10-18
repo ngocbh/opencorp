@@ -30,6 +30,17 @@ def _home(value: str | None) -> Path:
     return Path(value or os.environ.get("OPENCORP_HOME") or "~/.opencorp").expanduser()
 
 
+def _waits_for_old_home(command: str, home: Path) -> bool:
+    """Whether ``home`` is the default one while the office from before the rename is still in the old one; says so."""
+    user_home = Path.home()
+    new = user_home / legacy.NEW_HOME
+    if os.path.realpath(home) != os.path.realpath(new) or (old := legacy.old_home_only(user_home)) is None:
+        return False
+    print(f"opencorp {command}: the office from before the rename is at {old}; `opencorp doctor` prints the"
+          f" commands that move it to {new}", file=sys.stderr)
+    return True
+
+
 def _provider_stdin(args: argparse.Namespace) -> io.StringIO | None:
     # The provider is read before any question, so stdin is free of it; with it on stdin
     # nothing is asked, and questions without a flag take their defaults.
@@ -53,6 +64,8 @@ def _prompter(args: argparse.Namespace, stdin: io.StringIO | None, preset: dict[
 
 
 def _init(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("init", _home(args.home)):
+        return 1
     # Handles from flags are checked before anything is asked, so a bad one doesn't cost the owner an interview.
     for flag, handle in (("--handle", args.handle), ("--agent-handle", args.agent_handle)):
         if handle and (problem := handle_problem(handle)):
@@ -79,6 +92,8 @@ def _init(args: argparse.Namespace) -> int:
 
 
 def _onboard(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("onboard", _home(args.home)):
+        return 1
     stdin = _provider_stdin(args)
     try:
         onboard(_home(args.home), _prompter(args, stdin, {WHO: args.handle}), mode=args.service,
@@ -130,6 +145,8 @@ def _came_up(run: Launch, host: Host, how) -> bool:
 
 
 def _start(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("start", _home(args.home)):
+        return 1
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
     if host.answers(run.socket):
@@ -145,6 +162,8 @@ def _start(args: argparse.Namespace) -> int:
 
 
 def _restart(args: argparse.Namespace) -> int:
+    if _waits_for_old_home("restart", _home(args.home)):
+        return 1
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
     if is_new(OfficePaths(run.home).company):
