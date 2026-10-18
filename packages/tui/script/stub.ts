@@ -250,7 +250,7 @@ export function createFakeOffice(
     const humans = state.people.filter((p) => p.kind === "human")
     if (header === null) {
       if (humans.some((p) => p.devices?.length))
-        throw fail(401, "unauthenticated", "this office needs a device token; run `ac login`")
+        throw fail(401, "unauthenticated", "this office needs a device token; run `opencorp login`")
       return { actor: ceo(), device: null }
     }
     const token = /^bearer +(act_[A-Za-z0-9_-]{43})$/i.exec(header)?.[1]
@@ -258,7 +258,7 @@ export function createFakeOffice(
     const hash = createHash("sha256").update(token).digest("hex")
     for (const p of humans)
       for (const d of p.devices ?? []) if (d.token_sha256 === hash) return { actor: p.handle, device: d.name }
-    throw fail(401, "bad_token", "the office doesn't know this device; run `ac login`")
+    throw fail(401, "bad_token", "the office doesn't know this device; run `opencorp login`")
   }
 
   /** The human `handle`, if `actor` may change their `what`: themselves, or the CEO. */
@@ -294,7 +294,7 @@ export function createFakeOffice(
     check(str(body?.handle) && str(body.password), "handle and password are required")
     const person = state.people.find((p) => p.handle === body.handle && p.kind === "human")
     if (person && !passwords.has(person.handle))
-      throw fail(409, "no_password", `@${person.handle} has no password; set one with \`ac password\``)
+      throw fail(409, "no_password", `@${person.handle} has no password; set one with \`opencorp password\``)
     if (!person || passwords.get(person.handle) !== body.password)
       throw fail(401, "bad_login", "wrong handle or password")
     return addDevice(body.handle, { name: body.device, token_sha256: body.token_sha256 }, body.handle)
@@ -957,7 +957,7 @@ export function createFakeOffice(
       ({ params, actor }) => {
         checkManage(actor)
         if (params.name === OFFICE)
-          throw fail(422, "set_up_by_onboard", "office is office/provider.json; `ac onboard` changes it")
+          throw fail(422, "set_up_by_onboard", "office is office/provider.json; `opencorp onboard` changes it")
         connection(params.name)
         state.connections = state.connections.filter((c) => c.name !== params.name)
         return Response.json({ ok: true })

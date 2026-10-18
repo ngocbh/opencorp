@@ -27,7 +27,7 @@ def git(repo, *args):
 
 
 def office(home, *, device=True):
-    """An office as `ac init` leaves it: a company with this device listed for @me, identity.json, office state."""
+    """An office as `opencorp init` leaves it: a company with this device listed for @me, identity.json, office state."""
     paths = OfficePaths(home)
     make_home(paths)
     owner = Owner("me", "Me")
@@ -97,7 +97,7 @@ def test_offboard_deletes_a_pushed_company_and_then_the_empty_home(tmp_path):
 
 
 def test_this_devices_own_commits_dont_count_as_unpushed(tmp_path):
-    # A company joined with `ac onboard --from` has this device's commit on top of what it cloned.
+    # A company joined with `opencorp onboard --from` has this device's commit on top of what it cloned.
     paths = office(tmp_path / "home", device=False)
     publish(paths, tmp_path)
     me = make_device(paths.home, Owner("me", "Me"))
@@ -220,30 +220,30 @@ def test_offboard_removes_the_device_through_a_running_office(short_dir):
     assert sorted(os.listdir(paths.home)) == ["company"]
 
 
-def test_offboard_reports_how_ac_was_put_on_path_and_keeps_the_checkout(tmp_path):
+def test_offboard_reports_how_opencorp_was_put_on_path_and_keeps_the_checkout(tmp_path):
     repo = tmp_path / "checkout"
-    (repo / "packages" / "ac" / "src").mkdir(parents=True)
-    (repo / "packages" / "ac" / "src" / "main.ts").write_text("")
+    (repo / "packages" / "cli" / "src").mkdir(parents=True)
+    (repo / "packages" / "cli" / "src" / "main.ts").write_text("")
     wrapper, linked, other = tmp_path / "local", tmp_path / "bun", tmp_path / "sbin"
     for d in (wrapper, linked, other):
         d.mkdir()
-    (wrapper / "ac").write_text(f'#!/bin/bash\nexec bun {repo}/packages/ac/src/main.ts "$@"\n')
-    (linked / "ac").symlink_to(repo / "packages" / "ac" / "src" / "main.ts")
-    (other / "ac").write_bytes(b"\x7fELF not ours")
+    (wrapper / "opencorp").write_text(f'#!/bin/bash\nexec bun {repo}/packages/cli/src/main.ts "$@"\n')
+    (linked / "opencorp").symlink_to(repo / "packages" / "cli" / "src" / "main.ts")
+    (other / "opencorp").write_bytes(b"\x7fELF not ours")
     found = launchers({"PATH": os.pathsep.join(map(str, (wrapper, linked, other)))}, repo)
-    assert found == [wrapper / "ac", linked / "ac"]
+    assert found == [wrapper / "opencorp", linked / "opencorp"]
     ask = Script()
     offboard(tmp_path / "nowhere", ask, host=make_host(tmp_path, Runner()), repo=repo,
              environ={"PATH": str(wrapper)})
     said = "\n".join(ask.seen)
-    assert f"rm {wrapper / 'ac'}" in said
+    assert f"rm {wrapper / 'opencorp'}" in said
     assert f"The checkout at {repo} stays" in said
 
 
 def test_offboard_with_no_launcher_on_path_says_so(tmp_path):
     ask = Script()
     offboard(tmp_path / "nowhere", ask, host=make_host(tmp_path, Runner()), environ=no_launchers())
-    assert any("No `ac` launcher from" in line for line in ask.seen)
+    assert any("No `opencorp` launcher from" in line for line in ask.seen)
 
 
 def test_offboard_never_prints_the_token_or_the_provider(tmp_path):

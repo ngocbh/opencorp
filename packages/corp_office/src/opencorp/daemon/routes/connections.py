@@ -90,7 +90,7 @@ def _connection_list(conns: Connections, can_manage: bool) -> ConnectionList:
 
 
 def _llm_config(body: AddConnectionRequest) -> dict:
-    """The ``llm_config`` of the connection ``body`` asks for, as ``ac onboard`` builds one."""
+    """The ``llm_config`` of the connection ``body`` asks for, as ``opencorp onboard`` builds one."""
     endpoint = (body.endpoint or "").strip()
     if body.provider == "azure":
         if not endpoint:
@@ -189,7 +189,7 @@ async def remove(request: Request) -> JSONResponse:
     await call(_check_manage, get_office(request), acting_person(request))
     name = request.path_params["name"]
     if name == OFFICE:
-        raise HTTPError(422, "set_up_by_onboard", "office is office/provider.json; `ac onboard` changes it")
+        raise HTTPError(422, "set_up_by_onboard", "office is office/provider.json; `opencorp onboard` changes it")
     await call(_remove, conns, cache, name)
     return ok(Ack(ok=True))
 

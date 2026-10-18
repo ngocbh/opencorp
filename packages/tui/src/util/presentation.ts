@@ -32,7 +32,7 @@ export function sessionEpilogue(input: { title: string; sessionID?: string }) {
     ...wordmark("  "),
     "",
     `  ${weak("Session")}${bold}${input.title}${reset}`,
-    `  ${weak("Continue")}${bold}ac -s ${input.sessionID}${reset}`,
+    `  ${weak("Continue")}${bold}opencorp -s ${input.sessionID}${reset}`,
     "",
   ].join("\n")
 }

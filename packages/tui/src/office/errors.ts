@@ -25,7 +25,7 @@ export class OfficeUnavailable extends OfficeError {
 /** The office refused the request's device token, or wanted one (a 401). */
 export class UnknownDevice extends OfficeError {
   constructor(code: string) {
-    super(401, code, "the office doesn't know this device: run `ac login`")
+    super(401, code, "the office doesn't know this device: run `opencorp login`")
     this.name = "UnknownDevice"
   }
 }

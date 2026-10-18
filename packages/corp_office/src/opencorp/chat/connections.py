@@ -23,7 +23,7 @@ from opencorp.secrets import read_private, write_private
 log = logging.getLogger(__name__)
 
 OFFICE = "office"
-"""The connection that is office/provider.json, set up by ``ac onboard``."""
+"""The connection that is office/provider.json, set up by ``opencorp onboard``."""
 
 RESERVED = {OFFICE, "default", "login"}
 """Names no added connection may take: ``default`` and ``login`` are routes under /connections."""
@@ -237,7 +237,7 @@ class Connections:
         ``SIGN_IN_LOCK_TIMEOUT``.
         """
         if name == OFFICE:
-            raise ValueError("office is office/provider.json; `ac onboard` changes it, and it can't be removed")
+            raise ValueError("office is office/provider.json; `opencorp onboard` changes it, and it can't be removed")
         path = self._path(name)
         auth = self.auth_file(name)
         with self._lock:

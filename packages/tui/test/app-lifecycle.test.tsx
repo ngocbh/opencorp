@@ -29,7 +29,7 @@ test("SIGHUP destroys the renderer, clears the title and removes its listener", 
 
   try {
     const { run } = await import("../src/app")
-    // The shape `ac` calls it with: no config, so the defaults apply.
+    // The shape `opencorp` calls it with: no config, so the defaults apply.
     const task = Effect.runPromise(
       run({ socket: office.socket, cwd: "/tmp/proj", args: {} }).pipe(Effect.provide(Global.layer)),
     )
@@ -75,7 +75,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     await task
 
     expect(stdout).toContain("@minh · /tmp/proj")
-    expect(stdout).toContain(`ac -s ${s.id}`)
+    expect(stdout).toContain(`opencorp -s ${s.id}`)
   } finally {
     process.stdout.write = originalWrite
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()

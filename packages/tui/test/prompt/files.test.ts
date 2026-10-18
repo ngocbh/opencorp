@@ -7,7 +7,7 @@ import { findFiles } from "../../src/prompt/files"
 let dir: string
 
 beforeEach(async () => {
-  dir = await fs.mkdtemp(path.join(os.tmpdir(), "ac-files-"))
+  dir = await fs.mkdtemp(path.join(os.tmpdir(), "opencorp-files-"))
   for (const file of ["README.md", "src/app.ts", "src/lib/apply.ts", "node_modules/app/index.js", ".git/app"]) {
     await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true })
     await fs.writeFile(path.join(dir, file), "")

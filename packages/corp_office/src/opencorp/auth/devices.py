@@ -101,7 +101,7 @@ def login(git: CompanyGit, request: LoginRequest) -> Person:
     with git.lock:
         person = load_repo(git.root).people.get(request.handle)
     if person is not None and person.kind == "human" and person.password_hash is None:
-        raise DeviceRefused(409, "no_password", f"@{request.handle} has no password; set one with `ac password`")
+        raise DeviceRefused(409, "no_password", f"@{request.handle} has no password; set one with `opencorp password`")
     if person is None or person.kind != "human" or not check_password(request.password, person.password_hash):
         raise DeviceRefused(401, "bad_login", "wrong handle or password")
     device = Device(name=request.device, token_sha256=request.token_sha256)

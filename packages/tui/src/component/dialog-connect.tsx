@@ -103,7 +103,7 @@ function ConnectList(props: { onPick: (provider: Provider) => void }) {
     return row && "connection" in row ? connections().find((c) => c.name === row.connection) : undefined
   })
   const canDefault = createMemo(() => office.canManage() && highlighted()?.default === false)
-  // `office` is office/provider.json, which only `ac onboard` changes.
+  // `office` is office/provider.json, which only `opencorp onboard` changes.
   const canRemove = createMemo(() => office.canManage() && !!highlighted() && highlighted()?.name !== OFFICE)
 
   async function makeDefault(name: string) {

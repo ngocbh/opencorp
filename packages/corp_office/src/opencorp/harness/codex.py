@@ -46,10 +46,10 @@ def codex_command(env: Mapping[str, str], environ: Mapping[str, str] = os.enviro
     found = shutil.which(override or "codex", path=env.get("PATH"))
     if found is None and override:
         raise CodexMissing(f"AGENT_CORP_CODEX_BIN names {override}, which isn't an executable the office can find; "
-                           "fix or unset it, then run `ac doctor`.")
+                           "fix or unset it, then run `opencorp doctor`.")
     if found is None:
         raise CodexMissing("Codex isn't installed where the office can find it (on its PATH). Install it "
-                           "(npm install -g @openai/codex), sign in with `codex login`, then run `ac doctor`.")
+                           "(npm install -g @openai/codex), sign in with `codex login`, then run `opencorp doctor`.")
     return [found, *APP_SERVER_ARGS]
 
 
@@ -97,7 +97,7 @@ class CodexProcess:
     def start(self) -> dict[str, Any]:
         """Spawn, record, initialize with ``experimentalApi``, and check the sign-in; return initialize's result.
 
-        Raises ``CodexStartError`` (or ``CodexSignedOut``): a command that can't be run says to run ``ac doctor``, and
+        Raises ``CodexStartError`` (or ``CodexSignedOut``): a command that can't be run says to run ``opencorp doctor``, and
         a failed handshake also names ``log``, where Codex's output is. Nothing is left running or recorded.
         A process already killed never spawns.
         """
@@ -110,7 +110,7 @@ class CodexProcess:
                     self.proc = subprocess.Popen(self.command, cwd=self.cwd, env=self.env, stdin=subprocess.PIPE,
                                                  stdout=subprocess.PIPE, stderr=err, start_new_session=True)
             except OSError as exc:
-                raise CodexStartError(f"Codex couldn't start: {exc}. Run `ac doctor` to check it.") from exc
+                raise CodexStartError(f"Codex couldn't start: {exc}. Run `opencorp doctor` to check it.") from exc
             self.store.record_worker(self.key, pid=self.proc.pid, pgid=self.proc.pid,
                                      start_time=start_time(self.proc.pid) or time.time())
             self._recorded = True
@@ -172,9 +172,9 @@ class CodexProcess:
             self.store.remove_worker(self.key, pid=proc.pid)
 
     def start_error(self, exc: Exception) -> CodexStartError:
-        """The error for an app-server that failed or died while starting: what went wrong, to run ``ac doctor``, and
+        """The error for an app-server that failed or died while starting: what went wrong, to run ``opencorp doctor``, and
         where Codex's output (its stderr, with the reason) is."""
-        return CodexStartError(f"Codex didn't start: {exc}. Run `ac doctor` to check it; Codex's output is in "
+        return CodexStartError(f"Codex didn't start: {exc}. Run `opencorp doctor` to check it; Codex's output is in "
                                f"{self.log}.")
 
     def _closed(self) -> None:

@@ -69,7 +69,7 @@ async def test_once_a_human_has_a_device_unauthenticated_requests_are_refused(cl
     for method, path in [("GET", "/people"), ("GET", "/whoami"), ("POST", "/sessions")]:
         r = await client.request(method, path)
         assert r.status_code == 401
-        assert r.json() == {"error": "unauthenticated", "message": "this office needs a device token; run `ac login`"}
+        assert r.json() == {"error": "unauthenticated", "message": "this office needs a device token; run `opencorp login`"}
 
 
 async def test_a_token_acts_as_its_person(client, company):
@@ -293,7 +293,7 @@ PASSWORD = "pw-sentinel-c41e"
 
 
 def give_password(company, handle: str, password: str = PASSWORD) -> None:
-    """Commit a password's hash for ``handle``, as ``ac init`` would have."""
+    """Commit a password's hash for ``handle``, as ``opencorp init`` would have."""
     path = company / "people" / handle / "person.yaml"
     path.write_text(path.read_text() + f"password_hash: {json.dumps(hash_password(password))}\n")
     _git(company, "commit", "-qam", f"password for {handle}")

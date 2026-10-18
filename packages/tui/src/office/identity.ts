@@ -54,11 +54,11 @@ export function readIdentity(file: string, warn: (message: string) => void = con
   try {
     data = JSON.parse(text)
   } catch {
-    throw new Error(`${file} is not valid JSON; run \`ac login --force\``)
+    throw new Error(`${file} is not valid JSON; run \`opencorp login --force\``)
   }
   const { handle, device, token } = data
   if (typeof handle !== "string" || typeof device !== "string" || typeof token !== "string")
-    throw new Error(`${file} lacks a handle, device or token; run \`ac login --force\``)
+    throw new Error(`${file} lacks a handle, device or token; run \`opencorp login --force\``)
   return { handle, device, token }
 }
 

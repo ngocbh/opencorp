@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 OPEN = frozenset({("GET", "/health"), ("HEAD", "/health"), ("POST", "/login")})
 """Requests served without a token even once tokens are enforced: the "is the office up" probe of
-``ac``, ``ac start``, ``ac doctor`` and onboarding, and logging in with a password."""
+``opencorp``, ``opencorp start``, ``opencorp doctor`` and onboarding, and logging in with a password."""
 
 
 def acting_person(request: Request) -> str:

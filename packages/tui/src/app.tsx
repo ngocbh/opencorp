@@ -319,9 +319,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     if (route.data.type === "session") {
       const sessionID = route.data.sessionID
       const session = office.state.sessions.find((s) => s.id === sessionID)
-      if (session) return renderer.setTerminalTitle(`ac | ${personLabel(office.state.people, session.person)}`)
+      if (session) return renderer.setTerminalTitle(`opencorp | ${personLabel(office.state.people, session.person)}`)
     }
-    renderer.setTerminalTitle("ac")
+    renderer.setTerminalTitle("opencorp")
   })
 
   const args = useArgs()

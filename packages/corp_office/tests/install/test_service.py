@@ -275,7 +275,7 @@ def test_a_tmux_office_whose_session_is_gone_has_nothing_to_kill(tmp_path, one):
 
 
 def test_uninstalling_removes_another_managers_leftover_file_too(tmp_path, one):
-    # `ac start` records "background" when launchd won't start, but the plist stays behind.
+    # `opencorp start` records "background" when launchd won't start, but the plist stays behind.
     installed_as(one, "background")
     host = make_host(tmp_path, run := Runner())
     plist = launchd.plist_path(one, host)

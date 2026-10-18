@@ -464,7 +464,7 @@ class Spike:
     def __init__(self, codex: str, out: Path) -> None:
         self.codex, self.out = codex, out
         out.mkdir(parents=True, exist_ok=True)
-        self.root = Path(tempfile.mkdtemp(prefix="ac-codex-spike-"))
+        self.root = Path(tempfile.mkdtemp(prefix="opencorp-codex-spike-"))
         self.ws = self.root / "ws"
         # The owner's git config may sign commits or run hooks; a scratch repo needs neither.
         git = ["git", "-c", "user.name=spike", "-c", "user.email=spike@example.com", "-c", "commit.gpgsign=false",

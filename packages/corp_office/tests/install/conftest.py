@@ -36,7 +36,7 @@ def no_real_services(tmp_path_factory, monkeypatch):
     monkeypatch.setattr("opencorp.install.onboard.azure_deployments", lambda base_url, key: [])
     # Listing a provider's models would reach the provider; an empty list means the model is asked as before.
     monkeypatch.setattr("opencorp.install.onboard.provider_models", lambda name, key: [])
-    # `ac doctor` would run whatever codex is on the developer's PATH; tests of the check itself call it directly.
+    # `opencorp doctor` would run whatever codex is on the developer's PATH; tests of the check itself call it directly.
     monkeypatch.setattr("opencorp.install.doctor.codex_check",
                         lambda env, environ, mode=None: Check("codex", "ok", "stand-in"))
     yield

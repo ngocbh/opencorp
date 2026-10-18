@@ -10,7 +10,7 @@ import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { officeClient, officeNotRunning } from "../office"
 
-const USAGE = "Usage: ac feedback [SESSION|RUN] [-m TEXT] [--turn N]"
+const USAGE = "Usage: opencorp feedback [SESSION|RUN] [-m TEXT] [--turn N]"
 
 /** A usage error: printed with the usage line, exit 2. */
 class Usage extends Error {}
@@ -53,7 +53,7 @@ async function target(
 async function edit(template: string) {
   const editor = process.env.VISUAL || process.env.EDITOR
   if (!editor) throw new Usage("set $EDITOR (or $VISUAL), or pass -m TEXT")
-  const dir = mkdtempSync(path.join(os.tmpdir(), "ac-feedback-"))
+  const dir = mkdtempSync(path.join(os.tmpdir(), "opencorp-feedback-"))
   const file = path.join(dir, "FEEDBACK.md")
   try {
     writeFileSync(file, template)
@@ -70,7 +70,7 @@ async function edit(template: string) {
 }
 
 /**
- * `ac feedback [SESSION|RUN] [-m TEXT] [--turn N]`: queues feedback on a run for the person's
+ * `opencorp feedback [SESSION|RUN] [-m TEXT] [--turn N]`: queues feedback on a run for the person's
  * profile. Without `-m` it opens $EDITOR on a template listing the session's turns; `--turn N`
  * starts the text with `About turn N ("…"): `. Exits 1 on office errors, 2 on usage errors, and 3
  * when the office isn't running.
@@ -106,7 +106,7 @@ export const run: CommandRun = async (argv) => {
         : prefix + values.message.trim()
     const text = written(draft, prefix)
     if (!text) {
-      console.error("ac feedback: no feedback written; nothing sent")
+      console.error("opencorp feedback: no feedback written; nothing sent")
       return 1
     }
     const f = await client.feedback
@@ -122,7 +122,7 @@ export const run: CommandRun = async (argv) => {
     // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag or a missing value.
     const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
     const usage = e instanceof Usage || parse
-    console.error(`ac feedback: ${e instanceof Error ? e.message : e}${usage ? `\n${USAGE}` : ""}`)
+    console.error(`opencorp feedback: ${e instanceof Error ? e.message : e}${usage ? `\n${USAGE}` : ""}`)
     return usage ? 2 : 1
   }
 }

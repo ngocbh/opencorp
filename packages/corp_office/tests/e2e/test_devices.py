@@ -1,4 +1,4 @@
-"""A real office whose owner registered this device at onboarding: `ac` and the TUI's client use its token, and nothing else gets in."""
+"""A real office whose owner registered this device at onboarding: `opencorp` and the TUI's client use its token, and nothing else gets in."""
 
 import json
 import subprocess
@@ -46,18 +46,18 @@ def owned(ac_ready, short_dir, fake_llm):
 
 def tui_client(office: RunningOffice) -> dict:
     """What the TUI's office client reads from ``office`` as this device: who it is, the people, the stream."""
-    done = subprocess.run(["bun", "-e", TUI_CLIENT], cwd=REPO, env=office._ac_env(),
+    done = subprocess.run(["bun", "-e", TUI_CLIENT], cwd=REPO, env=office._cli_env(),
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stdout + done.stderr
     return json.loads(done.stdout)
 
 
-def test_ac_and_the_tui_use_the_device_token_and_nothing_else_gets_in(owned, workspace):
+def test_opencorp_and_the_tui_use_the_device_token_and_nothing_else_gets_in(owned, workspace):
     me = read_identity(identity_path(owned.home))
     outputs = []
 
-    def ac(*args, check=True):
-        done = owned.ac(*args, cwd=workspace, check=check)
+    def opencorp(*args, check=True):
+        done = owned.opencorp(*args, cwd=workspace, check=check)
         outputs.extend([done.stdout, done.stderr])
         return done
 
@@ -68,7 +68,7 @@ def test_ac_and_the_tui_use_the_device_token_and_nothing_else_gets_in(owned, wor
     first = subprocess.run([*git, "show", f"{root}:people/ngocbh/person.yaml"],
                            check=True, capture_output=True, text=True).stdout
     assert me.device in first and token_sha256(me.token) in first
-    whoami = ac("whoami").stdout
+    whoami = opencorp("whoami").stdout
     assert f"The office: @ngocbh, from device {me.device}" in whoami
 
     # Without the token: only the liveness probe answers.
@@ -84,15 +84,15 @@ def test_ac_and_the_tui_use_the_device_token_and_nothing_else_gets_in(owned, wor
     assert tui_client(owned) == {"whoami": {"person": "ngocbh", "device": me.device},
                                  "people": ["minh", "ngocbh"], "stream": "connected"}
 
-    # `ac` commands: a session ends, and the device list shows names only.
+    # `opencorp` commands: a session ends, and the device list shows names only.
     owned.fake.script({"content": "Hi."})
     sid = owned.start_chat(owned.person("minh"), workspace)
-    ac("end", sid)
+    opencorp("end", sid)
     assert owned.status(sid) in ("ending", "ended")
-    assert ac("devices", "list").stdout == f"{me.device}  (this device)\n"
+    assert opencorp("devices", "list").stdout == f"{me.device}  (this device)\n"
 
     # Logging out removes the last device, so the office is open again.
-    ac("logout")
+    opencorp("logout")
     assert owned.client().get("/people").status_code == 200
     assert "devices(@ngocbh): remove " + me.device == owned.git_log()[0]
     for text in outputs:

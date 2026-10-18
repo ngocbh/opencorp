@@ -1,7 +1,7 @@
-// Running the Python side of `ac`, and checking that the office is up. Onboarding, the doctor,
+// Running the Python side of `opencorp`, and checking that the office is up. Onboarding, the doctor,
 // and starting the office live in `python -m opencorp.install`, run with this checkout's venv;
 // it reads the home from $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed
-// through. `ac` never starts the office on its own: the service `ac init` or `ac onboard` installed does.
+// through. `opencorp` never starts the office on its own: the service `opencorp init` or `opencorp onboard` installed does.
 import { createOfficeClient } from "@opencorp/tui/office/client"
 import { readIdentity, type Identity } from "@opencorp/tui/office/identity"
 import { defaultSocket, identityPath } from "@opencorp/tui/office/paths"
@@ -9,7 +9,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 
-/** The checkout `ac` runs from; the office runs from the same one. */
+/** The checkout `opencorp` runs from; the office runs from the same one. */
 export const REPO = path.resolve(import.meta.dir, "../../..")
 
 /** What running the Python side touches; tests pass fakes. */
@@ -38,13 +38,13 @@ export function venvPython(repo = REPO) {
 
 /**
  * Runs `python -m opencorp.install <command> ...args` from the venv and resolves to its exit
- * code; without a venv, says to run `ac onboard` and resolves to 1. It runs in the caller's
+ * code; without a venv, says to run `opencorp onboard` and resolves to 1. It runs in the caller's
  * folder, so a relative `--home` or $AGENT_CORP_HOME means the same as it does to the TUI.
  */
 export async function runInstall(command: string, args: string[], deps: Deps = realDeps): Promise<number> {
   const python = venvPython()
   if (!deps.exists(python)) {
-    deps.error(`ac: no Python environment at ${path.dirname(path.dirname(python))}; run \`ac onboard\``)
+    deps.error(`opencorp: no Python environment at ${path.dirname(path.dirname(python))}; run \`opencorp onboard\``)
     return 1
   }
   return deps.spawn([python, "-m", "opencorp.install", command, ...args])
@@ -52,12 +52,12 @@ export async function runInstall(command: string, args: string[], deps: Deps = r
 
 /**
  * Syncs the checkout's venv with uv (on PATH or in ~/.local/bin) and resolves to uv's exit code; without uv, says
- * so for `ac <command>` and resolves to 1.
+ * so for `opencorp <command>` and resolves to 1.
  */
 export async function syncVenv(command: string, deps: Deps = realDeps): Promise<number> {
   const uv = deps.which("uv") ?? [path.join(os.homedir(), ".local", "bin", "uv")].find((p) => deps.exists(p))
   if (!uv) {
-    deps.error(`ac ${command}: uv not found; install it (https://docs.astral.sh/uv/) and run \`ac ${command}\` again`)
+    deps.error(`opencorp ${command}: uv not found; install it (https://docs.astral.sh/uv/) and run \`opencorp ${command}\` again`)
     return 1
   }
   // Quiet keeps uv's progress lines out of the install's prompts; its errors still show.
@@ -79,7 +79,7 @@ export const NO_OFFICE = 3
 
 /** Says the office isn't running; returns `NO_OFFICE`. */
 export function officeNotRunning(): number {
-  console.error("The office isn't running. Run `ac doctor`.")
+  console.error("The office isn't running. Run `opencorp doctor`.")
   return NO_OFFICE
 }
 
@@ -88,7 +88,7 @@ export function officeNotRunning(): number {
  * and treated as none: the office then says whether it needs a token.
  */
 export function localIdentity(): Identity | undefined {
-  const warn = (message: string) => console.error(`ac: ${message}`)
+  const warn = (message: string) => console.error(`opencorp: ${message}`)
   try {
     return readIdentity(identityPath(), warn)
   } catch (e) {

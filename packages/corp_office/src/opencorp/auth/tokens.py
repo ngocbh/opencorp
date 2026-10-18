@@ -43,11 +43,11 @@ def authenticate(header: str | None, roster: "Roster") -> tuple[str, str]:
             a token no human lists. Messages never include the token.
     """
     if header is None:
-        raise AuthError("unauthenticated", "this office needs a device token; run `ac login`")
+        raise AuthError("unauthenticated", "this office needs a device token; run `opencorp login`")
     match = _BEARER.fullmatch(header.strip())
     if match is None or not _TOKEN.fullmatch(match[1]):
         raise AuthError("bad_token", "the Authorization header isn't `Bearer <device token>`")
     owner = roster.tokens.get(token_sha256(match[1]))
     if owner is None:
-        raise AuthError("bad_token", "the office doesn't know this device; run `ac login`")
+        raise AuthError("bad_token", "the office doesn't know this device; run `opencorp login`")
     return owner

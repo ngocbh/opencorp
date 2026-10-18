@@ -1,4 +1,4 @@
-"""A real office on a temp home, made as `ac init` makes it, and the office calls the TUI makes."""
+"""A real office on a temp home, made as `opencorp init` makes it, and the office calls the TUI makes."""
 
 import json
 import os
@@ -16,8 +16,8 @@ from opencorp.auth.identity import identity_path, read_identity
 from opencorp.daemon.app import OfficePaths
 from opencorp.install.launch import REPO
 
-AC = REPO / "packages" / "ac" / "src" / "main.ts"
-"""The `ac` entry point in this checkout, run with bun."""
+CLI = REPO / "packages" / "cli" / "src" / "main.ts"
+"""The `opencorp` entry point in this checkout, run with bun."""
 
 
 def wait_for(check, what, timeout=40.0):
@@ -69,7 +69,7 @@ class RunningOffice:
 
     def onboard(self, device: bool = False) -> None:
         """Make Acme with Ngoc as CEO and Minh as its first teammate, and the office as a background process,
-        as `ac init` would.
+        as `opencorp init` would.
 
         With ``device``, init registers this device, so the office needs its token; the
         client sends it.
@@ -177,15 +177,15 @@ class RunningOffice:
 
         return wait_for(ready, f"session {sid}'s debrief")
 
-    def _ac_env(self) -> dict[str, str]:
+    def _cli_env(self) -> dict[str, str]:
         return dict(os.environ, AGENT_CORP_HOME=str(self.home))
 
-    def ac(self, *args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
-        """Run `ac <args>` in ``cwd`` against this office and wait for it."""
-        done = subprocess.run(["bun", str(AC), *args], cwd=cwd, env=self._ac_env(),
+    def opencorp(self, *args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Run `opencorp <args>` in ``cwd`` against this office and wait for it."""
+        done = subprocess.run(["bun", str(CLI), *args], cwd=cwd, env=self._cli_env(),
                               capture_output=True, text=True, timeout=90)
         if check:
-            assert done.returncode == 0, f"ac {' '.join(args)}: {done.stdout}{done.stderr}"
+            assert done.returncode == 0, f"opencorp {' '.join(args)}: {done.stdout}{done.stderr}"
         return done
 
     def git_log(self) -> list[str]:

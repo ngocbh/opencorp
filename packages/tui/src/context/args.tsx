@@ -1,6 +1,6 @@
 import { createSimpleContext } from "./helper"
 
-/** What `ac` passes the TUI from its flags. */
+/** What `opencorp` passes the TUI from its flags. */
 export interface Args {
   /** Text to send as soon as the office is online (from the home screen). */
   prompt?: string

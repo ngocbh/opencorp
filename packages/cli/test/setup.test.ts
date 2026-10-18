@@ -42,7 +42,7 @@ function fake(opts: { codes?: Record<string, number>; terminal?: boolean; screen
 const sync = { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO }
 
 for (const command of ["init", "onboard"] as const) {
-  describe(`ac ${command}`, () => {
+  describe(`opencorp ${command}`, () => {
     const install = (...argv: string[]) => [venvPython(), "-m", "opencorp.install", command, ...argv]
 
     for (const flag of ["--provider-stdin", "-h", "--help"]) {
@@ -86,7 +86,7 @@ for (const command of ["init", "onboard"] as const) {
       const { deps, errors, offices } = fake({ screenThrows: new Error("boom") })
       expect(await setUp(command, [], deps)).toBe(1)
       expect(errors).toEqual([
-        `ac ${command}: can't show the setup screen: boom; pass the provider with --provider-stdin instead`,
+        `opencorp ${command}: can't show the setup screen: boom; pass the provider with --provider-stdin instead`,
       ])
       expect(offices).toEqual([])
     })

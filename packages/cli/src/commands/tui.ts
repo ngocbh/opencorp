@@ -5,7 +5,7 @@ import { defaultSocket } from "@opencorp/tui/office/paths"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
 
-/** The TUI's args from `ac`'s flags: `-s/--session ID`, `-c/--continue`, `--person HANDLE`, `--prompt TEXT`. */
+/** The TUI's args from `opencorp`'s flags: `-s/--session ID`, `-c/--continue`, `--person HANDLE`, `--prompt TEXT`. */
 export function parseTuiArgs(argv: string[]) {
   const { values } = parseArgs({
     args: argv,
@@ -29,7 +29,7 @@ export const run: CommandRun = async (argv) => {
   try {
     args = parseTuiArgs(argv)
   } catch (e) {
-    console.error(`ac: ${e instanceof Error ? e.message : e}`)
+    console.error(`opencorp: ${e instanceof Error ? e.message : e}`)
     return 2
   }
   const socket = defaultSocket()
@@ -42,12 +42,12 @@ export const run: CommandRun = async (argv) => {
   } catch (e) {
     // Any other failure, the TUI shows as it would have without this check.
     if (e instanceof UnknownDevice) {
-      console.error(`ac: ${e.message}`)
+      console.error(`opencorp: ${e.message}`)
       return 1
     }
   }
   // The TUI is Solid JSX: the transform must be registered before its modules load, and a
-  // bunfig preload would only apply when `ac` runs from this package's folder.
+  // bunfig preload would only apply when `opencorp` runs from this package's folder.
   const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
   ensureSolidTransformPlugin()
   const [{ Effect }, { Global, run: runTui }] = await Promise.all([

@@ -1,6 +1,6 @@
 """This device's identity: ``<home>/identity.json`` (0600) holds the handle, device name and token.
 
-``ac`` reads and writes the same file. The token in it is never printed, logged or committed.
+``opencorp`` reads and writes the same file. The token in it is never printed, logged or committed.
 """
 
 import json

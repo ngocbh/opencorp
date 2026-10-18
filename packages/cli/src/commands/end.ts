@@ -31,7 +31,7 @@ export const run: CommandRun = async (argv) => {
   try {
     ;[id] = parseArgs({ args: argv, allowPositionals: true, options: {} }).positionals
   } catch (e) {
-    console.error(`ac end: ${e instanceof Error ? e.message : e}`)
+    console.error(`opencorp end: ${e instanceof Error ? e.message : e}`)
     return 2
   }
   const client = officeClient()
@@ -45,7 +45,7 @@ export const run: CommandRun = async (argv) => {
     return 0
   } catch (e) {
     if (e instanceof OfficeUnavailable) return officeNotRunning()
-    console.error(`ac end: ${e instanceof Error ? e.message : e}`)
+    console.error(`opencorp end: ${e instanceof Error ? e.message : e}`)
     return 1
   }
 }

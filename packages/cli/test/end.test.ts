@@ -31,7 +31,7 @@ async function capture(argv: string[]) {
   }
 }
 
-test("with no id, ac end ends the newest live main session in the folder", async () => {
+test("with no id, opencorp end ends the newest live main session in the folder", async () => {
   const office = createFakeOffice()
   try {
     const [first] = office.state.sessions
@@ -47,7 +47,7 @@ test("with no id, ac end ends the newest live main session in the folder", async
   }
 })
 
-test("ac end finds the folder's live session behind more than a page of newer sessions", async () => {
+test("opencorp end finds the folder's live session behind more than a page of newer sessions", async () => {
   const office = createFakeOffice()
   try {
     const [live] = office.state.sessions
@@ -67,10 +67,10 @@ test("ac end finds the folder's live session behind more than a page of newer se
   }
 })
 
-test("ac end ID ends that session and says the debrief follows; no office exits 3, its refusal 1", async () => {
+test("opencorp end ID ends that session and says the debrief follows; no office exits 3, its refusal 1", async () => {
   rmSync(path.dirname(socket), { recursive: true, force: true })
   const down = await capture(["end", "S1"])
-  expect([down.code, down.err]).toEqual([3, "The office isn't running. Run `ac doctor`."])
+  expect([down.code, down.err]).toEqual([3, "The office isn't running. Run `opencorp doctor`."])
 
   mkdirSync(path.dirname(socket), { recursive: true })
   const office = createFakeOffice({ socket })
@@ -85,13 +85,13 @@ test("ac end ID ends that session and says the debrief follows; no office exits 
     expect(office.state.sessions[0].status).toBe("ending")
     office.setStatus(id, "debriefing")
     const again = await capture(["end", id])
-    expect([again.code, again.err]).toEqual([1, `ac end: session ${id} has no live run`])
+    expect([again.code, again.err]).toEqual([1, `opencorp end: session ${id} has no live run`])
   } finally {
     office.stop()
   }
 })
 
-test("ac end on a side session promises no debrief", async () => {
+test("opencorp end on a side session promises no debrief", async () => {
   mkdirSync(path.dirname(socket), { recursive: true })
   const office = createFakeOffice({ socket })
   try {

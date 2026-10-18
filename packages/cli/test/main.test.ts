@@ -21,10 +21,12 @@ async function capture(argv: string[]) {
 test("--help lists every command; an unknown command exits 2", async () => {
   const help = await capture(["--help"])
   expect(help.code).toBe(0)
+  expect(help.out).toContain("Usage: opencorp [command] [options]")
+  expect(help.out).toContain("With no command, or only options, opencorp runs `tui`.")
   for (const name of Object.keys(commands)) expect(help.out).toContain(name)
   const unknown = await capture(["frobnicate"])
   expect(unknown.code).toBe(2)
-  expect(unknown.err).toContain("unknown command: frobnicate")
+  expect(unknown.err).toContain("opencorp: unknown command: frobnicate")
 })
 
 test("the TUI's flags become its args", () => {

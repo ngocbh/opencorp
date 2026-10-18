@@ -28,7 +28,7 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-/** Runs `ac profile …`, capturing what it writes to stdout and stderr. */
+/** Runs `opencorp profile …`, capturing what it writes to stdout and stderr. */
 async function profile(...argv: string[]) {
   const out: string[] = []
   const err: string[] = []
@@ -54,7 +54,7 @@ const puts = () => office.requests.filter((r) => r.method === "PUT").map((r) => 
 
 /** The file `err` says the unsaved edit is kept in; checks it is private to the user. */
 function kept(err: string) {
-  const file = /^ac profile: your edit is kept in (.+)$/m.exec(err)?.[1]
+  const file = /^opencorp profile: your edit is kept in (.+)$/m.exec(err)?.[1]
   if (!file) throw new Error(`no kept file in: ${err}`)
   expect(statSync(file).mode & 0o777).toBe(0o600)
   return readFileSync(file, "utf8")
@@ -102,7 +102,7 @@ function racingEditor(then: string) {
   )
 }
 
-/** Starts `ac profile edit minh` and changes the profile to `theirs` while its editor is open. */
+/** Starts `opencorp profile edit minh` and changes the profile to `theirs` while its editor is open. */
 async function editDuringHandEdit(theirs: string) {
   const pending = profile("edit", "minh")
   while (!existsSync(path.join(home, "opened"))) await Bun.sleep(10)
@@ -146,7 +146,7 @@ test("after a conflict, saving without merging keeps the rejected edit in a file
   racingEditor(":")
   const { r } = await editDuringHandEdit(theirs)
   expect(r).toMatchObject({ code: 1 })
-  expect(r.err).toContain("ac profile: your edit was not saved")
+  expect(r.err).toContain("opencorp profile: your edit was not saved")
   expect(kept(r.err)).toBe(before.text + "My line.\n")
   expect(puts()).toHaveLength(2)
   expect(office.state.profiles.minh!.text).toBe(theirs)
@@ -165,7 +165,7 @@ test("after a conflict, emptying the file or a failing editor keeps the rejected
   racingEditor("exit 3")
   const failed = (await editDuringHandEdit(now.text + "Another line.\n")).r
   expect(failed.code).toBe(1)
-  expect(failed.err).toContain("ac profile: the editor exited with code 3")
+  expect(failed.err).toContain("opencorp profile: the editor exited with code 3")
   expect(kept(failed.err)).toBe(now.text + "My line.\n")
 })
 
@@ -209,7 +209,7 @@ test("saving the text unchanged writes nothing", async () => {
 test("saving an empty file writes nothing", async () => {
   editor(`: > "$1"\n`)
   const r = await profile("edit", "minh")
-  expect(r).toMatchObject({ code: 1, err: "ac profile: the file is empty; nothing saved" })
+  expect(r).toMatchObject({ code: 1, err: "opencorp profile: the file is empty; nothing saved" })
   expect(puts()).toEqual([])
 })
 
@@ -219,7 +219,7 @@ test("a save over the profile budget warns", async () => {
   editor(`printf 'More.\\n' >> "$1"\n`)
   const r = await profile("edit", "minh")
   expect(r.code).toBe(0)
-  expect(r.err).toBe("ac profile: the profile is over the company's profile budget")
+  expect(r.err).toBe("opencorp profile: the profile is over the company's profile budget")
 })
 
 test("usage errors exit 2 and office errors exit 1", async () => {
@@ -229,15 +229,15 @@ test("usage errors exit 2 and office errors exit 1", async () => {
   expect((await profile()).code).toBe(2)
   const show = await profile("show", "minh")
   expect(show.code).toBe(2)
-  expect(show.err).toContain("Usage: ac profile edit PERSON")
+  expect(show.err).toContain("Usage: opencorp profile edit PERSON")
   expect((await profile("edit", "minh", "extra")).code).toBe(2)
   editor(`: # leaves the file as it is\n`)
   const unknown = await profile("edit", "@nobody")
-  expect(unknown).toMatchObject({ code: 1, err: "ac profile: no person @nobody" })
+  expect(unknown).toMatchObject({ code: 1, err: "opencorp profile: no person @nobody" })
   editor(`exit 3\n`)
   const failed = await profile("edit", "minh")
   expect(failed.code).toBe(1)
-  expect(failed.err).toBe("ac profile: the editor exited with code 3")
+  expect(failed.err).toBe("opencorp profile: the editor exited with code 3")
   expect(puts()).toEqual([])
 })
 
@@ -246,5 +246,5 @@ test("with no office running, edit says so and exits 3", async () => {
   rmSync(socket, { force: true })
   editor(`: # leaves the file as it is\n`)
   const r = await profile("edit", "minh")
-  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `ac doctor`."])
+  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `opencorp doctor`."])
 })

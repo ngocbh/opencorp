@@ -1,4 +1,4 @@
-"""``ac offboard``: take this machine's office away again, leaving the company's history where it is safe."""
+"""``opencorp offboard``: take this machine's office away again, leaving the company's history where it is safe."""
 
 import os
 from collections.abc import Mapping
@@ -21,8 +21,8 @@ KEEP = "No, keep it all"
 REMOVE = "Yes, remove it"
 """What the owner is asked before anything is removed, and the two answers."""
 
-LAUNCHER = Path("packages") / "ac" / "src" / "main.ts"
-"""What an ``ac`` launcher runs, relative to the checkout."""
+LAUNCHER = Path("packages") / "cli" / "src" / "main.ts"
+"""What an ``opencorp`` launcher runs, relative to the checkout."""
 
 
 class OffboardError(Exception):
@@ -125,7 +125,7 @@ def plan(home: Path, host: Host, *, delete_company: bool = False, repo: Path = R
         lines.append(f"this device ({me.device}) from @{me.handle} in the company repo")
     lines += found.service
     described = {paths.office: "the office's store, provider.json, connections and sign-ins, logs, and worktrees",
-                 identity_path(paths.home): "this device's identity and token", paths.home / "tui": "ac's own state",
+                 identity_path(paths.home): "this device's identity and token", paths.home / "tui": "opencorp's own state",
                  paths.home / CLONE: "an unfinished clone of a company"}
     lines += [f"{p} ({described[p]})" for p in state]
     if company is not None and keep_why is None:
@@ -160,13 +160,13 @@ def _remove_offline(paths: OfficePaths, me: Identity) -> str:
 
 
 def launchers(environ: Mapping[str, str], repo: Path) -> list[Path]:
-    """The ``ac`` files on ``PATH`` that run this checkout's ``ac``: links into it, or scripts naming its entry."""
+    """The ``opencorp`` files on ``PATH`` that run this checkout's ``opencorp``: links into it, or scripts naming its entry."""
     found: list[Path] = []
     entry = repo / LAUNCHER
     for folder in environ.get("PATH", "").split(os.pathsep):
         if not folder:
             continue
-        path = Path(folder) / "ac"
+        path = Path(folder) / "opencorp"
         try:
             if path.is_symlink():
                 target = Path(os.path.realpath(path))
@@ -186,10 +186,10 @@ def launchers(environ: Mapping[str, str], repo: Path) -> list[Path]:
 def _report_launchers(prompter: Prompter, environ: Mapping[str, str], repo: Path) -> None:
     found = launchers(environ, repo)
     if not found:
-        prompter.say(f"No `ac` launcher from {repo} is on your PATH.")
+        prompter.say(f"No `opencorp` launcher from {repo} is on your PATH.")
     for path in found:
         how = "a link made by `bun link`" if path.is_symlink() else "a wrapper script"
-        prompter.say(f"`ac` is on your PATH as {path}, {how}; remove it with `rm {path}`.")
+        prompter.say(f"`opencorp` is on your PATH as {path}, {how}; remove it with `rm {path}`.")
     prompter.say(f"The checkout at {repo} stays; delete it yourself once you're done with agent-corp.")
 
 

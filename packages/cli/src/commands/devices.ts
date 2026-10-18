@@ -1,4 +1,4 @@
-// `ac devices`: the devices a human uses ac from, as their person.yaml lists them.
+// `opencorp devices`: the devices a human uses opencorp from, as their person.yaml lists them.
 import { OfficeUnavailable } from "@opencorp/tui/office/errors"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
@@ -6,11 +6,11 @@ import { localIdentity, officeClient, officeNotRunning } from "../office"
 
 class Usage extends Error {}
 
-const USAGE = "usage: ac devices list [HANDLE] [--hashes] | add HANDLE NAME SHA256 | remove HANDLE NAME"
+const USAGE = "usage: opencorp devices list [HANDLE] [--hashes] | add HANDLE NAME SHA256 | remove HANDLE NAME"
 
 /**
- * `ac devices list [H] [--hashes]`: H's device names (this device's person by default), with
- * their token hashes only on `--hashes`. `ac devices add H NAME SHA256` and `ac devices remove
+ * `opencorp devices list [H] [--hashes]`: H's device names (this device's person by default), with
+ * their token hashes only on `--hashes`. `opencorp devices add H NAME SHA256` and `opencorp devices remove
  * H NAME` change H's list.
  */
 export const run: CommandRun = async (argv) => {
@@ -51,7 +51,7 @@ export const run: CommandRun = async (argv) => {
     throw new Usage(USAGE)
   } catch (e) {
     if (e instanceof OfficeUnavailable) return officeNotRunning()
-    console.error(`ac devices: ${e instanceof Error ? e.message : e}`)
+    console.error(`opencorp devices: ${e instanceof Error ? e.message : e}`)
     return e instanceof Usage || (e as { code?: string }).code?.startsWith("ERR_PARSE_ARGS") ? 2 : 1
   }
 }

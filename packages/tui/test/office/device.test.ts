@@ -51,7 +51,7 @@ test("a 401 is one line that says to log in, without the token", async () => {
   const e = await failure(request(srv.socket, "GET", "/people", undefined, { token }))
   expect(e).toBeInstanceOf(UnknownDevice)
   expect(e).toBeInstanceOf(OfficeError)
-  expect([e.status, e.code, e.message]).toEqual([401, "bad_token", "the office doesn't know this device: run `ac login`"])
+  expect([e.status, e.code, e.message]).toEqual([401, "bad_token", "the office doesn't know this device: run `opencorp login`"])
   expect(String(e)).not.toContain(token)
 })
 
@@ -85,7 +85,7 @@ test("the TUI's sync shows a refused device as an error, not as no office", asyn
   sync.start()
   cleanup.push(sync.stop)
   await until(() => sync.status() === "error")
-  expect(sync.error()).toBe("the office doesn't know this device: run `ac login`")
+  expect(sync.error()).toBe("the office doesn't know this device: run `opencorp login`")
 })
 
 test("the stub office: open as the CEO until a human has a device, then a token is needed", async () => {

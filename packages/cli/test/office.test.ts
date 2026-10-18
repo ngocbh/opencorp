@@ -64,7 +64,7 @@ test("syncThenInstall stops when uv is missing, naming the command", async () =>
   const noUv = fake({}, ["uv", path.join(os.homedir(), ".local", "bin", "uv")])
   expect(await syncThenInstall("init", [], noUv.deps)).toBe(1)
   expect(noUv.calls).toEqual([])
-  expect(noUv.errors.join("\n")).toContain("ac init: uv not found")
+  expect(noUv.errors.join("\n")).toContain("opencorp init: uv not found")
 })
 
 test("offboard runs the Python offboarding with its flags and never syncs the venv", async () => {
@@ -109,7 +109,7 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
   const bare = fake({}, [venvPython()])
   expect(await doctor([], bare.deps)).toBe(1)
   expect(bare.calls).toEqual([])
-  expect(bare.errors.join("\n")).toContain("run `ac onboard`")
+  expect(bare.errors.join("\n")).toContain("run `opencorp onboard`")
 })
 
 test("start runs the Python start with its flags", async () => {
@@ -131,11 +131,11 @@ test("restart syncs the venv, then runs the Python restart with its flags", asyn
 
 // CI's ts job has no venv; the office job tests `start` itself.
 test.skipIf(!fs.existsSync(venvPython()))(
-  "`ac start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python",
+  "`opencorp start` on an AGENT_CORP_HOME with no office exits 3 with the onboarding hint from the real Python",
   async () => {
-    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ac-home-")))
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-home-")))
     try {
-      const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "ac", "src", "main.ts"), "start"], {
+      const proc = Bun.spawn([process.execPath, path.join(REPO, "packages", "cli", "src", "main.ts"), "start"], {
         env: { ...process.env, AGENT_CORP_HOME: home },
         stdin: "ignore",
         stdout: "ignore",
@@ -143,7 +143,7 @@ test.skipIf(!fs.existsSync(venvPython()))(
       })
       const stderr = await new Response(proc.stderr).text()
       expect(await proc.exited).toBe(3)
-      expect(stderr).toContain(`no office at ${home} yet; run \`ac init\` to create one, or \`ac onboard --from URL\``)
+      expect(stderr).toContain(`no office at ${home} yet; run \`opencorp init\` to create one, or \`opencorp onboard --from URL\``)
     } finally {
       fs.rmSync(home, { recursive: true, force: true })
     }
@@ -169,7 +169,7 @@ test("a running office answers the probe with one request; no socket is no offic
   }
 })
 
-test("`ac` with no office says so and exits 3 before loading the TUI", async () => {
+test("`opencorp` with no office says so and exits 3 before loading the TUI", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "aco-"))
   process.env.AGENT_CORP_HOME = home
   const err: string[] = []
@@ -177,7 +177,7 @@ test("`ac` with no office says so and exits 3 before loading the TUI", async () 
   console.error = (...a: unknown[]) => void err.push(a.join(" "))
   try {
     expect(await main(["--continue"])).toBe(3)
-    expect(err).toEqual(["The office isn't running. Run `ac doctor`."])
+    expect(err).toEqual(["The office isn't running. Run `opencorp doctor`."])
   } finally {
     console.error = error
     fs.rmSync(home, { recursive: true, force: true })

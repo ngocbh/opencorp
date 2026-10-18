@@ -77,7 +77,7 @@ def install(launch: Launch, host: Host) -> None:
         # launchctl suggests re-running as root, but the agent belongs in the GUI login's session.
         reason = done.stderr.strip().splitlines()[0] if done.stderr.strip() else "Input/output error"
         raise ServiceError(f"launchctl bootstrap {domain} failed: {reason}; this happens outside a GUI login"
-                           " (over SSH or in a detached tmux): run `ac onboard` from Terminal in your GUI login,"
+                           " (over SSH or in a detached tmux): run `opencorp onboard` from Terminal in your GUI login,"
                            " or pass `--service tmux`")
     raise ServiceError(f"launchctl bootstrap {domain} failed: {done.stderr.strip()}")
 

@@ -2,7 +2,7 @@
 // prompter with set answers.
 import readline from "node:readline/promises"
 
-/** How `ac` asks the person at the terminal. */
+/** How `opencorp` asks the person at the terminal. */
 export interface Prompter {
   /** Whether there's a terminal to ask on; without one, nothing is asked. */
   readonly interactive: boolean

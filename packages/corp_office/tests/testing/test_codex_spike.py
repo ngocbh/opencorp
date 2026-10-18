@@ -183,9 +183,9 @@ def recorded(log):
 
 def test_the_recorder_scrubs_a_path_split_across_deltas_and_keeps_their_count_and_order(tmp_path):
     log = tmp_path / "s.jsonl"
-    recorder = Recorder(log, {"/tmp/ac-codex-spike-x1": "/work/spike"})
-    text = "Wrote /tmp/ac-codex-spike-x1/ws/a.md for you."
-    pieces = ["Wrote /tmp/ac-co", "dex-spike-", "x1/ws/a", ".md for you."]
+    recorder = Recorder(log, {"/tmp/opencorp-codex-spike-x1": "/work/spike"})
+    text = "Wrote /tmp/opencorp-codex-spike-x1/ws/a.md for you."
+    pieces = ["Wrote /tmp/opencorp-co", "dex-spike-", "x1/ws/a", ".md for you."]
     recorder.write("in", note("item/started", item={"type": "agentMessage", "id": "m1", "text": ""}))
     for i, piece in enumerate(pieces):
         recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta=piece))
@@ -193,7 +193,7 @@ def test_the_recorder_scrubs_a_path_split_across_deltas_and_keeps_their_count_an
             recorder.write("out", {"id": 7, "result": {}})
     recorder.write("in", note("item/completed", item={"type": "agentMessage", "id": "m1", "text": text}))
     lines = recorded(log)
-    assert "/tmp/ac-" not in log.read_text()
+    assert "/tmp/opencorp-" not in log.read_text()
     assert [(e["dir"], e["msg"].get("method")) for e in lines] == [
         ("in", "item/started"), ("in", "item/agentMessage/delta"), ("in", "item/agentMessage/delta"), ("out", None),
         ("in", "item/agentMessage/delta"), ("in", "item/agentMessage/delta"), ("in", "item/completed")]

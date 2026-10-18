@@ -1,4 +1,4 @@
-"""``ac onboard``: this machine's office for a company: the home, the company repo, this device, the model, the service."""
+"""``opencorp onboard``: this machine's office for a company: the home, the company repo, this device, the model, the service."""
 
 import getpass
 import json
@@ -39,14 +39,14 @@ if TYPE_CHECKING:
     from prompt_toolkit.output import Output
 
 
-SET_UP = "run `ac init` to create one, or `ac onboard --from URL` to join one"
+SET_UP = "run `opencorp init` to create one, or `opencorp onboard --from URL` to join one"
 """What to do when a home has no company."""
 
 
 def stop_to_top_up(count: int) -> str:
     """What to do about ``count`` missing template files while the office runs."""
     files = "template file" if count == 1 else "template files"
-    return f"The office is running; stop it and run `ac onboard` again to add {count} {files}."
+    return f"The office is running; stop it and run `opencorp onboard` again to add {count} {files}."
 
 
 class OnboardError(Exception):
@@ -486,7 +486,7 @@ def ensure_provider(path: Path, prompter: Prompter, stdin: TextIO | None = None,
     """
     if stdin is None:
         if os.path.lexists(path):
-            again = "fix it or remove it and run `ac onboard` again"
+            again = "fix it or remove it and run `opencorp onboard` again"
             try:
                 saved = load_provider(path).model_dump(exclude_defaults=True)
                 checked = with_default_model(check_provider(saved))
@@ -615,7 +615,7 @@ def user_git(*args: str) -> subprocess.CompletedProcess[str]:
 
 GIT_ACCESS = ("if git needs a login or a new host key, set that up in a terminal first"
               " (`gh auth login`, or `ssh -T git@HOST` once)")
-"""What to do when a clone or push fails: under ``ac``'s setup screen git has no terminal to ask on."""
+"""What to do when a clone or push fails: under ``opencorp``'s setup screen git has no terminal to ask on."""
 
 
 CLONE = ".company-clone"
@@ -646,7 +646,7 @@ def _clone(url: str, dest: Path) -> None:
     if done.returncode != 0:
         remove_path(dest)
         raise OnboardError(f"can't clone {redact(url)}: {redact(done.stderr.strip())}; {GIT_ACCESS},"
-                           " then run `ac onboard` again")
+                           " then run `opencorp onboard` again")
     if is_new(dest):
         remove_path(dest)
         raise OnboardError(f"{redact(url)} isn't a company repo: it has no company.yaml at its top")
@@ -664,7 +664,7 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
 
     A new identity is for the human you pick: the default is the human whose handle is this
     login's, otherwise the only human. A human with a password must give it; without a
-    terminal to ask on, the device is left out (None) for ``ac login`` to add. A device name
+    terminal to ask on, the device is left out (None) for ``opencorp login`` to add. A device name
     the human already lists gets a ``-2`` (``-3``, ...) suffix.
 
     Raises:
@@ -704,7 +704,7 @@ def _join(root: Path, worktrees: Path, home: Path, prompter: Prompter) -> Identi
         raise OnboardError(f"can't add this device to @{handle}: {exc}") from None
     _save_identity(home, me)
     if password_hash is None:
-        prompter.say(f"@{handle} has no password yet; set one with `ac password` so a new device has to give it")
+        prompter.say(f"@{handle} has no password yet; set one with `opencorp password` so a new device has to give it")
     return me
 
 
@@ -737,7 +737,7 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     cloned company is listed for the human you pick (after their password, if they have
     one) and committed in the clone before the office starts, unless the company already
     lists this device's identity; ``office/provider.json``; and the daemon under ``mode``. With ``steps``,
-    each step gets a numbered header (``ac init`` turns them off, since onboarding is one of
+    each step gets a numbered header (``opencorp init`` turns them off, since onboarding is one of
     its steps).
 
     Raises:
@@ -763,10 +763,10 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     if new:
         if running:
             raise OnboardError(f"the office is running, but {paths.company} has no company yet;"
-                               " stop it and run `ac onboard` again")
+                               " stop it and run `opencorp onboard` again")
         if paths.company.is_dir() and any(paths.company.iterdir()):
             raise OnboardError(f"{paths.company} holds a company that was never finished (no first commit);"
-                               " run `ac init` to finish it, or remove it to join another")
+                               " run `opencorp init` to finish it, or remove it to join another")
         url = source or prompter.ask(REPO_URL)
         if not url:
             raise OnboardError(f"there's no company at {paths.company}; {SET_UP}")
@@ -785,7 +785,7 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
             prompter.say(f"Company repo: {done} {paths.company}")
         errors = [i for i in lint(load_repo(root)) if i.severity == "error"]
         if errors:
-            raise OnboardError("the company repo has errors; fix them and run `ac onboard` again:\n"
+            raise OnboardError("the company repo has errors; fix them and run `opencorp onboard` again:\n"
                                + "\n".join(f"  {i.path}: {i.code}: {i.message}" for i in errors))
 
         step(2, "This device", "The office takes requests only from devices its humans list, once any human"
@@ -802,7 +802,7 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     if me is not None:
         prompter.say(f"This device: {me.device}, acting as @{me.handle} (its token is in {identity_path(paths.home)})")
     else:
-        prompter.say("This device has no identity yet; run `ac login` to use ac from it.")
+        prompter.say("This device has no identity yet; run `opencorp login` to use opencorp from it.")
 
     step(3, "Model", "Your agents think with this model; its key stays in this office, readable only by you.")
     from opencorp.install.interview import model_problem  # interview imports this module
@@ -819,4 +819,4 @@ def onboard(home: Path, prompter: Prompter, *, mode: str = "auto", stdin: TextIO
     except (ServiceError, OfficeStartError) as exc:
         raise OnboardError(str(exc)) from None
     prompter.say(f"Office: running under {installed.mode or 'a process started by hand'}; log at {run.log}")
-    prompter.say("Done. Run `ac` in a project folder to talk to your team.")
+    prompter.say("Done. Run `opencorp` in a project folder to talk to your team.")

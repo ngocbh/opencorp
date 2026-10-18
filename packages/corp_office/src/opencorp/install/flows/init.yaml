@@ -1,4 +1,4 @@
-# `ac init`'s flow: interview the owner until they accept a company, then ask for a password and a remote.
+# `opencorp init`'s flow: interview the owner until they accept a company, then ask for a password and a remote.
 # Only code nodes read the password and the remote, so the model never sees them.
 id: init
 name: init
@@ -53,7 +53,7 @@ nodes:
           "given" has "agent", ask who the first teammates should be; most owners start with one, such as an
           engineer, and may also choose none.
 
-          Never ask for a password, an API key, a token or a git remote URL: `ac init` asks for those itself.
+          Never ask for a password, an API key, a token or a git remote URL: `opencorp init` asks for those itself.
 
           When the last draft below isn't empty, start from it and ask only about what "What to change" says.
           "What to change" and check_company's problems override "given": if either says a given handle is taken,

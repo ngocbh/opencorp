@@ -94,6 +94,6 @@ jobs:
       - if: ${{ hashFiles('packages/tui/**/*.test.ts', 'packages/tui/**/*.test.tsx', '!packages/tui/node_modules/**') != '' }}
         run: bun test
         working-directory: packages/tui
-      - if: ${{ hashFiles('packages/ac/**/*.test.ts', 'packages/ac/**/*.test.tsx', '!packages/ac/node_modules/**') != '' }}
+      - if: ${{ hashFiles('packages/cli/**/*.test.ts', 'packages/cli/**/*.test.tsx', '!packages/cli/node_modules/**') != '' }}
         run: bun test
-        working-directory: packages/ac
+        working-directory: packages/cli

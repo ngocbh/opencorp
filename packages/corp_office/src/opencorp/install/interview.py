@@ -1,4 +1,4 @@
-"""`ac init`'s flow (an interview that asks on the terminal, the owner's confirmation, a password and a remote),
+"""`opencorp init`'s flow (an interview that asks on the terminal, the owner's confirmation, a password and a remote),
 and the draft without a terminal."""
 
 import json
@@ -34,7 +34,7 @@ WHAT_TO_CHANGE = "What should change? (empty to talk it over)"
 
 FLAGS = {"company": "--company", "owner.name": "--name", "owner.handle": "--handle",
          "teammate.name": "--agent", "teammate.handle": "--agent-handle"}
-"""The ``ac init`` flag that sets each draft field a problem can be about."""
+"""The ``opencorp init`` flag that sets each draft field a problem can be about."""
 
 
 @dataclass(frozen=True)
@@ -248,7 +248,7 @@ def run_init_flow(provider: Provider, prompter: Prompter, known: Known) -> dict:
     if state.stopped:
         raise state.stopped
     if result is not None and result.status == "failed" and result.failure.cause_type == "LoopMaxExceeded":
-        raise OnboardError("the interview didn't settle on a company; run `ac init` again")
+        raise OnboardError("the interview didn't settle on a company; run `opencorp init` again")
     if message is not None:
         raise ModelError(f"the model couldn't run the interview: {message}")
     return result.output

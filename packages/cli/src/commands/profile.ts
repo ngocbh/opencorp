@@ -10,7 +10,7 @@ import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { officeClient, officeNotRunning } from "../office"
 
-const USAGE = "Usage: ac profile edit PERSON"
+const USAGE = "Usage: opencorp profile edit PERSON"
 
 /** A usage error: printed with the usage line, exit 2. */
 class Usage extends Error {}
@@ -32,7 +32,7 @@ async function edit(editor: string, file: string, text: string) {
 }
 
 /**
- * `ac profile edit PERSON`: edits a person's profile.md in $EDITOR and saves it over the
+ * `opencorp profile edit PERSON`: edits a person's profile.md in $EDITOR and saves it over the
  * version it started from, which the office commits as a hand edit. If the profile changed
  * meanwhile, the editor re-opens on the new text with the rejected edit under a marker line;
  * saving drops the marker and everything below it. An empty save writes nothing. An edit that
@@ -41,7 +41,7 @@ async function edit(editor: string, file: string, text: string) {
  */
 export const run: CommandRun = async (argv) => {
   let dir: string | undefined
-  // The user's latest changed text until the office accepts it; kept if `ac` exits first.
+  // The user's latest changed text until the office accepts it; kept if `opencorp` exits first.
   let unsaved: string | undefined
   try {
     const { positionals } = parseArgs({ args: argv, allowPositionals: true, options: {} })
@@ -53,7 +53,7 @@ export const run: CommandRun = async (argv) => {
     const who = await person(client, name)
     let base = await client.profiles.get(who.handle)
     // mkdtemp makes the dir private (0700), so other users can't read or swap the file.
-    dir = mkdtempSync(path.join(os.tmpdir(), "ac-profile-"))
+    dir = mkdtempSync(path.join(os.tmpdir(), "opencorp-profile-"))
     const file = path.join(dir, "profile.md")
     let draft = base.text
     let conflicted = false
@@ -62,7 +62,7 @@ export const run: CommandRun = async (argv) => {
       if (text === base.text) {
         // After a lost race, an unchanged save means the rejected edit was left unmerged.
         if (conflicted) {
-          console.error("ac profile: your edit was not saved")
+          console.error("opencorp profile: your edit was not saved")
           return 1
         }
         console.log("No changes")
@@ -70,7 +70,7 @@ export const run: CommandRun = async (argv) => {
       }
       // As git aborts on an empty message: an emptied file is far likelier a mistake than intent.
       if (!text.trim()) {
-        console.error("ac profile: the file is empty; nothing saved")
+        console.error("opencorp profile: the file is empty; nothing saved")
         return 1
       }
       unsaved = text
@@ -86,7 +86,7 @@ export const run: CommandRun = async (argv) => {
           unsaved = undefined
           return reportSaved(who, base)
         }
-        console.error("ac profile: the profile changed while you edited it; your edit is below the marker line")
+        console.error("opencorp profile: the profile changed while you edited it; your edit is below the marker line")
         draft = conflictText(base.text, text)
         conflicted = true
       }
@@ -96,7 +96,7 @@ export const run: CommandRun = async (argv) => {
     // parseArgs throws a TypeError coded ERR_PARSE_ARGS_… for an unknown flag.
     const parse = e instanceof TypeError && "code" in e && String(e.code).startsWith("ERR_PARSE")
     const usage = e instanceof Usage || parse
-    console.error(`ac profile: ${e instanceof Error ? e.message : e}${usage ? `\n${USAGE}` : ""}`)
+    console.error(`opencorp profile: ${e instanceof Error ? e.message : e}${usage ? `\n${USAGE}` : ""}`)
     return usage ? 2 : 1
   } finally {
     if (dir) keepOrRemove(dir, unsaved)
@@ -106,7 +106,7 @@ export const run: CommandRun = async (argv) => {
 /** Says the profile of `who` is saved at `profile`, and warns if it is over budget. */
 function reportSaved(who: Person, profile: Profile) {
   console.log(`Saved the profile of @${who.handle} (${shortVersion(profile.version)})`)
-  if (profile.over_budget) console.error("ac profile: the profile is over the company's profile budget")
+  if (profile.over_budget) console.error("opencorp profile: the profile is over the company's profile budget")
   return 0
 }
 
@@ -117,5 +117,5 @@ function keepOrRemove(dir: string, unsaved: string | undefined) {
   writeFileSync(file, unsaved)
   // The editor may have replaced the file with one of its own permissions.
   chmodSync(file, 0o600)
-  console.error(`ac profile: your edit is kept in ${file}`)
+  console.error(`opencorp profile: your edit is kept in ${file}`)
 }

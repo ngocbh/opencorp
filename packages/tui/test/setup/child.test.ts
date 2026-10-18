@@ -6,7 +6,7 @@ import type { SetupPrompt } from "@opencorp/protocol"
 import { spawnSetup, type SetupChild } from "../../src/setup/child"
 import { until } from "../fixture/until"
 
-const dir = mkdtempSync(path.join(os.tmpdir(), "ac-setup-child-"))
+const dir = mkdtempSync(path.join(os.tmpdir(), "opencorp-setup-child-"))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
 let scripts = 0

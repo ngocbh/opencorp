@@ -28,7 +28,7 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-/** Runs `ac feedback …`, capturing what it writes to stdout and stderr. */
+/** Runs `opencorp feedback …`, capturing what it writes to stdout and stderr. */
 async function feedback(...argv: string[]) {
   const out: string[] = []
   const err: string[] = []
@@ -111,7 +111,7 @@ test("empty or pre-fill-only feedback isn't sent; no editor and no -m, or no suc
   writeFileSync(path.join(home, "ed.sh"), `: > "$1"\n`)
   process.env.EDITOR = `sh ${path.join(home, "ed.sh")}`
   const empty = await feedback(s.id)
-  expect(empty).toMatchObject({ code: 1, err: "ac feedback: no feedback written; nothing sent" })
+  expect(empty).toMatchObject({ code: 1, err: "opencorp feedback: no feedback written; nothing sent" })
   // Quitting the editor unchanged leaves only the pre-fill, and that is empty too.
   process.env.EDITOR = "true"
   expect((await feedback(s.id, "--turn", "2")).code).toBe(1)
@@ -121,7 +121,7 @@ test("empty or pre-fill-only feedback isn't sent; no editor and no -m, or no suc
   expect(turn.err).toContain("turn 3")
   const flag = await feedback("--bogus")
   expect(flag.code).toBe(2)
-  expect(flag.err).toContain("Usage: ac feedback")
+  expect(flag.err).toContain("Usage: opencorp feedback")
   expect(posts()).toEqual([])
 })
 
@@ -146,7 +146,7 @@ test("a run ID no session lists, like the debrief's own run, goes to this folder
   expect(posts()).toEqual([{ session_id: s.id, run_id: "run-debrief", text: "Shorter summary" }])
   // The office refuses a run that isn't the session's; that reads as an unknown ID.
   const r = await feedback("run-x", "-m", "x")
-  expect(r).toMatchObject({ code: 1, err: "ac feedback: no session or run run-x" })
+  expect(r).toMatchObject({ code: 1, err: "opencorp feedback: no session or run run-x" })
 })
 
 test("office errors exit 1: an unknown ID, and no session in this folder", async () => {
@@ -163,5 +163,5 @@ test("with no office running, feedback says so and exits 3", async () => {
   office.stop()
   rmSync(path.join(home, "office", "office.sock"), { force: true })
   const r = await feedback("-m", "x")
-  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `ac doctor`."])
+  expect([r.code, r.err]).toEqual([3, "The office isn't running. Run `opencorp doctor`."])
 })

@@ -71,13 +71,13 @@ def install(launch: Launch, host: Host, mode: str = "auto") -> Installed:
     if host.answers(launch.socket):
         if recorded is None:
             return Installed(None, [f"the office is already running (pid {pid(launch)}) but was not started by"
-                                    " a service; stop it and run `ac onboard` again to install one"])
+                                    " a service; stop it and run `opencorp onboard` again to install one"])
         if mode not in ("auto", recorded):
             raise ServiceError(f"the office is already running under {recorded}; stop it before moving it to {mode}")
         if recorded in _NOT_MANAGED:
             if (problem := _NOT_MANAGED[recorded](launch, host)) is not None:
                 raise ServiceError(f"the office is running, but {recorded} doesn't have its service ({problem});"
-                                   " stop the office and run `ac onboard` again")
+                                   " stop the office and run `opencorp onboard` again")
             return Installed(recorded, [])
         if recorded == "background":
             # Nothing to bring up to date, and starting it again would only spawn a daemon that exits.

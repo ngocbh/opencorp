@@ -24,9 +24,9 @@ test("steps and lines show in the transcript; with no question the spinner says 
 
 test("the header names the command", async () => {
   const child = new FakeChild()
-  const app = await bootSetup(child, "ac init")
+  const app = await bootSetup(child, "opencorp init")
   try {
-    await app.until((f) => f.includes("Setting up AgentCorp · ac init"))
+    await app.until((f) => f.includes("Setting up AgentCorp · opencorp init"))
   } finally {
     await app.stop()
   }

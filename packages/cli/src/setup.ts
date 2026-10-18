@@ -1,4 +1,4 @@
-// `ac init` and `ac onboard`: the install asks its questions on the TUI's setup screen, and the
+// `opencorp init` and `opencorp onboard`: the install asks its questions on the TUI's setup screen, and the
 // office opens once it's done. Without a terminal to draw on, the install runs as it always did.
 import { type Deps, realDeps, syncThenInstall, syncVenv, venvPython } from "./office"
 
@@ -8,7 +8,7 @@ export interface SetupDeps extends Deps {
   terminal(): boolean
   /** Runs the install `argv` behind the setup screen; resolves to its exit code once the screen is gone. */
   screen(argv: string[]): Promise<number>
-  /** Opens the office as `ac` with no arguments does; resolves to its exit code. */
+  /** Opens the office as `opencorp` with no arguments does; resolves to its exit code. */
   openOffice(): Promise<number>
 }
 
@@ -21,7 +21,7 @@ export const realSetupDeps: SetupDeps = {
   ...realDeps,
   terminal: () => drawable(process.env, Boolean(process.stdin.isTTY), Boolean(process.stdout.isTTY)),
   screen: async (argv) => {
-    // The screen is Solid JSX, loaded as `ac` loads the TUI.
+    // The screen is Solid JSX, loaded as `opencorp` loads the TUI.
     const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
     ensureSolidTransformPlugin()
     return (await import("@opencorp/tui/setup")).runSetup(argv, process.cwd())
@@ -41,7 +41,7 @@ function homeFlag(argv: string[]): string | undefined {
 }
 
 /**
- * `ac init`/`ac onboard`: the install's questions on the setup screen, then the office. With
+ * `opencorp init`/`opencorp onboard`: the install's questions on the setup screen, then the office. With
  * --provider-stdin or --help, or without a terminal to draw on, the install runs as before the screen.
  */
 export async function setUp(
@@ -62,7 +62,7 @@ export async function setUp(
     code = await deps.screen([venvPython(), "-m", "opencorp.install", command, "--json-prompts", ...argv])
   } catch (e) {
     deps.error(
-      `ac ${command}: can't show the setup screen: ${e instanceof Error ? e.message : e}; pass the provider with --provider-stdin instead`,
+      `opencorp ${command}: can't show the setup screen: ${e instanceof Error ? e.message : e}; pass the provider with --provider-stdin instead`,
     )
     return 1
   }

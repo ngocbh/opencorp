@@ -357,7 +357,7 @@ def e2e() -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if "--version" in argv:  # what `ac doctor` asks a codex on the office's PATH
+    if "--version" in argv:  # what `opencorp doctor` asks a codex on the office's PATH
         print("codex-cli 0.0.0-fake")
         return 0
     if "login" in argv:  # `codex login status`: the fake is always signed in
