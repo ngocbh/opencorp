@@ -28,6 +28,7 @@ from agent_corp.testing.codex_spike import (
     office_env,
     owner_load,
     pin_schema,
+    recut,
     scrub,
     signed_in,
 )
@@ -249,6 +250,20 @@ def test_a_stream_still_open_when_the_server_ends_is_written_scrubbed(tmp_path):
     with AppServer([sys.executable, "-c", DELTAS], tmp_path, Recorder(log, {"/Users/ann": "/home/owner"})) as server:
         server.wait("item/agentMessage/delta", where=lambda m: m["params"]["delta"] == "nn/x", timeout=30)
     assert "".join(e["msg"]["params"]["delta"] for e in recorded(log)) == "/home/owner/x"
+
+
+def test_recut_leaves_pieces_the_scrub_doesnt_change_as_they_are_after_one_scrub():
+    calls = []
+    assert recut(lambda s: calls.append(s) or s, ["a /x", "/y b"]) == ["a /x", "/y b"]
+    assert calls == ["a /x/y b"]
+    assert recut(lambda s: s, []) == []
+
+
+def test_recut_cuts_where_the_scrubbed_prefix_stops_agreeing_with_the_scrubbed_whole():
+    def text(s):
+        return s.replace("/Users/ann", "/home/owner")
+
+    assert recut(text, ["see /Us", "ers/a", "nn/x ok"]) == ["see /", "", "home/owner/x ok"]
 
 
 class UnflushableRecorder(Recorder):

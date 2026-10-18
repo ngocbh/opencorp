@@ -113,10 +113,14 @@ def _stream(msg: dict[str, Any]) -> tuple[Any, ...] | None:
 
 
 def recut(text: Callable[[str], str], pieces: list[str]) -> list[str]:
-    """``text`` of the joined ``pieces``, cut into as many pieces. A cut stays after the same text as before; one
-    inside a name ``text`` replaces moves back to where the replacement first differs from the name."""
+    """The joined ``pieces`` scrubbed by ``text``, cut into as many pieces. A cut lands where the scrubbed prefix
+    before it stops agreeing with the scrubbed whole, so one inside a replaced name moves back to where the name
+    starts to change. ``pieces`` come back as they are when ``text`` changes nothing."""
     joined = "".join(pieces)
-    whole, cuts, end = text(joined), [0], 0
+    whole = text(joined)
+    if whole == joined:  # the common case, without scrubbing each prefix again
+        return list(pieces)
+    cuts, end = [0], 0
     for piece in pieces[:-1]:
         end += len(piece)
         cuts.append(max(cuts[-1], len(os.path.commonprefix([text(joined[:end]), whole]))))
@@ -128,7 +132,8 @@ class Recorder:
 
     A name can be split across an item's streamed deltas, where scrubbing each one alone would miss it. So from an
     item's first delta until it completes (or its turn does, or ``flush``), every message waits; then each stream's
-    deltas are scrubbed as one text and cut again into as many deltas, and the messages are written in order."""
+    deltas are scrubbed as one text and cut again into as many deltas (``recut``; a cut inside a replaced name can
+    leave a delta empty), and the messages are written in order."""
 
     def __init__(self, path: Path, replacements: dict[str, str], words: dict[str, str] | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
