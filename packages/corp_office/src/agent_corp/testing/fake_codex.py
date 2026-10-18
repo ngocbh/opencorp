@@ -3,7 +3,8 @@
     python -I -m agent_corp.testing.fake_codex (--script s.json | --scenario e2e) [--log rpc.jsonl] [ignored args]
 
 A script is ``{"thread": {"id", "model"}, "account": {...} | null, "initialize_error": {...}, "initialize_delay":
-seconds, "interrupt_hangs": bool, "resume_error": {...}, "stderr": "...", "turns": [[step, ...], ...]}``. Each
+seconds, "interrupt_hangs": bool, "load_exit": code, "resume_error": {...}, "stderr": "...", "turns": [[step, ...],
+...]}``; ``load_exit`` dies with ``code`` on ``thread/start`` or ``thread/resume``, before answering. Each
 ``turn/start`` that starts a turn takes the next list of steps (an unscripted turn just completes). The count is kept
 next to ``--log``, so a restarted fake goes on with the next turn. A step is one of:
 
@@ -105,6 +106,8 @@ class Fake:
             return self.reply(request_id, {"account": self.script.get("account", {"type": "chatgpt"}),
                                            "requiresOpenaiAuth": True})
         if method in ("thread/start", "thread/resume"):
+            if "load_exit" in self.script:
+                os._exit(self.script["load_exit"])
             if method == "thread/resume":
                 if self.script.get("resume_error"):
                     return self.reply(request_id, error=self.script["resume_error"])

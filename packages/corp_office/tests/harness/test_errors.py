@@ -1,7 +1,9 @@
 """Codex that can't start, errors, a dead app-server, an unloaded thread, token counts."""
 
+import logging
 import os
 import signal
+import sys
 import threading
 import time
 
@@ -12,11 +14,14 @@ from agent_corp.harness.sessions import CodexSessions
 from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
 from agent_corp.worker.spawn import worker_env
-from tests.harness.conftest import CODEX_PERSON, errors, requests_valid, start, status, texts, wait_for
+from tests.harness.conftest import (CODEX_PERSON, codex_log, errors, requests_valid, start, status, stored, texts,
+                                    wait_for)
 from tests.store.conftest import session
 
 WRITER_LOCK = {"code": -32600, "message": "thread 01a1456b-695d-7440-bc59-6b401d4bb3ea already has an active writer"}
 """What Codex answered the spike's thread/resume of a thread another app-server had loaded."""
+STDERR = "ERROR rmcp::transport::auth: OAuth token refresh failed for MCP server jira WARN codex_core: retrying"
+"""Real Codex's stderr: several log streams at once, and lines that have nothing to do with the session."""
 
 
 def test_codex_missing_fails_the_session_and_says_what_to_do(make_harness, workspace, tmp_path):
@@ -57,12 +62,12 @@ def test_a_dead_app_server_leaves_the_session_idle_and_the_next_message_reloads_
                                                                                           workspace):
     fake_codex.script([[*fc.agent_message("m1", "Working")[:2], fc.command_approval(1, "c1", "x", wait=False),
                         {"sleep": 0.3}, {"spawn": 300}, {"exit": 1}], fc.agent_message("m2", "Back again")],
-                      stderr="panic: oops")
+                      stderr=STDERR)
     sid = start(harness, workspace)
     harness.prompt(sid, "go")
     wait_for(lambda: any("Codex stopped" in e for e in errors(harness, sid)) and status(harness, sid) == "idle",
              what="the crash handled")
-    assert "panic: oops" in errors(harness, sid)[0]
+    assert errors(harness, sid) == ["Codex stopped unexpectedly. Send a message to start it again."]
     assert [q.status for q in harness.store.list_questions(session_id=sid)] == ["stale"]
     assert texts(harness, sid)[-1].endswith("[interrupted]")
     [child] = fake_codex.spawned()  # a command the dead app-server left running
@@ -75,6 +80,51 @@ def test_a_dead_app_server_leaves_the_session_idle_and_the_next_message_reloads_
     assert len(fake_codex.calls("initialize")) == 2
     assert [r.session_id for r in harness.store.list_workers()] == [f"harness:{sid}"]  # the new one's record
     requests_valid(fake_codex)
+
+
+def test_a_crash_leaves_codex_stderr_in_its_codex_log_and_the_office_log_points_there(harness, fake_codex,
+                                                                                     workspace, caplog):
+    fake_codex.script([[{"exit": 1}]], stderr=STDERR)
+    sid = start(harness, workspace)
+    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+        harness.prompt(sid, "go")
+        wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the crash handled")
+    assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
+    [note] = [r.getMessage() for r in caplog.records if "exited unexpectedly" in r.getMessage()]
+    assert sid in note and f"Codex's output is in {harness.office.paths.run_dir(sid) / 'codex.log'}" in note
+    assert STDERR not in note
+
+
+def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_output_is(make_harness, workspace,
+                                                                                      caplog):
+    script = f"import sys; print({STDERR!r}, file=sys.stderr); sys.exit(1)"
+    h = make_harness(files=CODEX_PERSON, codex=lambda office, hooks: CodexSessions(
+        office, hooks, command=lambda: [sys.executable, "-I", "-c", script]))
+    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+        sid = h.start_session("minh", str(workspace), "codex").id
+        wait_for(lambda: status(h, sid) == "failed", what="failed")
+    log = str(h.office.paths.run_dir(sid) / "codex.log")
+    [error] = errors(h, sid)
+    assert "Codex didn't start" in error and "ac doctor" in error and f"Codex's output is in {log}" in error
+    assert STDERR not in stored(h, sid) and STDERR in codex_log(h, sid)
+    [note] = [r.getMessage() for r in caplog.records if sid in r.getMessage()]
+    assert note.count(log) == 1 and STDERR not in note
+
+
+def test_codex_that_dies_while_loading_the_thread_says_what_to_do_and_where_its_output_is(harness, fake_codex,
+                                                                                          workspace, caplog):
+    fake_codex.script(load_exit=1, stderr=STDERR)
+    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+        sid = harness.start_session("minh", str(workspace), "codex").id
+        wait_for(lambda: status(harness, sid) == "failed", what="failed")
+    log = str(harness.office.paths.run_dir(sid) / "codex.log")
+    [error] = errors(harness, sid)
+    assert "Codex didn't start" in error and "ac doctor" in error and f"Codex's output is in {log}" in error
+    assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
+    [note] = [r for r in caplog.records if sid in r.getMessage()]
+    assert note.levelno == logging.WARNING and note.exc_info is None  # an expected failure, not a traceback
+    assert note.getMessage().count(log) == 1 and STDERR not in note.getMessage()
+    assert harness.store.list_workers() == []
 
 
 def test_ending_after_a_crash_without_a_reload_leaves_no_record_or_children(harness, fake_codex, workspace):

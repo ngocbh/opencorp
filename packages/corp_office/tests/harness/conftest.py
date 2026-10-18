@@ -79,6 +79,18 @@ def harness(make_codex):
     return make_codex()
 
 
+def stored(harness, sid):
+    """Everything the store keeps of a session, as text: its row, its messages, and every event."""
+    return "\n".join([harness.store.get_session(sid).model_dump_json(),
+                      *(m.model_dump_json() for m in harness.store.list_messages(sid)),
+                      *(str(e.data) for e in harness.store.events_after())])
+
+
+def codex_log(harness, sid):
+    """The session's codex.log: its app-servers' stderr."""
+    return (harness.office.paths.run_dir(sid) / "codex.log").read_text()
+
+
 def start(harness, workspace, by="ngocbh"):
     """Start minh's Codex session in ``workspace`` as ``by``; wait for its load."""
     sid = harness.start_session("minh", str(workspace), "codex", opened_by=by).id

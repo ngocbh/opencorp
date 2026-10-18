@@ -87,14 +87,26 @@ def test_start_initializes_and_records_the_group_close_removes_it(tmp_path):
         assert not p.alive and store.list_workers() == [] and start_time(p.pid) is None
 
 
-def test_a_server_that_dies_calls_on_exit_with_its_stderr(tmp_path):
+def test_a_server_that_dies_calls_on_exit_and_leaves_its_stderr_in_its_log(tmp_path):
     with Store(tmp_path / "store.sqlite") as store:
         p, exits = process(tmp_path, store, {"stderr": "boom: bad config", "turns": [[{"exit": 3}]]})
         p.start()
         p.rpc.request("thread/start", {"cwd": str(tmp_path)})
         p.rpc.request("turn/start", {"threadId": "thr_fake", "input": []})
-        assert exits.wait(10) and "boom: bad config" in p.stderr_tail()
+        assert exits.wait(10) and "boom: bad config" in p.log.read_text()
         p.kill()
+
+
+def test_a_command_that_cant_be_run_says_to_run_ac_doctor_and_leaves_nothing(tmp_path):
+    (tmp_path / "codex").write_text("not a program")  # not executable
+    with Store(tmp_path / "store.sqlite") as store:
+        p = CodexProcess(store, "harness:S1", command=[str(tmp_path / "codex")], cwd=str(tmp_path),
+                         env=dict(os.environ), log=tmp_path / "codex.log", on_notification=lambda m, p: None,
+                         on_request=lambda i, m, p: None, on_exit=lambda p: None)
+        with pytest.raises(CodexStartError) as e:
+            p.start()
+        assert "Codex couldn't start" in str(e.value) and "ac doctor" in str(e.value)
+        assert store.list_workers() == []
 
 
 def test_a_refused_handshake_or_sign_in_raises_and_leaves_nothing(tmp_path):
@@ -102,7 +114,8 @@ def test_a_refused_handshake_or_sign_in_raises_and_leaves_nothing(tmp_path):
         p, _ = process(tmp_path, store, {"initialize_error": {"code": -32600, "message": "bad"}, "stderr": "why"})
         with pytest.raises(CodexStartError) as e:
             p.start()
-        assert "why" in e.value.tail and store.list_workers() == [] and not p.alive
+        assert str(p.log) in str(e.value) and "why" not in str(e.value) and "why" in p.log.read_text()
+        assert store.list_workers() == [] and not p.alive
         p, _ = process(tmp_path, store, {"account": None})
         with pytest.raises(CodexSignedOut):
             p.start()

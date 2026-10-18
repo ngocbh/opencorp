@@ -22,15 +22,11 @@ APP_SERVER_ARGS = ("app-server", "--listen", "stdio://")
 CLOSE_GRACE = 5.0
 """Seconds an app-server has to exit after stdin closes, before its group is killed."""
 START_TIMEOUT = 30.0
-_TAIL_BYTES = 4000
 
 
 class CodexStartError(Exception):
-    """The app-server didn't start or refused the handshake; ``tail`` is the end of its stderr."""
-
-    def __init__(self, message: str, tail: str = "") -> None:
-        super().__init__(message)
-        self.tail = tail
+    """Codex couldn't be run, didn't start, refused the handshake, or died loading the thread. The message says what
+    went wrong and what to do; it never holds Codex's stderr, which stays in the session's codex.log."""
 
 
 class CodexMissing(CodexStartError):
@@ -101,7 +97,8 @@ class CodexProcess:
     def start(self) -> dict[str, Any]:
         """Spawn, record, initialize with ``experimentalApi``, and check the sign-in; return initialize's result.
 
-        Raises ``CodexStartError`` (or ``CodexSignedOut``) with the stderr tail; nothing is left running or recorded.
+        Raises ``CodexStartError`` (or ``CodexSignedOut``): a command that can't be run says to run ``ac doctor``, and
+        a failed handshake also names ``log``, where Codex's output is. Nothing is left running or recorded.
         A process already killed never spawns.
         """
         self.log.parent.mkdir(parents=True, exist_ok=True)
@@ -113,7 +110,7 @@ class CodexProcess:
                     self.proc = subprocess.Popen(self.command, cwd=self.cwd, env=self.env, stdin=subprocess.PIPE,
                                                  stdout=subprocess.PIPE, stderr=err, start_new_session=True)
             except OSError as exc:
-                raise CodexStartError(f"Codex couldn't start: {exc}") from exc
+                raise CodexStartError(f"Codex couldn't start: {exc}. Run `ac doctor` to check it.") from exc
             self.store.record_worker(self.key, pid=self.proc.pid, pgid=self.proc.pid,
                                      start_time=start_time(self.proc.pid) or time.time())
             self._recorded = True
@@ -131,7 +128,7 @@ class CodexProcess:
             self.kill()
             if stopped:
                 raise CodexStartError("Codex was stopped before it started.") from exc
-            raise CodexStartError(f"Codex didn't start: {exc}", self.stderr_tail()) from exc
+            raise self.start_error(exc) from exc
         if account.get("account") is None and account.get("requiresOpenaiAuth"):
             self.kill()
             raise CodexSignedOut("Codex is signed out. Run `codex login` in a terminal, then send your message again.")
@@ -174,14 +171,11 @@ class CodexProcess:
         if recorded:  # only its own record: a later app-server of the same session has the same key
             self.store.remove_worker(self.key, pid=proc.pid)
 
-    def stderr_tail(self) -> str:
-        """The end of the app-server's stderr, for an error part."""
-        try:
-            with open(self.log, "rb") as f:
-                f.seek(max(0, os.path.getsize(self.log) - _TAIL_BYTES))
-                return f.read().decode(errors="replace").strip()
-        except OSError:
-            return ""
+    def start_error(self, exc: Exception) -> CodexStartError:
+        """The error for an app-server that failed or died while starting: what went wrong, to run ``ac doctor``, and
+        where Codex's output (its stderr, with the reason) is."""
+        return CodexStartError(f"Codex didn't start: {exc}. Run `ac doctor` to check it; Codex's output is in "
+                               f"{self.log}.")
 
     def _closed(self) -> None:
         if self.proc is not None:
