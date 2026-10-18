@@ -190,10 +190,29 @@ def test_without_a_launcher_bun_runs_the_cli_to_onboard(tmp_path):
     assert found.commands(501, REPO) == [f"{MV(home)}", f"{BUN} onboard"]
 
 
+def fake_bun(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "bun").write_text("#!/bin/sh\n")
+    (folder / "bun").chmod(0o755)
+    return folder / "bun"
+
+
 def test_the_bun_line_names_the_bun_running_the_cli(tmp_path):
     old_home(tmp_path)
-    found = legacy.find(make_host(tmp_path, Runner()), {"PATH": "", legacy.BUN_ENV: "/u/.bun/bin/bun"}, REPO)
-    assert found.commands(501, REPO)[-1] == f"/u/.bun/bin/bun {REPO / legacy.NEW_ENTRY} onboard"
+    bun = fake_bun(tmp_path / ".bun" / "bin")
+    found = legacy.find(make_host(tmp_path, Runner()), {"PATH": "", legacy.BUN_ENV: str(bun)}, REPO)
+    assert found.commands(501, REPO)[-1] == f"{bun} {REPO / legacy.NEW_ENTRY} onboard"
+
+
+def test_a_running_bun_that_isnt_an_executable_file_is_not_named(tmp_path):
+    old_home(tmp_path)
+    (tmp_path / "plain").write_text("")
+    on_path = fake_bun(tmp_path / "bin")
+    for given in ("/nowhere/bun", str(tmp_path), str(tmp_path / "plain")):
+        found = legacy.find(make_host(tmp_path, Runner()), {"PATH": "", legacy.BUN_ENV: given}, REPO)
+        assert found.commands(501, REPO)[-1] == f"{BUN} onboard"
+        found = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(on_path.parent), legacy.BUN_ENV: given}, REPO)
+        assert found.commands(501, REPO)[-1] == f"{on_path} {REPO / legacy.NEW_ENTRY} onboard"
 
 
 def test_without_the_running_bun_the_bun_on_path_is_named(tmp_path):

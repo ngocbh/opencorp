@@ -162,6 +162,14 @@ def _service_home(path: Path) -> Path | None:
         return None
 
 
+def _bun(environ: Mapping[str, str]) -> str:
+    """The bun that runs the CLI's entry: the CLI's own if it is an executable file, else the one on ``PATH``."""
+    running = environ.get(BUN_ENV, "")
+    if os.path.isfile(running) and os.access(running, os.X_OK):
+        return running
+    return shutil.which("bun", path=environ.get("PATH", "")) or "bun"
+
+
 def find(host: Host, environ: Mapping[str, str], repo: Path) -> Leftovers:
     """Look for the old home, its launchd, systemd and tmux jobs, old env vars, and an ``ac`` launcher for ``repo``."""
     old = host.user_home / OLD_HOME
@@ -189,7 +197,7 @@ def find(host: Host, environ: Mapping[str, str], repo: Path) -> Leftovers:
         elsewhere=tuple(sorted({h for h in others if h.is_dir()})),
         # Only this checkout's launcher counts: another `opencorp` on PATH may run a different checkout.
         on_path=bool(launchers(environ, repo)),
-        bun=environ.get(BUN_ENV) or shutil.which("bun", path=environ.get("PATH", "")) or "bun")
+        bun=_bun(environ))
 
 
 def old_home_only(user_home: Path) -> Path | None:
