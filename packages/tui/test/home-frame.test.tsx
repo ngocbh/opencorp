@@ -7,8 +7,8 @@ test("the home screen against a running office shows the logo, the prompt, and t
   const app = await bootFrame(createStub(office))
   try {
     const f = await app.until((f) => f.includes("Ask anything") && f.includes("@minh"))
-    expect(f).toContain("█  █ █▀▀▀ █▀▀█ █▀▀▄ ▀█▀ █    █▀▀█ █▀▀ █▀▀█")
-    expect(f).toContain("▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀  ▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀ █▀▀▀")
+    expect(f).toContain("█  █ █▀▀█ █▀▀█ █▀▀▄ █    █▀▀█ █▀▀ █▀▀█")
+    expect(f).toContain("▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀ █▀▀▀")
     expect(f).toContain("Software engineer")
     expect(f).not.toContain("Office is not running")
   } finally {
