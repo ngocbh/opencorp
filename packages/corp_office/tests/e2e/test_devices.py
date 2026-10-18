@@ -34,7 +34,7 @@ console.log(JSON.stringify({ ...seen, stream }))
 
 
 @pytest.fixture
-def owned(ac_ready, short_dir, fake_llm):
+def owned(cli_ready, short_dir, fake_llm):
     """A running office onboarded with this device registered for the owner, stopped afterwards."""
     running = RunningOffice(short_dir, fake_llm)
     try:

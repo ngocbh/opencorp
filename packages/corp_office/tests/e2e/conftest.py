@@ -47,7 +47,7 @@ def fake_codex_on_path(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def ac_ready():
+def cli_ready():
     """Skip when asked to (``AGENT_CORP_SKIP_E2E=1``) or when `opencorp` can't run here (no bun, or no `bun install`); fail instead on CI."""
     on_ci = bool(os.environ.get("CI"))
     if os.environ.get("AGENT_CORP_SKIP_E2E") == "1":
@@ -74,7 +74,7 @@ def fake_llm():
 
 
 @pytest.fixture
-def office(ac_ready, short_dir, fake_llm):
+def office(cli_ready, short_dir, fake_llm):
     """A running office on a short temp home (macOS socket paths are capped at 104 bytes), stopped afterwards."""
     running = RunningOffice(short_dir, fake_llm)
     try:
