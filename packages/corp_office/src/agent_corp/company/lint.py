@@ -137,7 +137,7 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
         base = repo.root / "people" / handle
         refs = (([(person.main, True)] if person.main else []) + [(sop.flow, False) for sop in person.sops]
                 + [(routine.flow, False) for routine in person.routines])
-        for ref, main in refs:
+        for ref, is_main in refs:
             try:
                 path = (base / ref).resolve()
             except (OSError, ValueError) as exc:  # e.g. a NUL byte in the path
@@ -157,7 +157,7 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
                                 f"{ref}: {type(exc).__name__}: {exc}")
             else:
                 declared = {p.name for p in flow.input}
-                if main and (missing := [name for name in MAIN_INPUTS if name not in declared]):
+                if is_main and (missing := [name for name in MAIN_INPUTS if name not in declared]):
                     what = f"the {' and '.join(missing)} input{'s' if len(missing) > 1 else ''}"
                     yield RepoIssue(_person_path(handle), "person.main_inputs_missing",
                                     f"{ref} doesn't declare {what}; the office passes both to a main flow and Yian"

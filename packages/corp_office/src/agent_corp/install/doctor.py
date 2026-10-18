@@ -171,12 +171,12 @@ def _provider(paths: OfficePaths) -> Check:
     login = "key saved" if "api_key" in llm else "yian's own login"
     # Yian has no default model, so a key that names none fails every run; onboard saves the provider's default.
     try:
-        saved = with_default_model(provider)
+        fixed = with_default_model(provider)
     except OnboardError as exc:
         return Check("provider", "fail", f"{path}: {exc}; run `ac onboard`")
-    if saved != provider:
+    if fixed != provider:
         return Check("provider", "warn", f"{name}, {login}, but no model, so runs fail;"
-                                         f" `ac onboard` saves {(saved.llm_config or {}).get('model')}")
+                                         f" `ac onboard` saves {(fixed.llm_config or {}).get('model')}")
     return Check("provider", "ok", f"{name}, {login}")
 
 
