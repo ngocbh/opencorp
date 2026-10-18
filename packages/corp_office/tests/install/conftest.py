@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from opencorp.install import legacy
 from opencorp.install.doctor import Check
 from opencorp.install.launch import Host, Launch, launch
 
@@ -28,6 +29,8 @@ def no_real_services(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("HOME", str(root / "user"))
     monkeypatch.setenv("OPENCORP_HOME", str(root / "user" / ".opencorp"))
+    for name in [k for k in os.environ if k.startswith(legacy.OLD_ENV)]:
+        monkeypatch.delenv(name)  # a developer's old variables would show up as leftovers
     (root / "user").mkdir()
     # A model check would reach the provider; tests of the check itself call it directly.
     monkeypatch.setattr("opencorp.install.init.model_problem", lambda provider: None)

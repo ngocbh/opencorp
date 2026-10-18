@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -11,7 +12,7 @@ from pydantic import TypeAdapter
 from opencorp.company.loader import load_repo
 from opencorp.daemon.app import OfficePaths
 from opencorp.install import __main__ as install_main
-from opencorp.install import doctor
+from opencorp.install import doctor, legacy
 from opencorp.install.__main__ import main
 from opencorp.install.doctor import codex_check as real_codex_check
 from opencorp.install.interview import Known
@@ -334,3 +335,17 @@ def test_offboard_without_a_terminal_or_yes_removes_nothing(tmp_path, monkeypatc
 def test_offboard_on_an_empty_home_is_exit_0(tmp_path, capsys):
     assert main(["offboard", "--home", str(tmp_path / "home")]) == 0
     assert "Nothing of this office to remove at" in capsys.readouterr().out
+
+
+def test_doctor_prints_the_commands_that_finish_the_move(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(doctor, "sandbox_problem", lambda: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    # Only conftest's refusing stand-ins (first on PATH) and the system dirs: no developer launcher in the output.
+    monkeypatch.setenv("PATH", os.pathsep.join([os.environ["PATH"].split(os.pathsep)[0], "/usr/bin", "/bin"]))
+    old, new = tmp_path / legacy.OLD_HOME, tmp_path / legacy.NEW_HOME
+    (old / "office").mkdir(parents=True)
+    main(["doctor", "--home", str(new)])
+    out = capsys.readouterr().out
+    assert "warn  leftovers" in out
+    bun = shlex.join(["bun", str(REPO / legacy.NEW_ENTRY)])
+    assert f"To finish moving to OpenCorp, run these in order:\n  mv {old} {new}\n  {bun} onboard\n" in out

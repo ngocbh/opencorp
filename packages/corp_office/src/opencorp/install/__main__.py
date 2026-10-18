@@ -17,10 +17,10 @@ from opencorp.company.naming import handle_problem
 from opencorp.company_template import is_new
 from opencorp.daemon.app import OfficePaths
 from opencorp.daemon.main import OfficeStartError
-from opencorp.install import doctor, init, offboard, service
+from opencorp.install import doctor, init, legacy, offboard, service
 from opencorp.install.interview import Known
 from opencorp.install.json_prompts import JsonPrompter
-from opencorp.install.launch import Host, Launch, ServiceError, launch
+from opencorp.install.launch import REPO, Host, Launch, ServiceError, launch
 from opencorp.install.onboard import SET_UP, WHO, OnboardError, Prompter, TtyPrompter, onboard
 
 NOT_ONBOARDED = 3
@@ -109,8 +109,10 @@ def _offboard(args: argparse.Namespace) -> int:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    found = doctor.checks(_home(args.home), probe=doctor.sandbox_problem, codex=doctor.codex_check)
+    host = Host()
+    found = doctor.checks(_home(args.home), host=host, probe=doctor.sandbox_problem, codex=doctor.codex_check)
     print(doctor.report(found), end="")
+    print(legacy.instructions(legacy.find(host, os.environ, REPO), host.uid, REPO), end="")
     return doctor.exit_code(found)
 
 

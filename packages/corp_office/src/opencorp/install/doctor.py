@@ -19,7 +19,7 @@ from opencorp.company.loader import load_repo
 from opencorp.company_template import is_new, missing_files
 from opencorp.daemon.app import OfficePaths
 from opencorp.harness.codex import CodexMissing, codex_command
-from opencorp.install import launchd, service, systemd
+from opencorp.install import launchd, legacy, service, systemd
 from opencorp.install.launch import REPO, Host, Launch, launch
 from opencorp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
 from opencorp.worker.spawn import worker_env
@@ -122,10 +122,13 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     return Check("codex", "ok", f"{named}, signed in")
 
 
-def _home(paths: OfficePaths) -> Check:
+def _home(paths: OfficePaths, old: Path | None = None) -> Check:
     try:
         st = os.stat(paths.home)
     except FileNotFoundError:
+        if old is not None:
+            return Check("home", "fail", f"no office home at {paths.home}; the office from before the rename is at"
+                                         f" {old} (see leftovers)")
         return Check("home", "fail", f"no office home at {paths.home}; {SET_UP}")
     except OSError as exc:
         return Check("home", "fail", f"can't read {paths.home}: {exc.strerror}")
@@ -290,13 +293,19 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
-           codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check) -> list[Check]:
-    """Every check, in the order onboarding sets things up."""
+           codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check,
+           environ: Mapping[str, str] = os.environ) -> list[Check]:
+    """Every check, in the order onboarding sets things up, with what an install from before the rename left."""
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
     paths = OfficePaths(run.home)
     running = host.answers(run.socket)
-    found = [_home(paths), _company(paths, running), _provider(paths)]
+    # launch() names only the default home `office`: only that one stands in for the old default home.
+    old = legacy.old_home_only(host.user_home) if run.name == "office" else None
+    found = [_home(paths, old)]
+    if leftovers := legacy.find(host, environ, repo):
+        found.append(Check("leftovers", "warn", leftovers.summary()))
+    found += [_company(paths, running), _provider(paths)]
     if (added := _connections(paths)) is not None:
         found.append(added)
     found.append(_service(run, host))

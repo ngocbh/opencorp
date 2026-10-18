@@ -8,7 +8,7 @@ import psutil
 from opencorp.chat.connections import ConnectionFile, Connections
 from opencorp.company_template import Owner, write_company
 from opencorp.daemon.app import OfficePaths
-from opencorp.install import doctor, launchd, systemd
+from opencorp.install import doctor, launchd, legacy, systemd
 from opencorp.install.doctor import Check, codex_check
 from opencorp.install.launch import Launch, launch
 from opencorp.install.onboard import SET_UP, write_private
@@ -39,7 +39,7 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
-                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"))
+                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={})
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -442,3 +442,24 @@ def test_a_codex_that_says_nothing_is_still_described(tmp_path):
     assert codex_check(env, {}) == Check("codex", "fail", f"{codex} --version failed: exit 3")
     codex.write_text('#!/bin/sh\nexit 0\n')
     assert codex_check(env, {}) == Check("codex", "ok", f"{codex} (no version printed), signed in")
+
+
+def test_leftovers_from_before_the_rename_warn_right_after_the_home(tmp_path):
+    old = tmp_path / legacy.OLD_HOME
+    old.mkdir()
+    found = run_checks(tmp_path, onboarded(tmp_path))
+    assert [c.name for c in found][:2] == ["home", "leftovers"]
+    assert found[1].status == "warn" and f"the old home {old}" in found[1].detail
+    assert doctor.exit_code(found) == 0
+
+
+def test_no_leftovers_no_line(tmp_path):
+    assert "leftovers" not in by_name(run_checks(tmp_path, onboarded(tmp_path)))
+
+
+def test_a_missing_default_home_next_to_the_old_one_says_where_the_office_is(tmp_path):
+    old = tmp_path / legacy.OLD_HOME
+    (old / "office").mkdir(parents=True)
+    got = by_name(run_checks(tmp_path, OfficePaths(tmp_path / legacy.NEW_HOME)))
+    assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / legacy.NEW_HOME}; the office from"
+                                f" before the rename is at {old} (see leftovers)")
