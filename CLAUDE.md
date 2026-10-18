@@ -90,6 +90,19 @@ Work is complete only when the PR merges.
 Yian changes go to the yian repo (github.com/ngocbh/yian) as their own issue and PR; never edit
 the submodule (`packages/yian/`) here. Bump the submodule pointer in a separate commit.
 
+## Releases
+
+The Python package `opencorp` goes to PyPI from `.github/workflows/publish.yml`, through PyPI
+Trusted Publishing (the `pypi` environment); no token is stored.
+
+1. Bump `version` in `pyproject.toml` in a PR and merge it.
+2. Publish a GitHub Release tagged `v<version>`. The workflow fails if the tag and the version
+   differ.
+
+The wheel's `yian[all]` dependency resolves from PyPI, not the submodule, so pin it to a yian
+release that has what the office needs (release yian first if it doesn't). Actions must be
+enabled for the workflow to run; run it by hand (`workflow_dispatch`) for a build-only dry run.
+
 ## Code style
 
 - Keep code direct and scoped to the task.
