@@ -89,14 +89,24 @@ class Leftovers:
             new_home = self.home.parent / NEW_HOME
             # Guarded: a new home made since the doctor ran would get the old one moved inside it.
             out.append(f"[ ! -e {q(new_home)} ] && mv {q(self.home)} {q(new_home)}")
+        made = False
         for old in self.launchers:
             new = old.with_name(NEW_LAUNCHER)
+            if new.exists() or new.is_symlink():
+                # An `opencorp` is already there: it's kept, and only the old launcher goes.
+                out.append(f"rm {q(old)}")
+                continue
+            made = True
+            # Guarded, so an `opencorp` made since the doctor ran isn't overwritten.
             if old.is_symlink():
-                out.append(f"ln -s {q(repo / NEW_ENTRY)} {q(new)} && rm {q(old)}")
+                out.append(f"[ ! -e {q(new)} ] && ln -s {q(repo / NEW_ENTRY)} {q(new)} && rm {q(old)}")
             else:
-                out.append(f"sed 's#{OLD_ENTRY}#{NEW_ENTRY}#' {q(old)} > {q(new)} && chmod +x {q(new)} && rm {q(old)}")
+                # The sed names only the two entries relative to the checkout, never the checkout's own path.
+                sep = next(c for c in "#|@,:" if c not in f"{OLD_ENTRY}{NEW_ENTRY}")
+                edit = shlex.quote(f"s{sep}{OLD_ENTRY}{sep}{NEW_ENTRY}{sep}")
+                out.append(f"[ ! -e {q(new)} ] && sed {edit} {q(old)} > {q(new)} && chmod +x {q(new)} && rm {q(old)}")
         # The launcher lines above come first so `opencorp` exists by now; with no launcher, bun runs the entry.
-        cli = NEW_LAUNCHER if self.launchers or self.on_path else shlex.join([self.bun, str(repo / NEW_ENTRY)])
+        cli = NEW_LAUNCHER if made or self.on_path else shlex.join([self.bun, str(repo / NEW_ENTRY)])
         if self.default:
             out.append(f"{cli} onboard")
         out += [f"{cli} onboard --home {q(home)}" for home in self.elsewhere]

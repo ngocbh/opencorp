@@ -151,7 +151,8 @@ def test_an_ac_wrapper_becomes_an_opencorp_wrapper(tmp_path):
     found = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(bin_dir)}, repo)
     new = bin_dir / "opencorp"
     assert found.commands(501, repo) == [
-        f"sed 's#packages/ac/src/main.ts#packages/cli/src/main.ts#' {wrapper} > {new} && chmod +x {new} && rm {wrapper}"]
+        f"[ ! -e {new} ] && sed 's#packages/ac/src/main.ts#packages/cli/src/main.ts#' {wrapper} > {new}"
+        f" && chmod +x {new} && rm {wrapper}"]
 
 
 def test_an_ac_link_becomes_an_opencorp_link(tmp_path):
@@ -161,7 +162,8 @@ def test_an_ac_link_becomes_an_opencorp_link(tmp_path):
     (bin_dir / "ac").symlink_to(repo / "packages" / "ac" / "src" / "main.ts")
     found = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(bin_dir)}, repo)
     assert found.commands(501, repo) == [
-        f"ln -s {repo / 'packages/cli/src/main.ts'} {bin_dir / 'opencorp'} && rm {bin_dir / 'ac'}"]
+        f"[ ! -e {bin_dir / 'opencorp'} ] && ln -s {repo / 'packages/cli/src/main.ts'} {bin_dir / 'opencorp'}"
+        f" && rm {bin_dir / 'ac'}"]
 
 
 def test_instructions_swap_the_launcher_before_onboarding_then_list_the_notes(tmp_path):
@@ -176,7 +178,8 @@ def test_instructions_swap_the_launcher_before_onboarding_then_list_the_notes(tm
     assert legacy.instructions(found, 501, repo) == (
         "\nTo finish moving to OpenCorp, run these in order:\n"
         f"  {MV(home)}\n"
-        f"  sed 's#packages/ac/src/main.ts#packages/cli/src/main.ts#' {wrapper} > {new} && chmod +x {new} && rm {wrapper}\n"
+        f"  [ ! -e {new} ] && sed 's#packages/ac/src/main.ts#packages/cli/src/main.ts#' {wrapper} > {new}"
+        f" && chmod +x {new} && rm {wrapper}\n"
         "  opencorp onboard\n"
         "\nAGENT_CORP_HOME is set, but OpenCorp reads OPENCORP_HOME now; rename it where you set it\n")
 
@@ -258,3 +261,49 @@ def test_the_move_moves_the_old_home(tmp_path):
     move = legacy.find(make_host(tmp_path, Runner()), {"PATH": ""}, REPO).commands(501, REPO)[0]
     assert sh(move).returncode == 0
     assert not home.exists() and (tmp_path / ".opencorp" / "office" / "install.json").is_file()
+
+
+def ac_wrapper(bin_dir, repo):
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = bin_dir / "ac"
+    wrapper.write_text(f'#!/bin/bash\nexec bun {repo}/packages/ac/src/main.ts "$@"\n')
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def test_an_opencorp_next_to_the_ac_launcher_is_kept_and_only_ac_goes(tmp_path):
+    repo = tmp_path / "repo"
+    wrapper = ac_wrapper(tmp_path / "bin", repo)
+    (tmp_path / "bin" / "opencorp").write_text(f'#!/bin/sh\nexec bun {repo}/packages/cli/src/main.ts "$@"\n')
+    found = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(tmp_path / "bin")}, repo)
+    assert found.commands(501, repo) == [f"rm {wrapper}"]
+
+
+def test_an_opencorp_for_another_checkout_next_to_ac_is_kept_and_bun_onboards(tmp_path):
+    repo = tmp_path / "repo"
+    old_home(tmp_path)
+    wrapper = ac_wrapper(tmp_path / "bin", repo)
+    (tmp_path / "bin" / "opencorp").write_text('#!/bin/sh\nexec bun /elsewhere/packages/cli/src/main.ts "$@"\n')
+    found = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(tmp_path / "bin")}, repo)
+    assert found.commands(501, repo)[1:] == [f"rm {wrapper}", f"bun {repo / legacy.NEW_ENTRY} onboard"]
+
+
+def test_the_printed_swap_works_with_a_hash_and_a_space_in_the_paths(tmp_path):
+    repo = tmp_path / "re#po x"
+    bin_dir = tmp_path / "b#in"
+    wrapper = ac_wrapper(bin_dir, repo)
+    found = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(bin_dir)}, repo)
+    [swap] = found.commands(501, repo)
+    done = sh(swap)
+    assert done.returncode == 0, done.stderr
+    assert not wrapper.exists()
+    assert (bin_dir / "opencorp").read_text() == f'#!/bin/bash\nexec bun {repo}/packages/cli/src/main.ts "$@"\n'
+
+
+def test_the_printed_swap_doesnt_overwrite_an_opencorp_made_since(tmp_path):
+    repo = tmp_path / "repo"
+    wrapper = ac_wrapper(tmp_path / "bin", repo)
+    [swap] = legacy.find(make_host(tmp_path, Runner()), {"PATH": str(tmp_path / "bin")}, repo).commands(501, repo)
+    (tmp_path / "bin" / "opencorp").write_text("mine\n")
+    sh(swap)
+    assert (tmp_path / "bin" / "opencorp").read_text() == "mine\n" and wrapper.exists()
