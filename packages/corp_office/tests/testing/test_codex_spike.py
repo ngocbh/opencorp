@@ -373,6 +373,7 @@ if sys.argv[1:] != ["app-server", "--listen", "stdio://"]:  # --version, login s
     print("codex-cli 0.0.0-fake")
     sys.exit(0)
 ask = os.environ.get("FAKE_CODEX_ASKS")  # the approval method a turn asks first; none when unset
+says_cwd = os.environ.get("FAKE_CODEX_SAYS_CWD")  # a turn streams its cwd in two deltas and never ends, when set
 
 
 def send(msg):
@@ -397,6 +398,10 @@ for line in sys.stdin:
         send({"id": msg["id"], "result": result.get(method, {})})
         if method == "turn/start" and ask:
             send({"id": 900, "method": ask, "params": {"itemId": "c1", "threadId": "thr_1", "turnId": "turn_1"}})
+        elif method == "turn/start" and says_cwd:
+            for piece in (os.getcwd()[:6], os.getcwd()[6:]):
+                send({"method": "item/agentMessage/delta",
+                      "params": {"threadId": "thr_1", "turnId": "turn_1", "itemId": "m1", "delta": piece}})
         elif method == "turn/start":
             send({"method": "turn/completed", "params": {"threadId": "thr_1",
                                                          "turn": {"id": "turn_1", "status": "completed"}}})
@@ -445,6 +450,23 @@ def test_eof_kills_its_app_server_when_it_fails(fake_spike, monkeypatch):
     with pytest.raises(SpikeError, match="the model ran no command"):
         fake_spike.eof(None)
     assert servers[0].proc.poll() is not None
+
+
+def test_eof_writes_the_deltas_still_waiting_when_it_fails(fake_spike, monkeypatch):
+    monkeypatch.delenv("FAKE_CODEX_ASKS", raising=False)
+    monkeypatch.setenv("FAKE_CODEX_SAYS_CWD", "1")
+
+    def fails_after_the_deltas(server):
+        deltas = lambda: sum(m.get("method") == "item/agentMessage/delta" for m in server.seen)  # noqa: E731
+        server.wait("item/agentMessage/delta", where=lambda m: deltas() == 2, timeout=30)
+        raise SpikeError("the model ran no command")
+
+    monkeypatch.setattr(fake_spike, "wait_command_started", fails_after_the_deltas)
+    with pytest.raises(SpikeError, match="the model ran no command"):
+        fake_spike.eof(None)
+    lines = [json.loads(line)["msg"] for line in (fake_spike.out / "sessions" / "eof.jsonl").read_text().splitlines()]
+    assert "".join(m["params"]["delta"] for m in lines if m.get("method") == "item/agentMessage/delta") == (
+        "/work/spike/ws")
 
 
 def test_eof_and_office_env_run_again_alone(tmp_path, monkeypatch):

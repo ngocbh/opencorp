@@ -335,9 +335,14 @@ class AppServer:
             os.killpg(self.proc.pid, signal.SIGKILL)
             self.proc.wait()
         took = time.monotonic() - start
-        self._reader.join(timeout)  # its last lines, and the deltas still waiting, reach the recording
-        self.recorder.flush()
+        self.finish_recording(timeout)
         return took
+
+    def finish_recording(self, timeout: float = 10) -> None:
+        """Once the server has exited: wait (up to ``timeout``) for its last lines, then write the deltas still
+        waiting on a stream that never completed."""
+        self._reader.join(timeout)
+        self.recorder.flush()
 
 
 INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
@@ -622,6 +627,7 @@ class Spike:
             except (ProcessLookupError, PermissionError):
                 pass
             s.proc.wait()
+            s.finish_recording()
 
     def office_env(self, _thread: Any) -> dict[str, Any]:
         env = office_env(dict(os.environ))
