@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test"
 import { buildIssueURL } from "../../src/component/error-component"
 
-test("crash report links to the agent-corp issue tracker", () => {
+test("crash report links to the OpenCorp issue tracker", () => {
   const url = buildIssueURL("boom", "Error: boom\n    at x")
-  expect(url.origin + url.pathname).toBe("https://github.com/ngocbh/agent-corp/issues/new")
+  expect(url.origin + url.pathname).toBe("https://github.com/ngocbh/opencorp/issues/new")
   expect(url.searchParams.get("title")).toBe("TUI crash: boom")
   expect(url.searchParams.get("body")).toContain("Error: boom")
 })

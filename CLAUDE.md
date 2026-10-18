@@ -1,14 +1,17 @@
-# agent-corp
+# OpenCorp
 
-A local office daemon that runs AI employees on top of the Yian engine.
+OpenCorp: run a company of AI employees on your machine. A local office daemon runs them on top
+of the Yian engine.
 
 ## Goals
 
 - Yian flows hold each employee's traits and SOPs: repeatable work that improves over long runs.
-- Flexible or one-off work runs in Codex, Claude Code, or OpenCode, unchanged. agent-corp lets
+- Flexible or one-off work runs in Codex, Claude Code, or OpenCode, unchanged. OpenCorp lets
   an employee act as their user.
-- agent-corp dogfoods Yian. Whenever we can, automate work with a Yian YAML flow that people and
+- OpenCorp dogfoods Yian. Whenever we can, automate work with a Yian YAML flow that people and
   agents can share and reuse, rather than with one-off code.
+
+OpenCorp isn't affiliated with OpenCode (the TUI is forked from it) or OpenCorporates.
 
 ## Building a feature on Yian
 
@@ -20,7 +23,7 @@ Before designing a feature, during brainstorming:
    plain office code.
 2. For a flow, list the Yian features it needs and check that Yian supports each one.
 3. For each missing feature, file an issue on the yian repo (github.com/ngocbh/yian) asking for a
-   generic feature. Don't work around it in agent-corp; build on what Yian has today and expand
+   generic feature. Don't work around it in OpenCorp; build on what Yian has today and expand
    when Yian ships more.
 
 ## Layout
@@ -42,7 +45,7 @@ the shared record of the design decisions.
 ## Setup
 
 ```
-git clone --recurse-submodules https://github.com/ngocbh/agent-corp.git && cd agent-corp
+git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd opencorp
 uv sync        # uses a uv-managed Python 3.12
 bun install
 ```

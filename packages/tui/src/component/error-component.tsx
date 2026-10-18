@@ -201,7 +201,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
 }
 
 export function buildIssueURL(message: string, stack: string) {
-  const url = new URL("https://github.com/ngocbh/agent-corp/issues/new")
+  const url = new URL("https://github.com/ngocbh/opencorp/issues/new")
   url.searchParams.set("title", `TUI crash: ${message}`)
   const system = `**Version:** ${InstallationVersion}\n**OS:** ${describeOS()}\n**Terminal:** ${describeTerminal()}\n\n`
 
