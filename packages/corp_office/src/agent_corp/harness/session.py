@@ -37,9 +37,9 @@ OPEN_ELSEWHERE = "This Codex session is open in another Codex window or process;
 
 
 def why(exc: Exception) -> str:
-    """What an error part says about a failed load: what to do, then the stderr tail."""
+    """What an error part says about a failed load: what went wrong and what to do, never Codex's stderr."""
     if isinstance(exc, CodexStartError):
-        return f"{exc}\n{exc.tail}".strip()
+        return str(exc)
     if isinstance(exc, RpcError) and _WRITER_LOCK.search(exc.message):
         return OPEN_ELSEWHERE
     if isinstance(exc, RpcError):
@@ -289,7 +289,7 @@ class CodexSession:
                 process, self.launching = self.launching, None
             if process is not None:
                 process.kill()
-            self._cant_load(exc)
+            self._cant_load(exc, process)
             return
         with self._lock:
             self.launching = None
@@ -302,11 +302,14 @@ class CodexSession:
         self.store.update_session(self.session_id, harness_session_id=self.thread_id, harness_model=result.get("model"))
         self._flush()
 
-    def _cant_load(self, exc: Exception) -> None:
+    def _cant_load(self, exc: Exception, process: CodexProcess | None) -> None:
         if self.stopped:
             return  # office stop: the session keeps its status for restore
-        if not isinstance(exc, (CodexStartError, RpcError)):
-            log.exception("codex session %s can't load its thread", self.session_id)
+        where = f" (Codex's stderr is in {process.log})" if process is not None else ""
+        if isinstance(exc, (CodexStartError, RpcError)):
+            log.warning("codex session %s can't load its thread: %s%s", self.session_id, exc, where)
+        else:
+            log.exception("codex session %s can't load its thread%s", self.session_id, where)
         self.transcript.error(why(exc))
         session = self.store.get_session(self.session_id)
         with self._lock:

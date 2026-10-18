@@ -3,6 +3,7 @@
 import logging
 import os
 import signal
+import sys
 import threading
 import time
 
@@ -91,6 +92,22 @@ def test_a_crash_leaves_codex_stderr_in_its_codex_log_and_the_office_log_points_
     assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
     [note] = [r.getMessage() for r in caplog.records if "exited unexpectedly" in r.getMessage()]
     assert sid in note and str(harness.office.paths.run_dir(sid) / "codex.log") in note and STDERR not in note
+
+
+def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_output_is(make_harness, workspace,
+                                                                                      caplog):
+    script = f"import sys; print({STDERR!r}, file=sys.stderr); sys.exit(1)"
+    h = make_harness(files=CODEX_PERSON, codex=lambda office, hooks: CodexSessions(
+        office, hooks, command=lambda: [sys.executable, "-I", "-c", script]))
+    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+        sid = h.start_session("minh", str(workspace), "codex").id
+        wait_for(lambda: status(h, sid) == "failed", what="failed")
+    log = str(h.office.paths.run_dir(sid) / "codex.log")
+    [error] = errors(h, sid)
+    assert "Codex didn't start" in error and "ac doctor" in error and log in error
+    assert STDERR not in stored(h, sid) and STDERR in codex_log(h, sid)
+    assert any(sid in r.getMessage() and log in r.getMessage() and STDERR not in r.getMessage()
+               for r in caplog.records)
 
 
 def test_ending_after_a_crash_without_a_reload_leaves_no_record_or_children(harness, fake_codex, workspace):

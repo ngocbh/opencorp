@@ -12,7 +12,7 @@ from agent_corp.harness.rpc import JsonRpc, RpcClosed
 from agent_corp.protocol.models import HarnessPolicy
 from agent_corp.testing import fake_codex as fc
 from agent_corp.worker.reaper import start_time
-from tests.harness.conftest import errors, requests_valid, start, status, texts, wait_for
+from tests.harness.conftest import codex_log, errors, requests_valid, start, status, stored, texts, wait_for
 
 
 class Live:
@@ -72,7 +72,10 @@ def test_a_load_codex_refuses_fails_the_session_with_why(harness, fake_codex, wo
     harness.hooks.session_ended.append(lambda s: ended.append(s.status))
     sid = harness.start_session("minh", str(workspace), "codex").id
     wait_for(lambda: status(harness, sid) == "failed", what="failed")
-    assert "config.toml: bad key" in errors(harness, sid)[0] and harness.store.list_workers() == []
+    [error] = errors(harness, sid)
+    assert "nope" in error and "ac doctor" in error and str(harness.office.paths.run_dir(sid) / "codex.log") in error
+    assert "config.toml: bad key" not in stored(harness, sid) and "config.toml: bad key" in codex_log(harness, sid)
+    assert harness.store.list_workers() == []
     assert ended == ["failed"]
 
 
