@@ -8,7 +8,7 @@ import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
 import { openEditor } from "../../editor"
-import { AGENT_CORP_BASE_MODE, clearFirst, useBindings } from "../../keymap"
+import { OPENCORP_BASE_MODE, clearFirst, useBindings } from "../../keymap"
 import { OfficeError, OfficeUnavailable, VersionConflictError } from "../../office/errors"
 import { Toast, useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
@@ -233,7 +233,7 @@ export function Profile() {
   const back = () => route.navigate(data.from ? { type: "session", sessionID: data.from } : { type: "home" })
 
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
       { key: "e", group: "Profile", cmd: () => void edit() },
@@ -249,7 +249,7 @@ export function Profile() {
     return true
   }
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     enabled: () => !!input && renderer.currentFocusedEditor === input,
     bindings: [
       // With text, Ctrl+C and Esc only clear it; on an empty box, Esc blurs and Ctrl+C goes on to leave.

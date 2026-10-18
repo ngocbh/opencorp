@@ -44,7 +44,7 @@ import { useTuiConfig } from "../../config"
 import { useClipboard } from "../../context/clipboard"
 import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
-import { AGENT_CORP_BASE_MODE, useBindings, useAgentCorpKeymap } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
 import { modelLabel } from "../../office/models"
@@ -206,7 +206,7 @@ export function Session() {
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
-  const keymap = useAgentCorpKeymap()
+  const keymap = useOpenCorpKeymap()
 
   createEffect(
     on(
@@ -513,7 +513,7 @@ export function Session() {
   }))
 
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("session", sessionBindingCommands),
   }))
 

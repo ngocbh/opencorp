@@ -33,7 +33,7 @@ nodes:
           changes: ${input.changes}
         output: Answers
         prompt: |-
-          You are setting up a new AgentCorp company with its owner, the human you are talking to. The owner is
+          You are setting up a new OpenCorp company with its owner, the human you are talking to. The owner is
           the company's CEO. The teammates are AI agents who report to the owner.
 
           Collect:

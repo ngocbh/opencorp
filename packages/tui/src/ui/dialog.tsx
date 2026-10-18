@@ -5,7 +5,7 @@ import { MouseButton, Renderable, RGBA } from "@opentui/core"
 import { createStore } from "solid-js/store"
 import { useToast } from "./toast"
 import { Flag } from "../core/flag"
-import { useBindings, useAgentCorpModeStack } from "../keymap"
+import { useBindings, useOpenCorpModeStack } from "../keymap"
 import { useClipboard } from "../context/clipboard"
 
 export function Dialog(
@@ -76,7 +76,7 @@ function init() {
   })
 
   const renderer = useRenderer()
-  const modeStack = useAgentCorpModeStack()
+  const modeStack = useOpenCorpModeStack()
 
   createEffect(() => {
     if (store.stack.length === 0) return

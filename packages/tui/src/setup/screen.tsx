@@ -72,7 +72,7 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
     >
       <box flexShrink={0} paddingTop={1}>
         <text fg={theme.text} wrapMode="none">
-          <b>Setting up AgentCorp</b>
+          <b>Setting up OpenCorp</b>
           <span style={{ fg: theme.textMuted }}>{props.command ? ` · ${props.command}` : ""}</span>
         </text>
       </box>

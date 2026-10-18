@@ -6,7 +6,7 @@ import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
 import { useRoute, useRouteData } from "../../context/route"
 import { useTheme } from "../../context/theme"
-import { AGENT_CORP_BASE_MODE, useBindings } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings } from "../../keymap"
 import { OfficeError, OfficeUnavailable } from "../../office/errors"
 import { useDialog } from "../../ui/dialog"
 import { DialogSelect } from "../../ui/dialog-select"
@@ -202,7 +202,7 @@ export function Debrief() {
   }
 
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     enabled: () => renderer.currentFocusedEditor === null,
     bindings: [
       { key: "r", group: "Debrief", cmd: refresh },
@@ -223,7 +223,7 @@ export function Debrief() {
     return true
   }
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     enabled: () => !!input && renderer.currentFocusedEditor === input,
     bindings: [
       // Esc only leaves the box: the draft stays for t and f to put a turn in front of. So only the clear keys

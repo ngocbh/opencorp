@@ -1,5 +1,5 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
-import { registerAgentCorpSpinner } from "./component/register-spinner"
+import { registerOpenCorpSpinner } from "./component/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { Global } from "./core/global"
@@ -54,18 +54,18 @@ import { TuiConfigProvider, useTuiConfig, resolve as resolveConfig, type TuiConf
 import { CommandPaletteDialog } from "./component/command-palette"
 import {
   COMMAND_PALETTE_COMMAND,
-  AGENT_CORP_BASE_MODE,
-  AgentCorpKeymapProvider,
-  registerAgentCorpKeymap,
+  OPENCORP_BASE_MODE,
+  OpenCorpKeymapProvider,
+  registerOpenCorpKeymap,
   useBindings,
-  useAgentCorpKeymap,
+  useOpenCorpKeymap,
 } from "./keymap"
 
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "./terminal-win32"
 import { destroyRenderer } from "./util/renderer"
 import { errorFormat } from "./util/error"
 
-registerAgentCorpSpinner()
+registerOpenCorpSpinner()
 
 const appGlobalBindingCommands = [
   "session.list",
@@ -89,7 +89,7 @@ const appBindingCommands = [
   "provider.connect",
   "agent.cycle",
   "agent.cycle.reverse",
-  "agentcorp.debug",
+  "opencorp.debug",
   "theme.switch",
   "theme.switch_mode",
   "theme.mode.lock",
@@ -154,7 +154,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
       win32DisableProcessedInput()
       const keymap = createDefaultOpenTuiKeymap(renderer)
       yield* Effect.acquireRelease(
-        Effect.sync(() => registerAgentCorpKeymap(keymap, renderer, input.config)),
+        Effect.sync(() => registerOpenCorpKeymap(keymap, renderer, input.config)),
         (unregister) => Effect.sync(unregister),
       )
       const shutdown = yield* Deferred.make<unknown>()
@@ -208,7 +208,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                         }}
                       >
                         <ClipboardProvider>
-                          <AgentCorpKeymapProvider keymap={keymap}>
+                          <OpenCorpKeymapProvider keymap={keymap}>
                             <ArgsProvider {...input.args}>
                               <KVProvider>
                                 <ToastProvider>
@@ -238,7 +238,7 @@ export const run = Effect.fn("Tui.run")(function* (opts: TuiInput) {
                                 </ToastProvider>
                               </KVProvider>
                             </ArgsProvider>
-                          </AgentCorpKeymapProvider>
+                          </OpenCorpKeymapProvider>
                         </ClipboardProvider>
                       </TuiStartupProvider>
                     </TuiTerminalEnvironmentProvider>
@@ -271,7 +271,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const dialog = useDialog()
   const local = useLocal()
   const kv = useKV()
-  const keymap = useAgentCorpKeymap()
+  const keymap = useOpenCorpKeymap()
   const toast = useToast()
   const themeState = useTheme()
   const { theme, mode, setMode, locked, lock, unlock } = themeState
@@ -448,7 +448,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         },
       },
       {
-        name: "agentcorp.debug",
+        name: "opencorp.debug",
         title: "View debug info",
         slashName: "debug",
         run: () => {
@@ -640,7 +640,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }))
 
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("app", appBindingCommands),
   }))
 
@@ -649,7 +649,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }))
 
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     enabled: () => {
       const current = promptRef.current
       if (!current?.focused) return true

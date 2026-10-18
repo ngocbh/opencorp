@@ -16,7 +16,7 @@ import type { Binding } from "@opentui/keymap"
 import { tint, useTheme } from "../../context/theme"
 import { SplitBorder } from "../../ui/border"
 import { useTuiConfig } from "../../config"
-import { clearFirst, useBindings, useAgentCorpModeStack } from "../../keymap"
+import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { SecretInput } from "../../setup/secret"
 import type { CardPage, PageAnswer } from "./answer"
 
@@ -78,7 +78,7 @@ export function QuestionView(
   const { theme } = useTheme()
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
-  const modeStack = useAgentCorpModeStack()
+  const modeStack = useOpenCorpModeStack()
 
   const [store, setStore] = createStore({
     page: 0,

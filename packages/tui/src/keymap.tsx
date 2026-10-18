@@ -18,18 +18,18 @@ import { useTuiConfig } from "./config"
 import { TuiKeybind } from "./config/keybind"
 
 export const LEADER_TOKEN = "leader"
-export const AGENT_CORP_BASE_MODE = "base"
+export const OPENCORP_BASE_MODE = "base"
 export const COMMAND_PALETTE_COMMAND = "command.palette.show"
 
-const AGENT_CORP_MODE_KEY = "agentcorp.mode"
+const OPENCORP_MODE_KEY = "opencorp.mode"
 
-export const AgentCorpKeymapProvider = KeymapProvider
-export const useAgentCorpKeymap = useKeymap
+export const OpenCorpKeymapProvider = KeymapProvider
+export const useOpenCorpKeymap = useKeymap
 
 export { useBindings, useKeymapSelector }
 
 export type OpenTuiKeymap = ReturnType<typeof useKeymap>
-type AgentCorpModeStack = ReturnType<typeof createAgentCorpModeStack>
+type OpenCorpModeStack = ReturnType<typeof createOpenCorpModeStack>
 type CommandSlashEntry = {
   display: string
   description?: string
@@ -44,18 +44,18 @@ type BindingLookup = {
 type FormatConfig = { keybinds: BindingLookup }
 type ResolvedKeymapConfig = FormatConfig & { leader_timeout: number }
 
-const modeStacks = new WeakMap<OpenTuiKeymap, AgentCorpModeStack>()
+const modeStacks = new WeakMap<OpenTuiKeymap, OpenCorpModeStack>()
 
 function isVisiblePaletteCommand(command: Command) {
   return command.hidden !== true && command.name !== COMMAND_PALETTE_COMMAND
 }
 
-export function createAgentCorpModeStack(keymap: OpenTuiKeymap) {
-  keymap.setData(AGENT_CORP_MODE_KEY, AGENT_CORP_BASE_MODE)
+export function createOpenCorpModeStack(keymap: OpenTuiKeymap) {
+  keymap.setData(OPENCORP_MODE_KEY, OPENCORP_BASE_MODE)
 
   const offFields = keymap.registerLayerFields({
     mode(value, ctx) {
-      ctx.require(AGENT_CORP_MODE_KEY, value)
+      ctx.require(OPENCORP_MODE_KEY, value)
     },
   })
 
@@ -63,12 +63,12 @@ export function createAgentCorpModeStack(keymap: OpenTuiKeymap) {
   let disposed = false
 
   const update = () => {
-    keymap.setData(AGENT_CORP_MODE_KEY, stack.at(-1)?.mode ?? AGENT_CORP_BASE_MODE)
+    keymap.setData(OPENCORP_MODE_KEY, stack.at(-1)?.mode ?? OPENCORP_BASE_MODE)
   }
 
   const stackApi = {
     current() {
-      return stack.at(-1)?.mode ?? AGENT_CORP_BASE_MODE
+      return stack.at(-1)?.mode ?? OPENCORP_BASE_MODE
     },
     push(mode: string) {
       if (disposed) return () => {}
@@ -90,7 +90,7 @@ export function createAgentCorpModeStack(keymap: OpenTuiKeymap) {
       disposed = true
       stack.length = 0
       offFields()
-      keymap.setData(AGENT_CORP_MODE_KEY, undefined)
+      keymap.setData(OPENCORP_MODE_KEY, undefined)
       modeStacks.delete(keymap)
     },
   }
@@ -99,11 +99,11 @@ export function createAgentCorpModeStack(keymap: OpenTuiKeymap) {
   return stackApi
 }
 
-export function useAgentCorpModeStack() {
-  return getAgentCorpModeStack(useAgentCorpKeymap())
+export function useOpenCorpModeStack() {
+  return getOpenCorpModeStack(useOpenCorpKeymap())
 }
 
-export function getAgentCorpModeStack(keymap: OpenTuiKeymap) {
+export function getOpenCorpModeStack(keymap: OpenTuiKeymap) {
   const value = modeStacks.get(keymap)
   if (!value) throw new Error("Mode stack is not registered for this keymap")
   return value
@@ -230,8 +230,8 @@ export function formatKeyBindings(bindings: Parameters<typeof formatCommandBindi
  * The setup screen takes only these; it has no leader chords, and its boxes are inputs, which the managed
  * textarea layer skips.
  */
-export function registerAgentCorpBaseKeymap(keymap: OpenTuiKeymap) {
-  const modeStack = createAgentCorpModeStack(keymap)
+export function registerOpenCorpBaseKeymap(keymap: OpenTuiKeymap) {
+  const modeStack = createOpenCorpModeStack(keymap)
   const offCommaBindings = registerCommaBindings(keymap)
   const offAliasExpander = registerKeyAliases(keymap)
   const offBaseLayout = registerBaseLayoutFallback(keymap)
@@ -243,8 +243,8 @@ export function registerAgentCorpBaseKeymap(keymap: OpenTuiKeymap) {
   }
 }
 
-export function registerAgentCorpKeymap(keymap: OpenTuiKeymap, renderer: CliRenderer, config: ResolvedKeymapConfig) {
-  const offBase = registerAgentCorpBaseKeymap(keymap)
+export function registerOpenCorpKeymap(keymap: OpenTuiKeymap, renderer: CliRenderer, config: ResolvedKeymapConfig) {
+  const offBase = registerOpenCorpBaseKeymap(keymap)
   const leader = leaderKey(config)
   const offLeader = leader
     ? registerTimedLeader(keymap, {
@@ -284,7 +284,7 @@ export function useCommandShortcut(command: string): Accessor<string> {
 }
 
 export function useCommandSlashes(): Accessor<readonly CommandSlashEntry[]> {
-  const keymap = useAgentCorpKeymap()
+  const keymap = useOpenCorpKeymap()
   const entries = useKeymapSelector((keymap: OpenTuiKeymap) =>
     keymap.getCommandEntries({
       visibility: "reachable",

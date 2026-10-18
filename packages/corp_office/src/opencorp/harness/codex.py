@@ -119,7 +119,7 @@ class CodexProcess:
         self.rpc.start()
         try:
             result = self.rpc.request("initialize", {
-                "clientInfo": {"name": "opencorp", "title": "AgentCorp", "version": version("opencorp")},
+                "clientInfo": {"name": "opencorp", "title": "OpenCorp", "version": version("opencorp")},
                 "capabilities": {"experimentalApi": True}}, timeout=START_TIMEOUT)
             self.rpc.notify("initialized")
             account = self.rpc.request("account/read", {"refreshToken": False}, timeout=START_TIMEOUT)

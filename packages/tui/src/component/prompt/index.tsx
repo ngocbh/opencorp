@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show } from "solid-js"
-import { registerAgentCorpSpinner } from "../register-spinner"
+import { registerOpenCorpSpinner } from "../register-spinner"
 import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
@@ -39,11 +39,11 @@ import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { createFadeIn } from "../../util/signal"
-import { AGENT_CORP_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useAgentCorpKeymap } from "../../keymap"
+import { OPENCORP_BASE_MODE, useBindings, useCommandShortcut, useLeaderActive, useOpenCorpKeymap } from "../../keymap"
 import { useTuiConfig } from "../../config"
 import { readLocalAttachment } from "./local-attachment"
 
-registerAgentCorpSpinner()
+registerOpenCorpSpinner()
 
 export type PromptProps = {
   sessionID?: string
@@ -120,7 +120,7 @@ export function Prompt(props: PromptProps) {
   })
   const history = usePromptHistory()
   const stash = usePromptStash()
-  const keymap = useAgentCorpKeymap()
+  const keymap = useOpenCorpKeymap()
   const agentShortcut = useCommandShortcut("agent.cycle")
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const renderer = useRenderer()
@@ -308,7 +308,7 @@ export function Prompt(props: PromptProps) {
   }))
 
   useBindings(() => ({
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("prompt.palette", [
       "prompt.submit",
       "prompt.editor",
@@ -547,7 +547,7 @@ export function Prompt(props: PromptProps) {
   // no draft, so Esc interrupts then. The priority holds that order however the layers are registered.
   useBindings(() => ({
     target: inputTarget,
-    mode: AGENT_CORP_BASE_MODE,
+    mode: OPENCORP_BASE_MODE,
     priority: 1,
     enabled: inputTarget() !== undefined && !props.disabled,
     bindings: [

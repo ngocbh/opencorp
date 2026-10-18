@@ -12,7 +12,7 @@ test("steps and lines show in the transcript; with no question the spinner says 
     child.push({ type: "step", number: 1, total: 5, title: "Model", why: "The model your people think with." })
     child.push({ type: "say", text: "Checking the key…" })
     const f = await app.until((f) => f.includes("Checking the key…"))
-    expect(f).toContain("Setting up AgentCorp")
+    expect(f).toContain("Setting up OpenCorp")
     expect(f).toContain("Step 1 of 5 · Model")
     expect(f).toContain("The model your people think with.")
     expect(f).toContain("Working…")
@@ -26,7 +26,7 @@ test("the header names the command", async () => {
   const child = new FakeChild()
   const app = await bootSetup(child, "opencorp init")
   try {
-    await app.until((f) => f.includes("Setting up AgentCorp · opencorp init"))
+    await app.until((f) => f.includes("Setting up OpenCorp · opencorp init"))
   } finally {
     await app.stop()
   }

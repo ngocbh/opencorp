@@ -206,7 +206,7 @@ export const CommandMap = {
   theme_mode_lock: "theme.mode.lock",
   sidebar_toggle: "session.sidebar.toggle",
   scrollbar_toggle: "session.toggle.scrollbar",
-  debug_view: "agentcorp.debug",
+  debug_view: "opencorp.debug",
   session_export: "session.export",
   session_copy: "session.copy",
   session_new: "session.new",

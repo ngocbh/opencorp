@@ -7,7 +7,7 @@ import { KVProvider } from "../context/kv"
 import { TuiPathsProvider } from "../context/runtime"
 import { ThemeProvider } from "../context/theme"
 import { Global } from "../core/global"
-import { AgentCorpKeymapProvider, registerAgentCorpBaseKeymap, type OpenTuiKeymap } from "../keymap"
+import { OpenCorpKeymapProvider, registerOpenCorpBaseKeymap, type OpenTuiKeymap } from "../keymap"
 import { destroyRenderer } from "../util/renderer"
 import { spawnSetup, type SetupChild } from "./child"
 import { SetupScreen } from "./screen"
@@ -62,7 +62,7 @@ export async function runSetupWith(
   }
   try {
     const keymap = createDefaultOpenTuiKeymap(renderer)
-    unregister = registerAgentCorpBaseKeymap(keymap)
+    unregister = registerOpenCorpBaseKeymap(keymap)
     // Emitted at the end of finalizeDestroy, which then releases stdin and stdout synchronously, so code awaiting
     // this runs once another renderer (the office's) can take them.
     const destroyed = new Promise<void>((resolve) => renderer.once("destroy", () => resolve()))
@@ -105,11 +105,11 @@ function Providers(props: { mode: "dark" | "light"; keymap: OpenTuiKeymap; child
       }}
     >
       <KVProvider>
-        <AgentCorpKeymapProvider keymap={props.keymap}>
+        <OpenCorpKeymapProvider keymap={props.keymap}>
           <TuiConfigProvider config={resolveConfig({}, { terminalSuspend: false })}>
             <ThemeProvider mode={props.mode}>{props.children}</ThemeProvider>
           </TuiConfigProvider>
-        </AgentCorpKeymapProvider>
+        </OpenCorpKeymapProvider>
       </KVProvider>
     </TuiPathsProvider>
   )

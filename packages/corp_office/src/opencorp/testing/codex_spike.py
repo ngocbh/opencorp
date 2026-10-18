@@ -499,7 +499,7 @@ class Spike:
                            Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements, self.words), env,
                            stderr=self.root / f"{name}.stderr")
         try:
-            server.request("initialize", {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike",
+            server.request("initialize", {"clientInfo": {"name": "opencorp_spike", "title": "OpenCorp spike",
                                                          "version": "0"}, "capabilities": {"experimentalApi": True}})
             server.notify("initialized")
         except BaseException:

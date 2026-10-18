@@ -16,7 +16,7 @@ import { Locale } from "../../util/locale"
 import type { PromptFilePart, PromptInfo } from "../../prompt/history"
 import { findFiles } from "../../prompt/files"
 import { useFrecency } from "../../prompt/frecency"
-import { useBindings, useCommandSlashes, useAgentCorpModeStack } from "../../keymap"
+import { useBindings, useCommandSlashes, useOpenCorpModeStack } from "../../keymap"
 import { displayCharAt, mentionTriggerIndex } from "../../prompt/display"
 
 function removeLineRange(input: string) {
@@ -82,7 +82,7 @@ export function Autocomplete(props: {
   const editor = useEditorContext()
   const office = useOffice()
   const slashes = useCommandSlashes()
-  const modeStack = useAgentCorpModeStack()
+  const modeStack = useOpenCorpModeStack()
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
   const frecency = useFrecency()

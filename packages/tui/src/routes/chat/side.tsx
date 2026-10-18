@@ -4,7 +4,7 @@ import { createEffect, createMemo, on, onCleanup, onMount, Show } from "solid-js
 import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
-import { clearFirst, useBindings, useAgentCorpModeStack } from "../../keymap"
+import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
 import { OfficeUnavailable, isNotImplemented } from "../../office/errors"
@@ -63,7 +63,7 @@ export function SideChat(props: {
   const toast = useToast()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
-  const modeStack = useAgentCorpModeStack()
+  const modeStack = useOpenCorpModeStack()
   let textarea: TextareaRenderable | undefined
   // A second Enter while a message is out sends nothing; the text stays until the office takes it.
   let sending = false
