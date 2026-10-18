@@ -6,8 +6,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft7Validator
 
 from agent_corp.testing import codex_spike
 from agent_corp.testing.codex_spike import (
@@ -26,11 +28,14 @@ from agent_corp.testing.codex_spike import (
     office_env,
     owner_load,
     pin_schema,
+    recut,
     scrub,
     signed_in,
 )
 from agent_corp.worker import spawn
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
+
+SCHEMA = Path(__file__).parents[1] / "harness" / "fixtures" / "codex" / "schema"
 
 
 @pytest.fixture(autouse=True)
@@ -168,6 +173,113 @@ def test_the_recorder_keeps_only_what_the_office_reads(tmp_path):
         {"dir": "in", "msg": {"method": "item/started", "params": {"cwd": "/home/owner/ws"}}}]
 
 
+def note(method, **params):
+    return {"method": method, "params": {"threadId": "t1", "turnId": "u1", **params}}
+
+
+def recorded(log):
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def test_the_recorder_scrubs_a_path_split_across_deltas_and_keeps_their_count_and_order(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/tmp/ac-codex-spike-x1": "/work/spike"})
+    text = "Wrote /tmp/ac-codex-spike-x1/ws/a.md for you."
+    pieces = ["Wrote /tmp/ac-co", "dex-spike-", "x1/ws/a", ".md for you."]
+    recorder.write("in", note("item/started", item={"type": "agentMessage", "id": "m1", "text": ""}))
+    for i, piece in enumerate(pieces):
+        recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta=piece))
+        if i == 1:  # what happens meanwhile stays where it happened
+            recorder.write("out", {"id": 7, "result": {}})
+    recorder.write("in", note("item/completed", item={"type": "agentMessage", "id": "m1", "text": text}))
+    lines = recorded(log)
+    assert "/tmp/ac-" not in log.read_text()
+    assert [(e["dir"], e["msg"].get("method")) for e in lines] == [
+        ("in", "item/started"), ("in", "item/agentMessage/delta"), ("in", "item/agentMessage/delta"), ("out", None),
+        ("in", "item/agentMessage/delta"), ("in", "item/agentMessage/delta"), ("in", "item/completed")]
+    deltas = [e["msg"]["params"]["delta"] for e in lines if e["msg"].get("method") == "item/agentMessage/delta"]
+    assert "".join(deltas) == lines[-1]["msg"]["params"]["item"]["text"] == "Wrote /work/spike/ws/a.md for you."
+    assert deltas[:3] == ["Wrote /", "", "work/spike/ws/a"]  # a cut inside the path moves back to where it changed
+    notes = Draft7Validator(json.loads((SCHEMA / "ServerNotification.json").read_text()))
+    for delta in [e["msg"] for e in lines if e["msg"].get("method") == "item/agentMessage/delta"]:
+        notes.validate(delta)
+
+
+def test_the_recorder_keeps_each_stream_apart(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/Users/ann": "/home/owner"})
+    for msg in [note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=0, delta="In /Users/"),
+                note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=1, delta="Then /Use"),
+                note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=0, delta="ann/a."),
+                note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=1, delta="rs/ann/b."),
+                note("item/commandExecution/outputDelta", itemId="c1", delta="/Users/a"),
+                note("item/completed", item={"type": "reasoning", "id": "r1", "summary": [], "content": []}),
+                note("item/commandExecution/outputDelta", itemId="c1", delta="nn/c\n"),
+                note("item/completed", item={"type": "commandExecution", "id": "c1"})]:
+        recorder.write("in", msg)
+    joined = {}
+    for e in recorded(log):
+        params = e["msg"]["params"]
+        if "delta" in params:
+            key = (params["itemId"], params.get("summaryIndex"))
+            joined[key] = joined.get(key, "") + params["delta"]
+    assert joined == {("r1", 0): "In /home/owner/a.", ("r1", 1): "Then /home/owner/b.", ("c1", None): "/home/owner/c\n"}
+
+
+def test_a_stream_still_open_when_the_turn_completes_is_written_then(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/Users/ann": "/home/owner"})
+    recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta="/Users/a"))
+    recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta="nn"))
+    assert log.read_text() == ""  # held until its stream ends
+    recorder.write("in", {"method": "turn/completed", "params": {"threadId": "t1", "turn": {"id": "u1"}}})
+    assert [e["msg"]["params"].get("delta") for e in recorded(log)] == ["/", "home/owner", None]
+
+
+DELTAS = r'''
+import json, sys
+for piece in ["/Users/a", "nn/x"]:
+    print(json.dumps({"method": "item/agentMessage/delta",
+                      "params": {"threadId": "t1", "turnId": "u1", "itemId": "m1", "delta": piece}}), flush=True)
+sys.stdin.read()
+'''
+
+
+def test_a_stream_still_open_when_the_server_ends_is_written_scrubbed(tmp_path):
+    log = tmp_path / "s.jsonl"
+    with AppServer([sys.executable, "-c", DELTAS], tmp_path, Recorder(log, {"/Users/ann": "/home/owner"})) as server:
+        server.wait("item/agentMessage/delta", where=lambda m: m["params"]["delta"] == "nn/x", timeout=30)
+    assert "".join(e["msg"]["params"]["delta"] for e in recorded(log)) == "/home/owner/x"
+
+
+def test_recut_leaves_pieces_the_scrub_doesnt_change_as_they_are_after_one_scrub():
+    calls = []
+    assert recut(lambda s: calls.append(s) or s, ["a /x", "/y b"]) == ["a /x", "/y b"]
+    assert calls == ["a /x/y b"]
+    assert recut(lambda s: s, []) == []
+
+
+def test_recut_cuts_where_the_scrubbed_prefix_stops_agreeing_with_the_scrubbed_whole():
+    def text(s):
+        return s.replace("/Users/ann", "/home/owner")
+
+    assert recut(text, ["see /Us", "ers/a", "nn/x ok"]) == ["see /", "", "home/owner/x ok"]
+
+
+class UnflushableRecorder(Recorder):
+    def flush(self):
+        raise OSError("disk full")
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_recording_that_fails_to_flush_still_ends_the_wait_for_the_server(tmp_path):
+    server = AppServer([sys.executable, "-c", "pass"], tmp_path, UnflushableRecorder(tmp_path / "s.jsonl", {}))
+    with pytest.raises(SpikeError, match="exited"):
+        server.next(timeout=10)
+    with pytest.raises(OSError, match="disk full"):
+        server.close()
+
+
 def test_owner_load_routes_approvals_to_the_user():
     assert owner_load("/w", "workspace-write", network=True) == {
         "cwd": "/w", "sandbox": "workspace-write", "approvalPolicy": "on-request", "approvalsReviewer": "user",
@@ -276,6 +388,7 @@ if sys.argv[1:] != ["app-server", "--listen", "stdio://"]:  # --version, login s
     print("codex-cli 0.0.0-fake")
     sys.exit(0)
 ask = os.environ.get("FAKE_CODEX_ASKS")  # the approval method a turn asks first; none when unset
+says_cwd = os.environ.get("FAKE_CODEX_SAYS_CWD")  # a turn streams its cwd in two deltas and never ends, when set
 
 
 def send(msg):
@@ -300,6 +413,10 @@ for line in sys.stdin:
         send({"id": msg["id"], "result": result.get(method, {})})
         if method == "turn/start" and ask:
             send({"id": 900, "method": ask, "params": {"itemId": "c1", "threadId": "thr_1", "turnId": "turn_1"}})
+        elif method == "turn/start" and says_cwd:
+            for piece in (os.getcwd()[:6], os.getcwd()[6:]):
+                send({"method": "item/agentMessage/delta",
+                      "params": {"threadId": "thr_1", "turnId": "turn_1", "itemId": "m1", "delta": piece}})
         elif method == "turn/start":
             send({"method": "turn/completed", "params": {"threadId": "thr_1",
                                                          "turn": {"id": "turn_1", "status": "completed"}}})
@@ -348,6 +465,23 @@ def test_eof_kills_its_app_server_when_it_fails(fake_spike, monkeypatch):
     with pytest.raises(SpikeError, match="the model ran no command"):
         fake_spike.eof(None)
     assert servers[0].proc.poll() is not None
+
+
+def test_eof_writes_the_deltas_still_waiting_when_it_fails(fake_spike, monkeypatch):
+    monkeypatch.delenv("FAKE_CODEX_ASKS", raising=False)
+    monkeypatch.setenv("FAKE_CODEX_SAYS_CWD", "1")
+
+    def fails_after_the_deltas(server):
+        deltas = lambda: sum(m.get("method") == "item/agentMessage/delta" for m in server.seen)  # noqa: E731
+        server.wait("item/agentMessage/delta", where=lambda m: deltas() == 2, timeout=30)
+        raise SpikeError("the model ran no command")
+
+    monkeypatch.setattr(fake_spike, "wait_command_started", fails_after_the_deltas)
+    with pytest.raises(SpikeError, match="the model ran no command"):
+        fake_spike.eof(None)
+    lines = [json.loads(line)["msg"] for line in (fake_spike.out / "sessions" / "eof.jsonl").read_text().splitlines()]
+    assert "".join(m["params"]["delta"] for m in lines if m.get("method") == "item/agentMessage/delta") == (
+        "/work/spike/ws")
 
 
 def test_eof_and_office_env_run_again_alone(tmp_path, monkeypatch):

@@ -102,14 +102,46 @@ def pin_schema(generated: Path, out: Path, *, version: str) -> None:
     (out / "VERSION").write_text(version + "\n")
 
 
+def _stream(msg: dict[str, Any]) -> tuple[Any, ...] | None:
+    """The stream a streamed ``item/...`` delta belongs to (its method and every param but ``delta``, so reasoning's
+    summary and content parts stay apart), or None for any other message."""
+    params = msg.get("params")
+    if not (str(msg.get("method")).startswith("item/") and isinstance(params, dict)
+            and isinstance(params.get("delta"), str) and isinstance(params.get("itemId"), str)):
+        return None
+    return (msg["method"], *sorted((k, json.dumps(v)) for k, v in params.items() if k != "delta"))
+
+
+def recut(text: Callable[[str], str], pieces: list[str]) -> list[str]:
+    """The joined ``pieces`` scrubbed by ``text``, cut into as many pieces. A cut lands where the scrubbed prefix
+    before it stops agreeing with the scrubbed whole, so one inside a replaced name moves back to where the name
+    starts to change. ``pieces`` come back as they are when ``text`` changes nothing."""
+    joined = "".join(pieces)
+    whole = text(joined)
+    if whole == joined:  # the common case, without scrubbing each prefix again
+        return list(pieces)
+    cuts, end = [0], 0
+    for piece in pieces[:-1]:
+        end += len(piece)
+        cuts.append(max(cuts[-1], len(os.path.commonprefix([text(joined[:end]), whole]))))
+    return [whole[a:b] for a, b in zip(cuts, [*cuts[1:], len(whole)])]
+
+
 class Recorder:
-    """Appends each message ``kept`` keeps, scrubbed, to a JSONL file as ``{"dir": "in" | "out", "msg": ...}``."""
+    """Appends each message ``kept`` keeps, scrubbed, to a JSONL file as ``{"dir": "in" | "out", "msg": ...}``.
+
+    A name can be split across an item's streamed deltas, where scrubbing each one alone would miss it. So from an
+    item's first delta until it completes (or its turn does, or ``flush``), every message waits; then each stream's
+    deltas are scrubbed as one text and cut again into as many deltas (``recut``; a cut inside a replaced name can
+    leave a delta empty), and the messages are written in order."""
 
     def __init__(self, path: Path, replacements: dict[str, str], words: dict[str, str] | None = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("")
         self.path, self.replacements, self.words = path, replacements, words or {}
         self._lock = threading.Lock()
+        self._held: list[tuple[str, dict[str, Any]]] = []
+        self._open: set[tuple[str | None, str]] = set()  # (turnId, itemId) of each item still streaming
 
     def scrub(self, value: Any) -> Any:
         return scrub(value, self.replacements, self.words)
@@ -117,9 +149,46 @@ class Recorder:
     def write(self, direction: str, msg: dict[str, Any]) -> None:
         if not kept(msg):
             return
-        line = json.dumps({"dir": direction, "msg": self.scrub(msg)})
-        with self._lock, self.path.open("a") as f:
-            f.write(line + "\n")
+        with self._lock:
+            params = msg.get("params") or {}
+            if _stream(msg):
+                self._open.add((params.get("turnId"), params["itemId"]))
+            if not self._open:
+                self._append([(direction, self.scrub(msg))])
+                return
+            self._held.append((direction, msg))
+            if msg.get("method") == "item/completed" and isinstance(params.get("item"), dict):
+                self._open = {(t, i) for t, i in self._open if i != params["item"].get("id")}
+            elif msg.get("method") == "turn/completed" and isinstance(params.get("turn"), dict):
+                self._open = {(t, i) for t, i in self._open if t != params["turn"].get("id")}
+            if not self._open:
+                self._flush()
+
+    def flush(self) -> None:
+        """Write what waits on a stream that never completed."""
+        with self._lock:
+            self._open.clear()
+            self._flush()
+
+    def _flush(self) -> None:
+        held, self._held = self._held, []
+        streams: dict[tuple[Any, ...], list[int]] = {}
+        for n, (_, msg) in enumerate(held):
+            if (stream := _stream(msg)) is not None:
+                streams.setdefault(stream, []).append(n)
+        out = [(direction, self.scrub(msg)) for direction, msg in held]
+        for at in streams.values():
+            pieces = recut(self.scrub, [held[n][1]["params"]["delta"] for n in at])
+            for n, piece in zip(at, pieces):
+                out[n][1]["params"]["delta"] = piece
+        self._append(out)
+
+    def _append(self, entries: list[tuple[str, dict[str, Any]]]) -> None:
+        """Write already scrubbed ``(direction, msg)`` pairs."""
+        lines = "".join(json.dumps({"dir": direction, "msg": msg}) + "\n" for direction, msg in entries)
+        if lines:
+            with self.path.open("a") as f:
+                f.write(lines)
 
 
 class AppServer:
@@ -144,7 +213,8 @@ class AppServer:
         self._answered = threading.Condition()
         self._inbox: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self.seen: list[dict[str, Any]] = []  # notifications and requests taken from the inbox
-        threading.Thread(target=self._read, daemon=True).start()
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
 
     def __enter__(self) -> "AppServer":
         return self
@@ -169,10 +239,13 @@ class AppServer:
                 else:
                     self._inbox.put(msg)
         finally:
-            with self._answered:
-                self._closed = True
-                self._answered.notify_all()
-            self._inbox.put(None)
+            try:
+                self.recorder.flush()
+            finally:  # whatever the recording does, nothing waits on a server that is gone
+                with self._answered:
+                    self._closed = True
+                    self._answered.notify_all()
+                self._inbox.put(None)
 
     def _stderr_tail(self, lines: int = 5) -> str:
         """The last ``lines`` lines of the server's stderr, scrubbed, to add to an error ("" without any)."""
@@ -266,7 +339,15 @@ class AppServer:
         except subprocess.TimeoutExpired:
             os.killpg(self.proc.pid, signal.SIGKILL)
             self.proc.wait()
-        return time.monotonic() - start
+        took = time.monotonic() - start
+        self.finish_recording(timeout)
+        return took
+
+    def finish_recording(self, timeout: float = 10) -> None:
+        """Once the server has exited: wait (up to ``timeout``) for its last lines, then write the deltas still
+        waiting on a stream that never completed."""
+        self._reader.join(timeout)
+        self.recorder.flush()
 
 
 INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
@@ -551,6 +632,7 @@ class Spike:
             except (ProcessLookupError, PermissionError):
                 pass
             s.proc.wait()
+            s.finish_recording()
 
     def office_env(self, _thread: Any) -> dict[str, Any]:
         env = office_env(dict(os.environ))
