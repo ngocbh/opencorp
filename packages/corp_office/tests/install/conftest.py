@@ -31,6 +31,7 @@ def no_real_services(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("OPENCORP_HOME", str(root / "user" / ".opencorp"))
     for name in [k for k in os.environ if k.startswith(legacy.OLD_ENV)]:
         monkeypatch.delenv(name)  # a developer's old variables would show up as leftovers
+    monkeypatch.delenv(legacy.BUN_ENV, raising=False)  # set only when the CLI runs the install, never under pytest
     (root / "user").mkdir()
     # A model check would reach the provider; tests of the check itself call it directly.
     monkeypatch.setattr("opencorp.install.init.model_problem", lambda provider: None)

@@ -2,6 +2,7 @@ import io
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -347,7 +348,8 @@ def test_doctor_prints_the_commands_that_finish_the_move(tmp_path, monkeypatch, 
     main(["doctor", "--home", str(new)])
     out = capsys.readouterr().out
     assert "warn  leftovers" in out
-    bun = shlex.join(["bun", str(REPO / legacy.NEW_ENTRY)])
+    # The bun the code names: without the CLI's own (conftest drops it), the one on this PATH, else plain bun.
+    bun = shlex.join([shutil.which("bun", path=os.environ["PATH"]) or "bun", str(REPO / legacy.NEW_ENTRY)])
     assert f"To finish moving to OpenCorp, run these in order:\n  [ ! -e {new} ] && mv {old} {new}\n  {bun} onboard\n" in out
 
 
