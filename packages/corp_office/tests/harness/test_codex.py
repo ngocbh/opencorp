@@ -17,6 +17,7 @@ from agent_corp.harness.codex import (CodexMissing, CodexProcess, CodexSignedOut
 from agent_corp.protocol.models import HarnessPolicy
 from agent_corp.store import Store
 from agent_corp.worker.reaper import reap, start_time
+from agent_corp.worker.spawn import worker_env
 from tests.chat.conftest import wait_for
 
 CLIENT = Draft7Validator(json.loads(
@@ -185,6 +186,27 @@ def test_the_app_server_gets_the_offices_codex_home_when_it_is_set(tmp_path):
             p = CodexProcess(store, "harness:S1", command=command, cwd=str(tmp_path), env={"PATH": os.environ["PATH"]},
                              log=tmp_path / "codex.log", on_notification=lambda m, p: None,
                              on_request=lambda i, m, p: None, on_exit=lambda p: None, environ=environ)
+            p.start()
+            assert seen.read_text() == expected
+            p.close(grace=1)
+
+
+def test_the_app_server_keeps_where_tls_finds_ca_certificates_only_when_set(tmp_path, monkeypatch):
+    seen = tmp_path / "certs.txt"
+    # A shell in front of the fake writes down the certificate settings the app-server was given.
+    command = ["/bin/sh", "-c", f'printf "%s %s" "${{SSL_CERT_FILE-unset}}" "${{SSL_CERT_DIR-unset}}" > "{seen}"; '
+               'exec "$0" "$@"', *fake(tmp_path)]
+    with Store(tmp_path / "store.sqlite") as store:
+        for certs, expected in (({"SSL_CERT_FILE": "/etc/pki/ca.crt", "SSL_CERT_DIR": "/etc/pki/certs"},
+                                 "/etc/pki/ca.crt /etc/pki/certs"), ({}, "unset unset")):
+            for name in ("SSL_CERT_FILE", "SSL_CERT_DIR"):
+                monkeypatch.delenv(name, raising=False)
+            for name, value in certs.items():
+                monkeypatch.setenv(name, value)
+            # worker_env() is the environment CodexSessions gives each app-server.
+            p = CodexProcess(store, "harness:S1", command=command, cwd=str(tmp_path), env=worker_env(),
+                             log=tmp_path / "codex.log", on_notification=lambda m, p: None,
+                             on_request=lambda i, m, p: None, on_exit=lambda p: None, environ={})
             p.start()
             assert seen.read_text() == expected
             p.close(grace=1)

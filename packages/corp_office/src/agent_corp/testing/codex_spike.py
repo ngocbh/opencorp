@@ -269,7 +269,7 @@ class AppServer:
         return time.monotonic() - start
 
 
-INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ")
+INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
 """``agent_corp.worker.spawn.INHERITED_ENV``, repeated: the spike imports nothing from the office."""
 _RELEVANT = re.compile(r"(^|_)(PROXY|SSL|CERTS?|CA_BUNDLE|CODEX|OPENAI|NODE)(_|$)")
 """Whole ``_``-separated tokens of an upper-cased name (``https_proxy`` counts; ``NoDefault…`` doesn't)."""
@@ -317,9 +317,9 @@ CHECKS = [
           "the error when another app-server holds the thread"),
     Check("S6", "eof", "stdin EOF during a command: seconds until exit, and whether the command outlives it",
           "killing the app-server's process group when it dies"),
-    Check("S7", "office-env", "in the environment the office gives an app-server (PATH, HOME, USER, LOGNAME, LANG, "
-          "TMPDIR, TZ, LC_*, and CODEX_HOME when set): account/read with refreshToken says signed in, and a plain turn "
-          "completes; the names of what that environment drops that could matter (proxies, certificates)",
+    Check("S7", "office-env", f"in the environment the office gives an app-server ({', '.join(INHERITED_ENV)}, "
+          "LC_*, and CODEX_HOME when set): account/read with refreshToken says signed in, and a plain turn completes; "
+          "the names of what that environment drops that could matter (proxies, certificates)",
           "the environment of every app-server the office starts"),
     Check("S8", "schema", "the pinned schema (generate-json-schema --experimental)",
           "the fake app-server's scripts; the translator's request and reply drift tests"),

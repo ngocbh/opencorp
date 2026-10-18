@@ -7,7 +7,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -29,13 +29,15 @@ class WorkerExists(RuntimeError):
 
 
 # The only parts of the office's environment a worker inherits; anything else it needs
-# (provider keys, endpoints, proxies) arrives in ``Job.env``.
-INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ")
+# (provider keys, endpoints, proxies) arrives in ``Job.env``. SSL_CERT_FILE and SSL_CERT_DIR
+# say where TLS finds CA certificates: uv's standalone Python looks in /etc/ssl, which some
+# Linuxes (RHEL) don't fill, so the owner points them at the system bundle.
+INHERITED_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR")
 
 
-def worker_env() -> dict[str, str]:
-    """The environment a worker starts with: ``INHERITED_ENV`` and ``LC_*`` from the office's."""
-    return {key: value for key, value in os.environ.items()
+def worker_env(environ: Mapping[str, str] = os.environ) -> dict[str, str]:
+    """The environment a worker starts with: ``INHERITED_ENV`` and ``LC_*`` from the office's (``environ``)."""
+    return {key: value for key, value in environ.items()
             if key in INHERITED_ENV or key.startswith("LC_")}
 
 

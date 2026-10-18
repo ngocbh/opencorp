@@ -29,6 +29,7 @@ from agent_corp.testing.codex_spike import (
     scrub,
     signed_in,
 )
+from agent_corp.worker import spawn
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
 
 
@@ -183,6 +184,17 @@ def test_the_office_env_is_the_workers_plus_codex_home_and_only_names_of_what_it
 
 def test_the_office_env_has_no_codex_home_when_none_is_set():
     assert office_env({"PATH": "/bin", "HOME": "/h", "OPENAI_API_KEY": "x"}) == {"PATH": "/bin", "HOME": "/h"}
+
+
+def test_the_spikes_allowlist_is_the_offices():
+    assert codex_spike.INHERITED_ENV == spawn.INHERITED_ENV
+
+
+def test_the_office_env_keeps_where_tls_finds_ca_certificates():
+    full = {"PATH": "/bin", "SSL_CERT_FILE": "/ca.pem", "SSL_CERT_DIR": "/certs", "REQUESTS_CA_BUNDLE": "/ca.pem"}
+    narrow = office_env(full)
+    assert narrow == {"PATH": "/bin", "SSL_CERT_FILE": "/ca.pem", "SSL_CERT_DIR": "/certs"}
+    assert missing_names(full, narrow) == {"relevant": ["REQUESTS_CA_BUNDLE"], "others": 0}
 
 
 def test_the_checklist_names_every_check_and_marks_failures():
