@@ -96,8 +96,8 @@ class CodexProcess:
     def start(self) -> dict[str, Any]:
         """Spawn, record, initialize with ``experimentalApi``, and check the sign-in; return initialize's result.
 
-        Raises ``CodexStartError`` (or ``CodexSignedOut``), pointing to ``log`` for the app-server's stderr; nothing
-        is left running or recorded.
+        Raises ``CodexStartError`` (or ``CodexSignedOut``): a command that can't be run says to run ``ac doctor``, and
+        a failed handshake also names ``log``, where Codex's output is. Nothing is left running or recorded.
         A process already killed never spawns.
         """
         self.log.parent.mkdir(parents=True, exist_ok=True)
@@ -109,7 +109,7 @@ class CodexProcess:
                     self.proc = subprocess.Popen(self.command, cwd=self.cwd, env=self.env, stdin=subprocess.PIPE,
                                                  stdout=subprocess.PIPE, stderr=err, start_new_session=True)
             except OSError as exc:
-                raise CodexStartError(f"Codex couldn't start: {exc}") from exc
+                raise CodexStartError(f"Codex couldn't start: {exc}. Run `ac doctor` to check it.") from exc
             self.store.record_worker(self.key, pid=self.proc.pid, pgid=self.proc.pid,
                                      start_time=start_time(self.proc.pid) or time.time())
             self._recorded = True

@@ -97,6 +97,18 @@ def test_a_server_that_dies_calls_on_exit_and_leaves_its_stderr_in_its_log(tmp_p
         p.kill()
 
 
+def test_a_command_that_cant_be_run_says_to_run_ac_doctor_and_leaves_nothing(tmp_path):
+    (tmp_path / "codex").write_text("not a program")  # not executable
+    with Store(tmp_path / "store.sqlite") as store:
+        p = CodexProcess(store, "harness:S1", command=[str(tmp_path / "codex")], cwd=str(tmp_path),
+                         env=dict(os.environ), log=tmp_path / "codex.log", on_notification=lambda m, p: None,
+                         on_request=lambda i, m, p: None, on_exit=lambda p: None)
+        with pytest.raises(CodexStartError) as e:
+            p.start()
+        assert "Codex couldn't start" in str(e.value) and "ac doctor" in str(e.value)
+        assert store.list_workers() == []
+
+
 def test_a_refused_handshake_or_sign_in_raises_and_leaves_nothing(tmp_path):
     with Store(tmp_path / "store.sqlite") as store:
         p, _ = process(tmp_path, store, {"initialize_error": {"code": -32600, "message": "bad"}, "stderr": "why"})
