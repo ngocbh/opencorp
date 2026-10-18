@@ -251,6 +251,20 @@ def test_a_stream_still_open_when_the_server_ends_is_written_scrubbed(tmp_path):
     assert "".join(e["msg"]["params"]["delta"] for e in recorded(log)) == "/home/owner/x"
 
 
+class UnflushableRecorder(Recorder):
+    def flush(self):
+        raise OSError("disk full")
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_recording_that_fails_to_flush_still_ends_the_wait_for_the_server(tmp_path):
+    server = AppServer([sys.executable, "-c", "pass"], tmp_path, UnflushableRecorder(tmp_path / "s.jsonl", {}))
+    with pytest.raises(SpikeError, match="exited"):
+        server.next(timeout=10)
+    with pytest.raises(OSError, match="disk full"):
+        server.close()
+
+
 def test_owner_load_routes_approvals_to_the_user():
     assert owner_load("/w", "workspace-write", network=True) == {
         "cwd": "/w", "sandbox": "workspace-write", "approvalPolicy": "on-request", "approvalsReviewer": "user",

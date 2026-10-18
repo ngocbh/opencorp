@@ -234,11 +234,13 @@ class AppServer:
                 else:
                     self._inbox.put(msg)
         finally:
-            self.recorder.flush()
-            with self._answered:
-                self._closed = True
-                self._answered.notify_all()
-            self._inbox.put(None)
+            try:
+                self.recorder.flush()
+            finally:  # whatever the recording does, nothing waits on a server that is gone
+                with self._answered:
+                    self._closed = True
+                    self._answered.notify_all()
+                self._inbox.put(None)
 
     def _stderr_tail(self, lines: int = 5) -> str:
         """The last ``lines`` lines of the server's stderr, scrubbed, to add to an error ("" without any)."""
