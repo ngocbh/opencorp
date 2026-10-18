@@ -6,8 +6,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft7Validator
 
 from agent_corp.testing import codex_spike
 from agent_corp.testing.codex_spike import (
@@ -31,6 +33,8 @@ from agent_corp.testing.codex_spike import (
 )
 from agent_corp.worker import spawn
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
+
+SCHEMA = Path(__file__).parents[1] / "harness" / "fixtures" / "codex" / "schema"
 
 
 @pytest.fixture(autouse=True)
@@ -166,6 +170,85 @@ def test_the_recorder_keeps_only_what_the_office_reads(tmp_path):
         recorder.write("in", msg)
     assert [json.loads(line) for line in log.read_text().splitlines()] == [
         {"dir": "in", "msg": {"method": "item/started", "params": {"cwd": "/home/owner/ws"}}}]
+
+
+def note(method, **params):
+    return {"method": method, "params": {"threadId": "t1", "turnId": "u1", **params}}
+
+
+def recorded(log):
+    return [json.loads(line) for line in log.read_text().splitlines()]
+
+
+def test_the_recorder_scrubs_a_path_split_across_deltas_and_keeps_their_count_and_order(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/tmp/ac-codex-spike-x1": "/work/spike"})
+    text = "Wrote /tmp/ac-codex-spike-x1/ws/a.md for you."
+    pieces = ["Wrote /tmp/ac-co", "dex-spike-", "x1/ws/a", ".md for you."]
+    recorder.write("in", note("item/started", item={"type": "agentMessage", "id": "m1", "text": ""}))
+    for i, piece in enumerate(pieces):
+        recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta=piece))
+        if i == 1:  # what happens meanwhile stays where it happened
+            recorder.write("out", {"id": 7, "result": {}})
+    recorder.write("in", note("item/completed", item={"type": "agentMessage", "id": "m1", "text": text}))
+    lines = recorded(log)
+    assert "/tmp/ac-" not in log.read_text()
+    assert [(e["dir"], e["msg"].get("method")) for e in lines] == [
+        ("in", "item/started"), ("in", "item/agentMessage/delta"), ("in", "item/agentMessage/delta"), ("out", None),
+        ("in", "item/agentMessage/delta"), ("in", "item/agentMessage/delta"), ("in", "item/completed")]
+    deltas = [e["msg"]["params"]["delta"] for e in lines if e["msg"].get("method") == "item/agentMessage/delta"]
+    assert "".join(deltas) == lines[-1]["msg"]["params"]["item"]["text"] == "Wrote /work/spike/ws/a.md for you."
+    assert deltas[:3] == ["Wrote /", "", "work/spike/ws/a"]  # a cut inside the path moves back to where it changed
+    notes = Draft7Validator(json.loads((SCHEMA / "ServerNotification.json").read_text()))
+    for delta in [e["msg"] for e in lines if e["msg"].get("method") == "item/agentMessage/delta"]:
+        notes.validate(delta)
+
+
+def test_the_recorder_keeps_each_stream_apart(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/Users/ann": "/home/owner"})
+    for msg in [note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=0, delta="In /Users/"),
+                note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=1, delta="Then /Use"),
+                note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=0, delta="ann/a."),
+                note("item/reasoning/summaryTextDelta", itemId="r1", summaryIndex=1, delta="rs/ann/b."),
+                note("item/commandExecution/outputDelta", itemId="c1", delta="/Users/a"),
+                note("item/completed", item={"type": "reasoning", "id": "r1", "summary": [], "content": []}),
+                note("item/commandExecution/outputDelta", itemId="c1", delta="nn/c\n"),
+                note("item/completed", item={"type": "commandExecution", "id": "c1"})]:
+        recorder.write("in", msg)
+    joined = {}
+    for e in recorded(log):
+        params = e["msg"]["params"]
+        if "delta" in params:
+            key = (params["itemId"], params.get("summaryIndex"))
+            joined[key] = joined.get(key, "") + params["delta"]
+    assert joined == {("r1", 0): "In /home/owner/a.", ("r1", 1): "Then /home/owner/b.", ("c1", None): "/home/owner/c\n"}
+
+
+def test_a_stream_still_open_when_the_turn_completes_is_written_then(tmp_path):
+    log = tmp_path / "s.jsonl"
+    recorder = Recorder(log, {"/Users/ann": "/home/owner"})
+    recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta="/Users/a"))
+    recorder.write("in", note("item/agentMessage/delta", itemId="m1", delta="nn"))
+    assert log.read_text() == ""  # held until its stream ends
+    recorder.write("in", {"method": "turn/completed", "params": {"threadId": "t1", "turn": {"id": "u1"}}})
+    assert [e["msg"]["params"].get("delta") for e in recorded(log)] == ["/", "home/owner", None]
+
+
+DELTAS = r'''
+import json, sys
+for piece in ["/Users/a", "nn/x"]:
+    print(json.dumps({"method": "item/agentMessage/delta",
+                      "params": {"threadId": "t1", "turnId": "u1", "itemId": "m1", "delta": piece}}), flush=True)
+sys.stdin.read()
+'''
+
+
+def test_a_stream_still_open_when_the_server_ends_is_written_scrubbed(tmp_path):
+    log = tmp_path / "s.jsonl"
+    with AppServer([sys.executable, "-c", DELTAS], tmp_path, Recorder(log, {"/Users/ann": "/home/owner"})) as server:
+        server.wait("item/agentMessage/delta", where=lambda m: m["params"]["delta"] == "nn/x", timeout=30)
+    assert "".join(e["msg"]["params"]["delta"] for e in recorded(log)) == "/home/owner/x"
 
 
 def test_owner_load_routes_approvals_to_the_user():
