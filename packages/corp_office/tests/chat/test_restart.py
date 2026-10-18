@@ -129,7 +129,7 @@ def test_a_session_whose_tool_parts_cant_be_swept_at_restore_fails_alone(make_ha
 
 
 def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_llm, workspace):
-    from agent_corp.store import new_id
+    from opencorp.store import new_id
 
     first = make_harness()
     sid = start(first, workspace)

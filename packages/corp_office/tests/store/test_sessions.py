@@ -4,8 +4,8 @@ import sqlite3
 
 import pytest
 
-from agent_corp.store import DuplicateKey, NotFound, Store, StoreError
-from agent_corp.store.migrate import MIGRATIONS, migrate
+from opencorp.store import DuplicateKey, NotFound, Store, StoreError
+from opencorp.store.migrate import MIGRATIONS, migrate
 from tests.store.conftest import debrief, feedback, message, proposal, question, session
 
 NO_SESSION = "01K6A0000000000000000000ZZ"

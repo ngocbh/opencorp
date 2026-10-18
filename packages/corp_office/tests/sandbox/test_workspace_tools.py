@@ -4,8 +4,8 @@ import time
 import pytest
 from yian.tools import ToolSet
 
-from agent_corp.tools import workspace
-from agent_corp.tools.workspace import (
+from opencorp.tools import workspace
+from opencorp.tools.workspace import (
     TOOL_NAMES,
     AuditRecord,
     ToolOutcome,

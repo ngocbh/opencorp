@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from agent_corp.install.launch import REPO, Launch, daemon_env, launch, run_command
+from opencorp.install.launch import REPO, Launch, daemon_env, launch, run_command
 
 HOME = Path("/Users/owner/.agent-corp")
 
@@ -9,7 +9,7 @@ HOME = Path("/Users/owner/.agent-corp")
 def test_the_launch_command_is_the_daemons_with_absolute_paths():
     got = launch(HOME, repo=Path("/opt/agent-corp"), environ={"PATH": "/usr/bin"}, user_home=Path("/Users/owner"))
     assert got == Launch(
-        argv=("/opt/agent-corp/.venv/bin/python", "-m", "agent_corp.daemon.main", "--home", str(HOME)),
+        argv=("/opt/agent-corp/.venv/bin/python", "-m", "opencorp.daemon.main", "--home", str(HOME)),
         env={"PATH": "/usr/bin"}, cwd=Path("/opt/agent-corp"), home=HOME, name="office")
     assert got.office == HOME / "office" and got.log == HOME / "office" / "office.log"
     assert got.socket == HOME / "office" / "office.sock"
@@ -53,7 +53,7 @@ def test_the_daemon_keeps_where_tls_finds_ca_certificates_when_set():
 
 
 def test_repo_is_this_checkout():
-    assert (REPO / "pyproject.toml").is_file() and (REPO / "packages" / "corp_office" / "src" / "agent_corp").is_dir()
+    assert (REPO / "pyproject.toml").is_file() and (REPO / "packages" / "corp_office" / "src" / "opencorp").is_dir()
 
 
 def test_a_missing_program_is_exit_127_not_an_exception():

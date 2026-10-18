@@ -10,17 +10,17 @@ import psutil
 import pytest
 import yaml
 
-from agent_corp.auth.identity import Identity, device_name, read_identity, write_identity
-from agent_corp.auth.passwords import hash_password
-from agent_corp.auth.tokens import new_token, token_sha256
-from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, write_company
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.install import onboard as onboard_module
-from agent_corp.install.onboard import TRIES, WHO, OnboardError, TtyPrompter, onboard, owner_defaults
-from agent_corp.protocol.models import Device
-from agent_corp.profile.debrief import DEBRIEF_FLOW
-from agent_corp.profile.manager import MANAGER_FLOW
+from opencorp.auth.identity import Identity, device_name, read_identity, write_identity
+from opencorp.auth.passwords import hash_password
+from opencorp.auth.tokens import new_token, token_sha256
+from opencorp.company.loader import load_repo
+from opencorp.company_template import Owner, write_company
+from opencorp.daemon.app import OfficePaths
+from opencorp.install import onboard as onboard_module
+from opencorp.install.onboard import TRIES, WHO, OnboardError, TtyPrompter, onboard, owner_defaults
+from opencorp.protocol.models import Device
+from opencorp.profile.debrief import DEBRIEF_FLOW
+from opencorp.profile.manager import MANAGER_FLOW
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
@@ -77,7 +77,7 @@ def test_an_existing_company_without_an_identity_suggests_login(tmp_path):
 def test_onboard_saves_no_provider_whose_model_doesnt_answer(tmp_path, monkeypatch):
     home = tmp_path / "home"
     company(home)
-    monkeypatch.setattr("agent_corp.install.interview.model_problem", lambda provider: "Connection error")
+    monkeypatch.setattr("opencorp.install.interview.model_problem", lambda provider: "Connection error")
     with pytest.raises(OnboardError, match="^the model didn't answer: Connection error$"):
         onboard(home, Script(), stdin=io.StringIO(PROVIDER), host=make_host(tmp_path, Runner(), answers=lambda s: True))
     assert not (home / "office" / "provider.json").exists()

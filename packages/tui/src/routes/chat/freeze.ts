@@ -1,6 +1,6 @@
 import type { Message } from "@agent-corp/protocol"
 
-/** What the office ends a reply stopped short with; mirrors agent_corp.chat.transcript.INTERRUPTED_TEXT. */
+/** What the office ends a reply stopped short with; mirrors opencorp.chat.transcript.INTERRUPTED_TEXT. */
 export const INTERRUPTED_TEXT = "\n\n[interrupted]"
 
 /**

@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from agent_corp.extensions import ExtensionError, load_extensions
+from opencorp.extensions import ExtensionError, load_extensions
 
 
 @pytest.fixture
@@ -54,9 +54,9 @@ def test_a_module_without_register_is_an_error(office, ext_pkg):
         load_extensions(office, name)
 
 
-def test_the_default_package_is_agent_corp_extensions(office, tmp_path, monkeypatch):
+def test_the_default_package_is_opencorp_extensions(office, tmp_path, monkeypatch):
     # Point the real package at a temp dir, so extensions added later don't change this test.
-    import agent_corp.extensions as package
+    import opencorp.extensions as package
 
     module = f"m_{uuid.uuid4().hex[:8]}"
     (tmp_path / f"{module}.py").write_text(CALLS)

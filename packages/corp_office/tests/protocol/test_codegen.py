@@ -8,11 +8,11 @@ import pydantic
 import pytest
 from jsonschema import Draft202012Validator
 
-from agent_corp.protocol import models
+from opencorp.protocol import models
 
 ROOT = Path(__file__).resolve().parents[4]
 FIXTURES = ROOT / "packages/protocol/fixtures"
-GENERATED = ROOT / "packages/corp_office/src/agent_corp/protocol/models.py"
+GENERATED = ROOT / "packages/corp_office/src/opencorp/protocol/models.py"
 SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
 
 

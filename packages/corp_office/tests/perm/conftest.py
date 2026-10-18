@@ -3,10 +3,10 @@
 import pytest
 import yaml
 
-from agent_corp.assets import fake
-from agent_corp.assets.registry import KindTool
-from agent_corp.perm.monitor import Monitor
-from agent_corp.secrets import SecretStore
+from opencorp.assets import fake
+from opencorp.assets.registry import KindTool
+from opencorp.perm.monitor import Monitor
+from opencorp.secrets import SecretStore
 from tests.company.conftest import _isolate_git, base_files, make_company  # noqa: F401
 from tests.store.conftest import store  # noqa: F401
 

@@ -4,10 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from agent_corp.company.loader import load_repo
-from agent_corp.tools import ToolContext, build, toolbox, work_items, workspace
-from agent_corp.tools.company import work
-from agent_corp.tools.workspace import READ_TOOLS, TOOL_NAMES
+from opencorp.company.loader import load_repo
+from opencorp.tools import ToolContext, build, toolbox, work_items, workspace
+from opencorp.tools.company import work
+from opencorp.tools.workspace import READ_TOOLS, TOOL_NAMES
 from tests.store.conftest import session, work_item
 
 

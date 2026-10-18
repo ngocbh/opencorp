@@ -6,19 +6,19 @@ from types import SimpleNamespace
 import pytest
 from yian import load_flow
 
-from agent_corp.auth.passwords import check_password
-from agent_corp.chat.provider import Provider
-from agent_corp.company.draft import Draft, Teammate, draft_problems
-from agent_corp.company.flow_yaml import read_flow
-from agent_corp.company_template import Owner
-from agent_corp.install import interview as interview_module
-from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import REMOTE
-from agent_corp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, WHAT_TO_CHANGE, Asking, Known, ModelError,
+from opencorp.auth.passwords import check_password
+from opencorp.chat.provider import Provider
+from opencorp.company.draft import Draft, Teammate, draft_problems
+from opencorp.company.flow_yaml import read_flow
+from opencorp.company_template import Owner
+from opencorp.install import interview as interview_module
+from opencorp.install import onboard as onboard_module
+from opencorp.install.init import REMOTE
+from opencorp.install.interview import (CHANGE, CONFIRM, CREATE, FLOW, WHAT_TO_CHANGE, Asking, Known, ModelError,
                                           ask_user, asking, clean, confirm, fallback_draft, init_flow, model_problem,
                                           run_init_flow, summary)
-from agent_corp.install.onboard import TRIES, OnboardError
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.install.onboard import TRIES, OnboardError
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 
 from .test_provider_setup import Script
 

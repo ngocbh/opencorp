@@ -14,17 +14,17 @@ from yian.llm_clients import ModelListError as HostListError
 from yian.llm_clients.auth import OpenAIAuth
 from pydantic import ValidationError
 
-from agent_corp.auth.identity import Identity, identity_path, write_identity
-from agent_corp.auth.tokens import new_token
-from agent_corp.chat import check, models
-from agent_corp.chat.connections import ConnectionFile, Connections, provider_label
-from agent_corp.chat.logins import Logins
-from agent_corp.chat.models import Listing, ModelCache, own_models
-from agent_corp.chat.models import list_models as real_list_models
-from agent_corp.chat.provider import ProviderError
-from agent_corp.daemon.app import create_app
-from agent_corp.protocol.models import ModelOption
-from agent_corp.secrets import write_private
+from opencorp.auth.identity import Identity, identity_path, write_identity
+from opencorp.auth.tokens import new_token
+from opencorp.chat import check, models
+from opencorp.chat.connections import ConnectionFile, Connections, provider_label
+from opencorp.chat.logins import Logins
+from opencorp.chat.models import Listing, ModelCache, own_models
+from opencorp.chat.models import list_models as real_list_models
+from opencorp.chat.provider import ProviderError
+from opencorp.daemon.app import create_app
+from opencorp.protocol.models import ModelOption
+from opencorp.secrets import write_private
 from tests.chat.test_logins import APPROVED, CATALOG, PENDING, REFRESH, SIGNATURE, TOKENS, USERCODE, Clock
 from tests.company.conftest import _git
 from tests.daemon.test_auth import add_human, bearer, give_device

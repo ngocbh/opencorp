@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.install import launchd
-from agent_corp.install.launch import ServiceError, launch
+from opencorp.install import launchd
+from opencorp.install.launch import ServiceError, launch
 
 from .conftest import GOLDEN, Runner, make_host
 

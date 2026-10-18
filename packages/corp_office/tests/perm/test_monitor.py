@@ -2,9 +2,9 @@
 
 from yian.tools import ToolSet
 
-from agent_corp.perm.monitor import DETAIL_CHARS
-from agent_corp.worker.job import group_specs
-from agent_corp.worker.rpc import BaseHandlers
+from opencorp.perm.monitor import DETAIL_CHARS
+from opencorp.worker.job import group_specs
+from opencorp.worker.rpc import BaseHandlers
 from tests.company.conftest import person
 from tests.perm.conftest import TOKEN, cluster, set_file
 

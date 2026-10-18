@@ -11,8 +11,8 @@ import time
 import httpx
 import pytest
 
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir,
+from opencorp.daemon.app import OfficePaths
+from opencorp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir,
                                     remove_stale_socket)
 from tests.daemon.conftest import base_files, served, write_repo
 
@@ -133,7 +133,7 @@ async def test_served_over_a_real_socket(office, short_dir):
 def _daemon(home):
     # The log goes to a file: an unread pipe fills up and blocks the daemon's writes.
     with open(home / "daemon.log", "w") as log:
-        return subprocess.Popen([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
+        return subprocess.Popen([sys.executable, "-m", "opencorp.daemon.main", "--home", str(home)],
                                 stdout=log, stderr=subprocess.STDOUT)
 
 
@@ -180,7 +180,7 @@ def test_daemon_serves_turns_away_a_second_and_stops_cleanly(home):
     try:
         _wait_until_serving(home, proc)
         assert stat.S_IMODE(os.stat(paths.socket).st_mode) == 0o600
-        second = subprocess.run([sys.executable, "-m", "agent_corp.daemon.main", "--home", str(home)],
+        second = subprocess.run([sys.executable, "-m", "opencorp.daemon.main", "--home", str(home)],
                                 capture_output=True, text=True, timeout=30)
         # Exit 0, so a service manager that restarts on failure doesn't retry the duplicate forever.
         assert second.returncode == 0 and f"office already running (pid {proc.pid})" in second.stderr
@@ -316,13 +316,13 @@ def test_a_failing_stop_hook_does_not_stop_the_others(home, tmp_path, monkeypatc
 
 
 async def test_build_office_runs_the_chat_harness(home, monkeypatch):
-    from agent_corp.chat.connections import Connections
-    from agent_corp.chat.harness import Harness
-    from agent_corp.chat.hire import Hiring
-    from agent_corp.chat.logins import Logins
-    from agent_corp.chat.models import ModelCache
-    from agent_corp.daemon.main import build_office
-    from agent_corp.profile import GitProfileStore
+    from opencorp.chat.connections import Connections
+    from opencorp.chat.harness import Harness
+    from opencorp.chat.hire import Hiring
+    from opencorp.chat.logins import Logins
+    from opencorp.chat.models import ModelCache
+    from opencorp.daemon.main import build_office
+    from opencorp.profile import GitProfileStore
 
     started = []
     monkeypatch.setattr(Harness, "restore", lambda self: started.append("restore"))
@@ -350,8 +350,8 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
 
 
 def test_the_office_runs_codex_sessions_on_the_harness_hooks(home):
-    from agent_corp.daemon.main import build_office
-    from agent_corp.harness.sessions import CodexSessions
+    from opencorp.daemon.main import build_office
+    from opencorp.harness.sessions import CodexSessions
 
     office = build_office(OfficePaths(home))
     try:
@@ -363,10 +363,10 @@ def test_the_office_runs_codex_sessions_on_the_harness_hooks(home):
 
 
 async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts(home):
-    from agent_corp.daemon.main import build_office
-    from agent_corp.protocol import now
-    from agent_corp.protocol.models import Session
-    from agent_corp.store import new_id
+    from opencorp.daemon.main import build_office
+    from opencorp.protocol import now
+    from opencorp.protocol.models import Session
+    from opencorp.store import new_id
 
     paths = OfficePaths(home)
     make_office_dir(paths.office)

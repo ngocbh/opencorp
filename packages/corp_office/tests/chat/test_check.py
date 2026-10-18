@@ -9,10 +9,10 @@ import sys
 
 import pytest
 
-from agent_corp.chat import check
-from agent_corp.chat.check import NO_RESULT, NOT_FINISHED, one_reply_problem
-from agent_corp.chat.provider import Provider
-from agent_corp.worker.spawn import worker_env
+from opencorp.chat import check
+from opencorp.chat.check import NO_RESULT, NOT_FINISHED, one_reply_problem
+from opencorp.chat.provider import Provider
+from opencorp.worker.spawn import worker_env
 
 SENTINEL = "sk-ant-sentinel-61f0d2c9a8b3"
 PROVIDER = Provider(llm_config={"provider": "anthropic", "api_key": SENTINEL, "model": "claude-x"})
@@ -38,7 +38,7 @@ def test_one_reply_check_runs_isolated_in_a_temp_cwd(monkeypatch):
     calls = fake_run(monkeypatch, '{"problem": null}\n')
     assert one_reply_problem(PROVIDER) is None
     [call] = calls
-    assert call["argv"] == [sys.executable, "-I", "-m", "agent_corp.chat.check"]
+    assert call["argv"] == [sys.executable, "-I", "-m", "opencorp.chat.check"]
     assert call["cwd_existed"] and call["cwd_files"] == [] and not os.path.exists(call["cwd"])
     assert os.path.realpath(call["cwd"]) != os.path.realpath(os.getcwd())
     assert call["env"] == worker_env() and call["timeout"] == 90
@@ -83,7 +83,7 @@ def test_the_child_prints_only_its_result_on_stdout(monkeypatch, capsys):
         print("composer chatter")
         return "HTTP 429"
 
-    monkeypatch.setattr("agent_corp.install.interview.model_problem", model_problem)
+    monkeypatch.setattr("opencorp.install.interview.model_problem", model_problem)
     monkeypatch.setattr(sys, "stdin", io.StringIO(PROVIDER.model_dump_json()))
     check.main()
     out, err = capsys.readouterr()

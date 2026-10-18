@@ -1,5 +1,5 @@
-from agent_corp.profile.feedback import MAX_ATTEMPTS
-from agent_corp.protocol.models import FeedbackRequest
+from opencorp.profile.feedback import MAX_ATTEMPTS
+from opencorp.protocol.models import FeedbackRequest
 from tests.profile.conftest import LEARNER_ASK, asked, learner_reply, wait_for
 from tests.profile.test_learning_feedback import PROFILE, ended, feedback_status, profile_text
 

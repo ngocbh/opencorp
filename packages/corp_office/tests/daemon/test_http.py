@@ -6,8 +6,8 @@ from typing import Annotated, Literal
 import pytest
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from agent_corp.daemon.app import create_app
-from agent_corp.daemon.http import MAX_BODY, _errors
+from opencorp.daemon.app import create_app
+from opencorp.daemon.http import MAX_BODY, _errors
 from tests.daemon.conftest import served
 from tests.store.conftest import question, session
 

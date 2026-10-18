@@ -14,10 +14,10 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 
 from yian.llm_clients.config import SUPPORTED_LLM_PROVIDERS
 
-from agent_corp.chat.models import ModelListError
-from agent_corp.chat.provider import load_provider
-from agent_corp.install import onboard as onboard_module
-from agent_corp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_OWN, NoTerminal, OnboardError,
+from opencorp.chat.models import ModelListError
+from opencorp.chat.provider import load_provider
+from opencorp.install import onboard as onboard_module
+from opencorp.install.onboard import (SET_UP_AGAIN, TRIES, TRY_AGAIN, TYPE_OWN, NoTerminal, OnboardError,
                                         TtyPrompter, azure_deployments, ensure_provider, provider_models, step_lines)
 
 KEY = "sk-ant-test-0123456789"
@@ -222,7 +222,7 @@ def test_azure_deployments_waits_fifteen_seconds_and_says_why_it_cant_list_them(
             raise ModelListError("HTTP 401", 401)
         return ["gpt-5.4"]
 
-    monkeypatch.setattr("agent_corp.chat.models.azure_deployments", listed)
+    monkeypatch.setattr("opencorp.chat.models.azure_deployments", listed)
     assert azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY) == ["gpt-5.4"]
     with pytest.raises(OnboardError, match="^HTTP 401$"):
         azure_deployments("https://acme.openai.azure.com/openai/v1/", KEY)
@@ -284,7 +284,7 @@ def test_provider_models_waits_fifteen_seconds_and_says_why_it_cant_list_them(mo
             raise reply
         return reply
 
-    monkeypatch.setattr("agent_corp.chat.models.provider_models", listed)
+    monkeypatch.setattr("opencorp.chat.models.provider_models", listed)
     assert provider_models("anthropic", SENTINEL) == ["claude-sonnet-4-5"]
     assert provider_models("azure", SENTINEL) == []
     with pytest.raises(OnboardError, match="^HTTP 401$"):

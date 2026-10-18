@@ -3,8 +3,8 @@ import pytest
 import base64
 import hashlib
 
-from agent_corp.auth.passwords import MIN_LENGTH, check_password, hash_password, password_problem
-from agent_corp.protocol.models import Person
+from opencorp.auth.passwords import MIN_LENGTH, check_password, hash_password, password_problem
+from opencorp.protocol.models import Person
 
 
 def test_a_hash_checks_its_password_and_no_other():

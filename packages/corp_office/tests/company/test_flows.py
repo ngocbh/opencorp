@@ -1,6 +1,6 @@
 import pytest
 
-from agent_corp.company.flows import load_confined
+from opencorp.company.flows import load_confined
 from tests.company.test_lint import CHILD, parent_flow
 
 

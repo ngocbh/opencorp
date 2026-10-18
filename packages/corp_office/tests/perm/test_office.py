@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent_corp.company.loader import load_repo
-from agent_corp.perm.office import may_manage_connections
+from opencorp.company.loader import load_repo
+from opencorp.perm.office import may_manage_connections
 
 AVA = {"people/ava/person.yaml": {"handle": "ava", "name": "Ava", "kind": "human", "title": "Designer",
                                   "manager": "ngocbh", "groups": ["design"]},

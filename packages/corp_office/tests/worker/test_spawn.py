@@ -12,11 +12,11 @@ from types import SimpleNamespace
 import psutil
 import pytest
 
-from agent_corp.worker import channel as channel_module
-from agent_corp.worker import spawn as spawn_module
-from agent_corp.worker.channel import Channel, FrameTooLarge
-from agent_corp.worker.main import EXIT_ORPHANED, job_tools
-from agent_corp.worker.spawn import Worker, WorkerExists, WorkerRegistry
+from opencorp.worker import channel as channel_module
+from opencorp.worker import spawn as spawn_module
+from opencorp.worker.channel import Channel, FrameTooLarge
+from opencorp.worker.main import EXIT_ORPHANED, job_tools
+from opencorp.worker.spawn import Worker, WorkerExists, WorkerRegistry
 
 from tests.worker.conftest import Recorder, office_end, run
 
@@ -52,7 +52,7 @@ def test_a_running_worker_is_recorded_and_isolated(fake_llm, registry, store, ma
     assert abs(record.start_time - proc.create_time()) < 0.01
     assert os.getpgid(worker.pid) == worker.pid
     assert Path(proc.cwd()).resolve() == session_dir.resolve()
-    assert proc.cmdline()[1:4] == ["-I", "-m", "agent_corp.worker.main"]
+    assert proc.cmdline()[1:4] == ["-I", "-m", "opencorp.worker.main"]
     env = proc.environ()
     assert "VLLM_BASE_URL" not in env  # it arrives in the start frame
     assert "OFFICE_SECRET" not in env  # only an allowlist of the office's env is passed on

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.tools.workspace import WorkspaceTools, interpreter
+from opencorp.tools.workspace import WorkspaceTools, interpreter
 
 ON_MAC = sys.platform == "darwin"
 ON_LINUX = sys.platform.startswith("linux")

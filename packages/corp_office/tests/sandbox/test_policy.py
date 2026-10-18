@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.sandbox.policy import SandboxPolicy, UnsafeWorkspace
+from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace
 
 
 def dirs(tmp_path):

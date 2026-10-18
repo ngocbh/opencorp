@@ -9,13 +9,13 @@ from typing import Any
 
 import pytest
 
-from agent_corp.store import Store
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
-from agent_corp.worker.channel import Channel
-from agent_corp.worker.job import Job
-from agent_corp.worker.main import main
-from agent_corp.worker.rpc import REQUEST_REPLIES, BaseHandlers, Rpc, answer_request
-from agent_corp.worker.spawn import WorkerRegistry
+from opencorp.store import Store
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.worker.channel import Channel
+from opencorp.worker.job import Job
+from opencorp.worker.main import main
+from opencorp.worker.rpc import REQUEST_REPLIES, BaseHandlers, Rpc, answer_request
+from opencorp.worker.spawn import WorkerRegistry
 from tests.company.conftest import CHAT
 
 

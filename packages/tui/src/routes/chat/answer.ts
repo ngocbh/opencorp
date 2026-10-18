@@ -125,7 +125,7 @@ export function buildAnswer(model: CardModel, answers: PageAnswer[]): AnswerRequ
   return { answer, answer_kind: typed ? "text" : "option" }
 }
 
-// The office's tool result for an answered question (agent_corp.questions.format): a choice
+// The office's tool result for an answered question (opencorp.questions.format): a choice
 // line, then any side-chat discussion behind this marker, written for the model.
 const DISCUSSION_MARK = "\n\nBefore answering, the user discussed your question with you in a side chat."
 const CHOSE = /^The user chose "([\s\S]*)" \(option \d+ of the \d+ shown\)\.$/

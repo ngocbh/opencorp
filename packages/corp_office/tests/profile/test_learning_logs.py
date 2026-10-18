@@ -2,13 +2,13 @@ import logging
 
 import pytest
 
-from agent_corp.chat.connections import OFFICE, write_run_record
-from agent_corp.extensions.learning import Learning
-from agent_corp.profile.debrief import ready_debrief
-from agent_corp.protocol import now
-from agent_corp.protocol.models import Feedback
-from agent_corp.store import new_id
-from agent_corp.testing.fake_llm import LLM_CONFIG
+from opencorp.chat.connections import OFFICE, write_run_record
+from opencorp.extensions.learning import Learning
+from opencorp.profile.debrief import ready_debrief
+from opencorp.protocol import now
+from opencorp.protocol.models import Feedback
+from opencorp.store import new_id
+from opencorp.testing.fake_llm import LLM_CONFIG
 from tests.profile.conftest import LEARNING_FILES, OUTPUT, settled, wait_for
 from tests.store.conftest import message, session
 
@@ -29,7 +29,7 @@ def keyed(make_harness, monkeypatch):
 
 def test_learning_never_logs_the_model_key(keyed, caplog):
     harness = keyed
-    caplog.set_level(logging.DEBUG, logger="agent_corp")
+    caplog.set_level(logging.DEBUG, logger="opencorp")
     learning = Learning(harness.office, harness, tick=None)
     learning.start()
     try:

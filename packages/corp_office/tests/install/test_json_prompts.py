@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from agent_corp.install.json_prompts import JsonPrompter
-from agent_corp.install.onboard import OnboardError
+from opencorp.install.json_prompts import JsonPrompter
+from opencorp.install.onboard import OnboardError
 
 
 def _prompter(*answers: str, preset=None) -> tuple[JsonPrompter, io.StringIO]:

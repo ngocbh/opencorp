@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent_corp.sandbox.policy import SandboxPolicy
-from agent_corp.tools.workspace import AuditRecord, ToolOutcome, WorkspaceTools, workspace_tool_functions
+from opencorp.sandbox.policy import SandboxPolicy
+from opencorp.tools.workspace import AuditRecord, ToolOutcome, WorkspaceTools, workspace_tool_functions
 from tests.sandbox.conftest import sandbox_available  # noqa: F401
 
 

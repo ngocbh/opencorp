@@ -3,10 +3,10 @@ import dataclasses
 import pytest
 import yaml
 
-from agent_corp.company.lint import lint
-from agent_corp.company.loader import load_repo
-from agent_corp.company.naming import asset_tool_name
-from agent_corp.company_template import Owner, write_company
+from opencorp.company.lint import lint
+from opencorp.company.loader import load_repo
+from opencorp.company.naming import asset_tool_name
+from opencorp.company_template import Owner, write_company
 from tests.company.conftest import CHAT, MAIN_INPUTS, base_files, person
 
 
@@ -131,7 +131,7 @@ def test_invalid_flow_carries_composer_message(make_company):
 def test_unexpected_flow_error_names_its_type(company, monkeypatch):
     def boom(root, path):
         raise KeyError("x")
-    monkeypatch.setattr("agent_corp.company.lint.load_confined", boom)
+    monkeypatch.setattr("opencorp.company.lint.load_confined", boom)
     [issue] = [i for i in lint(load_repo(company)) if i.code == "person.flow_invalid"]
     assert issue.message == "../../shared/flows/chat.yaml: KeyError: 'x'"
 

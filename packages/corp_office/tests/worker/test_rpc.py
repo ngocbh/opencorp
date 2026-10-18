@@ -6,8 +6,8 @@ import pytest
 from yian.memory.storage.markdown import MarkdownVersionMismatch
 from pydantic import ValidationError
 
-from agent_corp.worker.job import tool_spec
-from agent_corp.worker.rpc import BaseHandlers, answer_request, ask_user_stub, model_from_schema, remote_tool
+from opencorp.worker.job import tool_spec
+from opencorp.worker.rpc import BaseHandlers, answer_request, ask_user_stub, model_from_schema, remote_tool
 
 from tests.worker.conftest import office_end
 

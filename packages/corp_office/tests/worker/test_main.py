@@ -1,9 +1,9 @@
 import os
 import socket
 
-from agent_corp.worker import channel as channel_module
-from agent_corp.worker import main as main_module
-from agent_corp.worker.channel import Channel
+from opencorp.worker import channel as channel_module
+from opencorp.worker import main as main_module
+from opencorp.worker.channel import Channel
 
 
 def bad_start(make_job) -> dict:

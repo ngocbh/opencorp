@@ -7,10 +7,10 @@ import time
 import pytest
 import yaml
 
-from agent_corp.auth.roster import Roster, load_roster
-from agent_corp.auth.tokens import AuthError, authenticate, new_token, token_sha256
-from agent_corp.company.git import CompanyGit
-from agent_corp.protocol.models import Device, Person
+from opencorp.auth.roster import Roster, load_roster
+from opencorp.auth.tokens import AuthError, authenticate, new_token, token_sha256
+from opencorp.company.git import CompanyGit
+from opencorp.protocol.models import Device, Person
 from tests.company.conftest import _git, company  # noqa: F401
 
 

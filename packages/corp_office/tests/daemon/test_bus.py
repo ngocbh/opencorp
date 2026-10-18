@@ -3,10 +3,10 @@
 import asyncio
 import threading
 
-from agent_corp.daemon.bus import PING, Bus
-from agent_corp.protocol import now
-from agent_corp.protocol.models import Event, LiveEvent
-from agent_corp.store import new_id
+from opencorp.daemon.bus import PING, Bus
+from opencorp.protocol import now
+from opencorp.protocol.models import Event, LiveEvent
+from opencorp.store import new_id
 from tests.store.conftest import session
 
 S1, S2 = new_id(), new_id()

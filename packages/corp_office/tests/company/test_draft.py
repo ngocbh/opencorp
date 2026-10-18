@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent_corp.company.draft import Draft, Teammate, draft_problems
-from agent_corp.company_template import Owner
+from opencorp.company.draft import Draft, Teammate, draft_problems
+from opencorp.company_template import Owner
 
 ME = Owner(handle="ngocbh", name="Hong Ngoc Bui", title="CEO")
 GOOD = Draft("Acme", ME, (Teammate("Minh", "minh", "Engineer", "Writes the backend."), Teammate("Lan", "lan", "QA")))

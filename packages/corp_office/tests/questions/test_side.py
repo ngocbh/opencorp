@@ -6,17 +6,17 @@ from importlib.resources import files
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.company.flows import load_confined
-from agent_corp.questions.side import SIDE_CHAT_FLOW, discussion, side_spec
-from agent_corp.store import new_id
-from agent_corp.tools.workspace import READ_TOOLS
+from opencorp.chat.harness import HarnessError
+from opencorp.company.flows import load_confined
+from opencorp.questions.side import SIDE_CHAT_FLOW, discussion, side_spec
+from opencorp.store import new_id
+from opencorp.tools.workspace import READ_TOOLS
 from tests.chat.conftest import fake_llm, make_harness, workspace  # noqa: F401
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.store.conftest import message, question, session
 from tests.store.conftest import store  # noqa: F401
 
-SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
+SIDE_FLOW = (files("opencorp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
 
 
 def side_of(h, cwd, **over):

@@ -5,8 +5,8 @@ import time
 import psutil
 import pytest
 
-from agent_corp.sandbox.run import SandboxUnavailable, command, run, scrubbed_env
-from agent_corp.tools.workspace import interpreter
+from opencorp.sandbox.run import SandboxUnavailable, command, run, scrubbed_env
+from opencorp.tools.workspace import interpreter
 
 pytestmark = pytest.mark.usefixtures("sandbox_available")
 
@@ -84,7 +84,7 @@ def test_std_streams_by_path(make_policy):
 def test_group_is_killed_before_the_leader_is_reaped(make_policy, monkeypatch):
     # Until the leader is reaped its pid, and so the group id, can't be reused, so the
     # kill can't reach an unrelated process group.
-    run_module = sys.modules["agent_corp.sandbox.run"]
+    run_module = sys.modules["opencorp.sandbox.run"]
     seen = []
     real = run_module._kill_group
 

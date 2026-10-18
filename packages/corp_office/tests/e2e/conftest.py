@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-from agent_corp.install.launch import REPO
-from agent_corp.testing.fake_llm import FakeLLM
+from opencorp.install.launch import REPO
+from opencorp.testing.fake_llm import FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 from tests.sandbox.conftest import sandbox_available  # noqa: F401
@@ -40,7 +40,7 @@ def fake_codex_on_path(tmp_path_factory, monkeypatch):
     """Put the fake Codex first on ``PATH`` as ``codex``, so `ac doctor` never runs the developer's real one."""
     root = tmp_path_factory.mktemp("codex")
     codex = root / "codex"
-    codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I -m agent_corp.testing.fake_codex "$@"\n')
+    codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I -m opencorp.testing.fake_codex "$@"\n')
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{root}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.delenv("AGENT_CORP_CODEX_BIN", raising=False)

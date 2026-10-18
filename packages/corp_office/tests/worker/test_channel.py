@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-from agent_corp.worker import channel as channel_module
-from agent_corp.worker.channel import Channel, ChannelClosed, FrameTooLarge, jsonable
+from opencorp.worker import channel as channel_module
+from opencorp.worker.channel import Channel, ChannelClosed, FrameTooLarge, jsonable
 
 
 @pytest.fixture

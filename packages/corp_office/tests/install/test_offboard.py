@@ -3,18 +3,18 @@ import subprocess
 
 import pytest
 
-from agent_corp.auth.devices import add_device
-from agent_corp.auth.identity import device_name, read_identity
-from agent_corp.auth.tokens import token_sha256
-from agent_corp.company.git import CompanyGit
-from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, write_company
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.install import launchd, service
-from agent_corp.install.launch import Host, launch, office_answers
-from agent_corp.install.offboard import CONFIRM, KEEP, REMOVE, OffboardError, launchers, offboard
-from agent_corp.install.onboard import make_device, make_home
-from agent_corp.protocol.models import Device
+from opencorp.auth.devices import add_device
+from opencorp.auth.identity import device_name, read_identity
+from opencorp.auth.tokens import token_sha256
+from opencorp.company.git import CompanyGit
+from opencorp.company.loader import load_repo
+from opencorp.company_template import Owner, write_company
+from opencorp.daemon.app import OfficePaths
+from opencorp.install import launchd, service
+from opencorp.install.launch import Host, launch, office_answers
+from opencorp.install.offboard import CONFIRM, KEEP, REMOVE, OffboardError, launchers, offboard
+from opencorp.install.onboard import make_device, make_home
+from opencorp.protocol.models import Device
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from agent_corp.company.git import CompanyGit, CompanyGitError
+from opencorp.company.git import CompanyGit, CompanyGitError
 from tests.company.conftest import _git, write_repo
 
 PROFILE = "people/minh/profile.md"

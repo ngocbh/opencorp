@@ -3,7 +3,7 @@ import sys
 
 import pytest
 
-from agent_corp.sandbox.policy import SandboxPolicy
+from opencorp.sandbox.policy import SandboxPolicy
 
 ON_MAC = sys.platform == "darwin"
 ON_LINUX = sys.platform.startswith("linux")
@@ -12,7 +12,7 @@ ON_LINUX = sys.platform.startswith("linux")
 @pytest.fixture(scope="session")
 def sandbox_available(tmp_path_factory):
     """Skip when the sandbox can't start here (e.g. inside another sandbox), except on CI."""
-    from agent_corp.sandbox.run import run
+    from opencorp.sandbox.run import run
 
     root = tmp_path_factory.mktemp("probe")
     (root / "ws").mkdir()

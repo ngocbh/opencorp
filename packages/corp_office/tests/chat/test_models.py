@@ -9,11 +9,11 @@ import httpx
 import pytest
 from yian.llm_clients.auth import AuthStore, HttpResponse, OAuthCredentials
 
-from agent_corp.chat.connections import ConnectionFile, ConnectionGone, Connections
-from agent_corp.chat.models import (FRESH, TIMED_OUT, ListTimeout, ModelCache, ModelListError, azure_deployments,
+from opencorp.chat.connections import ConnectionFile, ConnectionGone, Connections
+from opencorp.chat.models import (FRESH, TIMED_OUT, ListTimeout, ModelCache, ModelListError, azure_deployments,
                                     list_models, own_models)
-from agent_corp.protocol.models import ModelList, ModelOption
-from agent_corp.secrets import write_private
+from opencorp.protocol.models import ModelList, ModelOption
+from opencorp.secrets import write_private
 
 SENTINEL = "sk-sentinel-3c9e10b7a2f4"
 ANTHROPIC_KEY = "sk-ant-sentinel-a7d93c10e5b2"

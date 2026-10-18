@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_corp.store import DuplicateKey, InvalidTransition, StoreError
+from opencorp.store import DuplicateKey, InvalidTransition, StoreError
 from tests.store.conftest import COMMIT, debrief, proposal, session
 
 

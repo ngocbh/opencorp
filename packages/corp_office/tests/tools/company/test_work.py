@@ -3,12 +3,12 @@
 import pytest
 from yian.tools import ToolSet
 
-from agent_corp.company.loader import load_repo
-from agent_corp.questions.ask import Answers, QuestionExpired
-from agent_corp.store import NotFound
-from agent_corp.tools.company.work import company_tools
-from agent_corp.worker.job import group_specs
-from agent_corp.worker.rpc import model_from_schema
+from opencorp.company.loader import load_repo
+from opencorp.questions.ask import Answers, QuestionExpired
+from opencorp.store import NotFound
+from opencorp.tools.company.work import company_tools
+from opencorp.worker.job import group_specs
+from opencorp.worker.rpc import model_from_schema
 from tests.store.conftest import session, work_item
 
 

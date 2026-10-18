@@ -7,8 +7,8 @@ import time
 import psutil
 import pytest
 
-from agent_corp.install import fallback, launchd, service, systemd
-from agent_corp.install.launch import Host, ServiceError, launch, office_answers
+from opencorp.install import fallback, launchd, service, systemd
+from opencorp.install.launch import Host, ServiceError, launch, office_answers
 from tests.daemon.conftest import short_dir  # noqa: F401
 
 from .conftest import Runner, make_host

@@ -9,19 +9,19 @@ from importlib.resources import files
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions.questions import register
-from agent_corp.protocol import now
-from agent_corp.protocol.models import Question
-from agent_corp.questions.format import CARRIED_NOTE, INTERRUPTED, SENT_BACK
-from agent_corp.questions.seed import FRAMING
-from agent_corp.questions.side import BACK_HINT, SEED_FILE, SIDE_CHAT_FLOW
-from agent_corp.store import new_id
+from opencorp.chat.harness import HarnessError
+from opencorp.extensions.questions import register
+from opencorp.protocol import now
+from opencorp.protocol.models import Question
+from opencorp.questions.format import CARRIED_NOTE, INTERRUPTED, SENT_BACK
+from opencorp.questions.seed import FRAMING
+from opencorp.questions.side import BACK_HINT, SEED_FILE, SIDE_CHAT_FLOW
+from opencorp.store import new_id
 from tests.chat.conftest import fake_llm, make_harness, status, texts, wait_for, workspace  # noqa: F401
 from tests.company.conftest import _isolate_git, person  # noqa: F401
 from tests.store.conftest import session as make_session
 
-SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
+SIDE_FLOW = (files("opencorp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
 ASK = {"tool_calls": [{"name": "ask_user", "arguments": {"question": "Retry or back off?",
                                                          "options": ["Retry", "Back off"]}}]}
 LAN = {"people/lan/person.yaml": {"handle": "lan", "name": "Lan", "kind": "human", "title": "Designer",

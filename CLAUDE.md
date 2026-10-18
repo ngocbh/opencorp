@@ -26,9 +26,9 @@ Before designing a feature, during brainstorming:
 ## Layout
 
 ```
-pyproject.toml                        # Python project "agent-corp" (import agent_corp)
-packages/corp_office/src/agent_corp/  # office daemon, run worker, sandbox launcher, permission layer, harness adapters
-packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/agent_corp/
+pyproject.toml                        # Python project "opencorp" (import opencorp)
+packages/corp_office/src/opencorp/    # office daemon, run worker, sandbox launcher, permission layer, harness adapters
+packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/opencorp/
 packages/yian/                        # submodule; uv path dependency
 packages/protocol/                    # JSON Schema → TS types + pydantic
 packages/tui/                         # the TUI (forked from OpenCode)
@@ -53,7 +53,7 @@ bun install
 - TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
   run each package's own `test` and `typecheck` scripts.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
-- `packages/corp_office/tests/<pkg>/` mirrors `packages/corp_office/src/agent_corp/<pkg>/`.
+- `packages/corp_office/tests/<pkg>/` mirrors `packages/corp_office/src/opencorp/<pkg>/`.
   Every test directory has an empty `__init__.py` so same-named test modules in different
   directories don't collide.
 
@@ -62,17 +62,17 @@ bun install
 `packages/protocol/schema/protocol.schema.json` changes only in a schema-only PR that:
 
 - edits the schema and its fixtures, and regenerates
-  `packages/corp_office/src/agent_corp/protocol/models.py` and
+  `packages/corp_office/src/opencorp/protocol/models.py` and
   `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
 - only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
   type of anything merged code uses;
-- adds the matching store migration (`packages/corp_office/src/agent_corp/store/migrations/`)
+- adds the matching store migration (`packages/corp_office/src/opencorp/store/migrations/`)
   when a new field lands on a `$def` the store persists, since inserts fail until the column
   exists;
 - merges before dependent work continues.
 
 Clients ignore enum values and event types they don't know. Make timestamps with
-`agent_corp.protocol.now()`.
+`opencorp.protocol.now()`.
 
 ## GitHub workflow
 

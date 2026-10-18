@@ -2,10 +2,10 @@
 
 import pytest
 
-import agent_corp.store.store as store_module
-from agent_corp.protocol.models import WorkItem
+import opencorp.store.store as store_module
+from opencorp.protocol.models import WorkItem
 
-from agent_corp.store import DuplicateKey, NotFound, StaleVersion, StoreError
+from opencorp.store import DuplicateKey, NotFound, StaleVersion, StoreError
 from tests.store.conftest import comment, work_item
 
 

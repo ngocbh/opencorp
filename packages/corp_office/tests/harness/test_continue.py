@@ -2,9 +2,9 @@
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions.learning import Learning
-from agent_corp.testing import fake_codex as fc
+from opencorp.chat.harness import HarnessError
+from opencorp.extensions.learning import Learning
+from opencorp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
 from tests.profile.conftest import LEARNING_FILES, debrief_reply
 from tests.store.conftest import session

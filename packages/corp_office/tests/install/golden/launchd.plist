@@ -20,7 +20,7 @@
 	<array>
 		<string>/opt/agent-corp/.venv/bin/python</string>
 		<string>-m</string>
-		<string>agent_corp.daemon.main</string>
+		<string>opencorp.daemon.main</string>
 		<string>--home</string>
 		<string>/Users/owner/.agent-corp</string>
 	</array>

@@ -6,22 +6,22 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_corp.assets.registry import builtin_kinds
-from agent_corp.chat.connections import ConnectionFile, Connections
-from agent_corp.chat.harness import Harness
-from agent_corp.chat.hooks import Hooks
-from agent_corp.chat.models import Listing, ModelCache, own_models
-from agent_corp.chat.provider import Provider
-from agent_corp.company.git import CompanyGit
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.perm.monitor import Monitor
-from agent_corp.protocol.models import ModelOption
-from agent_corp.secrets import SecretStore, write_private
-from agent_corp.store import Store
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.assets.registry import builtin_kinds
+from opencorp.chat.connections import ConnectionFile, Connections
+from opencorp.chat.harness import Harness
+from opencorp.chat.hooks import Hooks
+from opencorp.chat.models import Listing, ModelCache, own_models
+from opencorp.chat.provider import Provider
+from opencorp.company.git import CompanyGit
+from opencorp.daemon.app import OfficePaths
+from opencorp.perm.monitor import Monitor
+from opencorp.protocol.models import ModelOption
+from opencorp.secrets import SecretStore, write_private
+from opencorp.store import Store
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git, base_files, write_repo  # noqa: F401
 
-CHAT_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "chat.yaml").read_text()
+CHAT_FLOW = (files("opencorp.company_template") / "shared" / "flows" / "chat.yaml").read_text()
 
 
 class LiveLog:

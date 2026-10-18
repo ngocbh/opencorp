@@ -2,9 +2,9 @@ import subprocess
 
 import pytest
 
-from agent_corp.company.git import CompanyGit
-from agent_corp.profile import GitProfileStore
-from agent_corp.profile.feedback import MAX_ATTEMPTS, FeedbackHandlers, next_status
+from opencorp.company.git import CompanyGit
+from opencorp.profile import GitProfileStore
+from opencorp.profile.feedback import MAX_ATTEMPTS, FeedbackHandlers, next_status
 from tests.company.conftest import _isolate_git, base_files, write_repo  # noqa: F401
 
 SUCCEEDED = {"type": "result", "status": "succeeded", "backward": {"status": "succeeded", "failure": None}}

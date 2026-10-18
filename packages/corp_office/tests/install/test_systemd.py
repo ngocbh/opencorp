@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.install import systemd
-from agent_corp.install.launch import ServiceError, launch
+from opencorp.install import systemd
+from opencorp.install.launch import ServiceError, launch
 
 from .conftest import GOLDEN, Runner, make_host
 
@@ -19,7 +19,7 @@ def test_spaces_percents_and_dollars_reach_the_daemon_unchanged():
     odd = launch(Path("/Users/o w/100%/$HOME/.agent-corp"), repo=Path("/opt/a c"),
                  environ={"LANG": 'say "hi"'}, user_home=Path("/Users/o w"))
     text = systemd.unit(odd)
-    assert ('ExecStart="/opt/a c/.venv/bin/python" -m agent_corp.daemon.main'
+    assert ('ExecStart="/opt/a c/.venv/bin/python" -m opencorp.daemon.main'
             ' --home "/Users/o w/100%%/$$HOME/.agent-corp"\n') in text
     assert 'Environment="LANG=say \\"hi\\""\n' in text
     assert "WorkingDirectory=/opt/a c\n" in text

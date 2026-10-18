@@ -1,7 +1,7 @@
 import pytest
 
-from agent_corp.sandbox import bwrap
-from agent_corp.sandbox.policy import SandboxPolicy
+from opencorp.sandbox import bwrap
+from opencorp.sandbox.policy import SandboxPolicy
 
 
 @pytest.fixture

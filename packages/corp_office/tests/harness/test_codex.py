@@ -12,12 +12,12 @@ import psutil
 import pytest
 from jsonschema import Draft7Validator
 
-from agent_corp.harness.codex import (CodexMissing, CodexProcess, CodexSignedOut, CodexStartError, codex_command,
+from opencorp.harness.codex import (CodexMissing, CodexProcess, CodexSignedOut, CodexStartError, codex_command,
                                      owner_load)
-from agent_corp.protocol.models import HarnessPolicy
-from agent_corp.store import Store
-from agent_corp.worker.reaper import reap, start_time
-from agent_corp.worker.spawn import worker_env
+from opencorp.protocol.models import HarnessPolicy
+from opencorp.store import Store
+from opencorp.worker.reaper import reap, start_time
+from opencorp.worker.spawn import worker_env
 from tests.chat.conftest import wait_for
 
 CLIENT = Draft7Validator(json.loads(
@@ -60,7 +60,7 @@ def test_agent_corp_codex_bin_names_another_codex(tmp_path):
 def fake(tmp_path, script=None):
     path = tmp_path / "s.json"
     path.write_text(json.dumps(script or {}))
-    return [sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script", str(path),
+    return [sys.executable, "-I", "-m", "opencorp.testing.fake_codex", "--script", str(path),
             "--log", str(tmp_path / "log.jsonl")]
 
 
@@ -245,7 +245,7 @@ def test_a_kill_during_the_handshake_says_codex_was_stopped(tmp_path):
 
 
 def test_only_the_first_kill_signals_the_group(tmp_path, monkeypatch):
-    import agent_corp.harness.codex as codex
+    import opencorp.harness.codex as codex
     signalled = []
     monkeypatch.setattr(codex, "kill_group", lambda pgid: signalled.append(pgid) or True)
     with Store(tmp_path / "store.sqlite") as store:

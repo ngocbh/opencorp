@@ -2,8 +2,8 @@ import json
 
 from yian.memory.storage.markdown import FileMarkdownStore
 
-from agent_corp.worker.job import ProfileMemorySpec, SessionMemorySpec, group_specs
-from agent_corp.worker.main import pick_skills
+from opencorp.worker.job import ProfileMemorySpec, SessionMemorySpec, group_specs
+from opencorp.worker.main import pick_skills
 
 from tests.worker.conftest import Recorder, run, write_files
 

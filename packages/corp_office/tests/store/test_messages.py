@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent_corp.protocol.models import TextPart, ToolPart
-from agent_corp.store import DuplicateKey, NotFound, new_id
+from opencorp.protocol.models import TextPart, ToolPart
+from opencorp.store import DuplicateKey, NotFound, new_id
 from tests.store.conftest import message, session
 
 

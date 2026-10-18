@@ -4,10 +4,10 @@ import subprocess
 
 import pytest
 
-from agent_corp.chat.connections import read_run_record
-from agent_corp.extensions.learning import Learning
-from agent_corp.protocol.models import FeedbackRequest
-from agent_corp.testing import fake_codex as fc
+from opencorp.chat.connections import read_run_record
+from opencorp.extensions.learning import Learning
+from opencorp.protocol.models import FeedbackRequest
+from opencorp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
 from tests.profile.conftest import LEARNING_FILES, debrief_reply, learner_reply, review_reply
 

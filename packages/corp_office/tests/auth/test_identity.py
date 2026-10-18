@@ -5,9 +5,9 @@ import stat
 
 import pytest
 
-from agent_corp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
-from agent_corp.auth.tokens import new_token
-from agent_corp.protocol.models import Device
+from opencorp.auth.identity import Identity, device_name, identity_path, read_identity, write_identity
+from opencorp.auth.tokens import new_token
+from opencorp.protocol.models import Device
 
 
 @pytest.mark.parametrize(("host", "name"), [("Ngocs-MacBook-Pro.local", "ngocs-macbook-pro"), ("box", "box"),
