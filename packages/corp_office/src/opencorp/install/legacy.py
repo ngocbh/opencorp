@@ -77,12 +77,12 @@ class Leftovers:
 
         out: list[str] = []
         for plist in self.plists:
-            out += [f"launchctl bootout gui/{uid}/{plist.stem}", f"rm {q(plist)}"]
+            out += [f"launchctl bootout {shlex.quote(f'gui/{uid}/{plist.stem}')}", f"rm {q(plist)}"]
         for unit in self.units:
-            out += [f"systemctl --user disable --now {unit.name}", f"rm {q(unit)}"]
+            out += [f"systemctl --user disable --now {shlex.quote(unit.name)}", f"rm {q(unit)}"]
         if self.units:
             out.append("systemctl --user daemon-reload")
-        out += [f"tmux kill-session -t ={s}" for s in self.sessions]
+        out += [f"tmux kill-session -t {shlex.quote(f'={s}')}" for s in self.sessions]
         if self.pid:
             out.append(f"kill {self.pid}")
         if self.home and not self.both:

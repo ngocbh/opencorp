@@ -326,3 +326,19 @@ def test_the_printed_swap_doesnt_overwrite_an_opencorp_made_since(tmp_path):
     (tmp_path / "bin" / "opencorp").write_text("mine\n")
     sh(swap)
     assert (tmp_path / "bin" / "opencorp").read_text() == "mine\n" and wrapper.exists()
+
+
+def test_odd_job_names_are_quoted_in_the_commands(tmp_path):
+    plist = tmp_path / "Library" / "LaunchAgents" / "com.agent-corp.o b;x.plist"
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(b"")
+    unit = tmp_path / ".config" / "systemd" / "user" / "agent-corp-o b;x.service"
+    unit.parent.mkdir(parents=True)
+    unit.write_text("")
+    home = old_home(tmp_path)
+    (home / "office" / "install.json").write_text(json.dumps({"mode": "tmux", "name": "o b;x"}))
+    found = legacy.find(make_host(tmp_path, Runner([(["tmux", "has-session"], 0, "")])), {"PATH": ""}, REPO)
+    commands = found.commands(501, REPO)
+    assert "launchctl bootout 'gui/501/com.agent-corp.o b;x'" in commands
+    assert "systemctl --user disable --now 'agent-corp-o b;x.service'" in commands
+    assert "tmux kill-session -t '=agent-corp-o b;x'" in commands
