@@ -10,7 +10,7 @@ from opencorp.company.git import CompanyGit, CompanyGitError
 from tests.company.conftest import _git, write_repo
 
 PROFILE = "people/minh/profile.md"
-OFFICE = "agent-corp office <office@agent-corp.local>"
+OFFICE = "OpenCorp office <office@opencorp.local>"
 
 
 @pytest.fixture

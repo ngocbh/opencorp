@@ -1,1 +1,1 @@
-"""Test helpers shared by agent-corp's test suites."""
+"""Test helpers shared by OpenCorp's test suites."""

@@ -13,7 +13,7 @@ from opencorp.secrets import write_private
 
 
 def identity_path(home: Path) -> Path:
-    """Where the device identity lives under an agent-corp home."""
+    """Where the device identity lives under an OpenCorp home."""
     return home / "identity.json"
 
 

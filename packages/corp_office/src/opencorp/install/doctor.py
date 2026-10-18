@@ -24,7 +24,7 @@ from opencorp.install.launch import REPO, Host, Launch, launch
 from opencorp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
 from opencorp.worker.spawn import worker_env
 
-_START_ERROR = "agent-corp office: "
+_START_ERROR = "opencorp office: "
 """How the daemon prefixes the one line it prints when it can't start."""
 
 
@@ -268,7 +268,7 @@ def _crash(log: Path) -> str | None:
 
 
 def newest_source(repo: Path) -> float:
-    """The newest modification time of the Python the daemon runs (agent-corp and yian)."""
+    """The newest modification time of the Python the daemon runs (OpenCorp and yian)."""
     roots = [repo / "packages" / "corp_office" / "src" / "opencorp", repo / "packages" / "yian" / "src"]
     return max((p.stat().st_mtime for root in roots for p in root.rglob("*.py")), default=0.0)
 

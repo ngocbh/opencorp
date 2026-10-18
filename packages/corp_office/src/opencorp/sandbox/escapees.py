@@ -42,7 +42,7 @@ class Canary:
     def __init__(self, avoid: tuple[Path, ...] = ()) -> None:
         roots = [Path(os.path.realpath(tempfile.gettempdir())), Path("/private/tmp"), Path("/private/var/tmp")]
         root = next((r for r in roots if not any(r.is_relative_to(a) for a in avoid)), roots[0])
-        self.root = Path(tempfile.mkdtemp(prefix="agent-corp-call-", dir=root))
+        self.root = Path(tempfile.mkdtemp(prefix="opencorp-call-", dir=root))
         self.allowed = self.root / "allowed"
         self.denied = self.root / "denied"
         self.allowed.mkdir()

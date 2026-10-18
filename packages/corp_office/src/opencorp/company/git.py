@@ -8,7 +8,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-_IDENTITY = ["-c", "user.name=agent-corp office", "-c", "user.email=office@agent-corp.local"]
+_IDENTITY = ["-c", "user.name=OpenCorp office", "-c", "user.email=office@opencorp.local"]
 # Repo-local config and hooks still apply after the env is cleaned; never sign or run hooks.
 _NO_HOOKS = ["-c", "commit.gpgsign=false", "-c", f"core.hooksPath={os.devnull}"]
 _PIN_MARKER = ".agent-corp-pin"

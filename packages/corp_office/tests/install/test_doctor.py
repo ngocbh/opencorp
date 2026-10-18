@@ -226,10 +226,10 @@ def test_a_systemd_service_with_linger_is_ok(tmp_path):
 
 def test_an_office_that_keeps_failing_to_start_is_a_crash_loop(tmp_path):
     paths = onboarded(tmp_path)
-    (paths.office / "office.log").write_text("starting\nagent-corp office: the company repo has no .git\n\n")
+    (paths.office / "office.log").write_text("starting\nopencorp office: the company repo has no .git\n\n")
     got = by_name(run_checks(tmp_path, paths))
     assert got["office"].status == "fail"
-    assert "agent-corp office: the company repo has no .git" in got["office"].detail
+    assert "opencorp office: the company repo has no .git" in got["office"].detail
     assert "Run `opencorp start`." in got["office"].detail
 
 

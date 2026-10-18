@@ -190,7 +190,7 @@ def _report_launchers(prompter: Prompter, environ: Mapping[str, str], repo: Path
     for path in found:
         how = "a link made by `bun link`" if path.is_symlink() else "a wrapper script"
         prompter.say(f"`opencorp` is on your PATH as {path}, {how}; remove it with `rm {path}`.")
-    prompter.say(f"The checkout at {repo} stays; delete it yourself once you're done with agent-corp.")
+    prompter.say(f"The checkout at {repo} stays; delete it yourself once you're done with OpenCorp.")
 
 
 def offboard(home: Path, prompter: Prompter, *, yes: bool = False, delete_company: bool = False,

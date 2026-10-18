@@ -472,7 +472,7 @@ class Spike:
         try:
             self.ws.mkdir()
             subprocess.run([*git, "init", "-q"], cwd=self.ws, check=True)
-            (self.ws / "README.md").write_text("Scratch repo for the agent-corp Codex spike.\n")
+            (self.ws / "README.md").write_text("Scratch repo for the OpenCorp Codex spike.\n")
             subprocess.run([*git, "add", "-A"], cwd=self.ws, check=True)
             subprocess.run([*git, "commit", "-qm", "init"], cwd=self.ws, check=True)
         except BaseException:

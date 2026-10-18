@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// `opencorp`: the agent-corp command line. Each command lives in its own file under commands/ and
+// `opencorp`: the OpenCorp command line. Each command lives in its own file under commands/ and
 // is loaded only when it runs, so `opencorp doctor` never loads the TUI.
 
 /** A command's entry point: takes the arguments after its name, resolves to an exit code. */
