@@ -551,12 +551,14 @@ class CodexSession:
     def _exited(self, process: CodexProcess) -> None:
         if process is not self.process or process.closing:
             return
-        log.warning("codex app-server of session %s exited unexpectedly", self.session_id)
+        log.warning("codex app-server of session %s exited unexpectedly (code %s); its stderr is in %s",
+                    self.session_id, process.proc.returncode, process.log)
         self._lost(process, "Codex stopped unexpectedly. Send a message to start it again.")
 
     def _lost(self, process: CodexProcess, said: str | None) -> None:
         """The app-server died, or Codex unloaded the thread: finish its turn as interrupted, expire its cards, and
-        close its group now; the next message reloads the thread. ``said`` is the error part, with the stderr tail."""
+        close its group now; the next message reloads the thread. ``said`` is the error part; Codex's stderr stays in
+        its codex.log, which the office log names."""
         with self._lock:
             self.process = None
             if said is None:
@@ -566,7 +568,6 @@ class CodexSession:
                 self.requests.pop(question_id)
                 self._expire(question_id)
             self.by_request.clear()
-        tail = process.stderr_tail() if said else ""
         # A dead leader leaves its group to whatever it started (command children, #57): kill it now, which also
         # removes the record, so an end or idle_end that comes before any reload never finds them. An app-server
         # that only unloaded the thread is alive: close it through its stdin, which kills its group after.
@@ -582,7 +583,7 @@ class CodexSession:
         if turn is not None:
             self.translator.turn_completed(turn, "interrupted", None)
         if said:
-            self.transcript.error(said + (f"\n{tail}" if tail else ""))
+            self.transcript.error(said)
         with self._lock:
             if self.ending:
                 self._post(self._close)
