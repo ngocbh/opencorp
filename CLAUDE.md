@@ -32,7 +32,7 @@ packages/corp_office/tests/           # Python tests, mirroring packages/corp_of
 packages/yian/                        # submodule; uv path dependency
 packages/protocol/                    # JSON Schema → TS types + pydantic
 packages/tui/                         # the TUI (forked from OpenCode)
-packages/ac/                          # `ac` CLI entry
+packages/cli/                         # the `opencorp` CLI (npm package "opencorp")
 docs/plans/                           # design docs and plans (local only, gitignored)
 ```
 

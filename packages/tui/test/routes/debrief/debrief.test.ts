@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 import { aboutTurn, turns, written } from "../../../src/routes/debrief/debrief"
 
 const msg = (role: Message["role"], ...texts: string[]) =>

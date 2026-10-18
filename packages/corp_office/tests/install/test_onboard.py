@@ -42,7 +42,7 @@ def _stop(paths):
 
 
 def company(home, handle="me"):
-    """A company at ``home`` made as `ac init` makes it, with ``handle`` as CEO and no device."""
+    """A company at ``home`` made as `opencorp init` makes it, with ``handle`` as CEO and no device."""
     write_company(home / "company", home / "office" / "worktrees", company="Acme", owner=Owner(handle, "Me"))
     return home / "company"
 
@@ -68,7 +68,7 @@ def test_an_existing_company_without_an_identity_suggests_login(tmp_path):
     company(home)
     ask = Script()
     onboard(home, ask, stdin=io.StringIO(PROVIDER), host=make_host(tmp_path, Runner(), answers=lambda s: True))
-    assert "This device has no identity yet; run `ac login` to use ac from it." in ask.seen
+    assert "This device has no identity yet; run `opencorp login` to use opencorp from it." in ask.seen
     assert not (home / "identity.json").exists()
     assert [line for line in ask.seen if line.startswith("Step ")] == [
         "Step 1 of 4: Company", "Step 2 of 4: This device", "Step 3 of 4: Model", "Step 4 of 4: Office"]
@@ -100,7 +100,7 @@ def test_a_running_office_is_not_topped_up_behind_its_back(tmp_path):
     head = _git(paths.company, "rev-parse", "HEAD")
     ask = Script()
     onboard(paths.home, ask, stdin=io.StringIO(PROVIDER), host=make_host(tmp_path, Runner(), answers=lambda s: True))
-    assert "The office is running; stop it and run `ac onboard` again to add 2 template files." in "\n".join(ask.seen)
+    assert "The office is running; stop it and run `opencorp onboard` again to add 2 template files." in "\n".join(ask.seen)
     assert not (paths.company / DEBRIEF_FLOW).exists() and _git(paths.company, "rev-parse", "HEAD") == head
 
 
@@ -217,7 +217,7 @@ def test_a_human_without_a_password_joins_and_is_told_to_set_one(tmp_path, monke
     with pytest.raises(OnboardError, match="stop"):
         onboard(tmp_path / "home", ask, source=str(published(tmp_path)), host=make_host(tmp_path, Runner()))
     assert read_identity(tmp_path / "home" / "identity.json").handle == "lan"
-    assert "@lan has no password yet; set one with `ac password` so a new device has to give it" in ask.seen
+    assert "@lan has no password yet; set one with `opencorp password` so a new device has to give it" in ask.seen
 
 
 def test_an_identity_the_company_already_lists_is_kept_and_nothing_is_asked(tmp_path, monkeypatch):
@@ -287,14 +287,14 @@ def test_a_device_name_the_human_already_uses_gets_a_suffix(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("prompter", [Script(""), TtyPrompter(interactive=False)], ids=["empty", "non-interactive"])
 def test_no_company_and_no_repo_suggests_init(tmp_path, prompter):
-    with pytest.raises(OnboardError, match=r"no company at .*; run `ac init` to create one, or `ac onboard --from URL`"):
+    with pytest.raises(OnboardError, match=r"no company at .*; run `opencorp init` to create one, or `opencorp onboard --from URL`"):
         onboard(tmp_path / "home", prompter, host=make_host(tmp_path, Runner()))
     assert not (tmp_path / "home" / "company").exists()
 
 
 def test_a_repo_that_cant_be_cloned_leaves_nothing_behind(tmp_path):
     with pytest.raises(OnboardError, match=r"can't clone .*; if git needs a login or a new host key, set that up in"
-                                           r" a terminal first .*then run `ac onboard` again"):
+                                           r" a terminal first .*then run `opencorp onboard` again"):
         onboard(tmp_path / "home", Script(), source=str(tmp_path / "nowhere.git"), host=make_host(tmp_path, Runner()))
     assert sorted(os.listdir(tmp_path / "home")) == ["office"]
 
@@ -315,7 +315,7 @@ def test_a_company_init_left_unfinished_is_not_cloned_over(tmp_path):
     company_dir = tmp_path / "home" / "company"
     company_dir.mkdir(parents=True)
     (company_dir / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
-    with pytest.raises(OnboardError, match="run `ac init` to finish it"):
+    with pytest.raises(OnboardError, match="run `opencorp init` to finish it"):
         onboard(tmp_path / "home", Script(), source=str(tmp_path / "x.git"), host=make_host(tmp_path, Runner()))
     assert os.listdir(company_dir) == ["company.yaml"]
 

@@ -1,4 +1,4 @@
-"""``ac init``: ask for the model; run the init flow with it, which interviews the owner for the company, its CEO and
+"""``opencorp init``: ask for the model; run the init flow with it, which interviews the owner for the company, its CEO and
 its first teammates, then asks for a password and a remote; write the company, push it, and onboard this machine."""
 
 import os
@@ -43,7 +43,7 @@ def password_step(prompter: Prompter) -> str | None:
         try:
             password = prompter.secret(YOUR_PASSWORD)
         except NoTerminal:
-            prompter.say("Password: none, since there's no terminal to ask on; set one later with `ac password`")
+            prompter.say("Password: none, since there's no terminal to ask on; set one later with `opencorp password`")
             return None
         if why := password_problem(password):
             prompter.say(f"That doesn't work: {why}")
@@ -58,7 +58,7 @@ def remote_step(prompter: Prompter, given: str) -> str:
     """Show the remote step and return the git remote URL: ``given`` (from ``--remote``), or the one the owner
     types; empty when they pick none."""
     prompter.step(4, STEPS, "Remote", "A git remote, such as a private GitHub repo, lets other machines join the"
-                                      " company with `ac onboard --from URL`.")
+                                      " company with `opencorp onboard --from URL`.")
     if given:
         return given
     picked = prompter.choose(REMOTE, [NO_REMOTE], NO_REMOTE, typed=True)
@@ -95,7 +95,7 @@ def push(company: Path, url: str, prompter: Prompter) -> bool:
                      f" then retry with `git -C {where} push -u origin main`.")
         return False
     prompter.say(f"Remote: pushed the company to {redact(url)}; other machines join it with"
-                 f" `ac onboard --from {shlex.quote(redact(url))}`.")
+                 f" `opencorp onboard --from {shlex.quote(redact(url))}`.")
     return True
 
 
@@ -120,12 +120,12 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
     run = launch(home, repo=repo, environ=environ, user_home=host.user_home)
     paths = OfficePaths(run.home)
     if not is_new(paths.company):
-        raise OnboardError(f"there's already a company at {paths.company}; run `ac onboard` to set up"
+        raise OnboardError(f"there's already a company at {paths.company}; run `opencorp onboard` to set up"
                            " this office for it")
     make_home(paths)
     if host.answers(run.socket):
         raise OnboardError(f"the office is running, but {paths.company} has no company yet;"
-                           " stop it and run `ac init` again")
+                           " stop it and run `opencorp init` again")
 
     prompter.step(1, STEPS, "Model", "Your agents think with this model; its key stays in this office, readable"
                                      " only by you.")
@@ -167,6 +167,6 @@ def init(home: Path, prompter: Prompter, *, known: Known = Known(), mode: str = 
     else:
         prompter.say("Remote: none; the company lives only on this machine for now.")
 
-    prompter.step(5, STEPS, "This machine", "The office service and this device, as `ac onboard` sets them up.")
+    prompter.step(5, STEPS, "This machine", "The office service and this device, as `opencorp onboard` sets them up.")
     # The provider stdin was used up by the model step; onboard finds the file it wrote and keeps it.
     onboard(home, prompter, mode=mode, stdin=None, host=host, repo=repo, environ=environ, steps=False)

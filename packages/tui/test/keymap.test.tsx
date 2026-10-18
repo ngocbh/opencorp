@@ -5,7 +5,7 @@ import { testRender, useRenderer } from "@opentui/solid"
 import { expect, test } from "bun:test"
 import { onCleanup } from "solid-js"
 import { TuiKeybind } from "../src/config/keybind"
-import { getAgentCorpModeStack, AGENT_CORP_BASE_MODE, AgentCorpKeymapProvider, registerAgentCorpKeymap } from "../src/keymap"
+import { getOpenCorpModeStack, OPENCORP_BASE_MODE, OpenCorpKeymapProvider, registerOpenCorpKeymap } from "../src/keymap"
 
 function createResolvedKeymapConfig(input: TuiKeybind.KeybindOverrides = {}) {
   const keybinds = TuiKeybind.parse(input)
@@ -28,7 +28,7 @@ test("legacy page key aliases compile as page keys", async () => {
       messages_page_up: "pgup",
       messages_page_down: "pgdown",
     })
-    const offKeymap = registerAgentCorpKeymap(keymap, renderer, config)
+    const offKeymap = registerOpenCorpKeymap(keymap, renderer, config)
     const offLayer = keymap.registerLayer({
       bindings: config.keybinds.gather("session", ["session.page.up", "session.page.down"]),
     })
@@ -46,9 +46,9 @@ test("legacy page key aliases compile as page keys", async () => {
     })
 
     return (
-      <AgentCorpKeymapProvider keymap={keymap}>
+      <OpenCorpKeymapProvider keymap={keymap}>
         <box />
-      </AgentCorpKeymapProvider>
+      </OpenCorpKeymapProvider>
     )
   }
 
@@ -70,7 +70,7 @@ test("mode-less bindings stay active when the mode changes", async () => {
     const renderer = useRenderer()
     const keymap = createDefaultOpenTuiKeymap(renderer)
     const config = createResolvedKeymapConfig()
-    const offKeymap = registerAgentCorpKeymap(keymap, renderer, config)
+    const offKeymap = registerOpenCorpKeymap(keymap, renderer, config)
     const offGlobal = keymap.registerLayer({
       commands: [
         { name: "session.list", run() {} },
@@ -86,7 +86,7 @@ test("mode-less bindings stay active when the mode changes", async () => {
       ]),
     })
     const offBase = keymap.registerLayer({
-      mode: AGENT_CORP_BASE_MODE,
+      mode: OPENCORP_BASE_MODE,
       commands: [{ name: "agent.cycle", run() {} }],
       bindings: config.keybinds.gather("test.base", ["agent.cycle"]),
     })
@@ -102,10 +102,10 @@ test("mode-less bindings stay active when the mode changes", async () => {
       )
 
     counts.base = activeCounts()
-    const popQuestion = getAgentCorpModeStack(keymap).push("question")
+    const popQuestion = getOpenCorpModeStack(keymap).push("question")
     counts.question = activeCounts()
     popQuestion()
-    const popAutocomplete = getAgentCorpModeStack(keymap).push("autocomplete")
+    const popAutocomplete = getOpenCorpModeStack(keymap).push("autocomplete")
     counts.autocomplete = activeCounts()
     popAutocomplete()
 
@@ -116,9 +116,9 @@ test("mode-less bindings stay active when the mode changes", async () => {
     })
 
     return (
-      <AgentCorpKeymapProvider keymap={keymap}>
+      <OpenCorpKeymapProvider keymap={keymap}>
         <box />
-      </AgentCorpKeymapProvider>
+      </OpenCorpKeymapProvider>
     )
   }
 

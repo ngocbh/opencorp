@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Question } from "@agent-corp/protocol"
+import type { Question } from "@opencorp/protocol"
 import { emptyState } from "../../../src/office/store"
 import { cardQuestions } from "../../../src/routes/chat/turn"
 

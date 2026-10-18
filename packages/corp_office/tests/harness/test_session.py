@@ -73,7 +73,7 @@ def test_a_load_codex_refuses_fails_the_session_with_why(harness, fake_codex, wo
     sid = harness.start_session("minh", str(workspace), "codex").id
     wait_for(lambda: status(harness, sid) == "failed", what="failed")
     [error] = errors(harness, sid)
-    assert "nope" in error and "ac doctor" in error and str(harness.office.paths.run_dir(sid) / "codex.log") in error
+    assert "nope" in error and "opencorp doctor" in error and str(harness.office.paths.run_dir(sid) / "codex.log") in error
     assert "config.toml: bad key" not in stored(harness, sid) and "config.toml: bad key" in codex_log(harness, sid)
     assert harness.store.list_workers() == []
     assert ended == ["failed"]

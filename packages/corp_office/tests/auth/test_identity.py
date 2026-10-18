@@ -1,4 +1,4 @@
-"""The device identity file onboarding writes and ``ac`` reads."""
+"""The device identity file onboarding writes and ``opencorp`` reads."""
 
 import os
 import stat

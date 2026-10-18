@@ -24,7 +24,7 @@ export async function openEditor(input: { value: string; renderer: CliRenderer; 
   const editor = process.env.VISUAL || process.env.EDITOR
   if (!editor) return
   // A private dir (mkdtemp makes it 0700), not a guessable name in a shared, world-readable /tmp.
-  const dir = await mkdtemp(path.join(os.tmpdir(), "ac-prompt-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "opencorp-prompt-"))
   const file = path.join(dir, "prompt.md")
   await writeFile(file, input.value)
   input.renderer.suspend()

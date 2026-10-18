@@ -464,7 +464,7 @@ class Spike:
     def __init__(self, codex: str, out: Path) -> None:
         self.codex, self.out = codex, out
         out.mkdir(parents=True, exist_ok=True)
-        self.root = Path(tempfile.mkdtemp(prefix="ac-codex-spike-"))
+        self.root = Path(tempfile.mkdtemp(prefix="opencorp-codex-spike-"))
         self.ws = self.root / "ws"
         # The owner's git config may sign commits or run hooks; a scratch repo needs neither.
         git = ["git", "-c", "user.name=spike", "-c", "user.email=spike@example.com", "-c", "commit.gpgsign=false",
@@ -472,7 +472,7 @@ class Spike:
         try:
             self.ws.mkdir()
             subprocess.run([*git, "init", "-q"], cwd=self.ws, check=True)
-            (self.ws / "README.md").write_text("Scratch repo for the agent-corp Codex spike.\n")
+            (self.ws / "README.md").write_text("Scratch repo for the OpenCorp Codex spike.\n")
             subprocess.run([*git, "add", "-A"], cwd=self.ws, check=True)
             subprocess.run([*git, "commit", "-qm", "init"], cwd=self.ws, check=True)
         except BaseException:
@@ -499,7 +499,7 @@ class Spike:
                            Recorder(self.out / "sessions" / f"{name}.jsonl", self.replacements, self.words), env,
                            stderr=self.root / f"{name}.stderr")
         try:
-            server.request("initialize", {"clientInfo": {"name": "agent_corp_spike", "title": "AgentCorp spike",
+            server.request("initialize", {"clientInfo": {"name": "opencorp_spike", "title": "OpenCorp spike",
                                                          "version": "0"}, "capabilities": {"experimentalApi": True}})
             server.notify("initialized")
         except BaseException:

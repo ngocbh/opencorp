@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
 import { createOfficeClient } from "../../src/office/client"
 import { emptyState, openQuestions } from "../../src/office/store"

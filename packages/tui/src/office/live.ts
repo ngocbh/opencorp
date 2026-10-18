@@ -1,7 +1,7 @@
 // Runtime guards for event `data`. The protocol types it as a plain object; these check the
 // fields the client keys on or reads, so a malformed event is skipped rather than corrupting
 // state.
-import type { Event, Message, Part } from "@agent-corp/protocol"
+import type { Event, Message, Part } from "@opencorp/protocol"
 
 /** `part.updated` data: the whole part. */
 export type PartUpdated = { message_id: string; part: Part }

@@ -1,4 +1,4 @@
-"""Questions for ``ac``'s setup screen: one ``SetupPrompt`` JSON line out, one ``SetupAnswer`` JSON line back."""
+"""Questions for ``opencorp``'s setup screen: one ``SetupPrompt`` JSON line out, one ``SetupAnswer`` JSON line back."""
 
 from collections.abc import Mapping, Sequence
 from typing import TextIO
@@ -10,7 +10,7 @@ from opencorp.protocol.models import SetupAnswer, SetupAsk, SetupChoose, SetupSa
 
 
 class JsonPrompter:
-    """Asks through ``ac``'s setup screen: each prompt is a JSON line on ``out``, each answer a JSON line on ``answers``.
+    """Asks through ``opencorp``'s setup screen: each prompt is a JSON line on ``out``, each answer a JSON line on ``answers``.
 
     ``preset`` answers questions by their text without asking, as ``TtyPrompter``'s does.
     """

@@ -41,7 +41,7 @@ def test_a_worker_killed_mid_run_is_respawned_and_finishes_the_turn(office, work
     office.settled(sid, ["One.", "Recovered.", "Next."])
 
 
-def test_an_office_killed_mid_turn_comes_back_with_ac_start_and_finishes_the_turn(office, workspace):
+def test_an_office_killed_mid_turn_comes_back_with_opencorp_start_and_finishes_the_turn(office, workspace):
     fake = office.fake
     sid = first_turn(office, workspace)
     fake.script({"content": "Lost.", "hold": True}, {"content": "Resumed."})
@@ -50,9 +50,9 @@ def test_an_office_killed_mid_turn_comes_back_with_ac_start_and_finishes_the_tur
     orphan = office.worker(sid)
     old = office.kill_office()
     wait_for(lambda: not alive(orphan.pid), "the orphaned worker to exit when its office dies")
-    down = office.ac("end", cwd=workspace, check=False)
-    assert (down.returncode, down.stderr.strip()) == (3, "The office isn't running. Run `ac doctor`.")
-    office.ac("start", cwd=workspace)
+    down = office.opencorp("end", cwd=workspace, check=False)
+    assert (down.returncode, down.stderr.strip()) == (3, "The office isn't running. Run `opencorp doctor`.")
+    office.opencorp("start", cwd=workspace)
     assert office.pid() != old
     office.settled(sid, ["One.", "Resumed."])
     fake.release()  # the dead worker's call: nobody reads its reply
@@ -83,7 +83,7 @@ def test_two_feedbacks_learned_at_once_both_land_in_the_profile(office, workspac
                 learner_reply(base + "\n- Rule: brevity\n- Rule: citations\n"))
     calls = len(fake.requests())
     for cwd, text in zip(folders, ["Be brief.", "Cite files."]):
-        office.ac("feedback", "-m", text, cwd=cwd)  # queues it and returns; the learner call is held
+        office.opencorp("feedback", "-m", text, cwd=cwd)  # queues it and returns; the learner call is held
     wait_for(lambda: sum(LEARNER_ASK in asked(r) for r in fake.requests()[calls:]) == 2, "both learner calls")
     fake.release()
     subjects = {f"profile(@minh): from feedback on run {run} (ngocbh)" for run in runs}

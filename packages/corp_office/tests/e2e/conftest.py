@@ -37,7 +37,7 @@ def no_service_tools(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fake_codex_on_path(tmp_path_factory, monkeypatch):
-    """Put the fake Codex first on ``PATH`` as ``codex``, so `ac doctor` never runs the developer's real one."""
+    """Put the fake Codex first on ``PATH`` as ``codex``, so `opencorp doctor` never runs the developer's real one."""
     root = tmp_path_factory.mktemp("codex")
     codex = root / "codex"
     codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I -m opencorp.testing.fake_codex "$@"\n')
@@ -47,8 +47,8 @@ def fake_codex_on_path(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(scope="session")
-def ac_ready():
-    """Skip when asked to (``AGENT_CORP_SKIP_E2E=1``) or when `ac` can't run here (no bun, or no `bun install`); fail instead on CI."""
+def cli_ready():
+    """Skip when asked to (``AGENT_CORP_SKIP_E2E=1``) or when `opencorp` can't run here (no bun, or no `bun install`); fail instead on CI."""
     on_ci = bool(os.environ.get("CI"))
     if os.environ.get("AGENT_CORP_SKIP_E2E") == "1":
         # A CI job that inherits the variable must not pass by skipping the whole suite.
@@ -58,12 +58,12 @@ def ac_ready():
     problem = None
     if shutil.which("bun") is None:
         problem = "bun is not on PATH"
-    elif not (REPO / "packages" / "ac" / "node_modules" / "@agent-corp" / "tui").exists():
+    elif not (REPO / "packages" / "cli" / "node_modules" / "@opencorp" / "tui").exists():
         problem = "the TS packages aren't installed; run `bun install --frozen-lockfile`"
     if problem:
         if on_ci:
-            pytest.fail(f"ac can't run on CI: {problem}")
-        pytest.skip(f"ac can't run here: {problem}")
+            pytest.fail(f"opencorp can't run on CI: {problem}")
+        pytest.skip(f"opencorp can't run here: {problem}")
 
 
 @pytest.fixture
@@ -74,7 +74,7 @@ def fake_llm():
 
 
 @pytest.fixture
-def office(ac_ready, short_dir, fake_llm):
+def office(cli_ready, short_dir, fake_llm):
     """A running office on a short temp home (macOS socket paths are capped at 104 bytes), stopped afterwards."""
     running = RunningOffice(short_dir, fake_llm)
     try:

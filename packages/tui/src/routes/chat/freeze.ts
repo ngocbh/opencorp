@@ -1,4 +1,4 @@
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 
 /** What the office ends a reply stopped short with; mirrors opencorp.chat.transcript.INTERRUPTED_TEXT. */
 export const INTERRUPTED_TEXT = "\n\n[interrupted]"

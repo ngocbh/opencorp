@@ -1,0 +1,19 @@
+{
+  "name": "opencorp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "opencorp": "src/main.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@opencorp/protocol": "workspace:*",
+    "@opencorp/tui": "workspace:*",
+    "@opentui/solid": "catalog:",
+    "effect": "catalog:"
+  }
+}

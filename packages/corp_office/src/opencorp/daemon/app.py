@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class OfficePaths:
-    """Where the office keeps its files under an agent-corp home."""
+    """Where the office keeps its files under an OpenCorp home."""
 
     def __init__(self, home: Path) -> None:
         self.home = home

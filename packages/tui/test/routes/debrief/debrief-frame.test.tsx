@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Debrief, Message } from "@agent-corp/protocol"
+import type { Debrief, Message } from "@opencorp/protocol"
 import { createFakeOffice, createStub } from "../../../script/stub"
 import { bootFrame } from "../../fixture/frame"
 import { typeInto } from "../picker/type"

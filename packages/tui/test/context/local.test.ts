@@ -1,4 +1,4 @@
-import type { Person, Session } from "@agent-corp/protocol"
+import type { Person, Session } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { createSignal } from "solid-js"
 import { createHarnessPick, pickPerson } from "../../src/context/local"

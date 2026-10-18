@@ -49,7 +49,7 @@ def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
     (paths.company / "company.yaml").write_text('name: "Acme"\nceo: "me"\n')
     got = by_name(run_checks(tmp_path, paths))
     assert got["company"] == Check("company", "fail", f"{paths.company} has no company yet (no company.yaml, or no"
-                                   " first commit); run `ac init` to finish it")
+                                   " first commit); run `opencorp init` to finish it")
 
 
 def test_a_fresh_machine_is_told_to_onboard(tmp_path):
@@ -67,7 +67,7 @@ def test_an_onboarded_office_that_isnt_running_is_only_a_warning(tmp_path):
     assert got["service"] == Check("service", "ok", f"launchd: {label} is loaded")
     assert got["home"] == Check("home", "ok", str(paths.home))
     assert got["office"].status == "warn" and "not answering" in got["office"].detail
-    assert "Run `ac start`." in got["office"].detail
+    assert "Run `opencorp start`." in got["office"].detail
     assert f"`launchctl print gui/501/{label}` shows its status" in got["office"].detail
     assert got["sandbox"] == Check("sandbox", "ok", "sandboxed commands run")
     assert doctor.exit_code(got.values()) == 0
@@ -84,7 +84,7 @@ def test_a_stopped_systemd_office_names_the_next_step_and_the_unit(tmp_path):
     paths = onboarded(tmp_path, mode="systemd")
     unit = systemd.unit_name(launch(paths.home, user_home=tmp_path))
     got = by_name(run_checks(tmp_path, paths, Runner([(["loginctl"], 0, "", "Linger=yes\n")]), platform="linux"))
-    assert "Run `ac start`." in got["office"].detail
+    assert "Run `opencorp start`." in got["office"].detail
     assert f"`systemctl --user status {unit}` shows its status" in got["office"].detail
 
 
@@ -107,7 +107,7 @@ def test_a_company_missing_template_files_is_told_to_onboard_again(tmp_path):
     (paths.company / DEBRIEF_FLOW).unlink()
     got = by_name(run_checks(tmp_path, paths))
     assert got["company"].status == "warn"
-    assert DEBRIEF_FLOW in got["company"].detail and "`ac onboard` adds" in got["company"].detail
+    assert DEBRIEF_FLOW in got["company"].detail and "`opencorp onboard` adds" in got["company"].detail
 
 
 def test_a_running_office_missing_template_files_is_told_to_stop_first(tmp_path):
@@ -115,7 +115,7 @@ def test_a_running_office_missing_template_files_is_told_to_stop_first(tmp_path)
     (paths.company / DEBRIEF_FLOW).unlink()
     got = by_name(run_checks(tmp_path, paths, answers=True))
     assert got["company"].status == "warn" and DEBRIEF_FLOW in got["company"].detail
-    assert "The office is running; stop it and run `ac onboard` again to add 1 template file." in got["company"].detail
+    assert "The office is running; stop it and run `opencorp onboard` again to add 1 template file." in got["company"].detail
 
 
 def test_a_provider_others_can_read_fails_without_showing_it(tmp_path):
@@ -187,7 +187,7 @@ def test_a_key_with_no_model_warns_and_names_the_model_onboard_saves(tmp_path):
     paths = onboarded(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": KEY}})
     got = by_name(run_checks(tmp_path, paths))
     assert got["provider"] == Check("provider", "warn", "anthropic, key saved, but no model, so runs fail;"
-                                                        " `ac onboard` saves claude-sonnet-4-5")
+                                                        " `opencorp onboard` saves claude-sonnet-4-5")
     assert all(KEY not in c.detail for c in got.values())
 
 
@@ -197,14 +197,14 @@ def test_a_key_for_an_endpoint_of_your_own_with_no_model_fails(tmp_path):
     got = by_name(run_checks(tmp_path, paths))
     path = paths.office / "provider.json"
     assert got["provider"] == Check("provider", "fail", f"{path}: llm_config.model is missing, and an endpoint of"
-                                                        " your own has no default model; run `ac onboard`")
+                                                        " your own has no default model; run `opencorp onboard`")
     assert all(KEY not in c.detail for c in got.values())
 
 
 def test_an_unloaded_launch_agent_fails(tmp_path):
     paths = onboarded(tmp_path)
     got = by_name(run_checks(tmp_path, paths, Runner([(["launchctl", "print"], 113, "")])))
-    assert got["service"].status == "fail" and "run `ac onboard`" in got["service"].detail
+    assert got["service"].status == "fail" and "run `opencorp onboard`" in got["service"].detail
 
 
 def test_a_systemd_service_without_linger_warns_that_it_stops_at_logout(tmp_path):
@@ -226,11 +226,11 @@ def test_a_systemd_service_with_linger_is_ok(tmp_path):
 
 def test_an_office_that_keeps_failing_to_start_is_a_crash_loop(tmp_path):
     paths = onboarded(tmp_path)
-    (paths.office / "office.log").write_text("starting\nagent-corp office: the company repo has no .git\n\n")
+    (paths.office / "office.log").write_text("starting\nopencorp office: the company repo has no .git\n\n")
     got = by_name(run_checks(tmp_path, paths))
     assert got["office"].status == "fail"
-    assert "agent-corp office: the company repo has no .git" in got["office"].detail
-    assert "Run `ac start`." in got["office"].detail
+    assert "opencorp office: the company repo has no .git" in got["office"].detail
+    assert "Run `opencorp start`." in got["office"].detail
 
 
 def test_an_office_that_crashed_with_a_traceback_fails(tmp_path):
@@ -417,12 +417,12 @@ def test_codex_advice_says_how_the_office_picks_up_a_change_under_its_service(tm
     missing = {"PATH": str(tmp_path / "nowhere")}
     for mode in ("launchd", "systemd"):
         managed = codex_check(missing, {}, mode)
-        assert "stop the office and run `ac onboard` again from that shell" in managed.detail
-        assert "ac restart" not in managed.detail
+        assert "stop the office and run `opencorp onboard` again from that shell" in managed.detail
+        assert "opencorp restart" not in managed.detail
         override = codex_check(missing, {"AGENT_CORP_CODEX_BIN": "/nowhere/codex"}, mode)
-        assert "stop the office and run `ac onboard` again from that shell" in override.detail
+        assert "stop the office and run `opencorp onboard` again from that shell" in override.detail
     for mode in ("tmux", "background", None):
-        assert "then `ac restart` from that shell" in codex_check(missing, {}, mode).detail
+        assert "then `opencorp restart` from that shell" in codex_check(missing, {}, mode).detail
 
 
 def test_checks_give_the_codex_check_the_offices_recorded_service_mode(tmp_path):

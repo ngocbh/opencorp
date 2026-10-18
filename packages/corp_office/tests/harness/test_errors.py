@@ -105,7 +105,7 @@ def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_outp
         wait_for(lambda: status(h, sid) == "failed", what="failed")
     log = str(h.office.paths.run_dir(sid) / "codex.log")
     [error] = errors(h, sid)
-    assert "Codex didn't start" in error and "ac doctor" in error and f"Codex's output is in {log}" in error
+    assert "Codex didn't start" in error and "opencorp doctor" in error and f"Codex's output is in {log}" in error
     assert STDERR not in stored(h, sid) and STDERR in codex_log(h, sid)
     [note] = [r.getMessage() for r in caplog.records if sid in r.getMessage()]
     assert note.count(log) == 1 and STDERR not in note
@@ -119,7 +119,7 @@ def test_codex_that_dies_while_loading_the_thread_says_what_to_do_and_where_its_
         wait_for(lambda: status(harness, sid) == "failed", what="failed")
     log = str(harness.office.paths.run_dir(sid) / "codex.log")
     [error] = errors(harness, sid)
-    assert "Codex didn't start" in error and "ac doctor" in error and f"Codex's output is in {log}" in error
+    assert "Codex didn't start" in error and "opencorp doctor" in error and f"Codex's output is in {log}" in error
     assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
     [note] = [r for r in caplog.records if sid in r.getMessage()]
     assert note.levelno == logging.WARNING and note.exc_info is None  # an expected failure, not a traceback

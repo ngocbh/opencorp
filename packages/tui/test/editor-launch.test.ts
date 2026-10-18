@@ -61,9 +61,9 @@ test.skipIf(process.platform === "win32")(
 )
 
 test("editorCommand hands the file to sh as an argument on POSIX and quotes it for cmd.exe on Windows", () => {
-  expect(editorCommand("code --wait", "/tmp/ac-profile-x/profile.md", "darwin")).toEqual({
+  expect(editorCommand("code --wait", "/tmp/opencorp-profile-x/profile.md", "darwin")).toEqual({
     command: "sh",
-    args: ["-c", 'code --wait "$@"', "code --wait", "/tmp/ac-profile-x/profile.md"],
+    args: ["-c", 'code --wait "$@"', "code --wait", "/tmp/opencorp-profile-x/profile.md"],
     shell: false,
   })
   // With shell: true, Node joins the arguments unquoted, so a temp path with a space would split.

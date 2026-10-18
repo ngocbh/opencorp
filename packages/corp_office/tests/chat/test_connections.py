@@ -396,7 +396,7 @@ def test_add_raises_its_own_error_when_the_sign_in_cannot_be_removed(tmp_path, m
 def test_office_cannot_be_removed(tmp_path):
     office = office_dir(tmp_path, {"llm_config": {"provider": "anthropic", "api_key": SENTINEL}})
     c = Connections(office)
-    with pytest.raises(ValueError, match="ac onboard"):
+    with pytest.raises(ValueError, match="opencorp onboard"):
         c.remove(OFFICE)
     assert (office / "provider.json").exists()
 

@@ -1,4 +1,4 @@
-import type { Session } from "@agent-corp/protocol"
+import type { Session } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub, seed } from "../script/stub"
 import { bootFrame } from "./fixture/frame"

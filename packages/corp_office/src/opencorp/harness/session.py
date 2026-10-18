@@ -451,17 +451,17 @@ class CodexSession:
         try:
             card = self.translator.card(method, params, session=session, run_id=run_id, node_id=str(request_id))
         except Unserved:
-            self._refuse(process, request_id, -32601, f"agent-corp doesn't serve {method}")
+            self._refuse(process, request_id, -32601, f"OpenCorp doesn't serve {method}")
             return
         except Exception:  # a request shaped other than the pinned schema says: Codex would wait on it until Esc
             log.exception("codex session %s: no card can be made for %s", self.session_id, method)
-            self._refuse(process, request_id, -32603, f"agent-corp couldn't read {method}")
+            self._refuse(process, request_id, -32603, f"OpenCorp couldn't read {method}")
             return
         try:
             self.store.add_question(card.question)
         except Exception:  # no card to answer: Codex hears so now rather than waiting until Esc
             log.exception("codex session %s: the card for %s wasn't stored", self.session_id, method)
-            self._refuse(process, request_id, -32603, f"agent-corp couldn't show {method}")
+            self._refuse(process, request_id, -32603, f"OpenCorp couldn't show {method}")
             return
         # Registered once the card exists; an answer to it runs on this thread, so it can't come before this.
         with self._lock:
@@ -505,7 +505,7 @@ class CodexSession:
             # Codex treats an error reply as a refusal and goes on; with no reply it would wait until Esc.
             log.warning("codex session %s: no reply can be made from the answer to %s: %s", self.session_id,
                         question_id, exc)
-            self._refuse(process, pending.request_id, -32602, f"agent-corp couldn't use the answer: {exc}")
+            self._refuse(process, pending.request_id, -32602, f"OpenCorp couldn't use the answer: {exc}")
             return False
         try:
             process.rpc.reply(pending.request_id, result)

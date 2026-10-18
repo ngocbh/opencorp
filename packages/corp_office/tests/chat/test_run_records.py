@@ -33,7 +33,7 @@ def record_of(harness, sid):
 
 
 def rewrite_office(harness, **llm):
-    """Change office/provider.json's llm_config, as ``ac onboard`` would."""
+    """Change office/provider.json's llm_config, as ``opencorp onboard`` would."""
     path = harness.office.paths.office / "provider.json"
     provider = json.loads(path.read_text())
     write_private(path, json.dumps({**provider, "llm_config": {**provider["llm_config"], **llm}}).encode())

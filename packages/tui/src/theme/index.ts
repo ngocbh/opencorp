@@ -1,6 +1,6 @@
 import { SyntaxStyle, RGBA, type TerminalColors } from "@opentui/core"
 import aura from "./assets/aura.json" with { type: "json" }
-import agentcorp from "./assets/agentcorp.json" with { type: "json" }
+import opencorp from "./assets/opencorp.json" with { type: "json" }
 import ayu from "./assets/ayu.json" with { type: "json" }
 import carbonfox from "./assets/carbonfox.json" with { type: "json" }
 import catppuccinFrappe from "./assets/catppuccin-frappe.json" with { type: "json" }
@@ -149,7 +149,7 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   nord,
   ["one-dark"]: onedark,
   ["osaka-jade"]: osakaJade,
-  agentcorp,
+  opencorp,
   orng,
   ["lucent-orng"]: lucentOrng,
   palenight,
@@ -163,10 +163,10 @@ export const DEFAULT_THEMES: Record<string, ThemeJson> = {
   carbonfox,
 }
 
-export const DEFAULT_THEME = "agentcorp"
+export const DEFAULT_THEME = "opencorp"
 
 /** Built-in themes by their old names, so a theme chosen before a rename still loads. */
-export const RENAMED_THEMES: Record<string, string> = { opencode: "agentcorp" }
+export const RENAMED_THEMES: Record<string, string> = { opencode: "opencorp", agentcorp: "opencorp" }
 
 /** ``name``, or what its built-in theme is called now. */
 export function themeName(name: string) {

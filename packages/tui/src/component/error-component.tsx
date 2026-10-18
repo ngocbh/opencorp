@@ -13,7 +13,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
   const clipboard = useClipboard()
   const [copied, setCopied] = createSignal(false)
 
-  // Safe fallback palette per mode (mirrors theme/assets/agentcorp.json) since the
+  // Safe fallback palette per mode (mirrors theme/assets/opencorp.json) since the
   // theme context may be the thing that crashed.
   const isLight = props.mode === "light"
   const colors = isLight
@@ -108,7 +108,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
         {/* Headline */}
         <box flexDirection="column" alignItems="center" flexShrink={0}>
           <text attributes={TextAttributes.BOLD} fg={colors.text}>
-            agent-corp crashed
+            OpenCorp crashed
           </text>
           <Show when={showSubtext()}>
             <text fg={colors.muted}>An unexpected error stopped the session.</text>
@@ -192,7 +192,7 @@ export function ErrorComponent(props: { error: Error; reset: () => void; mode?: 
                 ? "Report copied — paste it into a new GitHub issue."
                 : "Copy the report and open a GitHub issue to help us fix this."}
             </text>
-            <text fg={colors.muted}>agent-corp</text>
+            <text fg={colors.muted}>OpenCorp</text>
           </box>
         </Show>
       </box>
@@ -211,7 +211,7 @@ export function buildIssueURL(message: string, stack: string) {
   // so measuring url.toString() is both correct and safe on any input.
   const MAX_URL_LENGTH = 6000
   const marker = "\n… (truncated)"
-  const head = `The agent-corp TUI crashed with an unexpected error.\n\n${system}**Error:** ${message}\n\n**Stack trace:**\n`
+  const head = `The OpenCorp TUI crashed with an unexpected error.\n\n${system}**Error:** ${message}\n\n**Stack trace:**\n`
   const setBody = (body: string) => url.searchParams.set("body", head + "```\n" + body + "\n```")
 
   setBody(stack)

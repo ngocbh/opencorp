@@ -422,7 +422,7 @@ def test_the_owners_changes_start_the_next_round_from_the_draft(login, fake_llm,
 def test_the_flow_gives_up_after_max_rounds(login, fake_llm, provider):
     fake_llm.script(*[r for _ in range(MAX) for r in round_replies(bad_output())])
     prompter = Script()
-    with pytest.raises(OnboardError, match="didn't settle on a company; run `ac init` again"):
+    with pytest.raises(OnboardError, match="didn't settle on a company; run `opencorp init` again"):
         run(provider, prompter)
     assert len(fake_llm.requests()) == 2 * MAX and prompter.seen == []
 

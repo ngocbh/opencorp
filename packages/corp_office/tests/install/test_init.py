@@ -278,7 +278,7 @@ def test_without_a_terminal_the_ceo_gets_no_password_and_is_told_how_to_set_one(
     with pytest.raises(OnboardError, match="stop"):
         run_init(tmp_path, ask)
     assert load_repo(tmp_path / "home" / "company").people["me"].password_hash is None
-    assert "Password: none, since there's no terminal to ask on; set one later with `ac password`" in ask.seen
+    assert "Password: none, since there's no terminal to ask on; set one later with `opencorp password`" in ask.seen
 
 
 def test_init_replaces_an_old_identity(tmp_path, monkeypatch):
@@ -305,7 +305,7 @@ def test_init_refuses_a_company_that_exists_and_suggests_onboard(tmp_path):
     home = tmp_path / "home"
     write_company(home / "company", home / "office/worktrees", company="Acme", owner=Owner("me", "Me"))
     head = _git(home / "company", "rev-parse", "HEAD")
-    with pytest.raises(OnboardError, match=r"already a company at .*; run `ac onboard`"):
+    with pytest.raises(OnboardError, match=r"already a company at .*; run `opencorp onboard`"):
         init(home, Script(), host=make_host(tmp_path, Runner()))
     assert _git(home / "company", "rev-parse", "HEAD") == head
 

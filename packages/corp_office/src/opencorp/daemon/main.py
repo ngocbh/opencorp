@@ -236,7 +236,7 @@ async def run(paths: OfficePaths, *, extensions: str = "opencorp.extensions") ->
 
 def main(argv: list[str] | None = None, *, extensions: str = "opencorp.extensions") -> int:
     """Parse arguments and run the daemon; returns the exit code (0 when this home's office is already running)."""
-    parser = argparse.ArgumentParser(prog="agent-corp-office")
+    parser = argparse.ArgumentParser(prog="opencorp-office")
     parser.add_argument("--home", default="~/.agent-corp", help="agent-corp home directory")
     args = parser.parse_args(argv)
     paths = OfficePaths(Path(args.home).expanduser().resolve())
@@ -245,10 +245,10 @@ def main(argv: list[str] | None = None, *, extensions: str = "opencorp.extension
     except AlreadyRunning as exc:
         # Not a failure: services restart the office only on failure, so a duplicate start
         # must not look like a crash.
-        print(f"agent-corp office: {exc}", file=sys.stderr)
+        print(f"opencorp office: {exc}", file=sys.stderr)
         return 0
     except OfficeStartError as exc:
-        print(f"agent-corp office: {exc}", file=sys.stderr)
+        print(f"opencorp office: {exc}", file=sys.stderr)
         return 1
     return 0
 

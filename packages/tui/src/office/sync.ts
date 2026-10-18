@@ -2,7 +2,7 @@
 // (re)connect re-reads state over GET: open the stream, wait for `: connected` (the office
 // subscribes before sending it), fetch while buffering stream events, apply the snapshot,
 // then replay the buffer on top.
-import type { Event, LiveEvent, Question } from "@agent-corp/protocol"
+import type { Event, LiveEvent, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
 import { OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"

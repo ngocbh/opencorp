@@ -1,4 +1,4 @@
-import type { Message, Part, Person, Session } from "@agent-corp/protocol"
+import type { Message, Part, Person, Session } from "@opencorp/protocol"
 
 export type TranscriptOptions = {
   toolDetails: boolean

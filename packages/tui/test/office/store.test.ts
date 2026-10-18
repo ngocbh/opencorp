@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Event, LiveEvent, Message, Session } from "@agent-corp/protocol"
+import type { Event, LiveEvent, Message, Session } from "@opencorp/protocol"
 import { applyLive, applyMeta, emptyState, openQuestions, replay, sessionsIn } from "../../src/office/store"
 
 const S = "S1"

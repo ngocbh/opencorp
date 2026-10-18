@@ -1,4 +1,4 @@
-import type { Message, Person, Session, ToolPart } from "@agent-corp/protocol"
+import type { Message, Person, Session, ToolPart } from "@opencorp/protocol"
 import { describe, expect, test } from "bun:test"
 import { formatMessage, formatPart, formatTranscript } from "../../src/util/transcript"
 

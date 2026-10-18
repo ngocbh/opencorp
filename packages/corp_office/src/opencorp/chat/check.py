@@ -29,7 +29,7 @@ def one_reply_problem(provider: Provider, *, timeout: float = TIMEOUT) -> str | 
     The check runs in a child, as a worker does (isolated, in a directory of its own, with a worker's environment),
     because it swaps ``os.environ`` for the provider's. The key goes to it on stdin only.
     """
-    with tempfile.TemporaryDirectory(prefix="ac-check-") as cwd:
+    with tempfile.TemporaryDirectory(prefix="opencorp-check-") as cwd:
         try:
             # Its stderr is dropped, never read: composer's errors there could quote the request.
             done = subprocess.run([sys.executable, "-I", "-m", "opencorp.chat.check"],

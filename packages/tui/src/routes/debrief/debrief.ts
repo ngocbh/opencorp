@@ -1,4 +1,4 @@
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 
 /**
  * The session's turns: its user messages in order, numbered from 1, each by the first line of

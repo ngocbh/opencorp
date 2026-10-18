@@ -1,4 +1,4 @@
-import type { Message, ProfileProposal, Session } from "@agent-corp/protocol"
+import type { Message, ProfileProposal, Session } from "@opencorp/protocol"
 
 /** The first seven characters of a version id, as git shows them. */
 export const shortVersion = (version: string) => version.slice(0, 7)

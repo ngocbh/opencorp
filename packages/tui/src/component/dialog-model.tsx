@@ -1,4 +1,4 @@
-import type { Connection, ModelList } from "@agent-corp/protocol"
+import type { Connection, ModelList } from "@opencorp/protocol"
 import { TextAttributes } from "@opentui/core"
 import * as fuzzysort from "fuzzysort"
 import { createEffect, createMemo, createSignal, onMount } from "solid-js"

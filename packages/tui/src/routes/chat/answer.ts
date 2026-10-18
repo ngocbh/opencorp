@@ -1,4 +1,4 @@
-import type { AnswerField, AnswerRequest, Question } from "@agent-corp/protocol"
+import type { AnswerField, AnswerRequest, Question } from "@opencorp/protocol"
 
 /** One pickable row on a card page; `value` is what the answer carries when it is picked. */
 export interface CardOption {

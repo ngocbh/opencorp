@@ -3,9 +3,9 @@ import { useTheme } from "../context/theme"
 import { useKV } from "../context/kv"
 import type { JSX } from "@opentui/solid"
 import type { RGBA } from "@opentui/core"
-import { registerAgentCorpSpinner } from "./register-spinner"
+import { registerOpenCorpSpinner } from "./register-spinner"
 
-registerAgentCorpSpinner()
+registerOpenCorpSpinner()
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 

@@ -1,7 +1,7 @@
-"""``python -m opencorp.install {init,onboard,offboard,doctor,start,restart}``: what ``ac init``,
-``ac onboard``, ``ac offboard``, ``ac doctor``, ``ac start`` and ``ac restart`` run.
+"""``python -m opencorp.install {init,onboard,offboard,doctor,start,restart}``: what ``opencorp init``,
+``opencorp onboard``, ``opencorp offboard``, ``opencorp doctor``, ``opencorp start`` and ``opencorp restart`` run.
 
-``ac``'s setup screen runs init and onboard with ``--json-prompts``: each question is a JSON line on stdout,
+``opencorp``'s setup screen runs init and onboard with ``--json-prompts``: each question is a JSON line on stdout,
 each answer a JSON line on stdin.
 
 Exit codes: 0 done, 1 failed, 3 (``start``, ``restart``) no office yet.
@@ -40,14 +40,14 @@ def _prompter(args: argparse.Namespace, stdin: io.StringIO | None, preset: dict[
     """The prompter for init and onboard: the setup screen's with --json-prompts, else the terminal's."""
     if not args.json_prompts:
         return TtyPrompter(preset, interactive=stdin is None)
-    # Prompts keep the stdout ac reads; everything else printed, by us, git or uv, goes to stderr,
+    # Prompts keep the stdout opencorp reads; everything else printed, by us, git or uv, goes to stderr,
     # so it can't land inside a prompt line.
     sys.stdout.flush()
     out = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)
     os.dup2(2, 1)
     # fd 1 began as a pipe, so sys.stdout is block-buffered; a stray print should reach stderr when it's made.
     sys.stdout.reconfigure(line_buffering=True)
-    # ac writes UTF-8 whatever the locale says, and names can be non-ASCII.
+    # opencorp writes UTF-8 whatever the locale says, and names can be non-ASCII.
     sys.stdin.reconfigure(encoding="utf-8")
     return JsonPrompter(out, sys.stdin, preset)
 
@@ -56,10 +56,10 @@ def _init(args: argparse.Namespace) -> int:
     # Handles from flags are checked before anything is asked, so a bad one doesn't cost the owner an interview.
     for flag, handle in (("--handle", args.handle), ("--agent-handle", args.agent_handle)):
         if handle and (problem := handle_problem(handle)):
-            print(f"ac init: {flag} {handle!r}: {problem}", file=sys.stderr)
+            print(f"opencorp init: {flag} {handle!r}: {problem}", file=sys.stderr)
             return 1
     if args.handle and args.agent_handle == args.handle:
-        print(f"ac init: --agent-handle {args.agent_handle!r} is the same as --handle", file=sys.stderr)
+        print(f"opencorp init: --agent-handle {args.agent_handle!r} is the same as --handle", file=sys.stderr)
         return 1
     known = Known(company=args.company or "", name=args.name or "", handle=args.handle or "",
                   title=args.title or "", agent=args.agent or "", agent_handle=args.agent_handle or "",
@@ -69,7 +69,7 @@ def _init(args: argparse.Namespace) -> int:
         init.init(_home(args.home), _prompter(args, stdin), known=known, mode=args.service,
                   stdin=stdin, device=not args.no_device)
     except OnboardError as exc:
-        print(f"ac init: {exc}", file=sys.stderr)
+        print(f"opencorp init: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         # Ctrl-C at a question leaves the cursor mid-line; end the line instead of showing a traceback.
@@ -84,7 +84,7 @@ def _onboard(args: argparse.Namespace) -> int:
         onboard(_home(args.home), _prompter(args, stdin, {WHO: args.handle}), mode=args.service,
                 stdin=stdin, source=args.source)
     except OnboardError as exc:
-        print(f"ac onboard: {exc}", file=sys.stderr)
+        print(f"opencorp onboard: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print(file=sys.stderr)
@@ -100,7 +100,7 @@ def _offboard(args: argparse.Namespace) -> int:
     except (offboard.OffboardError, OnboardError) as exc:
         declined = isinstance(exc, offboard.Declined) and not prompter.interactive
         hint = "; there's no terminal to ask on, so pass --yes to remove it" if declined else ""
-        print(f"ac offboard: {exc}{hint}", file=sys.stderr)
+        print(f"opencorp offboard: {exc}{hint}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print(file=sys.stderr)
@@ -119,10 +119,10 @@ def _came_up(run: Launch, host: Host, how) -> bool:
     try:
         started = how(run, host)
         for note in started.notes:
-            print(f"ac: {note}; started the office in the background instead", file=sys.stderr)
+            print(f"opencorp: {note}; started the office in the background instead", file=sys.stderr)
         service.wait(run, host)
     except (ServiceError, OfficeStartError) as exc:
-        print(f"ac: {exc}", file=sys.stderr)
+        print(f"opencorp: {exc}", file=sys.stderr)
         return False
     return True
 
@@ -134,7 +134,7 @@ def _start(args: argparse.Namespace) -> int:
         print(f"The office is already running (pid {service.pid(run)}).")
         return 0
     if is_new(OfficePaths(run.home).company):
-        print(f"ac: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
+        print(f"opencorp: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
         return NOT_ONBOARDED
     if not _came_up(run, host, service.start):
         return 1
@@ -146,7 +146,7 @@ def _restart(args: argparse.Namespace) -> int:
     host = Host()
     run = launch(_home(args.home), user_home=host.user_home)
     if is_new(OfficePaths(run.home).company):
-        print(f"ac: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
+        print(f"opencorp: no office at {run.home} yet; {SET_UP}", file=sys.stderr)
         return NOT_ONBOARDED
     was = service.pid(run) if host.answers(run.socket) else None
     if not _came_up(run, host, service.restart):
@@ -176,7 +176,7 @@ def main(argv: list[str] | None = None) -> int:
         given = sub.add_mutually_exclusive_group()
         given.add_argument("--provider-stdin", action="store_true",
                            help="read office/provider.json's content from stdin, replacing the file; ask nothing")
-        # Only for ac's setup screen, which reads the prompts; not something to type.
+        # Only for opencorp's setup screen, which reads the prompts; not something to type.
         given.add_argument("--json-prompts", action="store_true", help=argparse.SUPPRESS)
     init_args = commands.choices["init"]
     for flag, what in (("company", "the company's name"), ("name", "your name"), ("handle", "your handle"),
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                            help="push the company to this git remote without asking; the model never sees it")
     init_args.add_argument("--no-device", action="store_true",
                            help="don't register this device; the office stays open to requests without a token"
-                                " until someone runs `ac login`")
+                                " until someone runs `opencorp login`")
     onboard_args = commands.choices["onboard"]
     onboard_args.add_argument("--from", dest="source", metavar="URL",
                               help="clone the company from this git URL when there's none here yet")

@@ -1,10 +1,10 @@
 # OpenCode TUI inventory
 
 This file describes the fork as of upstream `b471c2b`. The TUI now talks only to the office
-(`src/office/`, typed by `@agent-corp/protocol`); every **replace** row below is done, and
+(`src/office/`, typed by `@opencorp/protocol`); every **replace** row below is done, and
 "Deleted with the OpenCode data layer" lists what was removed rather than ported.
 
-What the agent-corp TUI takes from OpenCode's `packages/tui`, and what happens to each
+What the OpenCorp TUI takes from OpenCode's `packages/tui`, and what happens to each
 dependency on the rest of the OpenCode monorepo.
 
 - Upstream: https://github.com/anomalyco/opencode at `b471c2b4495747353af768fbf2e0790c9d820ce2`,
@@ -36,9 +36,9 @@ Classification:
 | `QuestionRequest`, `QuestionAnswer` | `context/sync.tsx`, `routes/session/question.tsx` | replace | Protocol `PendingQuestion` and `AnswerRequest`; question cards build on this view. |
 | `Agent`, `Command`, `Config`, `Todo` | `context/sync.tsx` | replace | Employees replace agents; commands, config and todos follow the protocol or go. |
 | `Provider`, `ProviderListResponse`, `ProviderAuthMethod`, `ProviderAuthAuthorization`, `ConsoleState`, `ExperimentalConsoleListOrgsResponse` | `context/sync.tsx`, `util/{model,transcript}.ts`, `routes/session/index.tsx`, `component/dialog-{provider,console-org}.tsx`; test `util/transcript.test.ts` | drop | The office owns models and credentials; no provider pickers or auth in the TUI. The model picker (`component/dialog-model.tsx`) is rewritten on the office's connections API instead. |
-| `LspStatus`, `McpStatus`, `McpResource`, `FormatterStatus` | `context/sync.tsx` | drop | No LSP, MCP or formatter status in agent-corp. |
+| `LspStatus`, `McpStatus`, `McpResource`, `FormatterStatus` | `context/sync.tsx` | drop | No LSP, MCP or formatter status in OpenCorp. |
 | `VcsInfo`, `SnapshotFileDiff`, `VcsFileDiff`, `VcsFileStatus` | `context/sync.tsx`, `feature-plugins/system/diff-viewer.tsx`, `component/dialog-workspace-file-changes.tsx` | drop | The diff viewer and workspaces go. |
-| `Path` | `context/project.tsx` | replace | The working directory comes from `ac`. |
+| `Path` | `context/project.tsx` | replace | The working directory comes from `opencorp`. |
 | `Workspace`, `ExperimentalWorkspaceAdapterListResponse`, `ProjectDirectories` | `context/project.tsx`, `component/dialog-workspace-{create,list}.tsx`, `component/dialog-move-session.tsx` | drop | No OpenCode workspaces or session moves. |
 | `LocationRef`, `AgentV2Info`, `CommandV2Info`, `IntegrationInfo`, `ModelV2Info`, `PermissionSavedInfo`, `PermissionV2Request`, `ProviderV2Info`, `QuestionV2Request`, `ReferenceInfo`, `SessionMessage`, `SessionMessageAssistant`, `SessionMessageAssistantReasoning`, `SessionMessageAssistantText`, `SessionMessageAssistantTool`, `SessionV2Info`, `SkillV2Info`, `V2Event` | `context/{data,location}.tsx` | replace | OpenCode's v2 data layer; the protocol client's store replaces it. |
 | `FileSystemEntry` | `component/prompt/autocomplete.tsx` | replace | File mentions need an office route or a local listing. |
@@ -47,7 +47,7 @@ Classification:
 
 | Symbols | Importing files | Class | Reason |
 | --- | --- | --- | --- |
-| `TuiPlugin`, `TuiPluginModule`, `TuiPluginApi`, `TuiPluginMeta`, `TuiPluginStatus`, `TuiPluginInstallOptions`, `TuiPluginInstallResult`, `TuiRouteCurrent`, `TuiRouteDefinition`, `TuiSlotContext`, `TuiSlotMap`, `TuiSlotProps`, `TuiDialogSelectOption`, `TuiCommand` | `plugin/{api,adapters,runtime,slots,command-shim}.ts(x)`, `feature-plugins/**`; tests `app-lifecycle.test.tsx`, `fixture/tui-plugin.ts`, `cli/tui/diff-viewer.test.tsx` | drop | agent-corp has no TUI plugins. Slots render their fallback children instead. |
+| `TuiPlugin`, `TuiPluginModule`, `TuiPluginApi`, `TuiPluginMeta`, `TuiPluginStatus`, `TuiPluginInstallOptions`, `TuiPluginInstallResult`, `TuiRouteCurrent`, `TuiRouteDefinition`, `TuiSlotContext`, `TuiSlotMap`, `TuiSlotProps`, `TuiDialogSelectOption`, `TuiCommand` | `plugin/{api,adapters,runtime,slots,command-shim}.ts(x)`, `feature-plugins/**`; tests `app-lifecycle.test.tsx`, `fixture/tui-plugin.ts`, `cli/tui/diff-viewer.test.tsx` | drop | OpenCorp has no TUI plugins. Slots render their fallback children instead. |
 | `TuiAttention`, `TuiAttentionNotifyInput`, `TuiAttentionNotifyResult`, `TuiAttentionNotifySkipReason`, `TuiAttentionWhen`, `TuiAttentionSoundName`, `TuiAttentionSoundPack`, `TuiAttentionSoundPackInfo`, `TuiKV` | `attention.ts`, `feature-plugins/system/notifications.ts`; test `cli/cmd/tui/notifications.test.ts` | drop | Attention sounds and notifications are plugin features. |
 
 ### `@opencode-ai/core/*` (20 import sites; private workspace package)
@@ -94,7 +94,7 @@ change that rewires a kept file.
 | Model picker | `component/dialog-model.tsx` | replace (done) | Rewritten on the office's connections API (`GET /connections`, `GET /connections/{name}/models`, `POST /sessions/{id}/model`); this device's recent and favorite models are kept in `model.json`. Ctrl+A opens `/connect`. The palette's "Start new chats on my last pick" (`start_on_last_pick` in `kv.json`, off by default) makes a new chat ask `POST /sessions` for the newest pick, even one whose connection is gone; the office's note on a pick it can't use shows under the chat's header. |
 | Provider pickers, auth | `component/dialog-{provider,variant,console-org}.tsx`, `component/use-connected.tsx`, `util/provider-origin.ts`, the empty-provider dialog in `app.tsx` | drop | The office owns models and credentials. `util/model.ts` stays: the session view names message models with it and `--model` parsing uses it. |
 | Connect a provider | `component/dialog-connect.tsx` (new) | replace (done) | `/connect`, or Ctrl+A in the model picker, for those who may manage connections: lists the office's connections to make default (`PUT /connections/default`) or remove (`DELETE /connections/{name}`), and adds one with an API key (`POST /connections`); the key is typed in the masked `setup/secret.tsx` box and goes straight to the office. ChatGPT subscription signs in with a device code instead, after OpenCode's `AutoMethod`: the office starts the sign-in (`POST /connections/login`), the dialog shows its link and code (`c` copies the code) and reads it every 2 s (`GET /connections/login/{id}`), since office reads time out at 15 s; closing it cancels the sign-in (`DELETE /connections/login/{id}`). |
-| MCP, LSP, formatter status | `component/dialog-{mcp,status}.tsx`, the MCP toggle in `context/local.tsx`, the LSP/MCP counts in the session footer | drop | Not in agent-corp. |
+| MCP, LSP, formatter status | `component/dialog-{mcp,status}.tsx`, the MCP toggle in `context/local.tsx`, the LSP/MCP counts in the session footer | drop | Not in OpenCorp. |
 | Share | session share and unshare commands | drop | Sessions are not shared through OpenCode. |
 | Workspaces and session moves | `component/dialog-workspace-{create,list,file-changes,unavailable}.tsx`, `component/dialog-move-session.tsx`, `component/workspace-label.tsx`, `component/prompt/{workspace,move}.tsx`, `component/dialog-session-delete-failed.tsx` (workspace recovery), flag `OPENCODE_EXPERIMENTAL_WORKSPACES` | drop | No OpenCode workspaces. `context/project.tsx` keeps its workspace state for now. |
 | Agent, skill and tag dialogs | `component/dialog-{agent,skill,tag}.tsx` | drop | The employee picker replaces agent selection; skills are the office's; `dialog-tag` is unused upstream. |
@@ -119,4 +119,4 @@ Removed rather than ported, because the office has no counterpart:
 
 ## Rebranded
 
-The logo spells AgentCorp; the default theme is `agentcorp` (a saved `opencode` choice loads it); custom themes come from `.agent-corp/themes`; environment switches are `AGENT_CORP_*`. The OpenCode Go upsell art (`component/bg-pulse*.tsx`) was dropped.
+The logo spells OpenCorp; the default theme is `opencorp` (a theme saved under an older default name still loads); custom themes come from `.agent-corp/themes`; environment switches are `AGENT_CORP_*`. The OpenCode Go upsell art (`component/bg-pulse*.tsx`) was dropped.

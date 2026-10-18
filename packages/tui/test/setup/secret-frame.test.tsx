@@ -3,7 +3,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal, onCleanup, type JSX } from "solid-js"
 import { resolve, TuiConfigProvider } from "../../src/config"
-import { AgentCorpKeymapProvider, registerAgentCorpBaseKeymap } from "../../src/keymap"
+import { OpenCorpKeymapProvider, registerOpenCorpBaseKeymap } from "../../src/keymap"
 import { SecretInput } from "../../src/setup/secret"
 
 const SECRET = "sk-ant-sentinel-a7d93c10e5b2"
@@ -11,11 +11,11 @@ const SECRET = "sk-ant-sentinel-a7d93c10e5b2"
 /** The keymap and config the setup screen gives its boxes. */
 function Keys(props: { children: JSX.Element }) {
   const keymap = createDefaultOpenTuiKeymap(useRenderer())
-  onCleanup(registerAgentCorpBaseKeymap(keymap))
+  onCleanup(registerOpenCorpBaseKeymap(keymap))
   return (
-    <AgentCorpKeymapProvider keymap={keymap}>
+    <OpenCorpKeymapProvider keymap={keymap}>
       <TuiConfigProvider config={resolve({}, { terminalSuspend: false })}>{props.children}</TuiConfigProvider>
-    </AgentCorpKeymapProvider>
+    </OpenCorpKeymapProvider>
   )
 }
 

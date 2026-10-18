@@ -96,7 +96,7 @@ test("no file is no identity; a broken one says to log in again without echoing 
   expect(readIdentity(path.join(dir, "identity.json"))).toBeUndefined()
   const token = newToken()
   fs.writeFileSync(path.join(dir, "identity.json"), `{"token": "${token}"`, { mode: 0o600 })
-  expect(() => readIdentity(path.join(dir, "identity.json"))).toThrow("run `ac login --force`")
+  expect(() => readIdentity(path.join(dir, "identity.json"))).toThrow("run `opencorp login --force`")
   try {
     readIdentity(path.join(dir, "identity.json"))
   } catch (e) {

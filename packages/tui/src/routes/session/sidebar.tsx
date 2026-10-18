@@ -1,4 +1,4 @@
-import type { ConnectionList, Session } from "@agent-corp/protocol"
+import type { ConnectionList, Session } from "@opencorp/protocol"
 import { createMemo, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"

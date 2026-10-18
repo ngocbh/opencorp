@@ -1,7 +1,7 @@
 import { TextAttributes, type InputRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
-import type { SetupAsk, SetupChoose, SetupSecret } from "@agent-corp/protocol"
+import type { SetupAsk, SetupChoose, SetupSecret } from "@opencorp/protocol"
 import { Spinner } from "../component/spinner"
 import { useTuiConfig } from "../config"
 import { useTheme } from "../context/theme"
@@ -72,7 +72,7 @@ export function SetupScreen(props: { child: SetupChild; lines: string[]; command
     >
       <box flexShrink={0} paddingTop={1}>
         <text fg={theme.text} wrapMode="none">
-          <b>Setting up AgentCorp</b>
+          <b>Setting up OpenCorp</b>
           <span style={{ fg: theme.textMuted }}>{props.command ? ` · ${props.command}` : ""}</span>
         </text>
       </box>

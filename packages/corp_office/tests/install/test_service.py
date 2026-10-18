@@ -185,8 +185,8 @@ def test_start_without_an_install_runs_it_in_the_background(tmp_path, one):
 
 def test_waiting_for_an_office_that_never_answers_shows_the_log(tmp_path, one):
     one.office.mkdir(parents=True)
-    one.log.write_text("".join(f"line {i}\n" for i in range(30)) + "agent-corp office: no company repo\n")
-    with pytest.raises(ServiceError, match="(?s)did not answer.*line 29\nagent-corp office: no company repo") as info:
+    one.log.write_text("".join(f"line {i}\n" for i in range(30)) + "opencorp office: no company repo\n")
+    with pytest.raises(ServiceError, match="(?s)did not answer.*line 29\nopencorp office: no company repo") as info:
         service.wait(one, make_host(tmp_path, Runner()), timeout=1)
     assert "line 9\n" not in str(info.value)
 
@@ -275,7 +275,7 @@ def test_a_tmux_office_whose_session_is_gone_has_nothing_to_kill(tmp_path, one):
 
 
 def test_uninstalling_removes_another_managers_leftover_file_too(tmp_path, one):
-    # `ac start` records "background" when launchd won't start, but the plist stays behind.
+    # `opencorp start` records "background" when launchd won't start, but the plist stays behind.
     installed_as(one, "background")
     host = make_host(tmp_path, run := Runner())
     plist = launchd.plist_path(one, host)

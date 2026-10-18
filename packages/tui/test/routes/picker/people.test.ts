@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Person, Session } from "@agent-corp/protocol"
+import type { Person, Session } from "@opencorp/protocol"
 import path from "node:path"
 import { HANDLE, blocks, confirmRequest, harnessesOf, hireRequest, pickerRows } from "../../../src/routes/picker/people"
 

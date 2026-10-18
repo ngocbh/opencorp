@@ -13,8 +13,8 @@ LEARNED = "- Keep replies short."
 
 def test_the_m1_journey(office, workspace, sandbox_available):
     fake = office.fake
-    # 1. `ac` in a fresh folder: the office is healthy, the picker offers Minh, and he edits a file.
-    doctor = office.ac("doctor", cwd=workspace)
+    # 1. `opencorp` in a fresh folder: the office is healthy, the picker offers Minh, and he edits a file.
+    doctor = office.opencorp("doctor", cwd=workspace)
     assert not [line for line in doctor.stdout.splitlines() if line.startswith("fail")], doctor.stdout
     assert "ok    codex        codex-cli 0.0.0-fake" in doctor.stdout
     minh = office.person("minh")
@@ -60,14 +60,14 @@ def test_the_m1_journey(office, workspace, sandbox_available):
     assert len(fake.requests()) == 6  # Esc made no model call of its own
     assert "Write never.txt" in asked(fake.requests()[5])  # the stopped turn stays in the history
 
-    # 3. `/end`, the debrief, then `ac feedback` on the ended session's run.
+    # 3. `/end`, the debrief, then `opencorp feedback` on the ended session's run.
     fake.script(debrief_reply())
-    ended = office.ac("end", cwd=workspace)
+    ended = office.opencorp("end", cwd=workspace)
     assert ended.stdout.strip() == f"Ending @minh's session {sid}; its debrief follows."
     assert office.debriefed(sid)["summary"] == OUTPUT["summary"]
     before = office.get(f"/profiles/{minh}")["text"]
     fake.script(learner_reply(before + f"\n{LEARNED}\n"))
-    feedback = office.ac("feedback", "-m", "Keep replies short.", cwd=workspace)
+    feedback = office.opencorp("feedback", "-m", "Keep replies short.", cwd=workspace)
     [run_id] = office.session(sid)["run_ids"]
     assert f"is queued for @minh (session {sid}, run {run_id})" in feedback.stdout
 

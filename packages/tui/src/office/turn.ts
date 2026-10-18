@@ -1,6 +1,6 @@
 // Which open question is a chat's own turn. The office's chat flow keeps a `human_input` open at
 // its turn node while the chat is idle; clients show that one as the input box, not a card.
-import type { Question } from "@agent-corp/protocol"
+import type { Question } from "@opencorp/protocol"
 
 /** The turn node's path in the office's chat flows. */
 export const CHAT_TURN_PATH = "chat/ask"

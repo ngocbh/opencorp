@@ -1,4 +1,4 @@
-import type { Event, LiveEvent } from "@agent-corp/protocol"
+import type { Event, LiveEvent } from "@opencorp/protocol"
 import { UnknownDevice } from "./errors"
 import { authorization, BASE } from "./http"
 

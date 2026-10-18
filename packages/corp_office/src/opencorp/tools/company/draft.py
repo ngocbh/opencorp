@@ -1,4 +1,4 @@
-"""Tools for drafting a new company, which `ac init`'s flow does before the company exists; no office group has
+"""Tools for drafting a new company, which `opencorp init`'s flow does before the company exists; no office group has
 them."""
 
 from typing import TypedDict

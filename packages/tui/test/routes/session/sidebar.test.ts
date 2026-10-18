@@ -1,4 +1,4 @@
-import type { ConnectionList } from "@agent-corp/protocol"
+import type { ConnectionList } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { modelLabel } from "../../../src/office/models"
 import { costLabel } from "../../../src/routes/session/sidebar"
