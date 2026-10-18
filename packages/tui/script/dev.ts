@@ -1,7 +1,7 @@
 // Runs the TUI in this terminal: `bun run dev` against a seeded fake office that streams a
 // scripted reply to each prompt; `bun run dev --office` against the office at the default
 // socket, or `--socket PATH` against the one at PATH (both in the current folder).
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 import { Effect } from "effect"
 import { parseArgs } from "node:util"
 import { run } from "../src/app"

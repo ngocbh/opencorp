@@ -1,7 +1,7 @@
 # OpenCode TUI inventory
 
 This file describes the fork as of upstream `b471c2b`. The TUI now talks only to the office
-(`src/office/`, typed by `@agent-corp/protocol`); every **replace** row below is done, and
+(`src/office/`, typed by `@opencorp/protocol`); every **replace** row below is done, and
 "Deleted with the OpenCode data layer" lists what was removed rather than ported.
 
 What the agent-corp TUI takes from OpenCode's `packages/tui`, and what happens to each

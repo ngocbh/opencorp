@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Question } from "@agent-corp/protocol"
+import type { Question } from "@opencorp/protocol"
 import { isTurn, turnPath } from "../../src/office/turn"
 
 test("turnPath drops a trailing #N from every segment", () => {

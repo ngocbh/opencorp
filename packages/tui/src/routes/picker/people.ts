@@ -1,4 +1,4 @@
-import type { HireRequest, Person, RepoIssue, Session } from "@agent-corp/protocol"
+import type { HireRequest, Person, RepoIssue, Session } from "@opencorp/protocol"
 
 export type PickerGroup = "This folder" | "Recent" | "Everyone"
 

@@ -1,5 +1,5 @@
 // `ac password`: sets a human's password, which `ac login` asks for on a new device.
-import { OfficeUnavailable } from "@agent-corp/tui/office/errors"
+import { OfficeUnavailable } from "@opencorp/tui/office/errors"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"

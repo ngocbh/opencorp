@@ -1,5 +1,5 @@
 import { createMemo, Show } from "solid-js"
-import type { AnswerRequest, Question } from "@agent-corp/protocol"
+import type { AnswerRequest, Question } from "@opencorp/protocol"
 import { useOffice } from "../../context/office"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"

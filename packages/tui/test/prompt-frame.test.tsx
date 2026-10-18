@@ -1,4 +1,4 @@
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../script/stub"
 import { INTERRUPTED_TEXT } from "../src/routes/chat/freeze"

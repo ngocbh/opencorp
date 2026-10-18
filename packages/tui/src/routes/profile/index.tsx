@@ -1,4 +1,4 @@
-import type { Profile as ProfileData, ProfileProposal } from "@agent-corp/protocol"
+import type { Profile as ProfileData, ProfileProposal } from "@opencorp/protocol"
 import type { InputRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js"

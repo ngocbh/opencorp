@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test"
-import { createOfficeClient } from "@agent-corp/tui/office/client"
-import { conflictText } from "@agent-corp/tui/profile"
+import { createOfficeClient } from "@opencorp/tui/office/client"
+import { conflictText } from "@opencorp/tui/profile"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"

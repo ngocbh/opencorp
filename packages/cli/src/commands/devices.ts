@@ -1,5 +1,5 @@
 // `ac devices`: the devices a human uses ac from, as their person.yaml lists them.
-import { OfficeUnavailable } from "@agent-corp/tui/office/errors"
+import { OfficeUnavailable } from "@opencorp/tui/office/errors"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"

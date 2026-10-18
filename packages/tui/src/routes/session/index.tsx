@@ -14,7 +14,7 @@ import {
 } from "solid-js"
 import path from "node:path"
 import { mkdir, writeFile } from "node:fs/promises"
-import type { ErrorPart, FilePart, Message, Part, TextPart, ToolPart } from "@agent-corp/protocol"
+import type { ErrorPart, FilePart, Message, Part, TextPart, ToolPart } from "@opencorp/protocol"
 import { createTwoFilesPatch } from "diff"
 import { useRoute, useRouteData } from "../../context/route"
 import { SplitBorder } from "../../ui/border"

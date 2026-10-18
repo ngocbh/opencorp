@@ -1,6 +1,6 @@
 import { createMemo, createResource, createSignal, For, onCleanup, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
-import type { AnswerRequest, Question } from "@agent-corp/protocol"
+import type { AnswerRequest, Question } from "@opencorp/protocol"
 import { useOffice } from "../../context/office"
 import { OfficeError, isMissingRoute, isNotImplemented } from "../../office/errors"
 import { errorMessage } from "../../util/error"

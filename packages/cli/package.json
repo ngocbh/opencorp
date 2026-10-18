@@ -1,18 +1,18 @@
 {
-  "name": "@agent-corp/ac",
+  "name": "opencorp",
   "version": "0.0.1",
   "private": true,
   "type": "module",
   "bin": {
-    "ac": "src/main.ts"
+    "opencorp": "src/main.ts"
   },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@agent-corp/protocol": "workspace:*",
-    "@agent-corp/tui": "workspace:*",
+    "@opencorp/protocol": "workspace:*",
+    "@opencorp/tui": "workspace:*",
     "@opentui/solid": "catalog:",
     "effect": "catalog:"
   }

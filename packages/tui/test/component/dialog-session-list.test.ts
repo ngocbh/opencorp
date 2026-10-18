@@ -1,4 +1,4 @@
-import type { Person, Session } from "@agent-corp/protocol"
+import type { Person, Session } from "@opencorp/protocol"
 import { describe, expect, test } from "bun:test"
 import { listedSessions, sessionCategory, sessionRow } from "../../src/component/dialog-session-list"
 import { Locale } from "../../src/util/locale"

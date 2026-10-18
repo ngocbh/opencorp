@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util"
-import { createOfficeClient } from "@agent-corp/tui/office/client"
-import { UnknownDevice } from "@agent-corp/tui/office/errors"
-import { defaultSocket } from "@agent-corp/tui/office/paths"
+import { createOfficeClient } from "@opencorp/tui/office/client"
+import { UnknownDevice } from "@opencorp/tui/office/errors"
+import { defaultSocket } from "@opencorp/tui/office/paths"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
 
@@ -52,7 +52,7 @@ export const run: CommandRun = async (argv) => {
   ensureSolidTransformPlugin()
   const [{ Effect }, { Global, run: runTui }] = await Promise.all([
     import("effect"),
-    import("@agent-corp/tui"),
+    import("@opencorp/tui"),
   ])
   await Effect.runPromise(
     runTui({ socket, token, cwd: process.cwd(), args }).pipe(Effect.provide(Global.layer)),

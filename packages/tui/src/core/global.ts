@@ -31,7 +31,7 @@ export interface Interface {
   readonly state: string
 }
 
-export class Service extends Context.Service<Service, Interface>()("@agent-corp/tui/Global") {}
+export class Service extends Context.Service<Service, Interface>()("@opencorp/tui/Global") {}
 
 /** Provides `Service` with the current `Path` values. */
 export const layer = Layer.effect(

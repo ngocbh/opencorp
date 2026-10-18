@@ -1,6 +1,6 @@
 import { batch, createEffect, createSignal, on, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
-import type { ConnectionList, Question } from "@agent-corp/protocol"
+import type { ConnectionList, Question } from "@opencorp/protocol"
 import { createOfficeClient } from "../office/client"
 import { runEach } from "../office/queue"
 import { emptyState, type OfficeState } from "../office/store"

@@ -1,6 +1,6 @@
 // `ac whoami`: who this device is, locally and to the office.
-import { OfficeUnavailable } from "@agent-corp/tui/office/errors"
-import { identityPath } from "@agent-corp/tui/office/paths"
+import { OfficeUnavailable } from "@opencorp/tui/office/errors"
+import { identityPath } from "@opencorp/tui/office/paths"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"

@@ -1,6 +1,6 @@
 import { createStore } from "solid-js/store"
 import { createSimpleContext } from "./helper"
-import type { Person, Session } from "@agent-corp/protocol"
+import type { Person, Session } from "@opencorp/protocol"
 import { batch, createEffect, createMemo, createSignal } from "solid-js"
 import { useOffice } from "./office"
 import path from "path"

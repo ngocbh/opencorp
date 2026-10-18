@@ -2,7 +2,7 @@ import { afterAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import type { SetupPrompt } from "@agent-corp/protocol"
+import type { SetupPrompt } from "@opencorp/protocol"
 import { spawnSetup, type SetupChild } from "../../src/setup/child"
 import { until } from "../fixture/until"
 

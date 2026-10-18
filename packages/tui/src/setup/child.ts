@@ -1,4 +1,4 @@
-import type { SetupPrompt } from "@agent-corp/protocol"
+import type { SetupPrompt } from "@opencorp/protocol"
 
 /** The running install: its prompts, a way to answer, and how it ended. */
 export interface SetupChild {

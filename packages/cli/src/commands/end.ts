@@ -2,9 +2,9 @@ import { realpathSync } from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { officeClient, officeNotRunning } from "../office"
-import type { Session } from "@agent-corp/protocol"
-import type { OfficeClient } from "@agent-corp/tui/office/client"
-import { OfficeUnavailable } from "@agent-corp/tui/office/errors"
+import type { Session } from "@opencorp/protocol"
+import type { OfficeClient } from "@opencorp/tui/office/client"
+import { OfficeUnavailable } from "@opencorp/tui/office/errors"
 
 // An ending session is already on its way out, and a debriefing or later one is not live.
 const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy"])

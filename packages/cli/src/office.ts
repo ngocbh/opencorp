@@ -2,9 +2,9 @@
 // and starting the office live in `python -m opencorp.install`, run with this checkout's venv;
 // it reads the home from $AGENT_CORP_HOME, which it inherits, or from a `--home` flag passed
 // through. `ac` never starts the office on its own: the service `ac init` or `ac onboard` installed does.
-import { createOfficeClient } from "@agent-corp/tui/office/client"
-import { readIdentity, type Identity } from "@agent-corp/tui/office/identity"
-import { defaultSocket, identityPath } from "@agent-corp/tui/office/paths"
+import { createOfficeClient } from "@opencorp/tui/office/client"
+import { readIdentity, type Identity } from "@opencorp/tui/office/identity"
+import { defaultSocket, identityPath } from "@opencorp/tui/office/paths"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"

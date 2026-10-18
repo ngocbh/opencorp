@@ -1,7 +1,7 @@
 import { afterAll, afterEach, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
-import { createOfficeClient } from "@agent-corp/tui/office/client"
+import { createOfficeClient } from "@opencorp/tui/office/client"
 import { createFakeOffice } from "../../tui/script/stub"
 import { endSession } from "../src/commands/end"
 import { main } from "../src/main"

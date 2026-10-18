@@ -1,5 +1,5 @@
 {
-  "name": "agent-corp",
+  "name": "opencorp-workspace",
   "private": true,
   "packageManager": "bun@1.4.2",
   "workspaces": ["packages/*"],

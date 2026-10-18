@@ -1,6 +1,6 @@
 import { mock } from "bun:test"
 import { createTestRenderer } from "@opentui/core/testing"
-import type { SetupPrompt } from "@agent-corp/protocol"
+import type { SetupPrompt } from "@opencorp/protocol"
 import type { SetupChild } from "../../src/setup/child"
 
 /** A setup child the test drives: it pushes prompts, ends with a code, and records what the screen did. */

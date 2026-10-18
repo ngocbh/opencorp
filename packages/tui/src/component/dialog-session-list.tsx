@@ -1,4 +1,4 @@
-import type { Person, Session } from "@agent-corp/protocol"
+import type { Person, Session } from "@opencorp/protocol"
 import os from "node:os"
 import { createMemo, onMount } from "solid-js"
 import { useDialog } from "../ui/dialog"

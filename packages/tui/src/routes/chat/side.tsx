@@ -1,4 +1,4 @@
-import type { Question, Session } from "@agent-corp/protocol"
+import type { Question, Session } from "@opencorp/protocol"
 import type { TextareaRenderable } from "@opentui/core"
 import { createEffect, createMemo, on, onCleanup, onMount, Show } from "solid-js"
 import { useTuiConfig } from "../../config"

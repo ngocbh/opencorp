@@ -24,7 +24,7 @@ export const realSetupDeps: SetupDeps = {
     // The screen is Solid JSX, loaded as `ac` loads the TUI.
     const { ensureSolidTransformPlugin } = await import("@opentui/solid/bun-plugin")
     ensureSolidTransformPlugin()
-    return (await import("@agent-corp/tui/setup")).runSetup(argv, process.cwd())
+    return (await import("@opencorp/tui/setup")).runSetup(argv, process.cwd())
   },
   // With no office answering, this says so and exits 3, so setUp needs no check of its own.
   openOffice: async () => (await import("./commands/tui")).run([]),

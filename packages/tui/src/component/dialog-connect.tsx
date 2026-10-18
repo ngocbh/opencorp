@@ -1,4 +1,4 @@
-import type { AddConnectionRequest, ConnectionLogin } from "@agent-corp/protocol"
+import type { AddConnectionRequest, ConnectionLogin } from "@opencorp/protocol"
 import { InputRenderable, TextAttributes } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js"

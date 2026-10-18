@@ -1,7 +1,7 @@
 import { TextAttributes, type InputRenderable } from "@opentui/core"
 import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { createSignal, For, Match, Show, Switch, type ParentProps } from "solid-js"
-import type { SetupAsk, SetupChoose, SetupSecret } from "@agent-corp/protocol"
+import type { SetupAsk, SetupChoose, SetupSecret } from "@opencorp/protocol"
 import { Spinner } from "../component/spinner"
 import { useTuiConfig } from "../config"
 import { useTheme } from "../context/theme"

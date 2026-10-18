@@ -15,7 +15,7 @@ import type {
   Question,
   Session,
   WorkItem,
-} from "@agent-corp/protocol"
+} from "@opencorp/protocol"
 import { asMessage, asPartDelta, asPartUpdated, isMetaData } from "./live"
 import type { StreamEvent } from "./sse"
 

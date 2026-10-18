@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Message } from "@agent-corp/protocol"
+import type { Message } from "@opencorp/protocol"
 import { freeze, frozenView, INTERRUPTED_TEXT, unfreeze } from "../../../src/routes/chat/freeze"
 
 const at = "2026-09-30T00:00:00Z"

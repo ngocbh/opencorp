@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { Message, ProfileProposal, Session } from "@agent-corp/protocol"
+import type { Message, ProfileProposal, Session } from "@opencorp/protocol"
 import {
   CONFLICT_MARKER,
   conflictText,

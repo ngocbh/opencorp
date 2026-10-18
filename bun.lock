@@ -3,37 +3,37 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "agent-corp",
+      "name": "opencorp-workspace",
       "devDependencies": {
         "@types/bun": "^1.1.0",
         "typescript": "^5.6.0",
       },
     },
-    "packages/ac": {
-      "name": "@agent-corp/ac",
+    "packages/cli": {
+      "name": "opencorp",
       "version": "0.0.1",
       "bin": {
-        "ac": "src/main.ts",
+        "opencorp": "src/main.ts",
       },
       "dependencies": {
-        "@agent-corp/protocol": "workspace:*",
-        "@agent-corp/tui": "workspace:*",
+        "@opencorp/protocol": "workspace:*",
+        "@opencorp/tui": "workspace:*",
         "@opentui/solid": "catalog:",
         "effect": "catalog:",
       },
     },
     "packages/protocol": {
-      "name": "@agent-corp/protocol",
+      "name": "@opencorp/protocol",
       "version": "0.0.1",
       "devDependencies": {
         "json-schema-to-typescript": "15.0.4",
       },
     },
     "packages/tui": {
-      "name": "@agent-corp/tui",
+      "name": "@opencorp/tui",
       "version": "0.0.1",
       "dependencies": {
-        "@agent-corp/protocol": "workspace:*",
+        "@opencorp/protocol": "workspace:*",
         "@opentui/core": "catalog:",
         "@opentui/keymap": "catalog:",
         "@opentui/solid": "catalog:",
@@ -67,12 +67,6 @@
     "strip-ansi": "7.1.2",
   },
   "packages": {
-    "@agent-corp/ac": ["@agent-corp/ac@workspace:packages/ac"],
-
-    "@agent-corp/protocol": ["@agent-corp/protocol@workspace:packages/protocol"],
-
-    "@agent-corp/tui": ["@agent-corp/tui@workspace:packages/tui"],
-
     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
 
     "@apidevtools/json-schema-ref-parser": ["@apidevtools/json-schema-ref-parser@11.9.3", "", { "dependencies": { "@jsdevtools/ono": "^7.1.3", "@types/json-schema": "^7.0.15", "js-yaml": "^4.1.0" } }, "sha512-60vepv88RwcJtSHrD6MjIL6Ta3SOYbgfnkHb+ppAVK+o9mXprRtulx7VlRl3lN3bbvysAfCS7WMVfhUYemB0IQ=="],
@@ -154,6 +148,10 @@
     "@msgpackr-extract/msgpackr-extract-linux-x64": ["@msgpackr-extract/msgpackr-extract-linux-x64@3.0.4", "", { "os": "linux", "cpu": "x64" }, "sha512-8TNXMEjJc3QEy7R/x1INhgiU+XakDAFUzBhaz7+Rbrs8NH5UQeHQxxmzsSBJGyV6I1jW79undiQm8tOI+D+8FQ=="],
 
     "@msgpackr-extract/msgpackr-extract-win32-x64": ["@msgpackr-extract/msgpackr-extract-win32-x64@3.0.4", "", { "os": "win32", "cpu": "x64" }, "sha512-CmCXPQrkbwExx3j946/PtHWHbYJiCRBRDl4BlkRQcJB/YOwQxJRTpoo7aTsortjgoJ1x7opzTSxn7C+ASSLVjQ=="],
+
+    "@opencorp/protocol": ["@opencorp/protocol@workspace:packages/protocol"],
+
+    "@opencorp/tui": ["@opencorp/tui@workspace:packages/tui"],
 
     "@opentui/core": ["@opentui/core@0.4.5", "", { "dependencies": { "bun-ffi-structs": "0.2.4", "diff": "9.0.0", "marked": "17.0.1", "string-width": "7.2.0", "strip-ansi": "7.1.2" }, "optionalDependencies": { "@opentui/core-darwin-arm64": "0.4.5", "@opentui/core-darwin-x64": "0.4.5", "@opentui/core-linux-arm64": "0.4.5", "@opentui/core-linux-arm64-musl": "0.4.5", "@opentui/core-linux-x64": "0.4.5", "@opentui/core-linux-x64-musl": "0.4.5", "@opentui/core-win32-arm64": "0.4.5", "@opentui/core-win32-x64": "0.4.5" }, "peerDependencies": { "web-tree-sitter": "0.25.10" } }, "sha512-JsgRTPkA6e+Vxmumxai6SElOSlRQkbzNKHlCfemlArRiLhfC1IZ9RXJo2QH4xSu+uBOWAM90uss73/pPlkdEig=="],
 
@@ -348,6 +346,8 @@
     "onetime": ["onetime@6.0.0", "", { "dependencies": { "mimic-fn": "^4.0.0" } }, "sha512-1FlR+gjXK7X+AsAHso35MnyN5KqGwJRi/31ft6x0M194ht7S+rWAvd7PHss9xSKMzE0asv1pyIHaJYq+BbacAQ=="],
 
     "open": ["open@11.0.4", "", { "dependencies": { "default-browser": "^5.5.1", "define-lazy-prop": "^3.0.0", "is-in-ssh": "^1.0.0", "is-inside-container": "^1.0.0", "powershell-utils": "^0.2.1", "wsl-utils": "^1.0.0" } }, "sha512-++Zlftm0kVLPmzC06t6epuWmcRMDbI4z5P3NNX979WA/k23+NtSOynEGzsVfZwguKw2mi5umVgnBlJQMwRz4Pg=="],
+
+    "opencorp": ["opencorp@workspace:packages/cli"],
 
     "opentui-spinner": ["opentui-spinner@0.0.7", "", { "dependencies": { "cli-spinners": "^3.3.0" }, "peerDependencies": { "@opentui/core": "^0.3.4", "@opentui/react": "^0.3.4", "@opentui/solid": "^0.3.4", "typescript": "^5" }, "optionalPeers": ["@opentui/react", "@opentui/solid"] }, "sha512-nPzwAvJG+y9rVEwwHLHqbsMzLnIk2zw+F9LqwA7aYJvpM5gsrKC2rrGi36A+tZpA+1RnWxXeWEgVZMchnaH18Q=="],
 

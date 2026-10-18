@@ -1,4 +1,4 @@
-import type { ConnectionList, Session } from "@agent-corp/protocol"
+import type { ConnectionList, Session } from "@opencorp/protocol"
 
 /** The connection set up at onboarding, which sessions from before connections ran on. */
 export const OFFICE = "office"

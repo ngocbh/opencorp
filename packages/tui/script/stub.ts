@@ -21,7 +21,7 @@ import type {
   Question,
   Session,
   WorkItem,
-} from "@agent-corp/protocol"
+} from "@opencorp/protocol"
 import { createTwoFilesPatch } from "diff"
 import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"

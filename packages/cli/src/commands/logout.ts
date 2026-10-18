@@ -1,8 +1,8 @@
 // `ac logout`: takes this device off the office's list, then forgets its identity.
-import { createOfficeClient } from "@agent-corp/tui/office/client"
-import { OfficeError, OfficeUnavailable, UnknownDevice } from "@agent-corp/tui/office/errors"
-import { readIdentity, type Identity } from "@agent-corp/tui/office/identity"
-import { defaultSocket, identityPath } from "@agent-corp/tui/office/paths"
+import { createOfficeClient } from "@opencorp/tui/office/client"
+import { OfficeError, OfficeUnavailable, UnknownDevice } from "@opencorp/tui/office/errors"
+import { readIdentity, type Identity } from "@opencorp/tui/office/identity"
+import { defaultSocket, identityPath } from "@opencorp/tui/office/paths"
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"

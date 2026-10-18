@@ -1,5 +1,5 @@
 {
-  "name": "@agent-corp/tui",
+  "name": "@opencorp/tui",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -18,7 +18,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
-    "@agent-corp/protocol": "workspace:*",
+    "@opencorp/protocol": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",
     "@opentui/solid": "catalog:",

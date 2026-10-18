@@ -33,7 +33,7 @@ import type {
   SideChatRequest,
   StartLoginRequest,
   WorkItem,
-} from "@agent-corp/protocol"
+} from "@opencorp/protocol"
 import { OfficeTimeout } from "./errors"
 import { request, seg, type Method } from "./http"
 import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"

@@ -1,4 +1,4 @@
-import type { AnswerField, Question } from "@agent-corp/protocol"
+import type { AnswerField, Question } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
 import { answerShown, buildAnswer, cardModel } from "../../../src/routes/chat/answer"
 

@@ -1,5 +1,5 @@
 import { InputRenderable, TextAttributes } from "@opentui/core"
-import type { HireRequest, HireResponse, Person } from "@agent-corp/protocol"
+import type { HireRequest, HireResponse, Person } from "@opencorp/protocol"
 import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useOffice } from "../../context/office"
