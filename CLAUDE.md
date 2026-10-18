@@ -99,9 +99,12 @@ Trusted Publishing (the `pypi` environment); no token is stored.
 2. Publish a GitHub Release tagged `v<version>`. The workflow fails if the tag and the version
    differ.
 
-The wheel's `yian[all]` dependency resolves from PyPI, not the submodule, so pin it to a yian
-release that has what the office needs (release yian first if it doesn't). Actions must be
-enabled for the workflow to run; run it by hand (`workflow_dispatch`) for a build-only dry run.
+Actions must be enabled for the workflow to run; run it by hand (`workflow_dispatch`) for a
+build-only dry run.
+
+The published package depends on `yian[all]>=0.0.3` from PyPI, not the submodule. yian 0.0.3
+predates the submodule, so an install from PyPI can't load the flows the office ships yet. The
+0.0.x releases are placeholders until yian publishes a matching build; then raise the floor.
 
 ## Code style
 
