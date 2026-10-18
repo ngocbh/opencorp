@@ -1,0 +1,59 @@
+name: publish
+
+# Publishes the opencorp package to PyPI through Trusted Publishing (OIDC), so no token is stored.
+# Runs only for a published GitHub Release, or by hand as a build-only dry run: Actions minutes on
+# this private repo cost money, so it never runs on pushes or PRs.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The build takes only packages/corp_office/src, so the yian submodule isn't needed.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # setup-uv publishes no floating major tags, so pin the release.
+      - uses: astral-sh/setup-uv@v10.2.0
+      - if: github.event_name == 'release'
+        name: Check the tag matches the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version=$(uv version --short)
+          if [ "${TAG#v}" != "$version" ]; then
+            echo "::error::release tag $TAG does not match version $version in pyproject.toml"
+            exit 1
+          fi
+      # --no-sources: build against the published dependencies, not the local yian path.
+      - run: uv build --no-sources
+      - run: uvx twine check --strict dist/*
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/opencorp
+    permissions:
+      id-token: write   # Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
