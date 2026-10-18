@@ -18,11 +18,16 @@ def session(launch: Launch) -> str:
 
 
 def shell_command(launch: Launch) -> str:
-    """The daemon for tmux's shell: ``env -i`` so tmux's own environment (and any key in it) is dropped."""
+    """The daemon for tmux's shell: ``env -i`` so tmux's own environment (and any key in it) is dropped.
+
+    Its output goes to the log; its stdin stays on the pane.
+    """
     env = [shlex.quote(f"{k}={v}") for k, v in sorted(launch.env.items())]
     argv = [shlex.quote(a) for a in launch.argv]
-    return (f"exec env -i {' '.join(env + argv)}"
-            f" </dev/null >>{shlex.quote(str(launch.log))} 2>&1")
+    # stdin holds the pane's pty open: tmux 2.7 closes a pane once nothing has its pty open, even
+    # while its process runs, and the kernel then hangs up the daemon. The daemon never reads stdin,
+    # and every child it starts gets its own.
+    return f"exec env -i {' '.join(env + argv)} >>{shlex.quote(str(launch.log))} 2>&1"
 
 
 def start_tmux(launch: Launch, host: Host) -> None:
