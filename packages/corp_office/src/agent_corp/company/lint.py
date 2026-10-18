@@ -161,8 +161,9 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
                     what = f"the {' and '.join(missing)} input{'s' if len(missing) > 1 else ''}"
                     yield RepoIssue(_person_path(handle), "person.main_inputs_missing",
                                     f"{ref} doesn't declare {what}; the office passes both to a main flow and Yian"
-                                    " refuses inputs a flow doesn't declare, so declare person and talking_to under"
-                                    " input: (as the template's shared/flows/chat.yaml does)")
+                                    " refuses inputs a flow doesn't declare, so declare `person: !Person` (name,"
+                                    " handle, title, company, reports_to) and `talking_to: !str` under input: (as the"
+                                    " template's shared/flows/chat.yaml does)")
 
 
 def _skill_root(root: Path, rel: str, issues: list[RepoIssue]) -> set[str]:

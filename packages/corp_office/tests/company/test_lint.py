@@ -207,7 +207,8 @@ def test_a_main_flow_must_declare_person_and_talking_to(make_company):
     assert (issue.path, issue.severity) == ("people/minh/person.yaml", "error")
     assert issue.message == ("../../shared/flows/chat.yaml doesn't declare the person and talking_to inputs; the office"
                              " passes both to a main flow and Yian refuses inputs a flow doesn't declare, so declare"
-                             " person and talking_to under input: (as the template's shared/flows/chat.yaml does)")
+                             " `person: !Person` (name, handle, title, company, reports_to) and `talking_to: !str`"
+                             " under input: (as the template's shared/flows/chat.yaml does)")
 
 
 def test_a_main_flow_missing_one_input_names_only_that_one(make_company):
