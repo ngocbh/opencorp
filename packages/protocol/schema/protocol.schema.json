@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AgentCorpProtocol",
+  "title": "OpenCorpProtocol",
   "$defs": {
     "Id": {
       "type": "string", "pattern": "^(?:[0-9A-HJKMNP-TV-Z]{26}|[a-z0-9](?:-?[a-z0-9])*)$", "maxLength": 64,
@@ -22,7 +22,7 @@
     },
     "Device": {
       "type": "object", "additionalProperties": false, "required": ["name", "token_sha256"],
-      "description": "A device a human uses ac from: requests carrying the token whose hash this is act as that person.",
+      "description": "A device a human uses opencorp from: requests carrying the token whose hash this is act as that person.",
       "properties": {
         "name": { "$ref": "#/$defs/DeviceName" },
         "token_sha256": { "$ref": "#/$defs/TokenHash" }
@@ -103,7 +103,7 @@
         "provider_policy": { "type": "string", "default": "default" },
         "devices": {
           "type": "array", "items": { "$ref": "#/$defs/Device" }, "default": [],
-          "description": "The devices this human uses ac from, each with a unique name."
+          "description": "The devices this human uses opencorp from, each with a unique name."
         },
         "password_hash": {
           "anyOf": [{ "$ref": "#/$defs/PasswordHash" }, { "type": "null" }], "default": null,
@@ -746,7 +746,7 @@
       }
     },
     "SetupPrompt": {
-      "description": "One line `python -m agent_corp.install init|onboard --json-prompts` writes on stdout: a question for `ac`'s setup screen, or something to show.",
+      "description": "One line `python -m opencorp.install init|onboard --json-prompts` writes on stdout: a question for `opencorp`'s setup screen, or something to show.",
       "oneOf": [
         { "$ref": "#/$defs/SetupAsk" }, { "$ref": "#/$defs/SetupChoose" }, { "$ref": "#/$defs/SetupSecret" },
         { "$ref": "#/$defs/SetupSay" }, { "$ref": "#/$defs/SetupStep" }
@@ -811,7 +811,7 @@
     },
     "SetupAnswer": {
       "type": "object", "additionalProperties": false, "required": ["answer"],
-      "description": "One line `ac`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.",
+      "description": "One line `opencorp`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.",
       "properties": {
         "answer": { "type": "string" }
       }

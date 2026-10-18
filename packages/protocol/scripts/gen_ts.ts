@@ -28,7 +28,7 @@ export function markUntyped(node: any): void {
 }
 
 // The schema root only holds $defs; json-schema-to-typescript still emits it as this interface.
-const ROOT_INTERFACE = "export interface AgentCorpProtocol {\n  [k: string]: unknown;\n}\n"
+const ROOT_INTERFACE = "export interface OpenCorpProtocol {\n  [k: string]: unknown;\n}\n"
 
 /** Compiles the schema to TS source, one named export per `$defs` entry. */
 export async function generate(): Promise<string> {
@@ -36,7 +36,7 @@ export async function generate(): Promise<string> {
   for (const def of Object.values(schema.$defs)) markUntyped(def)
   // A root description would become a JSDoc block left orphaned above the next export.
   delete schema.description
-  const out = await compile(schema, "AgentCorpProtocol", {
+  const out = await compile(schema, "OpenCorpProtocol", {
     bannerComment: "// Generated from schema/protocol.schema.json. Do not edit.",
     // Emit every $def, including ones no other def references.
     unreachableDefinitions: true,
