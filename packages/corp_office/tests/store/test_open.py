@@ -6,9 +6,9 @@ import threading
 
 import pytest
 
-from agent_corp.store import MigrationError, Store
-from agent_corp.store.migrate import MIGRATIONS, ladder
-from agent_corp.store.store import enable_wal
+from opencorp.store import MigrationError, Store
+from opencorp.store.migrate import MIGRATIONS, ladder
+from opencorp.store.store import enable_wal
 
 TABLES = {
     "work_items", "comments", "sessions", "session_runs", "questions", "feedback", "messages", "parts",

@@ -1,8 +1,8 @@
 import pytest
 
-from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE, call_usd, cost_cap
-from agent_corp.chat.provider import Price
-from agent_corp.protocol.models import CompanyDefaults
+from opencorp.chat.cost import DEFAULT_PRICE, ZERO_PRICE, call_usd, cost_cap
+from opencorp.chat.provider import Price
+from opencorp.protocol.models import CompanyDefaults
 from tests.store.conftest import session
 
 

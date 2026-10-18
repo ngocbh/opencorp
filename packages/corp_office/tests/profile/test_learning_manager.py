@@ -2,10 +2,10 @@ import os
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.profile import GitProfileStore
-from agent_corp.profile.manager import profile_tools
-from agent_corp.secrets import write_private
+from opencorp.chat.harness import HarnessError
+from opencorp.profile import GitProfileStore
+from opencorp.profile.manager import profile_tools
+from opencorp.secrets import write_private
 from tests.profile.conftest import asked, status, texts, wait_for
 from tests.profile.test_learning_feedback import PROFILE, git_log, profile_text
 from tests.store.conftest import session

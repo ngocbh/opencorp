@@ -10,7 +10,7 @@ import pytest
 from yian.llm_clients.connection import ConnectionSnapshot
 from pydantic import ValidationError
 
-from agent_corp.chat.connections import (
+from opencorp.chat.connections import (
     OFFICE,
     BadConnectionName,
     ConnectionFile,
@@ -29,9 +29,9 @@ from agent_corp.chat.connections import (
     target_hash,
     write_run_record,
 )
-from agent_corp.chat.provider import Price, Provider, ProviderError
-from agent_corp.protocol.models import Connection
-from agent_corp.secrets import write_private
+from opencorp.chat.provider import Price, Provider, ProviderError
+from opencorp.protocol.models import Connection
+from opencorp.secrets import write_private
 
 SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
 OTHER_KEY = "sk-ant-other-5f0e2b7c91d4"
@@ -222,7 +222,7 @@ def test_remove_waits_for_composer_to_let_go_of_the_sign_in(tmp_path):
 
 
 def test_remove_gives_up_on_a_sign_in_locked_too_long(tmp_path, monkeypatch):
-    import agent_corp.chat.connections as connections
+    import opencorp.chat.connections as connections
 
     monkeypatch.setattr(connections, "SIGN_IN_LOCK_TIMEOUT", 0.2)
     c = Connections(office_dir(tmp_path))
@@ -274,7 +274,7 @@ def test_a_bad_name_raises_bad_connection_name(tmp_path):
 
 
 def test_get_reads_a_connection_removed_mid_read_as_gone(tmp_path, monkeypatch):
-    import agent_corp.chat.connections as connections
+    import opencorp.chat.connections as connections
 
     c = Connections(office_dir(tmp_path))
     c.put("second", api_key())
@@ -376,7 +376,7 @@ def test_remove_finishes_a_remove_cut_short(tmp_path):
 
 
 def test_add_raises_its_own_error_when_the_sign_in_cannot_be_removed(tmp_path, monkeypatch, caplog):
-    import agent_corp.chat.connections as connections
+    import opencorp.chat.connections as connections
 
     c = Connections(office_dir(tmp_path))
 
@@ -435,7 +435,7 @@ def test_add_saves_the_sign_in_before_the_connection(tmp_path):
 
 def test_add_removes_the_sign_in_when_the_connection_cannot_be_written(tmp_path, monkeypatch):
     c = Connections(office_dir(tmp_path))
-    import agent_corp.chat.connections as connections
+    import opencorp.chat.connections as connections
 
     def fail(path, data):
         raise OSError(28, "No space left on device")

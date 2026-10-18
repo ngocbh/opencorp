@@ -2,7 +2,7 @@
 
 from langchain_core.tools import StructuredTool
 
-from agent_corp.tools.company.draft import check_company
+from opencorp.tools.company.draft import check_company
 
 OWNER = {"name": "Hong Ngoc Bui", "handle": "ngocbh", "title": "CEO"}
 

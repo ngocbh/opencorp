@@ -2,9 +2,9 @@ import json
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.chat.turns import MAIN_CHAT
-from agent_corp.secrets import write_private
+from opencorp.chat.harness import HarnessError
+from opencorp.chat.turns import MAIN_CHAT
+from opencorp.secrets import write_private
 from tests.chat.conftest import errors, status, texts, wait_for
 from tests.company.conftest import person
 from tests.store.conftest import question as stored_question
@@ -221,7 +221,7 @@ def test_end_while_busy_interrupts_then_exits(harness, fake_llm, workspace):
 def test_esc_before_the_reply_starts_still_stops_it(harness, fake_llm, workspace, monkeypatch):
     import threading
 
-    from agent_corp.chat import harness as harness_module
+    from opencorp.chat import harness as harness_module
 
     fake_llm.script({"content": "Working", "tool_calls": [echo_call()], "hold": 30}, {"content": "never"})
     seen, release = threading.Event(), threading.Event()
@@ -280,7 +280,7 @@ def test_a_turn_answer_that_fails_leaves_the_turn_open(harness, fake_llm, worksp
 
 
 def test_turns_are_answered_for_the_ceo_of_the_pinned_company(harness, fake_llm, workspace, monkeypatch):
-    from agent_corp.chat import harness as harness_module
+    from opencorp.chat import harness as harness_module
 
     fake_llm.script({"content": "Hello."})
     sid = start(harness, workspace)
@@ -437,7 +437,7 @@ def test_a_failing_hook_does_not_stop_the_session(harness, fake_llm, workspace):
 
 
 def test_a_provider_error_at_start_fails_the_session(harness, workspace):
-    from agent_corp.chat.provider import ProviderError
+    from opencorp.chat.provider import ProviderError
 
     provider_json = harness.office.paths.office / "provider.json"
     provider_json.chmod(0o644)  # not private: load_provider refuses it
@@ -488,7 +488,7 @@ def test_nothing_the_harness_does_touches_the_store_after_close_all(harness, wor
 
 
 def test_close_all_refuses_and_cancels_worker_requests_only_once_the_channels_are_closed(harness, workspace):
-    from agent_corp.chat.harness import _Call
+    from opencorp.chat.harness import _Call
 
     sid = start(harness, workspace)
     call = _Call()
@@ -520,10 +520,10 @@ def test_a_stopping_harness_refuses_new_worker_requests(harness):
 def test_esc_answers_an_office_call_in_flight(make_harness, fake_llm, workspace):
     import threading
 
-    from agent_corp.assets import fake
-    from agent_corp.assets.registry import KindTool
-    from agent_corp.chat.harness import INTERRUPTED_CALL
-    from agent_corp.chat.transcript import INTERRUPTED_TEXT
+    from opencorp.assets import fake
+    from opencorp.assets.registry import KindTool
+    from opencorp.chat.harness import INTERRUPTED_CALL
+    from opencorp.chat.transcript import INTERRUPTED_TEXT
 
     entered, leave = threading.Event(), threading.Event()
 
@@ -576,7 +576,7 @@ def cap_items(harness):
 
 
 def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace):
-    from agent_corp.chat.provider import Price
+    from opencorp.chat.provider import Price
 
     harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})  # $1 per input token
     fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}},
@@ -596,7 +596,7 @@ def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace
 
 
 def test_raising_the_cap_closes_its_work_item_and_going_over_again_opens_one(make_harness, fake_llm, workspace):
-    from agent_corp.chat.provider import Price
+    from opencorp.chat.provider import Price
 
     harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})  # $1 per input token
     fake_llm.script(*({"content": f"reply {n}", "usage": {"prompt_tokens": 6, "completion_tokens": 1}}
@@ -623,9 +623,9 @@ def test_raising_the_cap_closes_its_work_item_and_going_over_again_opens_one(mak
 
 
 def test_a_cap_item_belongs_to_one_session_even_without_a_work_item(make_harness, workspace):
-    from agent_corp.protocol import now
-    from agent_corp.protocol.models import WorkItem
-    from agent_corp.store import new_id
+    from opencorp.protocol import now
+    from opencorp.protocol.models import WorkItem
+    from opencorp.store import new_id
 
     harness = make_harness()
     sid = start(harness, workspace)
@@ -641,7 +641,7 @@ SENTINEL = "sk-sentinel-7c2a51"
 
 
 def keyed(make_harness):
-    from agent_corp.testing.fake_llm import LLM_CONFIG
+    from opencorp.testing.fake_llm import LLM_CONFIG
 
     return make_harness(llm_config={**LLM_CONFIG, "api_key": SENTINEL})
 
@@ -676,7 +676,7 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
                                                                monkeypatch):
     import re
 
-    from agent_corp.chat import harness as harness_module
+    from opencorp.chat import harness as harness_module
 
     frames = []
     for name in ("event", "stream", "result", "error"):
@@ -717,7 +717,7 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
 def test_a_held_session_with_a_queued_message_does_not_idle_end(make_harness, fake_llm, workspace):
     import time
 
-    from agent_corp.chat.provider import Price
+    from opencorp.chat.provider import Price
 
     harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)}, defaults={"idle_end": "1s"})
     fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}},
@@ -736,7 +736,7 @@ def test_a_held_session_with_a_queued_message_does_not_idle_end(make_harness, fa
 def test_a_turn_that_opens_held_with_messages_queued_does_not_idle_end(make_harness, fake_llm, workspace):
     import time
 
-    from agent_corp.chat.provider import Price
+    from opencorp.chat.provider import Price
 
     harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)}, defaults={"idle_end": "1s"})
     fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}, "hold": 30},

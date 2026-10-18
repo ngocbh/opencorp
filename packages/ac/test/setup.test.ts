@@ -43,7 +43,7 @@ const sync = { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO }
 
 for (const command of ["init", "onboard"] as const) {
   describe(`ac ${command}`, () => {
-    const install = (...argv: string[]) => [venvPython(), "-m", "agent_corp.install", command, ...argv]
+    const install = (...argv: string[]) => [venvPython(), "-m", "opencorp.install", command, ...argv]
 
     for (const flag of ["--provider-stdin", "-h", "--help"]) {
       test(`with ${flag}, runs the install on this terminal, without the screen or the office`, async () => {

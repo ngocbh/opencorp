@@ -1,7 +1,7 @@
 import pytest
 
-from agent_corp.protocol.models import Question
-from agent_corp.questions.checker import InvalidAnswer, check_answer
+from opencorp.protocol.models import Question
+from opencorp.questions.checker import InvalidAnswer, check_answer
 
 T = "2026-09-30T00:00:00.000Z"
 

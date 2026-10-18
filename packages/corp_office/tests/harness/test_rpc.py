@@ -8,15 +8,15 @@ import threading
 
 import pytest
 
-from agent_corp.harness.rpc import JsonRpc, RpcClosed, RpcError
-from agent_corp.testing import fake_codex as fc
+from opencorp.harness.rpc import JsonRpc, RpcClosed, RpcError
+from opencorp.testing import fake_codex as fc
 from tests.chat.conftest import wait_for
 
 
 def connect(tmp_path, script, **handlers):
     path = tmp_path / "s.json"
     path.write_text(json.dumps(script))
-    proc = subprocess.Popen([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script", str(path),
+    proc = subprocess.Popen([sys.executable, "-I", "-m", "opencorp.testing.fake_codex", "--script", str(path),
                              "--log", str(tmp_path / "log.jsonl")], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     seen, closed = [], threading.Event()
     rpc = JsonRpc(proc.stdin, proc.stdout,

@@ -6,8 +6,8 @@ import threading
 
 import pytest
 
-from agent_corp.protocol.models import Event
-from agent_corp.store import NotFound, StoreError, Tx
+from opencorp.protocol.models import Event
+from opencorp.store import NotFound, StoreError, Tx
 from tests.store.conftest import work_item
 
 

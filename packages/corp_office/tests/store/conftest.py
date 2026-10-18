@@ -2,8 +2,8 @@
 
 import pytest
 
-from agent_corp.protocol import now
-from agent_corp.protocol.models import (
+from opencorp.protocol import now
+from opencorp.protocol.models import (
     Comment,
     Debrief,
     Feedback,
@@ -13,7 +13,7 @@ from agent_corp.protocol.models import (
     Session,
     WorkItem,
 )
-from agent_corp.store import Store, new_id
+from opencorp.store import Store, new_id
 
 COMMIT = "a" * 40
 

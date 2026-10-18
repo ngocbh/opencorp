@@ -3,9 +3,9 @@ from typing import get_args
 import pytest
 from pydantic import ValidationError
 
-from agent_corp.chat.transcript import INTERRUPTED_TEXT, ToolState, Transcript
-from agent_corp.protocol.models import ToolPart
-from agent_corp.store import Store
+from opencorp.chat.transcript import INTERRUPTED_TEXT, ToolState, Transcript
+from opencorp.protocol.models import ToolPart
+from opencorp.store import Store
 from tests.store.conftest import session
 
 

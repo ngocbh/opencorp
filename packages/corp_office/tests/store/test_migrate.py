@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from agent_corp.store.migrate import MigrationError, migrate, statements, user_version
+from opencorp.store.migrate import MigrationError, migrate, statements, user_version
 
 
 def _conn(tmp_path):

@@ -5,13 +5,13 @@ import time
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.harness import session as session_module
-from agent_corp.harness.codex import CodexStartError, owner_load
-from agent_corp.harness.rpc import JsonRpc, RpcClosed
-from agent_corp.protocol.models import HarnessPolicy
-from agent_corp.testing import fake_codex as fc
-from agent_corp.worker.reaper import start_time
+from opencorp.chat.harness import HarnessError
+from opencorp.harness import session as session_module
+from opencorp.harness.codex import CodexStartError, owner_load
+from opencorp.harness.rpc import JsonRpc, RpcClosed
+from opencorp.protocol.models import HarnessPolicy
+from opencorp.testing import fake_codex as fc
+from opencorp.worker.reaper import start_time
 from tests.harness.conftest import codex_log, errors, requests_valid, start, status, stored, texts, wait_for
 
 

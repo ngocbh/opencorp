@@ -2,8 +2,8 @@ import pytest
 from langchain_core.tools import StructuredTool
 from pydantic import ValidationError
 
-from agent_corp.tools.workspace import workspace_tool_functions
-from agent_corp.worker.job import (
+from opencorp.tools.workspace import workspace_tool_functions
+from opencorp.worker.job import (
     Job,
     ProfileMemorySpec,
     SessionMemorySpec,

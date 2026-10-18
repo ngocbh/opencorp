@@ -9,14 +9,14 @@ import time
 import pytest
 from yian.llm_clients.auth import AuthStore, OAuthCredentials
 
-from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_record
-from agent_corp.chat.cost import DEFAULT_PRICE, ZERO_PRICE
-from agent_corp.chat.harness import HarnessError, _refused_key
-from agent_corp.chat.models import TIMED_OUT, Listing, own_models
-from agent_corp.chat.provider import Price
-from agent_corp.company.loader import load_repo
-from agent_corp.protocol.models import ModelOption
-from agent_corp.secrets import write_private
+from opencorp.chat.connections import AUTH_FILE_ENV, ConnectionFile, read_run_record
+from opencorp.chat.cost import DEFAULT_PRICE, ZERO_PRICE
+from opencorp.chat.harness import HarnessError, _refused_key
+from opencorp.chat.models import TIMED_OUT, Listing, own_models
+from opencorp.chat.provider import Price
+from opencorp.company.loader import load_repo
+from opencorp.protocol.models import ModelOption
+from opencorp.secrets import write_private
 from tests.chat.conftest import errors, say, spawned, status, texts, wait_for
 from tests.company.conftest import person
 

@@ -5,7 +5,7 @@ from urllib.parse import quote
 import pytest
 import yaml
 
-from agent_corp.chat.hire import Hiring
+from opencorp.chat.hire import Hiring
 
 
 def _folder(cwd: str) -> str:

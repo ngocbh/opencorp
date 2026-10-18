@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft7Validator
 
-from agent_corp.testing import fake_codex as fc
+from opencorp.testing import fake_codex as fc
 
 SCHEMA = Path(__file__).parents[1] / "harness" / "fixtures" / "codex" / "schema"
 
@@ -53,7 +53,7 @@ def test_a_new_file_is_sent_as_its_content_and_an_update_as_a_diff():
 def run(tmp_path, script, *lines):
     path = tmp_path / "s.json"
     path.write_text(json.dumps(script))
-    proc = subprocess.run([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script", str(path),
+    proc = subprocess.run([sys.executable, "-I", "-m", "opencorp.testing.fake_codex", "--script", str(path),
                            "--log", str(tmp_path / "log.jsonl")],
                           input="".join(json.dumps(m) + "\n" for m in lines), capture_output=True, text=True, timeout=20)
     return [json.loads(line) for line in proc.stdout.splitlines()]
@@ -81,7 +81,7 @@ def test_it_answers_the_handshake_and_a_load_and_refuses_the_rest(tmp_path):
 
 
 def test_doctor_questions_get_fake_answers():
-    version = subprocess.run([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--version"],
+    version = subprocess.run([sys.executable, "-I", "-m", "opencorp.testing.fake_codex", "--version"],
                              capture_output=True, text=True, timeout=20)
     assert version.stdout.strip() == "codex-cli 0.0.0-fake"
 
@@ -92,7 +92,7 @@ class Live:
     def __init__(self, tmp_path, script):
         path = tmp_path / "s.json"
         path.write_text(json.dumps(script))
-        self.proc = subprocess.Popen([sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script",
+        self.proc = subprocess.Popen([sys.executable, "-I", "-m", "opencorp.testing.fake_codex", "--script",
                                       str(path), "--log", str(tmp_path / "log.jsonl")],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         self.out = []

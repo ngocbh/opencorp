@@ -2,7 +2,7 @@ import logging
 
 import pytest
 
-from agent_corp.chat.hooks import Hooks
+from opencorp.chat.hooks import Hooks
 
 
 def test_callbacks_run_in_order_with_their_arguments():
@@ -20,7 +20,7 @@ def test_a_failing_callback_is_logged_and_the_rest_still_run(caplog):
         raise RuntimeError("boom")
 
     hooks.session_ended += [boom, calls.append]
-    with caplog.at_level(logging.ERROR, logger="agent_corp.chat.hooks"):
+    with caplog.at_level(logging.ERROR, logger="opencorp.chat.hooks"):
         assert hooks.fire("session_ended", "S") == [None]
     assert calls == ["S"]
     assert "session_ended callback" in caplog.text and "boom" in caplog.text

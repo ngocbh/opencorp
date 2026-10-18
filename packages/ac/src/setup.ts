@@ -59,7 +59,7 @@ export async function setUp(
   if (synced !== 0) return synced
   let code: number
   try {
-    code = await deps.screen([venvPython(), "-m", "agent_corp.install", command, "--json-prompts", ...argv])
+    code = await deps.screen([venvPython(), "-m", "opencorp.install", command, "--json-prompts", ...argv])
   } catch (e) {
     deps.error(
       `ac ${command}: can't show the setup screen: ${e instanceof Error ? e.message : e}; pass the provider with --provider-stdin instead`,

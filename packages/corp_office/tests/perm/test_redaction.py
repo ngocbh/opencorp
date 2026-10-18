@@ -5,8 +5,8 @@ from urllib.parse import quote
 
 import pytest
 
-from agent_corp.assets.registry import KindTool
-from agent_corp.perm.monitor import Monitor, redact
+from opencorp.assets.registry import KindTool
+from opencorp.perm.monitor import Monitor, redact
 from tests.perm.conftest import KINDS, TOKEN
 
 PADDED = "p4dded-secret-value"

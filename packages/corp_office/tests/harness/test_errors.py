@@ -7,13 +7,13 @@ import sys
 import threading
 import time
 
-from agent_corp.harness import session as session_module
-from agent_corp.harness.rpc import RpcClosed, RpcError
-from agent_corp.harness.session import usage_base
-from agent_corp.harness.sessions import CodexSessions
-from agent_corp.testing import fake_codex as fc
-from agent_corp.worker.reaper import start_time
-from agent_corp.worker.spawn import worker_env
+from opencorp.harness import session as session_module
+from opencorp.harness.rpc import RpcClosed, RpcError
+from opencorp.harness.session import usage_base
+from opencorp.harness.sessions import CodexSessions
+from opencorp.testing import fake_codex as fc
+from opencorp.worker.reaper import start_time
+from opencorp.worker.spawn import worker_env
 from tests.harness.conftest import (CODEX_PERSON, codex_log, errors, requests_valid, start, status, stored, texts,
                                     wait_for)
 from tests.store.conftest import session
@@ -86,7 +86,7 @@ def test_a_crash_leaves_codex_stderr_in_its_codex_log_and_the_office_log_points_
                                                                                      workspace, caplog):
     fake_codex.script([[{"exit": 1}]], stderr=STDERR)
     sid = start(harness, workspace)
-    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+    with caplog.at_level(logging.WARNING, logger="opencorp.harness"):
         harness.prompt(sid, "go")
         wait_for(lambda: errors(harness, sid) and status(harness, sid) == "idle", what="the crash handled")
     assert STDERR not in stored(harness, sid) and STDERR in codex_log(harness, sid)
@@ -100,7 +100,7 @@ def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_outp
     script = f"import sys; print({STDERR!r}, file=sys.stderr); sys.exit(1)"
     h = make_harness(files=CODEX_PERSON, codex=lambda office, hooks: CodexSessions(
         office, hooks, command=lambda: [sys.executable, "-I", "-c", script]))
-    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+    with caplog.at_level(logging.WARNING, logger="opencorp.harness"):
         sid = h.start_session("minh", str(workspace), "codex").id
         wait_for(lambda: status(h, sid) == "failed", what="failed")
     log = str(h.office.paths.run_dir(sid) / "codex.log")
@@ -114,7 +114,7 @@ def test_codex_that_dies_before_the_handshake_says_what_to_do_and_where_its_outp
 def test_codex_that_dies_while_loading_the_thread_says_what_to_do_and_where_its_output_is(harness, fake_codex,
                                                                                           workspace, caplog):
     fake_codex.script(load_exit=1, stderr=STDERR)
-    with caplog.at_level(logging.WARNING, logger="agent_corp.harness"):
+    with caplog.at_level(logging.WARNING, logger="opencorp.harness"):
         sid = harness.start_session("minh", str(workspace), "codex").id
         wait_for(lambda: status(harness, sid) == "failed", what="failed")
     log = str(harness.office.paths.run_dir(sid) / "codex.log")

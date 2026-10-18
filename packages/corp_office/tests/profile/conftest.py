@@ -9,10 +9,10 @@ from importlib.resources import files
 
 import pytest
 
-from agent_corp.extensions.learning import Learning
+from opencorp.extensions.learning import Learning
 from tests.chat.conftest import _isolate_git, fake_llm, make_harness, status, texts, wait_for, workspace  # noqa: F401
 
-FLOWS = files("agent_corp.company_template") / "shared" / "flows"
+FLOWS = files("opencorp.company_template") / "shared" / "flows"
 LEARNING_FILES = {f"shared/flows/{name}": (FLOWS / name).read_text() for name in ("debrief.yaml", "profile_manager.yaml")}
 DEBRIEF_ASK = "Debrief it for the person who asked"
 LEARNER_ASK = "You maintain one markdown profile document"

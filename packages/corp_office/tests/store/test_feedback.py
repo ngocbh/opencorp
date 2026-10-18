@@ -2,7 +2,7 @@
 
 import pytest
 
-from agent_corp.store import InvalidTransition, StoreError
+from opencorp.store import InvalidTransition, StoreError
 from tests.store.conftest import COMMIT, feedback, session
 
 

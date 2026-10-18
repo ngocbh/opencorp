@@ -3,7 +3,7 @@
 import pytest
 from yian.tools.registry import _normalize_options
 
-from agent_corp.questions.normalize import _labels, normalize_options
+from opencorp.questions.normalize import _labels, normalize_options
 
 CASES = [
     (None, []),

@@ -3,8 +3,8 @@
 import json
 from pathlib import Path
 
-from agent_corp.worker.channel import Channel
-from agent_corp.worker.job import group_specs
+from opencorp.worker.channel import Channel
+from opencorp.worker.job import group_specs
 from tests.perm.conftest import TOKEN, cluster
 from tests.worker.conftest import Recorder, fake_llm, make_job, pin, registry, run, session_dir  # noqa: F401
 

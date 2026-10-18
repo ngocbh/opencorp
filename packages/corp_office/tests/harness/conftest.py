@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft7Validator
 
-from agent_corp.harness.sessions import CodexSessions
+from opencorp.harness.sessions import CodexSessions
 from tests.chat.conftest import (_isolate_git, errors, fake_llm, make_harness, status, texts, wait_for,  # noqa: F401
                                  workspace)
 from tests.company.conftest import person
@@ -30,7 +30,7 @@ class FakeCodex:
                                          "turns": list(turns), **extra}))
 
     def command(self):
-        return [sys.executable, "-I", "-m", "agent_corp.testing.fake_codex", "--script", str(self.path),
+        return [sys.executable, "-I", "-m", "opencorp.testing.fake_codex", "--script", str(self.path),
                 "--log", str(self.log)]
 
     def entries(self, direction):

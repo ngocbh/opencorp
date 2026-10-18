@@ -5,9 +5,9 @@ import json
 
 import pytest
 
-from agent_corp.daemon.routes import events
-from agent_corp.protocol.models import LiveEvent
-from agent_corp.store import new_id
+from opencorp.daemon.routes import events
+from opencorp.protocol.models import LiveEvent
+from opencorp.store import new_id
 from tests.daemon.conftest import served
 from tests.store.conftest import message, session
 

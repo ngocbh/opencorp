@@ -2,8 +2,8 @@ import re
 
 import pytest
 
-from agent_corp.sandbox import seatbelt
-from agent_corp.sandbox.policy import SandboxPolicy
+from opencorp.sandbox import seatbelt
+from opencorp.sandbox.policy import SandboxPolicy
 
 
 @pytest.fixture

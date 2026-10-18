@@ -9,8 +9,8 @@ import httpx
 import pytest
 import uvicorn
 
-from agent_corp.daemon.app import AbsoluteFormPaths, OfficePaths, create_app
-from agent_corp.daemon.main import OfficeServer, bind_socket
+from opencorp.daemon.app import AbsoluteFormPaths, OfficePaths, create_app
+from opencorp.daemon.main import OfficeServer, bind_socket
 from tests.daemon.conftest import FakePool
 
 

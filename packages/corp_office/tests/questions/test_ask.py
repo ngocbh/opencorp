@@ -5,11 +5,11 @@ import threading
 import pytest
 from yian.tools import ToolSet
 
-from agent_corp.protocol.models import DiscussionEntry, Question
-from agent_corp.questions import ask as ask_module
-from agent_corp.questions.ask import Answers, AnswersClosed, QuestionExpired, make_ask_user
-from agent_corp.store import NotFound, Store, StoreError
-from agent_corp.worker.rpc import ASK_KEYS, BaseHandlers, ask_user_stub
+from opencorp.protocol.models import DiscussionEntry, Question
+from opencorp.questions import ask as ask_module
+from opencorp.questions.ask import Answers, AnswersClosed, QuestionExpired, make_ask_user
+from opencorp.store import NotFound, Store, StoreError
+from opencorp.worker.rpc import ASK_KEYS, BaseHandlers, ask_user_stub
 from tests.store.conftest import question as make_question
 from tests.store.conftest import session, work_item
 from tests.store.conftest import store  # noqa: F401

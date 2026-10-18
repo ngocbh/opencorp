@@ -1,10 +1,10 @@
 from importlib.resources import files
 
-from agent_corp.chat.turns import MAIN_CHAT
-from agent_corp.company.flow_yaml import read_flow
-from agent_corp.company.flows import load_confined
+from opencorp.chat.turns import MAIN_CHAT
+from opencorp.company.flow_yaml import read_flow
+from opencorp.company.flows import load_confined
 
-ROOT = files("agent_corp.company_template")
+ROOT = files("opencorp.company_template")
 SIDE_CHAT = ROOT / "shared" / "flows" / "side_chat.yaml"
 
 

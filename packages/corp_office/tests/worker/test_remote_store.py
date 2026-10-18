@@ -4,8 +4,8 @@ from pathlib import Path
 import pytest
 from yian.memory.storage.markdown import FileMarkdownStore, MarkdownStore, MarkdownVersionMismatch
 
-from agent_corp.worker.remote_store import RemoteMarkdownStore
-from agent_corp.worker.rpc import BaseHandlers
+from opencorp.worker.remote_store import RemoteMarkdownStore
+from opencorp.worker.rpc import BaseHandlers
 
 from tests.worker.conftest import office_end
 

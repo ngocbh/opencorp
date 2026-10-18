@@ -5,17 +5,17 @@ import json
 
 import pytest
 
-from agent_corp.auth.tokens import new_token
-from agent_corp.chat.connections import Connections
-from agent_corp.chat.harness import Harness
-from agent_corp.chat.provider import Provider
-from agent_corp.extensions import learning
-from agent_corp.perm.monitor import Monitor
-from agent_corp.profile import GitProfileStore
-from agent_corp.profile.debrief import pending_debrief
-from agent_corp.profile.manager import propose
-from agent_corp.secrets import SecretStore, write_private
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.auth.tokens import new_token
+from opencorp.chat.connections import Connections
+from opencorp.chat.harness import Harness
+from opencorp.chat.provider import Provider
+from opencorp.extensions import learning
+from opencorp.perm.monitor import Monitor
+from opencorp.profile import GitProfileStore
+from opencorp.profile.debrief import pending_debrief
+from opencorp.profile.manager import propose
+from opencorp.secrets import SecretStore, write_private
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.chat.conftest import CHAT_FLOW
 from tests.company.conftest import _git, base_files, write_repo
 from tests.daemon.test_app import ULID

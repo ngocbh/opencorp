@@ -4,11 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from agent_corp.chat.hire import HireRefused, Hiring, agent_files
-from agent_corp.company.git import CompanyGit
-from agent_corp.company.lint import lint
-from agent_corp.company.loader import load_repo
-from agent_corp.protocol.models import HireRequest
+from opencorp.chat.hire import HireRefused, Hiring, agent_files
+from opencorp.company.git import CompanyGit
+from opencorp.company.lint import lint
+from opencorp.company.loader import load_repo
+from opencorp.protocol.models import HireRequest
 from tests.chat.conftest import CHAT_FLOW
 from tests.company.conftest import _git, base_files, person, write_repo
 

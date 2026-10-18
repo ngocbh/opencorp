@@ -5,15 +5,15 @@ import time
 
 import psutil
 
-from agent_corp.chat.connections import ConnectionFile, Connections
-from agent_corp.company_template import Owner, write_company
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.install import doctor, launchd, systemd
-from agent_corp.install.doctor import Check, codex_check
-from agent_corp.install.launch import Launch, launch
-from agent_corp.install.onboard import SET_UP, write_private
-from agent_corp.profile.debrief import DEBRIEF_FLOW
-from agent_corp.worker.spawn import INHERITED_ENV
+from opencorp.chat.connections import ConnectionFile, Connections
+from opencorp.company_template import Owner, write_company
+from opencorp.daemon.app import OfficePaths
+from opencorp.install import doctor, launchd, systemd
+from opencorp.install.doctor import Check, codex_check
+from opencorp.install.launch import Launch, launch
+from opencorp.install.onboard import SET_UP, write_private
+from opencorp.profile.debrief import DEBRIEF_FLOW
+from opencorp.worker.spawn import INHERITED_ENV
 from tests.company.conftest import _isolate_git  # noqa: F401
 
 from .conftest import Runner, make_host
@@ -250,12 +250,12 @@ def test_an_office_older_than_the_code_is_told_to_restart(tmp_path):
     this = Launch(argv=tuple(me.cmdline()), env={}, cwd=tmp_path, home=tmp_path, name="office")
     assert doctor.version_check(this, os.getpid(), newest=time.time() + 60).status == "warn"
     assert doctor.version_check(this, os.getpid(), newest=0).status == "ok"
-    other = Launch(argv=("/x/python", "-m", "agent_corp.daemon.main"), env={}, cwd=tmp_path, home=tmp_path, name="o")
+    other = Launch(argv=("/x/python", "-m", "opencorp.daemon.main"), env={}, cwd=tmp_path, home=tmp_path, name="o")
     assert "not this office's daemon" in doctor.version_check(other, os.getpid(), newest=0).detail
 
 
 def test_the_newest_source_covers_the_office_and_composer(tmp_path):
-    office = tmp_path / "packages/corp_office/src/agent_corp/x.py"
+    office = tmp_path / "packages/corp_office/src/opencorp/x.py"
     composer = tmp_path / "packages/yian/src/yian/y.py"
     for path, when in ((office, 100), (composer, 200)):
         path.parent.mkdir(parents=True)

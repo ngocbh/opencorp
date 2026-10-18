@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_corp import secrets as secrets_module
-from agent_corp.secrets import SecretStore
+from opencorp import secrets as secrets_module
+from opencorp.secrets import SecretStore
 
 KEY = "-----BEGIN KEY-----\nabc\n"
 

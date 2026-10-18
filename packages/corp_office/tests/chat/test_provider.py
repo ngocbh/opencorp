@@ -4,12 +4,12 @@ import os
 import pytest
 from starlette.requests import Request
 
-from agent_corp.chat.provider import Price, Provider, ProviderError, load_provider
-from agent_corp.secrets import write_private
-from agent_corp.store import Store
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
-from agent_corp.worker.job import Job, SessionMemorySpec, group_specs
-from agent_corp.worker.spawn import WorkerRegistry
+from opencorp.chat.provider import Price, Provider, ProviderError, load_provider
+from opencorp.secrets import write_private
+from opencorp.store import Store
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.worker.job import Job, SessionMemorySpec, group_specs
+from opencorp.worker.spawn import WorkerRegistry
 from tests.worker.conftest import Recorder, agent_flow, run, write_files
 
 SENTINEL = "sk-sentinel-4b1d9e"

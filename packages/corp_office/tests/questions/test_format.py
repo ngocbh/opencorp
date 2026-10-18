@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from agent_corp.protocol.models import DiscussionEntry
-from agent_corp.questions import format as fmt
-from agent_corp.questions.format import format_answer
+from opencorp.protocol.models import DiscussionEntry
+from opencorp.questions import format as fmt
+from opencorp.questions.format import format_answer
 from tests.store.conftest import question
 
 SID = "01J9ZZZZZZZZZZZZZZZZZZZZZZ"

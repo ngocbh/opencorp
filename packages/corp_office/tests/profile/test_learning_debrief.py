@@ -3,10 +3,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions.learning import DEBRIEFS_PER_TICK, MAX_DEBRIEFS, Learning, register
-from agent_corp.profile.debrief import pending_debrief
-from agent_corp.store import new_id
+from opencorp.chat.harness import HarnessError
+from opencorp.extensions.learning import DEBRIEFS_PER_TICK, MAX_DEBRIEFS, Learning, register
+from opencorp.profile.debrief import pending_debrief
+from opencorp.store import new_id
 from tests.profile.conftest import (DEBRIEF_ASK, OUTPUT, asked, chat, debrief_reply, fails_once, settled, status,
                                     wait_for)
 from tests.store.conftest import message, session

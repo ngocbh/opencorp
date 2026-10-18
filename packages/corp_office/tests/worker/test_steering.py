@@ -1,7 +1,7 @@
 import json
 import time
 
-from agent_corp.worker.inbox import Inbox
+from opencorp.worker.inbox import Inbox
 
 from tests.worker.conftest import Recorder, run
 

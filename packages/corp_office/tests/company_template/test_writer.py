@@ -4,17 +4,17 @@ from importlib.resources import files
 import pytest
 import yaml
 
-from agent_corp.company.flows import load_confined
-from agent_corp.company.lint import lint
-from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, template_files, write_company
-from agent_corp.profile.debrief import DEBRIEF_FLOW
-from agent_corp.protocol.models import Device
-from agent_corp.profile.manager import MANAGER_FLOW
+from opencorp.company.flows import load_confined
+from opencorp.company.lint import lint
+from opencorp.company.loader import load_repo
+from opencorp.company_template import Owner, template_files, write_company
+from opencorp.profile.debrief import DEBRIEF_FLOW
+from opencorp.protocol.models import Device
+from opencorp.profile.manager import MANAGER_FLOW
 from tests.company.conftest import _isolate_git  # noqa: F401
 
 OWNER = Owner(handle="ngocbh", name="Hong Ngoc Bui")
-PACKAGED_FLOWS = {f"shared/flows/{p.name}" for p in files("agent_corp.company_template").joinpath("shared", "flows").iterdir()
+PACKAGED_FLOWS = {f"shared/flows/{p.name}" for p in files("opencorp.company_template").joinpath("shared", "flows").iterdir()
                   if p.name.endswith(".yaml")}
 
 
@@ -133,9 +133,9 @@ def test_template_files_never_include_python(tmp_path):
 
 
 def test_the_first_hire_into_a_new_company_lints_clean(tmp_path):
-    from agent_corp.chat.hire import Hiring
-    from agent_corp.company.git import CompanyGit
-    from agent_corp.protocol.models import HireRequest
+    from opencorp.chat.hire import Hiring
+    from opencorp.company.git import CompanyGit
+    from opencorp.protocol.models import HireRequest
 
     root = tmp_path / "company"
     write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
@@ -148,7 +148,7 @@ def test_the_first_hire_into_a_new_company_lints_clean(tmp_path):
 
 
 def test_missing_files_names_what_writing_again_would_add(tmp_path):
-    from agent_corp.company_template import missing_files
+    from opencorp.company_template import missing_files
 
     root = tmp_path / "company"
     write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)
@@ -258,7 +258,7 @@ def test_a_truncated_company_yaml_from_a_stopped_first_write_is_rewritten(tmp_pa
 
 
 def test_is_new_until_the_first_commit(tmp_path):
-    from agent_corp.company_template import is_new
+    from opencorp.company_template import is_new
 
     root = tmp_path / "company"
     assert is_new(root)
@@ -272,7 +272,7 @@ def test_is_new_until_the_first_commit(tmp_path):
 
 @pytest.mark.parametrize("flow", sorted(PACKAGED_FLOWS))
 def test_every_packaged_flow_is_found_missing_and_topped_up(tmp_path, flow):
-    from agent_corp.company_template import missing_files
+    from opencorp.company_template import missing_files
 
     root = tmp_path / "company"
     write_company(root, tmp_path / "worktrees", company="Acme", owner=OWNER)

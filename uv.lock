@@ -7,53 +7,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agent-corp"
-version = "0.0.1"
-source = { editable = "." }
-dependencies = [
-    { name = "httpx" },
-    { name = "jsonschema" },
-    { name = "psutil" },
-    { name = "pydantic" },
-    { name = "python-ulid" },
-    { name = "pyyaml" },
-    { name = "questionary" },
-    { name = "starlette" },
-    { name = "uvicorn" },
-    { name = "yian", extra = ["all"] },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "datamodel-code-generator" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-timeout" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "httpx", specifier = ">=0.28" },
-    { name = "jsonschema", specifier = ">=4.23" },
-    { name = "psutil", specifier = ">=7" },
-    { name = "pydantic", specifier = ">=2.13" },
-    { name = "python-ulid", specifier = ">=4" },
-    { name = "pyyaml", specifier = ">=6" },
-    { name = "questionary", specifier = ">=2.1" },
-    { name = "starlette", specifier = ">=1.0" },
-    { name = "uvicorn", specifier = ">=0.54" },
-    { name = "yian", extras = ["all"], editable = "packages/yian" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "datamodel-code-generator", specifier = "==0.83.0" },
-    { name = "pytest", specifier = ">=9" },
-    { name = "pytest-asyncio", specifier = ">=1.0" },
-    { name = "pytest-timeout", specifier = ">=2.3" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1065,6 +1018,53 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e7/db/b135830095e2ae120ea04b0a53d3a1644eb65554385a8ef4c9cb4de3f5fd/openai-3.22.1.tar.gz", hash = "sha256:2575f961e4c1df8761f8eeb4d78e967de3f9b9f91b22f7120d60e393e970094d", size = 1751626, upload-time = "2026-09-30T00:25:55.548Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/74/e3b77d1157c8b9ad815a87d5719545097e5edb06156869c1657fbb6b797b/openai-3.22.1-py3-none-any.whl", hash = "sha256:43ff3de5457a8beb4afa177d4e0ba6841cfadd5219ebc62297fde6c8a9d401a6", size = 2090965, upload-time = "2026-09-30T00:25:53.524Z" },
+]
+
+[[package]]
+name = "opencorp"
+version = "0.0.1"
+source = { editable = "." }
+dependencies = [
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "python-ulid" },
+    { name = "pyyaml" },
+    { name = "questionary" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "yian", extra = ["all"] },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "datamodel-code-generator" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "pytest-timeout" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28" },
+    { name = "jsonschema", specifier = ">=4.23" },
+    { name = "psutil", specifier = ">=7" },
+    { name = "pydantic", specifier = ">=2.13" },
+    { name = "python-ulid", specifier = ">=4" },
+    { name = "pyyaml", specifier = ">=6" },
+    { name = "questionary", specifier = ">=2.1" },
+    { name = "starlette", specifier = ">=1.0" },
+    { name = "uvicorn", specifier = ">=0.54" },
+    { name = "yian", extras = ["all"], editable = "packages/yian" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "datamodel-code-generator", specifier = "==0.83.0" },
+    { name = "pytest", specifier = ">=9" },
+    { name = "pytest-asyncio", specifier = ">=1.0" },
+    { name = "pytest-timeout", specifier = ">=2.3" },
 ]
 
 [[package]]

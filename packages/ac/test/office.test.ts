@@ -42,7 +42,7 @@ test("syncThenInstall syncs the venv, then runs the Python onboarding with the f
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     {
-      argv: [venvPython(), "-m", "agent_corp.install", "onboard", "--service", "tmux", "--from", "git@example.com:acme.git"],
+      argv: [venvPython(), "-m", "opencorp.install", "onboard", "--service", "tmux", "--from", "git@example.com:acme.git"],
       cwd: undefined,
     },
   ])
@@ -54,7 +54,7 @@ test("syncThenInstall syncs the venv, then runs the Python init with the flags i
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
     {
-      argv: [venvPython(), "-m", "agent_corp.install", "init", "--company", "Acme", "--remote", "git@example.com:acme.git"],
+      argv: [venvPython(), "-m", "opencorp.install", "init", "--company", "Acme", "--remote", "git@example.com:acme.git"],
       cwd: undefined,
     },
   ])
@@ -71,7 +71,7 @@ test("offboard runs the Python offboarding with its flags and never syncs the ve
   const { deps, calls } = fake({ python: 1 })
   expect(await offboard(["--yes", "--delete-company", "--home", "/h"], deps)).toBe(1)
   expect(calls).toEqual([
-    { argv: [venvPython(), "-m", "agent_corp.install", "offboard", "--yes", "--delete-company", "--home", "/h"], cwd: undefined },
+    { argv: [venvPython(), "-m", "opencorp.install", "offboard", "--yes", "--delete-company", "--home", "/h"], cwd: undefined },
   ])
   const bare = fake({}, [venvPython()])
   expect(await offboard([], bare.deps)).toBe(1)
@@ -105,7 +105,7 @@ test("syncThenInstall stops when uv is missing or the sync fails", async () => {
 test("doctor runs the Python checks with its flags, or says to onboard when there is no venv", async () => {
   const { deps, calls } = fake({ python: 1 })
   expect(await doctor(["--home", "/h"], deps)).toBe(1)
-  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "doctor", "--home", "/h"], cwd: undefined }])
+  expect(calls).toEqual([{ argv: [venvPython(), "-m", "opencorp.install", "doctor", "--home", "/h"], cwd: undefined }])
   const bare = fake({}, [venvPython()])
   expect(await doctor([], bare.deps)).toBe(1)
   expect(bare.calls).toEqual([])
@@ -115,7 +115,7 @@ test("doctor runs the Python checks with its flags, or says to onboard when ther
 test("start runs the Python start with its flags", async () => {
   const { deps, calls } = fake({ python: 3 })
   expect(await start(["--home", "/h"], deps)).toBe(3)
-  expect(calls).toEqual([{ argv: [venvPython(), "-m", "agent_corp.install", "start", "--home", "/h"], cwd: undefined }])
+  expect(calls).toEqual([{ argv: [venvPython(), "-m", "opencorp.install", "start", "--home", "/h"], cwd: undefined }])
 })
 
 test("restart syncs the venv, then runs the Python restart with its flags", async () => {
@@ -123,7 +123,7 @@ test("restart syncs the venv, then runs the Python restart with its flags", asyn
   expect(await restart(["--home", "/h"], deps)).toBe(1)
   expect(calls).toEqual([
     { argv: ["/bin/uv", "sync", "--frozen", "--quiet"], cwd: REPO },
-    { argv: [venvPython(), "-m", "agent_corp.install", "restart", "--home", "/h"], cwd: undefined },
+    { argv: [venvPython(), "-m", "opencorp.install", "restart", "--home", "/h"], cwd: undefined },
   ])
   const { commands } = await import("../src/main")
   expect(commands.restart.summary).toBe("Stop the office and start it again")

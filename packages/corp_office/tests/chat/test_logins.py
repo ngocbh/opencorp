@@ -11,11 +11,11 @@ import time
 import pytest
 from yian.llm_clients.auth import AuthStore, HttpResponse, OpenAIAuth
 
-from agent_corp.chat import logins as logins_module
-from agent_corp.chat.connections import AUTH_FILE_ENV, ConnectionFile, Connections
-from agent_corp.chat.logins import FORGET, LoginNotFound, Logins, LoginsClosed
-from agent_corp.chat.provider import ProviderError
-from agent_corp.secrets import write_private
+from opencorp.chat import logins as logins_module
+from opencorp.chat.connections import AUTH_FILE_ENV, ConnectionFile, Connections
+from opencorp.chat.logins import FORGET, LoginNotFound, Logins, LoginsClosed
+from opencorp.chat.provider import ProviderError
+from opencorp.secrets import write_private
 from tests.chat.conftest import wait_for
 
 SIGNATURE = "fake-signature-6e2a90d4"

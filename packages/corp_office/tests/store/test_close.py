@@ -7,14 +7,14 @@ import threading
 
 import pytest
 
-from agent_corp.store import Store
+from opencorp.store import Store
 
 # A thread's BEGIN IMMEDIATE waits (without the GIL) on another connection's write lock
 # while the main thread closes the store. Run in a subprocess, so a crash fails the test
 # instead of killing pytest.
 CLOSE_DURING_A_WRITE = """
 import sqlite3, sys, threading, time
-from agent_corp.store import Store
+from opencorp.store import Store
 
 path = sys.argv[1]
 store = Store(path)

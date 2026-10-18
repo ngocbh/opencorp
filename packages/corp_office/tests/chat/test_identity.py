@@ -1,7 +1,7 @@
 from dataclasses import replace
 
-from agent_corp.chat.identity import person_inputs, talking_to
-from agent_corp.company.loader import load_repo
+from opencorp.chat.identity import person_inputs, talking_to
+from opencorp.company.loader import load_repo
 from tests.company.conftest import _isolate_git, company  # noqa: F401
 
 

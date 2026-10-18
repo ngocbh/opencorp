@@ -1,6 +1,6 @@
 import pytest
 
-from agent_corp.chat.turns import MAIN_CHAT, ChatFlow, seconds, turn_path
+from opencorp.chat.turns import MAIN_CHAT, ChatFlow, seconds, turn_path
 
 
 @pytest.mark.parametrize(("node_id", "path"), [

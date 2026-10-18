@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from agent_corp.store import new_id
-from agent_corp.tools.work_items import work_item_tools
+from opencorp.store import new_id
+from opencorp.tools.work_items import work_item_tools
 from tests.store.conftest import question, session, work_item
 
 

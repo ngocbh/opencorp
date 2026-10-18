@@ -4,9 +4,9 @@ from importlib.resources import files
 
 import pytest
 
-from agent_corp.auth.tokens import new_token
-from agent_corp.extensions.questions import register
-from agent_corp.questions.side import SIDE_CHAT_FLOW
+from opencorp.auth.tokens import new_token
+from opencorp.extensions.questions import register
+from opencorp.questions.side import SIDE_CHAT_FLOW
 from tests.chat.conftest import CHAT_FLOW
 from tests.company.conftest import base_files, write_repo
 from tests.daemon.test_app import ULID
@@ -14,7 +14,7 @@ from tests.daemon.test_auth import add_human, bearer, give_device
 from tests.daemon.test_routes_sessions import chat, fake_llm, until  # noqa: F401
 from tests.store.conftest import question, session
 
-SIDE_FLOW = (files("agent_corp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
+SIDE_FLOW = (files("opencorp.company_template") / "shared" / "flows" / "side_chat.yaml").read_text()
 ASK = {"tool_calls": [{"name": "ask_user", "arguments": {"question": "Retry or back off?",
                                                          "options": ["Retry", "Back off"]}}]}
 CARD_ACTIONS = [

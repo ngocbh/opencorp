@@ -1,8 +1,8 @@
-from agent_corp.extensions.learning import Learning
-from agent_corp.profile.debrief import ready_debrief
-from agent_corp.protocol import now
-from agent_corp.protocol.models import Feedback, FeedbackRequest
-from agent_corp.store import new_id
+from opencorp.extensions.learning import Learning
+from opencorp.profile.debrief import ready_debrief
+from opencorp.protocol import now
+from opencorp.protocol.models import Feedback, FeedbackRequest
+from opencorp.store import new_id
 from tests.profile.conftest import (LEARNER_ASK, OUTPUT, asked, chat, debrief_reply, learner_reply, settled, status,
                                     wait_for)
 from tests.profile.test_learning_feedback import PROFILE, feedback_status, profile_text

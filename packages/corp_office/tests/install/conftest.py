@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.install.doctor import Check
-from agent_corp.install.launch import Host, Launch, launch
+from opencorp.install.doctor import Check
+from opencorp.install.launch import Host, Launch, launch
 
 SERVICE_TOOLS = ("launchctl", "systemctl", "loginctl", "tmux")
 
@@ -30,14 +30,14 @@ def no_real_services(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("AGENT_CORP_HOME", str(root / "user" / ".agent-corp"))
     (root / "user").mkdir()
     # A model check would reach the provider; tests of the check itself call it directly.
-    monkeypatch.setattr("agent_corp.install.init.model_problem", lambda provider: None)
-    monkeypatch.setattr("agent_corp.install.interview.model_problem", lambda provider: None)
+    monkeypatch.setattr("opencorp.install.init.model_problem", lambda provider: None)
+    monkeypatch.setattr("opencorp.install.interview.model_problem", lambda provider: None)
     # Listing an Azure resource's deployments would reach Azure; an empty list means the name is typed.
-    monkeypatch.setattr("agent_corp.install.onboard.azure_deployments", lambda base_url, key: [])
+    monkeypatch.setattr("opencorp.install.onboard.azure_deployments", lambda base_url, key: [])
     # Listing a provider's models would reach the provider; an empty list means the model is asked as before.
-    monkeypatch.setattr("agent_corp.install.onboard.provider_models", lambda name, key: [])
+    monkeypatch.setattr("opencorp.install.onboard.provider_models", lambda name, key: [])
     # `ac doctor` would run whatever codex is on the developer's PATH; tests of the check itself call it directly.
-    monkeypatch.setattr("agent_corp.install.doctor.codex_check",
+    monkeypatch.setattr("opencorp.install.doctor.codex_check",
                         lambda env, environ, mode=None: Check("codex", "ok", "stand-in"))
     yield
     assert not calls.exists(), f"a test ran a real service tool:\n{calls.read_text()}"

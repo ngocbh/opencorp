@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft7Validator
 
-from agent_corp.testing import codex_spike
-from agent_corp.testing.codex_spike import (
+from opencorp.testing import codex_spike
+from opencorp.testing.codex_spike import (
     CHECKS,
     RERUN_CHECKS,
     SCENARIOS,
@@ -32,7 +32,7 @@ from agent_corp.testing.codex_spike import (
     scrub,
     signed_in,
 )
-from agent_corp.worker import spawn
+from opencorp.worker import spawn
 from tests.company.conftest import _isolate_git  # noqa: F401  (autouse: the owner's git config stays out)
 
 SCHEMA = Path(__file__).parents[1] / "harness" / "fixtures" / "codex" / "schema"

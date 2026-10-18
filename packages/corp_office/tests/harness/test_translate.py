@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft7Validator
 
-from agent_corp.chat.transcript import Transcript
-from agent_corp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED,
+from opencorp.chat.transcript import Transcript
+from opencorp.harness.translate import (COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED,
                                           REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved, change_counts,
                                           relative)
-from agent_corp.store import Store
-from agent_corp.testing import fake_codex as fc
+from opencorp.store import Store
+from opencorp.testing import fake_codex as fc
 from tests.store.conftest import session
 
 FIXTURES = Path(__file__).parent / "fixtures" / "codex"

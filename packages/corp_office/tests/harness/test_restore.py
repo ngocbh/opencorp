@@ -4,10 +4,10 @@ import threading
 
 import pytest
 
-from agent_corp.protocol import now
-from agent_corp.protocol.models import Message, TextPart, ToolPart
-from agent_corp.store import new_id
-from agent_corp.testing import fake_codex as fc
+from opencorp.protocol import now
+from opencorp.protocol.models import Message, TextPart, ToolPart
+from opencorp.store import new_id
+from opencorp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
 
 

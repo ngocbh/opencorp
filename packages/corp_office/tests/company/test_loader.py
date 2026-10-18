@@ -1,6 +1,6 @@
 from yian import load_flow
 
-from agent_corp.company.loader import load_repo
+from opencorp.company.loader import load_repo
 from tests.company.conftest import person
 
 

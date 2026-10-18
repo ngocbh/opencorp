@@ -12,9 +12,9 @@ from urllib.parse import quote
 import httpx
 import psutil
 
-from agent_corp.auth.identity import identity_path, read_identity
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.install.launch import REPO
+from opencorp.auth.identity import identity_path, read_identity
+from opencorp.daemon.app import OfficePaths
+from opencorp.install.launch import REPO
 
 AC = REPO / "packages" / "ac" / "src" / "main.ts"
 """The `ac` entry point in this checkout, run with bun."""
@@ -77,7 +77,7 @@ class RunningOffice:
         provider = {"llm_config": {"provider": "vllm", "model": "stub"}, "env": self.fake.env()}
         self.fake.script({"content": "OK", "match": "Reply with the single word OK."})  # init's model check
         done = subprocess.run(
-            [sys.executable, "-m", "agent_corp.install", "init", "--home", str(self.home),
+            [sys.executable, "-m", "opencorp.install", "init", "--home", str(self.home),
              "--provider-stdin", "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh",
              "--service", "background", *([] if device else ["--no-device"])],
             input=json.dumps(provider), capture_output=True, text=True, cwd=REPO, timeout=120)

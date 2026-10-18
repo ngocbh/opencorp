@@ -8,16 +8,16 @@ import threading
 import pytest
 from pydantic import TypeAdapter
 
-from agent_corp.company.loader import load_repo
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.install import __main__ as install_main
-from agent_corp.install import doctor
-from agent_corp.install.__main__ import main
-from agent_corp.install.doctor import codex_check as real_codex_check
-from agent_corp.install.interview import Known
-from agent_corp.install.launch import REPO, office_answers
-from agent_corp.protocol import models
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.company.loader import load_repo
+from opencorp.daemon.app import OfficePaths
+from opencorp.install import __main__ as install_main
+from opencorp.install import doctor
+from opencorp.install.__main__ import main
+from opencorp.install.doctor import codex_check as real_codex_check
+from opencorp.install.interview import Known
+from opencorp.install.launch import REPO, office_answers
+from opencorp.protocol import models
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
@@ -207,7 +207,7 @@ def fake():
 
 def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir, fake):
     paths = OfficePaths(short_dir)
-    args = [sys.executable, "-m", "agent_corp.install", "init", "--home", str(short_dir), "--provider-stdin",
+    args = [sys.executable, "-m", "opencorp.install", "init", "--home", str(short_dir), "--provider-stdin",
             "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
     fake.script({"content": "OK"})
@@ -239,8 +239,8 @@ def test_json_prompts_is_not_in_the_help(capsys):
 DRIVER = '''
 import sys
 
-import agent_corp.install.interview as interview
-from agent_corp.install.__main__ import main
+import opencorp.install.interview as interview
+from opencorp.install.__main__ import main
 
 
 def check(provider):
@@ -267,7 +267,7 @@ def _answer(prompt) -> str | None:
 
 def test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean(short_dir, fake, tmp_path):
     paths = OfficePaths(short_dir)
-    args = [sys.executable, "-m", "agent_corp.install", "init", "--home", str(short_dir), "--provider-stdin",
+    args = [sys.executable, "-m", "opencorp.install", "init", "--home", str(short_dir), "--provider-stdin",
             "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
     fake.script({"content": "OK"})

@@ -11,8 +11,8 @@ from yian.memory.profile import ProfileMemory
 from yian.memory.storage.markdown import MarkdownStore, MarkdownVersionMismatch
 from langchain_core.messages import AIMessage
 
-from agent_corp.company.git import CompanyGit, CompanyGitError
-from agent_corp.profile import EMPTY_BLOB, GitProfileStore, blob_id, commit_message
+from opencorp.company.git import CompanyGit, CompanyGitError
+from opencorp.profile import EMPTY_BLOB, GitProfileStore, blob_id, commit_message
 from tests.company.conftest import _git, _isolate_git, company  # noqa: F401
 
 PROFILE = "people/minh/profile.md"

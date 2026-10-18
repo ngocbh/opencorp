@@ -7,13 +7,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions.questions import register
-from agent_corp.harness import session as session_module
-from agent_corp.harness.sessions import _masked
-from agent_corp.protocol.models import QuestionPage
-from agent_corp.store import DuplicateKey, StoreError
-from agent_corp.testing import fake_codex as fc
+from opencorp.chat.harness import HarnessError
+from opencorp.extensions.questions import register
+from opencorp.harness import session as session_module
+from opencorp.harness.sessions import _masked
+from opencorp.protocol.models import QuestionPage
+from opencorp.store import DuplicateKey, StoreError
+from opencorp.testing import fake_codex as fc
 from tests.harness.conftest import start, status, wait_for
 from tests.store.conftest import question
 

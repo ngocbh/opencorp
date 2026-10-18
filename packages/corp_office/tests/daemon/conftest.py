@@ -12,11 +12,11 @@ import pytest
 import uvicorn
 from yian.memory.storage.markdown import MarkdownVersionMismatch
 
-from agent_corp.company.git import CompanyGit
-from agent_corp.daemon.app import Office, OfficePaths, create_app
-from agent_corp.daemon.bus import Bus
-from agent_corp.daemon.main import OfficeServer, bind_socket
-from agent_corp.store import Store
+from opencorp.company.git import CompanyGit
+from opencorp.daemon.app import Office, OfficePaths, create_app
+from opencorp.daemon.bus import Bus
+from opencorp.daemon.main import OfficeServer, bind_socket
+from opencorp.store import Store
 from tests.company.conftest import _isolate_git, base_files, company, write_repo  # noqa: F401
 
 

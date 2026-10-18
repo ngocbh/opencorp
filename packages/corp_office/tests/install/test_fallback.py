@@ -4,8 +4,8 @@ import subprocess
 
 import pytest
 
-from agent_corp.install import fallback
-from agent_corp.install.launch import ServiceError, launch
+from opencorp.install import fallback
+from opencorp.install.launch import ServiceError, launch
 
 from .conftest import Runner, make_host
 
@@ -16,7 +16,7 @@ def test_the_tmux_command_runs_the_daemon_with_only_its_env_its_output_to_the_lo
         owner_launch):
     assert fallback.shell_command(owner_launch) == (
         "exec env -i HOME=/Users/owner PATH=/usr/bin:/bin"
-        " /opt/agent-corp/.venv/bin/python -m agent_corp.daemon.main --home /Users/owner/.agent-corp"
+        " /opt/agent-corp/.venv/bin/python -m opencorp.daemon.main --home /Users/owner/.agent-corp"
         " >>/Users/owner/.agent-corp/office/office.log 2>&1")
 
 

@@ -11,11 +11,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from agent_corp.auth.passwords import check_password, hash_password
-from agent_corp.auth.tokens import new_token, token_sha256
-from agent_corp.daemon.app import create_app
-from agent_corp.daemon.auth import acting_person
-from agent_corp.install.launch import office_answers
+from opencorp.auth.passwords import check_password, hash_password
+from opencorp.auth.tokens import new_token, token_sha256
+from opencorp.daemon.app import create_app
+from opencorp.daemon.auth import acting_person
+from opencorp.install.launch import office_answers
 from tests.company.conftest import _git
 
 from .conftest import served

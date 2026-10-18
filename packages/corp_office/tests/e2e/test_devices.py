@@ -5,9 +5,9 @@ import subprocess
 
 import pytest
 
-from agent_corp.auth.identity import identity_path, read_identity
-from agent_corp.auth.tokens import token_sha256
-from agent_corp.install.launch import REPO
+from opencorp.auth.identity import identity_path, read_identity
+from opencorp.auth.tokens import token_sha256
+from opencorp.install.launch import REPO
 
 from .fixtures.office import RunningOffice
 

@@ -2,11 +2,11 @@
 
 import pytest
 
-from agent_corp.company.loader import load_repo
-from agent_corp.protocol.models import DiscussionEntry
-from agent_corp.questions.format import DISCUSSION_CAP
-from agent_corp.questions.seed import FRAMING, build_seed, card_text, first_message
-from agent_corp.store import new_id
+from opencorp.company.loader import load_repo
+from opencorp.protocol.models import DiscussionEntry
+from opencorp.questions.format import DISCUSSION_CAP
+from opencorp.questions.seed import FRAMING, build_seed, card_text, first_message
+from opencorp.store import new_id
 from tests.company.conftest import base_files, write_repo
 from tests.store.conftest import comment, message, question, session, work_item
 from tests.store.conftest import store  # noqa: F401

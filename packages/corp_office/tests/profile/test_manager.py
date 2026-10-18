@@ -5,11 +5,11 @@ from importlib.resources import files
 import pytest
 from yian.memory.storage.markdown import MarkdownVersionMismatch
 
-from agent_corp.company.flows import load_confined
-from agent_corp.company.git import CompanyGit
-from agent_corp.profile import GitProfileStore
-from agent_corp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_proposal, profile_tools
-from agent_corp.store import Store
+from opencorp.company.flows import load_confined
+from opencorp.company.git import CompanyGit
+from opencorp.profile import GitProfileStore
+from opencorp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_proposal, profile_tools
+from opencorp.store import Store
 from tests.company.conftest import _isolate_git, base_files, write_repo  # noqa: F401
 from tests.store.conftest import session
 
@@ -28,7 +28,7 @@ def subject(git):
 
 
 def test_the_profile_manager_template_loads():
-    root = files("agent_corp.company_template")
+    root = files("opencorp.company_template")
     flow = load_confined(root, root / MANAGER_FLOW)
     assert flow.name == "profile_manager"
 

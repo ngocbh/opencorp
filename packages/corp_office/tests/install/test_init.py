@@ -8,22 +8,22 @@ from dataclasses import replace
 import pytest
 import yaml
 
-from agent_corp.auth.identity import device_name, read_identity
-from agent_corp.auth.passwords import check_password
-from agent_corp.auth.tokens import token_sha256
-from agent_corp.company.draft import Draft, Teammate
-from agent_corp.company.lint import lint
-from agent_corp.company.loader import load_repo
-from agent_corp.company_template import Owner, is_new, missing_files, write_company
-from agent_corp.daemon.app import OfficePaths
-from agent_corp.install import init as init_module
-from agent_corp.install import onboard as onboard_module
-from agent_corp.install.init import NO_REMOTE, REMOTE, init, password_step, remote_step
-from agent_corp.install.interview import CONFIRM, Asking, Known, ModelError, asking
-from agent_corp.install.launch import office_answers
-from agent_corp.install.onboard import (GIT_ACCESS, SET_UP_AGAIN, TRY_AGAIN, NoTerminal, OnboardError, TtyPrompter,
+from opencorp.auth.identity import device_name, read_identity
+from opencorp.auth.passwords import check_password
+from opencorp.auth.tokens import token_sha256
+from opencorp.company.draft import Draft, Teammate
+from opencorp.company.lint import lint
+from opencorp.company.loader import load_repo
+from opencorp.company_template import Owner, is_new, missing_files, write_company
+from opencorp.daemon.app import OfficePaths
+from opencorp.install import init as init_module
+from opencorp.install import onboard as onboard_module
+from opencorp.install.init import NO_REMOTE, REMOTE, init, password_step, remote_step
+from opencorp.install.interview import CONFIRM, Asking, Known, ModelError, asking
+from opencorp.install.launch import office_answers
+from opencorp.install.onboard import (GIT_ACCESS, SET_UP_AGAIN, TRY_AGAIN, NoTerminal, OnboardError, TtyPrompter,
                                         onboard, redact)
-from agent_corp.testing.fake_llm import LLM_CONFIG, FakeLLM
+from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
@@ -323,7 +323,7 @@ def test_a_company_whose_first_write_stopped_early_is_finished(tmp_path, monkeyp
 
 def _stop_before_the_first_commit(tmp_path, monkeypatch):
     """Run init as `an` of Acme until the company's first commit, which fails."""
-    import agent_corp.company_template as template
+    import opencorp.company_template as template
 
     def fail(*a, **k):
         raise template.CompanyGitError("killed")

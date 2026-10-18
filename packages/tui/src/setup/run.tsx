@@ -23,7 +23,7 @@ export interface Writer {
  */
 export async function runSetup(argv: string[], cwd: string): Promise<number> {
   const child = spawnSetup(argv, cwd)
-  const name = argv[argv.indexOf("agent_corp.install") + 1]
+  const name = argv[argv.indexOf("opencorp.install") + 1]
   try {
     return await runSetupWith(child, process.stdout, process.stderr, name ? `ac ${name}` : "")
   } catch (e) {

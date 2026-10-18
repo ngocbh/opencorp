@@ -2,13 +2,13 @@ from importlib.resources import files
 
 import pytest
 
-from agent_corp.company.flows import load_confined
-from agent_corp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, REQUEST
-from agent_corp.profile.debrief import (DEBRIEF_FLOW, apprentice_header, confirm_follow_ups, pending_debrief,
+from opencorp.company.flows import load_confined
+from opencorp.harness.translate import COMMAND, FILE_CHANGE, MCP_TOOL, REQUEST
+from opencorp.profile.debrief import (DEBRIEF_FLOW, apprentice_header, confirm_follow_ups, pending_debrief,
                                         ready_debrief, transcript_text)
-from agent_corp.protocol import now
-from agent_corp.protocol.models import ErrorPart, Message, TextPart, ToolPart
-from agent_corp.store import new_id
+from opencorp.protocol import now
+from opencorp.protocol.models import ErrorPart, Message, TextPart, ToolPart
+from opencorp.store import new_id
 from tests.store.conftest import session, store, work_item  # noqa: F401
 
 OUTPUT = {"summary": "Fixed the bug.", "status": "done", "artifacts": ["PR #4"], "decisions": ["Use sqlite"],
@@ -16,7 +16,7 @@ OUTPUT = {"summary": "Fixed the bug.", "status": "done", "artifacts": ["PR #4"],
 
 
 def test_the_debrief_template_loads():
-    root = files("agent_corp.company_template")
+    root = files("opencorp.company_template")
     flow = load_confined(root, root / DEBRIEF_FLOW)
     assert flow.name == "debrief"
 

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.sandbox.escapees import Canary
+from opencorp.sandbox.escapees import Canary
 
 # The run tests cover the sweep itself (test_setsid_child_dies_with_the_call).
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="macOS escape sweep")

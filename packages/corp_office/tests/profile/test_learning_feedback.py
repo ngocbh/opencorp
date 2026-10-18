@@ -3,14 +3,14 @@ import threading
 
 import pytest
 
-from agent_corp.chat.connections import ConnectionFile, read_run_record
-from agent_corp.chat.harness import HarnessError
-from agent_corp.extensions import learning as learning_module
-from agent_corp.profile.debrief import DEBRIEF_FLOW
-from agent_corp.profile.feedback import MAX_ATTEMPTS, FeedbackHandlers
-from agent_corp.protocol import now
-from agent_corp.protocol.models import Feedback, FeedbackRequest
-from agent_corp.store import new_id
+from opencorp.chat.connections import ConnectionFile, read_run_record
+from opencorp.chat.harness import HarnessError
+from opencorp.extensions import learning as learning_module
+from opencorp.profile.debrief import DEBRIEF_FLOW
+from opencorp.profile.feedback import MAX_ATTEMPTS, FeedbackHandlers
+from opencorp.protocol import now
+from opencorp.protocol.models import Feedback, FeedbackRequest
+from opencorp.store import new_id
 from tests.chat.conftest import on, say, spawned
 from tests.profile.conftest import (LEARNER_ASK, asked, chat, debrief_reply, fails_once, learner_reply, review_reply,
                                     settled, status, wait_for)

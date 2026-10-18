@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from agent_corp.chat import harness as harness_module
-from agent_corp.chat.connections import OFFICE, ConnectionFile, config_hash, read_run_record
-from agent_corp.chat.harness import HarnessError
-from agent_corp.secrets import write_private
-from agent_corp.testing.fake_llm import LLM_CONFIG
+from opencorp.chat import harness as harness_module
+from opencorp.chat.connections import OFFICE, ConnectionFile, config_hash, read_run_record
+from opencorp.chat.harness import HarnessError
+from opencorp.secrets import write_private
+from opencorp.testing.fake_llm import LLM_CONFIG
 from tests.chat.conftest import errors, on, say, spawned, status, wait_for
 
 KEY = "sk-record-test-0e7c"

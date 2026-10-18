@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/opt/agent-corp
 Environment="HOME=/Users/owner"
 Environment="PATH=/usr/bin:/bin"
-ExecStart=/opt/agent-corp/.venv/bin/python -m agent_corp.daemon.main --home /Users/owner/.agent-corp
+ExecStart=/opt/agent-corp/.venv/bin/python -m opencorp.daemon.main --home /Users/owner/.agent-corp
 StandardOutput=append:/Users/owner/.agent-corp/office/office.log
 StandardError=append:/Users/owner/.agent-corp/office/office.log
 Restart=on-failure

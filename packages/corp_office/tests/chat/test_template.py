@@ -2,10 +2,10 @@ from importlib.resources import files
 
 import pytest
 
-from agent_corp.company.flow_yaml import read_flow
-from agent_corp.company.flows import load_confined
+from opencorp.company.flow_yaml import read_flow
+from opencorp.company.flows import load_confined
 
-ROOT = files("agent_corp.company_template")
+ROOT = files("opencorp.company_template")
 CHAT = ROOT / "shared" / "flows" / "chat.yaml"
 SIDE = ROOT / "shared" / "flows" / "side_chat.yaml"
 

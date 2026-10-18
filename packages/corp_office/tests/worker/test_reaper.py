@@ -6,7 +6,7 @@ import sys
 import psutil
 import pytest
 
-from agent_corp.worker.reaper import kill_group, reap
+from opencorp.worker.reaper import kill_group, reap
 
 from tests.worker.conftest import Recorder, run
 

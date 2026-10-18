@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from agent_corp.sandbox import fileops
-from agent_corp.sandbox.fileops import OpError
+from opencorp.sandbox import fileops
+from opencorp.sandbox.fileops import OpError
 
 
 @pytest.fixture(autouse=True)

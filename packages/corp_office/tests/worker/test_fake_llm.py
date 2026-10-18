@@ -5,10 +5,10 @@ import httpx
 import pytest
 from yian.run import run_flow
 
-from agent_corp.chat.connections import ConnectionFile
-from agent_corp.chat.models import list_models
-from agent_corp.company.flows import load_confined
-from agent_corp.testing.fake_llm import LLM_CONFIG
+from opencorp.chat.connections import ConnectionFile
+from opencorp.chat.models import list_models
+from opencorp.company.flows import load_confined
+from opencorp.testing.fake_llm import LLM_CONFIG
 
 
 @pytest.fixture
