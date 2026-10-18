@@ -52,6 +52,13 @@ def sandbox_problem() -> str | None:
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
 
 
+_SIGNED_OUT = "not logged in"
+"""How ``codex login status`` starts the line it prints when nobody is signed in, casefolded."""
+
+_LINE_CAP = 200
+"""The most of a failed ``codex login status`` line the report shows."""
+
+
 def _codex_change_lands(mode: str | None) -> str:
     """How a Codex install or setting made in this shell reaches an office running under ``mode``."""
     # launchd and systemd start the office with the environment `ac onboard` wrote into its service file, which
@@ -64,8 +71,9 @@ def _codex_change_lands(mode: str | None) -> str:
 def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | None = None,
                 timeout: float = 30) -> Check:
     """Whether the office can start Codex sessions, in the environment it gives an app-server: the binary on its PATH,
-    the version, and the sign-in. Missing or signed out is a warning, not a failure: only people with ``codex`` in
-    ``harnesses`` need it. A ``codex`` that won't run or doesn't answer within ``timeout`` seconds fails.
+    the version, and the sign-in. Missing, signed out, or a ``login status`` that fails otherwise (shown by the first
+    line it printed) is a warning, not a failure: only people with ``codex`` in ``harnesses`` need it. A ``codex`` that
+    won't run or doesn't answer within ``timeout`` seconds fails.
 
     ``environ`` is the office's environment: its ``AGENT_CORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
     joins ``env``, as they do for an app-server. ``mode`` is the office's recorded service mode, which decides how a
@@ -93,7 +101,12 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
         return Check("codex", "fail", f"{found} can't run: {exc.strerror or exc}")
     named = f"{printed} at {found}" if (printed := version.stdout.strip()) else f"{found} (no version printed)"
     if login.returncode != 0:
-        return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
+        said = next((line.strip() for line in (login.stderr + "\n" + login.stdout).splitlines() if line.strip()),
+                    f"exit {login.returncode}")
+        # Codex says "Not logged in" when signed out, and exits 1 on other errors too (a bad config.toml, say).
+        if said.casefold().startswith(_SIGNED_OUT):
+            return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
+        return Check("codex", "warn", f"{named}: `{found} login status` failed: {said[:_LINE_CAP]}")
     return Check("codex", "ok", f"{named}, signed in")
 
 

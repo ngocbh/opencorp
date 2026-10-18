@@ -264,11 +264,17 @@ def test_the_newest_source_covers_the_office_and_composer(tmp_path):
     assert doctor.newest_source(tmp_path) == 200
 
 
-def _codex(tmp_path, login_exit):
+def _codex(tmp_path, login_exit, login_err=None, login_out=""):
+    """A fake codex on a PATH; ``login status`` prints what real Codex does (on stderr) unless told otherwise."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    if login_err is None:
+        login_err = "Logged in using ChatGPT\n" if login_exit == 0 else "Not logged in\n"
+    (tmp_path / "login.err").write_text(login_err)
+    (tmp_path / "login.out").write_text(login_out)
     (bin_dir / "codex").write_text(
-        f'#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";; login) exit {login_exit};; esac\n')
+        f'#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";;\n'
+        f'login) cat "{tmp_path}/login.out"; cat "{tmp_path}/login.err" >&2; exit {login_exit};; esac\n')
     (bin_dir / "codex").chmod(0o755)
     return {"PATH": f"{bin_dir}:/usr/bin:/bin", "HOME": str(tmp_path)}
 
@@ -284,6 +290,25 @@ def test_codex_signed_out_or_missing_is_a_warning(tmp_path):
     assert signed_out == Check("codex", "warn", f"codex-cli 0.130.0 at {codex} is signed out; run `{codex} login`")
     missing = codex_check({"PATH": str(tmp_path / "nowhere")}, {})
     assert missing.status == "warn" and "not on the office's PATH" in missing.detail
+
+
+def test_a_codex_login_status_that_fails_otherwise_shows_its_first_line(tmp_path):
+    env = _codex(tmp_path, 1, "\nError loading configuration: unknown field `modle` in config.toml\nat line 3\n")
+    codex = tmp_path / "bin" / "codex"
+    assert codex_check(env, {}) == Check("codex", "warn", f"codex-cli 0.130.0 at {codex}: `{codex} login status`"
+                                         " failed: Error loading configuration: unknown field `modle` in config.toml")
+
+
+def test_a_failed_codex_login_status_falls_back_to_stdout_then_the_exit_code(tmp_path):
+    env = _codex(tmp_path, 2, "", "something odd\n")
+    assert codex_check(env, {}).detail.endswith("login status` failed: something odd")
+    (tmp_path / "login.out").write_text("")
+    assert codex_check(env, {}).detail.endswith("login status` failed: exit 2")
+
+
+def test_a_failed_codex_login_status_line_is_cut_short(tmp_path):
+    check = codex_check(_codex(tmp_path, 1, "Error checking login status: " + "x" * 500 + "\n"), {})
+    assert check.status == "warn" and check.detail.endswith("failed: Error checking login status: " + "x" * 171)
 
 
 def test_a_codex_that_hangs_or_cant_run_fails_the_check(tmp_path):
