@@ -124,15 +124,20 @@ def _check_assets(repo: CompanyRepo) -> Iterator[RepoIssue]:
                                     "warning")
 
 
+MAIN_INPUTS = ("person", "talking_to")
+"""The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare."""
+
+
 def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
-    """Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles."""
+    """Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles; a main flow
+    declares the inputs the office passes it."""
     for handle, person in sorted(repo.people.items()):
         if person.kind == "agent" and not person.main:
             yield RepoIssue(_person_path(handle), "person.no_main", "agents need a main flow")
         base = repo.root / "people" / handle
-        refs = (([person.main] if person.main else []) + [sop.flow for sop in person.sops]
-                + [routine.flow for routine in person.routines])
-        for ref in refs:
+        refs = (([(person.main, True)] if person.main else []) + [(sop.flow, False) for sop in person.sops]
+                + [(routine.flow, False) for routine in person.routines])
+        for ref, is_main in refs:
             try:
                 path = (base / ref).resolve()
             except (OSError, ValueError) as exc:  # e.g. a NUL byte in the path
@@ -142,7 +147,7 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
                 yield RepoIssue(_person_path(handle), "person.flow_missing", f"{ref} does not exist")
                 continue
             try:
-                load_confined(repo.root, path)
+                flow = load_confined(repo.root, path)
             except FlowOutsideRepo as exc:
                 yield RepoIssue(_person_path(handle), "person.flow_outside_repo", f"{ref}: {exc}")
             except LoadError as exc:
@@ -150,6 +155,15 @@ def _check_flows(repo: CompanyRepo) -> Iterator[RepoIssue]:
             except Exception as exc:  # OSError/ValueError from a child file, or a surprise
                 yield RepoIssue(_person_path(handle), "person.flow_invalid",
                                 f"{ref}: {type(exc).__name__}: {exc}")
+            else:
+                declared = {p.name for p in flow.input}
+                if is_main and (missing := [name for name in MAIN_INPUTS if name not in declared]):
+                    what = f"the {' and '.join(missing)} input{'s' if len(missing) > 1 else ''}"
+                    yield RepoIssue(_person_path(handle), "person.main_inputs_missing",
+                                    f"{ref} doesn't declare {what}; the office passes both to a main flow and Yian"
+                                    " refuses inputs a flow doesn't declare, so declare `person: !Person` (name,"
+                                    " handle, title, company, reports_to) and `talking_to: !str` under input: (as the"
+                                    " template's shared/flows/chat.yaml does)")
 
 
 def _skill_root(root: Path, rel: str, issues: list[RepoIssue]) -> set[str]:

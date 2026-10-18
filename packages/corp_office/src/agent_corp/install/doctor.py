@@ -2,6 +2,7 @@
 daemon, sandbox, and Codex."""
 
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -20,7 +21,7 @@ from agent_corp.daemon.app import OfficePaths
 from agent_corp.harness.codex import CodexMissing, codex_command
 from agent_corp.install import launchd, service, systemd
 from agent_corp.install.launch import REPO, Host, Launch, launch
-from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up
+from agent_corp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
 from agent_corp.worker.spawn import worker_env
 
 _START_ERROR = "agent-corp office: "
@@ -52,6 +53,22 @@ def sandbox_problem() -> str | None:
         return None if result.exit == 0 else result.stderr.decode(errors="replace").strip() or f"exit {result.exit}"
 
 
+_SIGNED_OUT = "not logged in"
+"""How ``codex login status`` starts the line it prints when nobody is signed in, casefolded."""
+
+_LINE_CAP = 200
+"""The most of a failed ``codex --version`` or ``codex login status`` the report shows."""
+
+
+_COLOR = re.compile(r"\x1b\[[0-9;]*m")
+"""An ANSI color code, which Codex may print around a line."""
+
+
+def _lines(output: str) -> list[str]:
+    """The non-empty lines of ``output``, stripped and without color codes."""
+    return [line for raw in output.splitlines() if (line := _COLOR.sub("", raw).strip())]
+
+
 def _codex_change_lands(mode: str | None) -> str:
     """How a Codex install or setting made in this shell reaches an office running under ``mode``."""
     # launchd and systemd start the office with the environment `ac onboard` wrote into its service file, which
@@ -64,8 +81,9 @@ def _codex_change_lands(mode: str | None) -> str:
 def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | None = None,
                 timeout: float = 30) -> Check:
     """Whether the office can start Codex sessions, in the environment it gives an app-server: the binary on its PATH,
-    the version, and the sign-in. Missing or signed out is a warning, not a failure: only people with ``codex`` in
-    ``harnesses`` need it. A ``codex`` that won't run or doesn't answer within ``timeout`` seconds fails.
+    the version, and the sign-in. Missing, signed out, or a ``login status`` that fails otherwise (shown by the first
+    line it printed) is a warning, not a failure: only people with ``codex`` in ``harnesses`` need it. A ``codex`` that
+    won't run or doesn't answer within ``timeout`` seconds fails.
 
     ``environ`` is the office's environment: its ``AGENT_CORP_CODEX_BIN`` picks the binary and its ``CODEX_HOME``
     joins ``env``, as they do for an app-server. ``mode`` is the office's recorded service mode, which decides how a
@@ -84,7 +102,7 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     try:
         version = subprocess.run([found, "--version"], env=env, capture_output=True, text=True, timeout=timeout)
         if version.returncode != 0:
-            why = version.stderr.strip()[:200] or f"exit {version.returncode}"
+            why = _COLOR.sub("", version.stderr).strip()[:_LINE_CAP] or f"exit {version.returncode}"
             return Check("codex", "fail", f"{found} --version failed: {why}")
         login = subprocess.run([found, "login", "status"], env=env, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
@@ -93,7 +111,14 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
         return Check("codex", "fail", f"{found} can't run: {exc.strerror or exc}")
     named = f"{printed} at {found}" if (printed := version.stdout.strip()) else f"{found} (no version printed)"
     if login.returncode != 0:
-        return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
+        lines = _lines(login.stderr + "\n" + login.stdout)
+        # Codex says "Not logged in" when signed out, and exits 1 on other errors too (a bad config.toml, say),
+        # possibly after a warning line.
+        if any(line.casefold().startswith(_SIGNED_OUT) for line in lines):
+            return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
+        said = next((line for line in lines if line.startswith("Error")), lines[0] if lines else None)
+        return Check("codex", "warn", f"{named}: `{found} login status` failed: "
+                                      f"{said[:_LINE_CAP] if said else f'exit {login.returncode}'}")
     return Check("codex", "ok", f"{named}, signed in")
 
 
@@ -142,8 +167,17 @@ def _provider(paths: OfficePaths) -> Check:
     except OnboardError as exc:
         return Check("provider", "fail", f"{path}: {exc}")
     llm = provider.llm_config or {}
+    name = llm.get("provider") or "default provider"
     login = "key saved" if "api_key" in llm else "yian's own login"
-    return Check("provider", "ok", f"{llm.get('provider') or 'default provider'}, {login}")
+    # Yian has no default model, so a key that names none fails every run; onboard saves the provider's default.
+    try:
+        fixed = with_default_model(provider)
+    except OnboardError as exc:
+        return Check("provider", "fail", f"{path}: {exc}; run `ac onboard`")
+    if fixed != provider:
+        return Check("provider", "warn", f"{name}, {login}, but no model, so runs fail;"
+                                         f" `ac onboard` saves {(fixed.llm_config or {}).get('model')}")
+    return Check("provider", "ok", f"{name}, {login}")
 
 
 def _connections(paths: OfficePaths) -> Check | None:

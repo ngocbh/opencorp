@@ -7,6 +7,20 @@ from pathlib import Path
 import pytest
 import yaml
 
+MAIN_INPUTS = """\
+typedefs:
+  Person:
+    name: str
+    handle: str
+    title: str
+    company: str
+    reports_to: str
+input:
+  person: !Person
+  talking_to: !str
+"""
+"""The inputs the office passes a main flow, which it must declare."""
+
 CHAT = """\
 id: chat
 name: chat
@@ -23,6 +37,9 @@ nodes:
     prompt: "${message}"
 output: ${reply.output}
 """
+
+MAIN = CHAT.replace("name: chat\n", "name: chat\n" + MAIN_INPUTS, 1)
+"""``CHAT`` as a person's main flow."""
 
 
 def _clean_env() -> dict[str, str]:
@@ -58,7 +75,7 @@ def base_files() -> dict[str, object]:
                                     "harnesses": ["composer"],
                                     "harness_policy": {"sandbox": "workspace-write", "network": False}},
         "people/minh/profile.md": "# Minh, Engineer\n",
-        "shared/flows/chat.yaml": CHAT,
+        "shared/flows/chat.yaml": MAIN,
         "shared/skills/code-review/SKILL.md": "---\nname: code-review\ndescription: Review code.\n---\nReview.\n",
         "groups/eng.yaml": {"id": "eng", "name": "Engineering", "parent": None, "head": None},
         "assets/fake.yaml": {"id": "fake", "kind": "fake", "tools": {"echo": {}},
