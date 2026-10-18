@@ -299,6 +299,27 @@ def test_a_codex_login_status_that_fails_otherwise_shows_its_first_line(tmp_path
                                          " failed: Error loading configuration: unknown field `modle` in config.toml")
 
 
+def test_codex_is_signed_out_when_any_line_says_so(tmp_path):
+    env = _codex(tmp_path, 1, "WARNING: proceeding, even though we could not update PATH\nNot logged in\n")
+    codex = tmp_path / "bin" / "codex"
+    assert codex_check(env, {}) == Check("codex", "warn",
+                                         f"codex-cli 0.130.0 at {codex} is signed out; run `{codex} login`")
+
+
+def test_a_failed_codex_login_status_shows_its_error_line_over_a_warning(tmp_path):
+    env = _codex(tmp_path, 1, "WARNING: proceeding, even though we could not update PATH\n"
+                              "Error loading configuration: unknown field `modle`\n")
+    detail = codex_check(env, {}).detail
+    assert detail.endswith("login status` failed: Error loading configuration: unknown field `modle`")
+
+
+def test_codex_color_codes_are_dropped_before_matching_and_showing(tmp_path):
+    env = _codex(tmp_path, 1, "\x1b[33mWARNING: odd\x1b[0m\n\x1b[1;31mError\x1b[0m checking login status: denied\n")
+    assert codex_check(env, {}).detail.endswith("login status` failed: Error checking login status: denied")
+    (tmp_path / "login.err").write_text("\x1b[2mNot logged in\x1b[0m\n")
+    assert codex_check(env, {}).detail.endswith("is signed out; run `" + str(tmp_path / "bin" / "codex") + " login`")
+
+
 def test_a_failed_codex_login_status_falls_back_to_stdout_then_the_exit_code(tmp_path):
     env = _codex(tmp_path, 2, "", "something odd\n")
     assert codex_check(env, {}).detail.endswith("login status` failed: something odd")

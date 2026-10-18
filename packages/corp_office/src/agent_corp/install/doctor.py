@@ -2,6 +2,7 @@
 daemon, sandbox, and Codex."""
 
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -59,6 +60,15 @@ _LINE_CAP = 200
 """The most of a failed ``codex login status`` line the report shows."""
 
 
+_COLOR = re.compile(r"\x1b\[[0-9;]*m")
+"""An ANSI color code, which Codex may print around a line."""
+
+
+def _lines(output: str) -> list[str]:
+    """The non-empty lines of ``output``, stripped and without color codes."""
+    return [line for raw in output.splitlines() if (line := _COLOR.sub("", raw).strip())]
+
+
 def _codex_change_lands(mode: str | None) -> str:
     """How a Codex install or setting made in this shell reaches an office running under ``mode``."""
     # launchd and systemd start the office with the environment `ac onboard` wrote into its service file, which
@@ -101,12 +111,14 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
         return Check("codex", "fail", f"{found} can't run: {exc.strerror or exc}")
     named = f"{printed} at {found}" if (printed := version.stdout.strip()) else f"{found} (no version printed)"
     if login.returncode != 0:
-        said = next((line.strip() for line in (login.stderr + "\n" + login.stdout).splitlines() if line.strip()),
-                    f"exit {login.returncode}")
-        # Codex says "Not logged in" when signed out, and exits 1 on other errors too (a bad config.toml, say).
-        if said.casefold().startswith(_SIGNED_OUT):
+        lines = _lines(login.stderr + "\n" + login.stdout)
+        # Codex says "Not logged in" when signed out, and exits 1 on other errors too (a bad config.toml, say),
+        # possibly after a warning line.
+        if any(line.casefold().startswith(_SIGNED_OUT) for line in lines):
             return Check("codex", "warn", f"{named} is signed out; run `{found} login`")
-        return Check("codex", "warn", f"{named}: `{found} login status` failed: {said[:_LINE_CAP]}")
+        said = next((line for line in lines if line.startswith("Error")), lines[0] if lines else None)
+        return Check("codex", "warn", f"{named}: `{found} login status` failed: "
+                                      f"{said[:_LINE_CAP] if said else f'exit {login.returncode}'}")
     return Check("codex", "ok", f"{named}, signed in")
 
 
