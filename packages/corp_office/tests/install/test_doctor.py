@@ -13,6 +13,7 @@ from agent_corp.install.doctor import Check, codex_check
 from agent_corp.install.launch import Launch, launch
 from agent_corp.install.onboard import SET_UP, write_private
 from agent_corp.profile.debrief import DEBRIEF_FLOW
+from agent_corp.worker.spawn import INHERITED_ENV
 from tests.company.conftest import _isolate_git  # noqa: F401
 
 from .conftest import Runner, make_host
@@ -278,14 +279,15 @@ def test_a_codex_that_hangs_or_cant_run_fails_the_check(tmp_path):
     assert broken.status == "fail" and broken.detail.startswith(f"{codex} can't run")
 
 
-def test_checks_run_the_codex_check_they_are_given_in_the_app_servers_environment(tmp_path):
+def test_checks_run_the_codex_check_they_are_given_in_the_app_servers_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
     seen = []
     host = make_host(tmp_path, Runner(), answers=lambda s: False)
     found = doctor.checks(OfficePaths(tmp_path / "home").home, host=host, repo=tmp_path / "repo", probe=lambda: None,
                           codex=lambda env, environ, mode: seen.append(env) or Check("codex", "ok", "stand-in"))
     assert found[-1] == Check("codex", "ok", "stand-in")
-    assert seen and all(k in ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "TZ") or k.startswith("LC_")
-                        for k in seen[0])
+    assert seen and all(k in INHERITED_ENV or k.startswith("LC_") for k in seen[0])
+    assert "OPENAI_API_KEY" not in seen[0]
 
 
 def test_agent_corp_codex_bin_names_the_codex_the_check_runs(tmp_path):
