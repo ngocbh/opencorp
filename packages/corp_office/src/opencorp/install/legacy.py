@@ -86,7 +86,9 @@ class Leftovers:
         if self.pid:
             out.append(f"kill {self.pid}")
         if self.home and not self.both:
-            out.append(f"mv {q(self.home)} {q(self.home.parent / NEW_HOME)}")
+            new_home = self.home.parent / NEW_HOME
+            # Guarded: a new home made since the doctor ran would get the old one moved inside it.
+            out.append(f"[ ! -e {q(new_home)} ] && mv {q(self.home)} {q(new_home)}")
         for old in self.launchers:
             new = old.with_name(NEW_LAUNCHER)
             if old.is_symlink():

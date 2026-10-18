@@ -1,6 +1,7 @@
 import json
 import plistlib
 import shlex
+import subprocess
 from pathlib import Path
 
 from opencorp.install import legacy
@@ -9,6 +10,16 @@ from .conftest import Runner, make_host
 
 REPO = Path("/opt/opencorp")
 BUN = shlex.join(["bun", str(REPO / legacy.NEW_ENTRY)])
+
+
+def MV(home):
+    """The printed move of the old ``home`` next to it, which runs only while the new home is missing."""
+    new = home.parent / ".opencorp"
+    return f"[ ! -e {new} ] && mv {home} {new}"
+
+
+def sh(command):
+    return subprocess.run(["/bin/sh", "-c", command], capture_output=True, text=True)
 
 
 def old_home(tmp_path, mode=None):
@@ -86,7 +97,7 @@ def test_a_launchd_office_is_stopped_then_moved_then_onboarded_again(tmp_path):
     plist = old_plist(tmp_path, home=home)
     found = legacy.find(make_host(tmp_path, Runner()), {"PATH": ""}, REPO)
     assert found.commands(501, REPO) == ["launchctl bootout gui/501/com.agent-corp.office", f"rm {plist}",
-                                         f"mv {home} {tmp_path / '.opencorp'}", f"{BUN} onboard"]
+                                         f"{MV(home)}", f"{BUN} onboard"]
 
 
 def test_a_systemd_unit_is_disabled_removed_and_reloaded(tmp_path):
@@ -108,7 +119,7 @@ def test_nothing_is_moved_over_an_existing_new_home(tmp_path):
     old_home(tmp_path)
     (tmp_path / ".opencorp").mkdir()
     found = legacy.find(make_host(tmp_path, Runner()), {"PATH": ""}, REPO)
-    assert not any(c.startswith("mv ") for c in found.commands(501, REPO))
+    assert not any("mv " in c for c in found.commands(501, REPO))
     assert any("keep the one with your company" in n for n in found.notes())
 
 
@@ -164,7 +175,7 @@ def test_instructions_swap_the_launcher_before_onboarding_then_list_the_notes(tm
     new = bin_dir / "opencorp"
     assert legacy.instructions(found, 501, repo) == (
         "\nTo finish moving to OpenCorp, run these in order:\n"
-        f"  mv {home} {tmp_path / '.opencorp'}\n"
+        f"  {MV(home)}\n"
         f"  sed 's#packages/ac/src/main.ts#packages/cli/src/main.ts#' {wrapper} > {new} && chmod +x {new} && rm {wrapper}\n"
         "  opencorp onboard\n"
         "\nAGENT_CORP_HOME is set, but OpenCorp reads OPENCORP_HOME now; rename it where you set it\n")
@@ -173,7 +184,7 @@ def test_instructions_swap_the_launcher_before_onboarding_then_list_the_notes(tm
 def test_without_a_launcher_bun_runs_the_cli_to_onboard(tmp_path):
     home = old_home(tmp_path)
     found = legacy.find(make_host(tmp_path, Runner()), {"PATH": ""}, REPO)
-    assert found.commands(501, REPO) == [f"mv {home} {tmp_path / '.opencorp'}", f"{BUN} onboard"]
+    assert found.commands(501, REPO) == [f"{MV(home)}", f"{BUN} onboard"]
 
 
 def test_the_bun_line_names_the_bun_running_the_cli(tmp_path):
@@ -232,3 +243,18 @@ def test_a_unit_at_another_home_is_onboarded_at_that_home(tmp_path):
     unit.write_text(f"[Service]\nExecStart=/opt/opencorp/.venv/bin/python -m agent_corp.daemon.main --home {other}\n")
     found = legacy.find(make_host(tmp_path, Runner(), platform="linux"), {"PATH": ""}, REPO)
     assert found.commands(501, REPO)[-1] == f"{BUN} onboard --home {other}"
+
+
+def test_the_move_leaves_a_new_home_that_appeared_since_alone(tmp_path):
+    home = old_home(tmp_path)
+    move = legacy.find(make_host(tmp_path, Runner()), {"PATH": ""}, REPO).commands(501, REPO)[0]
+    (tmp_path / ".opencorp").mkdir()
+    sh(move)
+    assert home.is_dir() and not (tmp_path / ".opencorp" / ".agent-corp").exists()
+
+
+def test_the_move_moves_the_old_home(tmp_path):
+    home = old_home(tmp_path, "launchd")
+    move = legacy.find(make_host(tmp_path, Runner()), {"PATH": ""}, REPO).commands(501, REPO)[0]
+    assert sh(move).returncode == 0
+    assert not home.exists() and (tmp_path / ".opencorp" / "office" / "install.json").is_file()

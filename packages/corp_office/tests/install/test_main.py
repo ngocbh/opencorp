@@ -348,7 +348,7 @@ def test_doctor_prints_the_commands_that_finish_the_move(tmp_path, monkeypatch, 
     out = capsys.readouterr().out
     assert "warn  leftovers" in out
     bun = shlex.join(["bun", str(REPO / legacy.NEW_ENTRY)])
-    assert f"To finish moving to OpenCorp, run these in order:\n  mv {old} {new}\n  {bun} onboard\n" in out
+    assert f"To finish moving to OpenCorp, run these in order:\n  [ ! -e {new} ] && mv {old} {new}\n  {bun} onboard\n" in out
 
 
 @pytest.mark.parametrize("command", ["init", "onboard", "start", "restart"])
