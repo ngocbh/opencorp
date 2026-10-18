@@ -320,6 +320,14 @@ def test_codex_color_codes_are_dropped_before_matching_and_showing(tmp_path):
     assert codex_check(env, {}).detail.endswith("is signed out; run `" + str(tmp_path / "bin" / "codex") + " login`")
 
 
+def test_a_failed_codex_version_line_is_cut_short_and_uncolored(tmp_path):
+    env = _codex(tmp_path, 0)
+    codex = tmp_path / "bin" / "codex"
+    codex.write_text('#!/bin/sh\nprintf "\\033[31mboom %s\\033[0m\\n" "$(printf "y%.0s" $(seq 1 300))" >&2\nexit 3\n')
+    check = codex_check(env, {})
+    assert check == Check("codex", "fail", f"{codex} --version failed: " + ("boom " + "y" * 300)[:200])
+
+
 def test_a_failed_codex_login_status_falls_back_to_stdout_then_the_exit_code(tmp_path):
     env = _codex(tmp_path, 2, "", "something odd\n")
     assert codex_check(env, {}).detail.endswith("login status` failed: something odd")

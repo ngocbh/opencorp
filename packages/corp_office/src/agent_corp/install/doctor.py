@@ -57,7 +57,7 @@ _SIGNED_OUT = "not logged in"
 """How ``codex login status`` starts the line it prints when nobody is signed in, casefolded."""
 
 _LINE_CAP = 200
-"""The most of a failed ``codex login status`` line the report shows."""
+"""The most of a failed ``codex --version`` or ``codex login status`` the report shows."""
 
 
 _COLOR = re.compile(r"\x1b\[[0-9;]*m")
@@ -102,7 +102,7 @@ def codex_check(env: dict[str, str], environ: Mapping[str, str], mode: str | Non
     try:
         version = subprocess.run([found, "--version"], env=env, capture_output=True, text=True, timeout=timeout)
         if version.returncode != 0:
-            why = version.stderr.strip()[:200] or f"exit {version.returncode}"
+            why = _COLOR.sub("", version.stderr).strip()[:_LINE_CAP] or f"exit {version.returncode}"
             return Check("codex", "fail", f"{found} --version failed: {why}")
         login = subprocess.run([found, "login", "status"], env=env, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
