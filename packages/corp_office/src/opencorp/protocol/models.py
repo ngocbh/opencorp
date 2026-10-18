@@ -36,7 +36,7 @@ type GitId = Annotated[
 
 class Device(BaseModel):
     """
-    A device a human uses ac from: requests carrying the token whose hash this is act as that person.
+    A device a human uses opencorp from: requests carrying the token whose hash this is act as that person.
     """
 
     model_config = ConfigDict(
@@ -157,7 +157,7 @@ class Person(BaseModel):
     devices: Annotated[
         list[Device],
         Field(
-            description='The devices this human uses ac from, each with a unique name.',
+            description='The devices this human uses opencorp from, each with a unique name.',
             validate_default=True,
         ),
     ] = []
@@ -1105,7 +1105,7 @@ class SetupStep(BaseModel):
 
 class SetupAnswer(BaseModel):
     """
-    One line `ac`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.
+    One line `opencorp`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.
     """
 
     model_config = ConfigDict(
@@ -1205,7 +1205,7 @@ class Session(BaseModel):
 type SetupPrompt = Annotated[
     SetupAsk | SetupChoose | SetupSecret | SetupSay | SetupStep,
     Field(
-        description="One line `python -m agent_corp.install init|onboard --json-prompts` writes on stdout: a question for `ac`'s setup screen, or something to show.",
+        description="One line `python -m opencorp.install init|onboard --json-prompts` writes on stdout: a question for `opencorp`'s setup screen, or something to show.",
         discriminator='type',
     ),
 ]

@@ -3,81 +3,81 @@
 /**
  * A group or asset id: a ULID or a lowercase slug (ids name files, and macOS is case-insensitive). No '_', '/', '.', or '--'.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Id".
  */
 export type Id = string;
 /**
  * A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Handle".
  */
 export type Handle = string;
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Ulid".
  */
 export type Ulid = string;
 /**
  * A git commit or blob id.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "GitId".
  */
 export type GitId = string;
 /**
  * A device's name within one person, such as 'macbook'.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "DeviceName".
  */
 export type DeviceName = string;
 /**
  * The lowercase hex sha256 of a device token. Tokens are long random secrets, so the hash is safe to publish.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "TokenHash".
  */
 export type TokenHash = string;
 /**
  * A password's salted hash as a PHC string, such as $scrypt$ln=15,r=8,p=1$<salt>$<hash>; never the password itself.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "PasswordHash".
  */
 export type PasswordHash = string;
 /**
  * A connection's name on its office; `office` is office/provider.json. A removed name is never reused.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ConnectionName".
  */
 export type ConnectionName = string;
 /**
  * UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Timestamp".
  */
 export type Timestamp = string;
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Part".
  */
 export type Part = TextPart | FilePart | ToolPart | ErrorPart;
 /**
- * One line `python -m agent_corp.install init|onboard --json-prompts` writes on stdout: a question for `ac`'s setup screen, or something to show.
+ * One line `python -m opencorp.install init|onboard --json-prompts` writes on stdout: a question for `opencorp`'s setup screen, or something to show.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupPrompt".
  */
 export type SetupPrompt = SetupAsk | SetupChoose | SetupSecret | SetupSay | SetupStep;
 
 /**
- * A device a human uses ac from: requests carrying the token whose hash this is act as that person.
+ * A device a human uses opencorp from: requests carrying the token whose hash this is act as that person.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Device".
  */
 export interface Device {
@@ -85,7 +85,7 @@ export interface Device {
   token_sha256: TokenHash;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "CompanyDefaults".
  */
 export interface CompanyDefaults {
@@ -98,7 +98,7 @@ export interface CompanyDefaults {
   side_seed_max_chars?: number;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Company".
  */
 export interface Company {
@@ -108,7 +108,7 @@ export interface Company {
   defaults?: CompanyDefaults | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "HarnessPolicy".
  */
 export interface HarnessPolicy {
@@ -116,7 +116,7 @@ export interface HarnessPolicy {
   network?: boolean;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Sop".
  */
 export interface Sop {
@@ -124,7 +124,7 @@ export interface Sop {
   gate?: boolean;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Routine".
  */
 export interface Routine {
@@ -135,7 +135,7 @@ export interface Routine {
   } | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Person".
  */
 export interface Person {
@@ -154,7 +154,7 @@ export interface Person {
   routines?: Routine[];
   provider_policy?: string;
   /**
-   * The devices this human uses ac from, each with a unique name.
+   * The devices this human uses opencorp from, each with a unique name.
    */
   devices?: Device[];
   /**
@@ -167,7 +167,7 @@ export interface Person {
   model?: string | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Group".
  */
 export interface Group {
@@ -177,14 +177,14 @@ export interface Group {
   head?: Handle | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "AssetTool".
  */
 export interface AssetTool {
   risk?: "normal" | "gated";
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Grant".
  */
 export interface Grant {
@@ -201,7 +201,7 @@ export interface Grant {
   } | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Asset".
  */
 export interface Asset {
@@ -214,7 +214,7 @@ export interface Asset {
   secrets?: string[];
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "WorkItem".
  */
 export interface WorkItem {
@@ -236,7 +236,7 @@ export interface WorkItem {
   updated_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Comment".
  */
 export interface Comment {
@@ -248,7 +248,7 @@ export interface Comment {
   created_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Session".
  */
 export interface Session {
@@ -304,7 +304,7 @@ export interface Session {
 /**
  * A harness session's token counts as the harness reports them, on the harness's own login; the office doesn't price them.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "HarnessUsage".
  */
 export interface HarnessUsage {
@@ -316,7 +316,7 @@ export interface HarnessUsage {
   output_tokens: number;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Message".
  */
 export interface Message {
@@ -331,7 +331,7 @@ export interface Message {
   created_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "TextPart".
  */
 export interface TextPart {
@@ -340,7 +340,7 @@ export interface TextPart {
   text: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "FilePart".
  */
 export interface FilePart {
@@ -350,7 +350,7 @@ export interface FilePart {
   mime: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ToolPart".
  */
 export interface ToolPart {
@@ -368,7 +368,7 @@ export interface ToolPart {
 /**
  * A turn that failed: why, in words the owner can act on. Never holds a secret.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ErrorPart".
  */
 export interface ErrorPart {
@@ -377,7 +377,7 @@ export interface ErrorPart {
   message: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Permission".
  */
 export interface Permission {
@@ -392,7 +392,7 @@ export interface Permission {
   created_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "QuestionOption".
  */
 export interface QuestionOption {
@@ -400,7 +400,7 @@ export interface QuestionOption {
   description?: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "QuestionPage".
  */
 export interface QuestionPage {
@@ -414,7 +414,7 @@ export interface QuestionPage {
   secret?: boolean;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "AnswerField".
  */
 export interface AnswerField {
@@ -440,7 +440,7 @@ export interface AnswerField {
   fields?: AnswerField[] | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "DiscussionEntry".
  */
 export interface DiscussionEntry {
@@ -448,7 +448,7 @@ export interface DiscussionEntry {
   text: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Question".
  */
 export interface Question {
@@ -485,7 +485,7 @@ export interface Question {
   updated_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Profile".
  */
 export interface Profile {
@@ -495,7 +495,7 @@ export interface Profile {
   over_budget?: boolean;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ProfileProposal".
  */
 export interface ProfileProposal {
@@ -510,7 +510,7 @@ export interface ProfileProposal {
   created_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "FollowUp".
  */
 export interface FollowUp {
@@ -519,7 +519,7 @@ export interface FollowUp {
   work_item_id?: Ulid | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Debrief".
  */
 export interface Debrief {
@@ -538,7 +538,7 @@ export interface Debrief {
   updated_at: Timestamp;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Feedback".
  */
 export interface Feedback {
@@ -562,7 +562,7 @@ export interface Feedback {
 /**
  * A metadata change, written to the outbox.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Event".
  */
 export interface Event {
@@ -594,7 +594,7 @@ export interface Event {
 /**
  * Streamed content that is never stored as metadata. For part.delta, data is {message_id, part_id, text} and the text is appended.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "LiveEvent".
  */
 export interface LiveEvent {
@@ -605,7 +605,7 @@ export interface LiveEvent {
   };
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "CreateSessionRequest".
  */
 export interface CreateSessionRequest {
@@ -622,28 +622,28 @@ export interface CreateSessionRequest {
   model?: string | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "PromptRequest".
  */
 export interface PromptRequest {
   text: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Ack".
  */
 export interface Ack {
   ok: true;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "CostCapRequest".
  */
 export interface CostCapRequest {
   cost_cap_usd: number;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "RepoIssue".
  */
 export interface RepoIssue {
@@ -653,7 +653,7 @@ export interface RepoIssue {
   severity?: "error" | "warning";
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "HireRequest".
  */
 export interface HireRequest {
@@ -664,7 +664,7 @@ export interface HireRequest {
   confirm?: boolean;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "HireResponse".
  */
 export interface HireResponse {
@@ -676,7 +676,7 @@ export interface HireResponse {
 /**
  * The body of every error response, sent with its HTTP status.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ApiError".
  */
 export interface ApiError {
@@ -687,7 +687,7 @@ export interface ApiError {
   message: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "AnswerRequest".
  */
 export interface AnswerRequest {
@@ -701,21 +701,21 @@ export interface AnswerRequest {
   answer_kind: "option" | "text";
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SideChatRequest".
  */
 export interface SideChatRequest {
   text: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SendBackRequest".
  */
 export interface SendBackRequest {
   note: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ProfileWriteRequest".
  */
 export interface ProfileWriteRequest {
@@ -723,7 +723,7 @@ export interface ProfileWriteRequest {
   base_version: GitId;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "VersionConflict".
  */
 export interface VersionConflict {
@@ -731,7 +731,7 @@ export interface VersionConflict {
   current: GitId;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ProfileManagerRequest".
  */
 export interface ProfileManagerRequest {
@@ -741,7 +741,7 @@ export interface ProfileManagerRequest {
   text: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "FeedbackRequest".
  */
 export interface FeedbackRequest {
@@ -753,7 +753,7 @@ export interface FeedbackRequest {
   text: string;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ConfirmFollowUpsRequest".
  */
 export interface ConfirmFollowUpsRequest {
@@ -762,7 +762,7 @@ export interface ConfirmFollowUpsRequest {
 /**
  * The body of POST /people/{handle}/devices.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "AddDeviceRequest".
  */
 export interface AddDeviceRequest {
@@ -772,7 +772,7 @@ export interface AddDeviceRequest {
 /**
  * The body of POST /login: a human's handle and password, and the device to add to their devices once they check out.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "LoginRequest".
  */
 export interface LoginRequest {
@@ -784,7 +784,7 @@ export interface LoginRequest {
 /**
  * The body of PUT /people/{handle}/password: the new password, which the office stores only as a hash.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetPasswordRequest".
  */
 export interface SetPasswordRequest {
@@ -793,7 +793,7 @@ export interface SetPasswordRequest {
 /**
  * A model connection on this office. Never holds a key.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "Connection".
  */
 export interface Connection {
@@ -806,7 +806,7 @@ export interface Connection {
 /**
  * The connections on this office.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ConnectionList".
  */
 export interface ConnectionList {
@@ -820,7 +820,7 @@ export interface ConnectionList {
 /**
  * A model a connection offers; `name` is its display name when the provider gives one.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ModelOption".
  */
 export interface ModelOption {
@@ -830,7 +830,7 @@ export interface ModelOption {
 /**
  * `listed` false: the provider can't list models, so a model name is typed.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ModelList".
  */
 export interface ModelList {
@@ -842,7 +842,7 @@ export interface ModelList {
 /**
  * A model equal to the connection's own is stored as null, so it follows that connection's changes.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetModelRequest".
  */
 export interface SetModelRequest {
@@ -852,7 +852,7 @@ export interface SetModelRequest {
 /**
  * A new API-key connection. The office never echoes it: a 422 names fields only.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "AddConnectionRequest".
  */
 export interface AddConnectionRequest {
@@ -865,7 +865,7 @@ export interface AddConnectionRequest {
   model?: string | null;
 }
 /**
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetDefaultConnectionRequest".
  */
 export interface SetDefaultConnectionRequest {
@@ -874,7 +874,7 @@ export interface SetDefaultConnectionRequest {
 /**
  * Starts a subscription sign-in that adds a connection.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "StartLoginRequest".
  */
 export interface StartLoginRequest {
@@ -883,7 +883,7 @@ export interface StartLoginRequest {
 /**
  * A subscription sign-in. While `waiting`, the human opens `url` and enters `user_code`; `connection` names the new connection once `signed_in`; `message` says why it failed.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "ConnectionLogin".
  */
 export interface ConnectionLogin {
@@ -897,7 +897,7 @@ export interface ConnectionLogin {
 /**
  * A typed answer; an empty one means `default`.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupAsk".
  */
 export interface SetupAsk {
@@ -908,7 +908,7 @@ export interface SetupAsk {
 /**
  * Pick one of `options`, or with `typed` type an answer.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupChoose".
  */
 export interface SetupChoose {
@@ -927,7 +927,7 @@ export interface SetupChoose {
 /**
  * An answer typed without being shown.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupSecret".
  */
 export interface SetupSecret {
@@ -937,7 +937,7 @@ export interface SetupSecret {
 /**
  * A line to show.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupSay".
  */
 export interface SetupSay {
@@ -947,7 +947,7 @@ export interface SetupSay {
 /**
  * The start of step `number` of `total`.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupStep".
  */
 export interface SetupStep {
@@ -958,9 +958,9 @@ export interface SetupStep {
   why: string;
 }
 /**
- * One line `ac`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.
+ * One line `opencorp`'s setup screen writes to the install's stdin: the answer to the last ask, choose or secret.
  *
- * This interface was referenced by `AgentCorpProtocol`'s JSON-Schema
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "SetupAnswer".
  */
 export interface SetupAnswer {
