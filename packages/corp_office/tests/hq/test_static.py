@@ -63,3 +63,11 @@ async def test_without_a_build_a_page_says_how_to_build(web):  # no dist fixture
 async def test_a_dist_without_index_html_is_not_built(web, dist):
     (dist / "index.html").unlink()
     assert (await web.get("/", headers={"sec-fetch-dest": "document"})).status_code == 503
+
+
+async def test_head_works_and_a_post_to_a_page_is_refused(web, dist):
+    r = await web.head("/assets/index-abc123.js")
+    assert r.status_code == 200 and r.content == b"" and r.headers["x-frame-options"] == "DENY"
+    assert (await web.head("/")).status_code == 200
+    r = await web.post("/", json={})
+    assert (r.status_code, r.json()["error"]) == (405, "method_not_allowed")
