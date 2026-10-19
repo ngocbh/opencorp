@@ -3,6 +3,23 @@ import { OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice, VersionCo
 // Bun sends the request over the socket; the host only fills the Host header.
 export const BASE = "http://localhost"
 
+/** Where the office is: its unix socket (Bun: the TUI and the CLI), or a base URL (a browser, with its cookie). */
+export type Transport = { socket: string } | { baseUrl: string }
+
+/** `target` as a transport; a bare string is a socket path. */
+export const transportOf = (target: string | Transport): Transport =>
+  typeof target === "string" ? { socket: target } : target
+
+/** The socket path or base URL `t` points at, for messages. */
+export const where = (t: Transport) => ("socket" in t ? t.socket : t.baseUrl)
+
+/** Fetches `path` from the office over `t`. */
+export function officeFetch(t: Transport, path: string, init: RequestInit): Promise<Response> {
+  return "socket" in t
+    ? fetch(BASE + path, { ...init, unix: t.socket })
+    : fetch(t.baseUrl + path, { ...init, credentials: "same-origin" })
+}
+
 export type Method = "GET" | "POST" | "PUT" | "DELETE"
 
 /** Encodes one path segment (an id or a folder path). */
@@ -23,13 +40,16 @@ export const authorization = (token?: string): Record<string, string> =>
 
 /** Sends one JSON request to the office and returns the parsed body. Throws `OfficeError`. */
 export async function request<T>(
-  socket: string,
+  target: string | Transport,
   method: Method,
   path: string,
   body?: unknown,
   opts: RequestOptions = {},
 ): Promise<T> {
   const { signal, timeoutMs, token } = opts
+  const t = transportOf(target)
+  // HQ refuses a write without a JSON body (a CORS "simple" POST can't send one), so a browser always sends one.
+  const sent = body === undefined && method !== "GET" && "baseUrl" in t ? {} : body
   const timeout = timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs)
   const both = signal && timeout ? AbortSignal.any([signal, timeout]) : (signal ?? timeout)
   const failed = (e: unknown, otherwise: () => OfficeError) => {
@@ -39,15 +59,14 @@ export async function request<T>(
   }
   let res: Response
   try {
-    res = await fetch(BASE + path, {
+    res = await officeFetch(t, path, {
       method,
-      unix: socket,
       signal: both,
-      headers: { ...authorization(token), ...(body !== undefined && { "content-type": "application/json" }) },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      headers: { ...authorization(token), ...(sent !== undefined && { "content-type": "application/json" }) },
+      body: sent === undefined ? undefined : JSON.stringify(sent),
     })
   } catch (e) {
-    throw failed(e, () => new OfficeUnavailable(socket, e))
+    throw failed(e, () => new OfficeUnavailable(where(t), e, "baseUrl" in t))
   }
   let data: unknown
   try {
