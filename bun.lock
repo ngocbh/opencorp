@@ -16,6 +16,7 @@
         "opencorp": "src/main.ts",
       },
       "dependencies": {
+        "@opencorp/client": "workspace:*",
         "@opencorp/protocol": "workspace:*",
         "@opencorp/tui": "workspace:*",
         "@opentui/solid": "catalog:",

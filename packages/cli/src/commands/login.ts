@@ -1,9 +1,15 @@
 // `opencorp login`: gives this device its own token and asks the office to list it for a person.
 import type { Person } from "@opencorp/protocol"
-import { createOfficeClient } from "@opencorp/tui/office/client"
-import { OfficeError, UnknownDevice } from "@opencorp/tui/office/errors"
-import { DEVICE_NAME, deviceName, newToken, tokenSha256, writeIdentity } from "@opencorp/tui/office/identity"
-import { defaultSocket, identityPath } from "@opencorp/tui/office/paths"
+import { createOfficeClient, OfficeError, UnknownDevice } from "@opencorp/client"
+import {
+  DEVICE_NAME,
+  deviceName,
+  newToken,
+  tokenSha256,
+  writeIdentity,
+  defaultSocket,
+  identityPath,
+} from "@opencorp/client/node"
 import fs from "node:fs"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"

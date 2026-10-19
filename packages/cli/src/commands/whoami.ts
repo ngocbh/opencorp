@@ -1,6 +1,6 @@
 // `opencorp whoami`: who this device is, locally and to the office.
-import { OfficeUnavailable } from "@opencorp/tui/office/errors"
-import { identityPath } from "@opencorp/tui/office/paths"
+import { OfficeUnavailable } from "@opencorp/client"
+import { identityPath } from "@opencorp/client/node"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"

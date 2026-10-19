@@ -1,7 +1,6 @@
 import { parseArgs } from "node:util"
-import { createOfficeClient } from "@opencorp/tui/office/client"
-import { UnknownDevice } from "@opencorp/tui/office/errors"
-import { defaultSocket } from "@opencorp/tui/office/paths"
+import { createOfficeClient, UnknownDevice } from "@opencorp/client"
+import { defaultSocket } from "@opencorp/client/node"
 import type { CommandRun } from "../main"
 import { localIdentity, officeAnswers, officeNotRunning } from "../office"
 
