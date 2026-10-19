@@ -22,6 +22,8 @@ from opencorp.chat.hooks import Hooks
 from opencorp.chat.logins import Logins
 from opencorp.chat.models import ModelCache
 from opencorp.company.git import CompanyGit
+from opencorp.company.snapshot import CompanySnapshots
+from opencorp.company.watch import HeadWatcher
 from opencorp.daemon.app import Office, OfficePaths, create_app
 from opencorp.daemon.bus import Bus
 from opencorp.extensions import ExtensionError, load_extensions
@@ -174,7 +176,8 @@ def build_office(paths: OfficePaths) -> Office:
 
     Workers left by an earlier office are killed first; the harness resumes their sessions on start.
     ``POST /people`` gets one ``Hiring`` for the office's life. On start, each connection's models are listed in the
-    background; on stop, subscription sign-ins still waiting are cancelled.
+    background; on stop, subscription sign-ins still waiting are cancelled. The company at HEAD is cached for HQ, and a
+    moved HEAD is announced as ``company.updated``.
     """
     store = Store(paths.store)
     git = CompanyGit(paths.company, paths.worktrees)
@@ -194,6 +197,10 @@ def build_office(paths: OfficePaths) -> Office:
     office.extras["connections"] = connections
     office.extras["models"] = models
     office.extras["logins"] = logins
+    office.extras["company"] = CompanySnapshots(git)
+    watcher = HeadWatcher(office)
+    office.on_start.append(watcher.start)
+    office.on_stop.append(watcher.stop)
     office.on_start.append(lambda: asyncio.to_thread(harness.restore))
     # warm returns its thread, which start doesn't wait on: a slow provider must not hold up the office's start.
     office.on_start.append(models.warm)
