@@ -1,5 +1,7 @@
 """The company at one commit of the office's clone: the company file, people and groups, read from git objects."""
 
+import asyncio
+
 import yaml
 from pydantic import BaseModel, ValidationError
 
@@ -65,3 +67,46 @@ def load_company_at(git: CompanyGit, sha: str) -> CompanyView:
         elif group is not None:
             teams.append(group)
     return CompanyView(sha=sha, company=company, people=found, groups=teams, issues=issues)
+
+
+class CompanySnapshots:
+    """``load_company_at`` by sha, loaded once however many callers ask at the same time; use it on the office loop.
+
+    Every HQ request checks its person at the newest HEAD, so a HEAD move would otherwise start one load per
+    request. The last ``KEEP`` loads are kept.
+    """
+
+    KEEP = 4
+
+    def __init__(self, git: CompanyGit) -> None:
+        self.git = git
+        self._done: dict[str, CompanyView] = {}
+        self._loading: dict[str, asyncio.Future[CompanyView]] = {}
+
+    async def at(self, sha: str) -> CompanyView:
+        """The company at ``sha``."""
+        if (view := self._done.get(sha)) is not None:
+            return view
+        future = self._loading.get(sha)
+        if future is None:
+            future = asyncio.ensure_future(asyncio.to_thread(load_company_at, self.git, sha))
+            self._loading[sha] = future
+            future.add_done_callback(lambda done: self._finished(sha, done))
+        # Shielded: one caller going away (a closed connection) mustn't cancel the load the others wait on.
+        return await asyncio.shield(future)
+
+    def _finished(self, sha: str, future: asyncio.Future[CompanyView]) -> None:
+        self._loading.pop(sha, None)
+        if future.cancelled() or future.exception() is not None:
+            return
+        self._done[sha] = future.result()
+        while len(self._done) > self.KEEP:
+            self._done.pop(next(iter(self._done)))
+
+    async def head(self) -> CompanyView | None:
+        """The company at the clone's HEAD; None before its first commit."""
+        try:
+            sha = self.git.read_head()  # two small file reads cost less than a thread hop
+        except ValueError:
+            return None
+        return await self.at(sha)

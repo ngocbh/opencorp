@@ -1,8 +1,13 @@
 """The company at one commit, from git objects."""
 
+import asyncio
+import time
+
+import pytest
+
 from opencorp.company.git import CompanyGit
-from opencorp.company.snapshot import load_company_at
-from tests.company.conftest import person
+from opencorp.company.snapshot import CompanySnapshots, load_company_at
+from tests.company.conftest import _git, person
 
 
 def git_of(root):
@@ -46,3 +51,45 @@ def test_a_missing_company_file_is_null_and_an_issue(make_company):
     root = make_company(**{"company.yaml": None})
     view = load_company_at(git_of(root), git_of(root).head())
     assert view.company is None and [i.code for i in view.issues] == ["repo.unreadable"]
+
+
+async def test_concurrent_callers_for_a_new_sha_share_one_load(company, monkeypatch):
+    calls = []
+
+    def slow(git, sha):
+        calls.append(sha)
+        time.sleep(0.1)
+        return load_company_at(git, sha)
+
+    monkeypatch.setattr("opencorp.company.snapshot.load_company_at", slow)
+    snaps = CompanySnapshots(git_of(company))
+    views = await asyncio.gather(*(snaps.head() for _ in range(10)))
+    assert len(calls) == 1 and all(v is views[0] for v in views)
+    assert await snaps.head() is views[0] and len(calls) == 1  # cached
+
+
+async def test_a_new_head_is_loaded_once_it_moves(company):
+    snaps = CompanySnapshots(git_of(company))
+    first = await snaps.head()
+    _git(company, "commit", "-q", "--allow-empty", "-m", "move")
+    second = await snaps.head()
+    assert second.sha != first.sha and second.sha == git_of(company).head()
+
+
+async def test_a_failed_load_is_not_cached(company, monkeypatch):
+    def broken(git, sha):
+        raise RuntimeError("git went away")
+
+    monkeypatch.setattr("opencorp.company.snapshot.load_company_at", broken)
+    snaps = CompanySnapshots(git_of(company))
+    with pytest.raises(RuntimeError):
+        await snaps.head()
+    monkeypatch.undo()
+    assert (await snaps.head()).company.ceo == "ngocbh"
+
+
+async def test_head_is_none_before_the_first_commit(tmp_path):
+    root = tmp_path / "company"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    assert await CompanySnapshots(git_of(root)).head() is None
