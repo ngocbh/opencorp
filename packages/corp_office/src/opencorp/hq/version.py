@@ -28,8 +28,9 @@ class BuildInfo:
 
     def __init__(self, app_dir: Path | None) -> None:
         self.path = None if app_dir is None else app_dir / "build.json"
-        self._raw: bytes | None = None
-        self._build: AppBuild | None = None
+        # The bytes last read and what they parsed to, swapped in one assignment so a reader on another thread never
+        # pairs one file's bytes with another's build.
+        self._cache: tuple[bytes, AppBuild | None] | None = None
 
     def read(self) -> AppBuild | None:
         """The app's build and key; None when it isn't built or the file isn't valid."""
@@ -40,12 +41,14 @@ class BuildInfo:
             # tick of Linux's coarse inode clock have the same mtime.
             raw = self.path.read_bytes()
         except OSError:
-            self._raw = self._build = None
+            self._cache = None
             return None
-        if raw != self._raw:
-            self._raw = raw
-            try:
-                self._build = AppBuild.model_validate(json.loads(raw))
-            except ValueError:  # bad JSON, bad UTF-8 and pydantic's ValidationError are all ValueErrors
-                self._build = None
-        return self._build
+        cache = self._cache
+        if cache is not None and cache[0] == raw:
+            return cache[1]
+        try:
+            build: AppBuild | None = AppBuild.model_validate(json.loads(raw))
+        except ValueError:  # bad JSON, bad UTF-8 and pydantic's ValidationError are all ValueErrors
+            build = None
+        self._cache = (raw, build)
+        return build
