@@ -1,5 +1,5 @@
 import type { Event, LiveEvent } from "@opencorp/protocol"
-import { OfficeError, UnknownDevice } from "./errors"
+import { failureKind, OfficeError, UnknownDevice } from "./errors"
 import { authorization, officeFetch, transportOf, type Transport } from "./http"
 
 export type SseMessage = { event?: string; id?: string; data: string }
@@ -46,7 +46,7 @@ export type StreamEvent =
   | { type: "connected" }
   /** A connected stream ended; reconnecting. */
   | { type: "disconnected"; error?: unknown }
-  /** A connect attempt failed (reported once per run of failures). */
+  /** A connect attempt failed (reported once per run of failures of one kind; see `failureKind`). */
   | { type: "unreachable"; error?: unknown }
   | { type: "meta"; id: string; event: Event }
   | { type: "live"; event: LiveEvent }
@@ -160,7 +160,8 @@ export function subscribe(
 
   void (async () => {
     let delay = minDelayMs
-    let reachable = true // so the first failed attempt reports `unreachable`
+    // The kind of the last failure reported; undefined while connected, so the first failed attempt reports.
+    let reported: string | undefined
     let resets = 0 // streams in a row that ended in a reset
     while (!closed) {
       unusable = false
@@ -168,7 +169,7 @@ export function subscribe(
       const { error, reset, connected } = await once()
       if (closed) break
       if (connected) {
-        reachable = true
+        reported = undefined
         handler({ type: "disconnected", error })
         if (unusable) resets = 0
         else {
@@ -186,8 +187,10 @@ export function subscribe(
             continue
           }
         }
-      } else if (reachable) {
-        reachable = false
+      } else if (failureKind(error) !== reported) {
+        // Network failures report once per run; an answer that changes (an office back up but refusing this
+        // device, say) reports again, or the client would keep showing the first failure.
+        reported = failureKind(error)
         handler({ type: "unreachable", error })
       }
       await sleep(delay)

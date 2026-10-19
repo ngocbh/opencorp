@@ -146,3 +146,46 @@ test("a 401 on the stream reaches onStatus as an UnknownDevice the app can recog
   expect(message).toBe((cause as UnknownDevice).message)
   expect(message).toContain("pair this browser again")
 })
+
+test("a refusal after an outage is reported: 503, then 401, ends as an UnknownDevice error", async () => {
+  let status = 503
+  const { base } = serve({ answer: () => new Response("", { status }) })
+  const seen: [OfficeStatus, unknown][] = []
+  const state = emptyState()
+  const sync = createOfficeSync({
+    client: createOfficeClient({ baseUrl: base }),
+    state: () => state,
+    mutate: (f) => f(state),
+    onStatus: (s, _error, cause) => seen.push([s, cause]),
+    stream: { minDelayMs: 10, maxDelayMs: 40 },
+  })
+  sync.start()
+  onStop(sync.stop)
+  while (!seen.length) await Bun.sleep(5)
+  expect(seen[0][0]).toBe("offline")
+  expect((seen[0][1] as OfficeError).status).toBe(503)
+  status = 401
+  while (seen.length < 2) await Bun.sleep(5)
+  expect(seen.length).toBe(2)
+  expect(seen[1][0]).toBe("error")
+  expect(seen[1][1]).toBeInstanceOf(UnknownDevice)
+})
+
+test("a stream refused with one status and then another reports each; repeated network failures report once", async () => {
+  let status = 503
+  const { base, stop } = serve({ answer: () => new Response("", { status }) })
+  const seen: StreamEvent[] = []
+  const sub = subscribe({ baseUrl: base }, (e) => seen.push(e), { minDelayMs: 5, maxDelayMs: 10 })
+  onStop(sub.close)
+  while (seen.length < 1) await Bun.sleep(5)
+  await Bun.sleep(50) // more 503s: still one report
+  expect(seen.length).toBe(1)
+  status = 403
+  while (seen.length < 2) await Bun.sleep(5)
+  expect(((seen[1] as { error?: any }).error as OfficeError).status).toBe(403)
+  stop()
+  while (seen.length < 3) await Bun.sleep(5)
+  await Bun.sleep(50) // more refused connections: still one report
+  expect(seen.map((e) => e.type)).toEqual(["unreachable", "unreachable", "unreachable"])
+  expect((seen[2] as { error?: any }).error).not.toBeInstanceOf(OfficeError)
+})

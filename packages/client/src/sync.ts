@@ -4,7 +4,7 @@
 // then replay the buffer on top.
 import type { Event, LiveEvent, Question } from "@opencorp/protocol"
 import type { OfficeClient } from "./client"
-import { OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
+import { failureKind, OfficeError, OfficeUnavailable, UnknownDevice } from "./errors"
 import type { StreamEvent, SubscribeOptions, Subscription } from "./sse"
 import { applyLive, applyMeta, replay, upsertQuestion, upsertSession, type OfficeState } from "./store"
 
@@ -54,6 +54,7 @@ export function createOfficeSync(opts: {
   }
   let status: OfficeStatus = "connecting"
   let error: string | undefined
+  let cause: string = failureKind(undefined)
   let sub: Subscription | undefined
   // Bumped when a stream ends, so a bootstrap still in flight for it is dropped.
   let generation = 0
@@ -66,11 +67,12 @@ export function createOfficeSync(opts: {
   const loads = new Map<string, Promise<void>>()
   const listeners = new Map<string, Set<(e: any) => void>>()
 
-  function setStatus(next: OfficeStatus, message?: string, cause?: unknown) {
-    if (next === status && message === error) return
+  function setStatus(next: OfficeStatus, message?: string, failure?: unknown) {
+    if (next === status && message === error && failureKind(failure) === cause) return
     status = next
     error = message
-    opts.onStatus?.(next, message, cause)
+    cause = failureKind(failure)
+    opts.onStatus?.(next, message, failure)
   }
 
   function fire(events: StreamEvent[]) {
