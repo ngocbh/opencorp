@@ -17,7 +17,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +26,7 @@ from ulid import ULID
 
 from opencorp.protocol import now
 from opencorp.protocol.models import (
+    BrowserSession,
     Comment,
     CostReport,
     Debrief,
@@ -181,6 +182,32 @@ class WorkerRecord:
     pid: int
     pgid: int
     start_time: float
+
+
+@dataclass(frozen=True)
+class HqSessionRecord:
+    """A browser signed in to HQ, as stored: with its secret's hash and its password fingerprint."""
+
+    id: str
+    person: str
+    name: str
+    label: str | None
+    secret_sha256: str
+    password_fp: str
+    issued_by: str
+    via: str
+    created_at: str
+    expires_at: str
+    last_used_at: str | None
+
+    def public(self) -> BrowserSession:
+        """The session as the API shows it: never the secret's hash or the fingerprint."""
+        return BrowserSession(id=self.id, person=self.person, name=self.name, label=self.label, via=self.via,
+                              issued_by=self.issued_by, created_at=self.created_at, expires_at=self.expires_at,
+                              last_used_at=self.last_used_at)
+
+
+_HQ_COLUMNS = tuple(f.name for f in fields(HqSessionRecord))
 
 
 @dataclass(frozen=True)
@@ -1198,3 +1225,50 @@ class Store:
                 tx.execute("DELETE FROM workers WHERE session_id = ?", (session_id,))
             else:
                 tx.execute("DELETE FROM workers WHERE session_id = ? AND pid = ?", (session_id, pid))
+
+    # --- HQ browser sessions (office-local bookkeeping: no events) --------------------------
+
+    def add_hq_session(self, record: HqSessionRecord) -> None:
+        """Insert a browser session after deleting every one expired by its creation time."""
+        with self.transaction() as tx:
+            tx.execute("DELETE FROM hq_sessions WHERE expires_at <= ?", (record.created_at,))
+            try:
+                tx.execute(f"INSERT INTO hq_sessions ({', '.join(_HQ_COLUMNS)}) "
+                           f"VALUES ({', '.join('?' * len(_HQ_COLUMNS))})", astuple(record))
+            except sqlite3.IntegrityError as exc:
+                raise DuplicateKey(f"hq_sessions: {exc}") from exc
+
+    def _hq_session(self, where: str, value: str) -> HqSessionRecord | None:
+        row = self._conn().execute(f"SELECT * FROM hq_sessions WHERE {where} = ?", (value,)).fetchone()
+        return None if row is None else HqSessionRecord(*(row[c] for c in _HQ_COLUMNS))
+
+    def get_hq_session(self, session_id: str) -> HqSessionRecord | None:
+        """The browser session ``session_id``, or None."""
+        return self._hq_session("id", session_id)
+
+    def hq_session_by_secret(self, secret_sha256: str) -> HqSessionRecord | None:
+        """The browser session whose cookie secret hashes to ``secret_sha256``, or None."""
+        return self._hq_session("secret_sha256", secret_sha256)
+
+    def list_hq_sessions(self, person: str | None = None) -> list[HqSessionRecord]:
+        """Browser sessions, newest first, optionally one person's."""
+        sql, params = "SELECT * FROM hq_sessions", ()
+        if person is not None:
+            sql, params = sql + " WHERE person = ?", (person,)
+        rows = self._conn().execute(sql + " ORDER BY created_at DESC, id DESC", params).fetchall()
+        return [HqSessionRecord(*(r[c] for c in _HQ_COLUMNS)) for r in rows]
+
+    def touch_hq_session(self, session_id: str, at: str) -> None:
+        """Record that the session was used at ``at``."""
+        with self.transaction() as tx:
+            tx.execute("UPDATE hq_sessions SET last_used_at = ? WHERE id = ?", (at, session_id))
+
+    def delete_hq_session(self, session_id: str) -> bool:
+        """Delete a browser session; whether there was one."""
+        with self.transaction() as tx:
+            return tx.execute("DELETE FROM hq_sessions WHERE id = ?", (session_id,)).rowcount > 0
+
+    def prune_hq_sessions(self, at: str) -> int:
+        """Delete the sessions expired by ``at``; how many."""
+        with self.transaction() as tx:
+            return tx.execute("DELETE FROM hq_sessions WHERE expires_at <= ?", (at,)).rowcount
