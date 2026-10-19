@@ -10,6 +10,12 @@ const office = `http://127.0.0.1:${process.env.OPENCORP_HQ_PORT ?? 49380}`
 export default defineConfig({
   plugins: [solid(), tailwindcss(), hqBuild()],
   server: { port: 5173, strictPort: true, proxy: { "/api": { target: office, changeOrigin: true } } },
-  // No inline module-preload polyfill: the CSP allows only same-origin script files.
-  build: { target: "esnext", modulePreload: { polyfill: false } },
+  build: {
+    // The minimum browsers index.html names.
+    target: ["es2022", "chrome116", "safari17.4", "firefox124"],
+    // No inline module-preload polyfill: the CSP allows only same-origin script files.
+    modulePreload: { polyfill: false },
+    // No asset inlined as a data: URL: the CSP's font-src allows only same-origin files.
+    assetsInlineLimit: 0,
+  },
 })

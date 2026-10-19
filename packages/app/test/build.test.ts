@@ -31,3 +31,15 @@ test("a build gets a fresh nonce in __HQ_BUILD__ and in build.json, with the api
   expect((hqBuild() as any).config({}, { command: "build" }).define.__HQ_BUILD__).not.toBe(define)
   expect((hqBuild() as any).config({}, { command: "serve" }).define.__HQ_BUILD__).toBe('"dev"')
 })
+
+test("the build targets the minimum browsers and inlines no asset, which the CSP would refuse as data:", () => {
+  // Under Node, as `vite build` loads it: importing Vite inside bun test fails.
+  const out = Bun.spawnSync(
+    ["node", "--input-type=module", "-e", 'console.log(JSON.stringify((await import("./vite.config.ts")).default.build))'],
+    { cwd: path.join(import.meta.dir, "..") },
+  )
+  expect(out.exitCode).toBe(0)
+  const build = JSON.parse(out.stdout.toString())
+  expect(build.target).toEqual(["es2022", "chrome116", "safari17.4", "firefox124"])
+  expect(build.assetsInlineLimit).toBe(0)
+})
