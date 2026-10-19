@@ -88,8 +88,11 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   return {
     socket,
     whoami: () => get<WhoAmI>("/whoami"),
-    /** Liveness and the office's and app's compatibility keys (HQ's `/api/health`). */
-    health: () => get<Health>("/health"),
+    /**
+     * Liveness, and over a base URL (HQ's `/api/health`) the office's and app's compatibility keys; the socket's
+     * `/health` answers only `{ok: true}`.
+     */
+    health: () => get<Health | { ok: true }>("/health"),
     /** The company at HEAD (HQ only). */
     company: { get: () => get<CompanyView>("/company") },
     /** Spend per person since `since`, a Timestamp (HQ only). */
