@@ -1,4 +1,4 @@
-// A fixture HQ for Playwright: the built app from dist/, served with the office's headers and static rules, and /api
+// A fixture HQ for Playwright: the app as built into e2e/dist, served with the office's headers and static rules, and /api
 // answered from in-memory state. It tests the app, not the office.
 // CSP must equal opencorp.hq.guard.CSP; packages/corp_office/tests/hq/test_app_fixture.py checks it.
 import { existsSync, readFileSync, statSync } from "node:fs"
@@ -13,7 +13,7 @@ const HEADERS = {
   "referrer-policy": "no-referrer",
   "cross-origin-opener-policy": "same-origin",
 }
-const DIST = path.join(import.meta.dir, "../dist")
+const DIST = path.join(import.meta.dir, "dist")
 const port = Number(process.argv[process.argv.indexOf("--port") + 1] || 4791)
 const build = JSON.parse(readFileSync(path.join(DIST, "build.json"), "utf8"))
 

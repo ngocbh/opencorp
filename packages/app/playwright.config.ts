@@ -12,7 +12,8 @@ export default defineConfig({
   use: { baseURL: `http://127.0.0.1:${PORT}`, trace: "retain-on-failure" },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: `bun run build && bun e2e/fixture.ts --port ${PORT}`,
+    // Its own build in e2e/dist: dist/ is what a running office serves, and a test run mustn't replace it.
+    command: `bun run build --outDir e2e/dist --emptyOutDir && bun e2e/fixture.ts --port ${PORT}`,
     url: `http://127.0.0.1:${PORT}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,
