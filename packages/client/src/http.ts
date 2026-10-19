@@ -70,21 +70,25 @@ export async function request<T>(
   } catch (e) {
     throw failed(e, () => new OfficeUnavailable(where(t), e, t.baseUrl !== undefined))
   }
-  let data: unknown
+  let text: string
   try {
-    const text = await res.text()
-    try {
-      data = text ? JSON.parse(text) : undefined
-    } catch {
-      throw new OfficeError(res.status, "bad_response", `${method} ${path}: HTTP ${res.status}, body is not JSON`)
-    }
+    text = await res.text()
   } catch (e) {
-    if (e instanceof OfficeError) throw e
     throw failed(e, () => new OfficeError(res.status, "bad_response", `${method} ${path}: the body could not be read`))
   }
+  let data: unknown
+  let json = true
+  try {
+    data = text ? JSON.parse(text) : undefined
+  } catch {
+    json = false
+  }
+  const d = (json && data && typeof data === "object" ? data : {}) as Record<string, unknown>
+  // Before the JSON check: a 401 from a proxy or a sign-in page has an HTML body and still means "sign in again".
+  if (res.status === 401)
+    throw new UnknownDevice(typeof d.error === "string" ? d.error : "unauthenticated", t.baseUrl !== undefined)
+  if (!json) throw new OfficeError(res.status, "bad_response", `${method} ${path}: HTTP ${res.status}, body is not JSON`)
   if (res.ok) return data as T
-  const d = (data ?? {}) as Record<string, unknown>
-  if (res.status === 401) throw new UnknownDevice(typeof d.error === "string" ? d.error : "unauthenticated")
   if (res.status === 409 && typeof d.expected === "string" && typeof d.current === "string")
     throw new VersionConflictError(d.expected, d.current)
   if (typeof d.error === "string")

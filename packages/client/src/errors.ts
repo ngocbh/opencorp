@@ -27,10 +27,17 @@ export class OfficeUnavailable extends OfficeError {
   }
 }
 
-/** The office refused the request's device token, or wanted one (a 401). */
+/** The office refused the request's device token or browser session, or wanted one (a 401). */
 export class UnknownDevice extends OfficeError {
-  constructor(code: string) {
-    super(401, code, "the office doesn't know this device: run `opencorp login`")
+  /** `remote`: the client reached the office at a base URL (a browser, signed in by pairing). */
+  constructor(code: string, remote = false) {
+    super(
+      401,
+      code,
+      remote
+        ? "the office doesn't know this browser: pair this browser again"
+        : "the office doesn't know this device: run `opencorp login`",
+    )
     this.name = "UnknownDevice"
   }
 }

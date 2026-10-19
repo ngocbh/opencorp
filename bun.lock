@@ -29,6 +29,9 @@
       "dependencies": {
         "@opencorp/protocol": "workspace:*",
       },
+      "devDependencies": {
+        "@types/bun": "^1.1.0",
+      },
     },
     "packages/protocol": {
       "name": "@opencorp/protocol",

@@ -37,8 +37,11 @@ export function createOfficeSync(opts: {
   state: () => OfficeState
   /** Applies a change to the state; may run it later, but in call order. */
   mutate: (fn: (s: OfficeState) => void) => void
-  /** Called on each status change, with the failure's message when the status is `error`. */
-  onStatus?: (s: OfficeStatus, error?: string) => void
+  /**
+   * Called on each status change, with the failure's message when the status is `error`, and the failure itself
+   * (`cause`) when there is one: an `UnknownDevice` means the device or browser must sign in again.
+   */
+  onStatus?: (s: OfficeStatus, error?: string, cause?: unknown) => void
   stream?: SubscribeOptions
   /** Past this many held-back events a load is abandoned and the stream reconnected. */
   maxBuffered?: number
@@ -63,11 +66,11 @@ export function createOfficeSync(opts: {
   const loads = new Map<string, Promise<void>>()
   const listeners = new Map<string, Set<(e: any) => void>>()
 
-  function setStatus(next: OfficeStatus, message?: string) {
+  function setStatus(next: OfficeStatus, message?: string, cause?: unknown) {
     if (next === status && message === error) return
     status = next
     error = message
-    opts.onStatus?.(next, message)
+    opts.onStatus?.(next, message, cause)
   }
 
   function fire(events: StreamEvent[]) {
@@ -114,8 +117,8 @@ export function createOfficeSync(opts: {
         buffer = undefined
         // A reset or dropped stream reconnects at once, so it shouldn't flash "offline".
         // A refused token won't pass on a retry, so it reads as an error, not as no office.
-        if (e.type === "unreachable" && e.error instanceof UnknownDevice) setStatus("error", e.error.message)
-        else if (e.type === "unreachable") setStatus("offline")
+        if (e.type === "unreachable" && e.error instanceof UnknownDevice) setStatus("error", e.error.message, e.error)
+        else if (e.type === "unreachable") setStatus("offline", undefined, e.error)
         else if (status !== "error") setStatus("connecting")
         return
     }
@@ -284,7 +287,7 @@ export function createOfficeSync(opts: {
     } catch (e) {
       if (mine !== generation) return
       buffer = undefined
-      setStatus("error", e instanceof Error ? e.message : String(e))
+      setStatus("error", e instanceof Error ? e.message : String(e), e)
       // The stream's backoff paces the retries.
       sub?.reconnect()
     }

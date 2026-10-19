@@ -1,5 +1,5 @@
 import type { Event, LiveEvent } from "@opencorp/protocol"
-import { UnknownDevice } from "./errors"
+import { OfficeError, UnknownDevice } from "./errors"
 import { authorization, officeFetch, transportOf, type Transport } from "./http"
 
 export type SseMessage = { event?: string; id?: string; data: string }
@@ -141,8 +141,10 @@ export function subscribe(
         signal: abort.signal,
         headers: { accept: "text/event-stream", ...authorization(opts.token) },
       })
-      if (res.status === 401) return { error: new UnknownDevice("unauthenticated"), reset, connected }
-      if (!res.ok || !res.body) return { error: new Error(`GET ${path}: HTTP ${res.status}`), reset, connected }
+      if (res.status === 401)
+        return { error: new UnknownDevice("unauthenticated", t.baseUrl !== undefined), reset, connected }
+      if (!res.ok || !res.body)
+        return { error: new OfficeError(res.status, "bad_response", `GET ${path}: HTTP ${res.status}`), reset, connected }
       const reader = res.body.getReader()
       for (let r = await reader.read(); !r.done; r = await reader.read()) {
         arm()

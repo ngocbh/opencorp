@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "license": "MIT",
+  "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
     "./node": "./src/node.ts"
@@ -14,5 +15,8 @@
   },
   "dependencies": {
     "@opencorp/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0"
   }
 }
