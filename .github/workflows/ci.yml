@@ -91,6 +91,9 @@ jobs:
       - run: bun test
         working-directory: packages/protocol
       # `bun test` exits 1 when a package has no test files yet.
+      - if: ${{ hashFiles('packages/client/**/*.test.ts', '!packages/client/node_modules/**') != '' }}
+        run: bun test
+        working-directory: packages/client
       - if: ${{ hashFiles('packages/tui/**/*.test.ts', 'packages/tui/**/*.test.tsx', '!packages/tui/node_modules/**') != '' }}
         run: bun test
         working-directory: packages/tui
