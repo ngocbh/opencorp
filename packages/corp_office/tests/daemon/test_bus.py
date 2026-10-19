@@ -120,3 +120,24 @@ def test_publish_and_close_racing_a_closing_loop_are_dropped():
     bus.publish_meta(meta(S1))
     bus.publish_live(live(S1))
     bus.close()
+
+
+async def test_a_type_filter_drops_other_types_and_live_events_before_they_are_queued():
+    bus = attached(queue_size=3)
+    sub = bus.subscribe(types={"session.updated", "company.updated"})
+    for _ in range(10):  # would overflow a 3-item queue if they were queued and filtered later
+        bus.publish_live(live(S1))
+        bus.publish_meta(meta(S1, "profile.updated"))
+    keep = meta("0123abc", "company.updated", sha="0123abc")
+    bus.publish_meta(keep)
+    assert await sub.next(timeout=1) == ("meta", keep)
+    assert not sub.dropped and bus.subscriber_count == 1
+
+
+async def test_without_types_a_subscription_still_takes_everything():
+    bus = attached()
+    sub = bus.subscribe()
+    a, b = live(S1), meta(S1, "profile.updated")
+    bus.publish_live(a)
+    bus.publish_meta(b)
+    assert [await sub.next(timeout=1) for _ in range(2)] == [("live", a), ("meta", b)]

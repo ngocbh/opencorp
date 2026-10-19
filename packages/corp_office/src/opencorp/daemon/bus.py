@@ -1,6 +1,7 @@
 """The office's in-process event bus: stored metadata events and live transcript events."""
 
 import asyncio
+from collections.abc import Iterable
 from typing import Literal
 
 from opencorp.protocol.models import Event, LiveEvent
@@ -18,21 +19,28 @@ PING = _Ping()
 
 
 class Subscription:
-    """One subscriber's queue of bus items, optionally for one session."""
+    """One subscriber's queue of bus items, optionally for one session or some metadata event types."""
 
-    def __init__(self, bus: "Bus", session: str | None) -> None:
+    def __init__(self, bus: "Bus", session: str | None, types: frozenset[str] | None = None) -> None:
         self._bus = bus
         self.session = session
+        self.types = types
+        """The metadata event types this subscription takes, or None for every event; with types, live events are
+        dropped too."""
         self._queue: asyncio.Queue[Item | None] = asyncio.Queue()
         self._done = False
         self.dropped = False
         """Whether the bus dropped this subscription for falling behind."""
 
     def matches(self, item: Item) -> bool:
-        """Whether ``item`` belongs to this subscription's session (always, without one)."""
+        """Whether ``item`` is of this subscription's types and belongs to its session (always, without either)."""
+        kind, event = item
+        # Filtered here, before the queue: a type nobody wants (part.delta) must not fill a subscriber's queue
+        # and get it dropped.
+        if self.types is not None and (kind != "meta" or event.type not in self.types):
+            return False
         if self.session is None:
             return True
-        kind, event = item
         if kind == "live":
             return event.session_id == self.session
         return event.subject_id == self.session or event.data.get("session_id") == self.session
@@ -103,9 +111,10 @@ class Bus:
         """Publish a live transcript event."""
         self._post(("live", event))
 
-    def subscribe(self, session: str | None = None) -> Subscription:
-        """A new subscription to every event, or to one session's. Call it on the office loop's thread."""
-        sub = Subscription(self, session)
+    def subscribe(self, session: str | None = None, *, types: Iterable[str] | None = None) -> Subscription:
+        """A new subscription to every event, or to one session's, optionally only metadata events of ``types``.
+        Call it on the office loop's thread."""
+        sub = Subscription(self, session, None if types is None else frozenset(types))
         if self._closed:
             sub._end()
         else:
