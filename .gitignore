@@ -8,3 +8,5 @@ __pycache__/
 .pytest_cache/
 .env
 .DS_Store
+packages/app/test-results/
+packages/app/playwright-report/

@@ -1,0 +1,15 @@
+<!doctype html>
+<!-- OpenCorp HQ needs Chrome 116+, Safari 17.4+ or Firefox 124+ (the client uses AbortSignal.any). -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OpenCorp HQ</title>
+    <!-- External, not inline: the page's CSP has no 'unsafe-inline'. It sets the theme before the first paint. -->
+    <script src="/theme.js"></script>
+  </head>
+  <body class="bg-white text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100">
+    <div id="root"></div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>
