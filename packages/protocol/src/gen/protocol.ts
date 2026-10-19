@@ -586,7 +586,7 @@ export interface Event {
   at: Timestamp;
   subject_id: string;
   /**
-   * The entity after the change.
+   * The entity after the change; for company.updated, `{sha}` of the new company commit.
    */
   data: {
     [k: string]: unknown;
@@ -796,7 +796,7 @@ export interface PairCodeRequest {
   open_file?: boolean;
 }
 /**
- * A one-time pairing link: single use, valid for 5 minutes.
+ * A one-time pairing link: single use, valid for 5 minutes. `path` and `url` carry the secret code: served only on the office socket, never under `/api`, and never logged.
  *
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "PairCode".

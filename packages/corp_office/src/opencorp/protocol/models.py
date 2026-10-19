@@ -623,7 +623,12 @@ class Event(BaseModel):
         ),
     ]
     subject_id: str
-    data: Annotated[dict[str, Any], Field(description='The entity after the change.')]
+    data: Annotated[
+        dict[str, Any],
+        Field(
+            description='The entity after the change; for company.updated, `{sha}` of the new company commit.'
+        ),
+    ]
 
 
 class LiveEvent(BaseModel):
@@ -869,7 +874,7 @@ class PairCodeRequest(BaseModel):
 
 class PairCode(BaseModel):
     """
-    A one-time pairing link: single use, valid for 5 minutes.
+    A one-time pairing link: single use, valid for 5 minutes. `path` and `url` carry the secret code: served only on the office socket, never under `/api`, and never logged.
     """
 
     model_config = ConfigDict(

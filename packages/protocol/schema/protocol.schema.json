@@ -509,7 +509,7 @@
         },
         "at": { "$ref": "#/$defs/Timestamp" },
         "subject_id": { "type": "string" },
-        "data": { "type": "object", "description": "The entity after the change." }
+        "data": { "type": "object", "description": "The entity after the change; for company.updated, `{sha}` of the new company commit." }
       }
     },
     "LiveEvent": {
@@ -640,7 +640,7 @@
     },
     "PairCode": {
       "type": "object", "additionalProperties": false, "required": ["path", "url", "socket", "port", "expires_at", "open_file"],
-      "description": "A one-time pairing link: single use, valid for 5 minutes.",
+      "description": "A one-time pairing link: single use, valid for 5 minutes. `path` and `url` carry the secret code: served only on the office socket, never under `/api`, and never logged.",
       "properties": {
         "path": { "type": "string", "description": "/pair#<code>." },
         "url": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "http://127.0.0.1:<port>/pair#<code> while TCP is listening, else null." },
