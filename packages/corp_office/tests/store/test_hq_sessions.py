@@ -26,6 +26,11 @@ def test_its_public_form_has_no_secret_hash_or_fingerprint(store):
     assert "secret_sha256" not in public and "password_fp" not in public and public["via"] == "pair"
 
 
+def test_its_repr_has_no_secret_hash_or_fingerprint():
+    text = repr(record(secret_sha256="e" * 64, password_fp="f" * 16))
+    assert "e" * 64 not in text and "f" * 16 not in text
+
+
 def test_a_secret_hash_is_unique(store):
     store.add_hq_session(record())
     with pytest.raises(DuplicateKey):

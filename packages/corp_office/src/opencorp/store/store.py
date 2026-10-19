@@ -17,7 +17,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import astuple, dataclass, fields
+from dataclasses import astuple, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -192,8 +192,9 @@ class HqSessionRecord:
     person: str
     name: str
     label: str | None
-    secret_sha256: str
-    password_fp: str
+    # Kept out of repr so a logged or printed record never carries them.
+    secret_sha256: str = field(repr=False)
+    password_fp: str = field(repr=False)
     issued_by: str
     via: str
     created_at: str
