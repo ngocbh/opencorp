@@ -114,6 +114,8 @@ class Bus:
     def subscribe(self, session: str | None = None, *, types: Iterable[str] | None = None) -> Subscription:
         """A new subscription to every event, or to one session's, optionally only metadata events of ``types``.
         Call it on the office loop's thread."""
+        if isinstance(types, str):  # a str is an iterable of its characters, which would match nothing
+            raise TypeError("types must be a collection of event types, not one string")
         sub = Subscription(self, session, None if types is None else frozenset(types))
         if self._closed:
             sub._end()

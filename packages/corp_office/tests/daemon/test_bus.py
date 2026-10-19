@@ -3,6 +3,8 @@
 import asyncio
 import threading
 
+import pytest
+
 from opencorp.daemon.bus import PING, Bus
 from opencorp.protocol import now
 from opencorp.protocol.models import Event, LiveEvent
@@ -141,3 +143,10 @@ async def test_without_types_a_subscription_still_takes_everything():
     bus.publish_live(a)
     bus.publish_meta(b)
     assert [await sub.next(timeout=1) for _ in range(2)] == [("live", a), ("meta", b)]
+
+
+async def test_types_given_as_one_string_is_a_type_error():
+    bus = attached()
+    with pytest.raises(TypeError):
+        bus.subscribe(types="company.updated")  # would otherwise be a set of its characters and match nothing
+    assert bus.subscriber_count == 0
