@@ -1,5 +1,7 @@
 """Browser sessions on HQ: office-local rows holding a secret's hash, never the secret."""
 
+import sqlite3
+
 import pytest
 
 from opencorp.store import DuplicateKey, HqSessionRecord, new_id
@@ -35,6 +37,11 @@ def test_a_secret_hash_is_unique(store):
     store.add_hq_session(record())
     with pytest.raises(DuplicateKey):
         store.add_hq_session(record())
+
+
+def test_another_integrity_error_is_not_a_duplicate(store):
+    with pytest.raises(sqlite3.IntegrityError, match="NOT NULL"):
+        store.add_hq_session(record(person=None))
 
 
 def test_adding_one_prunes_the_expired(store):

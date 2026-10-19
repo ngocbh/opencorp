@@ -1237,7 +1237,9 @@ class Store:
                 tx.execute(f"INSERT INTO hq_sessions ({', '.join(_HQ_COLUMNS)}) "
                            f"VALUES ({', '.join('?' * len(_HQ_COLUMNS))})", astuple(record))
             except sqlite3.IntegrityError as exc:
-                raise DuplicateKey(f"hq_sessions: {exc}") from exc
+                if "UNIQUE" in str(exc):
+                    raise DuplicateKey(f"hq_sessions: {exc}") from exc
+                raise
 
     def _hq_session(self, where: str, value: str) -> HqSessionRecord | None:
         row = self._conn().execute(f"SELECT * FROM hq_sessions WHERE {where} = ?", (value,)).fetchone()
