@@ -53,3 +53,15 @@ def test_the_app_build_and_the_office_compute_the_same_key():
     out = subprocess.run(["bun", "--eval", 'import { apiId } from "./packages/app/vite.hq.ts"; console.log(apiId())'],
                          cwd=CHECKOUT, capture_output=True, text=True, check=True)
     assert out.stdout.strip() == office_api()
+
+
+def test_build_json_that_is_too_big_too_deep_or_not_a_file_is_invalid(tmp_path):
+    info = BuildInfo(tmp_path)
+    path = tmp_path / "build.json"
+    path.write_text(" " * (64 * 1024) + json.dumps({"build": "b1", "api": "x"}))  # valid, but too big
+    assert info.read() is None
+    path.write_text("[" * 30_000 + "]" * 30_000)
+    assert info.read() is None
+    path.unlink()
+    path.mkdir()
+    assert info.read() is None

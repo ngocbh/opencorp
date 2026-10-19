@@ -23,6 +23,10 @@ def office_api(checkout: Path = CHECKOUT) -> str:
     return importlib.metadata.version("opencorp")
 
 
+MAX_BUILD_JSON = 64 * 1024
+"""The largest build.json read; a bigger one isn't valid."""
+
+
 class BuildInfo:
     """The built app's ``build.json`` under ``app_dir``, parsed again only when its content changes."""
 
@@ -36,11 +40,16 @@ class BuildInfo:
         """The app's build and key; None when it isn't built or the file isn't valid."""
         if self.path is None:
             return None
-        try:
-            # A few hundred bytes, read once per /api/health. Comparing bytes, not the mtime: two builds within one
-            # tick of Linux's coarse inode clock have the same mtime.
-            raw = self.path.read_bytes()
-        except OSError:
+        # A few hundred bytes, read once per /api/health. Comparing bytes, not the mtime: two builds within one tick
+        # of Linux's coarse inode clock have the same mtime. Only a regular file is read (a FIFO would block).
+        raw = None
+        if self.path.is_file():
+            try:
+                with self.path.open("rb") as f:
+                    raw = f.read(MAX_BUILD_JSON + 1)
+            except OSError:
+                pass
+        if raw is None or len(raw) > MAX_BUILD_JSON:
             self._cache = None
             return None
         cache = self._cache
@@ -48,7 +57,8 @@ class BuildInfo:
             return cache[1]
         try:
             build: AppBuild | None = AppBuild.model_validate(json.loads(raw))
-        except ValueError:  # bad JSON, bad UTF-8 and pydantic's ValidationError are all ValueErrors
+        # Bad JSON, bad UTF-8 and pydantic's ValidationError are all ValueErrors; deep nesting is a RecursionError.
+        except (ValueError, RecursionError):
             build = None
         self._cache = (raw, build)
         return build
