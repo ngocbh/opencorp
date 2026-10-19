@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { runEach } from "../../src/office/queue"
+import { runEach } from "../src/queue"
 
 test("runEach runs every function, logging the ones that throw", () => {
   const seen: number[] = []

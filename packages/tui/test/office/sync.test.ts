@@ -1,10 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
-import type { Message } from "@opencorp/protocol"
+import type { Message, Question } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { createOfficeClient } from "../../src/office/client"
-import { emptyState, openQuestions } from "../../src/office/store"
-import { createOfficeSync } from "../../src/office/sync"
-import { isTurn } from "../../src/office/turn"
+import { createOfficeClient, emptyState, openQuestions, createOfficeSync, isTurn } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
@@ -397,4 +394,57 @@ test("a load in flight at stop() neither reads again nor changes state", async (
   await Bun.sleep(50)
   expect(count(office, `GET /sessions/${id}/messages`)).toBe(1)
   expect(state.messages[id]).toEqual([])
+})
+
+/** A sync with a custom snapshot that keeps only the first person and counts its reads. */
+function startCustom(socket: string, state = emptyState()) {
+  const reads = { n: 0 }
+  const sync = createOfficeSync({
+    client: createOfficeClient({ socket }),
+    state: () => state,
+    mutate: (fn) => fn(state),
+    stream: fast,
+    snapshot: async (client) => {
+      reads.n++
+      const people = await client.people.list()
+      return (s) => void (s.people = people.slice(0, 1))
+    },
+  })
+  sync.start()
+  stop = () => sync.stop()
+  return { state, sync, reads }
+}
+
+test("a custom snapshot replaces the default reads, and runs on every connect", async () => {
+  office = createFakeOffice()
+  const { state, sync, reads } = startCustom(office.socket)
+  await until(() => sync.status() === "online")
+  expect(state.people.map((p) => p.handle)).toEqual(["minh"])
+  expect(state.sessions).toEqual([]) // the default snapshot's session list didn't run
+  expect(office.requests.some((r) => r.path.startsWith("/folders/"))).toBe(false)
+  office.dropStreams()
+  await until(() => reads.n === 2)
+})
+
+test("with a custom snapshot, held open questions aren't re-read by id on a reconnect", async () => {
+  // HQ serves no GET /questions/{id}: its snapshot re-reads every open question itself.
+  office = createFakeOffice()
+  const state = emptyState()
+  state.questions.Q1 = {
+    id: "Q1",
+    session_id: "S1",
+    run_id: "r",
+    node_id: null,
+    source: "ask_user",
+    asker: "minh",
+    question: "?",
+    status: "open",
+    created_at: "t",
+    updated_at: "t",
+  } as Question
+  const { sync, reads } = startCustom(office.socket, state)
+  await until(() => sync.status() === "online")
+  office.dropStreams()
+  await until(() => reads.n === 2 && sync.status() === "online")
+  expect(count(office, "GET /questions/Q1")).toBe(0)
 })

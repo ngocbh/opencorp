@@ -1,6 +1,6 @@
 import type { Event, LiveEvent } from "@opencorp/protocol"
 import { UnknownDevice } from "./errors"
-import { authorization, BASE } from "./http"
+import { authorization, officeFetch, transportOf, type Transport } from "./http"
 
 export type SseMessage = { event?: string; id?: string; data: string }
 
@@ -73,13 +73,14 @@ export type Subscription = {
   reconnect(): void
 }
 
-/** Follows the office's event stream on `socket`, reconnecting until `close()`. */
+/** Follows the office's event stream over `target` (a socket path or a transport), reconnecting until `close()`. */
 export function subscribe(
-  socket: string,
+  target: string | Transport,
   handler: (e: StreamEvent) => void,
   opts: SubscribeOptions = {},
 ): Subscription {
   const { minDelayMs = 250, maxDelayMs = 5000, idleMs = 45_000 } = opts
+  const t = transportOf(target)
   const path = "/events" + (opts.session ? `?session=${encodeURIComponent(opts.session)}` : "")
   let closed = false
   let ctl: AbortController | undefined
@@ -136,8 +137,7 @@ export function subscribe(
     )
     try {
       arm()
-      const res = await fetch(BASE + path, {
-        unix: socket,
+      const res = await officeFetch(t, path, {
         signal: abort.signal,
         headers: { accept: "text/event-stream", ...authorization(opts.token) },
       })

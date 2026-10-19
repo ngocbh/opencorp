@@ -10,13 +10,18 @@ export class OfficeError extends Error {
   }
 }
 
-/** Nothing is listening on the office socket. */
+/** Nothing answers at the office's socket or base URL. */
 export class OfficeUnavailable extends OfficeError {
   constructor(
     readonly socket: string,
     cause?: unknown,
+    remote = false,
   ) {
-    super(0, "office_unavailable", `the office is not running (no socket at ${socket})`)
+    super(
+      0,
+      "office_unavailable",
+      remote ? `can't reach the office at ${socket}` : `the office is not running (no socket at ${socket})`,
+    )
     this.name = "OfficeUnavailable"
     this.cause = cause
   }

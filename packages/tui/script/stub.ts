@@ -27,7 +27,7 @@ import { createHash } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
-import { isTurn } from "../src/office/turn"
+import { isTurn } from "@opencorp/client"
 import { HANDLE, harnessesOf } from "../src/routes/picker/people"
 import { createTuiResolvedConfig } from "../test/fixture/tui-runtime"
 

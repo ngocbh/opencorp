@@ -1,8 +1,9 @@
 # OpenCode TUI inventory
 
 This file describes the fork as of upstream `b471c2b`. The TUI now talks only to the office
-(`src/office/`, typed by `@opencorp/protocol`); every **replace** row below is done, and
-"Deleted with the OpenCode data layer" lists what was removed rather than ported.
+(`@opencorp/client` in `packages/client`, typed by `@opencorp/protocol`); every **replace** row
+below is done, and "Deleted with the OpenCode data layer" lists what was removed rather than
+ported.
 
 What the OpenCorp TUI takes from OpenCode's `packages/tui`, and what happens to each
 dependency on the rest of the OpenCode monorepo.
@@ -19,8 +20,9 @@ Classification:
 - **stand-in**: the upstream package is private; a small local module with the same exported
   names replaces it.
 - **vendor**: copied into this package.
-- **replace**: the office client (`src/office/`, typed by `packages/protocol`) replaced it.
-  The published OpenCode SDK is no longer a dependency (`test/no-opencode-sdk.test.ts`).
+- **replace**: the office client (`@opencorp/client` in `packages/client`, typed by
+  `packages/protocol`) replaced it. The published OpenCode SDK is no longer a dependency
+  (`test/no-opencode-sdk.test.ts`).
 - **drop**: removed with the feature that uses it.
 
 ## Imports from `@opencode-ai/*`
@@ -85,7 +87,7 @@ change that rewires a kept file.
 | Theme | `theme/**`, `context/theme.tsx` | keep | |
 | Keymap and config | `keymap.tsx`, `config/**` | keep | Plugin, attention, model, provider, MCP, share and workspace entries go with their features. |
 | Local state | `context/{kv,local}.tsx`, `util/persistence.ts` | keep | `local.tsx` holds the person to talk to and session pins. |
-| Data layer | `context/{sdk,sync,data,location,project,event,directory,permission}.ts(x)` | replace (done) | `src/office/` (client, SSE, store, sync) and `context/office.tsx`. |
+| Data layer | `context/{sdk,sync,data,location,project,event,directory,permission}.ts(x)` | replace (done) | `@opencorp/client` (`packages/client`: client, SSE, store, sync) and `context/office.tsx`. |
 | Editor | `editor.ts`, `editor-zed.ts`, `context/editor.ts` | keep | External `$EDITOR` for the prompt. Editor selection context is no longer sent with prompts. |
 | Clipboard, terminal | `clipboard.ts`, `terminal-win32.ts` | keep | |
 | Plugin runtime | `plugin/**`, `component/plugin-route-missing.tsx`, `component/startup-loading.tsx`, the `plugin` route | drop | No TUI plugins. The startup screen only covered plugin loading. |

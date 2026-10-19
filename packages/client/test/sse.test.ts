@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { createParser, type SseMessage } from "../../src/office/sse"
+import { createParser, type SseMessage } from "../src/sse"
 
 function parse(chunks: (string | Uint8Array)[]) {
   const messages: SseMessage[] = []

@@ -1,5 +1,5 @@
 // `opencorp password`: sets a human's password, which `opencorp login` asks for on a new device.
-import { OfficeUnavailable } from "@opencorp/tui/office/errors"
+import { OfficeUnavailable } from "@opencorp/client"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"

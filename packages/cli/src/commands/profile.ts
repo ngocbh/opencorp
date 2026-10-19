@@ -1,7 +1,6 @@
 import type { Person, Profile } from "@opencorp/protocol"
 import { launchEditor } from "@opencorp/tui/editor-launch"
-import type { OfficeClient } from "@opencorp/tui/office/client"
-import { OfficeUnavailable, VersionConflictError } from "@opencorp/tui/office/errors"
+import { type OfficeClient, OfficeUnavailable, VersionConflictError } from "@opencorp/client"
 import { conflictText, shortVersion, withoutConflict } from "@opencorp/tui/profile"
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import os from "node:os"

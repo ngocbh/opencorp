@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Question } from "@opencorp/protocol"
-import { isTurn, turnPath } from "../../src/office/turn"
+import { isTurn, turnPath } from "../src/turn"
 
 test("turnPath drops a trailing #N from every segment", () => {
   expect(turnPath("chat#3/ask")).toBe("chat/ask")

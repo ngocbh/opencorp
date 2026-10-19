@@ -2,7 +2,7 @@
 import os from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer } from "effect"
-import { opencorpHome } from "../office/paths"
+import { opencorpHome } from "@opencorp/client/node"
 
 function root() {
   return path.join(opencorpHome(), "tui")

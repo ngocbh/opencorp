@@ -1,3 +1,3 @@
 export { run, type TuiInput } from "./app"
-export { defaultSocket } from "./office/paths"
+export { defaultSocket } from "@opencorp/client/node"
 export { Global } from "./core/global"

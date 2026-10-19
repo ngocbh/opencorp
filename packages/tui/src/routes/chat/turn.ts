@@ -1,5 +1,4 @@
-import { openQuestions, type OfficeState } from "../../office/store"
-import { isTurn } from "../../office/turn"
+import { openQuestions, type OfficeState, isTurn } from "@opencorp/client"
 
 /** A session's open questions that show as cards, oldest first. */
 export function cardQuestions(state: OfficeState, sessionId: string) {

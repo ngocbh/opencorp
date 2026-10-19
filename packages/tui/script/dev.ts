@@ -6,8 +6,7 @@ import { Effect } from "effect"
 import { parseArgs } from "node:util"
 import { run } from "../src/app"
 import { Global } from "../src/core/global"
-import { readIdentity } from "../src/office/identity"
-import { defaultSocket, identityPath } from "../src/office/paths"
+import { readIdentity, defaultSocket, identityPath } from "@opencorp/client/node"
 import { createFakeOffice, type FakeOffice } from "./stub"
 
 const { values } = parseArgs({

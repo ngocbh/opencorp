@@ -2,9 +2,8 @@
 // and starting the office live in `python -m opencorp.install`, run with this checkout's venv;
 // it reads the home from $OPENCORP_HOME, which it inherits, or from a `--home` flag passed
 // through. `opencorp` never starts the office on its own: the service `opencorp init` or `opencorp onboard` installed does.
-import { createOfficeClient } from "@opencorp/tui/office/client"
-import { readIdentity, type Identity } from "@opencorp/tui/office/identity"
-import { defaultSocket, identityPath } from "@opencorp/tui/office/paths"
+import { createOfficeClient } from "@opencorp/client"
+import { readIdentity, type Identity, defaultSocket, identityPath } from "@opencorp/client/node"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"

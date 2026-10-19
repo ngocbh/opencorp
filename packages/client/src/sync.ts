@@ -16,13 +16,23 @@ export type OfficeEvents = { [K in Event["type"]]: Event } & { [K in LiveEvent["
 
 export type OfficeSync = ReturnType<typeof createOfficeSync>
 
+/**
+ * Reads what a client shows besides synced sessions; resolves to how to apply it. A client with its own snapshot
+ * (HQ) re-reads its open questions there: its held questions aren't re-read by id, and `refreshQuestion` and
+ * `syncSession` read routes HQ doesn't serve, so HQ clients don't call them.
+ */
+export type Snapshot = (client: OfficeClient) => Promise<(s: OfficeState) => void>
+
 const SESSION_LIMIT = 50
 /** The events held back while a snapshot loads, per bootstrap and per session load. */
 const MAX_BUFFERED = 10_000
 
 export function createOfficeSync(opts: {
   client: OfficeClient
-  cwd: string
+  /** The folder whose people the default snapshot reads; without it, `folderPeople` isn't read. */
+  cwd?: string
+  /** Replaces the default snapshot (people, folder people, the latest sessions). */
+  snapshot?: Snapshot
   /** Reads the current state (to find the open questions to re-check). */
   state: () => OfficeState
   /** Applies a change to the state; may run it later, but in call order. */
@@ -124,8 +134,12 @@ export function createOfficeSync(opts: {
     }
   }
 
-  /** Who worked in `cwd`, or undefined if that can't be read: it costs the list, not the bootstrap. */
+  /**
+   * Who worked in `cwd`, or undefined if there is no `cwd` or it can't be read: it costs the list,
+   * not the bootstrap.
+   */
   async function readFolderPeople() {
+    if (cwd === undefined) return undefined
     try {
       return await client.people.inFolder(cwd)
     } catch (e) {
@@ -133,6 +147,21 @@ export function createOfficeSync(opts: {
       return undefined
     }
   }
+
+  /** The TUI's snapshot: everyone, who worked in `cwd`, and the latest sessions. */
+  const defaultSnapshot: Snapshot = async () => {
+    const [people, folderPeople, sessions] = await Promise.all([
+      client.people.list(),
+      readFolderPeople(),
+      client.sessions.list({ limit: SESSION_LIMIT }),
+    ])
+    return (s) => {
+      s.people = people
+      if (folderPeople) s.folderPeople = folderPeople
+      for (const session of sessions) upsertSession(s, session)
+    }
+  }
+  const snapshot = opts.snapshot ?? defaultSnapshot
 
   /** Stops keeping a session live and drops its messages, which would only go stale. */
   function unsync(id: string) {
@@ -213,13 +242,14 @@ export function createOfficeSync(opts: {
     buffer = []
     const failed: string[] = []
     try {
-      const held = Object.values(opts.state().questions)
-        .filter((q) => q.status === "open")
-        .map((q) => q.id)
-      const [people, folderPeople, sessions, loaded, rechecked] = await Promise.all([
-        client.people.list(),
-        readFolderPeople(),
-        client.sessions.list({ limit: SESSION_LIMIT }),
+      // A custom snapshot replaces every open question itself (HQ has no GET /questions/{id}).
+      const held = opts.snapshot
+        ? []
+        : Object.values(opts.state().questions)
+            .filter((q) => q.status === "open")
+            .map((q) => q.id)
+      const [apply, loaded, rechecked] = await Promise.all([
+        snapshot(client),
         // Sessions still loading too: their own load may have read state before the stream
         // ended, so it will load again, but the snapshot shouldn't wait for that.
         Promise.all([...synced].map((id) => reload(id, failed))),
@@ -233,9 +263,7 @@ export function createOfficeSync(opts: {
       for (const e of events) if (e.type === "live") pending.get(e.event.session_id)?.push(e)
       const now = events
       mutate((s) => {
-        s.people = people
-        if (folderPeople) s.folderPeople = folderPeople
-        for (const session of sessions) upsertSession(s, session)
+        apply(s)
         for (const [id, q] of rechecked) {
           if (q) s.questions[id] = q
           else delete s.questions[id]

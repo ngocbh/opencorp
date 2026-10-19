@@ -9,8 +9,8 @@ import {
   readIdentity,
   tokenSha256,
   writeIdentity,
-} from "../../src/office/identity"
-import { identityPath } from "../../src/office/paths"
+} from "../src/identity"
+import { identityPath } from "../src/paths"
 
 const dirs: string[] = []
 afterEach(() => dirs.splice(0).forEach((d) => fs.rmSync(d, { recursive: true, force: true })))

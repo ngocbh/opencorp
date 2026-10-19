@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { createOfficeClient } from "../../src/office/client"
-import { OfficeError, VersionConflictError } from "../../src/office/errors"
+import { createOfficeClient, OfficeError, VersionConflictError } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 let office: FakeOffice
