@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import { createOfficeClient } from "../src/client"
 import { OfficeUnavailable } from "../src/errors"
+import { transportOf } from "../src/http"
 import { subscribe, type StreamEvent } from "../src/sse"
 
 type Seen = { method: string; path: string; type: string | null; body: string }
@@ -45,6 +46,20 @@ test("a socket write with no body still sends none", async () => {
   stop = () => (prev(), rmSync(dir, { recursive: true, force: true }))
   await createOfficeClient({ socket: path.join(dir, "o.sock") }).sessions.interrupt("S1")
   expect(seen).toEqual([{ method: "POST", path: "/sessions/S1/interrupt", type: null, body: "" }])
+})
+
+test("a base URL's trailing slashes are dropped", async () => {
+  expect(transportOf({ baseUrl: "http://127.0.0.1:1/api//" })).toEqual({ baseUrl: "http://127.0.0.1:1/api" })
+  const { seen, base } = serve()
+  await createOfficeClient({ baseUrl: `${base}/` }).whoami()
+  expect(seen.map((r) => r.path)).toEqual(["/api/whoami"])
+})
+
+test("a client takes a socket or a base URL, not both", () => {
+  // The typecheck runs this test: it fails if the directive's line type-checks.
+  // @ts-expect-error: a socket and a base URL at once
+  const both: Parameters<typeof createOfficeClient>[0] = { socket: "/x", baseUrl: "/api" }
+  expect(both).toBeDefined()
 })
 
 test("an unreachable base URL is OfficeUnavailable, naming the URL", async () => {

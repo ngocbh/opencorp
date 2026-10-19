@@ -35,7 +35,7 @@ import type {
   WorkItem,
 } from "@opencorp/protocol"
 import { OfficeTimeout } from "./errors"
-import { request, seg, where, type Method, type Transport } from "./http"
+import { request, seg, transportOf, where, type Method, type Transport } from "./http"
 import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"
 
 export type OfficeClient = ReturnType<typeof createOfficeClient>
@@ -67,7 +67,7 @@ export type WhoAmI = { person: string; device: string | null }
  */
 export function createOfficeClient(opts: Transport & { timeoutMs?: number; token?: string }) {
   const { timeoutMs = READ_TIMEOUT_MS, token } = opts
-  const transport: Transport = "socket" in opts ? { socket: opts.socket } : { baseUrl: opts.baseUrl }
+  const transport = transportOf(opts)
   /** The socket path, or the base URL in a browser. */
   const socket = where(transport)
   const call = <T>(method: Method, path: string, body?: unknown) => request<T>(transport, method, path, body, { token })
