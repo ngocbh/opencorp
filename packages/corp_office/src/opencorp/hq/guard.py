@@ -3,7 +3,6 @@ headers on every response."""
 
 import asyncio
 from collections.abc import Iterable
-from typing import Any
 
 from starlette.responses import RedirectResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
