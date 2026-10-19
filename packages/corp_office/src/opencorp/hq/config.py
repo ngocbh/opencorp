@@ -51,7 +51,7 @@ def load_config(office_dir: Path, *, platform: str = sys.platform, checkout: Pat
         data = json.loads(path.read_text())
     except FileNotFoundError:
         return defaults
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:  # RecursionError: JSON nested too deeply to parse
         return _ignored(defaults, f"{path} can't be read: {exc}")
     try:
         return _apply(defaults, data, office_dir)
@@ -77,7 +77,10 @@ def _apply(defaults: HqConfig, data: Any, office_dir: Path) -> HqConfig:
     if "app_dir" in data:
         if not isinstance(data["app_dir"], str) or not data["app_dir"]:
             raise ValueError("app_dir must be a path")
-        app_dir = Path(data["app_dir"]).expanduser()
+        try:
+            app_dir = Path(data["app_dir"]).expanduser()
+        except RuntimeError as exc:  # ~user that doesn't exist, or ~ with no home directory
+            raise ValueError(f"app_dir {data['app_dir']!r} can't be expanded: {exc}") from exc
         changes["app_dir"] = app_dir if app_dir.is_absolute() else office_dir / app_dir
     if "dev_origins" in data:
         origins = data["dev_origins"]

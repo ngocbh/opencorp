@@ -32,7 +32,9 @@ def test_settings_override_the_defaults(tmp_path):
 
 
 @pytest.mark.parametrize("bad", ["{", "[]", {"tcp": "yes"}, {"port": 70000}, {"port": True}, {"colour": 1},
-                                 {"dev_origins": ["localhost:5173"]}, {"dev_origins": ["http://a/b"]}])
+                                 {"dev_origins": ["localhost:5173"]}, {"dev_origins": ["http://a/b"]},
+                                 {"app_dir": "~nosuchuser-opencorp/dist"},
+                                 pytest.param("[" * 100_000 + "]" * 100_000, id="deeply-nested")])
 def test_a_bad_file_is_ignored_and_says_why(tmp_path, bad, caplog):
     write(tmp_path, bad)
     config = load_config(tmp_path, platform="darwin", checkout=tmp_path)
