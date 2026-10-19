@@ -14,9 +14,9 @@ from .fixtures.office import RunningOffice
 pytestmark = pytest.mark.timeout(180)
 
 TUI_CLIENT = """
-import { createOfficeClient } from "./packages/tui/src/office/client"
-import { readIdentity } from "./packages/tui/src/office/identity"
-import { defaultSocket, identityPath } from "./packages/tui/src/office/paths"
+import { createOfficeClient } from "./packages/client/src/client"
+import { readIdentity } from "./packages/client/src/identity"
+import { defaultSocket, identityPath } from "./packages/client/src/paths"
 
 const me = readIdentity(identityPath())
 const client = createOfficeClient({ socket: defaultSocket(), token: me?.token })
