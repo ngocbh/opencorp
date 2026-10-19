@@ -100,6 +100,15 @@ async def test_list_sessions_filters_and_limits(client, office):
     assert len((await client.get("/sessions", params={"limit": 1})).json()) == 1
 
 
+@pytest.mark.parametrize("params", [[("status", "busy"), ("status", "idle")], [("status", "busy, idle")]])
+async def test_list_sessions_filters_by_status_repeated_or_comma_separated(client, office, params):
+    busy = office.store.create_session(session(status="busy"))
+    idle = office.store.create_session(session(status="idle"))
+    office.store.create_session(session(status="ended"))
+    r = await client.get("/sessions", params=params)
+    assert r.status_code == 200 and {s["id"] for s in r.json()} == {busy.id, idle.id}
+
+
 async def test_list_sessions_defaults_to_fifty(client, office):
     for _ in range(51):
         office.store.create_session(session())
