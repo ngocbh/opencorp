@@ -26,9 +26,10 @@ class Hq:
 
     @classmethod
     def create(cls, office: Office) -> Hq:
-        """HQ for ``office``, with the settings in its ``hq.json``, sharing its company snapshot cache."""
+        """HQ for ``office``, with the settings in its ``hq.json``, sharing its company snapshot cache (made and
+        registered in ``office.extras`` when it has none)."""
         config = load_config(office.paths.office)
-        snapshots = office.extras.get("company") or CompanySnapshots(office.git)
+        snapshots = office.extras.setdefault("company", CompanySnapshots(office.git))
         return cls(office=office, config=config, api=office_api(), build=BuildInfo(config.app_dir),
                    snapshots=snapshots)
 

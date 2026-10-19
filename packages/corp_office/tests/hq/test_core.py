@@ -22,3 +22,9 @@ def test_hq_reads_its_settings_and_reports_health(office, tmp_path):
 def test_hq_shares_the_offices_snapshot_cache(office):
     cache = office.extras["company"] = CompanySnapshots(office.git)
     assert Hq.create(office).snapshots is cache
+
+
+def test_hq_registers_the_snapshot_cache_it_creates(office):
+    assert "company" not in office.extras
+    hq = Hq.create(office)
+    assert office.extras["company"] is hq.snapshots
