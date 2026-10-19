@@ -1158,7 +1158,9 @@ class Store:
         """Spend per person since ``since`` (a Timestamp): priced usage, and harness sessions updated since then.
 
         Only composer sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
-        counted instead. Every session kind counts: all of it is real spend.
+        counted instead. ``unpriced_sessions`` counts harness sessions whose ``updated_at`` is at or after ``since``,
+        which any update moves (a status change, a rename), so a counted session may not have spent anything since
+        then. Every session kind counts: all of it is real spend.
         """
         with self._read() as conn:
             priced = conn.execute(

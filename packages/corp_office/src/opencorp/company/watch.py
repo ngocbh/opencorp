@@ -52,6 +52,8 @@ class HeadWatcher:
             try:
                 sha = self._head()
                 if baseline:
+                    # A commit made while the office starts can become the baseline and go unannounced; that's
+                    # fine, since clients read the company with a GET when they connect.
                     baseline, last = False, sha
                 elif sha is not None and sha != last:
                     # As profile.updated does for other metadata kept outside the store.

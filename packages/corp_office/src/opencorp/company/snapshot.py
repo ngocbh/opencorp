@@ -108,7 +108,9 @@ class CompanySnapshots:
     async def head(self) -> CompanyView | None:
         """The company at the clone's HEAD; None before its first commit."""
         try:
-            sha = self.git.read_head()  # two small file reads cost less than a thread hop
+            # Called on the loop, not in a thread: usually two small file reads. Only the slow path (no commit yet,
+            # or a ref missing from packed-refs) runs `git rev-parse`.
+            sha = self.git.read_head()
         except ValueError:
             return None
         return await self.at(sha)
