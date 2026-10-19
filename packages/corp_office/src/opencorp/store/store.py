@@ -186,7 +186,10 @@ class WorkerRecord:
 
 @dataclass(frozen=True)
 class HqSessionRecord:
-    """A browser signed in to HQ, as stored: with its secret's hash and its password fingerprint."""
+    """A browser signed in to HQ, as stored: with its secret's hash and its password fingerprint.
+
+    Expiry is compared as text in SQL, so every timestamp must come from ``opencorp.protocol.now()``.
+    """
 
     id: str
     person: str
