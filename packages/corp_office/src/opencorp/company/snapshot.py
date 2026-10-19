@@ -26,6 +26,8 @@ def _parse[M: BaseModel](path: str, data: bytes | None, model: type[M], issues: 
         mark = getattr(exc, "problem_mark", None)
         where = f" (line {mark.line + 1})" if mark is not None else ""
         issues.append(RepoIssue(path=path, code="repo.unreadable", message=f"isn't valid YAML{where}"))
+    except RecursionError:  # the YAML parser recurses once per nesting level
+        issues.append(RepoIssue(path=path, code="repo.unreadable", message="is nested too deeply to read"))
     return None
 
 

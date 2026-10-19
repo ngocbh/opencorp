@@ -47,6 +47,13 @@ def test_files_that_dont_parse_become_issues_without_quoting_them(make_company):
     assert "ann" not in {p.handle for p in view.people}
 
 
+def test_a_deeply_nested_file_is_an_issue_and_the_rest_still_loads(make_company):
+    root = make_company(**{"groups/deep.yaml": "[" * 100_000 + "]" * 100_000})
+    view = load_company_at(git_of(root), git_of(root).head())
+    assert [(i.path, i.code) for i in view.issues] == [("groups/deep.yaml", "repo.unreadable")]
+    assert [p.handle for p in view.people] == ["minh", "ngocbh"]
+
+
 def test_a_missing_company_file_is_null_and_an_issue(make_company):
     root = make_company(**{"company.yaml": None})
     view = load_company_at(git_of(root), git_of(root).head())
