@@ -1,6 +1,7 @@
-"""The guard on every HQ request, before routing: Host, Fetch Metadata and Origin checks, and the security headers
-on every response."""
+"""The guard on every HQ request, before routing: Host, Fetch Metadata, Origin and body checks, and the security
+headers on every response."""
 
+import asyncio
 from collections.abc import Iterable
 from typing import Any
 
@@ -17,6 +18,13 @@ HEADERS = [(b"content-security-policy", CSP.encode()), (b"x-frame-options", b"DE
            (b"x-content-type-options", b"nosniff"), (b"referrer-policy", b"no-referrer"),
            (b"cross-origin-opener-policy", b"same-origin")]
 """The headers added to every HQ response."""
+
+MAX_API_BODY = 16 * 1024
+"""The largest /api request body; the only writes are pairing and logging out."""
+
+BODY_TIMEOUT_S = 10.0
+"""How long a whole /api body may take after its head: a client trickling a body would otherwise hold a connection
+for good."""
 
 _READS = frozenset({"GET", "HEAD"})
 _LOOPBACK = "127.0.0.1"
@@ -61,6 +69,14 @@ class HqGuard:
         refusal = self._refusal(scope)
         if refusal is not None:
             return await refusal(scope, receive, secured)
+        if is_api(scope["path"]) and scope["method"] not in _READS:
+            # Read the body here, so a chunked body over the cap, or one that stops arriving, is refused too.
+            body = await _read_capped(receive, MAX_API_BODY, BODY_TIMEOUT_S)
+            if body is None:  # the client went away; a partial body must never reach a route
+                return None
+            if isinstance(body, Response):
+                return await body(scope, receive, secured)
+            receive = _replay(body, receive)
         await self.app(scope, receive, secured)
 
     def _refusal(self, scope: Scope) -> Response | None:
@@ -88,4 +104,48 @@ class HqGuard:
         allowed = origin in (f"http://{host}", *self.dev_origins)
         if (origin is not None and not allowed) or (origin is None and method not in _READS):
             return error(403, "origin_not_allowed", "HQ's API answers only its own pages")
+        if method not in _READS:
+            kind = (header(scope, b"content-type") or "").split(";")[0].strip().lower()
+            if kind != "application/json":  # no CORS "simple" text/plain or form POST
+                return error(415, "json_required", "HQ's API takes only JSON bodies")
+            length = header(scope, b"content-length") or ""
+            if length.isascii() and length.isdecimal() and int(length) > MAX_API_BODY:
+                return _too_large()
         return None
+
+
+def _too_large() -> Response:
+    return error(413, "too_large", f"request body is over {MAX_API_BODY} bytes")
+
+
+async def _read_capped(receive: Receive, cap: int, timeout: float) -> bytes | Response | None:
+    """The whole request body; a 413 once it passes ``cap`` bytes, or a 408 if it takes longer than ``timeout``
+    seconds in all; None if the client disconnects first."""
+    body = bytearray()
+    try:
+        async with asyncio.timeout(timeout):
+            while True:
+                message = await receive()
+                if message["type"] != "http.request":
+                    return None
+                body += message.get("body", b"")
+                if len(body) > cap:
+                    return _too_large()
+                if not message.get("more_body", False):
+                    return bytes(body)
+    except TimeoutError:
+        return error(408, "body_timeout", "the request body stopped arriving")
+
+
+def _replay(body: bytes, receive: Receive) -> Receive:
+    """A ``receive`` that gives ``body`` once, then waits on the real one (for the disconnect)."""
+    sent = False
+
+    async def replayed() -> Message:
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
+
+    return replayed

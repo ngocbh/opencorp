@@ -1,11 +1,18 @@
 """The guard every HQ request passes before routing."""
 
+import asyncio
 import dataclasses
+import json
 
+import httpx
 import pytest
+from starlette.responses import JSONResponse
 
+from opencorp.hq import guard
 from opencorp.hq.api import create_hq_app
-from tests.hq.conftest import PORT, hq_client
+from opencorp.hq.core import Hq
+from opencorp.hq.guard import MAX_API_BODY, HqGuard
+from tests.hq.conftest import ORIGIN, PORT, hq_client
 
 
 @pytest.mark.parametrize("host", [f"127.0.0.1:{PORT + 1}", f"evil.example:{PORT}", f"[::1]:{PORT}", "127.0.0.1",
@@ -109,3 +116,136 @@ async def test_a_websocket_scope_is_closed_without_reaching_the_app(office, hq):
     scope = {"type": "websocket", "path": "/api/health", "headers": [(b"host", f"127.0.0.1:{PORT}".encode())]}
     await app(scope, receive, send)
     assert reached == [] and [m["type"] for m in sent] == ["websocket.close"]
+
+
+async def echo(scope, receive, send):
+    """An app that answers with the length of the body it received and whether it was whole."""
+    message = await receive()
+    body = {"length": len(message["body"]), "whole": not message["more_body"]}
+    await JSONResponse(body)(scope, receive, send)
+
+
+def echo_client(**headers) -> httpx.AsyncClient:
+    """A client of the guard in front of ``echo``, sending the TCP listener's own host and origin."""
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=HqGuard(echo, port=PORT)), base_url=ORIGIN,
+                             headers={"host": f"127.0.0.1:{PORT}", "origin": ORIGIN, **headers})
+
+
+@pytest.mark.parametrize("kind", ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", None])
+async def test_a_write_that_isnt_json_is_415(web, kind):
+    r = await web.post("/api/pair", content=b'{"code":"x"}', headers={"content-type": kind} if kind else {})
+    assert (r.status_code, r.json()["error"]) == (415, "json_required")
+
+
+async def test_a_body_less_write_with_the_json_type_passes(web):
+    r = await web.post("/api/nope", headers={"content-type": "application/json; charset=utf-8"})
+    assert r.status_code == 404  # past the guard, to the router
+
+
+async def test_the_guard_refuses_in_order_host_then_fetch_metadata_then_origin_then_json(office, hq):
+    text = {"content": b"x", "headers": {"content-type": "text/plain"}}
+    async with hq_client(office, hq, host="evil.example:49380", origin="http://evil.example:49380") as c:
+        assert (await c.post("/api/pair", **text)).json()["error"] == "host_not_allowed"
+    async with hq_client(office, hq, origin=ORIGIN, **{"sec-fetch-site": "cross-site"}) as c:
+        assert (await c.post("/api/pair", **text)).json()["error"] == "cross_site"
+    async with hq_client(office, hq, origin="http://127.0.0.1:3000") as c:
+        assert (await c.post("/api/pair", **text)).json()["error"] == "origin_not_allowed"
+
+
+async def test_a_write_up_to_16_kib_reaches_the_app_whole():
+    body = b"x" * MAX_API_BODY
+
+    async def chunks():
+        yield body[:9000]
+        yield body[9000:]
+
+    async with echo_client(**{"content-type": "application/json"}) as c:
+        assert (await c.post("/api/pair", content=body)).json() == {"length": MAX_API_BODY, "whole": True}
+        assert (await c.post("/api/pair", content=chunks())).json() == {"length": MAX_API_BODY, "whole": True}
+
+
+async def test_a_write_over_16_kib_is_413_with_or_without_a_length(web):
+    big = json.dumps({"code": "x" * 17000}).encode()
+    r = await web.post("/api/pair", content=big, headers={"content-type": "application/json"})
+    assert (r.status_code, r.json()["error"]) == (413, "too_large")
+
+    async def chunks():
+        yield big[:9000]
+        yield big[9000:]
+
+    r = await web.post("/api/pair", content=chunks(), headers={"content-type": "application/json"})
+    assert (r.status_code, r.json()["error"]) == (413, "too_large")
+
+
+async def test_a_declared_length_over_16_kib_is_413_before_the_body_is_read():
+    async def receive():
+        raise AssertionError("the body was read")
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/api/pair", "query_string": b"",
+             "headers": [(b"host", f"127.0.0.1:{PORT}".encode()), (b"origin", ORIGIN.encode()),
+                         (b"content-type", b"application/json"), (b"content-length", b"17000")]}
+    await HqGuard(echo, port=PORT)(scope, receive, send)
+    assert sent[0]["status"] == 413
+
+
+async def test_a_client_that_goes_away_mid_body_never_reaches_the_app():
+    messages = iter([{"type": "http.request", "body": b'{"code":', "more_body": True}, {"type": "http.disconnect"}])
+    reached, sent = [], []
+
+    async def app(scope, receive, send):
+        reached.append(scope)
+
+    async def receive():
+        return next(messages)
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "method": "POST", "path": "/api/pair", "query_string": b"",
+             "headers": [(b"host", f"127.0.0.1:{PORT}".encode()), (b"origin", ORIGIN.encode()),
+                         (b"content-type", b"application/json")]}
+    await HqGuard(app, port=PORT)(scope, receive, send)
+    assert reached == [] and sent == []
+
+
+@pytest.mark.parametrize("path", ["/api/health", "/api/nope", "/missing.js", "/"])
+async def test_every_response_carries_the_security_headers(web, path):
+    r = await web.get(path)
+    assert r.headers["content-security-policy"].startswith("default-src 'none'; script-src 'self'")
+    assert (r.headers["x-frame-options"], r.headers["x-content-type-options"], r.headers["referrer-policy"],
+            r.headers["cross-origin-opener-policy"]) == ("DENY", "nosniff", "no-referrer", "same-origin")
+
+
+async def test_a_refusal_and_a_redirect_carry_them_too(office, hq):
+    async with hq_client(office, hq, host="evil.example:49380") as c:
+        assert "content-security-policy" in (await c.get("/")).headers
+    async with hq_client(office, hq, host=f"localhost:{PORT}") as c:
+        r = await c.get("/")
+    assert r.status_code == 307 and r.headers["x-frame-options"] == "DENY"
+
+
+async def test_a_500_carries_them_too(office, hq, monkeypatch):
+    monkeypatch.setattr(Hq, "health", lambda self: 1 / 0)
+    # Starlette re-raises after answering 500; the transport mustn't turn that into a test error.
+    transport = httpx.ASGITransport(app=create_hq_app(office, hq, port=PORT), raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url=ORIGIN, headers={"host": f"127.0.0.1:{PORT}"}) as c:
+        r = await c.get("/api/health")
+    assert r.status_code == 500 and r.headers["x-frame-options"] == "DENY"
+
+
+async def test_a_body_that_stops_arriving_is_408(web, monkeypatch):
+    monkeypatch.setattr(guard, "BODY_TIMEOUT_S", 0.2)
+
+    async def stalls():
+        yield b'{"code":'
+        await asyncio.sleep(5)  # a slow client holding one of HQ's connections
+        yield b'"x"}'
+
+    async with asyncio.timeout(3):
+        r = await web.post("/api/pair", content=stalls(), headers={"content-type": "application/json"})
+    assert (r.status_code, r.json()["error"]) == (408, "body_timeout")
