@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import os from "node:os"
-import { opencorpHome, defaultSocket } from "../../src/office/paths"
+import { opencorpHome, defaultSocket } from "../src/paths"
 
 const saved = process.env.OPENCORP_HOME
 afterEach(() => {
