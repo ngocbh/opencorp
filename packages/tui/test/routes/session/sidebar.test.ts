@@ -1,6 +1,6 @@
 import type { ConnectionList } from "@opencorp/protocol"
 import { expect, test } from "bun:test"
-import { modelLabel } from "../../../src/office/models"
+import { modelLabel } from "@opencorp/client"
 import { costLabel } from "../../../src/routes/session/sidebar"
 
 const list: ConnectionList = {

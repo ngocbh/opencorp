@@ -1,12 +1,16 @@
 import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, serveUnix, type FakeOffice } from "../../script/stub"
-import { createOfficeClient } from "../../src/office/client"
-import { OfficeError, UnknownDevice } from "../../src/office/errors"
-import { request } from "../../src/office/http"
-import { newToken, tokenSha256 } from "../../src/office/identity"
-import { subscribe, type StreamEvent } from "../../src/office/sse"
-import { emptyState } from "../../src/office/store"
-import { createOfficeSync } from "../../src/office/sync"
+import {
+  createOfficeClient,
+  OfficeError,
+  UnknownDevice,
+  request,
+  subscribe,
+  type StreamEvent,
+  emptyState,
+  createOfficeSync,
+} from "@opencorp/client"
+import { newToken, tokenSha256 } from "@opencorp/client/node"
 import { until } from "../fixture/until"
 
 const cleanup: (() => void)[] = []

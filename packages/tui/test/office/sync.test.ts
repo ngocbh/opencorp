@@ -1,10 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
 import type { Message } from "@opencorp/protocol"
 import { createFakeOffice, type FakeOffice } from "../../script/stub"
-import { createOfficeClient } from "../../src/office/client"
-import { emptyState, openQuestions } from "../../src/office/store"
-import { createOfficeSync } from "../../src/office/sync"
-import { isTurn } from "../../src/office/turn"
+import { createOfficeClient, emptyState, openQuestions, createOfficeSync, isTurn } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }

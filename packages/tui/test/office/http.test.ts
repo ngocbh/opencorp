@@ -6,8 +6,8 @@ import {
   OfficeUnavailable,
   VersionConflictError,
   isNotImplemented,
-} from "../../src/office/errors"
-import { request } from "../../src/office/http"
+  request,
+} from "@opencorp/client"
 
 const stops: (() => void)[] = []
 afterEach(() => stops.splice(0).forEach((stop) => stop()))

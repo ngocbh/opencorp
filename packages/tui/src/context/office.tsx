@@ -1,10 +1,15 @@
 import { batch, createEffect, createSignal, on, onCleanup, onMount } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import type { ConnectionList, Question } from "@opencorp/protocol"
-import { createOfficeClient } from "../office/client"
-import { runEach } from "../office/queue"
-import { emptyState, type OfficeState } from "../office/store"
-import { createOfficeSync, type OfficeEvents, type OfficeStatus } from "../office/sync"
+import {
+  createOfficeClient,
+  runEach,
+  emptyState,
+  type OfficeState,
+  createOfficeSync,
+  type OfficeEvents,
+  type OfficeStatus,
+} from "@opencorp/client"
 import { createSimpleContext } from "./helper"
 
 // Streamed deltas arrive many times a second; applying them in one batch per frame keeps

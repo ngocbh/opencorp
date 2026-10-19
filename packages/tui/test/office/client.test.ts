@@ -5,9 +5,11 @@ import {
   CREATE_TIMEOUT_MS,
   START_LOGIN_TIMEOUT_MS,
   createOfficeClient,
-} from "../../src/office/client"
-import { OfficeError, OfficeTimeout, VersionConflictError } from "../../src/office/errors"
-import { request } from "../../src/office/http"
+  OfficeError,
+  OfficeTimeout,
+  VersionConflictError,
+  request,
+} from "@opencorp/client"
 import { until } from "../fixture/until"
 
 let office: FakeOffice

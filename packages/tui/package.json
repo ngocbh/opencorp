@@ -6,7 +6,6 @@
   "license": "MIT",
   "exports": {
     ".": "./src/index.tsx",
-    "./office/*": "./src/office/*.ts",
     "./debrief": "./src/routes/debrief/debrief.ts",
     "./editor-launch": "./src/editor-launch.ts",
     "./profile": "./src/routes/profile/profile.ts",
@@ -18,6 +17,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@opencorp/client": "workspace:*",
     "@opencorp/protocol": "workspace:*",
     "@opentui/core": "catalog:",
     "@opentui/keymap": "catalog:",

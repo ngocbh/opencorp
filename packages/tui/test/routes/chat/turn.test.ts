@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import type { Question } from "@opencorp/protocol"
-import { emptyState } from "../../../src/office/store"
+import { emptyState } from "@opencorp/client"
 import { cardQuestions } from "../../../src/routes/chat/turn"
 
 const q = (fields: Partial<Question>): Question => ({

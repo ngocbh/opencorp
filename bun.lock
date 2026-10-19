@@ -40,6 +40,7 @@
       "name": "@opencorp/tui",
       "version": "0.0.1",
       "dependencies": {
+        "@opencorp/client": "workspace:*",
         "@opencorp/protocol": "workspace:*",
         "@opentui/core": "catalog:",
         "@opentui/keymap": "catalog:",

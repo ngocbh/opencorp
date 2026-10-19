@@ -1,7 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { createFakeOffice, serveUnix } from "../../script/stub"
-import { createOfficeClient } from "../../src/office/client"
-import { subscribe, type StreamEvent, type SubscribeOptions } from "../../src/office/sse"
+import { createOfficeClient, subscribe, type StreamEvent, type SubscribeOptions } from "@opencorp/client"
 import { until } from "../fixture/until"
 
 const fast = { minDelayMs: 10, maxDelayMs: 40 }
