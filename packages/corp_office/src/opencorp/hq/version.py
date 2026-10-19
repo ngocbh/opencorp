@@ -14,12 +14,15 @@ CHECKOUT = Path(__file__).resolve().parents[5]
 
 def office_api(checkout: Path = CHECKOUT) -> str:
     """The compatibility key: ``<version>+<first 12 hex of sha256(protocol.schema.json)>`` in a checkout, so a
-    docs-only commit doesn't mark the app out of date; just the installed version without one."""
-    pyproject = checkout / "pyproject.toml"
+    docs-only commit doesn't mark the app out of date; just the installed version without one, or when the checkout's
+    ``pyproject.toml`` isn't opencorp's with a static version."""
     schema = checkout / "packages" / "protocol" / "schema" / "protocol.schema.json"
-    if pyproject.is_file() and schema.is_file():
-        version = tomllib.loads(pyproject.read_text())["project"]["version"]
-        return f"{version}+{hashlib.sha256(schema.read_bytes()).hexdigest()[:12]}"
+    try:
+        project = tomllib.loads((checkout / "pyproject.toml").read_text())["project"]
+        if project["name"] == "opencorp" and isinstance(version := project["version"], str):
+            return f"{version}+{hashlib.sha256(schema.read_bytes()).hexdigest()[:12]}"
+    except (OSError, ValueError, KeyError, TypeError):  # tomllib.TOMLDecodeError is a ValueError
+        pass
     return importlib.metadata.version("opencorp")
 
 

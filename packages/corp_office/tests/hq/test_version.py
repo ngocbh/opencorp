@@ -1,6 +1,7 @@
 """The compatibility key and the built app's id."""
 
 import hashlib
+import importlib.metadata
 import json
 import shutil
 import subprocess
@@ -27,6 +28,16 @@ def test_a_docs_only_change_keeps_the_key(tmp_path):
 
 def test_without_a_checkout_the_key_is_the_installed_version(tmp_path):
     assert "+" not in office_api(tmp_path)
+
+
+@pytest.mark.parametrize("pyproject", ['[project]\nname = "opencorp"\ndynamic = ["version"]\n',
+                                       '[project]\nname = "other"\nversion = "9.9.9"\n', "[project", ""])
+def test_a_pyproject_that_isnt_opencorps_with_a_version_falls_back_to_the_installed_version(tmp_path, pyproject):
+    (tmp_path / "pyproject.toml").write_text(pyproject)
+    schema = tmp_path / "packages/protocol/schema/protocol.schema.json"
+    schema.parent.mkdir(parents=True)
+    schema.write_text("{}")
+    assert office_api(tmp_path) == importlib.metadata.version("opencorp")
 
 
 def test_build_json_is_parsed_again_only_when_its_content_changes(tmp_path):
