@@ -46,7 +46,8 @@ BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "Rep
           "ProfileWriteRequest", "VersionConflict", "ProfileManagerRequest", "FeedbackRequest",
           "ConfirmFollowUpsRequest", "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection",
           "ConnectionList", "ModelOption", "ModelList", "SetModelRequest", "AddConnectionRequest",
-          "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin"}
+          "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView", "CostReport",
+          "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession"}
 
 
 def test_every_route_body_has_a_fixture():
@@ -74,3 +75,20 @@ def test_harness_session_fields_exist():
     assert "harness" in defs["Question"]["properties"]["source"]["enum"]
     assert {"harness_model", "harness_usage", "parent_session_id"} <= defs["Session"]["properties"].keys()
     assert "author" in defs["Message"]["properties"] and "secret" in defs["QuestionPage"]["properties"]
+
+
+HQ = {"CompanyView", "PersonCost", "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
+      "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession"}
+
+
+def test_hq_defs_exist_and_company_updated_is_an_event_type():
+    defs = _schema()["$defs"]
+    assert HQ <= defs.keys()
+    assert "company.updated" in defs["Event"]["properties"]["type"]["enum"]
+    assert "HqLoginRequest" not in defs  # password login is deferred
+
+
+def test_a_browser_session_never_carries_its_secret_or_password_fingerprint():
+    props = _schema()["$defs"]["BrowserSession"]["properties"]
+    assert not {"secret", "secret_sha256", "password_fp"} & props.keys()
+    assert props["via"]["enum"] == ["pair"]

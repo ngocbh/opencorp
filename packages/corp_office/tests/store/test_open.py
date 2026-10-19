@@ -12,7 +12,7 @@ from opencorp.store.store import enable_wal
 
 TABLES = {
     "work_items", "comments", "sessions", "session_runs", "questions", "feedback", "messages", "parts",
-    "outbox", "worked_folders", "audit", "usage", "workers", "debriefs", "profile_proposals",
+    "outbox", "worked_folders", "audit", "usage", "workers", "debriefs", "profile_proposals", "hq_sessions",
 }
 
 
@@ -66,6 +66,23 @@ def test_finished_threads_release_their_connections(tmp_path):
     finally:
         done.set()
         held.join()
+
+
+def test_hq_sessions_has_every_column_and_a_unique_secret_hash(store):
+    conn = store._conn()
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(hq_sessions)")]
+    assert cols == ["id", "person", "name", "label", "secret_sha256", "password_fp", "issued_by", "via",
+                    "created_at", "expires_at", "last_used_at"]
+    row = ("S1", "ngocbh", "web-aaaaaa", None, "h" * 64, "f" * 16, "ngocbh", "pair",
+           "2026-10-19T10:00:00.000Z", "2026-11-18T10:00:00.000Z", None)
+    conn.execute(f"INSERT INTO hq_sessions VALUES ({', '.join('?' * len(row))})", row)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(f"INSERT INTO hq_sessions VALUES ({', '.join('?' * len(row))})", ("S2", *row[1:]))
+
+
+def test_usage_is_indexed_by_time(store):
+    plan = store._conn().execute("EXPLAIN QUERY PLAN SELECT SUM(usd) FROM usage WHERE at >= ?", ("x",)).fetchall()
+    assert any("usage_at" in r[-1] for r in plan)
 
 
 def test_reopen_keeps_data_and_version(tmp_path):

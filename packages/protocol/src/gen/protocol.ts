@@ -581,11 +581,12 @@ export interface Event {
     | "debrief.updated"
     | "profile.updated"
     | "profile_proposal.created"
-    | "profile_proposal.updated";
+    | "profile_proposal.updated"
+    | "company.updated";
   at: Timestamp;
   subject_id: string;
   /**
-   * The entity after the change.
+   * The entity after the change; for company.updated, `{sha}` of the new company commit.
    */
   data: {
     [k: string]: unknown;
@@ -651,6 +652,210 @@ export interface RepoIssue {
   code: string;
   message: string;
   severity?: "error" | "warning";
+}
+/**
+ * The company at one commit of the office's clone, as GET /api/company serves it. People come without devices or password hashes.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "CompanyView".
+ */
+export interface CompanyView {
+  sha: GitId;
+  /**
+   * Null when company.yaml is missing or doesn't parse at this commit.
+   */
+  company: Company | null;
+  people: Person[];
+  groups: Group[];
+  /**
+   * The files at this commit that don't parse.
+   */
+  issues: RepoIssue[];
+}
+/**
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "PersonCost".
+ */
+export interface PersonCost {
+  /**
+   * The price of the person's model calls since the report's start; only composer sessions are priced.
+   */
+  usd: number;
+  /**
+   * The person's harness sessions (Codex, Claude) updated since then, whose tokens the office doesn't price.
+   */
+  unpriced_sessions: number;
+}
+/**
+ * Spend per person since a time, as GET /costs and GET /api/costs serve it.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "CostReport".
+ */
+export interface CostReport {
+  since: Timestamp;
+  /**
+   * By handle; people with no spend are left out.
+   */
+  people: {
+    [k: string]: PersonCost;
+  };
+}
+/**
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "ApiVersion".
+ */
+export interface ApiVersion {
+  /**
+   * The compatibility key: `<version>+<first 12 hex of sha256(protocol.schema.json)>`, or just the version for an install without the schema.
+   */
+  api: string;
+}
+/**
+ * The built web app's build.json.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "AppBuild".
+ */
+export interface AppBuild {
+  /**
+   * A random nonce per build.
+   */
+  build: string;
+  /**
+   * The compatibility key the app was built for.
+   */
+  api: string;
+}
+/**
+ * GET /api/health: the office's compatibility key and the built app's, if there is one.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "Health".
+ */
+export interface Health {
+  ok: true;
+  office: ApiVersion;
+  /**
+   * Null when the web app isn't built.
+   */
+  app: AppBuild | null;
+}
+/**
+ * HQ's TCP listener on 127.0.0.1.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "HqTcp".
+ */
+export interface HqTcp {
+  enabled: boolean;
+  /**
+   * The bound port while listening, else the configured one.
+   */
+  port: number;
+  listening: boolean;
+  /**
+   * Why the last bind failed.
+   */
+  error?: string | null;
+  next_retry_at?: Timestamp | null;
+}
+/**
+ * GET /hq on the office socket: where HQ listens, for `opencorp pair` and `opencorp doctor`.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "HqStatus".
+ */
+export interface HqStatus {
+  /**
+   * The path of hq.sock.
+   */
+  socket: string;
+  tcp: HqTcp;
+  /**
+   * http://127.0.0.1:<port>/ while TCP is listening, else null.
+   */
+  url: string | null;
+  health: Health;
+  warnings?: string[];
+}
+/**
+ * The body of POST /hq/pair on the office socket.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "PairCodeRequest".
+ */
+export interface PairCodeRequest {
+  /**
+   * The human the browser will act as; null: the asking person.
+   */
+  handle?: Handle | null;
+  /**
+   * Also write a 0600 redirect file to open, so the code never appears in a process's arguments.
+   */
+  open_file?: boolean;
+}
+/**
+ * A one-time pairing link: single use, valid for 5 minutes. `path` and `url` carry the secret code: served only on the office socket, never under `/api`, and never logged.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "PairCode".
+ */
+export interface PairCode {
+  /**
+   * /pair#<code>.
+   */
+  path: string;
+  /**
+   * http://127.0.0.1:<port>/pair#<code> while TCP is listening, else null.
+   */
+  url: string | null;
+  /**
+   * The path of hq.sock, for an SSH forward.
+   */
+  socket: string;
+  port: number;
+  expires_at: Timestamp;
+  /**
+   * The redirect file's path, when one was asked for and TCP is listening.
+   */
+  open_file: string | null;
+}
+/**
+ * The body of POST /api/pair: the code from the link's fragment.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "PairRequest".
+ */
+export interface PairRequest {
+  code: string;
+  /**
+   * Free text naming the browser, such as 'Safari on Mac'.
+   */
+  label?: string | null;
+}
+/**
+ * A browser signed in to this office's HQ. Local to the office; never the cookie's secret.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "BrowserSession".
+ */
+export interface BrowserSession {
+  id: Ulid;
+  person: Handle;
+  /**
+   * web-<6 characters>, made by the office.
+   */
+  name: string;
+  label: string | null;
+  via: "pair";
+  /**
+   * A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.
+   */
+  issued_by: string;
+  created_at: Timestamp;
+  expires_at: Timestamp;
+  last_used_at: Timestamp | null;
 }
 /**
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
