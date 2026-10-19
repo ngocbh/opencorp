@@ -27,12 +27,14 @@ from ulid import ULID
 from opencorp.protocol import now
 from opencorp.protocol.models import (
     Comment,
+    CostReport,
     Debrief,
     ErrorPart,
     Event,
     Feedback,
     FilePart,
     Message,
+    PersonCost,
     ProfileProposal,
     Question,
     Session,
@@ -1151,6 +1153,26 @@ class Store:
         """The summed price of a session's model calls."""
         row = self._conn().execute("SELECT COALESCE(SUM(usd), 0) FROM usage WHERE session_id = ?", (session_id,))
         return float(row.fetchone()[0])
+
+    def costs_since(self, since: str) -> CostReport:
+        """Spend per person since ``since`` (a Timestamp): priced usage, and harness sessions updated since then.
+
+        Only composer sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
+        counted instead. ``unpriced_sessions`` counts harness sessions whose ``updated_at`` is at or after ``since``,
+        which any update moves (a status change, a rename), so a counted session may not have spent anything since
+        then. Every session kind counts: all of it is real spend.
+        """
+        with self._read() as conn:
+            priced = conn.execute(
+                "SELECT s.person, SUM(u.usd) FROM usage u JOIN sessions s ON s.id = u.session_id "
+                "WHERE u.at >= ? GROUP BY s.person", (since,)).fetchall()
+            unpriced = conn.execute(
+                "SELECT person, COUNT(*) FROM sessions WHERE harness != 'composer' AND updated_at >= ? "
+                "GROUP BY person", (since,)).fetchall()
+        usd = {person: float(total) for person, total in priced}
+        count = {person: n for person, n in unpriced}
+        return CostReport(since=since, people={p: PersonCost(usd=usd.get(p, 0.0), unpriced_sessions=count.get(p, 0))
+                                               for p in sorted(usd.keys() | count.keys())})
 
     def record_worker(self, session_id: str, *, pid: int, pgid: int, start_time: float) -> WorkerRecord:
         """Record a session's worker, replacing any earlier record for the session."""

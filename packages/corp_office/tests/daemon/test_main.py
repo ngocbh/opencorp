@@ -321,6 +321,7 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
     from opencorp.chat.hire import Hiring
     from opencorp.chat.logins import Logins
     from opencorp.chat.models import ModelCache
+    from opencorp.company.snapshot import CompanySnapshots
     from opencorp.daemon.main import build_office
     from opencorp.profile import GitProfileStore
 
@@ -340,6 +341,7 @@ async def test_build_office_runs_the_chat_harness(home, monkeypatch):
         assert isinstance(cache, ModelCache) and cache.connections is conns
         logins = office.extras["logins"]
         assert isinstance(logins, Logins) and logins.connections is conns and logins.models is cache
+        assert isinstance(office.extras["company"], CompanySnapshots) and office.extras["company"].git is office.git
         assert started == []
         await office.start()  # restores live sessions, then lists each connection's models
         assert started == ["restore", ("warm", cache)]
