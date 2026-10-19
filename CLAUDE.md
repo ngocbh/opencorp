@@ -13,14 +13,24 @@ of the Yian engine.
 
 OpenCorp isn't affiliated with OpenCode (the TUI is forked from it) or OpenCorporates.
 
+## Built around Yian
+
+Everything in OpenCorp is built around Yian flows. Each kind of work an employee does is a flow:
+chatting with them, running an SOP, handing work to Codex, Claude Code, or OpenCode. Office code
+runs flows and provides the tools they call (workspace, company, questions, ...). It doesn't add
+a way to do work beside a flow.
+
+Codex sessions (#144) predate this principle and run outside Yian; #179 sketches moving them
+onto flows.
+
 ## Building a feature on Yian
 
 Before designing a feature, during brainstorming:
 
-1. Ask whether the work repeats: will the owner, other people, or agents run it again? If so,
-   build it as a Yian flow (an SOP or part of an employee's flows) that anyone can share and reuse.
-   If it's one-off or flexible work, leave it to a harness (Codex, Claude Code, OpenCode) or
-   plain office code.
+1. Design the feature as Yian flows plus the office tools they call. Ask whether the work
+   repeats: will the owner, other people, or agents run it again? If so, make it an SOP that
+   anyone can share and reuse. If it's one-off or flexible work, a flow hands it to Codex,
+   Claude Code, or OpenCode.
 2. For a flow, list the Yian features it needs and check that Yian supports each one.
 3. For each missing feature, file an issue on the yian repo (github.com/ngocbh/yian) asking for a
    generic feature. Don't work around it in OpenCorp; build on what Yian has today and expand
