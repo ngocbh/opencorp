@@ -45,15 +45,18 @@ class HeadWatcher:
             return None
 
     async def _run(self) -> None:
-        last = self._head()
+        baseline, last = True, None
         while True:
-            await asyncio.sleep(self.interval)
-            sha = self._head()
-            if sha is None or sha == last:
-                continue
-            last = sha
+            # Any failure (git missing, out of file descriptors, a locked store) is logged and the next poll tries
+            # again: a watcher that died would stop company.updated until the office restarts.
             try:
-                # As profile.updated does for other metadata kept outside the store.
-                await asyncio.to_thread(self.office.store.emit, "company.updated", sha, {"sha": sha})
+                sha = self._head()
+                if baseline:
+                    baseline, last = False, sha
+                elif sha is not None and sha != last:
+                    # As profile.updated does for other metadata kept outside the store.
+                    await asyncio.to_thread(self.office.store.emit, "company.updated", sha, {"sha": sha})
+                    last = sha  # only once recorded, so a failed emit is retried
             except Exception:
-                log.exception("couldn't record company.updated for %s", sha)
+                log.exception("couldn't check the company clone's HEAD or record company.updated")
+            await asyncio.sleep(self.interval)
