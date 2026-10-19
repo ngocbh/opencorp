@@ -36,6 +36,27 @@ Before designing a feature, during brainstorming:
    generic feature. Don't work around it in OpenCorp; build on what Yian has today and expand
    when Yian ships more.
 
+## Counterparts to study
+
+Before designing something, or when stuck, look at how well-established open-source projects solve
+it. Map their pieces to ours, reuse as much as their licenses allow, and decide only where
+following them conflicts with our goals. Yian's own invention is learning across runs and
+readable, typed SOPs. For everything else (durable recovery, external events, scheduling,
+retries, run views), borrow the designs below instead of re-solving them.
+
+| Area | Project | Strong at |
+|---|---|---|
+| Agent graphs | LangGraph | Checkpoints per step, `interrupt()` and resume for human input, time travel, Studio's run view |
+| Durable execution | Temporal | Event-history replay, retries, signals, queries and updates, long-running workflows, versioning, a mature web UI |
+| Event-driven steps | Inngest | Memoized `step.run`, `step.waitForEvent`, `step.sleep`, concurrency and throttling controls |
+| Learning from feedback | DSPy, TextGrad | DSPy: optimizers that tune prompts and examples against a metric. TextGrad: text feedback propagated backward through LLM calls |
+| Server and clients | OpenCode (our TUI's upstream) | One service with many clients, a contract-first API, an SSE event stream, a SolidJS web app, pairing, an Electron desktop app |
+| Gateway, security, native apps | OpenClaw | Device pairing and scopes, auth on loopback, protocol schema discipline, a macOS menu-bar app. Its security advisories show what to avoid |
+| Coding-agent protocol | Codex app-server | Threads, turns and items; approvals as server requests; one protocol for many clients |
+| AI-company org | Paperclip | Org chart, reporting lines and budgets for agent companies |
+
+Research notes on these live in `docs/plans/research/` (local only).
+
 ## Layout
 
 ```
