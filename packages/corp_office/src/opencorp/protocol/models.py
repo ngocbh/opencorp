@@ -76,6 +76,15 @@ type ConnectionName = Annotated[
 ]
 
 
+type Timestamp = Annotated[
+    str,
+    Field(
+        description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+        pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+    ),
+]
+
+
 class CompanyDefaults(BaseModel):
     model_config = ConfigDict(
         extra='forbid',
@@ -605,7 +614,7 @@ class Event(BaseModel):
         extra='forbid',
     )
     id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
-    type: Literal['work_item.created', 'work_item.updated', 'comment.created', 'session.created', 'session.updated', 'question.created', 'question.updated', 'feedback.created', 'feedback.updated', 'debrief.created', 'debrief.updated', 'profile.updated', 'profile_proposal.created', 'profile_proposal.updated']
+    type: Literal['work_item.created', 'work_item.updated', 'comment.created', 'session.created', 'session.updated', 'question.created', 'question.updated', 'feedback.created', 'feedback.updated', 'debrief.created', 'debrief.updated', 'profile.updated', 'profile_proposal.created', 'profile_proposal.updated', 'company.updated']
     at: Annotated[
         str,
         Field(
@@ -686,6 +695,277 @@ class RepoIssue(BaseModel):
     code: str
     message: str
     severity: Literal['error', 'warning'] = 'error'
+
+
+class CompanyView(BaseModel):
+    """
+    The company at one commit of the office's clone, as GET /api/company serves it. People come without devices or password hashes.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    sha: Annotated[
+        str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
+    ]
+    company: Annotated[
+        Company | None,
+        Field(
+            description="Null when company.yaml is missing or doesn't parse at this commit."
+        ),
+    ]
+    people: list[Person]
+    groups: list[Group]
+    issues: Annotated[
+        list[RepoIssue], Field(description="The files at this commit that don't parse.")
+    ]
+
+
+class PersonCost(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    usd: Annotated[
+        float,
+        Field(
+            description="The price of the person's model calls since the report's start; only composer sessions are priced.",
+            ge=0.0,
+        ),
+    ]
+    unpriced_sessions: Annotated[
+        int,
+        Field(
+            description="The person's harness sessions (Codex, Claude) updated since then, whose tokens the office doesn't price.",
+            ge=0,
+        ),
+    ]
+
+
+class CostReport(BaseModel):
+    """
+    Spend per person since a time, as GET /costs and GET /api/costs serve it.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    since: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+    people: Annotated[
+        dict[str, PersonCost],
+        Field(description='By handle; people with no spend are left out.'),
+    ]
+
+
+class ApiVersion(BaseModel):
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    api: Annotated[
+        str,
+        Field(
+            description='The compatibility key: `<version>+<first 12 hex of sha256(protocol.schema.json)>`, or just the version for an install without the schema.'
+        ),
+    ]
+
+
+class AppBuild(BaseModel):
+    """
+    The built web app's build.json.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    build: Annotated[str, Field(description='A random nonce per build.')]
+    api: Annotated[
+        str, Field(description='The compatibility key the app was built for.')
+    ]
+
+
+class Health(BaseModel):
+    """
+    GET /api/health: the office's compatibility key and the built app's, if there is one.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    ok: Literal[True]
+    office: ApiVersion
+    app: Annotated[
+        AppBuild | None, Field(description="Null when the web app isn't built.")
+    ]
+
+
+class HqTcp(BaseModel):
+    """
+    HQ's TCP listener on 127.0.0.1.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    enabled: bool
+    port: Annotated[
+        int,
+        Field(
+            description='The bound port while listening, else the configured one.',
+            ge=0,
+            le=65535,
+        ),
+    ]
+    listening: bool
+    error: Annotated[str | None, Field(description='Why the last bind failed.')] = None
+    next_retry_at: Timestamp | None = None
+
+
+class HqStatus(BaseModel):
+    """
+    GET /hq on the office socket: where HQ listens, for `opencorp pair` and `opencorp doctor`.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    socket: Annotated[str, Field(description='The path of hq.sock.')]
+    tcp: HqTcp
+    url: Annotated[
+        str | None,
+        Field(
+            description='http://127.0.0.1:<port>/ while TCP is listening, else null.'
+        ),
+    ]
+    health: Health
+    warnings: list[str] = []
+
+
+class PairCodeRequest(BaseModel):
+    """
+    The body of POST /hq/pair on the office socket.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    handle: Annotated[
+        Handle | None,
+        Field(
+            description='The human the browser will act as; null: the asking person.'
+        ),
+    ] = None
+    open_file: Annotated[
+        bool,
+        Field(
+            description="Also write a 0600 redirect file to open, so the code never appears in a process's arguments."
+        ),
+    ] = False
+
+
+class PairCode(BaseModel):
+    """
+    A one-time pairing link: single use, valid for 5 minutes.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    path: Annotated[str, Field(description='/pair#<code>.')]
+    url: Annotated[
+        str | None,
+        Field(
+            description='http://127.0.0.1:<port>/pair#<code> while TCP is listening, else null.'
+        ),
+    ]
+    socket: Annotated[
+        str, Field(description='The path of hq.sock, for an SSH forward.')
+    ]
+    port: Annotated[int, Field(ge=0, le=65535)]
+    expires_at: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+    open_file: Annotated[
+        str | None,
+        Field(
+            description="The redirect file's path, when one was asked for and TCP is listening."
+        ),
+    ]
+
+
+type Label = Annotated[
+    str,
+    Field(
+        description="Free text naming the browser, such as 'Safari on Mac'.",
+        max_length=100,
+    ),
+]
+
+
+class PairRequest(BaseModel):
+    """
+    The body of POST /api/pair: the code from the link's fragment.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    code: Annotated[str, Field(max_length=64, min_length=1)]
+    label: Annotated[
+        Label | None,
+        Field(description="Free text naming the browser, such as 'Safari on Mac'."),
+    ] = None
+
+
+class BrowserSession(BaseModel):
+    """
+    A browser signed in to this office's HQ. Local to the office; never the cookie's secret.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    person: Annotated[
+        str,
+        Field(
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    name: Annotated[str, Field(description='web-<6 characters>, made by the office.')]
+    label: str | None
+    via: Literal['pair']
+    issued_by: Annotated[
+        str,
+        Field(
+            description='Who ran `opencorp pair`.',
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    created_at: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+    expires_at: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+    last_used_at: Timestamp | None
 
 
 class HireRequest(BaseModel):

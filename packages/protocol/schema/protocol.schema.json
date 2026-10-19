@@ -503,7 +503,8 @@
             "feedback.created", "feedback.updated",
             "debrief.created", "debrief.updated",
             "profile.updated",
-            "profile_proposal.created", "profile_proposal.updated"
+            "profile_proposal.created", "profile_proposal.updated",
+            "company.updated"
           ]
         },
         "at": { "$ref": "#/$defs/Timestamp" },
@@ -555,6 +556,122 @@
         "code": { "type": "string" },
         "message": { "type": "string" },
         "severity": { "enum": ["error", "warning"], "default": "error" }
+      }
+    },
+    "CompanyView": {
+      "type": "object", "additionalProperties": false, "required": ["sha", "company", "people", "groups", "issues"],
+      "description": "The company at one commit of the office's clone, as GET /api/company serves it. People come without devices or password hashes.",
+      "properties": {
+        "sha": { "$ref": "#/$defs/GitId" },
+        "company": {
+          "anyOf": [{ "$ref": "#/$defs/Company" }, { "type": "null" }],
+          "description": "Null when company.yaml is missing or doesn't parse at this commit."
+        },
+        "people": { "type": "array", "items": { "$ref": "#/$defs/Person" } },
+        "groups": { "type": "array", "items": { "$ref": "#/$defs/Group" } },
+        "issues": { "type": "array", "items": { "$ref": "#/$defs/RepoIssue" }, "description": "The files at this commit that don't parse." }
+      }
+    },
+    "PersonCost": {
+      "type": "object", "additionalProperties": false, "required": ["usd", "unpriced_sessions"],
+      "properties": {
+        "usd": { "type": "number", "minimum": 0, "description": "The price of the person's model calls since the report's start; only composer sessions are priced." },
+        "unpriced_sessions": { "type": "integer", "minimum": 0, "description": "The person's harness sessions (Codex, Claude) updated since then, whose tokens the office doesn't price." }
+      }
+    },
+    "CostReport": {
+      "type": "object", "additionalProperties": false, "required": ["since", "people"],
+      "description": "Spend per person since a time, as GET /costs and GET /api/costs serve it.",
+      "properties": {
+        "since": { "$ref": "#/$defs/Timestamp" },
+        "people": { "type": "object", "additionalProperties": { "$ref": "#/$defs/PersonCost" }, "description": "By handle; people with no spend are left out." }
+      }
+    },
+    "ApiVersion": {
+      "type": "object", "additionalProperties": false, "required": ["api"],
+      "properties": { "api": { "type": "string", "description": "The compatibility key: `<version>+<first 12 hex of sha256(protocol.schema.json)>`, or just the version for an install without the schema." } }
+    },
+    "AppBuild": {
+      "type": "object", "additionalProperties": false, "required": ["build", "api"],
+      "description": "The built web app's build.json.",
+      "properties": {
+        "build": { "type": "string", "description": "A random nonce per build." },
+        "api": { "type": "string", "description": "The compatibility key the app was built for." }
+      }
+    },
+    "Health": {
+      "type": "object", "additionalProperties": false, "required": ["ok", "office", "app"],
+      "description": "GET /api/health: the office's compatibility key and the built app's, if there is one.",
+      "properties": {
+        "ok": { "const": true },
+        "office": { "$ref": "#/$defs/ApiVersion" },
+        "app": { "anyOf": [{ "$ref": "#/$defs/AppBuild" }, { "type": "null" }], "description": "Null when the web app isn't built." }
+      }
+    },
+    "HqTcp": {
+      "type": "object", "additionalProperties": false, "required": ["enabled", "port", "listening"],
+      "description": "HQ's TCP listener on 127.0.0.1.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "port": { "type": "integer", "minimum": 0, "maximum": 65535, "description": "The bound port while listening, else the configured one." },
+        "listening": { "type": "boolean" },
+        "error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "Why the last bind failed." },
+        "next_retry_at": { "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }], "default": null }
+      }
+    },
+    "HqStatus": {
+      "type": "object", "additionalProperties": false, "required": ["socket", "tcp", "url", "health"],
+      "description": "GET /hq on the office socket: where HQ listens, for `opencorp pair` and `opencorp doctor`.",
+      "properties": {
+        "socket": { "type": "string", "description": "The path of hq.sock." },
+        "tcp": { "$ref": "#/$defs/HqTcp" },
+        "url": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "http://127.0.0.1:<port>/ while TCP is listening, else null." },
+        "health": { "$ref": "#/$defs/Health" },
+        "warnings": { "type": "array", "items": { "type": "string" }, "default": [] }
+      }
+    },
+    "PairCodeRequest": {
+      "type": "object", "additionalProperties": false,
+      "description": "The body of POST /hq/pair on the office socket.",
+      "properties": {
+        "handle": { "anyOf": [{ "$ref": "#/$defs/Handle" }, { "type": "null" }], "default": null, "description": "The human the browser will act as; null: the asking person." },
+        "open_file": { "type": "boolean", "default": false, "description": "Also write a 0600 redirect file to open, so the code never appears in a process's arguments." }
+      }
+    },
+    "PairCode": {
+      "type": "object", "additionalProperties": false, "required": ["path", "url", "socket", "port", "expires_at", "open_file"],
+      "description": "A one-time pairing link: single use, valid for 5 minutes.",
+      "properties": {
+        "path": { "type": "string", "description": "/pair#<code>." },
+        "url": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "http://127.0.0.1:<port>/pair#<code> while TCP is listening, else null." },
+        "socket": { "type": "string", "description": "The path of hq.sock, for an SSH forward." },
+        "port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "expires_at": { "$ref": "#/$defs/Timestamp" },
+        "open_file": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "The redirect file's path, when one was asked for and TCP is listening." }
+      }
+    },
+    "PairRequest": {
+      "type": "object", "additionalProperties": false, "required": ["code"],
+      "description": "The body of POST /api/pair: the code from the link's fragment.",
+      "properties": {
+        "code": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "label": { "anyOf": [{ "type": "string", "maxLength": 100 }, { "type": "null" }], "default": null, "description": "Free text naming the browser, such as 'Safari on Mac'." }
+      }
+    },
+    "BrowserSession": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "person", "name", "label", "via", "issued_by", "created_at", "expires_at", "last_used_at"],
+      "description": "A browser signed in to this office's HQ. Local to the office; never the cookie's secret.",
+      "properties": {
+        "id": { "$ref": "#/$defs/Ulid" },
+        "person": { "$ref": "#/$defs/Handle" },
+        "name": { "type": "string", "description": "web-<6 characters>, made by the office." },
+        "label": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+        "via": { "enum": ["pair"] },
+        "issued_by": { "$ref": "#/$defs/Handle", "description": "Who ran `opencorp pair`." },
+        "created_at": { "$ref": "#/$defs/Timestamp" },
+        "expires_at": { "$ref": "#/$defs/Timestamp" },
+        "last_used_at": { "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }] }
       }
     },
     "HireRequest": {
