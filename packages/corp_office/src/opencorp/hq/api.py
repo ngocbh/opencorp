@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp
 
+from opencorp.daemon.bus import PING
 from opencorp.daemon.http import EXCEPTION_HANDLERS, HTTPError, error, ok, parse
 from opencorp.daemon.routes.costs import costs
 from opencorp.daemon.routes.devices import whoami
+from opencorp.daemon.routes.events import PING_S, RESET, frame
 from opencorp.daemon.routes.questions import list_questions
 from opencorp.daemon.routes.sessions import list_sessions
 from opencorp.daemon.routes.work_items import get_work_item
@@ -27,6 +30,10 @@ if TYPE_CHECKING:
     from opencorp.hq.core import Hq
 
 ANY = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+
+HQ_EVENT_TYPES = frozenset({"session.created", "session.updated", "question.created", "question.updated",
+                            "work_item.created", "work_item.updated", "company.updated"})
+"""What HQ's stream carries: no live transcript events, profiles, feedback, debriefs, proposals or comments."""
 
 MAX_AGE = 30 * 24 * 3600
 """The cookie's lifetime in seconds: the session's."""
@@ -87,6 +94,45 @@ async def company(request: Request) -> JSONResponse:
     return ok(view.model_copy(update={"people": people}))
 
 
+async def events(request: Request) -> Response:
+    """HQ's event stream: the /events contract (``: connected``, frames, ``reset``, pings) for HQ's event types.
+
+    Every frame and ping checks the session's expiry and revocation, and each ``company.updated`` checks its person
+    again at the new commit; a failing check ends the stream (the app then gets 401 and shows sign-in).
+    """
+    if request.method != "GET":  # a HEAD response to a stream that never ends would hold the connection
+        return error(405, "method_not_allowed", f"{request.method} is not allowed on /api/events", {"allow": "GET"})
+    hq = get_hq(request)
+    sid = request.state.hq_session
+
+    async def body() -> AsyncIterator[bytes]:
+        # Subscribed here, not in the handler, so a response that never starts leaves no subscription behind.
+        sub = hq.office.bus.subscribe(types=HQ_EVENT_TYPES)
+        hq.sessions.register(sid, sub)
+        try:
+            yield b": connected\n\n"
+            while hq.sessions.alive(sid):
+                item = await sub.next(timeout=PING_S)
+                if item is None:
+                    if sub.dropped:
+                        yield RESET
+                    return
+                if not hq.sessions.alive(sid):
+                    return
+                if item is PING:
+                    yield b": ping\n\n"
+                    continue
+                kind, event = item
+                if event.type == "company.updated" and not await hq.sessions.still_valid(sid, event.subject_id):
+                    return
+                yield frame(kind, event)
+        finally:
+            hq.sessions.unregister(sid, sub)
+            sub.close()
+
+    return StreamingResponse(body(), media_type="text/event-stream", headers={"cache-control": "no-cache"})
+
+
 async def no_route(request: Request) -> JSONResponse:
     """Everything under /api that isn't on the allowlist."""
     return error(404, "no_route", f"no route {request.method} {request.url.path}")
@@ -107,6 +153,7 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
         Route("/questions", list_questions, methods=["GET"]),
         Route("/work-items/{id}", get_work_item, methods=["GET"]),
         Route("/costs", costs, methods=["GET"]),
+        Route("/events", events, methods=["GET"]),
         Route("/pair", pair, methods=["POST"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/{rest:path}", no_route, methods=ANY),
