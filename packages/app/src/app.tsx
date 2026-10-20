@@ -3,14 +3,17 @@ import { lazy } from "solid-js"
 import { OfficeProvider } from "./data/office"
 import Pair from "./pages/pair"
 import SignIn from "./pages/sign-in"
+import { Shell } from "./shell"
 
 // Lazy, so a rebuild that deletes this chunk fails as a missing script and the app checks its version.
 const Company = lazy(() => import("./pages/company"))
 
-/** The company view with the office around it, at "/" and any other path. */
+/** The company view in the shell, with the office around it, at "/" and any other path. */
 const Office = () => (
   <OfficeProvider>
-    <Company />
+    <Shell>
+      <Company />
+    </Shell>
   </OfficeProvider>
 )
 

@@ -28,3 +28,18 @@ test("without a session the app shows sign-in, and never asks for a password", a
   await expect(page.getByText("Run `opencorp pair` on the office machine. HQ never asks for your password here.")).toBeVisible()
   await expect(page.locator("input[type=password]")).toHaveCount(0)
 })
+
+test("after pairing, the sidebar names the company and the person, and the connection is live", async ({ page, request }) => {
+  await request.post("/__fixture/code", { data: { code: "good-code-123" } })
+  await page.goto("/pair#good-code-123")
+  await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible()
+  await expect(page.getByText("@ngocbh")).toBeVisible()
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await expect(page.getByText(/paired by/)).toHaveCount(0) // paired by themselves
+})
+
+test("a browser someone else paired says so", async ({ page, request }) => {
+  await request.post("/__fixture/code", { data: { code: "from-ann-1234", issued_by: "ann" } })
+  await page.goto("/pair#from-ann-1234")
+  await expect(page.getByText("paired by @ann")).toBeVisible()
+})
