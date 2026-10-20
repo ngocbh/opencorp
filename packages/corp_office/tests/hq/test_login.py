@@ -1,11 +1,13 @@
 """Signing a browser in with a handle and password: the same session and cookie as pairing."""
 
 import logging
+import re
 
 import pytest
 import yaml
 
-from opencorp.auth.passwords import hash_password
+from opencorp.auth.passwords import check_password, hash_password
+from opencorp.hq import login as login_module
 from tests.company.conftest import _git
 from tests.hq.conftest import PORT, hq_client
 
@@ -96,3 +98,31 @@ async def test_the_password_is_never_logged(web, with_password, caplog):
     assert PASSWORD not in caplog.text and "a wrong guess here" not in caplog.text and secret not in caplog.text
     assert "sign-in for @ngocbh from 127.0.0.1 failed" in caplog.text
     assert "sign-in for @ngocbh from 127.0.0.1 ok" in caplog.text
+
+
+@pytest.mark.parametrize("case", ["wrong password", "unknown handle", "agent", "human without a password"])
+async def test_every_failure_is_the_same_401(web, company, case):
+    if case != "human without a password":
+        set_password(company, "ngocbh", hash_password(PASSWORD))
+    if case == "agent":
+        set_password(company, "minh", hash_password(PASSWORD))  # a hash on an agent signs nobody in
+    handle, password = {"wrong password": ("ngocbh", "not the password"), "unknown handle": ("nobody", PASSWORD),
+                        "agent": ("minh", PASSWORD), "human without a password": ("ngocbh", PASSWORD)}[case]
+    r = await login(web, handle, password)
+    assert (r.status_code, r.json()) == (401, {"error": "bad_credentials", "message": "wrong handle or password"})
+    assert "set-cookie" not in r.headers
+
+
+@pytest.mark.parametrize("handle", ["nobody", "minh", "ngocbh"])
+async def test_a_handle_without_a_password_still_costs_a_full_check(web, handle, monkeypatch):
+    checked = []
+    real = login_module.check_password
+    monkeypatch.setattr(login_module, "check_password", lambda pw, phc: checked.append(phc) or real(pw, phc))
+    assert (await login(web, handle)).status_code == 401
+    assert checked == [login_module.DUMMY_HASH]
+
+
+def test_the_dummy_hash_costs_what_a_real_one_does():
+    cost = re.compile(r"\$scrypt\$ln=\d+,r=\d+,p=\d+\$")
+    assert cost.match(login_module.DUMMY_HASH)[0] == cost.match(hash_password("x" * 12))[0]
+    assert not check_password(PASSWORD, login_module.DUMMY_HASH)
