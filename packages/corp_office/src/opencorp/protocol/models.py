@@ -847,6 +847,10 @@ class HqStatus(BaseModel):
         ),
     ]
     health: Health
+    socket_error: Annotated[
+        str | None,
+        Field(description="Why hq.sock isn't listening, or null when it is."),
+    ] = None
     warnings: list[str] = []
 
 

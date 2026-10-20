@@ -627,6 +627,7 @@
         "tcp": { "$ref": "#/$defs/HqTcp" },
         "url": { "anyOf": [{ "type": "string" }, { "type": "null" }], "description": "http://127.0.0.1:<port>/ while TCP is listening, else null." },
         "health": { "$ref": "#/$defs/Health" },
+        "socket_error": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "Why hq.sock isn't listening, or null when it is." },
         "warnings": { "type": "array", "items": { "type": "string" }, "default": [] }
       }
     },

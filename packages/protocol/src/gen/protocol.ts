@@ -777,6 +777,10 @@ export interface HqStatus {
    */
   url: string | null;
   health: Health;
+  /**
+   * Why hq.sock isn't listening, or null when it is.
+   */
+  socket_error?: string | null;
   warnings?: string[];
 }
 /**

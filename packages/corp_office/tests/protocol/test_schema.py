@@ -86,6 +86,7 @@ def test_hq_defs_exist_and_company_updated_is_an_event_type():
     defs = _schema()["$defs"]
     assert HQ <= defs.keys()
     assert "company.updated" in defs["Event"]["properties"]["type"]["enum"]
+    assert defs["HqStatus"]["properties"]["socket_error"]["default"] is None
 
 
 def test_a_browser_session_never_carries_its_secret_or_password_fingerprint():
