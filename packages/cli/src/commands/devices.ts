@@ -38,7 +38,9 @@ function browserLines(browsers: BrowserSession[]): string[] {
     ...browsers.map(
       (b) =>
         `  ${b.id}  ${b.name}${b.label ? ` (${b.label})` : ""}  paired by @${b.issued_by}  ` +
-        `last used ${b.last_used_at ? day(b.last_used_at) : "never"}  expires ${day(b.expires_at)}`,
+        `last used ${b.last_used_at ? day(b.last_used_at) : "never"}  ` +
+        // The office keeps an expired session until its next cleanup.
+        `${Date.parse(b.expires_at) <= Date.now() ? "expired" : "expires"} ${day(b.expires_at)}`,
     ),
   ]
 }

@@ -196,6 +196,14 @@ test("devices list adds this office's browsers: name, label, who paired it, last
   })
 })
 
+test("devices list says a session the office hasn't cleaned up yet has expired", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", expires_at: "2026-09-01T09:00:00Z" })
+  expect((await opencorp(trusted, "devices", "list")).out.split("\n").at(-1)).toBe(
+    `  ${b.id}  ${b.name}  paired by @ngocbh  last used never  expired ${day("2026-09-01T09:00:00Z")}`,
+  )
+})
+
 test("an agent's list asks for no browsers", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   expect((await opencorp(trusted, "devices", "list", "minh")).out).toBe("@minh has no devices.")
