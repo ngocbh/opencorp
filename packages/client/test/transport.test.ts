@@ -82,6 +82,32 @@ test("a 401 over a base URL is UnknownDevice, saying to pair this browser again,
   }
 })
 
+test("a 401 from signing in with a password is bad_credentials, not UnknownDevice, whatever its body", async () => {
+  for (const body of ['{"error": "bad_credentials", "message": "wrong handle or password"}', "<html>sign in</html>"]) {
+    const { base } = serve({ answer: () => new Response(body, { status: 401 }) })
+    const e = await failure(createOfficeClient({ baseUrl: base }).signIn({ handle: "ann", password: "pw" }))
+    expect(e).toBeInstanceOf(OfficeError)
+    expect(e).not.toBeInstanceOf(UnknownDevice)
+    expect([e.status, e.code, e.message]).toEqual([401, "bad_credentials", "wrong handle or password"])
+    stopServers()
+  }
+})
+
+test("a Retry-After header in seconds rides on the error; one that isn't seconds is left out", async () => {
+  const tooMany = (retry: string) => () =>
+    Response.json(
+      { error: "too_many_attempts", message: "too many tries" },
+      { status: 429, headers: { "retry-after": retry } },
+    )
+  const { base } = serve({ answer: tooMany("120") })
+  const e = await failure(createOfficeClient({ baseUrl: base }).signIn({ handle: "ann", password: "pw" }))
+  expect([e.status, e.code, e.retryAfterS]).toEqual([429, "too_many_attempts", 120])
+  stopServers()
+  const { base: other } = serve({ answer: tooMany("Wed, 21 Oct 2026 07:28:00 GMT") })
+  const dated = await failure(createOfficeClient({ baseUrl: other }).signIn({ handle: "ann", password: "pw" }))
+  expect([dated.code, dated.retryAfterS]).toEqual(["too_many_attempts", undefined])
+})
+
 test("a 401 over the socket still says to log in", async () => {
   const dir = mkdtempSync("/tmp/oct-")
   onStop(() => rmSync(dir, { recursive: true, force: true }))

@@ -91,7 +91,15 @@ export async function request<T>(
   if (res.ok) return data as T
   if (res.status === 409 && typeof d.expected === "string" && typeof d.current === "string")
     throw new VersionConflictError(d.expected, d.current)
-  if (typeof d.error === "string")
-    throw new OfficeError(res.status, d.error, typeof d.message === "string" ? d.message : d.error)
-  throw new OfficeError(res.status, "bad_response", `${method} ${path}: HTTP ${res.status}`)
+  const err =
+    typeof d.error === "string"
+      ? new OfficeError(res.status, d.error, typeof d.message === "string" ? d.message : d.error)
+      : new OfficeError(res.status, "bad_response", `${method} ${path}: HTTP ${res.status}`)
+  err.retryAfterS = retryAfter(res.headers.get("retry-after"))
+  throw err
+}
+
+/** A `Retry-After` header's delay in seconds; undefined when it's missing or an HTTP date. */
+function retryAfter(value: string | null) {
+  return value !== null && /^\s*\d+\s*$/.test(value) ? Number(value) : undefined
 }

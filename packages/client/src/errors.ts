@@ -1,5 +1,7 @@
 /** A failed office request: the `ApiError` body, or a response the client couldn't read. */
 export class OfficeError extends Error {
+  /** How many seconds the office asked the client to wait first (its `Retry-After` header), when it said. */
+  retryAfterS?: number
   constructor(
     readonly status: number,
     readonly code: string,
