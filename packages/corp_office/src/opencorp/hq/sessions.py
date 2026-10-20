@@ -18,6 +18,7 @@ from opencorp.company.git import CompanyGit
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.daemon.bus import Subscription
 from opencorp.daemon.http import HTTPError
+from opencorp.protocol import stamp
 from opencorp.protocol.models import BrowserSession, CompanyView, Person
 from opencorp.store import HqSessionRecord, Store, new_id
 
@@ -28,11 +29,6 @@ TOUCH_EVERY = timedelta(hours=1)
 """How often ``last_used_at`` is written at most."""
 
 _NAME_CHARS = string.ascii_lowercase + string.digits
-
-
-def stamp(at: datetime) -> str:
-    """``at`` as a protocol Timestamp."""
-    return at.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def password_fp(password_hash: str | None) -> str:

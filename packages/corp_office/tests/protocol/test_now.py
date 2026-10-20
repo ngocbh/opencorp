@@ -1,13 +1,13 @@
-"""protocol.now() yields schema-valid, sortable timestamps."""
+"""protocol.now() and stamp() yield schema-valid, sortable timestamps."""
 
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from opencorp.protocol import now
+from opencorp.protocol import now, stamp
 
 ROOT = Path(__file__).resolve().parents[4]
 SCHEMA_PATH = ROOT / "packages/protocol/schema/protocol.schema.json"
@@ -30,3 +30,9 @@ def test_string_order_is_time_order():
         time.sleep(0.002)
     assert stamps == sorted(stamps) and len(set(stamps)) == 3
     assert len({len(s) for s in stamps}) == 1
+
+
+def test_stamp_writes_any_aware_time_in_utc_like_now():
+    at = datetime(2026, 10, 19, 17, 0, 0, 123456, tzinfo=timezone(timedelta(hours=7)))
+    assert stamp(at) == "2026-10-19T10:00:00.123Z"
+    assert len(stamp(datetime.now(UTC))) == len(now())

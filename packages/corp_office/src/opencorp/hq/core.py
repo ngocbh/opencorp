@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.hq.config import HqConfig, load_config
 from opencorp.hq.pairing import PairCodes
-from opencorp.hq.sessions import BrowserSessions, stamp
+from opencorp.hq.sessions import BrowserSessions
 from opencorp.hq.version import BuildInfo, office_api
-from opencorp.protocol import now
+from opencorp.protocol import now, stamp
 from opencorp.protocol.models import ApiVersion, Health, HqStatus, HqTcp, PairCode
 
 if TYPE_CHECKING:
