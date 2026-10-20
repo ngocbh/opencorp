@@ -1,13 +1,13 @@
 // `opencorp pair`: a one-time link that signs a browser in to this office's HQ. The code is only ever printed or put
 // in a 0600 file the office wrote: never in a process's arguments, where other users could read it.
-import { isMissingRoute, OfficeUnavailable } from "@opencorp/client"
+import { isMissingRoute, isNotImplemented, OfficeUnavailable } from "@opencorp/client"
 import { opencorpHome } from "@opencorp/client/node"
 import type { HqTcp, PairCode } from "@opencorp/protocol"
 import os from "node:os"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
-import { localIdentity, officeClient, officeNotRunning } from "../office"
+import { localIdentity, NO_OFFICE, officeClient } from "../office"
 
 /**
  * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
@@ -99,9 +99,10 @@ export type PairDeps = {
   env: Env
   platform: string
   hostname(): string
-  /** Starts `argv` without waiting for it, its output discarded. */
+  /** Starts `argv` without waiting for it, its output discarded; throws if it can't start. */
   spawn(argv: string[]): void
   print(line: string): void
+  error(line: string): void
 }
 
 export const realPairDeps: PairDeps = {
@@ -110,6 +111,7 @@ export const realPairDeps: PairDeps = {
   hostname: () => os.hostname(),
   spawn: (argv) => void Bun.spawn(argv, { stdio: ["ignore", "ignore", "ignore"] }).unref(),
   print: (line) => console.log(line),
+  error: (line) => console.error(line),
 }
 
 /** `opencorp pair [--handle H] [--no-open]`: a one-time link that signs a browser in as H (you by default). */
@@ -118,7 +120,7 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
   try {
     ;({ values } = parseArgs({ args: argv, options: { handle: { type: "string" }, "no-open": { type: "boolean" } } }))
   } catch (e) {
-    console.error(`opencorp pair: ${e instanceof Error ? e.message : e}\n${USAGE}`)
+    deps.error(`opencorp pair: ${e instanceof Error ? e.message : e}\n${USAGE}`)
     return 2
   }
   const noOpen = !!values["no-open"]
@@ -140,14 +142,25 @@ export async function pair(argv: string[], deps: PairDeps = realPairDeps): Promi
       tcp,
     })
     for (const line of out.lines) deps.print(line)
-    // argv holds only the file's path; the file (0600, in the office dir) holds the code.
-    if (out.open) deps.spawn([deps.platform === "darwin" ? "open" : "xdg-open", out.open])
+    if (out.open) {
+      const opener = deps.platform === "darwin" ? "open" : "xdg-open"
+      try {
+        // argv holds only the file's path; the file (0600, in the office dir) holds the code.
+        deps.spawn([opener, out.open])
+      } catch (e) {
+        // The link is printed already, so it still works by hand.
+        deps.error(`Couldn't start ${opener} (${e instanceof Error ? e.message : e}); open the link above.`)
+      }
+    }
     return 0
   } catch (e) {
-    if (e instanceof OfficeUnavailable) return officeNotRunning()
-    if (isMissingRoute(e))
-      console.error("opencorp pair: this office has no HQ yet; update the checkout and run `opencorp restart`")
-    else console.error(`opencorp pair: ${e instanceof Error ? e.message : e}`)
+    if (e instanceof OfficeUnavailable) {
+      deps.error("The office isn't running. Run `opencorp doctor`.")
+      return NO_OFFICE
+    }
+    if (isMissingRoute(e) || isNotImplemented(e))
+      deps.error("opencorp pair: this office has no HQ yet; update the checkout and run `opencorp restart`")
+    else deps.error(`opencorp pair: ${e instanceof Error ? e.message : e}`)
     return 1
   }
 }

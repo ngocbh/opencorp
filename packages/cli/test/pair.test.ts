@@ -135,9 +135,10 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true })
 })
 
+type FakeOpts = NonNullable<Parameters<typeof createFakeOffice>[0]>
 /** A fake office on the home's socket, with HQ's TCP listener as `hq` says. */
-const start = (hq: NonNullable<Parameters<typeof createFakeOffice>[0]>["hq"], missing: string[] = []) =>
-  (office = createFakeOffice({ socket: path.join(home, "office", "office.sock"), hq, missing }))
+const start = (hq: FakeOpts["hq"], more: Omit<FakeOpts, "hq" | "socket"> = {}) =>
+  (office = createFakeOffice({ socket: path.join(home, "office", "office.sock"), hq, ...more }))
 
 /** The body of the last POST /hq/pair the fake office got. */
 const pairBody = () => office!.requests.findLast((r) => r.method === "POST" && r.path === "/hq/pair")?.body
@@ -145,14 +146,16 @@ const pairBody = () => office!.requests.findLast((r) => r.method === "POST" && r
 function deps(env: Record<string, string> = {}, platform = "darwin") {
   const spawned: string[][] = []
   const printed: string[] = []
+  const errors: string[] = []
   const d: PairDeps = {
     env,
     platform,
     hostname: () => "mac",
     spawn: (argv) => void spawned.push(argv),
     print: (l) => void printed.push(l),
+    error: (l) => void errors.push(l),
   }
-  return { d, spawned, printed }
+  return { d, spawned, printed, errors }
 }
 
 test("on a Mac it asks for a redirect file and opens it; the opener gets only the file's path", async () => {
@@ -212,22 +215,45 @@ test("with TCP off it says how to turn it on", async () => {
 })
 
 test("when GET /hq can't be read it says so, not that the web port is off", async () => {
-  start({ tcp: false }, ["GET /hq"])
+  start({ tcp: false }, { missing: ["GET /hq"] })
   const { d, printed } = deps()
   expect(await pair([], d)).toBe(0)
   expect(printed).toContain("Couldn't read the web port's status.")
   expect(printed.join("\n")).not.toContain("is off")
 })
 
-test("an office without HQ's routes says to update", async () => {
-  start({ tcp: true }, ["POST /hq/pair"])
-  expect(await pair([], deps().d)).toBe(1)
+test("an office without HQ's routes, or that answers 501 for them, says to update", async () => {
+  for (const more of [{ missing: ["POST /hq/pair"] }, { notImplemented: ["POST /hq/pair"] }]) {
+    start({ tcp: true }, more)
+    const { d, errors } = deps()
+    expect(await pair([], d)).toBe(1)
+    expect(errors).toEqual(["opencorp pair: this office has no HQ yet; update the checkout and run `opencorp restart`"])
+    office!.stop()
+    office = undefined
+  }
+})
+
+test("a missing opener prints why and still exits 0: the link is already printed", async () => {
+  start({ tcp: true, listening: true })
+  const { d, printed, errors } = deps({ DISPLAY: ":0" }, "linux")
+  d.spawn = () => {
+    throw new Error('Executable not found in $PATH: "xdg-open"')
+  }
+  expect(await pair([], d)).toBe(0)
+  expect(printed.join("\n")).toMatch(/http:\/\/127\.0\.0\.1:49380\/pair#/)
+  expect(errors).toEqual([
+    `Couldn't start xdg-open (Executable not found in $PATH: "xdg-open"); open the link above.`,
+  ])
 })
 
 test("without an office it says so and exits 3", async () => {
-  expect(await pair([], deps().d)).toBe(3)
+  const { d, errors } = deps()
+  expect(await pair([], d)).toBe(3)
+  expect(errors).toEqual(["The office isn't running. Run `opencorp doctor`."])
 })
 
 test("an unknown option is a usage error", async () => {
-  expect(await pair(["--nope"], deps().d)).toBe(2)
+  const { d, errors } = deps()
+  expect(await pair(["--nope"], d)).toBe(2)
+  expect(errors.join("\n")).toContain("usage: opencorp pair [--handle HANDLE] [--no-open]")
 })
