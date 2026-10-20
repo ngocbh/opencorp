@@ -6,6 +6,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 
 from opencorp.company.git import CompanyGit
+from opencorp.company.secret_keys import blank_secrets
 from opencorp.protocol.models import Company, CompanyView, Group, Person, RepoIssue
 
 
@@ -58,7 +59,7 @@ def load_company_at(git: CompanyGit, sha: str) -> CompanyView:
                                     message=f"the handle must match its directory {folder!r}"))
         elif person is not None:
             # The view goes to browsers, and the schema can't keep these out since it reuses Person.
-            found.append(person.model_copy(update={"devices": [], "password_hash": None}))
+            found.append(blank_secrets(person))
     teams: list[Group] = []
     for path in sorted(groups):
         group = _parse(path, data.get(groups[path]), Group, issues)
