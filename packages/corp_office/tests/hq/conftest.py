@@ -55,3 +55,11 @@ async def web(office, hq):
     """A client of the TCP listener's HQ app that sends the app's own origin, as the app's pages do."""
     async with hq_client(office, hq, origin=ORIGIN) as c:
         yield c
+
+
+@pytest.fixture
+async def signed_in(web, hq):
+    """``web`` with a browser session for the CEO."""
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
+    assert (await web.post("/api/pair", json={"code": code})).status_code == 200
+    return web

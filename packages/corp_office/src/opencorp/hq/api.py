@@ -12,11 +12,15 @@ from starlette.routing import Mount, Route
 from starlette.types import ASGIApp
 
 from opencorp.daemon.http import EXCEPTION_HANDLERS, HTTPError, error, ok, parse
+from opencorp.daemon.routes.costs import costs
 from opencorp.daemon.routes.devices import whoami
+from opencorp.daemon.routes.questions import list_questions
+from opencorp.daemon.routes.sessions import list_sessions
+from opencorp.daemon.routes.work_items import get_work_item
 from opencorp.hq.auth import BrowserAuth, cookie_name, cookie_value
 from opencorp.hq.guard import HqGuard
 from opencorp.hq.static import serve_app
-from opencorp.protocol.models import Ack, PairRequest
+from opencorp.protocol.models import Ack, CompanyView, PairRequest
 
 if TYPE_CHECKING:
     from opencorp.daemon.app import Office
@@ -74,6 +78,15 @@ async def logout(request: Request) -> JSONResponse:
     return response
 
 
+async def company(request: Request) -> JSONResponse:
+    """The company at HEAD: the snapshot this request's session was checked against, so people, groups and the CEO
+    come from one commit. People come without devices or password hashes."""
+    view: CompanyView = request.state.company
+    # The snapshot strips these already; stripped again here because this response goes to a browser.
+    people = [p.model_copy(update={"devices": [], "password_hash": None}) for p in view.people]
+    return ok(view.model_copy(update={"people": people}))
+
+
 async def no_route(request: Request) -> JSONResponse:
     """Everything under /api that isn't on the allowlist."""
     return error(404, "no_route", f"no route {request.method} {request.url.path}")
@@ -82,11 +95,18 @@ async def no_route(request: Request) -> JSONResponse:
 def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
     """The app one HQ listener serves: ``port`` is the TCP listener's bound port, None for ``hq.sock``.
 
-    It never mounts the socket's routes, and the socket's app never mounts these, so routing fails closed.
+    It never mounts the socket's routes, and the socket's app never mounts these, so routing fails closed. /api
+    serves reads the Company page needs, pairing and logging out; writes (connections, devices, passwords, hire,
+    prompts) stay socket-only.
     """
     api = [
         Route("/health", health, methods=["GET"]),
         Route("/whoami", whoami, methods=["GET"]),
+        Route("/company", company, methods=["GET"]),
+        Route("/sessions", list_sessions, methods=["GET"]),
+        Route("/questions", list_questions, methods=["GET"]),
+        Route("/work-items/{id}", get_work_item, methods=["GET"]),
+        Route("/costs", costs, methods=["GET"]),
         Route("/pair", pair, methods=["POST"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/{rest:path}", no_route, methods=ANY),
