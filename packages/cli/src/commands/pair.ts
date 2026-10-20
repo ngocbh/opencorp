@@ -9,8 +9,12 @@ import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"
 
-/** The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. */
-export const LOCAL_PORT = 49380
+/**
+ * The local port the printed SSH forwards use for hq.sock: any free one works there, since hq.sock takes any port. Not
+ * HQ's TCP default (49380), which an office on the browser's machine may hold; a different port also keeps that
+ * office's cookie apart from this one's, since the cookie's name carries the port.
+ */
+export const LOCAL_PORT = 49381
 
 type Env = Record<string, string | undefined>
 
@@ -19,6 +23,13 @@ export function canOpen(env: Env, platform: string) {
   if (env.SSH_CONNECTION) return false
   return platform === "darwin" || !!env.DISPLAY || !!env.WAYLAND_DISPLAY
 }
+
+/** `s` as one shell word: as is when it's plainly safe, else single-quoted. */
+const shellWord = (s: string) => (/^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`)
+
+/** An SSH command that forwards 127.0.0.1:`port` on the browser's machine to `target` on `host`, or fails loudly. */
+const forward = (port: number, target: string, host: string) =>
+  `  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:${port}:${target} ${host}`
 
 /** `ts` as a local clock time, for "until 14:05". */
 const clock = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
@@ -43,9 +54,13 @@ export function pairOutput(
     // The Host check takes only the listener's own port, so the forward must keep it.
     lines.push(
       "On the machine with your browser, forward HQ's port:",
-      `  ssh -N -L ${code.port}:127.0.0.1:${code.port} ${o.host}`,
+      forward(code.port, `127.0.0.1:${code.port}`, o.host),
       "then open:",
       `  ${code.url}`,
+      `If port ${code.port} is in use on your machine (an office runs there), forward HQ's socket instead:`,
+      forward(LOCAL_PORT, shellWord(code.socket), o.host),
+      "then open:",
+      `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
     )
   } else {
     if (!o.tcp) lines.push("Couldn't read the web port's status.")
@@ -56,14 +71,13 @@ export function pairOutput(
     }
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
-      `  ssh -N -L ${LOCAL_PORT}:${code.socket} ${o.host}`,
+      forward(LOCAL_PORT, shellWord(code.socket), o.host),
       "then open:",
       `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
-      `(hq.sock takes any port, so any free local port works in place of ${LOCAL_PORT},` +
-        " which is taken where an office runs.)",
+      `(hq.sock takes any port, so any free local port works in place of ${LOCAL_PORT}.)`,
     )
     if (!overSsh && o.tcp && !o.tcp.enabled)
-      lines.push(`To open it here instead, add "tcp": true to ${o.hqJson}, then run \`opencorp restart\`.`)
+      lines.push(`To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`)
   }
   lines.push(`(In place of ${o.host}, use however you reach this machine.)`)
   return { lines }

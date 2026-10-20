@@ -16,6 +16,7 @@ const code = (over: Partial<PairCode> = {}): PairCode => ({
 })
 const opts = { host: "misha", noOpen: false, hqJson: "/home/u/.opencorp/office/hq.json", tcp: null }
 const tcpOff = { enabled: false, port: 49380, listening: false, error: null, next_retry_at: null }
+const SOCKET_FORWARD = "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:/home/u/.opencorp/office/hq.sock misha"
 const taken = { enabled: true, port: 49380, listening: false, error: "Address already in use", next_retry_at: null }
 
 test("a desktop session not over SSH can open a browser", () => {
@@ -36,23 +37,28 @@ test("--no-open only prints", () => {
   expect(pairOutput(code(), { ...opts, noOpen: true, env: {}, platform: "darwin" }).open).toBeUndefined()
 })
 
-test("over SSH with TCP listening, it prints a forward of the same port", () => {
+test("over SSH with TCP listening, it forwards the same port, or hq.sock if that port is in use", () => {
   const out = pairOutput(code({ port: 50001, url: "http://127.0.0.1:50001/pair#X", open_file: null }), {
     ...opts,
     env: { SSH_CONNECTION: "1 2 3 4" },
     platform: "linux",
   })
   expect(out.open).toBeUndefined()
-  expect(out.lines).toContain("  ssh -N -L 50001:127.0.0.1:50001 misha")
+  expect(out.lines).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:50001:127.0.0.1:50001 misha")
   expect(out.lines).toContain("  http://127.0.0.1:50001/pair#X")
+  expect(out.lines).toContain(
+    "If port 50001 is in use on your machine (an office runs there), forward HQ's socket instead:",
+  )
+  expect(out.lines).toContain(SOCKET_FORWARD)
+  expect(out.lines).toContain("  http://127.0.0.1:49381/pair#CODE1234567890abcdefgh")
 })
 
 test("with TCP off, it prints a forward of hq.sock, and locally how to turn TCP on", () => {
   const off = code({ url: null, open_file: null })
   const local = pairOutput(off, { ...opts, tcp: tcpOff, env: {}, platform: "linux" }).lines
   expect(local).toContain("HQ's web port is off here.")
-  expect(local).toContain("  ssh -N -L 49380:/home/u/.opencorp/office/hq.sock misha")
-  expect(local).toContain("  http://127.0.0.1:49380/pair#CODE1234567890abcdefgh")
+  expect(local).toContain(SOCKET_FORWARD)
+  expect(local).toContain("  http://127.0.0.1:49381/pair#CODE1234567890abcdefgh")
   expect(local.join("\n")).toContain("any free local port works")
   expect(local.join("\n")).toContain('"tcp": true to /home/u/.opencorp/office/hq.json')
   const ssh = { SSH_CONNECTION: "1 2 3 4" }
@@ -64,7 +70,7 @@ test("with TCP on but its port taken, it says so, forwards hq.sock, and doesn't 
   const off = code({ url: null, open_file: null })
   const out = pairOutput(off, { ...opts, tcp: taken, env: {}, platform: "darwin" }).lines
   expect(out).toContain("HQ's web port 49380 is taken (Address already in use); `opencorp doctor` says more.")
-  expect(out).toContain("  ssh -N -L 49380:/home/u/.opencorp/office/hq.sock misha")
+  expect(out).toContain(SOCKET_FORWARD)
   expect(out.join("\n")).not.toContain('"tcp": true')
 })
 
@@ -74,7 +80,14 @@ test("when HQ's status can't be read, it says so rather than guess, and forwards
   expect(out).toContain("Couldn't read the web port's status.")
   expect(out.join("\n")).not.toContain("is off")
   expect(out.join("\n")).not.toContain('"tcp": true')
-  expect(out).toContain("  ssh -N -L 49380:/home/u/.opencorp/office/hq.sock misha")
+  expect(out).toContain(SOCKET_FORWARD)
+})
+
+test("a socket or hq.json path with spaces or quotes is shell-quoted", () => {
+  const off = code({ url: null, open_file: null, socket: "/home/u v/it's/hq.sock" })
+  const out = pairOutput(off, { ...opts, hqJson: "/home/u v/hq.json", tcp: tcpOff, env: {}, platform: "linux" }).lines
+  expect(out).toContain(`  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:'/home/u v/it'\\''s/hq.sock' misha`)
+  expect(out.join("\n")).toContain(`"tcp": true to '/home/u v/hq.json'`)
 })
 
 let office: FakeOffice | undefined
@@ -146,7 +159,7 @@ test("over SSH it never asks for a file or opens anything", async () => {
   expect(await pair([], d)).toBe(0)
   expect(pairBody()).toEqual({ handle: null, open_file: false })
   expect(spawned).toEqual([])
-  expect(printed).toContain("  ssh -N -L 49380:127.0.0.1:49380 mac")
+  expect(printed).toContain("  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49380:127.0.0.1:49380 mac")
 })
 
 test("with the web port taken it reads GET /hq and says so", async () => {
