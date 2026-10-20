@@ -1,5 +1,6 @@
 // `opencorp devices`: the devices a human uses opencorp from, as their person.yaml lists them.
-import { OfficeUnavailable } from "@opencorp/client"
+import { isMissingRoute, isNotImplemented, OfficeError, OfficeUnavailable, type OfficeClient } from "@opencorp/client"
+import type { BrowserSession, Person } from "@opencorp/protocol"
 import { parseArgs } from "node:util"
 import type { CommandRun } from "../main"
 import { localIdentity, officeClient, officeNotRunning } from "../office"
@@ -8,10 +9,42 @@ class Usage extends Error {}
 
 const USAGE = "usage: opencorp devices list [HANDLE] [--hashes] | add HANDLE NAME SHA256 | remove HANDLE NAME"
 
+const day = (ts: string) => new Date(ts).toLocaleDateString()
+
+/**
+ * This office's browser sessions for `person`, or none when there's nothing the asker may see: agents have none,
+ * and someone else's (403), an unknown person (404), an agent (422), an office without HQ (501) or from before it
+ * (no_route) leave the section out, so `devices list` reads as it did before.
+ */
+async function browsersOf(office: OfficeClient, person: Person): Promise<BrowserSession[]> {
+  if (person.kind !== "human") return []
+  try {
+    return await office.hq.browsers(person.handle)
+  } catch (e) {
+    if (isMissingRoute(e) || isNotImplemented(e) || (e instanceof OfficeError && [403, 404, 422].includes(e.status)))
+      return []
+    throw e
+  }
+}
+
+/** The "Browsers (this office)" section; nothing when there are none. */
+function browserLines(browsers: BrowserSession[]): string[] {
+  if (!browsers.length) return []
+  // Office-local, and named in their own namespace, apart from person.yaml's devices.
+  return [
+    "Browsers (this office):",
+    ...browsers.map(
+      (b) =>
+        `  ${b.id}  ${b.name}${b.label ? ` (${b.label})` : ""}  paired by @${b.issued_by}  ` +
+        `last used ${b.last_used_at ? day(b.last_used_at) : "never"}  expires ${day(b.expires_at)}`,
+    ),
+  ]
+}
+
 /**
  * `opencorp devices list [H] [--hashes]`: H's device names (this device's person by default), with
- * their token hashes only on `--hashes`. `opencorp devices add H NAME SHA256` and `opencorp devices remove
- * H NAME` change H's list.
+ * their token hashes only on `--hashes`. `list` also shows this office's browser sessions, when there are any you
+ * may see. `opencorp devices add H NAME SHA256` and `opencorp devices remove H NAME` change H's list.
  */
 export const run: CommandRun = async (argv) => {
   try {
@@ -33,6 +66,7 @@ export const run: CommandRun = async (argv) => {
         const mine = me?.handle === handle && me.device === d.name ? "  (this device)" : ""
         console.log(values.hashes ? `${d.name}  ${d.token_sha256}${mine}` : `${d.name}${mine}`)
       }
+      for (const line of browserLines(await browsersOf(office, person))) console.log(line)
       return 0
     }
     if (values.hashes) throw new Usage("--hashes goes with list")
