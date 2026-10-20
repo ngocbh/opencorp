@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.hq.config import HqConfig, load_config
 from opencorp.hq.pairing import PairCodes
+from opencorp.hq.servers import Listeners
 from opencorp.hq.sessions import BrowserSessions
+from opencorp.hq.status import other_users
 from opencorp.hq.version import BuildInfo, office_api
 from opencorp.protocol import now, stamp
 from opencorp.protocol.models import ApiVersion, Health, HqStatus, HqTcp, PairCode
@@ -38,6 +40,7 @@ class Hq:
     next_retry_at: str | None = None
     socket_error: str | None = None
     """Why hq.sock isn't listening, when binding it failed."""
+    listeners: Listeners | None = None
 
     @classmethod
     def create(cls, office: Office) -> Hq:
@@ -83,15 +86,26 @@ class Hq:
         found = [] if self.config.problem is None else [f"settings ignored: {self.config.problem}"]
         if self.socket_error is not None:
             found.append(f"HQ isn't listening on {self.socket}: {self.socket_error}")
+        if self.config.tcp and (others := other_users()):
+            found.append(f"the web port is on and this host has other users ({', '.join(others)}): any of them could "
+                         f"take the port while the office is down. Turn it off with \"tcp\": false in "
+                         f"{self.office.paths.office / 'hq.json'}")
         return found
 
     async def start(self) -> None:
-        """Delete expired browser sessions and the redirect files a crash left."""
+        """Delete expired browser sessions and the redirect files a crash left, then start the listeners if
+        ``listen``."""
         await asyncio.to_thread(self.office.store.prune_hq_sessions, now())
         await asyncio.to_thread(self.codes.remove_leftovers)
+        if self.listen:
+            self.listeners = Listeners(self)
+            await self.listeners.start()
 
     async def stop(self) -> None:
-        """Forget pending codes and delete their redirect files."""
+        """Stop the listeners, forget pending codes and delete their redirect files."""
+        if self.listeners is not None:
+            await self.listeners.stop()
+            self.listeners = None
         self.codes.close()
 
 

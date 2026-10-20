@@ -1,11 +1,12 @@
 """The Hq object an office carries."""
 
+import dataclasses
 import json
 
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.hq.core import Hq, attach
 from opencorp.hq.version import office_api
-from tests.daemon.conftest import _isolate_git, company, office, profile_stores  # noqa: F401
+from tests.daemon.conftest import _isolate_git, company, office, profile_stores, short_dir  # noqa: F401
 from tests.store.test_hq_sessions import record
 
 
@@ -89,3 +90,24 @@ async def test_start_deletes_redirect_files_a_crash_left(office):
         assert not any(path.exists() for path in left) and kept.exists()
     finally:
         await office.stop()
+
+
+async def test_status_warns_when_tcp_is_on_and_others_use_the_host(office, monkeypatch):
+    monkeypatch.setattr("opencorp.hq.core.other_users", lambda: ["ann"])
+    hq = attach(office, listen=False)
+    hq.config = dataclasses.replace(hq.config, tcp=True)
+    assert any("other users (ann)" in w for w in hq.status().warnings)
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    assert hq.status().warnings == []
+
+
+async def test_a_listening_hq_starts_and_stops_its_listeners_with_the_office(office, short_dir, monkeypatch):
+    monkeypatch.setattr(office.paths, "office", short_dir)
+    (short_dir / "hq.json").write_text(json.dumps({"tcp": False}))
+    hq = attach(office)
+    await office.start()
+    try:
+        assert hq.listeners is not None and hq.socket.exists()
+    finally:
+        await office.stop()
+    assert not hq.socket.exists()
