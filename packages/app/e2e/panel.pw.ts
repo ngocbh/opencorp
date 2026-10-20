@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { acme, session } from "./company"
 
 test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
@@ -32,4 +33,31 @@ test("an unplaced person opens their panel too", async ({ page }) => {
   await page.getByRole("region", { name: "Unplaced" }).getByRole("button", { name: "Zoe" }).click()
   await expect(panel(page, "Zoe")).toContainText("@zoe · agent · Analyst")
   await expect(panel(page, "Zoe")).toContainText("@ghost, who isn't in the company")
+})
+
+const live = (page: import("@playwright/test").Page, name: string) =>
+  panel(page, name).getByRole("list", { name: "Live sessions" }).getByRole("listitem")
+
+test("live sessions show status, cost and office; a harness session is unpriced", async ({ page }) => {
+  await page.getByRole("treeitem", { name: /Lead/ }).click()
+  await expect(live(page, "Lead")).toHaveText(["idle · $0.00 · mac"])
+  await page.getByRole("treeitem", { name: /Kai/ }).click()
+  await expect(live(page, "Kai")).toHaveText(["idle · $0.42 · mac"])
+  await page.getByRole("treeitem", { name: /Minh/ }).click()
+  await expect(live(page, "Minh").first()).toContainText("busy · unpriced · mac")
+  await page.getByRole("treeitem", { name: /Ann/ }).click()
+  await expect(panel(page, "Ann")).toContainText("Live sessionsNone")
+})
+
+test("only the person's own main and side sessions are live work", async ({ page, request }) => {
+  const sessions = [
+    ...acme().sessions,
+    session("S-ann-side", "ann", "busy", { kind: "side", office: "misha" }),
+    session("S-ann-profile", "ann", "busy", { kind: "profile_manager" }),
+  ]
+  await request.post("/__fixture/set", { data: { sessions } })
+  await page.reload()
+  await page.getByRole("radio", { name: "List" }).click()
+  await page.getByRole("treeitem", { name: /Ann/ }).click()
+  await expect(live(page, "Ann")).toHaveText(["busy · $0.00 · misha"])
 })

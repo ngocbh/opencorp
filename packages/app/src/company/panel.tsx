@@ -1,11 +1,14 @@
 import type { Group, Person } from "@opencorp/protocol"
 import { For, Show } from "solid-js"
+import { useOffice } from "../data/office"
+import { LIVE } from "../data/snapshot"
+import { costText } from "./format"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 
 /**
- * A person's side panel, read-only: their fields from person.yaml, manager and reports, and groups. Phones get it as a
- * full-width sheet over the list.
+ * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, and live sessions.
+ * Phones get it as a full-width sheet over the list.
  */
 export function Panel(props: {
   person: Person
@@ -15,6 +18,12 @@ export function Panel(props: {
   onSelect: (handle: string) => void
   onClose: () => void
 }) {
+  const office = useOffice()
+  /** The person's own live work: main and side sessions in a live status (profile_manager work is the office's). */
+  const sessions = () =>
+    office.state.sessions.filter(
+      (x) => x.person === props.person.handle && (x.kind === "main" || x.kind === "side") && LIVE.includes(x.status),
+    )
   return (
     <aside
       aria-label={props.person.name}
@@ -72,6 +81,19 @@ export function Panel(props: {
           {(id) => <span class="rounded bg-neutral-100 px-1.5 dark:bg-neutral-800">{props.groups.get(id)?.name ?? id}</span>}
         </For>
       </p>
+      <h3 class="mt-4 font-medium">Live sessions</h3>
+      <Show when={sessions().length} fallback={<p class="text-sm">None</p>}>
+        <ul aria-label="Live sessions" class="space-y-1 text-sm">
+          <For each={sessions()}>
+            {(x) => (
+              <li>
+                {/* The office prices composer tokens only; a harness session's spend isn't known here. */}
+                {x.status} · {x.harness === "composer" ? costText(x.cost ?? 0, 0) : "unpriced"} · {x.office}
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
     </aside>
   )
 }
