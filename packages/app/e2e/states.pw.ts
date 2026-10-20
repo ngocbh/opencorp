@@ -36,9 +36,10 @@ test("a rebuilt dist reloads the page once", async ({ page, request }) => {
   page.on("load", () => loads++)
   await request.post("/__fixture/set", { data: { health: { build: "a-newer-build" } } })
   await page.goto("/")
+  await expect.poll(() => loads).toBe(2) // the first load and one reload
   await expect(connection(page)).toHaveText("live")
   await page.waitForTimeout(1000)
-  expect(loads).toBe(2) // the first load and one reload; the sessionStorage guard stops a loop
+  expect(loads).toBe(2) // the sessionStorage guard stops a loop
 })
 
 test("a dropped office shows reconnecting, then a fresh snapshot", async ({ page, request }) => {
