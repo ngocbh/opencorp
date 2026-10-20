@@ -142,6 +142,7 @@ def _declares_body(scope: Scope) -> bool:
 
 
 def _too_large() -> Response:
+    """The 413 for an /api body over ``MAX_API_BODY``."""
     return error(413, "too_large", f"request body is over {MAX_API_BODY} bytes")
 
 
