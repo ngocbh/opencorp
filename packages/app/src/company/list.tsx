@@ -103,7 +103,7 @@ export function CompanyList(props: ListProps) {
                       />
                     )}
                   </Show>
-                  <Show when={!row().open && props.totals(row().item)}>
+                  <Show when={row().item.children.length > 0 && !row().open && props.totals(row().item)}>
                     {(text) => <span class="shrink-0 text-xs text-neutral-500">{text()}</span>}
                   </Show>
                 </li>

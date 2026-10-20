@@ -64,10 +64,10 @@ export default function Company() {
   // While searching, every kept branch is open, so the matches show.
   const isOpen = (item: Item, depth: number) =>
     query().trim() !== "" || prefs.isOpen(item.id, { depth, holdsNeedsYou: holds(item, needs()) })
-  /** A person's branch totals, from their node in the tree by manager; "By team" rows have none. */
+  /** A manager's branch totals, from their node in the tree by manager; leaves and "By team" rows have none. */
   const totalsOf = (item: Item) => {
     const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
-    return node ? totalsText(totals(node, status(), needs(), s.costs)) : undefined
+    return node?.children.length ? totalsText(totals(node, status(), needs(), s.costs)) : undefined
   }
   // The group filter highlights its members and dims everyone else, keeping the tree's shape.
   const dimmed = (item: Item) => {

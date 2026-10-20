@@ -39,6 +39,12 @@ test("a branch closes with its chevron, shows totals while closed, and stays clo
   await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "false")
 })
 
+test("a leaf shows no branch totals", async ({ page }) => {
+  await expect(row(page, /Kai/).getByTestId("cost")).toHaveText("$0.42")
+  await expect(row(page, /Ann/)).not.toContainText("person")
+  await expect(row(page, /Kai/)).not.toContainText("person")
+})
+
 test("arrow keys move, open and close, as the tree pattern says", async ({ page }) => {
   await row(page, /Ngoc/).focus()
   await page.keyboard.press("ArrowDown")
