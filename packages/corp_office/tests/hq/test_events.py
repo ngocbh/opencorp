@@ -173,3 +173,20 @@ async def test_a_failing_recheck_ends_the_stream_quietly_and_keeps_the_session(o
         assert office.store.get_hq_session(sid) is not None
     assert f"couldn't re-check HQ session {sid} at {sha}; ending its stream" in caplog.text
     assert "Exception in ASGI application" not in caplog.text
+
+
+async def test_an_unreadable_person_file_ends_the_stream_but_not_the_session(office, hq, short_dir, company):
+    async with hq_served(office, hq, short_dir / "hq.sock") as c:
+        sid = office.store.list_hq_sessions()[0].id
+        async with c.stream("GET", "/api/events") as r:
+            it = frames(r)
+            await take(it, 1)
+            hand_edit(company, "ngocbh", kind="robot")
+            sha = office.git.head()
+            await asyncio.to_thread(office.store.emit, "company.updated", sha, {"sha": sha})
+            with pytest.raises(StopAsyncIteration):  # no company.updated frame first
+                await take(it, 1)
+        assert office.store.get_hq_session(sid) is not None
+        assert (await c.get("/api/whoami")).status_code == 401
+        hand_edit(company, "ngocbh", kind="human")
+        assert (await c.get("/api/whoami")).status_code == 200
