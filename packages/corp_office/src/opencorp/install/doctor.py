@@ -314,9 +314,17 @@ def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | HqUnread
     if r.status_code != 200:  # 404 from an office before HQ, 501 from one without it attached
         return "unreachable"
     try:
-        return r.json()
-    except ValueError:
+        return _read_by_checks(r.json())
+    except (ValueError, KeyError, TypeError):
         return "unreadable"
+
+
+def _read_by_checks(body: dict) -> dict:
+    """``body``, once every part of it that ``hq_checks`` reads is there; KeyError or TypeError if one isn't."""
+    tcp, health = body["tcp"], body["health"]
+    _ = (body["socket"], body["url"], tcp["enabled"], tcp["port"], tcp["listening"], tcp["error"],
+         health["office"]["api"], health["app"] and health["app"]["api"], list(body.get("warnings", [])))
+    return body
 
 
 _UNREAD = {

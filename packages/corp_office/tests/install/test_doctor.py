@@ -548,6 +548,14 @@ def test_the_offices_warnings_are_shown(tmp_path):
     assert [c.detail for c in doctor.hq_checks(s, tmp_path, tmp_path) if c.name == "hq warning"] == s["warnings"]
 
 
+def test_an_answer_that_isnt_an_hq_status_is_unreadable(tmp_path, monkeypatch):
+    for body in (b"<html>", b'{"ok": true}', b'{"socket": "/s", "tcp": [], "url": null, "health": {}}', b"[1]"):
+        answering(monkeypatch, lambda request, body=body: httpx.Response(200, content=body))
+        assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == "unreadable", body
+    answering(monkeypatch, lambda request: httpx.Response(200, json=status()))
+    assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == status()
+
+
 def test_a_refused_device_is_told_to_log_in(tmp_path):
     [got] = doctor.hq_checks("refused", tmp_path, tmp_path)
     assert got.status == "warn" and "`opencorp login`" in got.detail and "restart" not in got.detail
