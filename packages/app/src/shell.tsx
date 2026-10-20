@@ -1,4 +1,12 @@
 import { A, useLocation } from "@solidjs/router"
+import Boxes from "lucide-solid/icons/boxes"
+import CircleCheck from "lucide-solid/icons/circle-check"
+import Inbox from "lucide-solid/icons/inbox"
+import Network from "lucide-solid/icons/network"
+import Repeat from "lucide-solid/icons/repeat"
+import RotateCcwClock from "lucide-solid/icons/rotate-ccw-clock"
+import Target from "lucide-solid/icons/target"
+import Unplug from "lucide-solid/icons/unplug"
 import {
   createContext,
   createEffect,
@@ -11,6 +19,7 @@ import {
   onMount,
   Show,
   useContext,
+  type Component,
   type ParentProps,
 } from "solid-js"
 import { useOffice } from "./data/office"
@@ -66,23 +75,31 @@ const ShellContext = createContext<ShellApi>()
 /** The shell around the page, if there is one. */
 export const useShell = () => useContext(ShellContext)
 
-/** A page HQ doesn't have yet: its name, and what it will be (with its issue, when there is one). */
-type Soon = { label: string; about: string }
+/** A sidebar item's icon: a Lucide icon, picked as Paperclip's sidebar picks them. */
+type Icon = Component<{ class?: string; size?: number }>
 
-const INBOX: Soon = { label: "Inbox", about: "What needs you. Not built yet." }
+/** A page HQ doesn't have yet: its name, its icon, and what it will be (with its issue, when there is one). */
+type Soon = { label: string; icon: Icon; about: string }
+
+const INBOX: Soon = { label: "Inbox", icon: Inbox, about: "What needs you. Not built yet." }
 const WORK: Soon[] = [
-  { label: "Issues", about: "Work items and their status. Not built yet: #238." },
-  { label: "Goals", about: "Company, team and personal goals. Not built yet: #239." },
-  { label: "Routines", about: "Scheduled SOPs. Not built yet." },
+  { label: "Issues", icon: CircleCheck, about: "Work items and their status. Not built yet: #238." },
+  { label: "Goals", icon: Target, about: "Company, team and personal goals. Not built yet: #239." },
+  { label: "Routines", icon: Repeat, about: "Scheduled SOPs. Not built yet." },
 ]
 const COMPANY: Soon[] = [
-  { label: "SOPs", about: "The company's Yian flows. Not built yet." },
-  { label: "Connections", about: "Model providers. Not built yet." },
-  { label: "Activity", about: "The audit feed. Not built yet." },
+  { label: "SOPs", icon: Boxes, about: "The company's Yian flows. Not built yet." },
+  { label: "Connections", icon: Unplug, about: "Model providers. Not built yet." },
+  { label: "Activity", icon: RotateCcwClock, about: "The audit feed. Not built yet." },
 ]
 
 // One row shape for every item, so a soon item lines up with the links around it.
 const ROW = "mx-2 flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-[13px] font-medium"
+
+/** The icon before an item's label. Lucide marks it aria-hidden, so the item's name stays its label. */
+function ItemIcon(props: { icon: Icon }) {
+  return <props.icon size={16} class="h-4 w-4 shrink-0" />
+}
 
 /** A sidebar section: a heading that labels its group of items. */
 function Section(props: ParentProps<{ label: string }>) {
@@ -98,7 +115,7 @@ function Section(props: ParentProps<{ label: string }>) {
 }
 
 /** A page HQ has: a link, highlighted while it's the current page. */
-function Item(props: { href: string; label: string; onClick?: () => void }) {
+function Item(props: { href: string; label: string; icon: Icon; onClick?: () => void }) {
   return (
     <li>
       <A
@@ -106,6 +123,7 @@ function Item(props: { href: string; label: string; onClick?: () => void }) {
         onClick={() => props.onClick?.()}
         class={`${ROW} text-neutral-700 outline-none hover:bg-neutral-100 hover:text-neutral-900 focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=page]:bg-neutral-200/70 aria-[current=page]:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-100 dark:aria-[current=page]:bg-neutral-800 dark:aria-[current=page]:text-neutral-50`}
       >
+        <ItemIcon icon={props.icon} />
         <span class="min-w-0 flex-1 truncate">{props.label}</span>
       </A>
     </li>
@@ -127,6 +145,7 @@ function SoonItem(props: { soon: Soon }) {
         title={props.soon.about}
         class={`${ROW} cursor-default text-neutral-400 dark:text-neutral-600`}
       >
+        <ItemIcon icon={props.soon.icon} />
         <span class="min-w-0 flex-1 truncate">{props.soon.label}</span>
         <span class="ml-auto rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] leading-none text-neutral-500 dark:bg-neutral-900">
           soon
@@ -232,7 +251,7 @@ export function Shell(props: ParentProps) {
                 <For each={WORK}>{(soon) => <SoonItem soon={soon} />}</For>
               </Section>
               <Section label="Company">
-                <Item href="/org" label="Org" onClick={close} />
+                <Item href="/org" label="Org" icon={Network} onClick={close} />
                 <For each={COMPANY}>{(soon) => <SoonItem soon={soon} />}</For>
               </Section>
             </div>
