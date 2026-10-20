@@ -224,6 +224,17 @@ test("a branch closes from its card and shows totals; clicking a card opens the 
   await expect(chart.locator("[aria-current=true]")).toHaveCount(1)
 })
 
+test("a new layout keeps the lines that are still drawn", async ({ page }) => {
+  const chart = await openChart(page)
+  const line = chart.locator('path[data-edge="ngocbh>ann"]')
+  await line.evaluate((el) => ((el as any).__kept = true))
+  const d = await line.getAttribute("d")
+  await chart.getByRole("button", { name: "Lead's branch" }).click()
+  await expect(chart.locator("svg path[data-edge]")).toHaveCount(2)
+  await expect(line).not.toHaveAttribute("d", d!) // the cards moved
+  expect(await line.evaluate((el) => (el as any).__kept)).toBe(true)
+})
+
 test("the branch choice is the list's: closed in the chart, closed in the list", async ({ page }) => {
   const chart = await openChart(page)
   await chart.getByRole("button", { name: "Close Lead's branch" }).click()

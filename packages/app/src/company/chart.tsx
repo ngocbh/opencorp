@@ -38,6 +38,9 @@ export default function Chart(props: ListProps) {
   const boxes = createMemo(() => new Map(drawn().boxes.map((b) => [b.id, b])))
   // Cards are keyed by id, not by box, so a new layout (a branch opened, a live update) keeps every card's element.
   const ids = createMemo(() => drawn().boxes.map((b) => b.id))
+  // Lines too: keyed by "from>to", so a new layout moves the ones still drawn instead of making them again.
+  const edges = createMemo(() => new Map(drawn().edges.map((e) => [`${e.from}>${e.to}`, e])))
+  const edgeKeys = createMemo(() => [...edges().keys()])
   const isSelected = createSelector(() => props.selected)
   const uid = createUniqueId()
   let viewport!: HTMLDivElement
@@ -225,9 +228,11 @@ export default function Chart(props: ListProps) {
           style={{ transform: `translate(${t().x}px, ${t().y}px) scale(${t().k})` }}
         >
           <svg aria-hidden="true" class="absolute left-0 top-0 overflow-visible" width={drawn().width} height={drawn().height}>
-            <For each={drawn().edges}>
-              {(e) => (
-                <path data-edge={`${e.from}>${e.to}`} d={elbow(e.points)} class="fill-none stroke-neutral-300 dark:stroke-neutral-700" />
+            <For each={edgeKeys()}>
+              {(key) => (
+                <Show when={edges().get(key)}>
+                  {(e) => <path data-edge={key} d={elbow(e().points)} class="fill-none stroke-neutral-300 dark:stroke-neutral-700" />}
+                </Show>
               )}
             </For>
           </svg>
