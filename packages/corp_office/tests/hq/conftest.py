@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from opencorp.hq.api import create_hq_app
-from opencorp.hq.core import Hq
+from opencorp.hq.core import attach
 from tests.company.conftest import make_company  # noqa: F401
 from tests.daemon.conftest import _isolate_git, company, office, profile_stores, short_dir  # noqa: F401
 
@@ -37,8 +37,7 @@ async def hq(office, hq_settings):
     """HQ attached to a started office, with ``hq_settings`` as its ``hq.json``."""
     office.paths.office.mkdir(parents=True, exist_ok=True)
     (office.paths.office / "hq.json").write_text(json.dumps(hq_settings))
-    found = Hq.create(office)
-    office.extras["hq"] = found
+    found = attach(office, listen=False)
     await office.start()
     yield found
     await office.stop()

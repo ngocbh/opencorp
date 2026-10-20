@@ -3,9 +3,10 @@
 import json
 
 from opencorp.company.snapshot import CompanySnapshots
-from opencorp.hq.core import Hq
+from opencorp.hq.core import Hq, attach
 from opencorp.hq.version import office_api
 from tests.daemon.conftest import _isolate_git, company, office, profile_stores  # noqa: F401
+from tests.store.test_hq_sessions import record
 
 
 def test_hq_reads_its_settings_and_reports_health(office, tmp_path):
@@ -28,3 +29,48 @@ def test_hq_registers_the_snapshot_cache_it_creates(office):
     assert "company" not in office.extras
     hq = Hq.create(office)
     assert office.extras["company"] is hq.snapshots
+
+
+async def test_attach_puts_hq_on_the_office_and_prunes_expired_sessions_at_start(office):
+    office.store.add_hq_session(record(expires_at="2026-01-01T00:00:00.000Z"))
+    hq = attach(office, listen=False)
+    assert office.extras["hq"] is hq and hq.listen is False
+    await office.start()
+    try:
+        assert office.store.list_hq_sessions() == []
+    finally:
+        await office.stop()
+
+
+async def test_mint_without_tcp_has_no_url_or_file(office):
+    hq = attach(office, listen=False)
+    code = hq.mint("ngocbh", issuer="ngocbh", open_file=True)
+    assert code.url is None and code.open_file is None and code.path.startswith("/pair#")
+    assert code.socket == str(office.paths.office / "hq.sock") and code.port == hq.config.port
+    assert hq.codes.redeem(code.path.split("#")[1]).handle == "ngocbh"
+
+
+async def test_mint_while_listening_writes_a_file_that_stopping_deletes(office):
+    office.paths.office.mkdir(mode=0o700, parents=True, exist_ok=True)
+    hq = attach(office, listen=False)
+    hq.bound_port = 49999
+    await office.start()
+    try:
+        code = hq.mint("ngocbh", issuer="ngocbh", open_file=True)
+        assert code.url == f"http://127.0.0.1:49999{code.path}" and code.port == 49999
+        assert code.url in (office.paths.office / code.open_file).read_text()
+    finally:
+        await office.stop()
+    assert not (office.paths.office / code.open_file).exists()
+
+
+async def test_status_before_listening(office):
+    status = attach(office, listen=False).status()
+    assert status.url is None and status.tcp.listening is False and status.health.office.api
+    assert status.socket == str(office.paths.office / "hq.sock")
+
+
+async def test_status_names_ignored_settings(office):
+    office.paths.office.mkdir(parents=True, exist_ok=True)
+    (office.paths.office / "hq.json").write_text("{")
+    assert attach(office, listen=False).status().warnings[0].startswith("settings ignored: ")
