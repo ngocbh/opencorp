@@ -101,7 +101,11 @@ export default function Chart(props: ListProps) {
   const center = (): [number, number] => [viewport.clientWidth / 2, viewport.clientHeight / 2]
   function onWheel(e: WheelEvent) {
     e.preventDefault() // the page doesn't scroll under the chart
-    moveTo(zoomAt(t(), Math.exp(-e.deltaY / 500), local(e)))
+    // Deltas in pixels; some mice report lines or pages.
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? viewport.clientHeight : 1
+    // A trackpad pinch arrives as the wheel with ctrlKey and small deltas, so it zooms harder; sideways pans.
+    const zoomed = zoomAt(t(), Math.exp((-e.deltaY * unit) / (e.ctrlKey ? 100 : 500)), local(e))
+    moveTo(pan(zoomed, -e.deltaX * unit, 0))
   }
   // Keyboard access: the cards are one tab stop (a roving tabindex, as in the list), and arrow keys move between them.
   const [focused, setFocused] = createSignal<string>()

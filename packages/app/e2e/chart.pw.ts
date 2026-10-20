@@ -171,6 +171,25 @@ test("opening the panel by mouse or by Enter does the same, and keeps the select
   await expect.poll(inView).toBe(true)
 })
 
+test("a sideways wheel pans; a trackpad pinch (the wheel with Ctrl) zooms harder than the wheel", async ({ page }) => {
+  await openChart(page)
+  const box = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  const [k0, x0, y0] = await transform(page)
+  await page.mouse.wheel(120, 0)
+  await expect.poll(async () => (await transform(page))[1]).toBeCloseTo(x0 - 120, 0)
+  expect((await transform(page))[0]).toBe(k0)
+  expect((await transform(page))[2]).toBe(y0)
+  await page.mouse.wheel(0, -50)
+  await expect.poll(async () => (await transform(page))[0]).toBeGreaterThan(k0)
+  const [k1] = await transform(page)
+  expect(k1).toBeLessThan(k0 * 1.2)
+  await page.keyboard.down("Control")
+  await page.mouse.wheel(0, -30)
+  await page.keyboard.up("Control")
+  await expect.poll(async () => (await transform(page))[0]).toBeGreaterThan(k1 * 1.3)
+})
+
 test("two pointers moving apart zoom in", async ({ page }) => {
   await openChart(page)
   const [before] = await transform(page)
