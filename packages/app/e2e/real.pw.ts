@@ -20,8 +20,16 @@ async function watchCsp(page: Page) {
 /** The company screen on a desktop: the org chart, with at least one card. */
 async function expectChart(page: Page) {
   const chart = page.getByRole("figure", { name: / org chart$/ })
-  await expect(chart).toBeVisible()
-  await expect(chart.locator("[data-card]").first()).toBeVisible()
+  await expect(chart).toBeVisible({ timeout: 15_000 })
+  await expect(chart.locator("[data-card]").first()).toBeVisible({ timeout: 15_000 })
+}
+
+/** Signs this browser out, so runs against a real office don't leave browser sessions behind. */
+async function signOut(page: Page) {
+  const origin = new URL(page.url()).origin
+  const out = await page.request.post("/api/logout", { headers: { origin }, data: {} })
+  expect([out.status(), await out.text()]).toEqual([200, "{\"ok\":true}"])
+  expect((await page.request.get("/api/whoami")).status()).toBe(401)
 }
 
 test("the pair link signs in: the chart on a desktop, the list at phone width, no CSP violation", async ({ page }) => {
@@ -31,12 +39,13 @@ test("the pair link signs in: the chart on a desktop, the list at phone width, n
   await page.goto(url.pathname + url.hash)
   await expect(page).toHaveURL(/\/$/)
   expect(page.url()).not.toContain("#")
-  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live", { timeout: 15_000 })
   await expectChart(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await expect(page.getByRole("tree")).toBeVisible()
   await expect(page.getByRole("figure")).toHaveCount(0)
   expect(await violations()).toEqual([])
+  await signOut(page)
 })
 
 test("the sign-in form signs in with a handle and password", async ({ page }) => {
@@ -50,4 +59,5 @@ test("the sign-in form signs in with a handle and password", async ({ page }) =>
   await expect(page).toHaveURL(/\/$/)
   await expectChart(page)
   expect(await violations()).toEqual([])
+  await signOut(page)
 })
