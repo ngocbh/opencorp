@@ -261,13 +261,15 @@ function companyFile(url: URL): Response {
   const at = url.searchParams.get("at") ?? ""
   const path = url.searchParams.get("path") ?? ""
   log.files.push({ at, path })
-  if (!state.source.served.includes(at))
-    return json({ error: "stale_commit", message: "that commit isn't served any more; read the tree again" }, 409)
+  // The office's order: the path's shape, then the commit, then the listing.
   if (!path || path.startsWith("/") || path.endsWith("/") || path.split("/").some((s) => !s || s === "." || s === ".."))
     return json({ error: "bad_path", message: "the path isn't repo-relative and /-separated" }, 400)
+  if (!state.source.served.includes(at))
+    return json({ error: "stale_commit", message: "that commit isn't served any more; read the tree again" }, 409)
   const file = state.source.files[path]
   if (!file) return json({ error: "no_file", message: `${path} isn't a file at ${at}` }, 404)
-  return json({ path, commit: at, ...file })
+  // Every key, as the office's model_dump(mode="json") writes them.
+  return json({ path, commit: at, text: null, target: null, reason: null, rewritten: false, ...file })
 }
 
 /** /__fixture/*: how tests set the office up and read what the app asked for. */

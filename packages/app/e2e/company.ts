@@ -113,8 +113,12 @@ export function source(): Source {
   const type = (f: SourceFile): CompanyTreeEntry["type"] =>
     f.content === "symlink" ? "symlink" : f.content === "submodule" ? "submodule" : "file"
   const entries: CompanyTreeEntry[] = [
-    ...folders.map((path): CompanyTreeEntry => ({ path, type: "folder" })),
-    ...Object.entries(files).map(([path, f]): CompanyTreeEntry => ({ path, type: type(f), size: f.text?.length ?? 100 })),
+    // Folders and submodules have no size, as the office lists them.
+    ...folders.map((path): CompanyTreeEntry => ({ path, type: "folder", size: null })),
+    ...Object.entries(files).map(([path, f]): CompanyTreeEntry => {
+      const t = type(f)
+      return { path, type: t, size: t === "submodule" ? null : (f.text?.length ?? 100) }
+    }),
   ]
   const time = new Date(Date.now() - 2 * 3_600_000).toISOString()
   return {
