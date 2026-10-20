@@ -12,7 +12,7 @@ from opencorp.hq.guard import header, is_api
 if TYPE_CHECKING:
     from opencorp.hq.core import Hq
 
-OPEN = frozenset({("GET", "/api/health"), ("HEAD", "/api/health"), ("POST", "/api/pair")})
+OPEN = frozenset({("GET", "/api/health"), ("HEAD", "/api/health"), ("POST", "/api/pair"), ("POST", "/api/login")})
 """The /api requests served without a session; every non-/api path (the app itself) is open too."""
 
 SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."

@@ -10,6 +10,7 @@ import string
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 import yaml
 from pydantic import ValidationError
@@ -48,15 +49,16 @@ class Humans:
     unreadable: frozenset[str]
 
 
-def password_fps(git: CompanyGit, sha: str) -> Humans:
-    """The humans' password fingerprints at commit ``sha``, read from git objects in one batch.
+def _humans(git: CompanyGit, sha: str) -> tuple[dict[str, str | None], frozenset[str]]:
+    """The humans' password hashes at commit ``sha`` (None for no password), read from git objects in one batch, and
+    the handles whose ``person.yaml`` can't be read there.
 
     The company snapshot drops password hashes, since it goes to browsers, so they are read here.
     """
     blobs = {path.split("/")[1]: blob for path, blob in git.files("people", sha).items()
              if path.count("/") == 2 and path.endswith("/person.yaml")}
     data = git.read_blobs(list(blobs.values()))
-    found: dict[str, str] = {}
+    found: dict[str, str | None] = {}
     unreadable: set[str] = set()
     for handle, blob in blobs.items():
         try:
@@ -67,8 +69,14 @@ def password_fps(git: CompanyGit, sha: str) -> Humans:
         if person.handle != handle:
             unreadable.add(handle)
         elif person.kind == "human":
-            found[handle] = password_fp(person.password_hash)
-    return Humans(found, frozenset(unreadable))
+            found[handle] = person.password_hash
+    return found, frozenset(unreadable)
+
+
+def password_fps(git: CompanyGit, sha: str) -> Humans:
+    """The humans' password fingerprints at commit ``sha``."""
+    hashes, unreadable = _humans(git, sha)
+    return Humans({handle: password_fp(h) for handle, h in hashes.items()}, unreadable)
 
 
 class _Fingerprints:
@@ -128,8 +136,21 @@ class BrowserSessions:
         view = await self.snapshots.head()
         return view, (Humans({}, frozenset()) if view is None else await self._fingerprints.at(view.sha))
 
-    async def issue(self, person: str, *, issued_by: str, label: str | None) -> tuple[BrowserSession, str]:
+    async def password_hash(self, person: str) -> str | None:
+        """``person``'s password hash at HEAD, or None unless they are a human with a password there."""
+        view = await self.snapshots.head()
+        if view is None:
+            return None
+        hashes, _ = await asyncio.to_thread(_humans, self.snapshots.git, view.sha)
+        return hashes.get(person)
+
+    async def issue(self, person: str, *, issued_by: str, label: str | None, via: Literal["pair", "login"] = "pair",
+                    checked: str | None = None) -> tuple[BrowserSession, str]:
         """A new session for the human ``person``; returns it and the cookie value ``<id>.<secret>``.
+
+        ``checked`` is the fingerprint of the password hash a sign-in was just checked against: when the password at
+        HEAD is no longer that one, the session isn't issued (``HTTPError(409, "password_changed")``), since a
+        password change ends the sessions of the old password.
 
         The name is made here (``web-<6 characters>``), so no name conflict can fail the request after a pairing
         code is spent.
@@ -138,12 +159,14 @@ class BrowserSessions:
         fps = humans.fps
         if person not in fps:
             raise HTTPError(422, "not_a_human", f"@{person} isn't a human in the company at HEAD")
+        if checked is not None and fps[person] != checked:
+            raise HTTPError(409, "password_changed", f"@{person}'s password changed while signing in")
         secret = secrets.token_urlsafe(32)
         at = self.clock()
         record = HqSessionRecord(
             id=new_id(), person=person, name="web-" + "".join(secrets.choice(_NAME_CHARS) for _ in range(6)),
             label=label, secret_sha256=_secret_sha256(secret), password_fp=fps[person],
-            issued_by=issued_by, via="pair", created_at=stamp(at), expires_at=stamp(at + TTL), last_used_at=None)
+            issued_by=issued_by, via=via, created_at=stamp(at), expires_at=stamp(at + TTL), last_used_at=None)
         await asyncio.to_thread(self.store.add_hq_session, record)
         self._live[record.id] = _Live(record.expires_at, person, record.password_fp)
         return record.public(), f"{record.id}.{secret}"

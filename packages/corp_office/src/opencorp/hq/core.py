@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.hq.config import HqConfig, load_config
+from opencorp.hq.login import Logins
 from opencorp.hq.pairing import PairCodes
 from opencorp.hq.servers import Listeners
 from opencorp.hq.sessions import BrowserSessions
@@ -32,6 +33,7 @@ class Hq:
     snapshots: CompanySnapshots
     sessions: BrowserSessions
     codes: PairCodes
+    logins: Logins
     listen: bool = False
     """Whether starting HQ starts its listeners (the daemon); tests attach without them."""
     bound_port: int | None = None
@@ -48,9 +50,10 @@ class Hq:
         registered in ``office.extras`` when it has none)."""
         config = load_config(office.paths.office)
         snapshots = office.extras.setdefault("company", CompanySnapshots(office.git))
+        sessions = BrowserSessions(office.store, snapshots)
         return cls(office=office, config=config, api=office_api(), build=BuildInfo(config.app_dir),
-                   snapshots=snapshots, sessions=BrowserSessions(office.store, snapshots),
-                   codes=PairCodes(office.paths.office))
+                   snapshots=snapshots, sessions=sessions, codes=PairCodes(office.paths.office),
+                   logins=Logins(sessions))
 
     @property
     def socket(self) -> Path:

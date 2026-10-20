@@ -292,3 +292,17 @@ async def test_a_revoke_during_the_fingerprint_load_wins_over_a_match(office, hq
     await s.revoke(public.id)
     gate.set()
     assert await checking is False
+
+
+async def test_a_signed_in_session_says_so_and_needs_the_password_it_was_checked_against(office, hq, company):
+    hash_ = hash_password("the first password")
+    hand_edit(company, "ngocbh", password_hash=hash_)
+    s = sessions_for(office, Clock())
+    assert await s.password_hash("ngocbh") == hash_
+    assert await s.password_hash("minh") is None and await s.password_hash("nobody") is None
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None, via="login", checked=password_fp(hash_))
+    assert public.via == "login" and office.store.get_hq_session(public.id).via == "login"
+    hand_edit(company, "ngocbh", password_hash=hash_password("changed meanwhile"))
+    with pytest.raises(HTTPError) as caught:
+        await s.issue("ngocbh", issued_by="ngocbh", label=None, via="login", checked=password_fp(hash_))
+    assert (caught.value.status, caught.value.code) == (409, "password_changed")
