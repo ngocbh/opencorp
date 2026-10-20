@@ -11,8 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import psutil
 
+from opencorp.auth.identity import identity_path, read_identity
 from opencorp.chat.provider import ProviderError, load_provider
 from opencorp.company.lint import lint
 from opencorp.company.loader import load_repo
@@ -289,6 +291,19 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
         return Check("version", "warn", "the office started before its code last changed; restart it"
                                         " to run the new code")
     return Check("version", "ok", f"pid {pid} runs the current code")
+
+
+def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | None:
+    """``GET /hq`` from the office on ``socket``, sent with this device's token if it has one; None if it can't be
+    read (no office, an office from before HQ, or a token it refuses)."""
+    me = read_identity(identity_path(home))
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office", timeout=timeout,
+                          headers=me.headers() if me else {}) as client:
+            r = client.get("/hq")
+        return r.json() if r.status_code == 200 else None
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,

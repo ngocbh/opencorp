@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import subprocess
@@ -15,6 +16,7 @@ from opencorp.install.onboard import SET_UP, write_private
 from opencorp.profile.debrief import DEBRIEF_FLOW
 from opencorp.worker.spawn import INHERITED_ENV
 from tests.company.conftest import _isolate_git  # noqa: F401
+from tests.daemon.conftest import company, office, profile_stores, short_dir  # noqa: F401
 
 from .conftest import Runner, make_host
 
@@ -463,3 +465,21 @@ def test_a_missing_default_home_next_to_the_old_one_says_where_the_office_is(tmp
     got = by_name(run_checks(tmp_path, OfficePaths(tmp_path / legacy.NEW_HOME)))
     assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / legacy.NEW_HOME}; the office from"
                                 f" before the rename is at {old} (see leftovers)")
+
+
+async def test_hq_status_is_read_with_this_devices_token(office, short_dir, company):
+    from opencorp.auth.identity import Identity, identity_path, write_identity
+    from opencorp.auth.tokens import new_token
+    from opencorp.hq.core import attach
+    from tests.daemon.conftest import served
+    from tests.daemon.test_auth import give_device
+
+    token = new_token()
+    give_device(company, "ngocbh", "mac", token)  # enforced from now on
+    write_identity(identity_path(short_dir), Identity("ngocbh", "mac", token))
+    attach(office, listen=False)
+    async with served(office, short_dir / "o.sock"):
+        status = await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir)
+        assert status["socket"].endswith("hq.sock")
+        (short_dir / "identity.json").unlink()
+        assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) is None  # 401
