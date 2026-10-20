@@ -66,7 +66,7 @@ def _git(root: Path, *args: str) -> str:
 def base_files() -> dict[str, object]:
     return {
         "company.yaml": {"name": "test-corp", "ceo": "ngocbh",
-                         "defaults": {"cost_cap_usd": 5, "idle_end": "2h", "max_turns": 500}},
+                         "defaults": {"cost_cap_usd": 5, "max_turns": 500}},
         "people/ngocbh/person.yaml": {"handle": "ngocbh", "name": "Hong Ngoc Bui",
                                       "kind": "human", "title": "CEO", "manager": None},
         "people/minh/person.yaml": {"handle": "minh", "name": "Minh", "kind": "agent",

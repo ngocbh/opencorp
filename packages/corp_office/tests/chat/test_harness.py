@@ -197,12 +197,6 @@ def test_max_turns_ends_the_session(make_harness, fake_llm, workspace):
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
 
 
-def test_an_idle_session_ends(make_harness, fake_llm, workspace):
-    harness = make_harness(defaults={"idle_end": "1s"})
-    session = harness.start_session("minh", str(workspace))
-    wait_for(lambda: status(harness, session.id) == "ended", timeout=15, what="the idle end")
-
-
 def test_end_while_busy_interrupts_then_exits(harness, fake_llm, workspace):
     fake_llm.script({"content": "Working", "tool_calls": [echo_call()], "hold": 30}, {"content": "never"})
     sid = start(harness, workspace)
@@ -714,31 +708,26 @@ def test_the_model_key_appears_in_no_frame_event_or_office_file(make_harness, fa
     assert texts(harness, sid) == ["ok"]
 
 
-def test_a_held_session_with_a_queued_message_does_not_idle_end(make_harness, fake_llm, workspace):
-    import time
-
+def test_a_held_session_keeps_a_queued_message_until_the_cap_is_raised(make_harness, fake_llm, workspace):
     from opencorp.chat.provider import Price
 
-    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)}, defaults={"idle_end": "1s"})
+    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})
     fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}},
                     {"content": "after the raise"})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
     wait_for(lambda: status(harness, sid) == "idle" and harness.store.get_session(sid).cost == 6, what="the charge")
     assert harness.prompt(sid, "please continue") == "queued"
-    time.sleep(2.5)
     settle(harness)
     assert status(harness, sid) == "idle"
     harness.set_cost_cap(sid, 20)
     wait_for(lambda: texts(harness, sid)[-1:] == ["after the raise"], what="the held turn")
 
 
-def test_a_turn_that_opens_held_with_messages_queued_does_not_idle_end(make_harness, fake_llm, workspace):
-    import time
-
+def test_a_turn_that_opens_held_keeps_the_messages_queued_before_it(make_harness, fake_llm, workspace):
     from opencorp.chat.provider import Price
 
-    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)}, defaults={"idle_end": "1s"})
+    harness = make_harness(prices={"stub": Price(input=1_000_000, output=0)})
     fake_llm.script({"content": "pricey", "usage": {"prompt_tokens": 6, "completion_tokens": 1}, "hold": 30},
                     {"content": "after the raise"})
     sid = start(harness, workspace)
@@ -748,9 +737,7 @@ def test_a_turn_that_opens_held_with_messages_queued_does_not_idle_end(make_harn
     assert harness.prompt(sid, "more") == "queued"
     fake_llm.release()
     wait_for(lambda: status(harness, sid) == "idle" and harness.store.get_session(sid).cost == 6, what="the charge")
-    time.sleep(2.5)
     settle(harness)
-    assert status(harness, sid) == "idle"
     assert harness._live[sid].pending == ["more"]
     harness.set_cost_cap(sid, 20)
     wait_for(lambda: texts(harness, sid)[-1:] == ["after the raise"], what="the held turn")
@@ -950,3 +937,14 @@ def test_the_harness_shares_its_hooks_with_the_codex_sessions(make_harness):
     seen = []
     h = make_harness(codex=lambda office, hooks: seen.append(hooks) or StartOnly())
     assert seen == [h.hooks]
+
+
+def test_no_composer_session_ends_because_time_passed():
+    from dataclasses import fields
+
+    from opencorp.chat import harness as harness_module
+    from opencorp.chat import turns
+
+    assert "timer" not in {f.name for f in fields(harness_module._Live)}
+    assert not hasattr(harness_module.Harness, "_idle")
+    assert not hasattr(turns, "seconds")

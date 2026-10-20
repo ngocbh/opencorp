@@ -23,7 +23,7 @@ from opencorp.chat.identity import person_inputs, talking_to
 from opencorp.chat.models import DEADLINE, ListTimeout, ModelCache
 from opencorp.chat.provider import Price, Provider, ProviderError
 from opencorp.chat.transcript import Transcript
-from opencorp.chat.turns import MAIN_CHAT, ChatFlow, seconds
+from opencorp.chat.turns import MAIN_CHAT, ChatFlow
 from opencorp.company.loader import load_repo
 from opencorp.perm.monitor import Monitor
 from opencorp.profile import GitProfileStore
@@ -129,7 +129,6 @@ class _Live:
     exits: int = 0
     died_at: str | None = None
     outcome: dict[str, Any] | None = None
-    timer: threading.Timer | None = None
     calls: set[_Call] = field(default_factory=set)
     announced: str | None = None  # the run whose run_finished has fired, so it never fires twice
 
@@ -777,9 +776,6 @@ class Harness:
             if self._stopping:
                 return
             self._stopping = True
-            for live in self._live.values():
-                if live.timer is not None:
-                    live.timer.cancel()
         if self.codex is not None:
             self.codex.close_all()
         self.registry.close_all()
@@ -855,19 +851,12 @@ class Harness:
                 live.ending = True
                 self._answer_turn(live, question_id, chat.exit, typed=False)
                 return
-            if not self._deliver(live) and not live.pending:  # a held message isn't idleness
-                live.timer = threading.Timer(seconds(live.defaults.idle_end), self._post,
-                                             (self._idle, live, question_id))
-                live.timer.daemon = True
-                live.timer.start()
+            self._deliver(live)
 
     def _queue(self, live: _Live, texts: list[str], *, by: str | None = None) -> None:
-        """Queue messages from ``by`` for the next turn; a queued message stops the idle timer."""
+        """Queue messages from ``by`` for the next turn."""
         live.pending.extend(texts)
         live.pending_by = by
-        if live.timer is not None:
-            live.timer.cancel()
-            live.timer = None
         self._deliver(live)
 
     def _deliver(self, live: _Live) -> bool:
@@ -899,9 +888,6 @@ class Harness:
         except InvalidTransition:
             log.warning("turn question %s was answered elsewhere", question_id)
         live.turn_q = None
-        if live.timer is not None:
-            live.timer.cancel()
-            live.timer = None
 
     def _check_prompt(self, live: _Live, text: str) -> None:
         """Raise ``422 refused`` if a ``prompt_check`` hook refuses the person's ``text``."""
@@ -920,10 +906,6 @@ class Harness:
         return sum(1 for q in self.store.list_questions(session_id=live.session_id, source="human_input",
                                                         status=("answered", "consumed"))
                    if chat.is_turn(q.node_id) and q.answer != chat.exit)
-
-    def _idle(self, live: _Live, question_id: str) -> None:
-        if self._current(live) and live.turn_q == question_id:
-            self.end(live.session_id)
 
     def _steer_left(self, live: _Live, texts: list[str]) -> None:
         with self._lock:
@@ -998,8 +980,6 @@ class Harness:
                 return
             live.died_at = live.turn_q
             live.worker, live.reply_node, live.next_reply, live.turn_q = None, None, None, None
-            if live.timer is not None:
-                live.timer.cancel()
             outcome, live.outcome = live.outcome, None
             if live.spec.workspace is not None:
                 live.spec.workspace.interrupt()  # nobody is left to read what its calls return
@@ -1080,9 +1060,6 @@ class Harness:
         # otherwise reach only the run after the next one to fail.
         worker, live.worker = live.worker, None  # its exit is no longer the session's
         live.turn_q, live.turn_node = None, None
-        if live.timer is not None:
-            live.timer.cancel()
-            live.timer = None
         live.pending.append(text)
         live.pending_by = by
         self.store.update_session(live.session_id, status="busy")
