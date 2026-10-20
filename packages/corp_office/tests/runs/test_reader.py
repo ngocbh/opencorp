@@ -1,13 +1,15 @@
 """The run-log reader: a lazy, bounded index per log with its node table; node and record pages; plain reads only."""
 
+import asyncio
 import os
+import threading
 import tracemalloc
 
 import pytest
 
 from opencorp.runs import reader as reader_mod
-from opencorp.runs.reader import (BIG_LINE, UnreadableLog, UnsupportedSchema, node_page, read_event, read_events,
-                                  refresh, scrubbed_lines)
+from opencorp.runs.reader import (BIG_LINE, RunLogReader, UnreadableLog, UnsupportedSchema, node_page, read_event,
+                                  read_events, refresh, scrubbed_lines)
 from tests.runs.logs import (FP, chat_log, expanded, failed, line, resumed, routed, run_started, started,
                              succeeded)
 
@@ -229,3 +231,71 @@ def test_the_download_is_every_complete_line_through_the_scrub(tmp_path):
         f.write(b'{"torn')
     lines = list(scrubbed_lines(path, lambda raw: raw.upper()))
     assert len(lines) == 10 and lines[0].startswith(b'{"KIND"')
+
+
+async def test_two_first_requests_build_once(tmp_path, monkeypatch):
+    path = chat_log(tmp_path / "r.jsonl")
+    calls, gate, real = [], threading.Event(), reader_mod.refresh
+
+    def slow(*args, **kwargs):
+        calls.append(1)
+        gate.wait(5)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(reader_mod, "refresh", slow)
+    reader = RunLogReader()
+    both = asyncio.gather(reader.index(path), reader.index(path))
+    await asyncio.sleep(0.1)
+    gate.set()
+    a, b = await both
+    assert a is b and calls == [1]
+
+
+async def test_a_log_is_read_whole_once_then_only_its_appends(tmp_path, monkeypatch):
+    path = chat_log(tmp_path / "r.jsonl")
+    starts, real = [], reader_mod._read
+    monkeypatch.setattr(reader_mod, "_read", lambda f, index, *a: (starts.append(index.offset), real(f, index, *a))[1])
+    reader = RunLogReader()
+    assert await reader.ready(path, wait=5) is not None  # a run page's header
+    assert node_page(await reader.index(path), before=None, limit=10).nodes  # then its Timeline
+    assert node_page(await reader.index(path), before=None, limit=10).nodes  # and its refetch, much later
+    assert starts.count(0) == 1
+
+
+async def test_the_lru_evicts_the_least_recently_used_logs_by_bytes(tmp_path):
+    paths = [chat_log(tmp_path / f"{n}.jsonl") for n in range(3)]
+    reader = RunLogReader(budget=1)  # every index is over budget: only the one just used stays
+    for path in paths:
+        await reader.index(path)
+    assert list(reader._lru) == [paths[2]]
+
+
+async def test_a_slow_build_answers_none_with_its_progress_then_the_index(tmp_path, monkeypatch):
+    path = chat_log(tmp_path / "r.jsonl")
+    gate, real = threading.Event(), reader_mod.refresh
+
+    def slow(path_, index, *, progress=None):
+        progress(10, 100)
+        gate.wait(5)
+        return real(path_, index, progress=progress)
+
+    monkeypatch.setattr(reader_mod, "refresh", slow)
+    reader = RunLogReader()
+    assert await reader.ready(path, wait=0.1) is None
+    assert reader.progress(path) == (10, 100)
+    gate.set()
+    assert (await reader.ready(path, wait=5)).last_seq == 15
+
+
+async def test_an_unreadable_log_isnt_read_again_until_it_changes(tmp_path, monkeypatch):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + line(1, "node_started", {"node_id": "a"}, schema=11))
+    calls, real = [], reader_mod.refresh
+    monkeypatch.setattr(reader_mod, "refresh", lambda *a, **k: (calls.append(1), real(*a, **k))[1])
+    reader = RunLogReader()
+    for _ in range(2):
+        with pytest.raises(UnsupportedSchema):
+            await reader.index(path)
+    assert calls == [1]
+    chat_log(path)  # replaced: read again
+    assert (await reader.index(path)).last_seq == 15 and calls == [1, 1]

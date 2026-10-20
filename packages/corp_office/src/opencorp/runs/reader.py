@@ -1,12 +1,14 @@
 """Read-only access to Yian run logs that workers may still be appending to: a lazy, bounded index per log, and pages
 of node attempts and records. Plain reads only: no lock file, no write, no ``resume_flow``."""
 
+import asyncio
 import hashlib
 import json
 import os
 import re
 import threading
 from bisect import bisect_left, bisect_right
+from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -380,3 +382,83 @@ def scrubbed_lines(path: Path, scrub_line: Callable[[bytes], bytes]) -> Iterator
     needs no index, so a log this office can't read still downloads."""
     with open(path, "rb") as f:
         yield from (scrub_line(line) for line in _lines(f, 0, os.fstat(f.fileno()).st_size))
+
+
+def _stamp(st: os.stat_result) -> tuple[int, int, int, int]:
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns
+
+
+class RunLogReader:
+    """The office's run-log indexes: built lazily per log on its first request, one build per log at a time, in a
+    thread; kept, node table and all, in an LRU capped in bytes and logs, so a log is read whole once unless it is
+    evicted. A log that can't be read isn't read again until its file changes. Use it on the office loop."""
+
+    def __init__(self, *, budget: int = LRU_BYTES, logs: int = LRU_LOGS) -> None:
+        self.budget, self.logs = budget, logs
+        self._lru: OrderedDict[Path, Index] = OrderedDict()
+        self._building: dict[Path, asyncio.Future[Index]] = {}
+        self._progress: dict[Path, tuple[int, int]] = {}
+        self._failed: dict[Path, tuple[tuple[int, int, int, int], UnreadableLog]] = {}
+
+    async def index(self, path: Path) -> Index:
+        """``path``'s index, brought up to date; concurrent callers share one build. Raises UnreadableLog (or
+        UnsupportedSchema) and FileNotFoundError."""
+        failed = self._failed.get(path)
+        if failed is not None:
+            if failed[0] == _stamp(os.stat(path)):
+                raise failed[1]
+            del self._failed[path]
+        future = self._building.get(path)
+        if future is None:
+            future = self._build(path)
+        try:
+            index = await asyncio.shield(future)
+        except Exception:
+            self._lru.pop(path, None)
+            raise
+        self._keep(path, index)
+        return index
+
+    async def ready(self, path: Path, *, wait: float) -> Index | None:
+        """``path``'s index if it is ready within ``wait`` seconds; else None, and the build goes on (``progress``)."""
+        task = asyncio.ensure_future(self.index(path))
+        task.add_done_callback(lambda t: t.cancelled() or t.exception())  # a failure is read by the next request
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), wait)
+        except TimeoutError:
+            return None
+
+    def progress(self, path: Path) -> tuple[int, int] | None:
+        """(bytes read, file size) of the build in progress for ``path``, if any."""
+        return self._progress.get(path)
+
+    def _build(self, path: Path) -> asyncio.Future[Index]:
+        def report(done: int, total: int) -> None:
+            self._progress[path] = (done, total)
+
+        def build() -> Index:
+            st = os.stat(path)
+            try:
+                return refresh(path, self._lru.get(path), progress=report)
+            except UnreadableLog as exc:
+                if len(self._failed) >= self.logs:
+                    self._failed.clear()
+                self._failed[path] = (_stamp(st), exc)
+                raise
+
+        def done(finished: asyncio.Future[Index]) -> None:
+            if self._building.get(path) is finished:
+                del self._building[path]
+                self._progress.pop(path, None)
+
+        future = asyncio.ensure_future(asyncio.to_thread(build))
+        self._building[path] = future
+        future.add_done_callback(done)
+        return future
+
+    def _keep(self, path: Path, index: Index) -> None:
+        self._lru[path] = index
+        self._lru.move_to_end(path)
+        while len(self._lru) > 1 and (len(self._lru) > self.logs
+                                      or sum(i.cost() for i in self._lru.values()) > self.budget):
+            self._lru.popitem(last=False)
