@@ -3,13 +3,16 @@
 import logging
 import re
 
+import httpx
 import pytest
 import yaml
 
 from opencorp.auth.passwords import check_password, hash_password
 from opencorp.hq import login as login_module
+from opencorp.hq.api import create_hq_app
+from opencorp.hq.login import DUMMY_HASH, MAX_KEYS, Throttle
 from tests.company.conftest import _git
-from tests.hq.conftest import PORT, hq_client
+from tests.hq.conftest import ORIGIN, PORT, hq_client
 
 PASSWORD = "correct horse battery"
 
@@ -126,3 +129,115 @@ def test_the_dummy_hash_costs_what_a_real_one_does():
     cost = re.compile(r"\$scrypt\$ln=\d+,r=\d+,p=\d+\$")
     assert cost.match(login_module.DUMMY_HASH)[0] == cost.match(hash_password("x" * 12))[0]
     assert not check_password(PASSWORD, login_module.DUMMY_HASH)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_five_failures_in_fifteen_minutes_lock_the_pair_and_each_lock_doubles_to_fifteen_minutes():
+    clock = Clock()
+    t = Throttle(clock)
+    for _ in range(4):
+        t.failed(("p", "a"))
+    assert t.wait(("p", "a")) is None
+    waits = []
+    for _ in range(5):
+        t.failed(("p", "a"))
+        waits.append(t.wait(("p", "a")))
+        clock.now += waits[-1]  # waits it out, then fails again
+        assert t.wait(("p", "a")) is None
+    assert waits == [60, 120, 240, 480, 900]
+    for _ in range(4):  # a 15-minute wait outlasts the pair's memory: it starts over
+        t.failed(("p", "a"))
+    assert t.wait(("p", "a")) is None
+
+
+def test_the_wait_is_whole_seconds_rounded_up():
+    clock = Clock()
+    t = Throttle(clock)
+    for _ in range(5):
+        t.failed(("p", "a"))
+    clock.now += 0.5
+    wait = t.wait(("p", "a"))
+    assert wait == 60 and isinstance(wait, int)
+
+
+def test_failures_older_than_fifteen_minutes_dont_count():
+    clock = Clock()
+    t = Throttle(clock)
+    for _ in range(4):
+        t.failed(("p", "a"))
+    clock.now += 15 * 60
+    t.failed(("p", "a"))
+    assert t.wait(("p", "a")) is None
+
+
+def test_a_success_clears_the_pair_and_only_that_pair():
+    t = Throttle(Clock())
+    for _ in range(5):
+        t.failed(("p", "a"))
+        t.failed(("p", "b"))
+    t.succeeded(("p", "a"))
+    assert t.wait(("p", "a")) is None and t.wait(("p", "b")) == 60
+
+
+def test_the_throttle_is_bounded():
+    clock = Clock()
+    t = Throttle(clock)
+    for _ in range(5):
+        t.failed(("p", "target"))
+    for i in range(MAX_KEYS + 10):
+        t.failed(("p", f"h{i}"))
+    assert len(t) == MAX_KEYS
+    clock.now += 15 * 60
+    t.failed(("p", "new"))
+    assert len(t) == 1  # entries go 15 minutes after their last failure
+
+
+def peer_client(office, hq, peer):
+    app = create_hq_app(office, hq, port=PORT)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 50000)), base_url=ORIGIN,
+                             headers={"host": f"127.0.0.1:{PORT}", "origin": ORIGIN})
+
+
+@pytest.fixture
+def fast_checks(monkeypatch):
+    """Password checks without scrypt's cost: the throttle tests make many."""
+    monkeypatch.setattr(login_module, "check_password", lambda pw, phc: pw == PASSWORD and phc != DUMMY_HASH)
+
+
+async def test_five_failures_give_429_with_retry_after_even_for_the_right_password(web, with_password, fast_checks):
+    for _ in range(5):
+        assert (await login(web, password="a wrong guess")).status_code == 401
+    r = await login(web)
+    assert r.status_code == 429 and r.json()["error"] == "too_many_attempts" and r.headers["retry-after"] == "60"
+    assert r.headers["content-type"] == "application/json"
+    assert "opencorp pair" in r.json()["message"] and "set-cookie" not in r.headers
+
+
+async def test_a_throttled_handle_leaves_other_handles_and_peers_alone(office, hq, web, with_password, fast_checks):
+    for _ in range(5):
+        await login(web, password="a wrong guess")
+    assert (await login(web, "minh", "a wrong guess")).status_code == 401
+    async with peer_client(office, hq, "127.0.0.2") as other:
+        assert (await login(other)).status_code == 200
+
+
+async def test_pairing_still_works_while_a_handle_is_throttled(web, hq, with_password, fast_checks):
+    for _ in range(6):
+        await login(web, password="a wrong guess")
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
+    assert (await web.post("/api/pair", json={"code": code})).status_code == 200
+
+
+async def test_a_success_clears_the_count(web, with_password, fast_checks):
+    for _ in range(4):
+        await login(web, password="a wrong guess")
+    assert (await login(web)).status_code == 200
+    for _ in range(4):
+        assert (await login(web, password="a wrong guess")).status_code == 401
