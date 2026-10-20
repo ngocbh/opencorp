@@ -562,5 +562,6 @@ def test_office_logging_leaves_the_opencorp_logger_as_it_found_it():
     logger = logging.getLogger("opencorp")
     before = (list(logger.handlers), logger.level, logger.propagate)
     with office_logging():
-        assert logger.propagate is False and logger.level == logging.INFO
+        assert logger.propagate is False and logging.getLogger("opencorp.x").isEnabledFor(logging.INFO)
     assert (list(logger.handlers), logger.level, logger.propagate) == before
+    assert not logging.getLogger("opencorp.x").isEnabledFor(logging.INFO)

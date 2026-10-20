@@ -140,7 +140,9 @@ def office_logging():
         yield
     finally:
         logger.removeHandler(handler)
-        logger.level, logger.propagate = saved
+        # setLevel, not assignment: it clears the level cache the child loggers keep.
+        logger.setLevel(saved[0])
+        logger.propagate = saved[1]
 
 
 class _OfficeHandler(logging.StreamHandler):
