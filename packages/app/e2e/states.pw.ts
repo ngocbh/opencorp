@@ -50,7 +50,7 @@ test("a dropped office shows reconnecting, then a fresh snapshot", async ({ page
   await request.post("/__fixture/drop", { data: { ms: 1500 } })
   await expect(connection(page)).toHaveText("reconnecting…")
   await expect(page.getByText("Reconnecting to the office…")).toBeVisible()
-  await expect(page.getByRole("heading", { name: "Acme Two" })).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByRole("navigation", { name: "HQ" }).getByRole("heading", { name: "Acme Two" })).toBeVisible({ timeout: 15_000 })
   await expect(connection(page)).toHaveText("live")
 })
 
@@ -132,7 +132,7 @@ test("company.updated reads the company again only for a new commit", async ({ p
   const next = "1111111111111111111111111111111111111111"
   await request.post("/__fixture/set", { data: { view: { sha: next, company: { name: "Acme Two", ceo: "ngocbh" } } } })
   await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha: next } } } })
-  await expect(page.getByRole("heading", { name: "Acme Two" })).toBeVisible()
+  await expect(page.getByRole("navigation", { name: "HQ" }).getByRole("heading", { name: "Acme Two" })).toBeVisible()
   expect(await companyReads()).toBe(2)
 })
 

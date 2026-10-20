@@ -1,0 +1,80 @@
+import { expect, test } from "bun:test"
+import { fromTeams, fromTree, holds, keep, label, moveFocus, visibleRows, type Item } from "../src/company/rows"
+import { byTeam } from "../src/company/teams"
+import { buildTree } from "../src/company/tree"
+import { person } from "./people"
+
+// ceo ─┬─ al ─┬─ bo
+//      │      └─ cy
+//      └─ dee
+const tree = buildTree([person("ceo", null), person("al", "ceo"), person("bo", "al"), person("cy", "al"), person("dee", "ceo")],
+  { name: "A", ceo: "ceo" })
+const items = fromTree(tree.roots)
+
+test("visible rows: roots, and the children of open items, with level, parent and position", () => {
+  const rows = visibleRows(items, (item) => item.id !== "al")
+  expect(rows.map((r) => [r.item.id, r.level, r.parent, r.open, r.posinset, r.setsize])).toEqual([
+    ["ceo", 1, null, true, 1, 1],
+    ["al", 2, "ceo", false, 1, 2],
+    ["dee", 2, "ceo", false, 2, 2],
+  ])
+})
+
+test("isOpen is asked only about branches, with each one's depth; a leaf is never open", () => {
+  const asked: [string, number][] = []
+  const rows = visibleRows(items, (item, depth) => (asked.push([item.id, depth]), true))
+  expect(asked).toEqual([["ceo", 0], ["al", 1]])
+  expect(rows.find((r) => r.item.id === "dee")?.open).toBe(false)
+})
+
+test("a person's label is their name and title", () => {
+  expect(label(items[0])).toBe("Ceo, T")
+})
+
+test("up and down move through visible rows; home and end go to the ends", () => {
+  const rows = visibleRows(items, () => true) // ceo, al, bo, cy, dee
+  expect(moveFocus(rows, "al", "ArrowDown")).toEqual({ focus: "bo" })
+  expect(moveFocus(rows, "al", "ArrowUp")).toEqual({ focus: "ceo" })
+  expect(moveFocus(rows, "dee", "ArrowDown")).toBeNull()
+  expect(moveFocus(rows, "bo", "Home")).toEqual({ focus: "ceo" })
+  expect(moveFocus(rows, "bo", "End")).toEqual({ focus: "dee" })
+})
+
+test("right opens a closed branch, then moves to its first child; left closes, then moves to the parent", () => {
+  expect(moveFocus(visibleRows(items, (i) => i.id !== "al"), "al", "ArrowRight")).toEqual({ open: "al", to: true })
+  const open = visibleRows(items, () => true)
+  expect(moveFocus(open, "al", "ArrowRight")).toEqual({ focus: "bo" })
+  expect(moveFocus(open, "bo", "ArrowRight")).toBeNull()
+  expect(moveFocus(open, "al", "ArrowLeft")).toEqual({ open: "al", to: false })
+  expect(moveFocus(open, "bo", "ArrowLeft")).toEqual({ focus: "al" })
+  expect(moveFocus(open, "dee", "Enter")).toBeNull()
+})
+
+const ids = (list: Item[]): unknown => list.map((i) => (i.children.length ? [i.id, ids(i.children)] : i.id))
+
+test("search keeps people matching by name, handle or title, and the people above them", () => {
+  expect(ids(keep(items, "cy"))).toEqual([["ceo", [["al", ["cy"]]]]])
+  expect(ids(keep(items, "AL"))).toEqual([["ceo", ["al"]]]) // a match's own reports don't match, so they go
+  expect(keep(items, "zz")).toEqual([])
+  expect(keep(items, "  ")).toBe(items)
+})
+
+test("a branch holds a card for the viewer when anyone under it has one", () => {
+  const needs = new Map([["cy", 1]])
+  expect([holds(items[0], needs), holds(items[0].children[0], needs), holds(items[0].children[1], needs)]).toEqual([true, true, false])
+})
+
+test("By team: a team holds its sub-teams, then its members; each copy of a person has its own id; No team last", () => {
+  const people = [person("al", null, { groups: ["eng", "ops"] }), person("bo", null)]
+  const { teams, noTeam } = byTeam(people, [{ id: "eng", name: "ENG", parent: null, head: null }, { id: "ops", name: "OPS", parent: "eng", head: null }])
+  const rows = visibleRows(fromTeams(teams, noTeam), () => true)
+  expect(rows.map((r) => [r.item.id, r.level, label(r.item)])).toEqual([
+    ["team:eng", 1, "ENG"],
+    ["team:ops", 2, "OPS"],
+    ["team:ops/al", 3, "Al, T"],
+    ["team:eng/al", 2, "Al, T"],
+    ["team:", 1, "No team"],
+    ["team:/bo", 2, "Bo, T"],
+  ])
+  expect(rows.filter((r) => r.item.kind === "person" && r.item.muted).map((r) => r.item.id)).toEqual(["team:ops/al"])
+})
