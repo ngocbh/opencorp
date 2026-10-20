@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import logging
 import socket
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -98,15 +99,26 @@ def hq_config(app: Any) -> uvicorn.Config:
                           timeout_keep_alive=5, timeout_graceful_shutdown=5, log_config=None)
 
 
+@dataclass
+class _Served:
+    """One running HQ server: its task, its socket, and its TCP port (None for hq.sock)."""
+
+    server: HqServer
+    task: asyncio.Task[None]
+    sock: socket.socket
+    port: int | None
+
+
 class Listeners:
     """HQ's servers for one office: on ``hq.sock`` always, and on TCP 127.0.0.1 when enabled, retried every
     ``RETRY_S`` seconds until the port is free. A taken port never stops the office."""
 
     def __init__(self, hq: Hq) -> None:
         self.hq = hq
-        self._servers: list[tuple[HqServer, asyncio.Task[None], socket.socket]] = []
+        self._servers: list[_Served] = []
         self._tcp: asyncio.Task[None] | None = None
         self._owns_socket = False
+        self._stopping = False
 
     async def start(self) -> None:
         """Listen on hq.sock, and start binding TCP in the background."""
@@ -123,7 +135,10 @@ class Listeners:
         if self.hq.config.tcp:
             self._tcp = asyncio.create_task(self._bind_tcp())
 
-    async def _bind_tcp(self) -> None:
+    async def _bind_tcp(self, wait: float = 0) -> None:
+        if wait:
+            self.hq.next_retry_at = stamp(datetime.now(UTC) + timedelta(seconds=wait))
+            await asyncio.sleep(wait)
         said = None
         while True:
             try:
@@ -146,22 +161,61 @@ class Listeners:
 
     def _serve(self, sock: socket.socket, *, port: int | None) -> None:
         server = HqServer(hq_config(create_hq_app(self.hq.office, self.hq, port=port)))
-        self._servers.append((server, asyncio.create_task(server.serve(sockets=[sock])), sock))
+        served = _Served(server, asyncio.create_task(_run(server, sock)), sock, port)
+        self._servers.append(served)
+        served.task.add_done_callback(lambda _: self._ended(served))
+
+    def _where(self, served: _Served) -> str:
+        return str(self.hq.socket) if served.port is None else f"127.0.0.1:{served.port}"
+
+    def _ended(self, served: _Served) -> None:
+        """A server's task ended: unless ``stop`` asked for it, log why, drop it, and say so in the status; a TCP
+        listener binds its port again after ``RETRY_S``."""
+        if served.server.should_exit or self._stopping or served.task.cancelled():
+            return
+        exc = served.task.exception()
+        why = "it stopped" if exc is None else f"it failed: {exc or type(exc).__name__}"
+        log.error("HQ's server on %s ended (%s)", self._where(served), why, exc_info=exc)
+        served.sock.close()
+        self._servers.remove(served)
+        if served.port is None:
+            self.hq.socket_error = f"its server ended ({why})"
+        else:
+            self.hq.bound_port, self.hq.tcp_error = None, f"its server ended ({why})"
+            self._tcp = asyncio.create_task(self._bind_tcp(wait=RETRY_S))
 
     async def stop(self) -> None:
-        """Stop binding, stop every server (their streams already ended with the office's bus), remove hq.sock."""
+        """Stop binding, stop every server (their streams already ended with the office's bus), remove hq.sock.
+        What goes wrong on the way is logged: the office's other stop hooks still run."""
+        self._stopping = True
         if self._tcp is not None:
             self._tcp.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            try:
                 await self._tcp
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.exception("HQ's TCP listener failed")
             self._tcp = None
-        for server, _, _ in self._servers:
-            server.should_exit = True
-        await asyncio.gather(*(task for _, task, _ in self._servers), return_exceptions=True)
-        for _, _, sock in self._servers:
-            sock.close()
+        for served in self._servers:
+            served.server.should_exit = True
+        results = await asyncio.gather(*(served.task for served in self._servers), return_exceptions=True)
+        for served, result in zip(self._servers, results, strict=True):
+            if result is not None:
+                log.error("HQ's server on %s failed while stopping", self._where(served), exc_info=result)
+            served.sock.close()
         self._servers.clear()
         self.hq.bound_port = self.hq.tcp_error = self.hq.next_retry_at = self.hq.socket_error = None
         if self._owns_socket:  # never what start found there and refused
             self._owns_socket = False
             self.hq.socket.unlink(missing_ok=True)
+        self._stopping = False
+
+
+async def _run(server: HqServer, sock: socket.socket) -> None:
+    """Serve ``sock``. uvicorn exits the process with ``SystemExit`` when it can't start; for an HQ listener that
+    must be an error of its own, not the office's end."""
+    try:
+        await server.serve(sockets=[sock])
+    except SystemExit as exc:
+        raise RuntimeError(f"uvicorn exited ({exc.code})") from exc

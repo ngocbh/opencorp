@@ -221,3 +221,69 @@ async def test_stop_leaves_alone_what_start_refused_at_hq_sock(short_office, hq,
     assert hq.socket_error is not None
     await listeners.stop()
     assert hq.socket.exists() and hq.socket_error is None
+
+
+def _failing_once(monkeypatch, exc):
+    """Make the next HqServer.serve raise ``exc`` at once; later ones serve as usual."""
+    real, calls = servers.HqServer.serve, []
+
+    async def serve(self, sockets=None):
+        calls.append(sockets)
+        if len(calls) == 1:
+            raise exc
+        await real(self, sockets=sockets)
+
+    monkeypatch.setattr(servers.HqServer, "serve", serve)
+    return calls
+
+
+async def test_a_tcp_server_that_dies_is_noticed_and_the_port_bound_again(short_office, hq, monkeypatch, caplog):
+    monkeypatch.setattr(servers, "RETRY_S", 0.1)
+    calls = _failing_once(monkeypatch, RuntimeError("crashed"))
+    hq.config = dataclasses.replace(hq.config, tcp=True)
+    monkeypatch.setattr(short_office.paths, "office", short_office.paths.office / "nope")  # no hq.sock: TCP only
+    listeners = Listeners(hq)
+    await listeners.start()
+    try:
+        async with asyncio.timeout(3):
+            while len(calls) < 2 or hq.bound_port is None:
+                await asyncio.sleep(0.02)
+        assert "crashed" in caplog.text and hq.tcp_error is None
+        async with httpx.AsyncClient(base_url=hq.status().url, trust_env=False) as c:
+            assert (await c.get("/api/health")).status_code == 200
+    finally:
+        await listeners.stop()
+
+
+async def test_a_hq_sock_server_that_exits_is_a_warning_not_a_stopped_office(short_office, hq, monkeypatch):
+    _failing_once(monkeypatch, SystemExit(1))
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    listeners = Listeners(hq)
+    await listeners.start()
+    try:
+        async with asyncio.timeout(2):
+            while hq.socket_error is None:
+                await asyncio.sleep(0.02)
+        assert any("isn't listening on" in w for w in hq.status().warnings)
+    finally:
+        await listeners.stop()
+    assert not hq.socket.exists()
+
+
+async def test_stop_logs_what_went_wrong_instead_of_raising(short_office, hq, monkeypatch, caplog):
+    def broken(port):
+        raise ValueError("no such port")
+
+    monkeypatch.setattr(servers, "bind_tcp", broken)
+
+    async def late(self, sockets=None):
+        while not self.should_exit:
+            await asyncio.sleep(0.01)
+        raise RuntimeError("failed on the way out")
+
+    monkeypatch.setattr(servers.HqServer, "serve", late)
+    listeners = Listeners(hq)
+    await listeners.start()
+    await asyncio.sleep(0.05)
+    await listeners.stop()
+    assert "no such port" in caplog.text and "failed on the way out" in caplog.text
