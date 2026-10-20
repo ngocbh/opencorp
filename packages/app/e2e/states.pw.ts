@@ -93,3 +93,10 @@ test("session.updated refetches costs at most once every 10 s", async ({ page, r
   await page.waitForTimeout(500)
   expect(await costReads()).toBe(2)
 })
+
+test("a tab opened while the office is down connects once it's back", async ({ page, request }) => {
+  await request.post("/__fixture/drop", { data: { ms: 2000 } })
+  await page.goto("/")
+  await expect(connection(page)).toHaveText("live", { timeout: 15_000 })
+  await expect(page.getByText("@ngocbh")).toBeVisible()
+})

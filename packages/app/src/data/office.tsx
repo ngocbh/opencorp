@@ -49,6 +49,8 @@ function createOffice(toSignIn: () => void) {
   let after: (() => void)[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
   let signedOut = false
+  // Set on unmount: a whoami or a read still in flight then must not start or change anything.
+  let disposed = false
   let stopPausing: (() => void) | undefined
 
   function flush() {
@@ -84,6 +86,8 @@ function createOffice(toSignIn: () => void) {
     if (next === "online") {
       setReady(true)
       void checkVersion()
+      // The first whoami may have failed while the office was down: fill in who is signed in now.
+      if (!me()) void checkSignedIn()
     }
     // The stream's 401 shows as "error": ask who this browser is, and go to sign-in if the session is gone.
     else if (next === "error") void checkSignedIn()
@@ -100,10 +104,8 @@ function createOffice(toSignIn: () => void) {
   async function checkSignedIn() {
     try {
       setMe((await client.whoami()).person)
-      return true
     } catch (e) {
       if (e instanceof UnknownDevice) signOut() // the client maps every 401 to UnknownDevice
-      return false
     }
   }
 
@@ -158,12 +160,16 @@ function createOffice(toSignIn: () => void) {
   window.addEventListener("vite:preloadError", onPreloadError)
 
   onMount(async () => {
-    if (!(await checkSignedIn())) return
+    // Only a 401 signs out; any other failure (the office restarting, say) leaves the stream's backoff to retry, and a
+    // later 401 on the stream reaches checkSignedIn through "error".
+    await checkSignedIn()
+    if (signedOut || disposed) return
     sync.start()
     // A hidden tab lets go of its stream after a minute and takes a fresh snapshot when shown again.
     stopPausing = pauseWhenHidden({ start: () => void (signedOut || sync.start()), stop: sync.stop }, document)
   })
   onCleanup(() => {
+    disposed = true
     window.removeEventListener("vite:preloadError", onPreloadError)
     sync.stop()
     stopPausing?.()
