@@ -87,3 +87,20 @@ test("the wheel over the chart doesn't scroll the page", async ({ page }) => {
   await expect.poll(async () => (await transform(page))[0]).toBeLessThan(1)
   expect(await page.evaluate(() => scrollY)).toBe(0)
 })
+
+test("two pointers moving apart zoom in", async ({ page }) => {
+  await openChart(page)
+  const [before] = await transform(page)
+  // Playwright has no multi-touch mouse: send the pointer events a two-finger pinch makes.
+  await page.getByTestId("chart-viewport").evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const send = (type: string, id: number, x: number) =>
+      el.dispatchEvent(new PointerEvent(type, { pointerId: id, clientX: r.left + x, clientY: r.top + 100, bubbles: true, pointerType: "touch" }))
+    send("pointerdown", 1, 200)
+    send("pointerdown", 2, 300)
+    send("pointermove", 2, 400)
+    send("pointerup", 1, 200)
+    send("pointerup", 2, 400)
+  })
+  expect((await transform(page))[0]).toBeCloseTo(Math.min(2, before * 2), 2)
+})

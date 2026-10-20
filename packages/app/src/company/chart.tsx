@@ -1,6 +1,6 @@
 import { createMemo, createSelector, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js"
 import { describe, personCost } from "./format"
-import { fit, layout, pan, zoomAt, type Box, type Transform } from "./layout"
+import { fit, layout, pan, pinch, zoomAt, type Box, type Transform } from "./layout"
 import type { ListProps } from "./list"
 import { PersonBody } from "./person"
 import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./rows"
@@ -58,6 +58,13 @@ export default function Chart(props: ListProps) {
     const prev = pointers.get(e.pointerId)
     if (!prev) return
     const next = local(e)
+    if (pointers.size === 2) {
+      const other = [...pointers].find(([id]) => id !== e.pointerId)![1]
+      dragging = true // a pinch isn't a click either
+      moveTo(pinch(t(), [prev, other], [next, other]))
+      pointers.set(e.pointerId, next)
+      return
+    }
     // A press on a card stays a click until the pointer has moved a few pixels; the travel so far still counts.
     if (!dragging && Math.hypot(next[0] - prev[0], next[1] - prev[1]) < 4) return
     if (!dragging) {
