@@ -2,8 +2,9 @@ import { createMemo, createSignal } from "solid-js"
 import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
-import { fromTree, holds, keep, personOf, type Item } from "../company/rows"
+import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../company/rows"
 import { inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
+import { byTeam } from "../company/teams"
 import { Toolbar } from "../company/toolbar"
 import { buildTree } from "../company/tree"
 import { useOffice } from "../data/office"
@@ -17,6 +18,7 @@ export default function Company() {
   // follow it once HQ shows several offices.
   const [query, setQuery] = createSignal("")
   const [group, setGroup] = createSignal("")
+  const [teamView, setTeamView] = createSignal(false)
   const [officeFilter] = createSignal<OfficeFilter>(null)
   const sessions = createMemo(() => inOffice(s.sessions, officeFilter()))
   const tree = createMemo(() => buildTree(s.people, s.company))
@@ -26,11 +28,14 @@ export default function Company() {
     needsYou(office.me() ?? "", sessions(), Object.values(s.questions), s.company?.ceo ?? null, assignee),
   )
   const groups = createMemo(() => new Map(s.groups.map((g) => [g.id, g])))
-  const items = createMemo(() => keep(fromTree(tree().roots), query()))
+  const items = createMemo(() => {
+    const t = teamView() ? byTeam(s.people, s.groups) : undefined
+    return keep(t ? fromTeams(t.teams, t.noTeam) : fromTree(tree().roots), query())
+  })
   // While searching, every kept branch is open, so the matches show.
   const isOpen = (item: Item, depth: number) =>
     query().trim() !== "" || prefs.isOpen(item.id, { depth, holdsNeedsYou: holds(item, needs()) })
-  /** A person's branch totals, from their node in the tree by manager. */
+  /** A person's branch totals, from their node in the tree by manager; "By team" rows have none. */
   const totalsOf = (item: Item) => {
     const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
     return node ? totalsText(totals(node, status(), needs(), s.costs)) : undefined
@@ -50,6 +55,8 @@ export default function Company() {
         groups={s.groups}
         group={group()}
         onGroup={setGroup}
+        byTeam={teamView()}
+        onByTeam={setTeamView}
       />
       <CompanyList
         label={name()}

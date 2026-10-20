@@ -80,3 +80,12 @@ test("the group filter dims everyone outside the group", async ({ page }) => {
   await page.getByRole("combobox", { name: "Group" }).selectOption("")
   await expect(row(page, /Kai/)).toHaveAttribute("data-dimmed", "false")
 })
+
+test("By team groups people under their teams, muted after their first, with No team last", async ({ page }) => {
+  await page.getByText("By team", { exact: true }).click() // the switch's label; its input is visually hidden
+  await expect(page.getByRole("switch", { name: "By team" })).toBeChecked()
+  await expect(page.getByRole("treeitem", { name: "ENG", exact: true })).toHaveAttribute("aria-level", "1")
+  await expect(page.getByRole("treeitem", { name: "OPS", exact: true })).toHaveAttribute("aria-level", "2")
+  await expect(page.getByRole("treeitem", { name: "No team", exact: true })).toBeVisible()
+  await expect(page.locator('[role=treeitem][data-muted="true"]')).toHaveAttribute("aria-label", "Minh, Engineer")
+})
