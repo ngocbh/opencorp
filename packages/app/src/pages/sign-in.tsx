@@ -38,7 +38,7 @@ export default function SignIn() {
         label: browserLabel(navigator.userAgent),
       })
       rememberSession(session)
-      navigate("/", { replace: true })
+      navigate("/org", { replace: true })
     } catch (err) {
       fail(signInFailure(err))
     } finally {

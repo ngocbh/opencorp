@@ -1,4 +1,4 @@
-import { Route, Router, type RouteSectionProps } from "@solidjs/router"
+import { A, Navigate, Route, Router, type RouteSectionProps } from "@solidjs/router"
 import { lazy } from "solid-js"
 import { OfficeProvider } from "./data/office"
 import Pair from "./pages/pair"
@@ -15,6 +15,19 @@ const Office = (props: RouteSectionProps) => (
   </OfficeProvider>
 )
 
+/** What an address inside the shell with no screen shows. */
+const NoPage = () => (
+  <div class="space-y-2 p-6">
+    <h2 class="text-lg font-semibold">There's no page here.</h2>
+    <p>
+      <A href="/org" class="underline">
+        Org
+      </A>{" "}
+      shows the company.
+    </p>
+  </div>
+)
+
 /** The HQ app's routes. */
 export function App() {
   return (
@@ -22,8 +35,10 @@ export function App() {
       <Route path="/pair" component={Pair} />
       <Route path="/sign-in" component={SignIn} />
       <Route path="/" component={Office}>
-        <Route path="/" component={Company} />
-        <Route path="*" component={Company} />
+        {/* The home screen until there's an Inbox; old bookmarks of / land here too. */}
+        <Route path="/" component={() => <Navigate href="/org" />} />
+        <Route path="/org" component={Company} />
+        <Route path="*" component={NoPage} />
       </Route>
     </Router>
   )

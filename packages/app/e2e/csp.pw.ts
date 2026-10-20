@@ -58,6 +58,27 @@ test("the sidebar's Sign out, and the sign-in page it lands on, load with no CSP
   expect(await violations()).toEqual([])
 })
 
+test("the sidebar on a desktop, and its Menu drawer on a phone, load with no CSP violation", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true } })
+  const violations = await watchCsp(page)
+  await page.goto("/")
+  const nav = page.getByRole("navigation", { name: "HQ" })
+  await expect(nav.getByRole("link", { name: "Org" })).toHaveAttribute("aria-current", "page")
+  await nav.getByRole("link", { name: "Issues soon" }).hover()
+  await nav.getByRole("link", { name: "Org" }).focus()
+  await page.goto("/nowhere")
+  await expect(page.getByText("There's no page here.")).toBeVisible()
+  await violations()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await nav.getByRole("button", { name: "Menu" }).click()
+  await expect(nav.getByRole("link", { name: "Activity soon" })).toBeVisible()
+  await page.keyboard.press("Escape")
+  await nav.getByRole("button", { name: "Menu" }).click()
+  await nav.getByRole("link", { name: "Org" }).click()
+  await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  expect(await violations()).toEqual([])
+})
+
 test("pairing, the shell, the reconnecting banner and the blocked page load with no CSP violation", async ({ page, request }) => {
   const violations = await watchCsp(page)
   await page.goto("/pair#nope")

@@ -36,7 +36,7 @@ test("Sign out ends the session, forgets it here, and lands on sign-in for good"
   expect(await pendingLogout(page)).toBeNull()
   // The company was replaced in the history, so Back can't show it.
   await page.goBack()
-  expect(new URL(page.url()).pathname).not.toBe("/")
+  expect(["/", "/org"]).not.toContain(new URL(page.url()).pathname)
   await expect(page.getByRole("navigation", { name: "HQ" })).toHaveCount(0)
   await page.goto("/")
   await expect(page).toHaveURL("/sign-in")
@@ -102,7 +102,7 @@ test("Signing in again clears a pending sign-out: the new session stays", async 
   expect(await pendingLogout(page)).not.toBeNull()
   await page.request.post("/__fixture/drop", { data: { ms: 0 } })
   await signIn(page)
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   expect(await pendingLogout(page)).toBeNull()
   expect((await fixtureLog(page)).logouts).toBe(0)
   await page.reload()

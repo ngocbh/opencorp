@@ -48,7 +48,7 @@ test("the right handle and password land on / signed in; the handle is cleaned a
   await page.getByLabel("Handle").fill("  @NgocBH ")
   await page.getByLabel("Password").fill(PASSWORD)
   await page.getByLabel("Password").press("Enter")
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   await expect(page.getByText("@ngocbh")).toBeVisible()
   await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
   await expect(page.getByText(/paired by/)).toHaveCount(0) // signed in as themselves
@@ -127,7 +127,7 @@ test("a busy office says to try again, and the next try signs in", async ({ page
   await request.post("/__fixture/set", { data: { login: { retryAfter: null, busy: false } } })
   await page.getByLabel("Password").fill(PASSWORD)
   await page.getByRole("button", { name: "Sign in" }).click()
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
 })
 
 test("an office it can't reach says what went wrong", async ({ page }) => {
@@ -151,7 +151,7 @@ test("while the office checks, the form is busy and read-only and keeps focus, a
   await expect(page.getByLabel("Password")).not.toBeEditable()
   await expect(page.getByLabel("Password")).toBeFocused()
   await expect(page.getByLabel("Password")).toHaveValue(PASSWORD) // read-only, not wiped
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   let log = await (await request.get("/__fixture/log")).json()
   expect(log.logins.length).toBe(1)
   // A double click on the button too.
@@ -161,7 +161,7 @@ test("while the office checks, the form is busy and read-only and keeps focus, a
   await page.getByLabel("Handle").fill("ngocbh")
   await page.getByLabel("Password").fill(PASSWORD)
   await page.getByRole("button", { name: "Sign in" }).click({ clickCount: 2 })
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   log = await (await request.get("/__fixture/log")).json()
   expect(log.logins.length).toBe(1)
 })

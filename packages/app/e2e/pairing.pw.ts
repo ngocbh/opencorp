@@ -8,7 +8,7 @@ test("the link signs in once, drops the code from the URL and the history, and l
   await page.goto("/pair#good-code-123")
   await expect(page).toHaveURL("/pair") // stripped while the code is still being spent
   await expect(page.getByRole("status")).toHaveText("Signing in…")
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   const log = await (await request.get("/__fixture/log")).json()
   expect(log.pairs).toEqual([{ code: "good-code-123", label: expect.stringContaining(" on ") }])
   await page.goBack()
@@ -56,7 +56,7 @@ test("a new link opened in the tab that showed a failed one signs in", async ({ 
   await expect(page.getByRole("alert")).toBeVisible()
   await request.post("/__fixture/code", { data: { code: "good-code-123" } })
   await page.goto("/pair#good-code-123") // the same document: only the fragment changes
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
 })
 
@@ -77,6 +77,6 @@ test("a browser that refuses storage still signs in", async ({ page, request }) 
   })
   await request.post("/__fixture/code", { data: { code: "good-code-123" } })
   await page.goto("/pair#good-code-123")
-  await expect(page).toHaveURL("/")
+  await expect(page).toHaveURL("/org")
   await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
 })
