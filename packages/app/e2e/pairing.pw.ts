@@ -4,7 +4,9 @@ test.beforeEach(async ({ request }) => void (await request.post("/__fixture/rese
 
 test("the link signs in once, drops the code from the URL and the history, and lands on /", async ({ page, request }) => {
   await request.post("/__fixture/code", { data: { code: "good-code-123" } })
+  await request.post("/__fixture/set", { data: { delay: { "/api/pair": 1000 } } })
   await page.goto("/pair#good-code-123")
+  await expect(page).toHaveURL("/pair") // stripped while the code is still being spent
   await expect(page).toHaveURL("/")
   const log = await (await request.get("/__fixture/log")).json()
   expect(log.pairs).toEqual([{ code: "good-code-123", label: expect.stringContaining(" on ") }])
@@ -15,6 +17,7 @@ test("the link signs in once, drops the code from the URL and the history, and l
 test("a used or wrong link says to pair again", async ({ page }) => {
   await page.goto("/pair#nope")
   await expect(page.getByRole("alert")).toHaveText("This link has expired or was already used. Run `opencorp pair` again.")
+  await expect(page).toHaveURL("/pair")
 })
 
 test("a link without a code says the same", async ({ page }) => {
