@@ -6,6 +6,8 @@ export default defineConfig({
   testDir: "e2e",
   // Not *.test.ts or *.spec.ts: `bun test` would pick those up.
   testMatch: /.*\.pw\.ts$/,
+  // real.pw.ts runs against a running office: playwright.real.config.ts.
+  testIgnore: /real\.pw\.ts$/,
   // One fixture server with shared state: tests run one at a time and reset it first.
   workers: 1,
   fullyParallel: false,
