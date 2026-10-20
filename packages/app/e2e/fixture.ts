@@ -3,6 +3,8 @@
 // CSP must equal opencorp.hq.guard.CSP; packages/corp_office/tests/hq/test_app_fixture.py checks it.
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
+import type { BrowserSession } from "@opencorp/protocol"
+import { acme, type Data } from "./company"
 
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -19,7 +21,15 @@ const build = JSON.parse(readFileSync(path.join(DIST, "build.json"), "utf8"))
 
 /** A file of the built app, index.html for a document navigation, or a plain 404, as the office serves them. */
 function serveStatic(req: Request, url: URL): Response {
-  const rel = decodeURIComponent(url.pathname).replace(/^\/+/, "")
+  // The office serves the app to GET and HEAD only.
+  if (req.method !== "GET" && req.method !== "HEAD")
+    return json({ error: "method_not_allowed", message: `no route ${req.method} ${url.pathname}` }, 405)
+  let rel: string
+  try {
+    rel = decodeURIComponent(url.pathname).replace(/^\/+/, "")
+  } catch {
+    return new Response("not found", { status: 404, headers: HEADERS }) // a malformed %-escape names no file
+  }
   const file = path.join(DIST, rel)
   if (rel && !rel.split("/").includes("..") && existsSync(file) && statSync(file).isFile())
     return new Response(Bun.file(file), {
@@ -37,14 +47,171 @@ function serveStatic(req: Request, url: URL): Response {
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   Response.json(body, { status, headers: { ...HEADERS, ...headers } })
 
+type Fixture = Data & {
+  signedIn: boolean
+  /** Codes that sign a browser in once, with who issued each. */
+  codes: Record<string, string>
+  /** Overrides for /api/health: another office key, another build, or no build at all. */
+  health: { officeApi?: string; build?: string; app?: null }
+  whoami: { person: string; device: string | null }
+  /** Milliseconds to hold a route's answer, by path. */
+  delay: Record<string, number>
+}
+const fresh = (): Fixture => ({
+  ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
+})
+const emptyLog = () => ({ pairs: [] as unknown[], health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
+let state = fresh()
+let log = emptyLog()
+let downUntil = 0
+
+// Open event streams, written to by /__fixture/emit and ended by /__fixture/drop and /__fixture/reset.
+const streams = new Set<ReadableStreamDefaultController<Uint8Array>>()
+const enc = new TextEncoder()
+function write(text: string) {
+  for (const c of streams) {
+    try {
+      c.enqueue(enc.encode(text))
+    } catch {
+      streams.delete(c)
+    }
+  }
+}
+function closeAll() {
+  for (const c of streams) {
+    try {
+      c.close()
+    } catch {}
+  }
+  streams.clear()
+}
+setInterval(() => write(": ping\n\n"), 15_000) // as the office's 15 s ping
+
+let seq = 0
+/** A meta frame as the office writes it (`event`, `id`, `data`). */
+function frame(e: { type: string; data: Record<string, unknown> }) {
+  const event = { id: `E${String(++seq).padStart(25, "0")}`, at: new Date().toISOString(), subject_id: String(e.data.id ?? ""), ...e }
+  return `event: meta\nid: ${event.id}\ndata: ${JSON.stringify(event)}\n\n`
+}
+
+function health() {
+  const app = state.health.app === null ? null : { build: state.health.build ?? build.build, api: build.api }
+  return { ok: true, office: { api: state.health.officeApi ?? build.api }, app }
+}
+
+function events() {
+  let ctl!: ReadableStreamDefaultController<Uint8Array>
+  const body = new ReadableStream<Uint8Array>({
+    start(c) {
+      ctl = c
+      streams.add(c)
+      c.enqueue(enc.encode(": connected\n\n"))
+    },
+    cancel() {
+      streams.delete(ctl)
+    },
+  })
+  return new Response(body, { headers: { ...HEADERS, "content-type": "text/event-stream", "cache-control": "no-cache" } })
+}
+
+const SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."
+const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
+
+/** HQ's /api, as the office answers it, from `state`. */
+async function api(req: Request, url: URL): Promise<Response> {
+  const p = url.pathname
+  log.api.push(p)
+  if (Date.now() < downUntil) return json({ error: "office_unavailable", message: "the office is restarting" }, 503)
+  if (state.delay[p]) await Bun.sleep(state.delay[p])
+  if (p === "/api/health") return log.health++, json(health())
+  if (p === "/api/pair" && req.method === "POST") {
+    const body = await req.json().catch(() => ({}))
+    log.pairs.push(body)
+    const issued_by = state.codes[body.code]
+    if (!issued_by) return json({ error: "pair_code_invalid", message: EXPIRED }, 400)
+    delete state.codes[body.code]
+    state.signedIn = true
+    const at = new Date()
+    const session: BrowserSession = {
+      id: "01JA1H0000000000000000000A", person: state.whoami.person, name: "web-abc123", label: body.label ?? null,
+      via: "pair", issued_by, created_at: at.toISOString(),
+      expires_at: new Date(at.getTime() + 30 * 86_400_000).toISOString(), last_used_at: null,
+    }
+    return json(session, 200, { "set-cookie": `opencorp_hq_${port}=fixture; HttpOnly; SameSite=Strict; Path=/` })
+  }
+  if (!state.signedIn) return json({ error: "sign_in_required", message: SIGN_IN }, 401)
+  if (p === "/api/logout" && req.method === "POST") return (state.signedIn = false), json({ ok: true })
+  if (req.method !== "GET") return json({ error: "no_route", message: `no route ${req.method} ${p}` }, 404)
+  const workItem = /^\/api\/work-items\/([^/]+)$/.exec(p)?.[1]
+  if (workItem) {
+    log.workItems.push(workItem)
+    const found = state.workItems[workItem]
+    return found ? json(found) : json({ error: "not_found", message: `no work item ${workItem}` }, 404)
+  }
+  switch (p) {
+    case "/api/whoami":
+      return json(state.whoami)
+    case "/api/company":
+      return json(state.view)
+    case "/api/sessions": {
+      const wanted = url.searchParams.getAll("status").flatMap((x) => x.split(","))
+      return json(state.sessions.filter((x) => !wanted.length || wanted.includes(x.status)))
+    }
+    case "/api/questions":
+      return json(state.questions.filter((q) => q.status === "open"))
+    case "/api/costs": {
+      const since = url.searchParams.get("since") ?? ""
+      log.costs.push(since)
+      return json({ since, people: state.costs })
+    }
+    case "/api/events":
+      return events()
+  }
+  // Everything else, GET /api/questions/{id} included, is off HQ's allowlist.
+  return json({ error: "no_route", message: `no route GET ${p}` }, 404)
+}
+
+/** /__fixture/*: how tests set the office up and read what the app asked for. */
+async function control(req: Request, url: URL): Promise<Response> {
+  const body = req.method === "POST" ? await req.json().catch(() => ({})) : {}
+  switch (url.pathname) {
+    case "/__fixture/reset":
+      state = fresh()
+      log = emptyLog()
+      downUntil = 0
+      closeAll()
+      return json({ ok: true })
+    case "/__fixture/set": {
+      // `view` merges into the company view; anything else replaces the key.
+      const { view, ...rest } = body
+      Object.assign(state, rest)
+      if (view) state.view = { ...state.view, ...view }
+      return json({ ok: true })
+    }
+    case "/__fixture/code":
+      state.codes[body.code] = body.issued_by ?? "ngocbh"
+      return json({ ok: true })
+    case "/__fixture/log":
+      return json(log)
+    case "/__fixture/emit":
+      write(frame(body.event))
+      return json({ ok: true })
+    case "/__fixture/drop":
+      downUntil = Date.now() + (body.ms ?? 0)
+      closeAll()
+      return json({ ok: true })
+  }
+  return json({ error: "no_route" }, 404)
+}
+
 Bun.serve({
   hostname: "127.0.0.1",
   port,
   idleTimeout: 0, // event streams stay quiet for longer than Bun's 10 s default
   async fetch(req) {
     const url = new URL(req.url)
-    if (url.pathname === "/api/health") return json({ ok: true, office: { api: build.api }, app: build })
-    if (url.pathname.startsWith("/api/")) return json({ error: "no_route", message: "no route" }, 404)
+    if (url.pathname.startsWith("/__fixture/")) return control(req, url)
+    if (url.pathname === "/api" || url.pathname.startsWith("/api/")) return api(req, url)
     return serveStatic(req, url)
   },
 })

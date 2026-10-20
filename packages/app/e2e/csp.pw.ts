@@ -1,5 +1,7 @@
 import { expect, test } from "@playwright/test"
 
+test.beforeEach(async ({ request }) => void (await request.post("/__fixture/reset")))
+
 test("the built app loads with no CSP violation", async ({ page }) => {
   const violations: string[] = []
   page.on("console", (m) => {
