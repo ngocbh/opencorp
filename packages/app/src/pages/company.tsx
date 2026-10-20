@@ -115,9 +115,11 @@ export default function Company() {
     opener = from instanceof HTMLElement && from !== document.body ? from : undefined
     setSelected(handle)
   }
-  /** Where focus goes when the panel closes: its opener, or the tree's current row once the opener is gone. */
+  /** Where focus goes when the panel closes: its opener, or the tree's current row (or chart card) once it's gone. */
   const returnTo = () =>
-    opener?.isConnected ? opener : (document.querySelector<HTMLElement>('[role=treeitem][tabindex="0"]') ?? undefined)
+    opener?.isConnected
+      ? opener
+      : (document.querySelector<HTMLElement>('[role=treeitem][tabindex="0"], [data-card] [tabindex="0"]') ?? undefined)
   // On a phone the panel is a sheet over the whole screen: nothing behind it can take focus.
   const sheet = () => !desktop() && !!shown()
   const shell = useShell()

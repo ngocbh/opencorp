@@ -1,6 +1,17 @@
-import { createMemo, createSelector, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js"
+import {
+  createComputed,
+  createEffect,
+  createMemo,
+  createSelector,
+  createSignal,
+  createUniqueId,
+  For,
+  onCleanup,
+  onMount,
+  Show,
+} from "solid-js"
 import { describe, personCost } from "./format"
-import { fit, layout, pan, pinch, zoomAt, type Box, type Transform } from "./layout"
+import { arrow, fit, layout, pan, pinch, reveal, zoomAt, type Box, type Transform } from "./layout"
 import type { ListProps } from "./list"
 import { PersonBody } from "./person"
 import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./rows"
@@ -86,7 +97,71 @@ export default function Chart(props: ListProps) {
     e.preventDefault() // the page doesn't scroll under the chart
     moveTo(zoomAt(t(), Math.exp(-e.deltaY / 500), local(e)))
   }
+  // Keyboard access: the cards are one tab stop (a roving tabindex, as in the list), and arrow keys move between them.
+  const [focused, setFocused] = createSignal<string>()
+  /** The card with tabindex 0: the focused one while it's drawn, else the first. */
+  const current = () => (boxes().has(focused() ?? "") ? focused() : ids()[0])
+  const isCurrent = createSelector(current)
+  const elements = new Map<string, HTMLElement>()
+  // Focus scrolls the viewport to show a card (overflow: hidden still scrolls). The canvas's transform does that job,
+  // so a scroll becomes a pan, and the transform stays the whole story of where the canvas is.
+  function unscroll() {
+    const { scrollLeft: x, scrollTop: y } = viewport
+    if (!x && !y) return
+    viewport.scrollLeft = viewport.scrollTop = 0
+    moveTo(pan(t(), -x, -y))
+  }
+  /** Card `id` became the current one: pan it into view if it isn't. */
+  function onCardFocus(id: string) {
+    setFocused(id)
+    unscroll()
+    // A press focuses the card under it: moving the card then could take it from under the pointer before the click.
+    if (pointers.size) return
+    const box = boxes().get(id)
+    const next = box && reveal(t(), box, { width: viewport.clientWidth, height: viewport.clientHeight }, MARGIN)
+    if (next && next !== t()) moveTo(next)
+  }
+  function focusCard(id: string) {
+    onCardFocus(id)
+    elements.get(id)?.focus({ preventScroll: true })
+  }
+  function onCardKey(e: KeyboardEvent, id: string) {
+    const to = arrow(drawn(), id, e.key)
+    if (to === undefined) return
+    e.preventDefault()
+    focusCard(to)
+  }
+  // Each card's manager as last seen, kept for cards that have gone: every ancestor of a card was drawn with it.
+  const parents = new Map<string, string | null>()
+  createComputed(() => rows().forEach((r) => parents.set(r.item.id, r.parent)))
+  /** A card that had focus when it went away (its branch closed, filtered out, moved in the company). */
+  let lost: string | undefined
+  createEffect(() => {
+    const drawnNow = boxes()
+    if (lost === undefined) return
+    // Parents as last seen can loop after a reorg (two people swapped), so each is visited once.
+    const seen = new Set([lost])
+    let to: string | null | undefined = parents.get(lost)
+    while (to && !drawnNow.has(to) && !seen.has(to)) {
+      seen.add(to)
+      to = parents.get(to)
+    }
+    lost = undefined
+    const target = to && drawnNow.has(to) ? to : ids()[0]
+    if (target) focusCard(target)
+  })
+  /** Keeps card `id`'s focusable element, and notes when it leaves the page while it holds focus. */
+  const register = (id: string, el: HTMLElement) => {
+    elements.set(id, el)
+    // Runs before the card leaves the page, while it can still hold focus.
+    onCleanup(() => {
+      elements.delete(id)
+      if (document.activeElement === el) lost = id
+    })
+  }
   onMount(() => {
+    viewport.addEventListener("scroll", unscroll)
+    onCleanup(() => viewport.removeEventListener("scroll", unscroll))
     // Not Solid's onWheel: preventDefault needs a listener that isn't passive.
     viewport.addEventListener("wheel", onWheel, { passive: false })
     onCleanup(() => viewport.removeEventListener("wheel", onWheel))
@@ -132,7 +207,11 @@ export default function Chart(props: ListProps) {
                     box={boxes().get(id)!}
                     selected={!!personOf(row().item) && isSelected(personOf(row().item)!.handle)}
                     descId={`${uid}-${id}`}
+                    current={isCurrent(id)}
                     chart={props}
+                    focusable={(el) => register(id, el)}
+                    onFocus={() => onCardFocus(id)}
+                    onKey={(e) => onCardKey(e, id)}
                   />
                 )}
               </Show>
@@ -156,7 +235,20 @@ export default function Chart(props: ListProps) {
 }
 
 /** One card: a person's (a button that opens the side panel), or a team's header in "By team". */
-function Card(props: { item: Item; open: boolean; box: Box; selected: boolean; descId: string; chart: ListProps }) {
+function Card(props: {
+  item: Item
+  open: boolean
+  box: Box
+  selected: boolean
+  descId: string
+  /** Whether this card is the chart's tab stop. */
+  current: boolean
+  chart: ListProps
+  /** Takes the card's focusable element. */
+  focusable: (el: HTMLElement) => void
+  onFocus: () => void
+  onKey: (e: KeyboardEvent) => void
+}) {
   const person = () => personOf(props.item)
   const closed = () => props.item.children.length > 0 && !props.open
   const branchStatus = () => (closed() ? props.chart.branchStatus(props.item) : undefined)
@@ -185,20 +277,35 @@ function Card(props: { item: Item; open: boolean; box: Box; selected: boolean; d
       <Show
         when={person()}
         fallback={
-          <div class="grid h-full place-items-center rounded-lg border-2 border-neutral-400 bg-white font-semibold dark:border-neutral-600 dark:bg-neutral-950">
+          <div
+            ref={props.focusable}
+            role="group"
+            aria-label={teamName(props.item)}
+            tabindex={props.current ? 0 : -1}
+            class="grid h-full place-items-center rounded-lg border-2 border-neutral-400 bg-white font-semibold outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-600 dark:bg-neutral-950 dark:focus-visible:ring-neutral-100"
+            onFocus={props.onFocus}
+            onKeyDown={(e) => props.onKey(e)}
+          >
             {teamName(props.item)}
           </div>
         }
       >
         {(p) => (
           <button
+            ref={props.focusable}
             type="button"
+            tabindex={props.current ? 0 : -1}
             aria-label={label(props.item)}
             aria-describedby={props.descId}
             // "By team" shows someone once in full and muted elsewhere: only the full card is the selected one.
             aria-current={props.selected && !isMuted(props.item) ? "true" : undefined}
             class="flex h-full w-full flex-col justify-center gap-1 overflow-hidden rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=true]:border-neutral-900 aria-[current=true]:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950 dark:focus-visible:ring-neutral-100 dark:aria-[current=true]:border-neutral-100 dark:aria-[current=true]:bg-neutral-900"
-            onClick={() => props.chart.onSelect(p().handle)}
+            onFocus={props.onFocus}
+            onKeyDown={(e) => props.onKey(e)}
+            onClick={() => {
+              props.onFocus() // a click doesn't focus a button in every browser; the panel gives focus back here
+              props.chart.onSelect(p().handle)
+            }}
           >
             <PersonBody
               card
@@ -221,6 +328,8 @@ function Card(props: { item: Item; open: boolean; box: Box; selected: boolean; d
         <button
           type="button"
           aria-label={`${props.open ? "Close" : "Open"} ${personOf(props.item)?.name ?? teamName(props.item)}'s branch`}
+          // After its card in the tab order, for the current card only: the chart stays a short stop on the way past.
+          tabindex={props.current ? 0 : -1}
           class="absolute -bottom-3 left-1/2 h-6 min-w-6 -translate-x-1/2 rounded-full border border-neutral-300 bg-white px-1.5 text-xs leading-none text-neutral-600 outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:focus-visible:ring-neutral-100"
           onClick={() => props.chart.setOpen(props.item.id, !props.open)}
         >

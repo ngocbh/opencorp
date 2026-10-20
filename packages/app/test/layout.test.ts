@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { CARD, fit, layout, pan, pinch, zoomAt, type LayoutNode } from "../src/company/layout"
+import { arrow, CARD, fit, layout, pan, pinch, reveal, zoomAt, type LayoutNode } from "../src/company/layout"
 
 const n = (id: string, ...children: LayoutNode[]): LayoutNode => ({ id, children })
 const slot = CARD.w + CARD.gapX
@@ -97,4 +97,40 @@ test("two pointers moving apart zoom about their midpoint; moving together pans"
 
 test("two pointers on one spot don't zoom by a division by zero", () => {
   expect(pinch({ k: 1, x: 0, y: 0 }, [[5, 5], [5, 5]], [[5, 5], [5, 5]])).toEqual({ k: 1, x: 0, y: 0 })
+})
+
+test("arrow keys go up to the manager, down to the first report, and across the row", () => {
+  const drawn = layout([n("ceo", n("a", n("x"), n("y")), n("b", n("z"))), n("solo")], () => true)
+  const go = (at: string, key: string) => arrow(drawn, at, key)
+  expect(go("ceo", "ArrowDown")).toBe("a")
+  expect(go("a", "ArrowDown")).toBe("x")
+  expect(go("y", "ArrowUp")).toBe("a")
+  expect(go("ceo", "ArrowUp")).toBeUndefined()
+  expect(go("x", "ArrowDown")).toBeUndefined()
+  expect(go("a", "ArrowRight")).toBe("b")
+  // Across the row, past a branch's edge: y and z have different managers.
+  expect(go("y", "ArrowRight")).toBe("z")
+  expect(go("z", "ArrowLeft")).toBe("y")
+  expect(go("ceo", "ArrowRight")).toBe("solo")
+  expect(go("x", "ArrowLeft")).toBeUndefined()
+  expect(go("b", "Home")).toBe("ceo")
+  expect(go("ceo", "End")).toBe("solo")
+  expect(go("ceo", "Enter")).toBeUndefined()
+})
+
+test("a closed branch has no report to go down to", () => {
+  const drawn = layout([n("ceo", n("a", n("x")))], (id) => id !== "a")
+  expect(arrow(drawn, "a", "ArrowDown")).toBeUndefined()
+})
+
+test("reveal pans a card just into view, and leaves a card in view alone", () => {
+  const view = { width: 1000, height: 600 }
+  const t = { k: 1, x: 0, y: 0 }
+  expect(reveal(t, { id: "a", x: 100, y: 100 }, view, 10)).toBe(t)
+  // Off the right edge: moved left just enough, with the margin.
+  expect(reveal(t, { id: "a", x: 900, y: 100 }, view, 10)).toEqual({ k: 1, x: 1000 - 10 - 900 - CARD.w, y: 0 })
+  // Above the top: moved down.
+  expect(reveal(t, { id: "a", x: 100, y: -300 }, view, 10)).toEqual({ k: 1, x: 0, y: 310 })
+  // Scaled: the card's view position is k * x + t.x.
+  expect(reveal({ k: 2, x: 0, y: 0 }, { id: "a", x: -100, y: 50 }, view, 10)).toEqual({ k: 2, x: 210, y: 0 })
 })

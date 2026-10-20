@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { acme, SHA } from "./company"
 
 test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/reset")
@@ -127,4 +128,82 @@ test("the branch choice is the list's: closed in the chart, closed in the list",
   await chart.getByRole("button", { name: "Close Lead's branch" }).click()
   await page.getByRole("radio", { name: "List" }).click()
   await expect(page.getByRole("treeitem", { name: /Lead/ })).toHaveAttribute("aria-expanded", "false")
+})
+
+test("the cards are one tab stop; arrow keys move up, down and across", async ({ page }) => {
+  const chart = await openChart(page)
+  const card = (name: string) => chart.getByRole("button", { name, exact: true })
+  await expect(chart.locator('[data-card] [aria-describedby][tabindex="0"]')).toHaveCount(1)
+  await page.getByRole("radio", { name: "Chart" }).focus()
+  await page.keyboard.press("Tab")
+  await expect(card("Ngoc, CEO")).toBeFocused()
+  for (const [key, name] of [
+    ["ArrowDown", "Ann, Designer"],
+    ["ArrowRight", "Lead, Tech lead"],
+    ["ArrowDown", "Kai, Engineer"],
+    ["ArrowRight", "Minh, Engineer"],
+    ["ArrowUp", "Lead, Tech lead"],
+    ["ArrowUp", "Ngoc, CEO"],
+    ["End", "Minh, Engineer"],
+    ["Home", "Ngoc, CEO"],
+  ]) {
+    await page.keyboard.press(key)
+    await expect(card(name)).toBeFocused()
+  }
+  await expect(card("Ngoc, CEO")).toHaveAttribute("tabindex", "0")
+  // Tab goes on to the focused card's branch button, then past the other cards.
+  await page.keyboard.press("Tab")
+  await expect(chart.getByRole("button", { name: "Close Ngoc's branch" })).toBeFocused()
+  await page.keyboard.press("Tab")
+  await expect(chart.getByRole("button", { name: "Zoom in" })).toBeFocused()
+})
+
+test("a card that takes focus off screen is panned into view", async ({ page }) => {
+  const chart = await openChart(page)
+  for (let i = 0; i < 4; i++) await page.getByRole("button", { name: "Zoom in" }).click()
+  await chart.getByRole("button", { name: "Ngoc, CEO" }).focus()
+  const view = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.keyboard.press("End") // Minh, far to the right and below at this zoom
+  const minh = (await chart.getByRole("button", { name: "Minh, Engineer" }).boundingBox())!
+  expect(minh.x).toBeGreaterThanOrEqual(view.x)
+  expect(minh.x + minh.width).toBeLessThanOrEqual(view.x + view.width)
+  expect(minh.y + minh.height).toBeLessThanOrEqual(view.y + view.height)
+  // The viewport itself never scrolls: the canvas's transform does the moving.
+  expect(await page.getByTestId("chart-viewport").evaluate((el) => [el.scrollLeft, el.scrollTop])).toEqual([0, 0])
+})
+
+test("Enter on a card opens the side panel; Escape brings focus back to the card", async ({ page }) => {
+  const chart = await openChart(page)
+  await chart.getByRole("button", { name: "Kai, Engineer" }).focus()
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("complementary", { name: "Kai" })).toBeVisible()
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("complementary")).toHaveCount(0)
+  await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toBeFocused()
+  await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toHaveAttribute("tabindex", "0")
+})
+
+test("when the focused card goes away, focus moves to the nearest card above it that's still there", async ({ page, request }) => {
+  const chart = await openChart(page)
+  await chart.getByRole("button", { name: "Kai, Engineer" }).focus()
+  const next = SHA.replace(/^0/, "f")
+  const people = acme().view.people.map((p) => (p.handle === "kai" ? { ...p, manager: "ghost" } : p))
+  await request.post("/__fixture/set", { data: { view: { sha: next, people } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha: next } } } })
+  await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toHaveCount(0) // unplaced now
+  await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toBeFocused()
+  await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toHaveAttribute("tabindex", "0")
+})
+
+test("a live update keeps the focused card's element", async ({ page, request }) => {
+  const chart = await openChart(page)
+  const ann = chart.getByRole("button", { name: "Ann, Designer" })
+  await ann.focus()
+  await ann.evaluate((el) => ((el as any).__kept = true))
+  await request.post("/__fixture/emit", {
+    data: { event: { type: "session.updated", data: { ...acme().sessions[1], id: "S-ann", person: "ann", status: "busy", updated_at: "2026-10-19T12:00:00.000Z" } } },
+  })
+  await expect(ann.getByTestId("status")).toHaveAttribute("data-status", "busy")
+  await expect(ann).toBeFocused()
+  expect(await ann.evaluate((el) => (el as any).__kept)).toBe(true)
 })

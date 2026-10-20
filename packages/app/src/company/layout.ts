@@ -105,3 +105,46 @@ export function pinch(t: Transform, before: [Point, Point], after: [Point, Point
   const zoomed = d0 < 1 ? t : zoomAt(t, dist(...after) / d0, m0)
   return pan(zoomed, m1[0] - m0[0], m1[1] - m0[1])
 }
+
+/**
+ * Where an arrow key goes from card `at`: up to its manager, down to its first drawn report, left and right to the
+ * nearest card on its row (across branches too); Home and End to the first and last card. Undefined when there's
+ * nowhere to go, or for another key.
+ */
+export function arrow(drawn: { boxes: Box[]; edges: Edge[] }, at: string, key: string): string | undefined {
+  const box = drawn.boxes.find((b) => b.id === at)
+  if (!box) return drawn.boxes[0]?.id
+  const across = (dir: 1 | -1) => {
+    let best: Box | undefined
+    for (const b of drawn.boxes)
+      if (b.y === box.y && (b.x - box.x) * dir > 0 && (!best || Math.abs(b.x - box.x) < Math.abs(best.x - box.x))) best = b
+    return best?.id
+  }
+  switch (key) {
+    case "ArrowUp":
+      return drawn.edges.find((e) => e.to === at)?.from
+    case "ArrowDown":
+      return drawn.edges.find((e) => e.from === at)?.to
+    case "ArrowLeft":
+      return across(-1)
+    case "ArrowRight":
+      return across(1)
+    case "Home":
+      return drawn.boxes[0].id
+    case "End":
+      return drawn.boxes[drawn.boxes.length - 1].id
+  }
+  return undefined
+}
+
+/** `t` panned just enough to show `box` in `view`, `margin` pixels in from the edges; `t` itself when it's in view. */
+export function reveal(t: Transform, box: Box, view: Size, margin = 0): Transform {
+  const shift = (start: number, size: number, room: number) => {
+    if (start < margin) return margin - start
+    if (start + size > room - margin) return Math.max(room - margin - start - size, margin - start)
+    return 0
+  }
+  const dx = shift(t.x + box.x * t.k, CARD.w * t.k, view.width)
+  const dy = shift(t.y + box.y * t.k, CARD.h * t.k, view.height)
+  return dx || dy ? pan(t, dx, dy) : t
+}
