@@ -278,5 +278,7 @@ def _request_args(kind: str, frame: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _failed(kind: str, exc: Exception) -> dict[str, Any]:
-    log.info("worker %s request failed", kind, exc_info=exc)
+    # The type only at info: failed requests are routine, and the message or traceback can carry tool arguments.
+    log.info("worker %s request failed: %s", kind, type(exc).__name__)
+    log.debug("worker %s request failed", kind, exc_info=exc)
     return {"error": "failed", "message": str(exc) or type(exc).__name__}
