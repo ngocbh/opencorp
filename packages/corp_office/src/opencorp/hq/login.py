@@ -64,7 +64,7 @@ class Throttle:
     ``FIRST_WAIT_S``, and each failure after a lock locks it again for twice as long, up to ``WINDOW_S``.
 
     A pair is forgotten, locks and all, ``WINDOW_S`` after its last failure; at most ``MAX_KEYS`` are kept, the least
-    recently failed going first.
+    recently failed unlocked pair going first, and a lock is never evicted.
     """
 
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
@@ -75,11 +75,16 @@ class Throttle:
         return len(self._tries)
 
     def wait(self, key: Key) -> int | None:
-        """The seconds left on ``key``'s lock, or None when it isn't locked."""
+        """The seconds left on ``key``'s lock, or None when it isn't locked. A pair not remembered while every
+        remembered pair is locked waits for the first lock to end: there's no room to count its failures."""
         now = self.clock()
         self._forget(now)
         tries = self._tries.get(key)
-        return None if tries is None or tries.until <= now else math.ceil(tries.until - now)
+        if tries is not None:
+            return None if tries.until <= now else math.ceil(tries.until - now)
+        if len(self._tries) >= MAX_KEYS and all(t.until > now for t in self._tries.values()):
+            return math.ceil(min(t.until for t in self._tries.values()) - now)
+        return None
 
     def failed(self, key: Key) -> None:
         """Count a failure for ``key``, locking it once there are ``LIMIT`` within ``WINDOW_S`` or it was locked
@@ -92,8 +97,10 @@ class Throttle:
         if tries.locks or (len(tries.failures) == LIMIT and tries.failures[0] > now - WINDOW_S):
             tries.until = now + min(FIRST_WAIT_S * 2 ** tries.locks, WINDOW_S)
             tries.locks += 1
-        while len(self._tries) > MAX_KEYS:
-            del self._tries[next(iter(self._tries))]
+        if len(self._tries) > MAX_KEYS:
+            # Evicting a lock would let anyone clear it by failing on enough other handles: the oldest unlocked pair
+            # goes, which is this one when every other pair is locked.
+            del self._tries[next(k for k, t in self._tries.items() if t.until <= now)]
 
     def succeeded(self, key: Key) -> None:
         """Forget ``key``'s failures."""

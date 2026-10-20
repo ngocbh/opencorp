@@ -206,6 +206,29 @@ def test_the_throttle_is_bounded():
     assert len(t) == 1  # entries go 15 minutes after their last failure
 
 
+def test_filling_the_table_evicts_unlocked_pairs_never_a_lock():
+    t = Throttle(Clock())
+    for _ in range(5):
+        t.failed(("p", "target"))
+    for i in range(MAX_KEYS):
+        t.failed(("p", f"h{i}"))
+    assert len(t) == MAX_KEYS and t.wait(("p", "target")) == 60
+
+
+def test_a_table_full_of_locks_refuses_new_pairs_until_the_first_lock_ends():
+    clock = Clock()
+    t = Throttle(clock)
+    for i in range(MAX_KEYS):
+        for _ in range(5):
+            t.failed(("p", f"h{i}"))
+        clock.now += 1 / 128  # exact in binary, so the sum is too
+    assert t.wait(("p", "new")) == 53  # the oldest lock, from 7.8 s ago, ends first
+    t.failed(("p", "new"))  # a check that started before the table filled: dropped, not a lock evicted
+    assert len(t) == MAX_KEYS and t.wait(("p", "h0")) is not None
+    clock.now += 60
+    assert t.wait(("p", "new")) is None
+
+
 def peer_client(office, hq, peer):
     app = create_hq_app(office, hq, port=PORT)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 50000)), base_url=ORIGIN,
