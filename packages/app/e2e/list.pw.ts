@@ -161,3 +161,11 @@ test("a live status change shows without a reload", async ({ page, request }) =>
   })
   await expect(row(page, /Ann/).getByTestId("status")).toHaveAttribute("data-status", "busy")
 })
+
+test("a skeleton shows until the first snapshot", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { delay: { "/api/company": 1000 } } })
+  await page.reload()
+  await expect(page.locator("[aria-busy=true]")).toBeVisible()
+  await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  await expect(page.locator("[aria-busy=true]")).toHaveCount(0)
+})

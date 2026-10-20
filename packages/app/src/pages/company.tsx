@@ -20,6 +20,17 @@ function useDesktop() {
   return desktop
 }
 
+/** What the page shows before the first snapshot. */
+function Skeleton() {
+  return (
+    <div aria-busy="true" aria-label="Loading the company" class="space-y-3 p-6">
+      <div class="h-4 w-1/3 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+      <div class="h-4 w-1/2 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+      <div class="h-4 w-2/5 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+    </div>
+  )
+}
+
 /** The company view. */
 export default function Company() {
   const office = useOffice()
@@ -68,7 +79,7 @@ export default function Company() {
   const select = (_handle: string) => {} // the side panel comes next
   const name = () => s.company?.name ?? "Company"
   return (
-    <>
+    <Show when={office.ready()} fallback={<Skeleton />}>
       <Toolbar
         company={name()}
         query={query()}
@@ -102,6 +113,6 @@ export default function Company() {
         onSelect={select}
       />
       <Unplaced people={tree().unplaced} onSelect={select} />
-    </>
+    </Show>
   )
 }
