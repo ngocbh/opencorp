@@ -104,3 +104,27 @@ test("two pointers moving apart zoom in", async ({ page }) => {
   })
   expect((await transform(page))[0]).toBeCloseTo(Math.min(2, before * 2), 2)
 })
+
+test("a branch closes from its card and shows totals; clicking a card opens the side panel", async ({ page }) => {
+  const chart = await openChart(page)
+  await chart.getByRole("button", { name: "Close Lead's branch" }).click()
+  await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toContainText("3 people")
+  await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toHaveCount(0)
+  await expect(chart.locator("svg path[data-edge]")).toHaveCount(2)
+  // The same description as the list's row.
+  await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toHaveAccessibleDescription(
+    "waiting in this branch · 1 card for you · $0.00 · 3 people · 1 busy · 2 waiting · 2 for you · $0.42 +1 unpriced")
+  await chart.getByRole("button", { name: "Open Lead's branch" }).click()
+  await expect(chart.locator("svg path[data-edge]")).toHaveCount(4)
+  await chart.getByRole("button", { name: "Ann, Designer" }).click()
+  await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
+  await expect(chart.getByRole("button", { name: "Ann, Designer" })).toHaveAttribute("aria-current", "true")
+  await expect(chart.locator("[aria-current=true]")).toHaveCount(1)
+})
+
+test("the branch choice is the list's: closed in the chart, closed in the list", async ({ page }) => {
+  const chart = await openChart(page)
+  await chart.getByRole("button", { name: "Close Lead's branch" }).click()
+  await page.getByRole("radio", { name: "List" }).click()
+  await expect(page.getByRole("treeitem", { name: /Lead/ })).toHaveAttribute("aria-expanded", "false")
+})

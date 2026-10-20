@@ -217,6 +217,16 @@ function Card(props: { item: Item; open: boolean; box: Box; selected: boolean; d
           </button>
         )}
       </Show>
+      <Show when={props.item.children.length}>
+        <button
+          type="button"
+          aria-label={`${props.open ? "Close" : "Open"} ${personOf(props.item)?.name ?? teamName(props.item)}'s branch`}
+          class="absolute -bottom-3 left-1/2 h-6 min-w-6 -translate-x-1/2 rounded-full border border-neutral-300 bg-white px-1.5 text-xs leading-none text-neutral-600 outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:focus-visible:ring-neutral-100"
+          onClick={() => props.chart.setOpen(props.item.id, !props.open)}
+        >
+          {props.open ? "−" : `+${props.item.children.length}`}
+        </button>
+      </Show>
     </div>
   )
 }
