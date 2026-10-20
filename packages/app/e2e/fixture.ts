@@ -19,17 +19,27 @@ const DIST = path.join(import.meta.dir, "dist")
 const port = Number(process.argv[process.argv.indexOf("--port") + 1] || 4791)
 const build = JSON.parse(readFileSync(path.join(DIST, "build.json"), "utf8"))
 
+/** `path` with its %-escapes decoded; an escape that isn't valid UTF-8 stays as it is, as uvicorn decodes paths. */
+function decodePath(path: string) {
+  return path.replace(/(%[0-9A-Fa-f]{2})+/g, (run) => {
+    try {
+      return decodeURIComponent(run)
+    } catch {
+      return run
+    }
+  })
+}
+
 /** A file of the built app, index.html for a document navigation, or a plain 404, as the office serves them. */
 function serveStatic(req: Request, url: URL): Response {
   // The office serves the app to GET and HEAD only.
   if (req.method !== "GET" && req.method !== "HEAD")
-    return json({ error: "method_not_allowed", message: `no route ${req.method} ${url.pathname}` }, 405)
-  let rel: string
-  try {
-    rel = decodeURIComponent(url.pathname).replace(/^\/+/, "")
-  } catch {
-    return new Response("not found", { status: 404, headers: HEADERS }) // a malformed %-escape names no file
-  }
+    return json(
+      { error: "method_not_allowed", message: `${req.method} is not allowed on ${url.pathname}` },
+      405,
+      { allow: "GET, HEAD" },
+    )
+  const rel = decodePath(url.pathname).replace(/^\/+/, "")
   const file = path.join(DIST, rel)
   if (rel && !rel.split("/").includes("..") && existsSync(file) && statSync(file).isFile())
     return new Response(Bun.file(file), {

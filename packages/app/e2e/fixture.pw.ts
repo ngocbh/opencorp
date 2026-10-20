@@ -17,9 +17,13 @@ test("the fixture gates /api on a session, spends a code once, logs calls, and c
   expect((await request.get("/api/company")).status()).toBe(503)
 })
 
-test("static files: a malformed path is a 404, and only GET and HEAD get index.html", async ({ request }) => {
-  expect((await request.get("/%E0%A4%A")).status()).toBe(404)
+test("static files: a malformed path is a page like any other, and only GET and HEAD get index.html", async ({ request }) => {
+  // As the office: uvicorn decodes a path leniently, keeping an escape it can't read.
+  const malformed = await request.get("/%E0%A4%A", { headers: { "sec-fetch-dest": "document" } })
+  expect([malformed.status(), malformed.headers()["content-type"]]).toEqual([200, expect.stringContaining("text/html")])
+  expect((await request.get("/assets/%E0%A4%A.js")).status()).toBe(404)
   expect((await request.get("/some/page")).status()).toBe(200)
   expect((await request.head("/some/page")).status()).toBe(200)
-  expect((await request.post("/some/page", { data: {} })).status()).toBe(405)
+  const post = await request.post("/some/page", { data: {} })
+  expect([post.status(), post.headers()["allow"], (await post.json()).error]).toEqual([405, "GET, HEAD", "method_not_allowed"])
 })
