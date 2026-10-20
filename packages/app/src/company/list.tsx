@@ -1,5 +1,5 @@
 import type { Group, PersonCost } from "@opencorp/protocol"
-import { createMemo, createSignal, For, Show } from "solid-js"
+import { createComputed, createEffect, createMemo, createSelector, createSignal, For, onCleanup, Show } from "solid-js"
 import { PersonBody } from "./person"
 import { isMuted, label, moveFocus, personOf, teamName, visibleRows, type Item } from "./rows"
 import type { Status } from "./status"
@@ -34,7 +34,24 @@ export function CompanyList(props: ListProps) {
   const [focused, setFocused] = createSignal<string>()
   /** The row with tabindex 0: the focused one while it's visible, else the first. */
   const current = () => (byId().has(focused() ?? "") ? focused() : ids()[0])
+  const isCurrent = createSelector(current)
   const elements = new Map<string, HTMLElement>()
+  // Each row's parent as last seen, kept for rows that have gone: every ancestor of a row was visible with it.
+  const parents = new Map<string, string | null>()
+  createComputed(() => rows().forEach((r) => parents.set(r.item.id, r.parent)))
+  /** A row that had focus when it went away (closed above it, filtered out, moved in the company). */
+  let lost: string | undefined
+  createEffect(() => {
+    const visible = byId()
+    if (lost === undefined) return
+    let to: string | null | undefined = parents.get(lost)
+    while (to && !visible.has(to)) to = parents.get(to)
+    lost = undefined
+    const target = to ?? ids()[0]
+    if (!target) return
+    setFocused(target)
+    elements.get(target)?.focus()
+  })
   function onKey(e: KeyboardEvent, id: string) {
     const row = byId().get(id)
     const p = row && personOf(row.item)
@@ -64,14 +81,20 @@ export function CompanyList(props: ListProps) {
                   aria-setsize={row().setsize}
                   aria-posinset={row().posinset}
                   aria-expanded={row().item.children.length ? row().open : undefined}
-                  aria-selected={current() === id}
-                  tabindex={current() === id ? 0 : -1}
+                  tabindex={isCurrent(id) ? 0 : -1}
                   data-dimmed={String(props.dimmed(row().item))}
                   data-muted={isMuted(row().item) ? "true" : undefined}
                   // Computed, so Solid sets it with style.setProperty, which the CSP allows.
                   style={{ "padding-left": `${row().level - 1 + 0.5}rem` }}
                   class="flex cursor-default items-center gap-2 rounded py-1 pr-2 outline-none focus-visible:ring-2 data-[dimmed=true]:opacity-40 data-[muted=true]:opacity-60"
-                  ref={(el) => elements.set(id, el)}
+                  ref={(el) => {
+                    elements.set(id, el)
+                    // Runs before the row leaves the page, while it can still hold focus.
+                    onCleanup(() => {
+                      elements.delete(id)
+                      if (document.activeElement === el) lost = id
+                    })
+                  }}
                   onFocus={() => setFocused(id)}
                   onKeyDown={(e) => onKey(e, id)}
                   onClick={() => {

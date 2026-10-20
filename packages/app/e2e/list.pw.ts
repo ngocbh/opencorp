@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test"
-import { acme, card, person, session } from "./company"
+import { acme, card, person, session, SHA } from "./company"
 
 test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
@@ -87,6 +87,17 @@ test("arrow keys move, open and close, as the tree pattern says", async ({ page 
 
 test("the toolbar names the company", async ({ page }) => {
   await expect(page.getByRole("main").getByRole("heading", { name: "Acme", level: 2 })).toBeVisible()
+})
+
+test("when the focused row goes away, focus moves to the nearest row above it that's still there", async ({ page, request }) => {
+  await row(page, /Kai/).focus()
+  const next = SHA.replace(/^0/, "f")
+  const people = acme().view.people.map((p) => (p.handle === "kai" ? { ...p, manager: "ghost" } : p))
+  await request.post("/__fixture/set", { data: { view: { sha: next, people } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha: next } } } })
+  await expect(row(page, /Kai/)).toHaveCount(0) // unplaced now
+  await expect(row(page, /Lead/)).toBeFocused()
+  await expect(row(page, /Lead/)).toHaveAttribute("tabindex", "0")
 })
 
 test("search filters by name, handle or title, keeping the people above a match", async ({ page }) => {
