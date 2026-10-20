@@ -43,7 +43,7 @@ const ShellContext = createContext<ShellApi>()
 /** The shell around the page, if there is one. */
 export const useShell = () => useContext(ShellContext)
 
-/** The sidebar (company, screens, who is signed in, the connection) and the main area. */
+/** The sidebar (company, screens, who is signed in and Sign out, the connection) and the main area. */
 export function Shell(props: ParentProps) {
   const office = useOffice()
   const [covered, setCovered] = createSignal(false)
@@ -70,6 +70,14 @@ export function Shell(props: ParentProps) {
           <div class="mt-auto space-y-1 pt-6 text-sm">
             <Show when={office.me()}>{(me) => <p>@{me()}</p>}</Show>
             <Show when={office.pairedBy()}>{(by) => <p class="text-neutral-500">paired by @{by()}</p>}</Show>
+            <button
+              type="button"
+              disabled={office.signingOut()}
+              onClick={() => void office.signOut()}
+              class="-mx-2 block rounded px-2 py-1 text-left outline-none hover:bg-neutral-100 focus-visible:ring-2 focus-visible:ring-neutral-900 disabled:opacity-60 dark:hover:bg-neutral-900 dark:focus-visible:ring-neutral-100"
+            >
+              {office.signingOut() ? "Signing out…" : "Sign out"}
+            </button>
             <p role="status" aria-label="Connection">
               {connection()}
             </p>

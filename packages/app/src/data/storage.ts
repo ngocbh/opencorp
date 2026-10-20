@@ -20,3 +20,10 @@ export function store(area: Area, key: string, value: string): boolean {
     return false
   }
 }
+
+/** Removes `key`; a browser that refuses storage has nothing to remove. */
+export function forget(area: Area, key: string) {
+  try {
+    window[area].removeItem(key)
+  } catch {}
+}

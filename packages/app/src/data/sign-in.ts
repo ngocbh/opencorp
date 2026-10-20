@@ -2,7 +2,7 @@
 // session they keep.
 import { OfficeError, UnknownDevice } from "@opencorp/client"
 import type { BrowserSession } from "@opencorp/protocol"
-import { store } from "./storage"
+import { forget, store } from "./storage"
 
 /** "Safari on Mac", from the user agent, to name this browser in `opencorp devices list`. */
 export function browserLabel(ua: string) {
@@ -65,3 +65,6 @@ export function signInFailure(e: unknown) {
 export function rememberSession({ id, name, issued_by }: BrowserSession) {
   store("localStorage", "hq.session", JSON.stringify({ id, name, issued_by }))
 }
+
+/** Forgets what rememberSession kept, once this browser is signed out. */
+export const forgetSession = () => forget("localStorage", "hq.session")

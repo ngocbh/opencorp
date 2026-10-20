@@ -16,6 +16,7 @@ import { useNavigate } from "@solidjs/router"
 import { batch, createContext, createSignal, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { throttle } from "./costs"
+import { forgetSession } from "./sign-in"
 import { hqSnapshot } from "./snapshot"
 import { readStored, store } from "./storage"
 import { RELOADED_FOR, verdict } from "./version"
@@ -29,6 +30,9 @@ const NOT_BUILT_RECHECK_MS = 3_000
 
 /** Costs are read again on session.updated at most this often (the design's 10 s). */
 const COST_EVERY_MS = 10_000
+
+/** How long Sign out waits for the office to end the session before signing out here anyway. */
+const LOGOUT_WAIT_MS = 3_000
 
 /** The cost window the person last picked, kept in localStorage. */
 function savedWindow(): CostWindow {
@@ -52,6 +56,8 @@ function createOffice(toSignIn: () => void) {
   const [costWindow, setCostWindowSignal] = createSignal<CostWindow>(savedWindow())
   /** Set when the built app can't run against this office: the shell shows a full page instead. */
   const [blocked, setBlocked] = createSignal<"out_of_date" | "not_built">()
+  /** Whether Sign out is waiting for the office. */
+  const [signingOut, setSigningOut] = createSignal(false)
   let queue: ((s: OfficeState) => void)[] = []
   let after: (() => void)[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -105,11 +111,27 @@ function createOffice(toSignIn: () => void) {
     else if (next === "error") void checkSignedIn()
   }
 
-  function signOut() {
+  /** Signs this tab out: forgets the session it kept, stops the sync, and goes to sign-in. */
+  function leave() {
     if (signedOut) return
     signedOut = true
+    forgetSession()
     sync.stop()
     toSignIn()
+  }
+
+  /** Ends this browser's session at the office, then signs out here whatever the office answers. */
+  async function signOut() {
+    if (signingOut() || signedOut) return
+    setSigningOut(true)
+    try {
+      await Promise.race([client.logout(), new Promise((done) => setTimeout(done, LOGOUT_WAIT_MS))])
+    } catch (error) {
+      // A 401 means the session is gone already. Otherwise (the office down) it lasts until it expires or
+      // `opencorp devices remove-browser` ends it; nothing on this page can do more.
+      if (!(error instanceof UnknownDevice)) console.warn("Sign out didn't reach the office", { error })
+    }
+    leave()
   }
 
   /** Reads who this browser is; a 401 (no session, expired, revoked, a password change, offboarded) is sign-in. */
@@ -117,7 +139,7 @@ function createOffice(toSignIn: () => void) {
     try {
       setMe((await client.whoami()).person)
     } catch (e) {
-      if (e instanceof UnknownDevice) signOut() // the client maps every 401 to UnknownDevice
+      if (e instanceof UnknownDevice) leave() // the client maps every 401 to UnknownDevice
     }
   }
 
@@ -235,6 +257,8 @@ function createOffice(toSignIn: () => void) {
     costWindow,
     setCostWindow,
     blocked,
+    signOut,
+    signingOut,
     checkVersion,
     loadWorkItem,
   }
