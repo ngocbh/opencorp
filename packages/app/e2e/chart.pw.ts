@@ -219,6 +219,17 @@ test("a branch closes from its card and shows totals; clicking a card opens the 
   // The branch button sits below the totals line, not over it.
   const totals = (await chart.getByRole("button", { name: "Lead, Tech lead" }).getByTestId("totals").boundingBox())!
   expect(totals.y + totals.height).toBeLessThanOrEqual((await toggle.boundingBox())!.y + 1)
+  // Nothing on a closed branch's card is cut off at its bottom edge.
+  const fits = await chart.getByRole("button", { name: "Lead, Tech lead" }).evaluate((el) => {
+    const card = el.getBoundingClientRect()
+    const pad = parseFloat(getComputedStyle(el).paddingTop)
+    const first = el.firstElementChild!.getBoundingClientRect()
+    const line = el.querySelector<HTMLElement>("[data-testid=totals]")!
+    const totals = line.getBoundingClientRect()
+    // A squeezed line keeps its box but clips its text: its content is taller than it is.
+    return first.top >= card.top + pad - 0.5 && totals.bottom <= card.bottom && line.scrollHeight <= line.clientHeight
+  })
+  expect(fits).toBe(true)
   await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toHaveCount(0)
   await expect(chart.locator("svg path[data-edge]")).toHaveCount(2)
   // The same description as the list's row.

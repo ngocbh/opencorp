@@ -315,7 +315,7 @@ function Card(props: {
     // The size classes match CARD in layout.ts.
     <div
       data-card={props.item.id}
-      class="absolute h-[96px] w-[208px] data-[dimmed=true]:opacity-40 data-[muted=true]:opacity-60"
+      class="absolute h-[104px] w-[208px] data-[dimmed=true]:opacity-40 data-[muted=true]:opacity-60"
       data-dimmed={String(props.chart.dimmed(props.item))}
       data-muted={isMuted(props.item) ? "true" : undefined}
       // Computed, so Solid sets it with style.setProperty, which the CSP allows.
@@ -363,7 +363,7 @@ function Card(props: {
               cost={props.chart.cost(p().handle)}
             />
             <Show when={totals()}>
-              {(text) => <span data-testid="totals" class="block truncate text-xs text-neutral-500 dark:text-neutral-400">{text()}</span>}
+              {(text) => <span data-testid="totals" class="block shrink-0 truncate text-xs text-neutral-500 dark:text-neutral-400">{text()}</span>}
             </Show>
             <span id={props.descId} class="sr-only">
               {description(p().handle)}

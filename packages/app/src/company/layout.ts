@@ -8,7 +8,7 @@ export type Box = { id: string; x: number; y: number }
 export type Edge = { from: string; to: string; points: [number, number][] }
 
 /** A card's size and the gaps between cards; the chart's card classes match `w` and `h`. */
-export const CARD = { w: 208, h: 96, gapX: 24, gapY: 48 }
+export const CARD = { w: 208, h: 104, gapX: 24, gapY: 48 }
 
 /**
  * A top-down tree: a leaf or a closed branch is one card wide, a branch as wide as its children together, and each
