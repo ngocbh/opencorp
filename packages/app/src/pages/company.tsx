@@ -99,7 +99,8 @@ export default function Company() {
   return (
     <Show when={office.ready()} fallback={<Skeleton />}>
       <div class="flex">
-        <div class="min-w-0 flex-1">
+        {/* On a phone the panel is a sheet over the list, so the list can't take focus behind it. */}
+        <div class="min-w-0 flex-1" inert={!desktop() && !!shown()}>
           <Toolbar
             company={name()}
             query={query()}
@@ -132,6 +133,7 @@ export default function Company() {
             totals={totalsOf}
             dimmed={dimmed}
             onSelect={select}
+            selected={shown()?.handle}
           />
           <Unplaced people={tree().unplaced} onSelect={select} />
         </div>

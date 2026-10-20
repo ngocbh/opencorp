@@ -1,5 +1,5 @@
 import type { Group, Person } from "@opencorp/protocol"
-import { createEffect, For, Show } from "solid-js"
+import { createEffect, For, on, onCleanup, onMount, Show } from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
 import { costText } from "./format"
@@ -28,13 +28,48 @@ export function Panel(props: {
   createEffect(() => {
     for (const x of sessions()) if (x.work_item_id) office.loadWorkItem(x.work_item_id)
   })
+  let aside!: HTMLElement
+  let heading!: HTMLHeadingElement
+  /** Where focus goes back to on close: the row (or button) that last opened or moved the panel. */
+  let back: HTMLElement | undefined
+  // Focus moves into the panel when it opens and when it moves to someone else (the manager button it was on may be
+  // gone), remembering the row it came from.
+  createEffect(
+    on(
+      () => props.person.handle,
+      () => {
+        const from = document.activeElement
+        if (from instanceof HTMLElement && from !== document.body && !aside.contains(from)) back = from
+        heading.focus()
+      },
+    ),
+  )
+  // Escape closes the panel from anywhere but a form control, which has its own use for it (a search box clears).
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key !== "Escape" || e.defaultPrevented) return
+    if (e.target instanceof Element && e.target.closest("input, select, textarea")) return
+    props.onClose()
+  }
+  onMount(() => document.addEventListener("keydown", onKey))
+  onCleanup(() => {
+    document.removeEventListener("keydown", onKey)
+    // After this update: on a phone the list is inert until the panel has gone. Focus that's somewhere else on the
+    // page (the search box, say) stays there.
+    queueMicrotask(() => {
+      const at = document.activeElement
+      if ((!at || at === document.body || aside.contains(at)) && back?.isConnected) back.focus()
+    })
+  })
   return (
     <aside
+      ref={aside}
       aria-label={props.person.name}
       class="fixed inset-0 z-10 overflow-y-auto bg-white p-4 md:sticky md:top-0 md:inset-auto md:max-h-screen md:w-80 md:shrink-0 md:self-start md:border-l md:border-neutral-200 dark:bg-neutral-950 dark:md:border-neutral-800"
     >
       <div class="flex items-start justify-between gap-2">
-        <h2 class="text-lg font-semibold">{props.person.name}</h2>
+        <h2 ref={heading} tabindex={-1} class="rounded text-lg font-semibold outline-none focus-visible:ring-2">
+          {props.person.name}
+        </h2>
         <button
           type="button"
           aria-label="Close"
