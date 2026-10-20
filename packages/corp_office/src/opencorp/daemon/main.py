@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import errno
 import fcntl
+import logging
 import os
 import resource
 import signal
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import uvicorn
+from uvicorn.logging import DefaultFormatter
 
 from opencorp.chat.connections import Connections
 from opencorp.chat.harness import Harness
@@ -117,6 +119,36 @@ def raise_fd_limit(target: int = FD_TARGET) -> None:
             pass  # keep the limit we have
 
 
+@contextlib.contextmanager
+def office_logging():
+    """Send the ``opencorp`` loggers' info lines and up to stderr, formatted like uvicorn's own lines, while active.
+
+    The services send the daemon's stderr to ``office.log``. The logger isn't propagated, so a root handler can't print
+    a line twice. Entered again while active, it adds no second handler; on exit the logger is restored.
+    """
+    logger = logging.getLogger("opencorp")
+    if any(isinstance(h, _OfficeHandler) for h in logger.handlers):
+        yield
+        return
+    saved = logger.level, logger.propagate
+    handler = _OfficeHandler(sys.stderr)
+    handler.setFormatter(DefaultFormatter("%(levelprefix)s %(message)s"))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    try:
+        yield
+    finally:
+        logger.removeHandler(handler)
+        # setLevel, not assignment: it clears the level cache the child loggers keep.
+        logger.setLevel(saved[0])
+        logger.propagate = saved[1]
+
+
+class _OfficeHandler(logging.StreamHandler):
+    """The handler ``office_logging`` adds, told apart from any other on the ``opencorp`` logger."""
+
+
 def server_config(app: Any, **overrides: Any) -> uvicorn.Config:
     """The office socket's uvicorn settings. WebSockets are off: no route uses them."""
     return uvicorn.Config(app, **{"lifespan": "on", "log_level": "info", "timeout_graceful_shutdown": 5, "ws": "none",
@@ -192,7 +224,12 @@ def build_office(paths: OfficePaths) -> Office:
 
 
 async def run(paths: OfficePaths, *, extensions: str = "opencorp.extensions") -> None:
-    """Run the daemon until SIGINT, SIGTERM, or SIGHUP."""
+    """Run the daemon until SIGINT, SIGTERM, or SIGHUP, with the office's logging set up."""
+    with office_logging():
+        await _run(paths, extensions=extensions)
+
+
+async def _run(paths: OfficePaths, *, extensions: str) -> None:
     make_office_dir(paths.office)
     raise_fd_limit()
     pidfile = PidFile(paths.pidfile)

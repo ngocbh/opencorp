@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from pathlib import Path
@@ -130,6 +131,21 @@ def test_store_value_and_os_errors_keep_their_codes():
     tool = answer_request({"type": "tool_call", "id": 3, "group": "g", "name": "parse", "args": {"text": "x"}},
                           BaseHandlers(tools={"g": {"parse": parse}}), None)
     assert (tool["error"], tool["message"]) == ("failed", "bad text")
+
+
+def test_a_failed_request_logs_its_exception_type_at_info_and_the_traceback_only_at_debug(caplog):
+    def parse(text: str) -> str:
+        """Parse."""
+        raise ValueError(f"bad text {text}")
+
+    caplog.set_level(logging.DEBUG, logger="opencorp.worker.rpc")
+    answer_request({"type": "tool_call", "id": 3, "group": "g", "name": "parse", "args": {"text": "s3cret"}},
+                   BaseHandlers(tools={"g": {"parse": parse}}), None)
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert [r.getMessage() for r in infos] == ["worker tool_call request failed: ValueError"]
+    assert infos[0].exc_info is None
+    assert [r.exc_info[1] for r in caplog.records if r.levelno == logging.DEBUG and r.exc_info]
+    assert "s3cret" not in "".join(r.getMessage() for r in infos)
 
 
 def test_a_malformed_request_is_failed_not_a_store_error():

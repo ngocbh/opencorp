@@ -4,6 +4,7 @@ import asyncio
 import errno
 import importlib
 import json
+import logging
 import os
 import resource
 import signal
@@ -18,7 +19,7 @@ import pytest
 
 from opencorp.daemon.app import OfficePaths
 from opencorp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir,
-                                    raise_fd_limit, remove_stale_socket, server_config)
+                                    office_logging, raise_fd_limit, remove_stale_socket, server_config)
 from opencorp.daemon.sockets import bind_tcp
 from tests.daemon.conftest import base_files, served, write_repo
 from tests.hq.net import free_port
@@ -196,6 +197,20 @@ def test_the_daemon_attaches_hq_after_the_extensions(home):
         _stop(home, proc)
 
 
+def test_the_daemons_info_lines_reach_its_log_in_uvicorns_format(home):
+    proc = _daemon(home)
+    try:
+        _wait_until_serving(home, proc)
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(OfficePaths(home).socket)),
+                          base_url="http://localhost") as c:
+            path = c.post("/hq/pair", json={}).json()["path"]
+    finally:
+        _stop(home, proc)
+    lines = _log(home).splitlines()
+    assert any(line.startswith("INFO:     pairing code minted for @") for line in lines), _log(home)
+    assert path.partition("#")[2] not in _log(home)
+
+
 def test_daemon_serves_turns_away_a_second_and_stops_cleanly(home):
     paths = OfficePaths(home)
     proc = _daemon(home)
@@ -331,8 +346,11 @@ def test_a_failing_stop_hook_does_not_stop_the_others(home, tmp_path, monkeypatc
         assert not a.thread.is_alive()
         err = capsys.readouterr().err
         # uvicorn logs the start-up error: B's, not C's stop failure raised while cleaning up.
-        failure = err[err.index("Traceback"):err.index("Application startup failed")].rsplit("ERROR:", 1)[0]
+        failure = err[err.index("ERROR:    Traceback"):err.index("Application startup failed")].rsplit("ERROR:", 1)[0]
         assert failure.rstrip().endswith("RuntimeError: no model key") and "c never started" not in failure
+        # The office logs C's failure on its own.
+        stop_failure = err[err.index("ERROR:    office on_stop callback"):err.index("ERROR:    Traceback")]
+        assert stop_failure.rstrip().endswith("RuntimeError: c never started")
     finally:
         importlib.import_module("stopfail.a").stop.set()  # never leave the thread running
 
@@ -525,3 +543,25 @@ def test_a_restart_with_an_open_web_stream_rebinds_the_port_at_once(home):
         assert listening(1.5)  # well before the first retry at 5 s: the first bind worked
     finally:
         _stop(home, proc)
+
+
+def test_office_logging_sends_opencorp_info_lines_to_stderr_like_uvicorn(capsys):
+    with office_logging():
+        logging.getLogger("opencorp.hq.login").info("sign-in for @%s throttled", "ngocbh")
+        logging.getLogger("opencorp.hq.login").debug("not this one")
+    assert capsys.readouterr().err == "INFO:     sign-in for @ngocbh throttled\n"
+
+
+def test_office_logging_twice_writes_each_line_once(capsys):
+    with office_logging(), office_logging():
+        logging.getLogger("opencorp.hq.login").info("once")
+    assert capsys.readouterr().err == "INFO:     once\n"
+
+
+def test_office_logging_leaves_the_opencorp_logger_as_it_found_it():
+    logger = logging.getLogger("opencorp")
+    before = (list(logger.handlers), logger.level, logger.propagate)
+    with office_logging():
+        assert logger.propagate is False and logging.getLogger("opencorp.x").isEnabledFor(logging.INFO)
+    assert (list(logger.handlers), logger.level, logger.propagate) == before
+    assert not logging.getLogger("opencorp.x").isEnabledFor(logging.INFO)
