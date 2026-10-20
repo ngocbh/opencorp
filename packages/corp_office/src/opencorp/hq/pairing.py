@@ -93,6 +93,12 @@ class PairCodes:
         for key in list(self._pending):
             self._drop(key)
 
+    def remove_leftovers(self) -> None:
+        """Delete redirect files, and their temporary files, that a crashed office left in the office dir."""
+        for pattern in ("pair-*.html", ".pair-*.html.*.tmp"):
+            for path in self.office_dir.glob(pattern):
+                path.unlink(missing_ok=True)
+
     def _drop(self, key: str) -> None:
         pending = self._pending.pop(key)
         if pending.file is not None:

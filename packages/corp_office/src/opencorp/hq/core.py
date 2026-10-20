@@ -81,8 +81,9 @@ class Hq:
         return [] if self.config.problem is None else [f"settings ignored: {self.config.problem}"]
 
     async def start(self) -> None:
-        """Delete expired browser sessions."""
+        """Delete expired browser sessions and the redirect files a crash left."""
         await asyncio.to_thread(self.office.store.prune_hq_sessions, now())
+        await asyncio.to_thread(self.codes.remove_leftovers)
 
     async def stop(self) -> None:
         """Forget pending codes and delete their redirect files."""

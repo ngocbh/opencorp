@@ -74,3 +74,18 @@ async def test_status_names_ignored_settings(office):
     office.paths.office.mkdir(parents=True, exist_ok=True)
     (office.paths.office / "hq.json").write_text("{")
     assert attach(office, listen=False).status().warnings[0].startswith("settings ignored: ")
+
+
+async def test_start_deletes_redirect_files_a_crash_left(office):
+    office.paths.office.mkdir(mode=0o700, parents=True, exist_ok=True)
+    left = [office.paths.office / "pair-0123456789abcdef.html", office.paths.office / ".pair-0a.html.123.tmp"]
+    kept = office.paths.office / "hq.json"
+    for path in left:
+        path.write_text("x")
+    kept.write_text("{}")
+    attach(office, listen=False)
+    await office.start()
+    try:
+        assert not any(path.exists() for path in left) and kept.exists()
+    finally:
+        await office.stop()
