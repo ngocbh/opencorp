@@ -151,6 +151,7 @@ export default function Company() {
               groups={groups()}
               onSelect={select}
               onClose={() => setSelected(undefined)}
+              modal={!desktop()}
             />
           )}
         </Show>

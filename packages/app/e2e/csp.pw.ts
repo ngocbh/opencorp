@@ -78,6 +78,6 @@ test("the side panel, its live sessions and 'now doing', and the phone sheet loa
   await violations()
   await page.setViewportSize({ width: 390, height: 844 })
   await page.getByRole("treeitem", { name: /Ann/ }).click()
-  await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
+  await expect(page.getByRole("dialog", { name: "Ann" })).toBeVisible()
   expect(await violations()).toEqual([])
 })

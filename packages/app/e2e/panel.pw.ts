@@ -109,24 +109,35 @@ test("the row of the panel's person is the selected one", async ({ page }) => {
   await expect(page.locator("[role=treeitem][aria-selected=true]")).toHaveCount(0)
 })
 
+/** The panel on a phone: a modal dialog. */
+const sheet = (page: import("@playwright/test").Page, name: string) => page.getByRole("dialog", { name })
+
+test("on a desktop the panel is a complementary region, not a dialog", async ({ page }) => {
+  await page.getByRole("treeitem", { name: /Lead/ }).click()
+  await expect(panel(page, "Lead")).toBeVisible()
+  await expect(page.getByRole("dialog")).toHaveCount(0)
+})
+
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 } })
 
   test("the panel is a full-width sheet, and the list behind it can't take focus", async ({ page }) => {
     await page.getByRole("treeitem", { name: /Lead/ }).click()
-    const box = await panel(page, "Lead").boundingBox()
+    await expect(sheet(page, "Lead")).toHaveAttribute("aria-modal", "true")
+    await expect(page.getByRole("complementary")).toHaveCount(0)
+    const box = await sheet(page, "Lead").boundingBox()
     expect(box).toMatchObject({ x: 0, y: 0, width: 390, height: 844 })
     // The list is inert: a row can't take focus while the sheet is over it.
     await page.getByRole("treeitem", { name: /Kai/ }).evaluate((el: HTMLElement) => el.focus())
     await expect(page.getByRole("treeitem", { name: /Kai/ })).not.toBeFocused()
-    await panel(page, "Lead").getByRole("button", { name: "Close" }).click()
+    await sheet(page, "Lead").getByRole("button", { name: "Close" }).click()
     await expect(page.getByRole("treeitem", { name: /Lead/ })).toBeFocused()
   })
 
   test("the sidebar behind the sheet can't take focus either, until it closes", async ({ page }) => {
     const company = page.locator('nav a[href="/"]')
     await page.getByRole("treeitem", { name: /Lead/ }).click()
-    await expect(panel(page, "Lead").getByRole("heading", { name: "Lead" })).toBeFocused()
+    await expect(sheet(page, "Lead").getByRole("heading", { name: "Lead" })).toBeFocused()
     await page.keyboard.press("Shift+Tab")
     await expect(company).not.toBeFocused()
     await company.evaluate((el: HTMLElement) => el.focus())

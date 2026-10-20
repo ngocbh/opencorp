@@ -1,5 +1,5 @@
 import type { Group, Person } from "@opencorp/protocol"
-import { createEffect, For, on, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createUniqueId, For, on, onCleanup, onMount, Show } from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
 import { costText } from "./format"
@@ -8,7 +8,7 @@ const MUTED = "text-neutral-500 dark:text-neutral-400"
 
 /**
  * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, and live sessions with
- * what each is doing. Phones get it as a full-width sheet over the list.
+ * what each is doing. Beside the list it's a complementary region; on a phone it's a full-width modal sheet over it.
  */
 export function Panel(props: {
   person: Person
@@ -17,6 +17,8 @@ export function Panel(props: {
   groups: Map<string, Group>
   onSelect: (handle: string) => void
   onClose: () => void
+  /** Whether it's a sheet over everything (a phone), so a modal dialog. */
+  modal: boolean
 }) {
   const office = useOffice()
   /** The person's own live work: main and side sessions in a live status (profile_manager work is the office's). */
@@ -28,7 +30,8 @@ export function Panel(props: {
   createEffect(() => {
     for (const x of sessions()) if (x.work_item_id) office.loadWorkItem(x.work_item_id)
   })
-  let aside!: HTMLElement
+  const headingId = createUniqueId()
+  let root!: HTMLDivElement
   let heading!: HTMLHeadingElement
   /** Where focus goes back to on close: the row (or button) that last opened or moved the panel. */
   let back: HTMLElement | undefined
@@ -39,7 +42,7 @@ export function Panel(props: {
       () => props.person.handle,
       () => {
         const from = document.activeElement
-        if (from instanceof HTMLElement && from !== document.body && !aside.contains(from)) back = from
+        if (from instanceof HTMLElement && from !== document.body && !root.contains(from)) back = from
         heading.focus()
       },
     ),
@@ -57,17 +60,20 @@ export function Panel(props: {
     // page (the search box, say) stays there.
     queueMicrotask(() => {
       const at = document.activeElement
-      if ((!at || at === document.body || aside.contains(at)) && back?.isConnected) back.focus()
+      if ((!at || at === document.body || root.contains(at)) && back?.isConnected) back.focus()
     })
   })
   return (
-    <aside
-      ref={aside}
-      aria-label={props.person.name}
+    // A div: <aside> can't take the dialog role.
+    <div
+      ref={root}
+      role={props.modal ? "dialog" : "complementary"}
+      aria-modal={props.modal ? "true" : undefined}
+      aria-labelledby={headingId}
       class="fixed inset-0 z-10 overflow-y-auto bg-white p-4 md:sticky md:top-0 md:inset-auto md:max-h-screen md:w-80 md:shrink-0 md:self-start md:border-l md:border-neutral-200 dark:bg-neutral-950 dark:md:border-neutral-800"
     >
       <div class="flex items-start justify-between gap-2">
-        <h2 ref={heading} tabindex={-1} class="rounded text-lg font-semibold outline-none focus-visible:ring-2">
+        <h2 id={headingId} ref={heading} tabindex={-1} class="rounded text-lg font-semibold outline-none focus-visible:ring-2">
           {props.person.name}
         </h2>
         <button
@@ -136,6 +142,6 @@ export function Panel(props: {
           </For>
         </ul>
       </Show>
-    </aside>
+    </div>
   )
 }
