@@ -848,7 +848,7 @@ export interface BrowserSession {
    */
   name: string;
   label: string | null;
-  via: "pair";
+  via: "pair" | "login";
   /**
    * A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.
    */
@@ -856,6 +856,20 @@ export interface BrowserSession {
   created_at: Timestamp;
   expires_at: Timestamp;
   last_used_at: Timestamp | null;
+}
+/**
+ * The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "HqLoginRequest".
+ */
+export interface HqLoginRequest {
+  handle: Handle;
+  password: string;
+  /**
+   * Free text naming the browser, such as 'Safari on Mac'.
+   */
+  label?: string | null;
 }
 /**
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema

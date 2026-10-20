@@ -948,11 +948,11 @@ class BrowserSession(BaseModel):
     ]
     name: Annotated[str, Field(description='web-<6 characters>, made by the office.')]
     label: str | None
-    via: Literal['pair']
+    via: Literal['pair', 'login']
     issued_by: Annotated[
         str,
         Field(
-            description='Who ran `opencorp pair`.',
+            description='Who ran `opencorp pair`, or the person who signed in with a password.',
             pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
@@ -971,6 +971,28 @@ class BrowserSession(BaseModel):
         ),
     ]
     last_used_at: Timestamp | None
+
+
+class HqLoginRequest(BaseModel):
+    """
+    The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    handle: Annotated[
+        str,
+        Field(
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    password: Annotated[str, Field(min_length=1)]
+    label: Annotated[
+        Label | None,
+        Field(description="Free text naming the browser, such as 'Safari on Mac'."),
+    ] = None
 
 
 class HireRequest(BaseModel):

@@ -667,11 +667,20 @@
         "person": { "$ref": "#/$defs/Handle" },
         "name": { "type": "string", "description": "web-<6 characters>, made by the office." },
         "label": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
-        "via": { "enum": ["pair"] },
-        "issued_by": { "$ref": "#/$defs/Handle", "description": "Who ran `opencorp pair`." },
+        "via": { "enum": ["pair", "login"] },
+        "issued_by": { "$ref": "#/$defs/Handle", "description": "Who ran `opencorp pair`, or the person who signed in with a password." },
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "expires_at": { "$ref": "#/$defs/Timestamp" },
         "last_used_at": { "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }] }
+      }
+    },
+    "HqLoginRequest": {
+      "type": "object", "additionalProperties": false, "required": ["handle", "password"],
+      "description": "The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie.",
+      "properties": {
+        "handle": { "$ref": "#/$defs/Handle" },
+        "password": { "type": "string", "minLength": 1 },
+        "label": { "anyOf": [{ "type": "string", "maxLength": 100 }, { "type": "null" }], "default": null, "description": "Free text naming the browser, such as 'Safari on Mac'." }
       }
     },
     "HireRequest": {
