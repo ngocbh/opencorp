@@ -113,8 +113,9 @@ class Listeners:
             remove_stale_socket(self.hq.socket)  # the office holds its pidfile, so no live office owns it
             self._serve(bind_socket(self.hq.socket), port=None)
             self.hq.socket_error = None
-        except OfficeStartError as exc:
-            # Logged and kept for GET /hq and doctor: a path too long for sun_path mustn't fail silently.
+        except (OfficeStartError, OSError) as exc:
+            # Logged and kept for GET /hq and doctor: a path too long for sun_path mustn't fail silently, and
+            # hq.sock failing mustn't stop the office.
             log.error("HQ can't listen on %s: %s", self.hq.socket, exc)
             self.hq.socket_error = str(exc)
         if self.hq.config.tcp:

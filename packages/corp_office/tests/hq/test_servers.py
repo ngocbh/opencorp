@@ -193,3 +193,17 @@ async def test_a_failed_hq_sock_bind_is_a_warning(office, hq, short_dir, monkeyp
         assert any("isn't listening on" in w and "hq.sock" in w for w in hq.status().warnings)
     finally:
         await listeners.stop()
+
+
+async def test_an_os_error_at_hq_sock_is_a_warning_too(short_office, hq, monkeypatch):
+    def refused(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(servers, "remove_stale_socket", refused)
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    listeners = Listeners(hq)
+    await listeners.start()  # the office runs on
+    try:
+        assert any("isn't listening on" in w and "Permission denied" in w for w in hq.status().warnings)
+    finally:
+        await listeners.stop()
