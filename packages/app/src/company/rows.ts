@@ -61,3 +61,20 @@ export function moveFocus(rows: Row[], at: string, key: string): Move | null {
   }
   return null
 }
+
+/** `items` cut down to the people matching `query` (name, handle or title) and the items above them. */
+export function keep(items: Item[], query: string): Item[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return items
+  const hit = (p: Person) => [p.name, p.handle, p.title].some((text) => text.toLowerCase().includes(q))
+  return items.flatMap((item): Item[] => {
+    const children = keep(item.children, query)
+    const self = item.kind === "person" && hit(item.person)
+    return self || children.length ? [{ ...item, children } as Item] : []
+  })
+}
+
+/** Whether anyone under `item` (not `item` itself) has a card for the viewer: such branches start open. */
+export function holds(item: Item, needs: Map<string, number>): boolean {
+  return item.children.some((c) => (c.kind === "person" && (needs.get(c.person.handle) ?? 0) > 0) || holds(c, needs))
+}

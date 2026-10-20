@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { fromTree, label, moveFocus, visibleRows } from "../src/company/rows"
+import { fromTree, holds, keep, label, moveFocus, visibleRows, type Item } from "../src/company/rows"
 import { buildTree } from "../src/company/tree"
 import { person } from "./people"
 
@@ -47,4 +47,18 @@ test("right opens a closed branch, then moves to its first child; left closes, t
   expect(moveFocus(open, "al", "ArrowLeft")).toEqual({ open: "al", to: false })
   expect(moveFocus(open, "bo", "ArrowLeft")).toEqual({ focus: "al" })
   expect(moveFocus(open, "dee", "Enter")).toBeNull()
+})
+
+const ids = (list: Item[]): unknown => list.map((i) => (i.children.length ? [i.id, ids(i.children)] : i.id))
+
+test("search keeps people matching by name, handle or title, and the people above them", () => {
+  expect(ids(keep(items, "cy"))).toEqual([["ceo", [["al", ["cy"]]]]])
+  expect(ids(keep(items, "AL"))).toEqual([["ceo", ["al"]]]) // a match's own reports don't match, so they go
+  expect(keep(items, "zz")).toEqual([])
+  expect(keep(items, "  ")).toBe(items)
+})
+
+test("a branch holds a card for the viewer when anyone under it has one", () => {
+  const needs = new Map([["cy", 1]])
+  expect([holds(items[0], needs), holds(items[0].children[0], needs), holds(items[0].children[1], needs)]).toEqual([true, true, false])
 })
