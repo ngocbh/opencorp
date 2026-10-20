@@ -1,0 +1,63 @@
+// The org chart's geometry: where each card and line goes. Pure, so it's tested without a browser.
+
+/** A node to lay out: a person, or a team header in "By team". */
+export type LayoutNode = { id: string; children: LayoutNode[] }
+/** A card's top-left corner, in canvas pixels. */
+export type Box = { id: string; x: number; y: number }
+/** A line from a manager's card to a report's: four points, down, across, down. */
+export type Edge = { from: string; to: string; points: [number, number][] }
+
+/** A card's size and the gaps between cards; the chart's card classes match `w` and `h`. */
+export const CARD = { w: 208, h: 88, gapX: 24, gapY: 48 }
+
+/**
+ * A top-down tree: a leaf or a closed branch is one card wide, a branch as wide as its children together, and each
+ * parent is centred over its first and last child. Simpler than Reingold-Tilford, and enough for a company's tree.
+ * Boxes come in tree order (a parent before its children), the order the cards take focus in.
+ */
+export function layout(roots: LayoutNode[], open: (id: string) => boolean) {
+  const slot = CARD.w + CARD.gapX
+  const row = CARD.h + CARD.gapY
+  const drawn = (node: LayoutNode) => node.children.length > 0 && open(node.id)
+  const widths = new Map<string, number>()
+  const width = (node: LayoutNode): number => {
+    let w = widths.get(node.id)
+    if (w === undefined) {
+      w = drawn(node) ? node.children.reduce((sum, c) => sum + width(c), 0) : 1
+      widths.set(node.id, w)
+    }
+    return w
+  }
+  const boxes: Box[] = []
+  const edges: Edge[] = []
+  let depthMax = 0
+  /** Places `node` and what's drawn under it from `left`; returns the centre of its card. */
+  const place = (node: LayoutNode, left: number, depth: number): number => {
+    depthMax = Math.max(depthMax, depth)
+    const y = depth * row
+    const box: Box = { id: node.id, x: 0, y }
+    boxes.push(box)
+    let cx = left + CARD.w / 2
+    if (drawn(node)) {
+      const centers: number[] = []
+      let at = left
+      for (const child of node.children) {
+        centers.push(place(child, at, depth + 1))
+        at += width(child) * slot
+      }
+      cx = (centers[0] + centers[centers.length - 1]) / 2
+      const mid = y + CARD.h + CARD.gapY / 2
+      node.children.forEach((child, i) =>
+        edges.push({ from: node.id, to: child.id, points: [[cx, y + CARD.h], [cx, mid], [centers[i], mid], [centers[i], y + row]] }),
+      )
+    }
+    box.x = cx - CARD.w / 2
+    return cx
+  }
+  let left = 0
+  for (const root of roots) {
+    place(root, left, 0)
+    left += width(root) * slot
+  }
+  return { boxes, edges, width: Math.max(0, left - CARD.gapX), height: roots.length ? depthMax * row + CARD.h : 0 }
+}
