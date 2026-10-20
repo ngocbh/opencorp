@@ -6,10 +6,13 @@ import json
 import os
 import re
 import threading
-from collections.abc import Callable
-from dataclasses import dataclass, field
+from bisect import bisect_left, bisect_right
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, BinaryIO
+
+from opencorp.protocol.models import RunEvent, RunEventPage
 
 SCHEMAS = frozenset({9})
 """The run-log schemas this office reads: Yian's SCHEMA_VERSION at the submodule pin. The bump to yian#940 adds 10."""
@@ -230,3 +233,150 @@ def _ended(index: Index, seq: int, kind: str, payload: dict[str, Any]) -> None:
         attempt.handle = payload["handle"]
     if failure is not None:
         attempt.error = str(failure.get("message") or failure.get("code") or "")[:ERROR_CHARS] or None
+
+
+@dataclass(frozen=True)
+class NodePage:
+    """Node attempts, newest start first (copies), the dividers among them, and where the next older page starts."""
+
+    nodes: list[Attempt]
+    dividers: list[tuple[int, list[str]]]
+    next_before: int | None
+    dropped: bool
+
+
+def node_page(index: Index, *, before: int | None, limit: int) -> NodePage:
+    """Up to ``limit`` attempts that started before seq ``before`` (all when None), newest first."""
+    with index.lock:
+        table = index.nodes
+        end = len(table) if before is None else bisect_left(table, before, key=lambda a: a.seq)
+        start = max(0, end - limit)
+        page = [replace(a) for a in reversed(table[start:end])]
+        if not page:
+            return NodePage([], [], None, index.dropped)
+        low, high = table[start].seq, before if before is not None else float("inf")
+        dividers = [(seq, list(retried)) for seq, retried in index.dividers if low <= seq < high]
+        return NodePage(page, dividers, low if start > 0 else None, index.dropped)
+
+
+def _window(index: Index, first: int) -> tuple[int, int, int]:
+    """(the seq and byte offset of the last sparse entry at or before seq ``first``, the offset after the last complete
+    line indexed)."""
+    with index.lock:
+        i = bisect_right(index.sparse, first, key=lambda s: s[0]) - 1
+        seq, start = index.sparse[i] if i >= 0 else (0, 0)
+        return seq, start, index.offset
+
+
+def _lines(f: BinaryIO, start: int, stop: int) -> Iterator[bytes]:
+    """The complete lines between byte ``start`` and byte ``stop``, one at a time."""
+    f.seek(start)
+    pos, parts = start, []
+    while pos < stop and (chunk := f.read(min(CHUNK, stop - pos))):
+        pos += len(chunk)
+        s = 0
+        while (nl := chunk.find(b"\n", s)) >= 0:
+            parts.append(chunk[s:nl + 1])
+            yield b"".join(parts)
+            parts, s = [], nl + 1
+        if s < len(chunk):
+            parts.append(chunk[s:])
+
+
+def _escape(key: object) -> str:
+    return str(key).replace("~", "~0").replace("/", "~1")
+
+
+def _cut(value: Any, path: str, cut: list[str]) -> Any:
+    """``value`` with each string longer than FIELD_CHARS cut, its JSON pointer added to ``cut``."""
+    if isinstance(value, str):
+        if len(value) <= FIELD_CHARS:
+            return value
+        cut.append(path)
+        return value[:FIELD_CHARS] + "…"
+    if isinstance(value, dict):
+        return {k: _cut(v, f"{path}/{_escape(k)}", cut) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_cut(v, f"{path}/{i}", cut) for i, v in enumerate(value)]
+    return value
+
+
+def _node_of(payload: dict[str, Any] | None) -> str | None:
+    if not payload:
+        return None
+    failure = payload.get("failure") if isinstance(payload.get("failure"), dict) else {}
+    found = payload.get("node_id") or payload.get("spawner_id") or failure.get("node_id")
+    return found if isinstance(found, str) else None
+
+
+def _event(line: bytes, seq: int, scrub: Callable[[dict[str, Any]], dict[str, Any]], *,
+           whole: bool) -> RunEvent | None:
+    """Line ``seq`` as a page shows it (``whole``: as one opened record shows it, evidence included); None when it no
+    longer parses as record ``seq`` (the file changed since it was indexed)."""
+    if len(line) > BIG_LINE and not whole:
+        head = _HEAD.match(line[:256])
+        return RunEvent(seq=seq, kind=head[1].decode() if head else "unknown", size=len(line))
+    try:
+        record = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(record, dict) or record.get("seq") != seq:
+        return None
+    payload, left_out = record.get("payload"), False
+    if isinstance(payload, dict) and not whole:
+        for key in EVIDENCE:
+            if payload.get(key) is not None:
+                payload[key], left_out = None, True
+    clean = scrub(record)
+    kind = clean.get("kind") if isinstance(clean.get("kind"), str) and clean.get("kind") else "unknown"
+    if "withheld" in clean:
+        return RunEvent(seq=seq, kind=kind, node_id=clean.get("node_id"), withheld=clean["withheld"])
+    payload = clean.get("payload") if isinstance(clean.get("payload"), dict) else None
+    cut: list[str] = []
+    if payload is not None and (not whole or len(json.dumps(payload, ensure_ascii=False)) > EVENT_BYTES):
+        payload = _cut(payload, "", cut)
+    return RunEvent(seq=seq, kind=kind, node_id=_node_of(payload), payload=payload, cut=cut,
+                    evidence_left_out=left_out)
+
+
+def read_events(path: Path, index: Index, *, after: int | None, limit: int,
+                scrub: Callable[[dict[str, Any]], dict[str, Any]]) -> RunEventPage:
+    """Records after seq ``after`` (from the first when None), scrubbed, up to ``limit`` or PAGE_BYTES of JSON. A
+    line's seq is its line number, counted from a sparse entry; a line that no longer matches ends the page there."""
+    first = 0 if after is None else after + 1
+    base, start, stop = _window(index, first)
+    events: list[RunEvent] = []
+    used, next_after, cut = 0, None, False
+    with open(path, "rb") as f:
+        for seq, line in enumerate(_lines(f, start, stop), base):
+            if seq < first:
+                continue
+            event = _event(line, seq, scrub, whole=False)
+            if event is None:  # rewritten since it was indexed: the next request's refresh rebuilds
+                next_after = events[-1].seq if events else after
+                break
+            size = len(event.model_dump_json())
+            if events and (len(events) >= limit or used + size > PAGE_BYTES):
+                next_after, cut = events[-1].seq, len(events) < limit
+                break
+            events.append(event)
+            used += size
+    return RunEventPage(events=events, next_after=next_after, cut=cut)
+
+
+def read_event(path: Path, index: Index, seq: int,
+               scrub: Callable[[dict[str, Any]], dict[str, Any]]) -> RunEvent | None:
+    """The record with ``seq``, scrubbed, evidence included and cut only past EVENT_BYTES; None if there is none."""
+    base, start, stop = _window(index, seq)
+    with open(path, "rb") as f:
+        for at, line in enumerate(_lines(f, start, stop), base):
+            if at == seq:
+                return _event(line, seq, scrub, whole=True)
+    return None
+
+
+def scrubbed_lines(path: Path, scrub_line: Callable[[bytes], bytes]) -> Iterator[bytes]:
+    """Every complete line of ``path`` as it is now, through ``scrub_line``: the download, one line in memory. It
+    needs no index, so a log this office can't read still downloads."""
+    with open(path, "rb") as f:
+        yield from (scrub_line(line) for line in _lines(f, 0, os.fstat(f.fileno()).st_size))

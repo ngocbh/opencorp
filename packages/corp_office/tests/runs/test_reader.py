@@ -6,7 +6,8 @@ import tracemalloc
 import pytest
 
 from opencorp.runs import reader as reader_mod
-from opencorp.runs.reader import UnreadableLog, UnsupportedSchema, refresh
+from opencorp.runs.reader import (BIG_LINE, UnreadableLog, UnsupportedSchema, node_page, read_event, read_events,
+                                  refresh, scrubbed_lines)
 from tests.runs.logs import (FP, chat_log, expanded, failed, line, resumed, routed, run_started, started,
                              succeeded)
 
@@ -138,3 +139,93 @@ def test_a_large_log_builds_with_memory_under_its_largest_line_plus_32_mib(tmp_p
         tracemalloc.stop()
     assert index.last_seq == seq + 1 and not index.open and index.nodes[-1].node_id == "huge"
     assert peak < (2 << 20) + (32 << 20)
+
+
+def test_node_pages_go_newest_first_with_their_dividers(tmp_path):
+    index = refresh(chat_log(tmp_path / "r.jsonl", turns=3), None)
+    page = node_page(index, before=None, limit=4)
+    assert [a.node_id for a in page.nodes] == ["chat#3/ask", "chat#2/reply", "chat#2/route", "chat#2/ask"]
+    older = node_page(index, before=page.next_before, limit=100)
+    assert (older.nodes[0].node_id, older.nodes[-1].node_id, older.next_before) == ("chat#1/reply", "chat", None)
+    assert page.nodes[0] is not index.nodes[-1]  # copies: a refresh can't change a page being sent
+
+
+def test_record_pages_seek_by_seq_and_stop_at_the_count(tmp_path):
+    path = chat_log(tmp_path / "r.jsonl", turns=30)  # seqs 0..183
+    index = refresh(path, None)
+    page = read_events(path, index, after=99, limit=10, scrub=nothing)
+    assert ([e.seq for e in page.events], page.next_after, page.cut) == (list(range(100, 110)), 109, False)
+    last = read_events(path, index, after=180, limit=10, scrub=nothing)
+    assert ([e.seq for e in last.events], last.next_after) == ([181, 182, 183], None)
+
+
+def test_an_envelope_field_after_seq_doesnt_hide_a_record_from_pages_or_one_record(tmp_path):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + b"".join(started(n, f"n{n}", trace_id=f"t{n}") for n in range(1, 70)))
+    index = refresh(path, None)
+    page = read_events(path, index, after=63, limit=10, scrub=nothing)
+    assert [e.seq for e in page.events] == list(range(64, 70))
+    assert read_event(path, index, 65, nothing).node_id == "n65"
+
+
+def test_long_strings_are_cut_evidence_left_out_and_the_page_stops_at_its_bytes(tmp_path, monkeypatch):
+    monkeypatch.setattr(reader_mod, "PAGE_BYTES", 20_000)
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + b"".join(
+        succeeded(n, f"n{n}", {"output": "x" * 10_000}, evidence={"prompt": "p"}) for n in range(1, 6)))
+    page = read_events(path, refresh(path, None), after=0, limit=500, scrub=nothing)
+    first = page.events[0]
+    assert first.cut == ["/value/output"] and len(first.payload["value"]["output"]) == reader_mod.FIELD_CHARS + 1
+    assert first.evidence_left_out and first.payload["evidence"] is None and first.node_id == "n1"
+    assert page.cut and len(page.events) < 5 and page.next_after == page.events[-1].seq
+
+
+def test_a_line_over_2_mib_is_a_stub_with_its_kind_seq_and_size(tmp_path):
+    path = tmp_path / "r.jsonl"
+    huge = line(1, "node_succeeded", {"node_id": "big", "value": {"output": "y" * (BIG_LINE + 10)}},
+                at="2026-10-20T10:00:00.000Z")
+    path.write_bytes(run_started(0) + huge + started(2, "next"))
+    page = read_events(path, refresh(path, None), after=0, limit=10, scrub=nothing)
+    stub = page.events[0]
+    assert (stub.seq, stub.kind, stub.size, stub.payload) == (1, "node_succeeded", len(huge), None)
+    assert page.events[1].seq == 2
+
+
+def test_one_record_by_seq_has_its_evidence_and_is_capped(tmp_path, monkeypatch):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + succeeded(1, "a", {"output": "z" * 9000}, evidence={"prompt": "the prompt"}))
+    index = refresh(path, None)
+    event = read_event(path, index, 1, nothing)
+    assert event.payload["evidence"] == {"prompt": "the prompt"} and event.cut == []
+    monkeypatch.setattr(reader_mod, "EVENT_BYTES", 5000)
+    assert read_event(path, index, 1, nothing).cut == ["/value/output"]
+    assert read_event(path, index, 7, nothing) is None
+
+
+def test_a_page_shows_a_withheld_record_as_its_stub(tmp_path):
+    path = chat_log(tmp_path / "r.jsonl", turns=1)
+
+    def withhold(record):
+        return {"seq": record["seq"], "kind": record["kind"], "withheld": "a secret couldn't be removed"}
+
+    page = read_events(path, refresh(path, None), after=None, limit=3, scrub=withhold)
+    assert [(e.seq, e.withheld, e.payload) for e in page.events] == [
+        (0, "a secret couldn't be removed", None), (1, "a secret couldn't be removed", None),
+        (2, "a secret couldn't be removed", None)]
+
+
+def test_a_file_changed_under_a_page_stops_it_there(tmp_path):
+    path = chat_log(tmp_path / "r.jsonl", turns=1)
+    index = refresh(path, None)
+    data = path.read_bytes().splitlines(keepends=True)
+    path.write_bytes(b"".join(data[:4]) + started(9, "rewritten") + b"".join(data[5:]))  # line 4 no longer seq 4
+    page = read_events(path, index, after=None, limit=100, scrub=nothing)
+    assert ([e.seq for e in page.events], page.next_after) == ([0, 1, 2, 3], 3)
+
+
+def test_the_download_is_every_complete_line_through_the_scrub(tmp_path):
+    path = chat_log(tmp_path / "r.jsonl", turns=1)
+    with path.open("ab") as f:
+        f.write(b'{"torn')
+    lines = list(scrubbed_lines(path, lambda raw: raw.upper()))
+    assert len(lines) == 10 and lines[0].startswith(b'{"KIND"')
