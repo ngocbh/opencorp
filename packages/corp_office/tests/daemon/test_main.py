@@ -1,8 +1,13 @@
 """The daemon process: a 0600 socket, one daemon per home, clean shutdown."""
 
+import asyncio
+import errno
 import importlib
+import json
 import os
+import resource
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -13,8 +18,10 @@ import pytest
 
 from opencorp.daemon.app import OfficePaths
 from opencorp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir,
-                                    remove_stale_socket)
+                                    raise_fd_limit, remove_stale_socket, server_config)
+from opencorp.daemon.sockets import bind_tcp
 from tests.daemon.conftest import base_files, served, write_repo
+from tests.hq.net import free_port
 
 
 def test_socket_is_0600_even_with_a_loose_umask(short_dir):
@@ -403,3 +410,118 @@ async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts
         await office.stop()
     finally:
         office.store.close()
+
+
+def test_the_tcp_socket_reuses_addresses_but_never_shares_the_port():
+    sock = bind_tcp(0)
+    try:
+        assert sock.getsockname()[0] == "127.0.0.1"
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) == 0
+    finally:
+        sock.close()
+
+
+def _left_in_time_wait() -> int:
+    """A port on 127.0.0.1 whose listener is closed and whose one connection the server side closed first, so that
+    connection sits in TIME_WAIT on the server's port, as after a restart with a browser stream open."""
+    listener = bind_tcp(0)
+    port = listener.getsockname()[1]
+    listener.setblocking(True)
+    client = socket.create_connection(("127.0.0.1", port))
+    conn, _ = listener.accept()
+    conn.close()
+    assert client.recv(1) == b""  # the client reads to EOF, then closes: a FIN, not a RST that clears TIME_WAIT
+    client.close()
+    listener.close()
+    return port
+
+
+def _blocked_without_reuse(port: int) -> bool:
+    """Whether a socket without SO_REUSEADDR can't bind ``port`` right now."""
+    with socket.socket() as plain:
+        try:
+            plain.bind(("127.0.0.1", port))
+        except OSError as exc:
+            assert exc.errno == errno.EADDRINUSE
+            return True
+    return False
+
+
+def test_the_tcp_socket_binds_a_port_left_in_time_wait():
+    port = _left_in_time_wait()
+    if not _blocked_without_reuse(port):
+        pytest.skip("this kernel lets a plain socket bind past TIME_WAIT, so there's nothing to show")
+    bind_tcp(port).close()
+
+
+def test_the_office_server_has_websockets_off():
+    assert server_config(lambda *a: None).ws == "none"
+
+
+def test_the_soft_fd_limit_is_raised_to_4096_within_the_hard_one(monkeypatch):
+    set_to = []
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (256, 10240))
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: set_to.append(limits))
+    raise_fd_limit()
+    assert set_to == [(4096, 10240)]
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (256, 1024))
+    raise_fd_limit()
+    assert set_to[-1] == (1024, 1024)
+
+
+async def test_a_websocket_upgrade_is_served_as_plain_http_on_the_office_socket(office, short_dir):
+    async with served(office, short_dir / "o.sock"):
+        reader, writer = await asyncio.open_unix_connection(str(short_dir / "o.sock"))
+        writer.write(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+                     b"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+        status = await asyncio.wait_for(reader.readline(), 5)
+        writer.close()
+    # With ws="none" uvicorn ignores the upgrade and serves /health. Without it, the upgrade reaches Starlette,
+    # which has no WebSocket route, and uvicorn answers 403, so this pins the setting rather than only "not 101".
+    assert status.startswith(b"HTTP/1.1 200")
+
+
+def test_a_restart_with_an_open_web_stream_rebinds_the_port_at_once(home):
+    port = free_port()
+    (home / "office" / "hq.json").write_text(json.dumps({"tcp": True, "port": port}))
+    paths = OfficePaths(home)
+
+    def sock_client():
+        return httpx.Client(transport=httpx.HTTPTransport(uds=str(paths.socket)), base_url="http://localhost")
+
+    def listening(within):
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            with sock_client() as c:
+                if c.get("/hq").json()["tcp"]["listening"]:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    proc = _daemon(home)
+    try:
+        _wait_until_serving(home, proc)
+        assert listening(3)
+        with sock_client() as c:
+            code = c.post("/hq/pair", json={}).json()["path"].split("#")[1]
+        origin = f"http://127.0.0.1:{port}"
+        with httpx.Client(base_url=origin, headers={"origin": origin}, trust_env=False) as web:
+            assert web.post("/api/pair", json={"code": code}).status_code == 200
+            with web.stream("GET", "/api/events") as r:
+                lines = r.iter_lines()
+                assert next(lines) == ": connected"
+                _stop(home, proc)  # SIGTERM with the stream open: the server side closes first, into TIME_WAIT
+                for _ in lines:  # read to EOF, so closing sends a FIN, not a RST that clears TIME_WAIT
+                    pass
+    finally:
+        if proc.poll() is None:
+            _stop(home, proc)
+    if not _blocked_without_reuse(port):
+        pytest.skip("this kernel lets a plain socket bind past TIME_WAIT, so there's nothing to show")
+    proc = _daemon(home)
+    try:
+        _wait_until_serving(home, proc)
+        assert listening(1.5)  # well before the first retry at 5 s: the first bind worked
+    finally:
+        _stop(home, proc)

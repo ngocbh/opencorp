@@ -9,13 +9,12 @@ from pathlib import Path
 
 import httpx
 import pytest
-import uvicorn
 from yian.memory.storage.markdown import MarkdownVersionMismatch
 
 from opencorp.company.git import CompanyGit
 from opencorp.daemon.app import Office, OfficePaths, create_app
 from opencorp.daemon.bus import Bus
-from opencorp.daemon.main import OfficeServer, bind_socket
+from opencorp.daemon.main import OfficeServer, bind_socket, server_config
 from opencorp.store import Store
 from tests.company.conftest import _isolate_git, base_files, company, write_repo  # noqa: F401
 
@@ -101,8 +100,7 @@ def short_dir():
 async def served(office, socket_path: Path):
     """Serve ``office`` on ``socket_path`` in this loop; yields an httpx client over the socket."""
     sock = bind_socket(socket_path)
-    server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="warning",
-                                         timeout_graceful_shutdown=2), office)
+    server = OfficeServer(server_config(create_app(office), log_level="warning", timeout_graceful_shutdown=2), office)
     task = asyncio.create_task(server.serve(sockets=[sock]))
     async with asyncio.timeout(10):
         while not server.started:

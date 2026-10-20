@@ -23,6 +23,7 @@ from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
+from .conftest import no_web_port
 from .test_onboard import _stop
 
 KEY = "sk-ant-sentinel-a7d93c10e5b2"
@@ -160,6 +161,7 @@ def test_init_without_git_says_so_instead_of_a_traceback(tmp_path, monkeypatch, 
 
 def test_scripted_init_then_start_brings_a_stopped_office_back(short_dir, monkeypatch, capsys):
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))
     args = ["init", "--home", str(short_dir), "--provider-stdin", "--company", "Acme",
             "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--service", "background"]
@@ -181,6 +183,7 @@ def test_scripted_init_then_start_brings_a_stopped_office_back(short_dir, monkey
 
 def test_restart_replaces_a_running_office_and_starts_a_stopped_one(short_dir, monkeypatch, capsys):
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"llm_config": {"provider": "openai"}})))
     args = ["init", "--home", str(short_dir), "--provider-stdin", "--company", "Acme",
             "--name", "Hong Ngoc Bui", "--handle", "ngocbh", "--service", "background"]
@@ -209,6 +212,7 @@ def fake():
 
 def test_init_in_a_real_process_keeps_the_key_off_the_terminal(short_dir, fake):
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     args = [sys.executable, "-m", "opencorp.install", "init", "--home", str(short_dir), "--provider-stdin",
             "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}
@@ -269,6 +273,7 @@ def _answer(prompt) -> str | None:
 
 def test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean(short_dir, fake, tmp_path):
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     args = [sys.executable, "-m", "opencorp.install", "init", "--home", str(short_dir), "--provider-stdin",
             "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh", "--service", "background"]
     provider = {"llm_config": {**LLM_CONFIG, "api_key": KEY}, "env": fake.env()}

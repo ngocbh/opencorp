@@ -11,7 +11,7 @@ from opencorp.install import fallback, launchd, service, systemd
 from opencorp.install.launch import Host, ServiceError, launch, office_answers
 from tests.daemon.conftest import short_dir  # noqa: F401
 
-from .conftest import Runner, make_host
+from .conftest import Runner, make_host, no_web_port
 
 
 def recorded(launch):
@@ -296,6 +296,7 @@ def test_uninstalling_a_background_office_stops_its_daemon(short_dir):
 
     home = short_dir / "home"
     company(home)
+    no_web_port(home)
     run = launch(home)
     host = make_host(short_dir, Runner(), popen=subprocess.Popen, answers=office_answers)
     service.install(run, host, "background")
@@ -324,6 +325,7 @@ def test_restarting_a_background_office_runs_a_new_daemon(short_dir):
 
     home = short_dir / "home"
     company(home)
+    no_web_port(home)
     run = launch(home)
     host = make_host(short_dir, Runner(), popen=subprocess.Popen, answers=office_answers)
     service.install(run, host, "background")

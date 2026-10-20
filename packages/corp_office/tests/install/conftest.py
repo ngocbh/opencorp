@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from opencorp.daemon.app import OfficePaths
 from opencorp.install import legacy
 from opencorp.install.doctor import Check
 from opencorp.install.launch import Host, Launch, launch
@@ -48,6 +49,13 @@ def no_real_services(tmp_path_factory, monkeypatch):
 
 
 GOLDEN = Path(__file__).parent / "golden"
+
+
+def no_web_port(home: Path) -> None:
+    """Keep the daemon a test starts in ``home`` off HQ's TCP port, which the owner's own office holds on a Mac."""
+    office = OfficePaths(home).office
+    office.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (office / "hq.json").write_text('{"tcp": false}')
 
 
 class Runner:

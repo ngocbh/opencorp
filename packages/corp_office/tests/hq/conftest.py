@@ -6,11 +6,11 @@ import json
 
 import httpx
 import pytest
-import uvicorn
 
 from opencorp.daemon.main import bind_socket
 from opencorp.hq.api import create_hq_app
 from opencorp.hq.core import attach
+from opencorp.hq.servers import HqServer, hq_config
 from tests.company.conftest import make_company  # noqa: F401
 from tests.daemon.conftest import _isolate_git, company, office, profile_stores, short_dir  # noqa: F401
 
@@ -76,8 +76,7 @@ async def hq_served(office, hq, socket_path, *, host="127.0.0.1:5555"):
     Streams need a real server: httpx's ASGITransport buffers whole responses.
     """
     sock = bind_socket(socket_path)
-    server = _Quiet(uvicorn.Config(create_hq_app(office, hq, port=None), lifespan="off", log_config=None,
-                                   timeout_graceful_shutdown=2))
+    server = HqServer(hq_config(create_hq_app(office, hq, port=None)))
     task = asyncio.create_task(server.serve(sockets=[sock]))
     async with asyncio.timeout(10):
         while not server.started:
@@ -99,10 +98,3 @@ async def hq_served(office, hq, socket_path, *, host="127.0.0.1:5555"):
             await task
             socket_path.unlink(missing_ok=True)
 
-
-class _Quiet(uvicorn.Server):
-    """A test server that leaves the signals alone."""
-
-    @contextlib.contextmanager
-    def capture_signals(self):
-        yield
