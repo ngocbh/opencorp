@@ -41,7 +41,8 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
-                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={})
+                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={},
+                         hq=lambda socket, home: None)
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -522,3 +523,12 @@ def test_the_offices_warnings_are_shown(tmp_path):
 
 def test_no_status_warns(tmp_path):
     assert doctor.hq_checks(None, tmp_path, tmp_path)[0].status == "warn"
+
+
+def test_a_running_office_reports_hq(tmp_path):
+    paths = onboarded(tmp_path)
+    host = make_host(tmp_path, Runner(), answers=lambda s: True)
+    got = by_name(doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=lambda: None,
+                                codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={},
+                                hq=lambda socket, home: status()))
+    assert got["hq"].status == "ok"

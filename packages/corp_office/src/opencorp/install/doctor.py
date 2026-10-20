@@ -1,5 +1,5 @@
 """``opencorp doctor``: check the office home (there and private), company repo, provider and connections, service,
-daemon, sandbox, and Codex."""
+daemon, HQ, sandbox, and Codex."""
 
 import os
 import re
@@ -336,10 +336,12 @@ def hq_checks(status: dict | None, office_dir: Path, repo: Path) -> list[Check]:
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
            codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check,
-           environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None) -> list[Check]:
+           environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None,
+           hq: Callable[[Path, Path], dict | None] = hq_status) -> list[Check]:
     """Every check, in the order onboarding sets things up, with what an install from before the rename left.
 
     ``leftovers`` is what ``legacy.find`` already found for ``environ`` and ``repo``; it is looked for when None.
+    ``hq`` reads HQ's status from the office socket and the OpenCorp home.
     """
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
@@ -361,6 +363,7 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
         found.append(Check("office", "ok", f"answering on {run.socket} (pid {pid or '?'})"))
         if pid.isdecimal():
             found.append(version_check(run, int(pid), newest_source(repo)))
+        found += hq_checks(hq(run.socket, run.home), paths.office, repo)
     elif error := _crash(run.log):
         found.append(Check("office", "fail", f"not answering on {run.socket}; its last start failed: {error}"
                                              f" (log: {run.log}). {_next_step(run, host)}"))
