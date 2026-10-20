@@ -1,8 +1,14 @@
 import { Switch } from "@kobalte/core/switch"
 import type { Group } from "@opencorp/protocol"
-import { For } from "solid-js"
+import { For, Show } from "solid-js"
+import type { CostWindow } from "../data/window"
+import type { View } from "./prefs"
+import { Segmented } from "./segmented"
 
-/** The company view's controls: the company's name, the search box, the group filter and "By team". */
+/**
+ * The company view's controls: the company's name, the search box, the group filter, "By team", the cost window and
+ * Chart/List (only where the chart fits).
+ */
 export function Toolbar(props: {
   company: string
   query: string
@@ -12,6 +18,11 @@ export function Toolbar(props: {
   onGroup: (id: string) => void
   byTeam: boolean
   onByTeam: (on: boolean) => void
+  window: CostWindow
+  onWindow: (w: CostWindow) => void
+  view: View
+  onView: (v: View) => void
+  canChart: boolean
 }) {
   return (
     <div class="flex flex-wrap items-center gap-3 border-b border-neutral-200 p-3 dark:border-neutral-800">
@@ -40,6 +51,15 @@ export function Toolbar(props: {
         </Switch.Control>
         <Switch.Label>By team</Switch.Label>
       </Switch>
+      <Segmented
+        label="Cost window"
+        value={props.window}
+        onChange={props.onWindow}
+        options={[["today", "Today"], ["7d", "7 days"], ["30d", "30 days"]]}
+      />
+      <Show when={props.canChart}>
+        <Segmented label="View" value={props.view} onChange={props.onView} options={[["chart", "Chart"], ["list", "List"]]} />
+      </Show>
     </div>
   )
 }

@@ -4,6 +4,7 @@ test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
   await request.post("/__fixture/set", { data: { signedIn: true } })
   await page.goto("/")
+  await page.getByRole("radio", { name: "List" }).click()
 })
 
 const row = (page: import("@playwright/test").Page, name: RegExp | string) => page.getByRole("treeitem", { name })
@@ -88,4 +89,36 @@ test("By team groups people under their teams, muted after their first, with No 
   await expect(page.getByRole("treeitem", { name: "OPS", exact: true })).toHaveAttribute("aria-level", "2")
   await expect(page.getByRole("treeitem", { name: "No team", exact: true })).toBeVisible()
   await expect(page.locator('[role=treeitem][data-muted="true"]')).toHaveAttribute("aria-label", "Minh, Engineer")
+})
+
+test("the cost window refetches costs and is remembered", async ({ page, request }) => {
+  const costs = async () => (await (await request.get("/__fixture/log")).json()).costs as string[]
+  await expect(page.getByRole("radio", { name: "Today" })).toHaveAttribute("aria-checked", "true")
+  await page.getByRole("radio", { name: "7 days" }).click()
+  await expect(page.getByRole("radio", { name: "7 days" })).toHaveAttribute("aria-checked", "true")
+  await expect.poll(async () => (await costs()).length).toBe(2)
+  const [today, week] = await costs()
+  expect(Date.parse(week)).toBeLessThan(Date.parse(today))
+  await page.reload()
+  await expect(page.getByRole("radio", { name: "7 days" })).toHaveAttribute("aria-checked", "true")
+})
+
+test("Chart and List on a desktop; phones always get the list", async ({ page }) => {
+  await expect(page.getByRole("radiogroup", { name: "View" }).getByRole("radio")).toHaveText(["Chart", "List"])
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload()
+  await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  await expect(page.getByRole("radio", { name: "Chart" })).toHaveCount(0)
+})
+
+test("a radio group is one tab stop, and arrow keys move its choice", async ({ page }) => {
+  const today = page.getByRole("radio", { name: "Today" })
+  await expect(page.getByRole("radiogroup", { name: "Cost window" }).locator("[tabindex='0']")).toHaveCount(1)
+  await today.focus()
+  await page.keyboard.press("ArrowRight")
+  await expect(page.getByRole("radio", { name: "7 days" })).toBeFocused()
+  await expect(page.getByRole("radio", { name: "7 days" })).toHaveAttribute("aria-checked", "true")
+  await page.keyboard.press("ArrowLeft")
+  await page.keyboard.press("ArrowLeft")
+  await expect(page.getByRole("radio", { name: "30 days" })).toHaveAttribute("aria-checked", "true")
 })

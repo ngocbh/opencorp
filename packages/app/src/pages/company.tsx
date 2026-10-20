@@ -1,4 +1,4 @@
-import { createMemo, createSignal } from "solid-js"
+import { createMemo, createSignal, onCleanup, Show } from "solid-js"
 import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
@@ -9,11 +9,22 @@ import { Toolbar } from "../company/toolbar"
 import { buildTree } from "../company/tree"
 import { useOffice } from "../data/office"
 
+/** Whether the window is at least Tailwind's md breakpoint: phones always get the list. */
+function useDesktop() {
+  const query = matchMedia("(min-width: 768px)")
+  const [desktop, setDesktop] = createSignal(query.matches)
+  const changed = () => setDesktop(query.matches)
+  query.addEventListener("change", changed)
+  onCleanup(() => query.removeEventListener("change", changed))
+  return desktop
+}
+
 /** The company view. */
 export default function Company() {
   const office = useOffice()
   const s = office.state
   const prefs = createPrefs()
+  const desktop = useDesktop()
   // The toolbar's state. The office filter is one value today (every office); its slot is here so status and cards
   // follow it once HQ shows several offices.
   const [query, setQuery] = createSignal("")
@@ -45,6 +56,8 @@ export default function Company() {
     const p = personOf(item)
     return !!group() && !!p && !(p.groups ?? []).includes(group())
   }
+  /** What the page shows; the chart comes with its own change, and the list stays the default until then. */
+  const view = () => (desktop() ? (prefs.view() ?? "list") : "list")
   const name = () => s.company?.name ?? "Company"
   return (
     <>
@@ -57,7 +70,15 @@ export default function Company() {
         onGroup={setGroup}
         byTeam={teamView()}
         onByTeam={setTeamView}
+        window={office.costWindow()}
+        onWindow={office.setCostWindow}
+        view={view()}
+        onView={prefs.setView}
+        canChart={desktop()}
       />
+      <Show when={view() === "chart"}>
+        <p class="px-3 pt-3 text-sm text-neutral-500">The chart isn't built yet; this is the list.</p>
+      </Show>
       <CompanyList
         label={name()}
         items={items()}
