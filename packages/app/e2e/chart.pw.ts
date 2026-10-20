@@ -218,3 +218,22 @@ test("By team draws team headers over their members, with copies muted", async (
   await chart.getByRole("button", { name: "Close OPS's branch" }).click()
   await expect(chart.locator('[data-muted="true"]')).toHaveCount(0)
 })
+
+test("the chart is the desktop default, and the choice of view is remembered", async ({ page }) => {
+  await page.goto("/")
+  await expect(page.getByRole("figure", { name: "Acme org chart" })).toBeVisible()
+  await expect(page.getByRole("radio", { name: "Chart" })).toHaveAttribute("aria-checked", "true")
+  await page.getByRole("radio", { name: "List" }).click()
+  await page.reload()
+  await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  await page.getByRole("radio", { name: "Chart" }).click()
+  await page.reload()
+  await expect(page.getByRole("figure", { name: "Acme org chart" })).toBeVisible()
+})
+
+test("phones get the list, with no chart", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto("/")
+  await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  await expect(page.getByRole("figure")).toHaveCount(0)
+})

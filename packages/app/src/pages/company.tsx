@@ -92,8 +92,8 @@ export default function Company() {
     const p = personOf(item)
     return !!group() && !!p && !(p.groups ?? []).includes(group())
   }
-  /** What the page shows; the chart comes with its own change, and the list stays the default until then. */
-  const view = () => (desktop() ? (prefs.view() ?? "list") : "list")
+  /** The chart on a desktop unless this browser chose the list; phones always get the list. */
+  const view = () => (desktop() ? (prefs.view() ?? "chart") : "list")
   /** The person the side panel shows. */
   const [selected, setSelected] = createSignal<string>()
   const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
