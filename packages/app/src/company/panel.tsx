@@ -38,10 +38,11 @@ export function Panel(props: {
   // Focus moves into the panel when it opens and when it moves to someone else (the manager button it was on may be
   // gone).
   createEffect(on(() => props.person.handle, () => heading.focus()))
-  // Escape closes the panel from anywhere but a form control, which has its own use for it (a search box clears).
+  // Escape closes the panel from anywhere but a text field or a select, which have their own use for it (a search box
+  // clears); a checkbox or radio has none.
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== "Escape" || e.defaultPrevented) return
-    if (e.target instanceof Element && e.target.closest("input, select, textarea")) return
+    if (e.target instanceof Element && e.target.closest("input:not([type=checkbox]):not([type=radio]), select, textarea")) return
     props.onClose()
   }
   onMount(() => document.addEventListener("keydown", onKey))

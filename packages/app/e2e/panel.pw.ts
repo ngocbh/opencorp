@@ -110,6 +110,13 @@ test("Escape in the search box is the search box's", async ({ page }) => {
   await expect(page.getByRole("searchbox", { name: "Search people" })).toBeFocused()
 })
 
+test("Escape on the By team switch still closes the panel", async ({ page }) => {
+  await page.getByRole("treeitem", { name: /Lead/ }).click()
+  await page.getByRole("switch", { name: "By team" }).focus()
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("complementary")).toHaveCount(0)
+})
+
 test("the row of the panel's person is the selected one", async ({ page }) => {
   const row = (name: RegExp) => page.getByRole("treeitem", { name })
   await expect(row(/Lead/)).toHaveAttribute("aria-selected", "false")
