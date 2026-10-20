@@ -21,9 +21,9 @@ test("/ goes to /org, replacing itself in the history, and Org is the current pa
 
 test("an address with no page says so inside the shell, with no item current", async ({ page }) => {
   await page.goto("/nowhere")
-  await expect(page.getByRole("main")).toContainText("There's no page here.")
+  await expect(page.getByRole("main").getByRole("heading", { name: "There's no page here.", level: 2 })).toBeVisible()
   await expect(nav(page).locator("[aria-current]")).toHaveCount(0)
-  await org(page).click()
+  await page.getByRole("main").getByRole("link", { name: "Org" }).click()
   await expect(page).toHaveURL("/org")
   await expect(org(page)).toHaveAttribute("aria-current", "page")
 })

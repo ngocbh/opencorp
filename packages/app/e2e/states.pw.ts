@@ -113,7 +113,7 @@ test("an office whose snapshot this app can't read still gets the version check"
 test("moving between screens keeps the office: no second sign-in check or stream", async ({ page, request }) => {
   await page.goto("/elsewhere")
   await expect(connection(page)).toHaveText("live")
-  await page.getByRole("link", { name: "Org" }).click()
+  await page.getByRole("navigation", { name: "HQ" }).getByRole("link", { name: "Org" }).click()
   await expect(page).toHaveURL("/org")
   await page.waitForTimeout(500)
   const log = await (await request.get("/__fixture/log")).json()
