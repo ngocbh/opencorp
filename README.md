@@ -18,3 +18,8 @@ OpenCorp runs AI employees locally, on top of [Yian](https://github.com/ngocbh/y
 Setup, layout, tests, and workflow: [CLAUDE.md](CLAUDE.md).
 
 OpenCorp isn't affiliated with OpenCode (its TUI is forked from OpenCode's) or with OpenCorporates.
+
+## License
+
+MIT; see [LICENSE](LICENSE). Code and designs we build on are credited in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
