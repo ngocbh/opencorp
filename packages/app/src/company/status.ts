@@ -11,6 +11,13 @@ const COUNTED = new Set<Session["kind"]>(["main", "side"])
 
 const urgent = (a: Status, b: Status) => (URGENCY.indexOf(a) <= URGENCY.indexOf(b) ? a : b)
 
+/** The office filter: one office's name, or null for every office (the only choice while HQ shows one office). */
+export type OfficeFilter = string | null
+
+/** The sessions the office filter keeps: on null, every office's, so status adds up across offices. */
+export const inOffice = (sessions: Session[], office: OfficeFilter) =>
+  office === null ? sessions : sessions.filter((x) => x.office === office)
+
 /** Open questions shown as cards: an idle chat keeps one open at its turn node, which is its input box, not a card. */
 export const cards = (questions: Iterable<Question>) => [...questions].filter((q) => q.status === "open" && !isTurn(q))
 

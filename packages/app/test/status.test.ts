@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { Question, Session } from "@opencorp/protocol"
 import { buildTree } from "../src/company/tree"
-import { branchStatus, needsYou, recipient, statusByPerson, totals } from "../src/company/status"
+import { branchStatus, inOffice, needsYou, recipient, statusByPerson, totals } from "../src/company/status"
 import { person } from "./people"
 
 const s = (id: string, who: string, status: Session["status"], kind: Session["kind"] = "main") =>
@@ -70,4 +70,11 @@ test("a collapsed branch totals people, busy, waiting, needs you and cost", () =
   expect(totals(tree.roots[0].children[0].children[0], status, needs, null)).toEqual(
     { people: 1, busy: 0, waiting: 1, needsYou: 2, usd: 0, unpriced: 0 },
   )
+})
+
+test("the office filter keeps one office's sessions, or every office's with null", () => {
+  const mac = { ...s("1", "ann", "busy"), office: "mac" } as Session
+  const box = { ...s("2", "ann", "idle"), office: "box" } as Session
+  expect(inOffice([mac, box], null)).toEqual([mac, box])
+  expect(statusByPerson(inOffice([mac, box], "box"), []).get("ann")).toBe("idle")
 })
