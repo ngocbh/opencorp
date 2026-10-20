@@ -16,7 +16,7 @@ import { useNavigate } from "@solidjs/router"
 import { batch, createContext, createSignal, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { throttle } from "./costs"
-import { forgetSession } from "./sign-in"
+import { forgetSession, setSignOutPending, signOutPending } from "./sign-in"
 import { hqSnapshot } from "./snapshot"
 import { readStored, store } from "./storage"
 import { RELOADED_FOR, verdict } from "./version"
@@ -56,8 +56,10 @@ function createOffice(toSignIn: () => void) {
   const [costWindow, setCostWindowSignal] = createSignal<CostWindow>(savedWindow())
   /** Set when the built app can't run against this office: the shell shows a full page instead. */
   const [blocked, setBlocked] = createSignal<"out_of_date" | "not_built">()
+  /** Set when this load starts with a sign-out the office didn't hear of: it's sent again before anything else. */
+  const pendingSignOut = signOutPending()
   /** Whether Sign out is waiting for the office. */
-  const [signingOut, setSigningOut] = createSignal(false)
+  const [signingOut, setSigningOut] = createSignal(pendingSignOut)
   let queue: ((s: OfficeState) => void)[] = []
   let after: (() => void)[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -120,17 +122,30 @@ function createOffice(toSignIn: () => void) {
     toSignIn()
   }
 
+  /** Asks the office to end this browser's session, waiting LOGOUT_WAIT_MS at most; whether it's ended. */
+  async function endSession(): Promise<boolean> {
+    let wait: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        client.logout().then(() => true),
+        new Promise<boolean>((done) => (wait = setTimeout(done, LOGOUT_WAIT_MS, false))),
+      ])
+    } catch (error) {
+      if (error instanceof UnknownDevice) return true // the session is gone already
+      console.warn("Sign out didn't reach the office", { error })
+      return false
+    } finally {
+      clearTimeout(wait)
+    }
+  }
+
   /** Ends this browser's session at the office, then signs out here whatever the office answers. */
   async function signOut() {
     if (signingOut() || signedOut) return
     setSigningOut(true)
-    try {
-      await Promise.race([client.logout(), new Promise((done) => setTimeout(done, LOGOUT_WAIT_MS))])
-    } catch (error) {
-      // A 401 means the session is gone already. Otherwise (the office down) it lasts until it expires or
-      // `opencorp devices remove-browser` ends it; nothing on this page can do more.
-      if (!(error instanceof UnknownDevice)) console.warn("Sign out didn't reach the office", { error })
-    }
+    // The HttpOnly cookie outlives anything this page can clear: a session the office didn't end would sign the next
+    // load back in, so that load asks again.
+    setSignOutPending(!(await endSession()))
     leave()
   }
 
@@ -219,6 +234,11 @@ function createOffice(toSignIn: () => void) {
   window.addEventListener("vite:preloadError", onPreloadError)
 
   onMount(async () => {
+    if (pendingSignOut) {
+      if (await endSession()) setSignOutPending(false)
+      if (!disposed) leave()
+      return
+    }
     // Only a 401 signs out; any other failure (the office restarting, say) leaves the stream's backoff to retry, and a
     // later 401 on the stream reaches checkSignedIn through "error".
     await checkSignedIn()
@@ -248,6 +268,7 @@ function createOffice(toSignIn: () => void) {
 
   return {
     client,
+    pendingSignOut,
     state: state as Readonly<OfficeState>,
     status,
     error,
@@ -271,7 +292,8 @@ const OfficeContext = createContext<Office>()
 export function OfficeProvider(props: ParentProps) {
   const navigate = useNavigate()
   const office = createOffice(() => navigate("/sign-in", { replace: true }))
-  return <OfficeContext.Provider value={office}>{props.children}</OfficeContext.Provider>
+  // Nothing of the company shows while a sign-out from an earlier load is sent again.
+  return <OfficeContext.Provider value={office}>{office.pendingSignOut ? null : props.children}</OfficeContext.Provider>
 }
 
 /** The office, inside an OfficeProvider. */
