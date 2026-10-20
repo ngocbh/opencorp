@@ -82,7 +82,9 @@ export function holds(item: Item, needs: Map<string, number>): boolean {
 
 /**
  * Items for "By team": each team holds its sub-teams, then its members (muted after their first group); "No team"
- * last. Ids carry the team, since a person in two groups appears twice.
+ * last. Ids carry the team, since a person in two groups appears twice. They can't collide: group ids and handles
+ * never hold "/" or ":" (the protocol's Id and Handle patterns), so "team:<group>" is a header, "team:<group>/<handle>"
+ * a member, and a bare handle a row of the tree by manager.
  */
 export function fromTeams(teams: Team[], noTeam: Person[]): Item[] {
   const member = (team: string, p: Person, muted: boolean): Item =>
