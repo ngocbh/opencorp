@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { Question, Session } from "@opencorp/protocol"
 import { buildTree } from "../src/company/tree"
-import { branchStatus, statusByPerson } from "../src/company/status"
+import { branchStatus, needsYou, recipient, statusByPerson } from "../src/company/status"
 import { person } from "./people"
 
 const s = (id: string, who: string, status: Session["status"], kind: Session["kind"] = "main") =>
@@ -37,4 +37,26 @@ test("a branch takes its most urgent member's status", () => {
   expect(branchStatus(tree.roots[0], m)).toBe("waiting")
   expect(branchStatus(tree.roots[0], new Map([["al", "idle" as const]]))).toBe("idle")
   expect(branchStatus(tree.roots[0], new Map())).toBe("away")
+})
+
+test("ask_manager goes to its work item's assignee; anything else to who opened the session, else the CEO", () => {
+  const sessions = new Map([["1", { ...s("1", "minh", "idle"), opened_by: "ann" } as Session], ["2", s("2", "minh", "idle")]])
+  const assignee = (id: string) => (id === "W1" ? "lead" : undefined)
+  expect(recipient(q("a", "1", { source: "ask_manager", work_item_id: "W1" }), sessions.get("1"), "ceo", assignee)).toBe("lead")
+  expect(recipient(q("b", "1"), sessions.get("1"), "ceo", assignee)).toBe("ann")
+  expect(recipient(q("c", "2"), sessions.get("2"), "ceo", assignee)).toBe("ceo")
+  expect(recipient(q("d", "1", { source: "ask_manager", work_item_id: "W9" }), sessions.get("1"), "ceo", assignee)).toBeNull()
+  expect(recipient(q("e", "1", { source: "ask_manager", work_item_id: null }), sessions.get("1"), "ceo", assignee)).toBeNull()
+  expect(recipient(q("f", "2"), sessions.get("2"), null, assignee)).toBeNull()
+})
+
+test("needs you counts, per asking person, the open cards whose recipient is the viewer", () => {
+  const sessions = [{ ...s("1", "minh", "idle"), opened_by: "ceo" } as Session, { ...s("2", "kai", "idle"), opened_by: "ann" } as Session]
+  const questions = [q("a", "1"), q("b", "1"), q("c", "2"), q("t", "1", { source: "human_input", node_id: "chat/ask" })]
+  expect(Object.fromEntries(needsYou("ceo", sessions, questions, "ceo", () => undefined))).toEqual({ minh: 2 })
+  expect(Object.fromEntries(needsYou("ann", sessions, questions, "ceo", () => undefined))).toEqual({ kai: 1 })
+})
+
+test("a card on a session the app doesn't have counts for its asker", () => {
+  expect(Object.fromEntries(needsYou("ceo", [], [q("a", "gone", { asker: "zoe" })], "ceo", () => undefined))).toEqual({ zoe: 1 })
 })

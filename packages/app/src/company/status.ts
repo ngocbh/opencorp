@@ -35,3 +35,37 @@ export function statusByPerson(sessions: Session[], questions: Iterable<Question
 export function branchStatus(node: TreeNode, m: Map<string, Status>): Status {
   return node.children.reduce((st, c) => urgent(st, branchStatus(c, m)), m.get(node.person.handle) ?? "away")
 }
+
+/**
+ * Who should answer `q`: for `ask_manager`, its work item's assignee (the asker's manager at the session's pinned
+ * commit); for anything else, who opened the session, else the CEO, as the harness's `_owner` decides (it uses the
+ * pinned CEO; the app uses HEAD's).
+ */
+export function recipient(
+  q: Question,
+  session: Session | undefined,
+  ceo: string | null,
+  assignee: (workItemId: string) => string | null | undefined,
+): string | null {
+  if (q.source === "ask_manager") return q.work_item_id ? (assignee(q.work_item_id) ?? null) : null
+  return session?.opened_by ?? ceo
+}
+
+/** For `viewer`: how many open cards each asking person has for them. */
+export function needsYou(
+  viewer: string,
+  sessions: Session[],
+  questions: Iterable<Question>,
+  ceo: string | null,
+  assignee: (workItemId: string) => string | null | undefined,
+): Map<string, number> {
+  const byId = new Map(sessions.map((x) => [x.id, x]))
+  const out = new Map<string, number>()
+  for (const q of cards(questions)) {
+    const session = byId.get(q.session_id)
+    if (recipient(q, session, ceo, assignee) !== viewer) continue
+    const asker = session?.person ?? q.asker
+    out.set(asker, (out.get(asker) ?? 0) + 1)
+  }
+  return out
+}
