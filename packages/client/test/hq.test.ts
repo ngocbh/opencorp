@@ -15,6 +15,7 @@ test("the browser client's HQ reads and writes hit /api", async () => {
   await c.costs.since("2026-10-19T00:00:00.000Z")
   await c.health()
   await c.pair({ code: "abc", label: "Safari" })
+  await c.signIn({ handle: "ann", password: "pw", label: "Safari on Mac" })
   await c.logout()
   await c.sessions.list({ status: ["busy", "idle"], limit: 500 })
   expect(seen.map((s) => `${s.method} ${s.path}${s.query}`)).toEqual([
@@ -22,10 +23,16 @@ test("the browser client's HQ reads and writes hit /api", async () => {
     "GET /api/costs?since=2026-10-19T00%3A00%3A00.000Z",
     "GET /api/health",
     "POST /api/pair",
+    "POST /api/login",
     "POST /api/logout",
     "GET /api/sessions?limit=500&status=busy%2Cidle",
   ])
   expect(seen.find((s) => s.path === "/api/logout")?.body).toBe("{}")
+  const login = seen.find((s) => s.path === "/api/login")!
+  expect([login.type, JSON.parse(login.body)]).toEqual([
+    "application/json",
+    { handle: "ann", password: "pw", label: "Safari on Mac" },
+  ])
 })
 
 test("the socket client's HQ routes, and health's plain answer there", async () => {

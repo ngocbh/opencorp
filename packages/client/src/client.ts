@@ -19,6 +19,7 @@ import type {
   Health,
   HireRequest,
   HireResponse,
+  HqLoginRequest,
   HqStatus,
   LoginRequest,
   Message,
@@ -42,7 +43,7 @@ import type {
   StartLoginRequest,
   WorkItem,
 } from "@opencorp/protocol"
-import { OfficeTimeout } from "./errors"
+import { OfficeError, OfficeTimeout, UnknownDevice } from "./errors"
 import { request, seg, transportOf, where, type Method, type Transport } from "./http"
 import { subscribe, type StreamEvent, type SubscribeOptions } from "./sse"
 
@@ -99,6 +100,18 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     costs: { since: (since: string) => get<CostReport>(`/costs${query({ since })}`) },
     /** Spends a pairing code and signs this browser in (HQ only). */
     pair: (req: PairRequest) => post<BrowserSession>("/pair", req),
+    /**
+     * Signs this browser in with a human's handle and password (HQ only). A 401 here is `bad_credentials`, not
+     * `UnknownDevice`: the browser has no session yet, so "pair this browser again" would be wrong. The exception is
+     * `sign_in_required`, which stays `UnknownDevice`: an office without `/api/login` refuses it like any other
+     * session-less request.
+     */
+    signIn: (req: HqLoginRequest) =>
+      post<BrowserSession>("/login", req).catch((e) => {
+        if (e instanceof UnknownDevice && e.code !== "sign_in_required")
+          throw new OfficeError(401, "bad_credentials", "wrong handle or password")
+        throw e
+      }),
     /** Signs this browser out (HQ only). */
     logout: () => post<Ack>("/logout"),
     /** HQ's routes on the office socket. */

@@ -1,34 +1,9 @@
 import { OfficeError, createOfficeClient } from "@opencorp/client"
 import { useNavigate } from "@solidjs/router"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
-import { store } from "../data/storage"
+import { browserLabel, rememberSession } from "../data/sign-in"
 
 const EXPIRED = "This link has expired or was already used."
-
-/** "Safari on Mac", from the user agent, to name this browser in `opencorp devices list`. */
-export function browserLabel(ua: string) {
-  const browser = /Edg\//.test(ua)
-    ? "Edge"
-    : /Firefox\//.test(ua)
-      ? "Firefox"
-      : /Chrome\//.test(ua)
-        ? "Chrome"
-        : /Safari\//.test(ua)
-          ? "Safari"
-          : "A browser"
-  const os = /iPhone|iPad/.test(ua)
-    ? "iPhone"
-    : /Android/.test(ua)
-      ? "Android"
-      : /Mac OS X/.test(ua)
-        ? "Mac"
-        : /Windows/.test(ua)
-          ? "Windows"
-          : /Linux/.test(ua)
-            ? "Linux"
-            : "this device"
-  return `${browser} on ${os}`
-}
 
 /** `/pair#<code>`: spends the code and signs this browser in. */
 export default function Pair() {
@@ -44,9 +19,7 @@ export default function Pair() {
     try {
       const client = createOfficeClient({ baseUrl: "/api" })
       const session = await client.pair({ code, label: browserLabel(navigator.userAgent) })
-      // Not a secret (the cookie is HttpOnly): only who paired this browser, for the sidebar.
-      const { id, name, issued_by } = session
-      store("localStorage", "hq.session", JSON.stringify({ id, name, issued_by }))
+      rememberSession(session)
       navigate("/", { replace: true })
     } catch (e) {
       if (e instanceof OfficeError && e.code === "pair_code_invalid") return setFailed(EXPIRED)

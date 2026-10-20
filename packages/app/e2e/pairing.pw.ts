@@ -28,12 +28,12 @@ test("a link without a code says the same", async ({ page }) => {
   await expect(page.getByRole("alert")).toContainText("Run opencorp pair again.")
 })
 
-test("without a session the app shows sign-in, and never asks for a password", async ({ page }) => {
+test("without a session the app shows sign-in, which still offers opencorp pair next to the password form", async ({ page }) => {
   await page.goto("/")
   await expect(page).toHaveURL("/sign-in")
-  await expect(page.getByText("Run opencorp pair on the office machine. HQ never asks for your password here.")).toBeVisible()
+  await expect(page.getByText("Or run opencorp pair on the office machine and open the link it prints.")).toBeVisible()
   await expect(page.locator("main code").first()).toHaveText("opencorp pair")
-  await expect(page.locator("input[type=password]")).toHaveCount(0)
+  await expect(page.locator("input[type=password]")).toHaveCount(1)
 })
 
 test("after pairing, the sidebar names the company and the person, and the connection is live", async ({ page, request }) => {

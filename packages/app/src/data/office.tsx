@@ -214,7 +214,7 @@ function createOffice(toSignIn: () => void) {
     clearTimeout(timer)
   })
 
-  /** Who paired this browser, when it wasn't the signed-in person; the pair page keeps it. */
+  /** Who signed this browser in, when it wasn't the signed-in person; pairing and sign-in keep it (rememberSession). */
   const pairedBy = () => {
     try {
       const by = JSON.parse(readStored("localStorage", "hq.session") ?? "null")?.issued_by

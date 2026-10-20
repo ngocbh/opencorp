@@ -17,6 +17,40 @@ test("the fixture gates /api on a session, spends a code once, logs calls, and c
   expect((await request.get("/api/company")).status()).toBe(503)
 })
 
+test("the fixture's /api/login: one 401 for every failure, 429 with Retry-After, 503, and a session cookie", async ({ request }) => {
+  const login = (data: unknown) => request.post("/api/login", { data })
+  for (const body of [
+    { handle: "ngocbh", password: "wrong" },
+    { handle: "nobody", password: "correct horse" },
+    { handle: "minh", password: "correct horse" }, // an agent: never a password
+  ]) {
+    const r = await login(body)
+    expect([r.status(), await r.json()]).toEqual([401, { error: "bad_credentials", message: "wrong handle or password" }])
+  }
+  expect((await login({ handle: "@NgocBH", password: "x" })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "" })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", label: 5 })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", label: "x".repeat(101) })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", extra: 1 })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", label: null })).status()).toBe(401)
+  expect((await request.get("/api/company")).status()).toBe(401)
+  await request.post("/__fixture/set", { data: { login: { retryAfter: 600, busy: false } } })
+  const limited = await login({ handle: "ngocbh", password: "correct horse" })
+  expect([limited.status(), limited.headers()["retry-after"], (await limited.json()).error]).toEqual([429, "600", "too_many_attempts"])
+  await request.post("/__fixture/set", { data: { login: { retryAfter: null, busy: true } } })
+  const busy = await login({ handle: "ngocbh", password: "correct horse" })
+  expect([busy.status(), (await busy.json()).error]).toEqual([503, "busy"])
+  await request.post("/__fixture/set", { data: { login: { retryAfter: null, busy: false } } })
+  const ok = await login({ handle: "ngocbh", password: "correct horse", label: "Chrome on Mac" })
+  expect(ok.status()).toBe(200)
+  expect(ok.headers()["set-cookie"]).toMatch(/^opencorp_hq_\d+=fixture; HttpOnly; SameSite=Strict; Path=\/; Max-Age=2592000/)
+  expect(await ok.json()).toMatchObject({ person: "ngocbh", via: "login", issued_by: "ngocbh", label: "Chrome on Mac" })
+  expect((await request.get("/api/company")).status()).toBe(200)
+  const log = await (await request.get("/__fixture/log")).json()
+  expect(log.logins.at(-1)).toEqual({ handle: "ngocbh", label: "Chrome on Mac" })
+  expect(JSON.stringify(log)).not.toContain("correct horse") // the fixture never keeps a password
+})
+
 test("static files: a malformed path is a page like any other, and only GET and HEAD get index.html", async ({ request }) => {
   // As the office: uvicorn decodes a path leniently, keeping an escape it can't read.
   const malformed = await request.get("/%E0%A4%A", { headers: { "sec-fetch-dest": "document" } })

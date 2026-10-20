@@ -68,12 +68,17 @@ type Fixture = Data & {
   delay: Record<string, number>
   /** A status to fail a route with, by path. */
   fail: Record<string, number>
+  /** Each human's password, by handle; an agent never has one. */
+  passwords: Record<string, string>
+  /** /api/login's throttle: `retryAfter` (seconds) answers every sign-in 429, `busy` answers 503. */
+  login: { retryAfter: number | null; busy: boolean }
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
-  fail: {},
+  fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
 })
-const emptyLog = () => ({ pairs: [] as unknown[], health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
+// `logins` keeps each sign-in's handle and label, never its password.
+const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
 let state = fresh()
 let log = emptyLog()
 let downUntil = 0
@@ -127,6 +132,50 @@ function events() {
   return new Response(body, { headers: { ...HEADERS, "content-type": "text/event-stream", "cache-control": "no-cache" } })
 }
 
+const HANDLE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
+const MAX_AGE = 30 * 86_400
+
+/** A browser session as /api/pair and /api/login return it. */
+function session(via: BrowserSession["via"], issued_by: string, label: string | null): BrowserSession {
+  const at = new Date()
+  return {
+    id: "01JA1H0000000000000000000A", person: state.whoami.person, name: "web-abc123", label, via, issued_by,
+    created_at: at.toISOString(), expires_at: new Date(at.getTime() + MAX_AGE * 1000).toISOString(), last_used_at: null,
+  }
+}
+
+/** The session cookie the office sets on a sign-in. */
+const cookie = () => ({ "set-cookie": `opencorp_hq_${port}=fixture; HttpOnly; SameSite=Strict; Path=/; Max-Age=${MAX_AGE}` })
+
+/** POST /api/login as the office answers it: one 401 for every failure, so nobody learns which handles exist. */
+async function login(req: Request): Promise<Response> {
+  const body = await req.json().catch(() => null)
+  const keys = body && typeof body === "object" ? Object.keys(body) : []
+  if (
+    !body ||
+    typeof body.handle !== "string" ||
+    !HANDLE.test(body.handle) ||
+    typeof body.password !== "string" ||
+    !body.password ||
+    keys.some((k) => !["handle", "password", "label"].includes(k)) ||
+    (body.label != null && (typeof body.label !== "string" || body.label.length > 100))
+  )
+    return json({ error: "invalid_body", message: "the body isn't an HqLoginRequest" }, 422)
+  const { handle, password, label = null } = body
+  log.logins.push({ handle, label })
+  if (state.login.retryAfter !== null)
+    return json({ error: "too_many_attempts", message: "too many tries; wait, or run `opencorp pair`" }, 429, {
+      "retry-after": String(state.login.retryAfter),
+    })
+  if (state.login.busy) return json({ error: "busy", message: "the office is busy; try again" }, 503)
+  const human = state.view.people.some((p) => p.handle === handle && p.kind === "human")
+  if (!human || state.passwords[handle] !== password)
+    return json({ error: "bad_credentials", message: "wrong handle or password" }, 401)
+  state.signedIn = true
+  state.whoami = { person: handle, device: "web-abc123" }
+  return json(session("login", handle, label), 200, cookie())
+}
+
 const SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."
 const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
 
@@ -145,14 +194,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!issued_by) return json({ error: "pair_code_invalid", message: EXPIRED }, 400)
     delete state.codes[body.code]
     state.signedIn = true
-    const at = new Date()
-    const session: BrowserSession = {
-      id: "01JA1H0000000000000000000A", person: state.whoami.person, name: "web-abc123", label: body.label ?? null,
-      via: "pair", issued_by, created_at: at.toISOString(),
-      expires_at: new Date(at.getTime() + 30 * 86_400_000).toISOString(), last_used_at: null,
-    }
-    return json(session, 200, { "set-cookie": `opencorp_hq_${port}=fixture; HttpOnly; SameSite=Strict; Path=/` })
+    return json(session("pair", issued_by, body.label ?? null), 200, cookie())
   }
+  if (p === "/api/login" && req.method === "POST") return login(req)
   if (!state.signedIn) return json({ error: "sign_in_required", message: SIGN_IN }, 401)
   if (p === "/api/logout" && req.method === "POST") return (state.signedIn = false), json({ ok: true })
   if (req.method !== "GET") return json({ error: "no_route", message: `no route ${req.method} ${p}` }, 404)

@@ -30,6 +30,20 @@ test("the built app loads with no CSP violation", async ({ page }) => {
   expect(await violations()).toEqual([])
 })
 
+test("the sign-in form, its error and signing in with a password load with no CSP violation", async ({ page }) => {
+  const violations = await watchCsp(page)
+  await page.goto("/sign-in")
+  await page.getByLabel("Handle").fill("ngocbh")
+  await page.getByLabel("Password").fill("wrong one")
+  await page.getByRole("button", { name: "Sign in" }).click()
+  await expect(page.getByRole("alert")).toHaveText("Wrong handle or password.")
+  await violations()
+  await page.getByLabel("Password").fill("correct horse")
+  await page.getByRole("button", { name: "Sign in" }).click()
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  expect(await violations()).toEqual([])
+})
+
 test("pairing, the shell, the reconnecting banner and the blocked page load with no CSP violation", async ({ page, request }) => {
   const violations = await watchCsp(page)
   await page.goto("/pair#nope")
