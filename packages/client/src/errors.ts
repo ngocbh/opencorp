@@ -27,10 +27,17 @@ export class OfficeUnavailable extends OfficeError {
   }
 }
 
-/** The office refused the request's device token, or wanted one (a 401). */
+/** The office refused the request's device token or browser session, or wanted one (a 401). */
 export class UnknownDevice extends OfficeError {
-  constructor(code: string) {
-    super(401, code, "the office doesn't know this device: run `opencorp login`")
+  /** `remote`: the client reached the office at a base URL (a browser, signed in by pairing). */
+  constructor(code: string, remote = false) {
+    super(
+      401,
+      code,
+      remote
+        ? "the office doesn't know this browser: pair this browser again"
+        : "the office doesn't know this device: run `opencorp login`",
+    )
     this.name = "UnknownDevice"
   }
 }
@@ -63,3 +70,12 @@ export const isNotImplemented = (e: unknown) => e instanceof OfficeError && e.st
 
 /** Whether `e` is an office's `404 no_route`: an office older than the route. */
 export const isMissingRoute = (e: unknown) => e instanceof OfficeError && e.status === 404 && e.code === "no_route"
+
+/**
+ * What kind of failure `e` is, to tell a new failure from a repeat of the last: the class and status when the office
+ * answered, "network" when it didn't (no answer, a dropped connection), "none" for no failure.
+ */
+export function failureKind(e: unknown) {
+  if (e === undefined) return "none"
+  return e instanceof OfficeError && e.status > 0 ? `${e.name} ${e.status}` : "network"
+}

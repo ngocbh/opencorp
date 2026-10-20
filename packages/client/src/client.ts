@@ -3,21 +3,29 @@ import type {
   AddDeviceRequest,
   AddConnectionRequest,
   AnswerRequest,
+  BrowserSession,
   Comment,
+  CompanyView,
   ConfirmFollowUpsRequest,
   Connection,
   ConnectionList,
   ConnectionLogin,
   CostCapRequest,
+  CostReport,
   CreateSessionRequest,
   Debrief,
   Feedback,
   FeedbackRequest,
+  Health,
   HireRequest,
   HireResponse,
+  HqStatus,
   LoginRequest,
   Message,
   ModelList,
+  PairCode,
+  PairCodeRequest,
+  PairRequest,
   Person,
   Profile,
   ProfileManagerRequest,
@@ -80,6 +88,26 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   return {
     socket,
     whoami: () => get<WhoAmI>("/whoami"),
+    /**
+     * Liveness, and over a base URL (HQ's `/api/health`) the office's and app's compatibility keys; the socket's
+     * `/health` answers only `{ok: true}`.
+     */
+    health: () => get<Health | { ok: true }>("/health"),
+    /** The company at HEAD (HQ only). */
+    company: { get: () => get<CompanyView>("/company") },
+    /** Spend per person since `since`, a Timestamp (HQ only). */
+    costs: { since: (since: string) => get<CostReport>(`/costs${query({ since })}`) },
+    /** Spends a pairing code and signs this browser in (HQ only). */
+    pair: (req: PairRequest) => post<BrowserSession>("/pair", req),
+    /** Signs this browser out (HQ only). */
+    logout: () => post<Ack>("/logout"),
+    /** HQ's routes on the office socket. */
+    hq: {
+      status: () => get<HqStatus>("/hq"),
+      pair: (req: PairCodeRequest) => post<PairCode>("/hq/pair", req),
+      browsers: (person?: string) => get<BrowserSession[]>(`/hq/browsers${query({ person })}`),
+      removeBrowser: (id: string) => call<Ack>("DELETE", `/hq/browsers/${seg(id)}`),
+    },
     /** Adds a device for a human who gives their password; served without a token. */
     login: (req: LoginRequest) => post<Person>("/login", req),
     people: {
@@ -94,7 +122,15 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
       remove: (person: string, name: string) => call<Person>("DELETE", `/people/${seg(person)}/devices/${seg(name)}`),
     },
     sessions: {
-      list: (opts: { person?: string; limit?: number } = {}) => get<Session[]>(`/sessions${query(opts)}`),
+      /** Sessions, newest updated first; several statuses are sent comma-separated. */
+      list: (opts: { person?: string; limit?: number; status?: Session["status"] | Session["status"][] } = {}) =>
+        get<Session[]>(
+          `/sessions${query({
+            person: opts.person,
+            limit: opts.limit,
+            status: [opts.status ?? []].flat().join(",") || undefined,
+          })}`,
+        ),
       // Starting a chat may wait up to 8 s for the connections' model lists, so it gets a limit of its own.
       create: (req: CreateSessionRequest) =>
         request<Session>(transport, "POST", "/sessions", req, { timeoutMs: CREATE_TIMEOUT_MS, token }).catch((e) => {

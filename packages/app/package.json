@@ -1,0 +1,28 @@
+{
+  "name": "@opencorp/app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "bun test ./test",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@kobalte/core": "catalog:",
+    "@opencorp/client": "workspace:*",
+    "@opencorp/protocol": "workspace:*",
+    "@solidjs/router": "catalog:",
+    "solid-js": "catalog:"
+  },
+  "devDependencies": {
+    "@playwright/test": "catalog:",
+    "@tailwindcss/vite": "4.3.3",
+    "tailwindcss": "4.3.3",
+    "vite": "8.2.2",
+    "vite-plugin-solid": "2.11.14"
+  }
+}

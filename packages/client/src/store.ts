@@ -3,9 +3,13 @@
 // object.
 import type {
   Comment,
+  Company,
+  CompanyView,
+  CostReport,
   Debrief,
   Event,
   Feedback,
+  Group,
   LiveEvent,
   Message,
   Part,
@@ -13,6 +17,7 @@ import type {
   Profile,
   ProfileProposal,
   Question,
+  RepoIssue,
   Session,
   WorkItem,
 } from "@opencorp/protocol"
@@ -37,6 +42,15 @@ export type OfficeState = {
   profiles: Record<string, Profile>
   /** By session id. */
   debriefs: Record<string, Debrief>
+  /** The company file at `sha` (HQ); null when it's missing or doesn't parse, or before the first snapshot. */
+  company: Company | null
+  groups: Group[]
+  /** The commit `people`, `groups` and `company` come from (HQ). */
+  sha: string | null
+  /** Files at `sha` that don't parse (HQ). */
+  issues: RepoIssue[]
+  /** Spend per person for the app's window (HQ). */
+  costs: CostReport | null
 }
 
 export function emptyState(): OfficeState {
@@ -52,7 +66,21 @@ export function emptyState(): OfficeState {
     comments: {},
     profiles: {},
     debriefs: {},
+    company: null,
+    groups: [],
+    sha: null,
+    issues: [],
+    costs: null,
   }
+}
+
+/** Applies a company snapshot: people, groups, the company and its issues, all from one commit. */
+export function applyCompany(s: OfficeState, view: CompanyView) {
+  s.people = view.people
+  s.groups = view.groups
+  s.company = view.company
+  s.sha = view.sha
+  s.issues = view.issues
 }
 
 /** Whether `local` is strictly newer than `incoming`, so the incoming copy is stale. */

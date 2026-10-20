@@ -4,6 +4,9 @@
   "packageManager": "bun@1.4.2",
   "workspaces": ["packages/*"],
   "catalog": {
+    "@kobalte/core": "0.13.13",
+    "@playwright/test": "1.59.1",
+    "@solidjs/router": "1.0.0",
     "@opentui/core": "0.4.5",
     "@opentui/keymap": "0.4.5",
     "@opentui/solid": "0.4.5",
@@ -21,6 +24,7 @@
     "solid-js@1.9.10": "packages/tui/patches/solid-js@1.9.10.patch"
   },
   "scripts": {
+    "build": "bun run --filter '@opencorp/app' build",
     "test": "bun run --filter '*' test",
     "typecheck": "bun run --filter '*' typecheck"
   },
