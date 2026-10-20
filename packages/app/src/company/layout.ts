@@ -86,3 +86,22 @@ export function zoomAt(t: Transform, factor: number, [px, py]: [number, number])
   const r = k / t.k
   return { k, x: px - (px - t.x) * r, y: py - (py - t.y) * r }
 }
+
+type Point = [number, number]
+
+/** `t` moved by the pointer's travel. */
+export const pan = (t: Transform, dx: number, dy: number): Transform => ({ ...t, x: t.x + dx, y: t.y + dy })
+
+const mid = (a: Point, b: Point): Point => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]
+const dist = (a: Point, b: Point) => Math.hypot(a[0] - b[0], a[1] - b[1])
+
+/**
+ * Two pointers moving from `before` to `after`: zoom about their midpoint by how much farther apart they are, and
+ * pan with the midpoint. Pointers that started on one spot only pan.
+ */
+export function pinch(t: Transform, before: [Point, Point], after: [Point, Point]): Transform {
+  const [m0, m1] = [mid(...before), mid(...after)]
+  const d0 = dist(...before)
+  const zoomed = d0 < 1 ? t : zoomAt(t, dist(...after) / d0, m0)
+  return pan(zoomed, m1[0] - m0[0], m1[1] - m0[1])
+}

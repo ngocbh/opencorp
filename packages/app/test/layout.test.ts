@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { CARD, fit, layout, zoomAt, type LayoutNode } from "../src/company/layout"
+import { CARD, fit, layout, pan, pinch, zoomAt, type LayoutNode } from "../src/company/layout"
 
 const n = (id: string, ...children: LayoutNode[]): LayoutNode => ({ id, children })
 const slot = CARD.w + CARD.gapX
@@ -84,4 +84,17 @@ test("zooming keeps the point under the cursor still, within 0.2 and 2", () => {
   // Below the floor after a fit: zooming out goes no further, zooming in works.
   expect(zoomAt({ k: 0.1, x: 0, y: 0 }, 0.5, [0, 0]).k).toBe(0.1)
   expect(zoomAt({ k: 0.1, x: 0, y: 0 }, 1.5, [0, 0]).k).toBeCloseTo(0.15)
+})
+
+test("pan moves by the pointer's travel", () => {
+  expect(pan({ k: 2, x: 1, y: 1 }, 10, -5)).toEqual({ k: 2, x: 11, y: -4 })
+})
+
+test("two pointers moving apart zoom about their midpoint; moving together pans", () => {
+  expect(pinch({ k: 1, x: 0, y: 0 }, [[0, 0], [100, 0]], [[-50, 0], [150, 0]])).toEqual({ k: 2, x: -50, y: 0 })
+  expect(pinch({ k: 1, x: 0, y: 0 }, [[0, 0], [100, 0]], [[10, 10], [110, 10]])).toEqual({ k: 1, x: 10, y: 10 })
+})
+
+test("two pointers on one spot don't zoom by a division by zero", () => {
+  expect(pinch({ k: 1, x: 0, y: 0 }, [[5, 5], [5, 5]], [[5, 5], [5, 5]])).toEqual({ k: 1, x: 0, y: 0 })
 })
