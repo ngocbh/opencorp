@@ -1,4 +1,5 @@
-"""HQ on a real office: `opencorp pair`, a browser session, the company and the event stream, and signing out."""
+"""HQ on a real office: `opencorp pair` and password sign-in over TCP, hq.sock with TCP off and the SSH forwards
+`opencorp pair` prints, the company and the event stream, signing out, and what `opencorp doctor` says about HQ."""
 
 import re
 
@@ -28,6 +29,17 @@ def local(monkeypatch):
 def web_office(cli_ready, short_dir, fake_llm):
     """A running office with HQ's TCP listener on a free port."""
     running = RunningOffice(short_dir, fake_llm, hq={"tcp": True, "port": 0})
+    try:
+        running.onboard()
+        yield running
+    finally:
+        running.stop()
+
+
+@pytest.fixture
+def sock_office(cli_ready, short_dir, fake_llm):
+    """A running office with HQ's TCP listener off: hq.sock only."""
+    running = RunningOffice(short_dir, fake_llm, hq={"tcp": False})
     try:
         running.onboard()
         yield running
@@ -135,3 +147,42 @@ def test_over_ssh_pair_prints_the_same_port_forward_and_the_hq_sock_one(web_offi
     with over_hq_sock(web_office, f"127.0.0.1:{LOCAL_PORT}") as browser:
         assert browser.post("/api/pair", json={"code": code}).status_code == 200
         assert browser.get("/api/company").json()["company"]["name"] == "Acme"
+
+
+def test_with_tcp_off_pair_prints_the_socket_forward_and_hq_sock_serves_any_local_port(sock_office, tmp_path, local):
+    out = sock_office.opencorp("pair", "--no-open", cwd=tmp_path).stdout
+    hq_sock = sock_office.paths.office / "hq.sock"
+    assert f"ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:{LOCAL_PORT}:{hq_sock} " in out
+    assert f"http://127.0.0.1:{LOCAL_PORT}/pair#" in out and '"tcp": true' in out
+    code = CODE.search(out).group(1)
+    with over_hq_sock(sock_office, "127.0.0.1:61234") as browser:  # any local port: hq.sock takes them all
+        assert browser.post("/api/pair", json={"code": code}).status_code == 200
+        assert browser.get("/api/company").json()["company"]["name"] == "Acme"
+        assert browser.get("/api/company", headers={"host": "misha.example:61234"}).status_code == 403
+    assert oct(hq_sock.stat().st_mode & 0o777) == "0o600"
+    doctor = sock_office.opencorp("doctor", cwd=tmp_path, check=False).stdout
+    assert doctor_line("ok", "hq", f"on {hq_sock} only (the web port is off); `opencorp pair` prints the SSH "
+                                   "forward") in doctor, doctor
+
+
+def test_the_code_never_reaches_a_process_list_or_the_log(sock_office, tmp_path):
+    import psutil
+
+    out = sock_office.opencorp("pair", "--no-open", cwd=tmp_path).stdout
+    code = CODE.search(out).group(1)
+    assert not any(code in " ".join(p.info["cmdline"] or []) for p in psutil.process_iter(["cmdline"]))
+    assert code not in (sock_office.paths.office / "office.log").read_text()
+
+
+def test_doctor_names_what_keeps_hq_off_hq_sock(cli_ready, short_dir, fake_llm, tmp_path):
+    running = RunningOffice(short_dir, fake_llm, hq={"tcp": False})
+    hq_sock = running.paths.office / "hq.sock"
+    hq_sock.write_text("not a socket\n")
+    try:
+        running.onboard()
+        assert running.hq_status()["socket_error"] == f"{hq_sock} exists and is not a socket"
+        doctor = running.opencorp("doctor", cwd=tmp_path, check=False).stdout
+        assert doctor_line("warn", "hq", f"not listening on {hq_sock}: {hq_sock} exists and is not a socket; run "
+                                         "`opencorp restart` once that's fixed") in doctor, doctor
+    finally:
+        running.stop()
