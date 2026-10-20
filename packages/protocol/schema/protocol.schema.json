@@ -504,12 +504,12 @@
             "debrief.created", "debrief.updated",
             "profile.updated",
             "profile_proposal.created", "profile_proposal.updated",
-            "company.updated"
+            "company.updated", "run.updated"
           ]
         },
         "at": { "$ref": "#/$defs/Timestamp" },
         "subject_id": { "type": "string" },
-        "data": { "type": "object", "description": "The entity after the change; for company.updated, `{sha}` of the new company commit." }
+        "data": { "type": "object", "description": "The entity after the change; for company.updated, `{sha}` of the new company commit; for run.updated, a RunUpdated." }
       }
     },
     "LiveEvent": {
@@ -642,6 +642,142 @@
           "type": "boolean", "default": false,
           "description": "True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept."
         }
+      }
+    },
+    "RunSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["run_id", "session_id", "flow", "flow_path", "person", "driver", "status", "launched_at"],
+      "description": "One run the office launched, as the Run Logs list shows it: from the office's runs table, the session, its questions and memory. No run log is read for it.",
+      "properties": {
+        "run_id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "flow": { "type": "string", "minLength": 1, "description": "What ran: chat, side_chat, profile_manager or debrief; later SOPs and discussions." },
+        "flow_path": { "type": "string", "minLength": 1, "description": "The flow's path in the company repo, at the session's pinned commit." },
+        "person": { "$ref": "#/$defs/Handle", "description": "The employee whose flow it is." },
+        "driver": { "type": "string", "minLength": 1, "description": "Who started the run, fixed at launch: a human's handle, or `office` for runs the office starts itself." },
+        "participants": {
+          "type": "array", "items": { "$ref": "#/$defs/Handle" }, "default": [],
+          "description": "Everyone else in it, the employee first: whoever answered its turns, cards or questions, or opened a side chat on its cards. Never the driver."
+        },
+        "parent_run_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The run it was started from: a side chat's card's run, a debrief's session's last run. Null for a top-level run." },
+        "status": { "enum": ["running", "waiting", "idle", "finished", "failed", "interrupted"] },
+        "reason": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }], "default": null, "description": "Why it failed or was interrupted, secrets removed." },
+        "failed_node": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }], "default": null, "description": "The node it failed at, when it failed at one." },
+        "current_nodes": { "type": "array", "items": { "type": "string" }, "default": [], "description": "While running, waiting or idle: the node ids it is at now, deepest only. Empty while running means it is starting." },
+        "asking": { "type": "boolean", "default": false, "description": "While waiting: a model question (one with no node) is open." },
+        "held": { "type": "boolean", "default": false, "description": "While waiting: it is held at its cost cap, with nothing else open." },
+        "codex": { "type": "boolean", "default": false, "description": "A debrief of a Codex session." },
+        "launched_at": { "$ref": "#/$defs/Timestamp" },
+        "ended_at": { "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }], "default": null, "description": "When the office learned it ended. Null while open, and for a run an office stop interrupted." },
+        "replaces": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The run of the same session this fresh run replaced." },
+        "replaced_by": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The fresh run of the same session that replaced this one." },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/RunSummary" }, "default": [], "description": "On a top-level row of a list page and on a run's page: the newest 200 runs started from it, newest first." },
+        "children_total": { "type": "integer", "minimum": 0, "default": 0, "description": "How many runs were started from it, shown or not." }
+      }
+    },
+    "RunPage": {
+      "type": "object", "additionalProperties": false, "required": ["runs"],
+      "description": "One page of GET /runs: top-level runs, newest first, each with its children.",
+      "properties": {
+        "runs": { "type": "array", "items": { "$ref": "#/$defs/RunSummary" } },
+        "next": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The `before` of the next page; null on the last." }
+      }
+    },
+    "RunUsage": {
+      "type": "object", "additionalProperties": false, "required": ["input_tokens", "output_tokens", "usd"],
+      "description": "What a run's model calls used, as the chat harness recorded them.",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "usd": { "type": "number", "minimum": 0 }
+      }
+    },
+    "RunDetail": {
+      "type": "object", "additionalProperties": false, "required": ["run", "repo_commit", "log_state"],
+      "description": "GET /runs/{id}: the run's summary, what its log's first record says, and whether the log can be read.",
+      "properties": {
+        "run": { "$ref": "#/$defs/RunSummary" },
+        "parent": { "anyOf": [{ "$ref": "#/$defs/RunSummary" }, { "type": "null" }], "default": null },
+        "repo_commit": { "$ref": "#/$defs/GitId", "description": "The session's pinned commit: which version of the flow ran." },
+        "flow_fingerprint": { "anyOf": [{ "type": "string", "pattern": "^[0-9a-f]{64}$" }, { "type": "null" }], "default": null },
+        "learnable": { "anyOf": [{ "type": "boolean" }, { "type": "null" }], "default": null, "description": "Whether the log keeps evidence (prompts, model turns, tool calls); null until the log is read." },
+        "models": { "type": "object", "additionalProperties": { "type": "string" }, "default": {}, "description": "The model of each agent node, by static path, from the log's first record." },
+        "usage": { "anyOf": [{ "$ref": "#/$defs/RunUsage" }, { "type": "null" }], "default": null, "description": "Null when not recorded: the office records usage only for runs the chat harness runs, not debriefs." },
+        "log_state": { "enum": ["ok", "indexing", "missing", "not_started", "unsupported_schema"] },
+        "log_message": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "What to show for any log_state but ok." },
+        "bytes_done": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "While indexing: bytes of the log read so far." },
+        "bytes_total": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "While indexing: the log's size in bytes." }
+      }
+    },
+    "RunNode": {
+      "type": "object", "additionalProperties": false, "required": ["seq", "node_id", "status"],
+      "description": "One node attempt, from its start record and its outcome record.",
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0, "description": "The start record's seq." },
+        "end_seq": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "The outcome record's seq; null while open or once restarted." },
+        "node_id": { "type": "string", "minLength": 1 },
+        "kind": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "agent, case, loop, map, call, …: the node's kind by static path. Always null until Yian lists a flow's nodes publicly (yian#943); clients show nothing for null." },
+        "status": { "enum": ["open", "succeeded", "routed", "expanded", "failed", "restarted"] },
+        "handle": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "For a routed case: the handle it took." },
+        "error": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }], "default": null, "description": "For a failed node: its error, secrets removed." }
+      }
+    },
+    "RunDivider": {
+      "type": "object", "additionalProperties": false, "required": ["seq", "retried"],
+      "description": "A run_resumed record: where the run was resumed and which nodes it retried.",
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "retried": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "RunNodePage": {
+      "type": "object", "additionalProperties": false, "required": ["nodes"],
+      "description": "GET /runs/{id}/nodes: node attempts, newest start first, and the resume dividers among them.",
+      "properties": {
+        "nodes": { "type": "array", "items": { "$ref": "#/$defs/RunNode" } },
+        "dividers": { "type": "array", "items": { "$ref": "#/$defs/RunDivider" }, "default": [] },
+        "next_before": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "The `before` of the next (older) page; null on the oldest." },
+        "dropped": { "type": "boolean", "default": false, "description": "True when older attempts were dropped from the table (past 100,000): see Raw." },
+        "indexing": { "type": "boolean", "default": false, "description": "True when the log is still being read for the first time: nodes is empty; ask again." },
+        "bytes_done": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "While indexing: bytes of the log read so far." },
+        "bytes_total": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "While indexing: the log's size in bytes." }
+      }
+    },
+    "RunEvent": {
+      "type": "object", "additionalProperties": false, "required": ["seq", "kind"],
+      "description": "One run-log record as written, secrets removed.",
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "kind": { "type": "string", "minLength": 1 },
+        "node_id": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
+        "payload": { "anyOf": [{ "type": "object" }, { "type": "null" }], "default": null, "description": "The record's payload, scrubbed; null when withheld or too large to preview." },
+        "cut": { "type": "array", "items": { "type": "string" }, "default": [], "description": "JSON pointers (into payload) of strings cut at 4 KiB; fetch the event by seq for the whole." },
+        "evidence_left_out": { "type": "boolean", "default": false, "description": "True when evidence was left out of a page; fetch the event by seq for it." },
+        "withheld": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "Why the payload isn't shown: a secret couldn't be removed." },
+        "size": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "The record's size in bytes, when it was too large to preview." }
+      }
+    },
+    "RunEventPage": {
+      "type": "object", "additionalProperties": false, "required": ["events"],
+      "description": "GET /runs/{id}/events: records in seq order, at most 500 or 256 KiB of JSON.",
+      "properties": {
+        "events": { "type": "array", "items": { "$ref": "#/$defs/RunEvent" } },
+        "next_after": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "The `after` of the next page; null at the end of the log so far." },
+        "cut": { "type": "boolean", "default": false, "description": "True when the page stopped at its byte cap." },
+        "indexing": { "type": "boolean", "default": false, "description": "True when the log is still being read for the first time: events is empty; ask again." },
+        "bytes_done": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "While indexing: bytes of the log read so far." },
+        "bytes_total": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "While indexing: the log's size in bytes." }
+      }
+    },
+    "RunUpdated": {
+      "type": "object", "additionalProperties": false, "required": ["run_id", "session_id", "status"],
+      "description": "The data of a run.updated event: from the store and memory, node ids only.",
+      "properties": {
+        "run_id": { "$ref": "#/$defs/Ulid" },
+        "session_id": { "$ref": "#/$defs/Ulid" },
+        "parent_run_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
+        "status": { "enum": ["running", "waiting", "idle", "finished", "failed", "interrupted"] },
+        "current_nodes": { "type": "array", "items": { "type": "string" }, "default": [] }
       }
     },
     "PersonCost": {
