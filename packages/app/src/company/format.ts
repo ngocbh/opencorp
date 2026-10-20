@@ -36,3 +36,19 @@ export function describe(d: { status: Status; branch: boolean; needs: number; co
     .filter(Boolean)
     .join(" · ")
 }
+
+const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["year", 365 * 86_400],
+  ["month", 30 * 86_400],
+  ["day", 86_400],
+  ["hour", 3_600],
+  ["minute", 60],
+]
+const relative = new Intl.RelativeTimeFormat("en", { numeric: "auto" })
+
+/** How long ago `time` was, in words: "just now", "5 minutes ago", "yesterday", "3 months ago". */
+export function ago(time: string, now = Date.now()) {
+  const seconds = (now - Date.parse(time)) / 1000
+  for (const [unit, size] of UNITS) if (seconds >= size) return relative.format(-Math.floor(seconds / size), unit)
+  return "just now"
+}
