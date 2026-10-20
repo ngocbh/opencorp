@@ -175,14 +175,16 @@ def test_the_code_never_reaches_a_process_list_or_the_log(sock_office, tmp_path)
 
 
 def test_doctor_names_what_keeps_hq_off_hq_sock(cli_ready, short_dir, fake_llm, tmp_path):
-    running = RunningOffice(short_dir, fake_llm, hq={"tcp": False})
-    hq_sock = running.paths.office / "hq.sock"
-    hq_sock.write_text("not a socket\n")
+    running = None
     try:
+        running = RunningOffice(short_dir, fake_llm, hq={"tcp": False})
+        hq_sock = running.paths.office / "hq.sock"
+        hq_sock.write_text("not a socket\n")
         running.onboard()
         assert running.hq_status()["socket_error"] == f"{hq_sock} exists and is not a socket"
         doctor = running.opencorp("doctor", cwd=tmp_path, check=False).stdout
         assert doctor_line("warn", "hq", f"not listening on {hq_sock}: {hq_sock} exists and is not a socket; run "
                                          "`opencorp restart` once that's fixed") in doctor, doctor
     finally:
-        running.stop()
+        if running is not None:
+            running.stop()
