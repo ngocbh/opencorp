@@ -39,6 +39,14 @@ test("a branch closes with its chevron, shows totals while closed, and stays clo
   await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "false")
 })
 
+test("a closed branch's dot shows the most urgent status in it, marked as the branch's", async ({ page }) => {
+  await expect(row(page, /Ngoc/).getByTestId("status")).toHaveAttribute("data-status", "away")
+  await row(page, /Ngoc/).getByTestId("toggle").click()
+  await expect(row(page, /Ngoc/).getByTestId("status")).toHaveAttribute("data-status", "waiting")
+  await expect(row(page, /Ngoc/).getByTestId("status")).toHaveAttribute("data-branch", "true")
+  await expect(row(page, /Ngoc/).getByTestId("status")).toContainText("waiting in this branch")
+})
+
 test("a leaf shows no branch totals", async ({ page }) => {
   await expect(row(page, /Kai/).getByTestId("cost")).toHaveText("$0.42")
   await expect(row(page, /Ann/)).not.toContainText("person")

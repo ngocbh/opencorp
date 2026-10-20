@@ -4,7 +4,7 @@ import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
 import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../company/rows"
-import { cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
+import { branchStatus, cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { byTeam } from "../company/teams"
 import { Toolbar } from "../company/toolbar"
 import { buildTree } from "../company/tree"
@@ -77,6 +77,11 @@ export default function Company() {
     const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
     return node?.children.length ? totalsText(totals(node, status(), needs(), s.costs)) : undefined
   }
+  /** A manager's branch status, from their node in the tree by manager. */
+  const branchStatusOf = (item: Item) => {
+    const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
+    return node?.children.length ? branchStatus(node, status()) : undefined
+  }
   // The group filter highlights its members and dims everyone else, keeping the tree's shape.
   const dimmed = (item: Item) => {
     const p = personOf(item)
@@ -113,6 +118,7 @@ export default function Company() {
         isOpen={isOpen}
         setOpen={setOpen}
         status={(h) => status().get(h) ?? "away"}
+        branchStatus={branchStatusOf}
         needs={(h) => needs().get(h) ?? 0}
         cost={(h) => s.costs?.people[h]}
         groups={groups()}

@@ -12,6 +12,8 @@ export type ListProps = {
   isOpen: (item: Item, depth: number) => boolean
   setOpen: (id: string, open: boolean) => void
   status: (handle: string) => Status
+  /** A closed branch's status: its most urgent member's; undefined for a leaf or a team. */
+  branchStatus: (item: Item) => Status | undefined
   needs: (handle: string) => number
   cost: (handle: string) => PersonCost | undefined
   groups: Map<string, Group>
@@ -73,6 +75,8 @@ export function CompanyList(props: ListProps) {
           <Show when={byId().get(id)}>
             {(row) => {
               const person = () => personOf(row().item)
+              const closed = () => row().item.children.length > 0 && !row().open
+              const branchStatus = () => (closed() ? props.branchStatus(row().item) : undefined)
               return (
                 <li
                   role="treeitem"
@@ -119,14 +123,15 @@ export function CompanyList(props: ListProps) {
                     {(p) => (
                       <PersonBody
                         person={p()}
-                        status={props.status(p().handle)}
+                        status={branchStatus() ?? props.status(p().handle)}
+                        branch={branchStatus() !== undefined}
                         needs={props.needs(p().handle)}
                         cost={props.cost(p().handle)}
                         groups={props.groups}
                       />
                     )}
                   </Show>
-                  <Show when={row().item.children.length > 0 && !row().open && props.totals(row().item)}>
+                  <Show when={closed() && props.totals(row().item)}>
                     {(text) => <span class="shrink-0 text-xs text-neutral-500">{text()}</span>}
                   </Show>
                 </li>

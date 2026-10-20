@@ -10,6 +10,9 @@ const DOT: Record<Status, string> = {
   away: "border border-neutral-400",
 }
 
+/** A closed branch's dot is outlined, so it doesn't read as the person's own status. */
+const BRANCH = "outline outline-1 outline-offset-2 outline-neutral-500 dark:outline-neutral-400"
+
 const initials = (name: string) => name.split(/\s+/).map((w) => w[0] ?? "").join("").slice(0, 2).toUpperCase()
 
 /**
@@ -22,6 +25,8 @@ export function PersonBody(props: {
   needs: number
   cost: PersonCost | undefined
   groups?: Map<string, Group>
+  /** Whether `status` is the person's closed branch's (its most urgent member's), not their own. */
+  branch?: boolean
 }) {
   return (
     <span class="flex min-w-0 flex-1 items-center gap-2">
@@ -32,8 +37,13 @@ export function PersonBody(props: {
         {initials(props.person.name)}
         <span class="absolute -bottom-1 -right-1 text-[10px]">{props.person.kind === "human" ? "●" : "◆"}</span>
       </span>
-      <span data-testid="status" data-status={props.status} class={`h-2.5 w-2.5 shrink-0 rounded-full ${DOT[props.status]}`}>
-        <span class="sr-only">{props.status}</span>
+      <span
+        data-testid="status"
+        data-status={props.status}
+        data-branch={props.branch ? "true" : undefined}
+        class={`h-2.5 w-2.5 shrink-0 rounded-full ${DOT[props.status]} ${props.branch ? BRANCH : ""}`}
+      >
+        <span class="sr-only">{props.branch ? `${props.status} in this branch` : props.status}</span>
       </span>
       <span class="min-w-0 truncate">
         <span class="font-medium">{props.person.name}</span> <span class="text-neutral-500">{props.person.title}</span>
