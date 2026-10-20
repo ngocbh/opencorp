@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test"
-import { card, session } from "./company"
+import { card, session, SHA } from "./company"
 
 test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/reset")
@@ -116,4 +116,20 @@ test("moving between screens keeps the office: no second sign-in check or stream
   await page.waitForTimeout(500)
   const log = await (await request.get("/__fixture/log")).json()
   expect(log.api.filter((p: string) => p === "/api/whoami" || p === "/api/events")).toEqual(["/api/whoami", "/api/events"])
+})
+
+test("company.updated reads the company again only for a new commit", async ({ page, request }) => {
+  await page.goto("/")
+  await expect(connection(page)).toHaveText("live")
+  const companyReads = async () =>
+    (await (await request.get("/__fixture/log")).json()).api.filter((p: string) => p === "/api/company").length
+  expect(await companyReads()).toBe(1)
+  await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha: SHA } } } })
+  await page.waitForTimeout(500)
+  expect(await companyReads()).toBe(1) // the commit the snapshot read
+  const next = "1111111111111111111111111111111111111111"
+  await request.post("/__fixture/set", { data: { view: { sha: next, company: { name: "Acme Two", ceo: "ngocbh" } } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha: next } } } })
+  await expect(page.getByRole("heading", { name: "Acme Two" })).toBeVisible()
+  expect(await companyReads()).toBe(2)
 })

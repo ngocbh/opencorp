@@ -64,6 +64,7 @@ function createOffice(toSignIn: () => void) {
     runEach(calls)
   }
   const mutate = (fn: (s: OfficeState) => void) => {
+    if (disposed) return
     queue.push(fn)
     timer ??= setTimeout(flush, FLUSH_MS)
   }
@@ -130,6 +131,7 @@ function createOffice(toSignIn: () => void) {
   let costReads = 0
   /** Reads the costs for the window; only the latest read's answer is kept. */
   async function readCosts() {
+    if (disposed) return
     const ask = ++costReads
     try {
       const report = await client.costs.since(since(costWindow()))
@@ -147,9 +149,13 @@ function createOffice(toSignIn: () => void) {
   }
   sync.on("session.updated", () => costs.call())
 
-  sync.on("company.updated", () => {
+  let companyReads = 0
+  /** Reads the company at a new commit; only the latest read's answer is kept. */
+  sync.on("company.updated", (e) => {
+    if (e.data.sha && e.data.sha === state.sha) return // the commit the state already holds
+    const ask = ++companyReads
     client.company.get().then(
-      (view) => mutate((s) => applyCompany(s, view)),
+      (view) => void (ask === companyReads && mutate((s) => applyCompany(s, view))),
       (error) => console.error("Failed to read the company", { error }),
     )
   })
