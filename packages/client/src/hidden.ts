@@ -23,6 +23,7 @@ export function pauseWhenHidden(sync: { start(): void; stop(): void }, page: Pag
     }
   }
   page.addEventListener("visibilitychange", changed)
+  changed() // a tab opened in the background is hidden from the start
   return () => {
     clearTimeout(timer)
     page.removeEventListener("visibilitychange", changed)

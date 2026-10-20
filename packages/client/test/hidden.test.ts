@@ -29,3 +29,14 @@ test("a tab shown again within the limit keeps its stream", async () => {
   await Bun.sleep(70)
   expect(calls).toEqual([])
 })
+
+test("a tab that opens hidden lets go of its stream too", async () => {
+  const calls: string[] = []
+  const p = page()
+  p.hidden = true
+  pauseWhenHidden({ start: () => calls.push("start"), stop: () => calls.push("stop") }, p as any, 20)
+  await Bun.sleep(40)
+  p.hidden = false
+  p.fire()
+  expect(calls).toEqual(["stop", "start"])
+})
