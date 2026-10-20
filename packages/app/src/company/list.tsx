@@ -123,7 +123,8 @@ export function CompanyList(props: ListProps) {
                   aria-expanded={row().item.children.length ? row().open : undefined}
                   tabindex={isCurrent(id) ? 0 : -1}
                   aria-describedby={person() ? descId : undefined}
-                  aria-selected={person() ? isSelected(person()!.handle) : undefined}
+                  // "By team" shows someone once in full and muted elsewhere: only the full row is the selected one.
+                  aria-selected={person() ? !isMuted(row().item) && isSelected(person()!.handle) : undefined}
                   data-dimmed={String(props.dimmed(row().item))}
                   data-muted={isMuted(row().item) ? "true" : undefined}
                   // Computed, so Solid sets it with style.setProperty, which the CSP allows.

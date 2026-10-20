@@ -148,6 +148,13 @@ test("someone who leaves the company closes their panel, and coming back doesn't
   await expect(search).toBeFocused()
 })
 
+test("in By team only a person's first row is selected, not their muted ones", async ({ page }) => {
+  await page.getByText("By team", { exact: true }).click()
+  await page.getByRole("treeitem", { name: /Minh/ }).first().click()
+  await expect(page.locator("[role=treeitem][aria-selected=true]")).toHaveCount(1)
+  await expect(page.locator('[role=treeitem][data-muted="true"]')).toHaveAttribute("aria-selected", "false")
+})
+
 /** The panel on a phone: a modal dialog. */
 const sheet = (page: import("@playwright/test").Page, name: string) => page.getByRole("dialog", { name })
 
