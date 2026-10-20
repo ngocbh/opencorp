@@ -1,8 +1,11 @@
 """The daemon process: a 0600 socket, one daemon per home, clean shutdown."""
 
+import asyncio
 import importlib
 import os
+import resource
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -13,7 +16,8 @@ import pytest
 
 from opencorp.daemon.app import OfficePaths
 from opencorp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bind_socket, main, make_office_dir,
-                                    remove_stale_socket)
+                                    raise_fd_limit, remove_stale_socket, server_config)
+from opencorp.daemon.sockets import bind_tcp
 from tests.daemon.conftest import base_files, served, write_repo
 
 
@@ -403,3 +407,40 @@ async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts
         await office.stop()
     finally:
         office.store.close()
+
+
+def test_the_tcp_socket_reuses_addresses_but_never_shares_the_port():
+    sock = bind_tcp(0)
+    try:
+        assert sock.getsockname()[0] == "127.0.0.1"
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
+        assert sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT) == 0
+    finally:
+        sock.close()
+
+
+def test_the_office_server_has_websockets_off():
+    assert server_config(lambda *a: None).ws == "none"
+
+
+def test_the_soft_fd_limit_is_raised_to_4096_within_the_hard_one(monkeypatch):
+    set_to = []
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (256, 10240))
+    monkeypatch.setattr(resource, "setrlimit", lambda which, limits: set_to.append(limits))
+    raise_fd_limit()
+    assert set_to == [(4096, 10240)]
+    monkeypatch.setattr(resource, "getrlimit", lambda which: (256, 1024))
+    raise_fd_limit()
+    assert set_to[-1] == (1024, 1024)
+
+
+async def test_a_websocket_upgrade_is_served_as_plain_http_on_the_office_socket(office, short_dir):
+    async with served(office, short_dir / "o.sock"):
+        reader, writer = await asyncio.open_unix_connection(str(short_dir / "o.sock"))
+        writer.write(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+                     b"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n")
+        status = await asyncio.wait_for(reader.readline(), 5)
+        writer.close()
+    # With ws="none" uvicorn ignores the upgrade and serves /health. Without it, the upgrade reaches Starlette,
+    # which has no WebSocket route, and uvicorn answers 403, so this pins the setting rather than only "not 101".
+    assert status.startswith(b"HTTP/1.1 200")

@@ -6,12 +6,13 @@ import contextlib
 import errno
 import fcntl
 import os
+import resource
 import signal
-import socket
 import stat
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 
@@ -26,6 +27,8 @@ from opencorp.company.snapshot import CompanySnapshots
 from opencorp.company.watch import HeadWatcher
 from opencorp.daemon.app import Office, OfficePaths, create_app
 from opencorp.daemon.bus import Bus
+from opencorp.daemon.sockets import (SUN_PATH_MAX, OfficeStartError, bind_socket,  # noqa: F401  (re-exported)
+                                     check_socket_path, remove_stale_socket)
 from opencorp.extensions import ExtensionError, load_extensions
 from opencorp.harness.sessions import CodexSessions
 from opencorp.hq.core import attach as attach_hq
@@ -34,14 +37,6 @@ from opencorp.profile import GitProfileStore
 from opencorp.secrets import SecretStore
 from opencorp.store import Store
 from opencorp.worker import reap
-
-# sockaddr_un.sun_path, including the terminating NUL.
-SUN_PATH_MAX = 104 if sys.platform == "darwin" else 108
-
-
-class OfficeStartError(Exception):
-    """The daemon can't start; the message says why."""
-
 
 class AlreadyRunning(OfficeStartError):
     """Another daemon holds this home's pidfile."""
@@ -107,38 +102,25 @@ def make_office_dir(path: Path) -> None:
     os.chmod(path, 0o700)
 
 
-def check_socket_path(path: Path) -> None:
-    """Raise ``OfficeStartError`` if ``path`` is too long for a unix socket."""
-    size = len(os.fsencode(path))
-    if size >= SUN_PATH_MAX:
-        raise OfficeStartError(f"socket path too long ({size} bytes, limit {SUN_PATH_MAX - 1}): {path}")
+FD_TARGET = 4096
 
 
-def remove_stale_socket(path: Path) -> None:
-    """Unlink the socket a crashed daemon left at ``path``; ``OfficeStartError`` if something else is there."""
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return
-    if not stat.S_ISSOCK(st.st_mode):
-        raise OfficeStartError(f"{path} exists and is not a socket")
-    path.unlink(missing_ok=True)
+def raise_fd_limit(target: int = FD_TARGET) -> None:
+    """Raise the soft open-file limit to ``target`` (within the hard limit): launchd agents often start at 256, and
+    HQ's listeners may hold 64 connections each."""
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = target if hard == resource.RLIM_INFINITY else min(hard, target)
+    if soft < want:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+        except (ValueError, OSError):
+            pass  # keep the limit we have
 
 
-def bind_socket(path: Path) -> socket.socket:
-    """A listening unix socket at ``path`` with mode 0600."""
-    check_socket_path(path)
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    # uvicorn's --uds chmods the socket to 0666. Until listen() nobody can connect, so
-    # chmod between bind and listen leaves no window, without a process-wide umask change.
-    try:
-        sock.bind(str(path))
-        os.chmod(path, 0o600)
-        sock.listen(128)
-    except OSError as exc:
-        sock.close()
-        raise OfficeStartError(f"can't listen on {path}: {exc}") from exc
-    return sock
+def server_config(app: Any, **overrides: Any) -> uvicorn.Config:
+    """The office socket's uvicorn settings. WebSockets are off: no route uses them."""
+    return uvicorn.Config(app, **{"lifespan": "on", "log_level": "info", "timeout_graceful_shutdown": 5, "ws": "none",
+                                  **overrides})
 
 
 class OfficeServer(uvicorn.Server):
@@ -212,6 +194,7 @@ def build_office(paths: OfficePaths) -> Office:
 async def run(paths: OfficePaths, *, extensions: str = "opencorp.extensions") -> None:
     """Run the daemon until SIGINT, SIGTERM, or SIGHUP."""
     make_office_dir(paths.office)
+    raise_fd_limit()
     pidfile = PidFile(paths.pidfile)
     pidfile.acquire()
     try:
@@ -228,8 +211,7 @@ async def run(paths: OfficePaths, *, extensions: str = "opencorp.extensions") ->
             attach_hq(office)
             remove_stale_socket(paths.socket)  # we hold the lock, so no live daemon owns it
             sock = bind_socket(paths.socket)
-            server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="info",
-                                                 timeout_graceful_shutdown=5), office)
+            server = OfficeServer(server_config(create_app(office)), office)
             try:
                 await server.serve(sockets=[sock])
             except SystemExit as exc:
