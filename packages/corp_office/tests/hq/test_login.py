@@ -1,7 +1,9 @@
 """Signing a browser in with a handle and password: the same session and cookie as pairing."""
 
+import asyncio
 import logging
 import re
+import threading
 
 import httpx
 import pytest
@@ -10,7 +12,7 @@ import yaml
 from opencorp.auth.passwords import check_password, hash_password
 from opencorp.hq import login as login_module
 from opencorp.hq.api import create_hq_app
-from opencorp.hq.login import DUMMY_HASH, MAX_KEYS, Throttle
+from opencorp.hq.login import DUMMY_HASH, MAX_KEYS, Busy, Throttle
 from tests.company.conftest import _git
 from tests.hq.conftest import ORIGIN, PORT, hq_client
 
@@ -241,3 +243,52 @@ async def test_a_success_clears_the_count(web, with_password, fast_checks):
     assert (await login(web)).status_code == 200
     for _ in range(4):
         assert (await login(web, password="a wrong guess")).status_code == 401
+
+
+async def test_two_checks_at_a_time_and_a_third_is_503_busy_at_once(web, with_password, monkeypatch):
+    entered, release = [], threading.Event()
+
+    def held(pw, phc):
+        entered.append(phc)
+        release.wait(10)
+        return False
+
+    monkeypatch.setattr(login_module, "check_password", held)
+    first = [asyncio.create_task(login(web, password="a wrong guess")) for _ in range(2)]
+    try:
+        async with asyncio.timeout(5):
+            while len(entered) < 2:
+                await asyncio.sleep(0.01)
+        r = await login(web)
+        assert r.status_code == 503 and r.json()["error"] == "busy" and len(entered) == 2
+    finally:
+        release.set()
+    assert [r.status_code for r in await asyncio.gather(*first)] == [401, 401]
+    monkeypatch.setattr(login_module, "check_password", lambda pw, phc: pw == PASSWORD)
+    assert (await login(web)).status_code == 200  # the busy answer counted no failure, and the slots came back
+
+
+async def test_a_check_whose_request_went_away_still_holds_its_slot(hq, with_password, monkeypatch):
+    entered, release = [], threading.Event()
+
+    def held(pw, phc):
+        entered.append(phc)
+        release.wait(10)
+        return False
+
+    monkeypatch.setattr(login_module, "check_password", held)
+    gone = [asyncio.create_task(hq.logins.check("p", "ngocbh", "a wrong guess")) for _ in range(2)]
+    try:
+        async with asyncio.timeout(5):
+            while len(entered) < 2:
+                await asyncio.sleep(0.01)
+        for task in gone:
+            task.cancel()
+        await asyncio.gather(*gone, return_exceptions=True)
+        with pytest.raises(Busy):
+            await hq.logins.check("p", "ngocbh", PASSWORD)
+    finally:
+        release.set()
+    async with asyncio.timeout(5):
+        while hq.logins._checks.locked():
+            await asyncio.sleep(0.01)

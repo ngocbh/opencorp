@@ -29,12 +29,19 @@ FIRST_WAIT_S = 60
 MAX_KEYS = 1000
 """The most pairs the throttle remembers."""
 
+CHECKS = 2
+"""The most password checks at a time: each holds about 64 MiB and a core for a tenth of a second."""
+
 type Key = tuple[str, str]
 """(peer address, handle)."""
 
 
 class BadCredentials(Exception):
     """The handle and password don't sign anyone in; which part was wrong is never said."""
+
+
+class Busy(Exception):
+    """``CHECKS`` password checks are running already; the caller tries again later instead of queueing."""
 
 
 class Throttled(Exception):
@@ -107,19 +114,31 @@ class Logins:
     def __init__(self, sessions: BrowserSessions, *, clock: Callable[[], float] = time.monotonic) -> None:
         self.sessions = sessions
         self.throttle = Throttle(clock)
+        self._checks = asyncio.Semaphore(CHECKS)
 
     async def check(self, peer: str, handle: str, password: str) -> str:
         """The fingerprint of the password hash ``password`` matches, ``handle``'s at HEAD; raises ``BadCredentials``
-        unless ``handle`` is a human whose password it is, and ``Throttled`` while ``(peer, handle)`` is locked.
+        unless ``handle`` is a human whose password it is, ``Throttled`` while ``(peer, handle)`` is locked, and
+        ``Busy`` when ``CHECKS`` checks are running.
 
         Pairing never comes here, so no number of failures here can lock anyone out of ``opencorp pair``.
         """
         key = (peer, handle)
         if (wait := self.throttle.wait(key)) is not None:
             raise Throttled(wait)
-        phc = await self.sessions.password_hash(handle)
-        # scrypt costs about 64 MiB and a tenth of a second: off the loop.
-        matched = await asyncio.to_thread(check_password, password, phc or DUMMY_HASH)
+        if self._checks.locked():  # never a queue without bound
+            raise Busy
+        await self._checks.acquire()  # free, just checked: returns at once
+        try:
+            phc = await self.sessions.password_hash(handle)
+        except BaseException:
+            self._checks.release()
+            raise
+        # scrypt costs about 64 MiB and a tenth of a second: off the loop. The slot is freed when the check ends,
+        # not when this request does, so clients that go away mid-check can't start more checks than CHECKS.
+        check = asyncio.ensure_future(asyncio.to_thread(check_password, password, phc or DUMMY_HASH))
+        check.add_done_callback(lambda _: self._checks.release())
+        matched = await asyncio.shield(check)
         if phc is None or not matched:
             self.throttle.failed(key)
             raise BadCredentials

@@ -24,7 +24,7 @@ from opencorp.daemon.routes.sessions import list_sessions
 from opencorp.daemon.routes.work_items import get_work_item
 from opencorp.hq.auth import BrowserAuth, cookie_name, cookie_value
 from opencorp.hq.guard import HqGuard
-from opencorp.hq.login import BadCredentials, Throttled
+from opencorp.hq.login import BadCredentials, Busy, Throttled
 from opencorp.hq.static import serve_app
 from opencorp.protocol.models import Ack, CompanyView, HqLoginRequest, PairRequest
 
@@ -114,6 +114,8 @@ async def login(request: Request) -> JSONResponse:
         return error(429, "too_many_attempts",
                      f"too many tries; wait {minutes} minute{'s' * (minutes != 1)}, or run `opencorp pair` on the "
                      "office machine", {"retry-after": str(exc.retry_after)})
+    except Busy:
+        return error(503, "busy", "the office is busy; try again", {"retry-after": "1"})
     if old is not None:
         await hq.sessions.revoke(old.id)  # signing in again replaces this browser's session
     log.info("sign-in for %s ok", who)
