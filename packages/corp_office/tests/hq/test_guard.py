@@ -1,11 +1,14 @@
 """The guard every HQ request passes before routing."""
 
 import asyncio
+import contextlib
 import dataclasses
 import json
+import socket
 
 import httpx
 import pytest
+import uvicorn
 from starlette.responses import JSONResponse
 
 from opencorp.hq import guard
@@ -249,3 +252,92 @@ async def test_a_body_that_stops_arriving_is_408(web, monkeypatch):
     async with asyncio.timeout(3):
         r = await web.post("/api/pair", content=stalls(), headers={"content-type": "application/json"})
     assert (r.status_code, r.json()["error"]) == (408, "body_timeout")
+
+
+@contextlib.asynccontextmanager
+async def served(app_for_port):
+    """Serve ``app_for_port(port)`` with uvicorn's h11 protocol on a free loopback port; yields the port."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app_for_port(port), lifespan="off", ws="none", http="h11",
+                                           log_level="warning", timeout_keep_alive=5))
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    try:
+        async with asyncio.timeout(10):
+            while not server.started:
+                await asyncio.sleep(0.01)
+        yield port
+    finally:
+        server.should_exit = True
+        await task
+        sock.close()
+
+
+async def trickle(port: int, head: str, seconds: float = 4.0) -> tuple[bytes, bool]:
+    """Send ``head``, then a byte of body every 0.1 s; the response and whether the server closed within
+    ``seconds``."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port)
+    writer.write(head.encode())
+    got = b""
+    try:
+        async with asyncio.timeout(seconds):
+            while True:
+                writer.write(b"x")
+                await writer.drain()
+                try:
+                    data = await asyncio.wait_for(reader.read(4096), 0.1)
+                except TimeoutError:
+                    continue
+                if not data:
+                    return got, True
+                got += data
+    except TimeoutError:
+        return got, False
+    except ConnectionError:
+        return got, True
+    finally:
+        writer.close()
+
+
+def post(port: int, path: str, *extra: str) -> str:
+    """A POST head from the app's own page that promises a 1000-byte JSON body."""
+    return "".join([f"POST {path} HTTP/1.1\r\n", f"Host: 127.0.0.1:{port}\r\n", f"Origin: http://127.0.0.1:{port}\r\n",
+                    "Content-Type: application/json\r\n", *extra, "Content-Length: 1000\r\n\r\n"])
+
+
+async def test_a_408_closes_the_connection_while_the_client_still_trickles(monkeypatch):
+    monkeypatch.setattr(guard, "BODY_TIMEOUT_S", 0.5)
+    async with served(lambda port: HqGuard(echo, port=port)) as port:
+        got, closed = await trickle(port, post(port, "/api/pair"))
+    assert got.startswith(b"HTTP/1.1 408") and b"connection: close" in got and closed
+
+
+async def test_a_413_closes_the_connection_before_the_body_is_read():
+    async with served(lambda port: HqGuard(echo, port=port)) as port:
+        got, closed = await trickle(port, post(port, "/api/pair").replace("1000", "20000"))
+    assert got.startswith(b"HTTP/1.1 413") and closed
+
+
+async def test_a_response_that_leaves_the_body_unread_closes_the_connection():
+    async def ignores_the_body(scope, receive, send):
+        await JSONResponse({}, 405)(scope, receive, send)
+
+    async with served(lambda port: HqGuard(ignores_the_body, port=port)) as port:
+        got, closed = await trickle(port, post(port, "/some/page"))
+    assert got.startswith(b"HTTP/1.1 405") and b"connection: close" in got and closed
+
+
+async def test_a_refusal_closes_the_connection():
+    async with served(lambda port: HqGuard(echo, port=port)) as port:
+        got, closed = await trickle(port, post(port, "/api/pair").replace(f"127.0.0.1:{port}\r\nOrigin",
+                                                                         f"evil.example:{port}\r\nOrigin"))
+    assert got.startswith(b"HTTP/1.1 403") and closed
+
+
+async def test_a_read_body_keeps_the_connection_open():
+    async with served(lambda port: HqGuard(echo, port=port)) as port, \
+            httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}", trust_env=False,
+                              headers={"origin": f"http://127.0.0.1:{port}"}) as c:
+        r = await c.post("/api/pair", json={"code": "x"})
+    assert r.status_code == 200 and "connection" not in r.headers

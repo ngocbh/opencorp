@@ -18,6 +18,8 @@ HEADERS = [(b"content-security-policy", CSP.encode()), (b"x-frame-options", b"DE
            (b"cross-origin-opener-policy", b"same-origin")]
 """The headers added to every HQ response."""
 
+_SECURITY_NAMES = frozenset(name for name, _ in HEADERS)
+
 MAX_API_BODY = 16 * 1024
 """The largest /api request body; the only writes are pairing and logging out."""
 
@@ -60,23 +62,40 @@ class HqGuard:
                 await send({"type": "websocket.close", "code": 1008})
             return None
 
+        # A response sent before the body is read leaves the rest of it on the wire, and uvicorn keeps reading it
+        # into a connection that never frees while a client trickles bytes: such a response closes the connection.
+        body_left = _declares_body(scope)
+        closing = False
+
+        async def tracked() -> Message:
+            nonlocal body_left
+            message = await receive()
+            if message["type"] == "http.request" and not message.get("more_body", False):
+                body_left = False
+            return message
+
         async def secured(message: Message) -> None:
             if message["type"] == "http.response.start":
-                message = {**message, "headers": [*message.get("headers", []), *HEADERS]}
+                close = closing or body_left
+                drop = _SECURITY_NAMES | ({b"connection"} if close else set())
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() not in drop]
+                message = {**message, "headers": [*headers, *HEADERS, *([(b"connection", b"close")] if close else [])]}
             await send(message)
 
         refusal = self._refusal(scope)
         if refusal is not None:
-            return await refusal(scope, receive, secured)
-        if is_api(scope["path"]) and scope["method"] not in _READS:
-            # Read the body here, so a chunked body over the cap, or one that stops arriving, is refused too.
-            body = await _read_capped(receive, MAX_API_BODY, BODY_TIMEOUT_S)
-            if body is None:  # the client went away; a partial body must never reach a route
-                return None
-            if isinstance(body, Response):
-                return await body(scope, receive, secured)
-            receive = _replay(body, receive)
-        await self.app(scope, receive, secured)
+            closing = True
+            return await refusal(scope, tracked, secured)
+        if not (is_api(scope["path"]) and scope["method"] not in _READS):
+            return await self.app(scope, tracked, secured)
+        # Read the body here, so a chunked body over the cap, or one that stops arriving, is refused too.
+        body = await _read_capped(tracked, MAX_API_BODY, BODY_TIMEOUT_S)
+        if body is None:  # the client went away; a partial body must never reach a route
+            return None
+        if isinstance(body, Response):
+            closing = True
+            return await body(scope, tracked, secured)
+        await self.app(scope, _replay(body, tracked), secured)
 
     def _refusal(self, scope: Scope) -> Response | None:
         """The response that refuses the request, or None to let it through."""
@@ -111,6 +130,12 @@ class HqGuard:
             if length.isascii() and length.isdecimal() and int(length) > MAX_API_BODY:
                 return _too_large()
         return None
+
+
+def _declares_body(scope: Scope) -> bool:
+    """Whether the request's head promises a body (a nonzero Content-Length, or a Transfer-Encoding)."""
+    length = header(scope, b"content-length")
+    return header(scope, b"transfer-encoding") is not None or (length is not None and length.strip() not in ("", "0"))
 
 
 def _too_large() -> Response:
