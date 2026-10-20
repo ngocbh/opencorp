@@ -1,0 +1,14 @@
+{
+  "commit": { "id": "0123456789abcdef0123456789abcdef01234567", "subject": "Hire Minh", "author": "Ngoc Bui", "time": "2026-10-20T14:03:11.000Z" },
+  "entries": [
+    { "path": "people", "type": "folder" },
+    { "path": "vendor", "type": "submodule", "size": null },
+    { "path": "company.yaml", "type": "file", "size": 64 },
+    { "path": "people/minh", "type": "folder" },
+    { "path": "people/ngocbh", "type": "folder" },
+    { "path": "people/minh/person.yaml", "type": "file", "size": 182 },
+    { "path": "people/ngocbh/notes.md", "type": "symlink", "size": 10 }
+  ],
+  "truncated": false,
+  "skipped": 1
+}
