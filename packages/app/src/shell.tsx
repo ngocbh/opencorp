@@ -61,11 +61,10 @@ export function Shell(props: ParentProps) {
         <nav aria-label="HQ" inert={covered()} class="flex w-56 shrink-0 flex-col border-r border-neutral-200 p-4 dark:border-neutral-800">
           <h1 class="text-lg font-semibold">{office.state.company?.name ?? "OpenCorp HQ"}</h1>
           <A
-            href="/"
-            end
+            href="/org"
             class="mt-4 block rounded px-2 py-1 aria-[current=page]:bg-neutral-100 dark:aria-[current=page]:bg-neutral-900"
           >
-            Company
+            Org
           </A>
           <div class="mt-auto space-y-1 pt-6 text-sm">
             <Show when={office.me()}>{(me) => <p>@{me()}</p>}</Show>

@@ -20,7 +20,7 @@ export default function Pair() {
       const client = createOfficeClient({ baseUrl: "/api" })
       const session = await client.pair({ code, label: browserLabel(navigator.userAgent) })
       rememberSession(session)
-      navigate("/", { replace: true })
+      navigate("/org", { replace: true })
     } catch (e) {
       if (e instanceof OfficeError && e.code === "pair_code_invalid") return setFailed(EXPIRED)
       // The code has left the URL, so this tab can't try it again.

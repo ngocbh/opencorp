@@ -194,7 +194,7 @@ test.describe("on a phone", () => {
   })
 
   test("the sidebar behind the sheet can't take focus either, until it closes", async ({ page }) => {
-    const company = page.locator('nav a[href="/"]')
+    const company = page.locator('nav a[href="/org"]')
     await page.getByRole("treeitem", { name: /Lead/ }).click()
     await expect(sheet(page, "Lead").getByRole("heading", { name: "Lead" })).toBeFocused()
     await page.keyboard.press("Shift+Tab")
