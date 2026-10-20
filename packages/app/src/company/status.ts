@@ -4,7 +4,7 @@ import type { TreeNode } from "./tree"
 
 export type Status = "waiting" | "busy" | "idle" | "away"
 /** Most urgent first. */
-export const URGENCY: Status[] = ["waiting", "busy", "idle", "away"]
+export const URGENCY: readonly Status[] = ["waiting", "busy", "idle", "away"]
 const BUSY = new Set<Session["status"]>(["starting", "busy", "ending", "debriefing"])
 /** profile_manager sessions are the office's work, not the person's. */
 const COUNTED = new Set<Session["kind"]>(["main", "side"])
