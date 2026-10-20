@@ -178,6 +178,112 @@ test("devices list shows names, and hashes only on --hashes", async () => {
   })
 })
 
+const day = (ts: string) => new Date(ts).toLocaleDateString()
+
+test("devices list adds this office's browsers: name, label, who paired it, last use, expiry", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ann", label: "Safari on Mac" })
+  const used = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", last_used_at: "2026-10-18T09:00:00Z" })
+  expect(await opencorp(trusted, "devices", "list")).toEqual({
+    code: 0,
+    out: [
+      "mac  (this device)",
+      "Browsers (this office):",
+      `  ${used.id}  ${used.name}  paired by @ngocbh  last used ${day("2026-10-18T09:00:00Z")}  expires ${day(used.expires_at)}`,
+      `  ${b.id}  ${b.name} (Safari on Mac)  paired by @ann  last used never  expires ${day(b.expires_at)}`,
+    ].join("\n"),
+    err: "",
+  })
+})
+
+test("devices list says a session the office hasn't cleaned up yet has expired", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", expires_at: "2026-09-01T09:00:00Z" })
+  expect((await opencorp(trusted, "devices", "list")).out.split("\n").at(-1)).toBe(
+    `  ${b.id}  ${b.name}  paired by @ngocbh  last used never  expired ${day("2026-09-01T09:00:00Z")}`,
+  )
+})
+
+test("an agent's list asks for no browsers", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  expect((await opencorp(trusted, "devices", "list", "minh")).out).toBe("@minh has no devices.")
+  expect(office.requests.some((r) => r.path.startsWith("/hq/browsers"))).toBe(false)
+})
+
+test("a human who isn't the CEO sees someone else's devices as today, without their browsers", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.state.people.push({ handle: "ann", name: "Ann", kind: "human", title: "Designer", manager: "ngocbh" })
+  office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", label: "Safari on Mac" })
+  await opencorp(other, "login", "--handle", "ann", "--device", "laptop") // untrusted: prints the add command
+  await opencorp(trusted, "devices", "add", "ann", "laptop", tokenSha256(identity(other).token))
+  expect(await opencorp(other, "devices", "list", "ngocbh")).toEqual({ code: 0, out: "mac", err: "" }) // 403 left out
+})
+
+test("an office without HQ, or from before it, lists devices as today; another failure is said", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.addBrowser({ person: "ngocbh", issued_by: "ngocbh" })
+  const today = { code: 0, out: "mac  (this device)", err: "" }
+  office.notImplemented.add("GET /hq/browsers")
+  expect(await opencorp(trusted, "devices", "list")).toEqual(today)
+  office.notImplemented.clear()
+  office.broken.add("GET /hq/browsers")
+  expect(await opencorp(trusted, "devices", "list")).toEqual({
+    code: 1,
+    out: "mac  (this device)",
+    err: "opencorp devices: GET /hq/browsers failed",
+  })
+  const state = office.state
+  office.stop()
+  office = createFakeOffice({ socket: path.join(trusted, "office", "office.sock"), seed: state, missing: ["GET /hq/browsers"] })
+  expect(await opencorp(trusted, "devices", "list")).toEqual(today)
+})
+
+test("remove-browser signs a browser out; a second time it's gone", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh" })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 0,
+    out: `Signed out browser ${b.name}.`,
+    err: "",
+  })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 1,
+    out: "",
+    err: `opencorp devices: no browser session ${b.id}`,
+  })
+  expect((await opencorp(trusted, "devices", "remove-browser")).code).toBe(2)
+  office.notImplemented.add("DELETE /hq/browsers/:id")
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 1,
+    out: "",
+    err: "opencorp devices: this office has no HQ yet; update the checkout and run `opencorp restart`",
+  })
+})
+
+test("remove-browser takes one of your own sessions by its web- name too", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh" })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.name)).toEqual({
+    code: 0,
+    out: `Signed out browser ${b.name}.`,
+    err: "",
+  })
+  expect(office.requests.at(-1)?.raw).toBe(`/hq/browsers/${b.id}`)
+  expect((await opencorp(trusted, "devices", "remove-browser", b.id)).err).toBe(`opencorp devices: no browser session ${b.id}`)
+})
+
+test("the CEO signs out someone else's browser, confirmed by its id", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  office.state.people.push({ handle: "ann", name: "Ann", kind: "human", title: "Designer", manager: "ngocbh" })
+  const b = office.addBrowser({ person: "ann", issued_by: "ann" })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 0,
+    out: `Signed out browser ${b.id}.`,
+    err: "",
+  })
+  expect((await opencorp(trusted, "devices", "remove-browser", b.id)).err).toBe(`opencorp devices: no browser session ${b.id}`)
+})
+
 test("logout removes this device with its own token, then the identity", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   const token = identity(trusted).token
