@@ -1244,17 +1244,17 @@ class Store:
                     raise DuplicateKey(f"hq_sessions: {exc}") from exc
                 raise
 
-    def _hq_session(self, where: str, value: str) -> HqSessionRecord | None:
-        row = self._conn().execute(f"SELECT * FROM hq_sessions WHERE {where} = ?", (value,)).fetchone()
+    def _hq_session(self, where: str, params: tuple[str, ...]) -> HqSessionRecord | None:
+        row = self._conn().execute(f"SELECT * FROM hq_sessions WHERE {where}", params).fetchone()
         return None if row is None else HqSessionRecord(*(row[c] for c in _HQ_COLUMNS))
 
     def get_hq_session(self, session_id: str) -> HqSessionRecord | None:
         """The browser session ``session_id``, or None."""
-        return self._hq_session("id", session_id)
+        return self._hq_session("id = ?", (session_id,))
 
-    def hq_session_by_secret(self, secret_sha256: str) -> HqSessionRecord | None:
-        """The browser session whose cookie secret hashes to ``secret_sha256``, or None."""
-        return self._hq_session("secret_sha256", secret_sha256)
+    def hq_session_by_secret(self, secret_sha256: str, now: str) -> HqSessionRecord | None:
+        """The browser session whose cookie secret hashes to ``secret_sha256``, unless it expired by ``now``."""
+        return self._hq_session("secret_sha256 = ? AND expires_at > ?", (secret_sha256, now))
 
     def list_hq_sessions(self, person: str | None = None) -> list[HqSessionRecord]:
         """Browser sessions, newest first, optionally one person's."""
@@ -1264,10 +1264,11 @@ class Store:
         rows = self._conn().execute(sql + " ORDER BY created_at DESC, id DESC", params).fetchall()
         return [HqSessionRecord(*(r[c] for c in _HQ_COLUMNS)) for r in rows]
 
-    def touch_hq_session(self, session_id: str, at: str) -> None:
-        """Record that the session was used at ``at``."""
+    def touch_hq_session(self, session_id: str, at: str, *, before: str) -> None:
+        """Record that the session was used at ``at``, unless it was already recorded as used since ``before``."""
         with self.transaction() as tx:
-            tx.execute("UPDATE hq_sessions SET last_used_at = ? WHERE id = ?", (at, session_id))
+            tx.execute("UPDATE hq_sessions SET last_used_at = ? WHERE id = ? "
+                       "AND (last_used_at IS NULL OR last_used_at < ?)", (at, session_id, before))
 
     def delete_hq_session(self, session_id: str) -> bool:
         """Delete a browser session; whether there was one."""
