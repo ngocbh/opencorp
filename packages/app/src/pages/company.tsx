@@ -10,6 +10,7 @@ import { Panel } from "../company/panel"
 import { Toolbar } from "../company/toolbar"
 import { buildTree, byName } from "../company/tree"
 import { useOffice } from "../data/office"
+import { useShell } from "../shell"
 
 /** Whether the window is at least Tailwind's md breakpoint: phones always get the list. */
 function useDesktop() {
@@ -95,12 +96,16 @@ export default function Company() {
   const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
   const shown = () => byHandle().get(selected() ?? "")
   const select = (handle: string) => setSelected(handle)
+  // On a phone the panel is a sheet over the whole screen: nothing behind it can take focus.
+  const sheet = () => !desktop() && !!shown()
+  const shell = useShell()
+  createEffect(() => shell?.setCovered(sheet()))
+  onCleanup(() => shell?.setCovered(false))
   const name = () => s.company?.name ?? "Company"
   return (
     <Show when={office.ready()} fallback={<Skeleton />}>
       <div class="flex">
-        {/* On a phone the panel is a sheet over the list, so the list can't take focus behind it. */}
-        <div class="min-w-0 flex-1" inert={!desktop() && !!shown()}>
+        <div class="min-w-0 flex-1" inert={sheet()}>
           <Toolbar
             company={name()}
             query={query()}

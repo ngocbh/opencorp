@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router"
-import { ErrorBoundary, onMount, Show, type ParentProps } from "solid-js"
+import { createContext, createSignal, ErrorBoundary, onMount, Show, useContext, type ParentProps } from "solid-js"
 import { useOffice } from "./data/office"
 
 /** What the shell shows in place of the app when the built app can't run against this office. */
@@ -33,9 +33,20 @@ function LoadFailed() {
   )
 }
 
+/** What a page can ask of the shell. */
+type ShellApi = {
+  /** Whether a full-screen sheet covers the sidebar, which then can't take focus. */
+  setCovered: (covered: boolean) => void
+}
+const ShellContext = createContext<ShellApi>()
+
+/** The shell around the page, if there is one. */
+export const useShell = () => useContext(ShellContext)
+
 /** The sidebar (company, screens, who is signed in, the connection) and the main area. */
 export function Shell(props: ParentProps) {
   const office = useOffice()
+  const [covered, setCovered] = createSignal(false)
   const connection = () => (office.status() === "online" ? "live" : office.ready() ? "reconnecting…" : "connecting…")
   return (
     <Show
@@ -47,7 +58,7 @@ export function Shell(props: ParentProps) {
       }
     >
       <div class="flex min-h-screen">
-        <nav aria-label="HQ" class="flex w-56 shrink-0 flex-col border-r border-neutral-200 p-4 dark:border-neutral-800">
+        <nav aria-label="HQ" inert={covered()} class="flex w-56 shrink-0 flex-col border-r border-neutral-200 p-4 dark:border-neutral-800">
           <h1 class="text-lg font-semibold">{office.state.company?.name ?? "OpenCorp HQ"}</h1>
           <A
             href="/"
@@ -75,7 +86,9 @@ export function Shell(props: ParentProps) {
           <Show when={office.ready() && office.status() !== "online"}>
             <p class="bg-amber-100 px-4 py-2 text-sm dark:bg-amber-950">Reconnecting to the office…</p>
           </Show>
-          <ErrorBoundary fallback={<LoadFailed />}>{props.children}</ErrorBoundary>
+          <ShellContext.Provider value={{ setCovered }}>
+            <ErrorBoundary fallback={<LoadFailed />}>{props.children}</ErrorBoundary>
+          </ShellContext.Provider>
         </main>
       </div>
     </Show>

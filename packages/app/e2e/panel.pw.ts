@@ -122,4 +122,17 @@ test.describe("on a phone", () => {
     await panel(page, "Lead").getByRole("button", { name: "Close" }).click()
     await expect(page.getByRole("treeitem", { name: /Lead/ })).toBeFocused()
   })
+
+  test("the sidebar behind the sheet can't take focus either, until it closes", async ({ page }) => {
+    const company = page.locator('nav a[href="/"]')
+    await page.getByRole("treeitem", { name: /Lead/ }).click()
+    await expect(panel(page, "Lead").getByRole("heading", { name: "Lead" })).toBeFocused()
+    await page.keyboard.press("Shift+Tab")
+    await expect(company).not.toBeFocused()
+    await company.evaluate((el: HTMLElement) => el.focus())
+    await expect(company).not.toBeFocused()
+    await page.keyboard.press("Escape")
+    await company.evaluate((el: HTMLElement) => el.focus())
+    await expect(company).toBeFocused()
+  })
 })
