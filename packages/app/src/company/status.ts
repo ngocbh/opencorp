@@ -50,15 +50,18 @@ export function branchStatus(node: TreeNode, m: Map<string, Status>): Status {
  */
 export function recipient(
   q: Question,
-  session: Session | undefined,
+  session: Session,
   ceo: string | null,
   assignee: (workItemId: string) => string | null | undefined,
 ): string | null {
   if (q.source === "ask_manager") return q.work_item_id ? (assignee(q.work_item_id) ?? null) : null
-  return session?.opened_by ?? ceo
+  return session.opened_by ?? ceo
 }
 
-/** For `viewer`: how many open cards each asking person has for them. */
+/**
+ * For `viewer`: how many open cards each asking person has for them. A card counts only when its session is in
+ * `sessions`, as for status, so the office filter and non-live sessions treat both alike.
+ */
 export function needsYou(
   viewer: string,
   sessions: Session[],
@@ -70,9 +73,8 @@ export function needsYou(
   const out = new Map<string, number>()
   for (const q of cards(questions)) {
     const session = byId.get(q.session_id)
-    if (recipient(q, session, ceo, assignee) !== viewer) continue
-    const asker = session?.person ?? q.asker
-    out.set(asker, (out.get(asker) ?? 0) + 1)
+    if (!session || recipient(q, session, ceo, assignee) !== viewer) continue
+    out.set(session.person, (out.get(session.person) ?? 0) + 1)
   }
   return out
 }

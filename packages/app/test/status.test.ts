@@ -40,14 +40,15 @@ test("a branch takes its most urgent member's status", () => {
 })
 
 test("ask_manager goes to its work item's assignee; anything else to who opened the session, else the CEO", () => {
-  const sessions = new Map([["1", { ...s("1", "minh", "idle"), opened_by: "ann" } as Session], ["2", s("2", "minh", "idle")]])
+  const opened = { ...s("1", "minh", "idle"), opened_by: "ann" } as Session
+  const office = s("2", "minh", "idle")
   const assignee = (id: string) => (id === "W1" ? "lead" : undefined)
-  expect(recipient(q("a", "1", { source: "ask_manager", work_item_id: "W1" }), sessions.get("1"), "ceo", assignee)).toBe("lead")
-  expect(recipient(q("b", "1"), sessions.get("1"), "ceo", assignee)).toBe("ann")
-  expect(recipient(q("c", "2"), sessions.get("2"), "ceo", assignee)).toBe("ceo")
-  expect(recipient(q("d", "1", { source: "ask_manager", work_item_id: "W9" }), sessions.get("1"), "ceo", assignee)).toBeNull()
-  expect(recipient(q("e", "1", { source: "ask_manager", work_item_id: null }), sessions.get("1"), "ceo", assignee)).toBeNull()
-  expect(recipient(q("f", "2"), sessions.get("2"), null, assignee)).toBeNull()
+  expect(recipient(q("a", "1", { source: "ask_manager", work_item_id: "W1" }), opened, "ceo", assignee)).toBe("lead")
+  expect(recipient(q("b", "1"), opened, "ceo", assignee)).toBe("ann")
+  expect(recipient(q("c", "2"), office, "ceo", assignee)).toBe("ceo")
+  expect(recipient(q("d", "1", { source: "ask_manager", work_item_id: "W9" }), opened, "ceo", assignee)).toBeNull()
+  expect(recipient(q("e", "1", { source: "ask_manager", work_item_id: null }), opened, "ceo", assignee)).toBeNull()
+  expect(recipient(q("f", "2"), office, null, assignee)).toBeNull()
 })
 
 test("needs you counts, per asking person, the open cards whose recipient is the viewer", () => {
@@ -57,8 +58,13 @@ test("needs you counts, per asking person, the open cards whose recipient is the
   expect(Object.fromEntries(needsYou("ann", sessions, questions, "ceo", () => undefined))).toEqual({ kai: 1 })
 })
 
-test("a card on a session the app doesn't have counts for its asker", () => {
-  expect(Object.fromEntries(needsYou("ceo", [], [q("a", "gone", { asker: "zoe" })], "ceo", () => undefined))).toEqual({ zoe: 1 })
+test("a card counts only when its session is in the list, as for status", () => {
+  expect(Object.fromEntries(needsYou("ceo", [], [q("a", "gone", { asker: "zoe" })], "ceo", () => undefined))).toEqual({})
+  const mac = { ...s("1", "ann", "idle"), office: "mac" } as Session
+  const box = { ...s("2", "bo", "idle"), office: "box" } as Session
+  const questions = [q("a", "1"), q("b", "2")]
+  expect(Object.fromEntries(needsYou("ceo", inOffice([mac, box], "mac"), questions, "ceo", () => undefined))).toEqual({ ann: 1 })
+  expect(Object.fromEntries(needsYou("ceo", inOffice([mac, box], null), questions, "ceo", () => undefined))).toEqual({ ann: 1, bo: 1 })
 })
 
 test("a collapsed branch totals people, busy, waiting, needs you and cost", () => {
