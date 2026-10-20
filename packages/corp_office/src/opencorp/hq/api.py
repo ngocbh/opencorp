@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,8 @@ from opencorp.protocol.models import Ack, CompanyView, PairRequest
 if TYPE_CHECKING:
     from opencorp.daemon.app import Office
     from opencorp.hq.core import Hq
+
+log = logging.getLogger(__name__)
 
 ANY = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
@@ -123,8 +126,16 @@ async def events(request: Request) -> Response:
                     yield b": ping\n\n"
                     continue
                 kind, event = item
-                if event.type == "company.updated" and not await hq.sessions.still_valid(sid, event.subject_id):
-                    return
+                if event.type == "company.updated":
+                    try:
+                        valid = await hq.sessions.still_valid(sid, event.subject_id)
+                    except Exception:
+                        # The app reconnects, and its next request checks the session at HEAD again.
+                        log.exception("couldn't re-check HQ session %s at %s; ending its stream", sid,
+                                      event.subject_id)
+                        return
+                    if not valid:
+                        return
                 yield frame(kind, event)
         finally:
             hq.sessions.unregister(sid, sub)

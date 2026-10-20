@@ -7,6 +7,7 @@ import pytest
 
 from opencorp.auth.passwords import hash_password
 from opencorp.hq import api
+from opencorp.hq import sessions as sessions_module
 from opencorp.hq.sessions import TTL
 from opencorp.protocol import now
 from opencorp.protocol.models import Event, LiveEvent
@@ -152,3 +153,23 @@ async def test_a_password_change_ends_the_stream_at_company_updated(office, hq, 
         with pytest.raises(StopAsyncIteration):  # no company.updated frame first
             await take(it, 1)
         assert (await c.get("/api/whoami")).status_code == 401
+
+
+async def test_a_failing_recheck_ends_the_stream_quietly_and_keeps_the_session(office, hq, short_dir, company,
+                                                                               monkeypatch, caplog):
+    async with hq_served(office, hq, short_dir / "hq.sock") as c, c.stream("GET", "/api/events") as r:
+        sid = office.store.list_hq_sessions()[0].id
+        it = frames(r)
+        await take(it, 1)
+
+        def broken(git, sha):
+            raise OSError("git went away")
+
+        monkeypatch.setattr(sessions_module, "password_fps", broken)
+        hand_edit(company, "ngocbh", title="Boss")  # a commit whose fingerprints aren't loaded yet
+        sha = office.git.head()
+        await asyncio.to_thread(office.store.emit, "company.updated", sha, {"sha": sha})
+        await ends(it)
+        assert office.store.get_hq_session(sid) is not None
+    assert f"couldn't re-check HQ session {sid} at {sha}; ending its stream" in caplog.text
+    assert "Exception in ASGI application" not in caplog.text
