@@ -6,9 +6,11 @@ import { createPrefs } from "../company/prefs"
 import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../company/rows"
 import { branchStatus, cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { byTeam } from "../company/teams"
+import { Panel } from "../company/panel"
 import { Toolbar } from "../company/toolbar"
-import { buildTree } from "../company/tree"
+import { buildTree, byName } from "../company/tree"
 import { useOffice } from "../data/office"
+import { useShell } from "../shell"
 
 /** Whether the window is at least Tailwind's md breakpoint: phones always get the list. */
 function useDesktop() {
@@ -89,44 +91,91 @@ export default function Company() {
   }
   /** What the page shows; the chart comes with its own change, and the list stays the default until then. */
   const view = () => (desktop() ? (prefs.view() ?? "list") : "list")
-  const select = (_handle: string) => {} // the side panel comes next
+  /** The person the side panel shows. */
+  const [selected, setSelected] = createSignal<string>()
+  const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
+  const shown = () => byHandle().get(selected() ?? "")
+  /** The panel's person's reports, by name. */
+  const reports = createMemo(() => {
+    const handle = shown()?.handle
+    return handle ? s.people.filter((x) => x.manager === handle).sort(byName) : []
+  })
+  // Someone who leaves the company closes their panel: coming back at a later commit mustn't reopen it.
+  createEffect(() => {
+    if (selected() !== undefined && !shown()) setSelected(undefined)
+  })
+  /** The row (or Unplaced button) that opened the panel: focus goes back there when it closes. */
+  let opener: HTMLElement | undefined
+  /** Opens the panel on `handle` from the list or Unplaced; a move inside the panel keeps the opener. */
+  const select = (handle: string) => {
+    const from = document.activeElement
+    opener = from instanceof HTMLElement && from !== document.body ? from : undefined
+    setSelected(handle)
+  }
+  /** Where focus goes when the panel closes: its opener, or the tree's current row once the opener is gone. */
+  const returnTo = () =>
+    opener?.isConnected ? opener : (document.querySelector<HTMLElement>('[role=treeitem][tabindex="0"]') ?? undefined)
+  // On a phone the panel is a sheet over the whole screen: nothing behind it can take focus.
+  const sheet = () => !desktop() && !!shown()
+  const shell = useShell()
+  createEffect(() => shell?.setCovered(sheet()))
+  onCleanup(() => shell?.setCovered(false))
   const name = () => s.company?.name ?? "Company"
   return (
     <Show when={office.ready()} fallback={<Skeleton />}>
-      <Toolbar
-        company={name()}
-        query={query()}
-        onQuery={setQuery}
-        groups={s.groups}
-        group={group()}
-        onGroup={setGroup}
-        byTeam={teamView()}
-        onByTeam={setTeamView}
-        window={office.costWindow()}
-        onWindow={office.setCostWindow}
-        view={view()}
-        onView={prefs.setView}
-        canChart={desktop()}
-      />
-      <Banners noCompany={!s.company} ceoHasManager={tree().ceoHasManager} issues={s.issues} />
-      <Show when={view() === "chart"}>
-        <p class="px-3 pt-3 text-sm text-neutral-500 dark:text-neutral-400">The chart isn't built yet; this is the list.</p>
-      </Show>
-      <CompanyList
-        label={name()}
-        items={items()}
-        isOpen={isOpen}
-        setOpen={setOpen}
-        status={(h) => status().get(h) ?? "away"}
-        branchStatus={branchStatusOf}
-        needs={(h) => needs().get(h) ?? 0}
-        cost={(h) => s.costs?.people[h]}
-        groups={groups()}
-        totals={totalsOf}
-        dimmed={dimmed}
-        onSelect={select}
-      />
-      <Unplaced people={tree().unplaced} onSelect={select} />
+      <div class="flex">
+        <div class="min-w-0 flex-1" inert={sheet()}>
+          <Toolbar
+            company={name()}
+            query={query()}
+            onQuery={setQuery}
+            groups={s.groups}
+            group={group()}
+            onGroup={setGroup}
+            byTeam={teamView()}
+            onByTeam={setTeamView}
+            window={office.costWindow()}
+            onWindow={office.setCostWindow}
+            view={view()}
+            onView={prefs.setView}
+            canChart={desktop()}
+          />
+          <Banners noCompany={!s.company} ceoHasManager={tree().ceoHasManager} issues={s.issues} />
+          <Show when={view() === "chart"}>
+            <p class="px-3 pt-3 text-sm text-neutral-500 dark:text-neutral-400">The chart isn't built yet; this is the list.</p>
+          </Show>
+          <CompanyList
+            label={name()}
+            items={items()}
+            isOpen={isOpen}
+            setOpen={setOpen}
+            status={(h) => status().get(h) ?? "away"}
+            branchStatus={branchStatusOf}
+            needs={(h) => needs().get(h) ?? 0}
+            cost={(h) => s.costs?.people[h]}
+            groups={groups()}
+            totals={totalsOf}
+            dimmed={dimmed}
+            onSelect={select}
+            selected={shown()?.handle}
+          />
+          <Unplaced people={tree().unplaced} onSelect={select} />
+        </div>
+        <Show when={shown()}>
+          {(p) => (
+            <Panel
+              person={p()}
+              manager={p().manager ? byHandle().get(p().manager!) : undefined}
+              reports={reports()}
+              groups={groups()}
+              onSelect={setSelected}
+              onClose={() => setSelected(undefined)}
+              returnTo={returnTo}
+              modal={!desktop()}
+            />
+          )}
+        </Show>
+      </div>
     </Show>
   )
 }

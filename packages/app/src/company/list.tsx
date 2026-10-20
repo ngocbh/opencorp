@@ -33,6 +33,8 @@ export type ListProps = {
   /** Whether the group filter dims this row. */
   dimmed: (item: Item) => boolean
   onSelect: (handle: string) => void
+  /** The handle of the person the side panel shows: their row is the selected one. */
+  selected: string | undefined
 }
 
 /**
@@ -48,6 +50,7 @@ export function CompanyList(props: ListProps) {
   /** The row with tabindex 0: the focused one while it's visible, else the first. */
   const current = () => (byId().has(focused() ?? "") ? focused() : ids()[0])
   const isCurrent = createSelector(current)
+  const isSelected = createSelector(() => props.selected)
   const uid = createUniqueId()
   const elements = new Map<string, HTMLElement>()
   // Each row's parent as last seen, kept for rows that have gone: every ancestor of a row was visible with it.
@@ -120,11 +123,13 @@ export function CompanyList(props: ListProps) {
                   aria-expanded={row().item.children.length ? row().open : undefined}
                   tabindex={isCurrent(id) ? 0 : -1}
                   aria-describedby={person() ? descId : undefined}
+                  // "By team" shows someone once in full and muted elsewhere: only the full row is the selected one.
+                  aria-selected={person() ? !isMuted(row().item) && isSelected(person()!.handle) : undefined}
                   data-dimmed={String(props.dimmed(row().item))}
                   data-muted={isMuted(row().item) ? "true" : undefined}
                   // Computed, so Solid sets it with style.setProperty, which the CSP allows.
                   style={{ "padding-left": `${row().level - 1 + 0.5}rem` }}
-                  class="flex cursor-default items-center gap-2 rounded py-1 pr-2 outline-none focus-visible:ring-2 data-[dimmed=true]:opacity-40 data-[muted=true]:opacity-60"
+                  class="flex cursor-default items-center gap-2 rounded py-1 pr-2 outline-none focus-visible:ring-2 aria-selected:bg-neutral-100 dark:aria-selected:bg-neutral-900 data-[dimmed=true]:opacity-40 data-[muted=true]:opacity-60"
                   ref={(el) => {
                     elements.set(id, el)
                     // Runs before the row leaves the page, while it can still hold focus.
