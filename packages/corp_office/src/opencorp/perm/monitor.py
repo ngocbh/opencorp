@@ -159,6 +159,13 @@ def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     return _scrub(value, keys, _needles(values))
 
 
+def redactor(values: Iterable[str]) -> Callable[[Any], Any]:
+    """``redact(value, (), values)`` as a function with its needles built once, for scrubbing many values with one set
+    of secrets (every record of a run log)."""
+    needles = _needles(values)
+    return lambda value: _scrub(value, (), needles)
+
+
 def _needles(values: Iterable[str]) -> list[str]:
     plain: set[str] = set()
     for value in values:

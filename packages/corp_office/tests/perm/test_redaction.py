@@ -6,7 +6,7 @@ from urllib.parse import quote
 import pytest
 
 from opencorp.assets.registry import KindTool
-from opencorp.perm.monitor import Monitor, redact
+from opencorp.perm.monitor import Monitor, redact, redactor
 from tests.perm.conftest import KINDS, TOKEN
 
 PADDED = "p4dded-secret-value"
@@ -131,3 +131,14 @@ def test_an_interrupt_inside_a_kind_is_audited_then_raised(monitor, store):
 def test_keys_that_scrub_to_the_same_text_keep_every_value():
     got = redact({"x-abcdefgh": 1, "x-12345678": 2, "[redacted]": 3, "abcdefgh": 4}, set(), ["abcdefgh", "12345678"])
     assert got == {"x-[redacted]": 1, "x-[redacted]#2": 2, "[redacted]": 3, "[redacted]#2": 4}
+
+
+def test_a_redactor_scrubs_as_redact_does_with_its_needles_built_once(monkeypatch):
+    from opencorp.perm import monitor
+
+    value = {"a": "x hunter2hunter2 y", "b": ["hunter2hunter2"], "c": 3}
+    built = []
+    real = monitor._needles
+    monkeypatch.setattr(monitor, "_needles", lambda values: (built.append(1), real(values))[1])
+    scrub = redactor(["hunter2hunter2"])
+    assert scrub(value) == scrub(value) == redact(value, (), ["hunter2hunter2"]) and len(built) == 2

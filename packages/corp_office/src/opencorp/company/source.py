@@ -85,8 +85,9 @@ class Served:
     known: frozenset[str]
 
 
-def _known(git: CompanyGit, entries: list[TreeEntry]) -> frozenset[str]:
-    """Every string under a secret key in each ``people/<h>/person.yaml`` that parses."""
+def person_secrets(git: CompanyGit, entries: list[TreeEntry]) -> frozenset[str]:
+    """Every string under a secret key in each ``people/<h>/person.yaml`` of ``entries`` that parses: the known values a
+    browser must never see."""
     people = [e.blob for e in entries
               if e.type == "file" and _PERSON.fullmatch(e.path) and (e.size or 0) <= MAX_PARSED]
     found: set[str] = set()
@@ -101,7 +102,7 @@ def _known(git: CompanyGit, entries: list[TreeEntry]) -> frozenset[str]:
 def load(git: CompanyGit, sha: str) -> Served:
     """The listing, tree response and known secret values at ``sha``, a HEAD the office read itself."""
     entries = git.list_tree(sha)
-    known = _known(git, entries)
+    known = person_secrets(git, entries)
     listing: dict[str, TreeEntry] = {}
     skipped = 0
     for entry in entries:
