@@ -194,8 +194,8 @@ class BrowserSessions:
         return await asyncio.to_thread(self.store.delete_hq_session, sid)
 
     def register(self, sid: str, sub: Subscription) -> None:
-        """Track an open stream of session ``sid``, so revoking the session ends it; a session that isn't live
-        ends it now."""
+        """Track an open stream of session ``sid``, so revoking the session ends it; a revoked or unknown session
+        ends it now (expiry is left to the stream's ``alive`` check)."""
         live = self._live.get(sid)
         if live is None or live.revoked:
             sub.end()
