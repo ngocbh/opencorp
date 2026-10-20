@@ -102,11 +102,15 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     pair: (req: PairRequest) => post<BrowserSession>("/pair", req),
     /**
      * Signs this browser in with a human's handle and password (HQ only). A 401 here is `bad_credentials`, not
-     * `UnknownDevice`: the browser has no session yet, so "pair this browser again" would be wrong.
+     * `UnknownDevice`: the browser has no session yet, so "pair this browser again" would be wrong. The exception is
+     * `sign_in_required`, which stays `UnknownDevice`: an office without `/api/login` refuses it like any other
+     * session-less request.
      */
     signIn: (req: HqLoginRequest) =>
       post<BrowserSession>("/login", req).catch((e) => {
-        throw e instanceof UnknownDevice ? new OfficeError(401, "bad_credentials", "wrong handle or password") : e
+        if (e instanceof UnknownDevice && e.code !== "sign_in_required")
+          throw new OfficeError(401, "bad_credentials", "wrong handle or password")
+        throw e
       }),
     /** Signs this browser out (HQ only). */
     logout: () => post<Ack>("/logout"),

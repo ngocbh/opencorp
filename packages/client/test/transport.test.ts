@@ -93,6 +93,15 @@ test("a 401 from signing in with a password is bad_credentials, not UnknownDevic
   }
 })
 
+test("an office without /api/login refuses it as it refuses any session-less write: that 401 stays sign_in_required", async () => {
+  const { base } = serve({
+    answer: () => Response.json({ error: "sign_in_required", message: "sign in first" }, { status: 401 }),
+  })
+  const e = await failure(createOfficeClient({ baseUrl: base }).signIn({ handle: "ann", password: "pw" }))
+  expect(e).toBeInstanceOf(UnknownDevice)
+  expect([e.status, e.code]).toEqual([401, "sign_in_required"])
+})
+
 test("a Retry-After header in seconds rides on the error; one that isn't seconds is left out", async () => {
   const tooMany = (retry: string) => () =>
     Response.json(
