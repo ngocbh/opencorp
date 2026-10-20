@@ -63,6 +63,8 @@ export default function Chart(props: ListProps) {
   const pointers = new Map<number, [number, number]>()
   /** Whether the press so far is a drag, not a click. */
   let dragging = false
+  /** Whether a drag is going on now: the cursor grabs. */
+  const [grabbing, setGrabbing] = createSignal(false)
   const local = (e: { clientX: number; clientY: number }): [number, number] => {
     const r = viewport.getBoundingClientRect()
     return [e.clientX - r.left, e.clientY - r.top]
@@ -76,7 +78,7 @@ export default function Chart(props: ListProps) {
     const prev = pointers.get(e.pointerId)
     if (!prev) return
     // A release we never heard of (outside the window, say): the mouse is only hovering now.
-    if (e.pointerType === "mouse" && e.buttons === 0) return void pointers.delete(e.pointerId)
+    if (e.pointerType === "mouse" && e.buttons === 0) return up(e)
     const next = local(e)
     if (pointers.size === 2) {
       const other = [...pointers].find(([id]) => id !== e.pointerId)![1]
@@ -89,6 +91,7 @@ export default function Chart(props: ListProps) {
     if (!dragging && Math.hypot(next[0] - prev[0], next[1] - prev[1]) < 4) return
     if (!dragging) {
       dragging = true
+      setGrabbing(true)
       try {
         viewport.setPointerCapture(e.pointerId) // the drag keeps going outside the chart
       } catch {} // a synthetic pointer can't be captured
@@ -96,7 +99,10 @@ export default function Chart(props: ListProps) {
     moveTo(pan(t(), next[0] - prev[0], next[1] - prev[1]))
     pointers.set(e.pointerId, next)
   }
-  const up = (e: PointerEvent) => void pointers.delete(e.pointerId)
+  function up(e: PointerEvent) {
+    pointers.delete(e.pointerId)
+    if (!pointers.size) setGrabbing(false)
+  }
   // A drag that ends on a card isn't that card's click. A keyboard's click (Enter or Space on a card, detail 0) is.
   const swallowDragClick = (e: MouseEvent) => {
     if (dragging && e.detail > 0) e.stopPropagation()
@@ -213,7 +219,8 @@ export default function Chart(props: ListProps) {
       <div
         ref={viewport}
         data-testid="chart-viewport"
-        class="relative h-full w-full cursor-grab touch-none select-none overflow-hidden"
+        data-dragging={grabbing() ? "true" : undefined}
+        class="relative h-full w-full cursor-grab touch-none select-none overflow-hidden data-[dragging=true]:cursor-grabbing"
         onPointerDown={down}
         onPointerMove={move}
         onPointerUp={up}

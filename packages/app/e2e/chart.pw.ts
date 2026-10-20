@@ -38,7 +38,9 @@ test("dragging pans the chart by the pointer's travel, even when it starts on a 
   await page.mouse.move(card.x + card.width / 2, card.y + card.height / 2)
   await page.mouse.down()
   await page.mouse.move(card.x + card.width / 2 + 100, card.y + card.height / 2 + 20, { steps: 5 })
+  await expect(page.getByTestId("chart-viewport")).toHaveAttribute("data-dragging", "true") // the grabbing cursor
   await page.mouse.up()
+  await expect(page.getByTestId("chart-viewport")).not.toHaveAttribute("data-dragging")
   const [, x1, y1] = await transform(page)
   expect([Math.round(x1 - x0), Math.round(y1 - y0)]).toEqual([100, 20])
   await expect(page.getByRole("complementary")).toHaveCount(0) // a drag isn't a click
