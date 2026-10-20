@@ -69,7 +69,7 @@ async def test_only_a_human_at_head_gets_a_session(office, hq):
     for handle in ("minh", "nobody"):
         with pytest.raises(HTTPError) as caught:
             await s.issue(handle, issued_by="ngocbh", label=None)
-        assert (caught.value.status, caught.value.code) == (403, "not_a_human")
+        assert (caught.value.status, caught.value.code) == (422, "not_a_human")  # as on the socket
 
 
 async def test_an_expired_session_is_refused_and_the_next_issue_deletes_it(office, hq):

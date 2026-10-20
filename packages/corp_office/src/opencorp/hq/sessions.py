@@ -141,7 +141,7 @@ class BrowserSessions:
         _, humans = await self._at_head()
         fps = humans.fps
         if person not in fps:
-            raise HTTPError(403, "not_a_human", f"@{person} isn't a human in the company at HEAD")
+            raise HTTPError(422, "not_a_human", f"@{person} isn't a human in the company at HEAD")
         secret = secrets.token_urlsafe(32)
         at = self.clock()
         record = HqSessionRecord(
