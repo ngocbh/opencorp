@@ -87,3 +87,19 @@ test("the fake mints HQ links as the office does: a URL only while TCP listens, 
   expect([b.url, b.open_file, b.socket.endsWith("hq.sock")]).toEqual([null, null, true])
   expect((await post({ handle: "minh" })).error).toBe("not_a_human")
 })
+
+test("the fake lists and removes browser sessions with the office's rules", async () => {
+  office = createFakeOffice()
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh", label: "Safari on Mac" })
+  const call = (p: string, method = "GET") => fetch(BASE + p, { method, unix: office.socket }).then((r) => r.json())
+  expect(b).toMatchObject({ person: "ngocbh", via: "pair", last_used_at: null })
+  expect(b.name).toMatch(/^web-[0-9a-f]{6}$/)
+  expect((await call("/hq/browsers")).map((x: { id: string }) => x.id)).toEqual([b.id])
+  expect((await call("/hq/browsers?person=minh")).error).toBe("not_a_human")
+  expect((await call("/hq/browsers?person=nobody")).error).toBe("not_found")
+  expect(await call(`/hq/browsers/${b.id}`, "DELETE")).toEqual({ ok: true })
+  expect(await call(`/hq/browsers/${b.id}`, "DELETE")).toEqual({
+    error: "not_found",
+    message: `no browser session ${b.id}`,
+  })
+})

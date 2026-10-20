@@ -1,6 +1,7 @@
 // A stand-in office for tests and `bun run dev`: an in-memory office on a unix socket that
 // speaks the office's HTTP routes and SSE framing, with no Python.
 import type {
+  BrowserSession,
   Comment,
   Connection,
   ConnectionList,
@@ -792,9 +793,8 @@ export function createFakeOffice(
       warnings: [],
     }
   }
-  /** A one-time HQ link for `body.handle` (the actor by default), under the rule for devices. */
-  function mintPair(body: PairCodeRequest, actor: string): PairCode {
-    const handle = body.handle ?? actor
+  /** Refuses unless `handle` is a human and `actor` is them or the CEO: HQ's rule, the one for devices. */
+  function hqFor(handle: string, actor: string) {
     const person = need(
       state.people.find((p) => p.handle === handle),
       `person @${handle}`,
@@ -802,6 +802,11 @@ export function createFakeOffice(
     if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; agents don't sign in to HQ`)
     if (actor !== handle && actor !== ceo())
       throw fail(403, "forbidden", `only @${handle} or the CEO can do this for @${handle}`)
+  }
+  /** A one-time HQ link for `body.handle` (the actor by default), under the rule for devices. */
+  function mintPair(body: PairCodeRequest, actor: string): PairCode {
+    const handle = body.handle ?? actor
+    hqFor(handle, actor)
     const code = randomBytes(16).toString("base64url")
     const url = hqListening() ? `http://127.0.0.1:${hqOpts.port}/pair#${code}` : null
     return {
@@ -818,11 +823,52 @@ export function createFakeOffice(
     }
   }
 
+  // This office's browser sessions, newest first. Office-local, so not part of FakeState (person.yaml's view).
+  const browsers: BrowserSession[] = []
+  /** Adds a browser session, as `opencorp pair` and a browser's POST /api/pair would. */
+  function addBrowser(fields: Partial<BrowserSession> & Pick<BrowserSession, "person" | "issued_by">): BrowserSession {
+    const at = new Date()
+    const b: BrowserSession = {
+      id: nextId(),
+      name: `web-${randomBytes(3).toString("hex")}`,
+      label: null,
+      via: "pair",
+      created_at: at.toISOString(),
+      expires_at: new Date(at.getTime() + 30 * 86_400_000).toISOString(),
+      last_used_at: null,
+      ...fields,
+    }
+    browsers.unshift(b)
+    return b
+  }
+
   const routes: [string, string, Handler][] = [
     ["GET", "/health", () => Response.json({ ok: true })],
     ["GET", "/whoami", ({ actor, device }) => Response.json({ person: actor, device })],
     ["GET", "/hq", () => Response.json(hqStatus())],
     ["POST", "/hq/pair", ({ body, actor }) => Response.json(mintPair(body ?? {}, actor))],
+    [
+      "GET",
+      "/hq/browsers",
+      ({ query, actor }) => {
+        const handle = query.get("person") || actor
+        hqFor(handle, actor)
+        return Response.json(browsers.filter((b) => b.person === handle))
+      },
+    ],
+    [
+      "DELETE",
+      "/hq/browsers/:id",
+      ({ params, actor }) => {
+        const b = need(
+          browsers.find((x) => x.id === params.id),
+          `browser session ${params.id}`,
+        )
+        hqFor(b.person, actor)
+        browsers.splice(browsers.indexOf(b), 1)
+        return Response.json({ ok: true })
+      },
+    ],
     ["POST", "/people/:handle/devices", ({ params, body, actor }) => Response.json(addDevice(params.handle, body, actor))],
     ["POST", "/login", ({ body }) => Response.json(login(body))],
     [
@@ -1410,6 +1456,8 @@ export function createFakeOffice(
      * office's does when the provider is slow to give one.
      */
     loginCodeReads,
+    /** Adds a browser session for tests; returns it. */
+    addBrowser,
     /** Subscription sign-ins by id, as they are now. */
     logins: () => [...logins.values()].map((l) => l.login),
     nextId,
