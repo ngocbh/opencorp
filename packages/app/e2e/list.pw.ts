@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test"
+import { acme } from "./company"
 
 test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
@@ -121,4 +122,26 @@ test("a radio group is one tab stop, and arrow keys move its choice", async ({ p
   await page.keyboard.press("ArrowLeft")
   await page.keyboard.press("ArrowLeft")
   await expect(page.getByRole("radio", { name: "30 days" })).toHaveAttribute("aria-checked", "true")
+})
+
+test("unplaced people, the issue banner and the doctor pointer", async ({ page }) => {
+  const unplaced = page.getByRole("region", { name: "Unplaced" })
+  await expect(unplaced).toContainText("Zoe")
+  await expect(unplaced).toContainText("`opencorp doctor` names unknown managers and cycles")
+  await expect(page.getByRole("alert").filter({ hasText: "people/bad/person.yaml" })).toContainText("kind: isn't an allowed value")
+})
+
+test("a CEO with a manager stays at the top, with a banner", async ({ page, request }) => {
+  const people = acme().view.people.map((p) => (p.handle === "ngocbh" ? { ...p, manager: "ann" } : p))
+  await request.post("/__fixture/set", { data: { view: { people } } })
+  await page.reload()
+  await expect(page.getByRole("alert").filter({ hasText: "company.ceo_has_manager" })).toBeVisible()
+  await expect(row(page, /Ngoc/)).toHaveAttribute("aria-level", "1")
+})
+
+test("no readable company.yaml: a banner, and everyone without a manager at the top", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { view: { company: null } } })
+  await page.reload()
+  await expect(page.getByRole("alert").filter({ hasText: "company.yaml" })).toBeVisible()
+  await expect(page.getByRole("tree", { name: "Company" })).toBeVisible()
 })

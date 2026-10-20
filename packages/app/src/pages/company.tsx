@@ -1,4 +1,5 @@
 import { createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { Banners, Unplaced } from "../company/banners"
 import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
@@ -58,6 +59,7 @@ export default function Company() {
   }
   /** What the page shows; the chart comes with its own change, and the list stays the default until then. */
   const view = () => (desktop() ? (prefs.view() ?? "list") : "list")
+  const select = (_handle: string) => {} // the side panel comes next
   const name = () => s.company?.name ?? "Company"
   return (
     <>
@@ -76,6 +78,7 @@ export default function Company() {
         onView={prefs.setView}
         canChart={desktop()}
       />
+      <Banners noCompany={!s.company} ceoHasManager={tree().ceoHasManager} issues={s.issues} />
       <Show when={view() === "chart"}>
         <p class="px-3 pt-3 text-sm text-neutral-500">The chart isn't built yet; this is the list.</p>
       </Show>
@@ -90,8 +93,9 @@ export default function Company() {
         groups={groups()}
         totals={totalsOf}
         dimmed={dimmed}
-        onSelect={() => {}}
+        onSelect={select}
       />
+      <Unplaced people={tree().unplaced} onSelect={select} />
     </>
   )
 }
