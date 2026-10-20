@@ -4,6 +4,7 @@ import pytest
 import yaml
 
 from opencorp.auth.passwords import hash_password
+from opencorp.company import secret_keys
 from tests.company.conftest import _git
 from tests.hq.conftest import PORT
 from tests.store.conftest import question, session, work_item
@@ -57,6 +58,14 @@ async def test_company_strips_devices_and_password_hashes_whatever_the_snapshot_
     assert r.status_code == 200 and r.json()["people"]
     assert all(p["devices"] == [] and p["password_hash"] is None for p in r.json()["people"])
     assert "token_sha256" not in r.text and "$scrypt$" not in r.text
+
+
+async def test_company_blanks_by_secret_keys(signed_in, hq, monkeypatch):
+    view = await hq.snapshots.head()
+    monkeypatch.setattr(secret_keys, "SECRET_KEYS", secret_keys.SECRET_KEYS | {"skills"})
+    assert any(p.skills for p in view.people)  # loaded before the change, so only the handler can blank them
+    r = await signed_in.get("/api/company")
+    assert r.status_code == 200 and all(p["skills"] == [] for p in r.json()["people"])
 
 
 @pytest.mark.parametrize("status", [["busy", "idle"], ["busy,idle"]])

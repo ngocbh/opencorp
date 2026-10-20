@@ -5,6 +5,7 @@ import time
 
 import pytest
 
+from opencorp.company import secret_keys
 from opencorp.company.git import CompanyGit
 from opencorp.company.snapshot import CompanySnapshots, load_company_at
 from tests.company.conftest import _git, person
@@ -23,6 +24,14 @@ def test_people_groups_and_the_company_come_from_one_commit(company):
     assert view.sha == sha and view.company.ceo == "ngocbh"
     assert [p.handle for p in view.people] == ["minh", "ngocbh"] and view.people[0].name == "Minh"
     assert [g.id for g in view.groups] == ["eng"] and view.issues == []
+
+
+def test_people_are_blanked_by_secret_keys(company, monkeypatch):
+    # One constant drives the snapshot, /api/company and Source: a new secret key is blanked here too.
+    monkeypatch.setattr(secret_keys, "SECRET_KEYS", secret_keys.SECRET_KEYS | {"skills"})
+    git = git_of(company)
+    minh = next(p for p in load_company_at(git, git.head()).people if p.handle == "minh")
+    assert minh.skills == [] and minh.title == "Engineer"
 
 
 def test_people_come_without_devices_or_password_hashes(make_company):

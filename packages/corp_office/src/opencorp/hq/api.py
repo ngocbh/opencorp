@@ -14,6 +14,8 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp
 
+from opencorp.company.secret_keys import blank_secrets
+from opencorp.company.source import SourceError
 from opencorp.daemon.bus import PING
 from opencorp.daemon.http import EXCEPTION_HANDLERS, HTTPError, error, ok, parse
 from opencorp.daemon.routes.costs import costs
@@ -142,8 +144,26 @@ async def company(request: Request) -> JSONResponse:
     come from one commit. People come without devices or password hashes."""
     view: CompanyView = request.state.company
     # The snapshot strips these already; stripped again here because this response goes to a browser.
-    people = [p.model_copy(update={"devices": [], "password_hash": None}) for p in view.people]
+    people = [blank_secrets(p) for p in view.people]
     return ok(view.model_copy(update={"people": people}))
+
+
+async def company_tree(request: Request) -> JSONResponse:
+    """The company repo's files at the commit this request's session was checked against, which becomes a commit
+    files can be read at. Secret-revealing and non-UTF-8 paths are left out."""
+    view: CompanyView = request.state.company
+    return ok(await get_hq(request).source.tree(view.sha))
+
+
+async def company_file(request: Request) -> JSONResponse:
+    """One file at ``at``, one of the last commits the tree route served, with secrets hidden: 400 ``bad_path``,
+    404 ``no_file`` or 409 ``stale_commit`` otherwise."""
+    query = request.query_params
+    try:
+        found = await get_hq(request).source.file(query.get("at"), query.get("path"))
+    except SourceError as exc:
+        return error(exc.status, exc.code, exc.message)
+    return ok(found)
 
 
 async def events(request: Request) -> Response:
@@ -209,6 +229,8 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
         Route("/health", health, methods=["GET"]),
         Route("/whoami", whoami, methods=["GET"]),
         Route("/company", company, methods=["GET"]),
+        Route("/company/tree", company_tree, methods=["GET"]),
+        Route("/company/file", company_file, methods=["GET"]),
         Route("/sessions", list_sessions, methods=["GET"]),
         Route("/questions", list_questions, methods=["GET"]),
         Route("/work-items/{id}", get_work_item, methods=["GET"]),
