@@ -339,7 +339,7 @@ function Card(props: {
             aria-describedby={props.descId}
             // "By team" shows someone once in full and muted elsewhere: only the full card is the selected one.
             aria-current={props.selected && !isMuted(props.item) ? "true" : undefined}
-            class="flex h-full w-full flex-col justify-center gap-1 overflow-hidden rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=true]:border-neutral-900 aria-[current=true]:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950 dark:focus-visible:ring-neutral-100 dark:aria-[current=true]:border-neutral-100 dark:aria-[current=true]:bg-neutral-900"
+            class="flex h-full w-full flex-col justify-center gap-1 overflow-hidden rounded-lg border border-neutral-300 bg-white px-2 pb-3 pt-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=true]:border-neutral-900 aria-[current=true]:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950 dark:focus-visible:ring-neutral-100 dark:aria-[current=true]:border-neutral-100 dark:aria-[current=true]:bg-neutral-900"
             onFocus={() => props.onFocus(true)}
             onKeyDown={(e) => props.onKey(e)}
             onClick={() => {
@@ -367,7 +367,8 @@ function Card(props: {
       <Show when={props.item.children.length}>
         <button
           type="button"
-          aria-label={`${props.open ? "Close" : "Open"} ${personOf(props.item)?.name ?? teamName(props.item)}'s branch`}
+          aria-label={`${personOf(props.item)?.name ?? teamName(props.item)}'s branch`}
+          aria-expanded={props.open}
           // After its card in the tab order, for the current card only: the chart stays a short stop on the way past.
           tabindex={props.current ? 0 : -1}
           class="absolute -bottom-3 left-1/2 h-6 min-w-6 -translate-x-1/2 rounded-full border border-neutral-300 bg-white px-1.5 text-xs leading-none text-neutral-600 outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300 dark:focus-visible:ring-neutral-100"

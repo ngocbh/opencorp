@@ -120,7 +120,7 @@ test("while the chart shows its fit, it fits again when the view resizes or the 
   const resized = await canvas.getAttribute("data-transform")
   await page.getByRole("button", { name: "Fit" }).click()
   await expect(canvas).toHaveAttribute("data-transform", resized!)
-  await chart.getByRole("button", { name: "Lead's branch" }).click() // narrower: two cards wide, not three
+  await chart.getByRole("button", { name: "Lead's branch", exact: true }).click() // narrower: two cards wide, not three
   await expect(canvas).not.toHaveAttribute("data-transform", resized!)
   const closed = await canvas.getAttribute("data-transform")
   await page.getByRole("button", { name: "Fit" }).click()
@@ -209,14 +209,20 @@ test("two pointers moving apart zoom in", async ({ page }) => {
 
 test("a branch closes from its card and shows totals; clicking a card opens the side panel", async ({ page }) => {
   const chart = await openChart(page)
-  await chart.getByRole("button", { name: "Close Lead's branch" }).click()
+  const toggle = chart.getByRole("button", { name: "Lead's branch", exact: true })
+  await expect(toggle).toHaveAttribute("aria-expanded", "true")
+  await toggle.click()
+  await expect(toggle).toHaveAttribute("aria-expanded", "false")
   await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toContainText("3 people")
+  // The branch button sits below the totals line, not over it.
+  const totals = (await chart.getByRole("button", { name: "Lead, Tech lead" }).getByTestId("totals").boundingBox())!
+  expect(totals.y + totals.height).toBeLessThanOrEqual((await toggle.boundingBox())!.y + 1)
   await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toHaveCount(0)
   await expect(chart.locator("svg path[data-edge]")).toHaveCount(2)
   // The same description as the list's row.
   await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toHaveAccessibleDescription(
     "waiting in this branch · 1 card for you · $0.00 · 3 people · 1 busy · 2 waiting · 2 for you · $0.42 +1 unpriced")
-  await chart.getByRole("button", { name: "Open Lead's branch" }).click()
+  await chart.getByRole("button", { name: "Lead's branch", exact: true }).click()
   await expect(chart.locator("svg path[data-edge]")).toHaveCount(4)
   await chart.getByRole("button", { name: "Ann, Designer" }).click()
   await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
@@ -229,7 +235,7 @@ test("a new layout keeps the lines that are still drawn", async ({ page }) => {
   const line = chart.locator('path[data-edge="ngocbh>ann"]')
   await line.evaluate((el) => ((el as any).__kept = true))
   const d = await line.getAttribute("d")
-  await chart.getByRole("button", { name: "Lead's branch" }).click()
+  await chart.getByRole("button", { name: "Lead's branch", exact: true }).click()
   await expect(chart.locator("svg path[data-edge]")).toHaveCount(2)
   await expect(line).not.toHaveAttribute("d", d!) // the cards moved
   expect(await line.evaluate((el) => (el as any).__kept)).toBe(true)
@@ -237,7 +243,7 @@ test("a new layout keeps the lines that are still drawn", async ({ page }) => {
 
 test("the branch choice is the list's: closed in the chart, closed in the list", async ({ page }) => {
   const chart = await openChart(page)
-  await chart.getByRole("button", { name: "Close Lead's branch" }).click()
+  await chart.getByRole("button", { name: "Lead's branch", exact: true }).click()
   await page.getByRole("radio", { name: "List" }).click()
   await expect(page.getByRole("treeitem", { name: /Lead/ })).toHaveAttribute("aria-expanded", "false")
 })
@@ -265,7 +271,7 @@ test("the cards are one tab stop; arrow keys move up, down and across", async ({
   await expect(card("Ngoc, CEO")).toHaveAttribute("tabindex", "0")
   // Tab goes on to the focused card's branch button, then past the other cards.
   await page.keyboard.press("Tab")
-  await expect(chart.getByRole("button", { name: "Close Ngoc's branch" })).toBeFocused()
+  await expect(chart.getByRole("button", { name: "Ngoc's branch", exact: true })).toBeFocused()
   await page.keyboard.press("Tab")
   await expect(chart.getByRole("button", { name: "Zoom in" })).toBeFocused()
 })
@@ -327,7 +333,7 @@ test("By team draws team headers over their members, with copies muted", async (
   await expect(chart.getByRole("group", { name: "No team", exact: true })).toBeVisible()
   await expect(chart.locator('[data-muted="true"]')).toHaveCount(1) // Minh's copy under OPS
   await expect(chart.locator('[data-muted="true"]').getByRole("button", { name: "Minh, Engineer" })).toBeVisible()
-  await chart.getByRole("button", { name: "Close OPS's branch" }).click()
+  await chart.getByRole("button", { name: "OPS's branch", exact: true }).click()
   await expect(chart.locator('[data-muted="true"]')).toHaveCount(0)
 })
 

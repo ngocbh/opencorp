@@ -109,7 +109,7 @@ test("the chart, panned, zoomed, pinched, with a branch closed and By team, has 
   await page.mouse.up()
   await page.mouse.wheel(0, -200)
   await page.getByRole("button", { name: "Zoom out" }).click()
-  await chart.getByRole("button", { name: "Close Lead's branch" }).click()
+  await chart.getByRole("button", { name: "Lead's branch", exact: true }).click()
   await expect(chart.getByRole("button", { name: "Lead, Tech lead" })).toContainText("3 people")
   await chart.getByRole("button", { name: "Ann, Designer" }).click()
   await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
