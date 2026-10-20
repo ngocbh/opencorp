@@ -79,6 +79,7 @@ test("the sidebar: the company and its connection, Inbox, then Work and Company,
   await expect(nav(page).getByText(/^@ngocbh$/)).toBeInViewport()
   await expect(nav(page).getByRole("button", { name: "Sign out" })).toBeInViewport()
   await page.mouse.wheel(0, 2000)
+  await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(0)
   await expect(nav(page).getByRole("heading", { name: "Acme", level: 1 })).toBeInViewport()
 })
 
@@ -132,6 +133,30 @@ test.describe("on a phone", () => {
     expect([main.x, main.width]).toEqual([0, 390])
     expect(main.y).toBeGreaterThanOrEqual(bar.height)
     await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  })
+
+  test("the top bar stays on screen as the page scrolls, and the open menu holds the page still", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 480 })
+    await page.goto("/org")
+    await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+    await page.mouse.move(200, 300)
+    await page.mouse.wheel(0, 400)
+    await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(0)
+    await expect(menu(page)).toBeInViewport()
+    expect((await nav(page).boundingBox())!.y).toBe(0)
+    await menu(page).click()
+    await expect(org(page)).toBeInViewport()
+    const before = await page.evaluate(() => scrollY)
+    await page.mouse.move(350, 300) // over the backdrop
+    await page.mouse.wheel(0, 400)
+    await page.mouse.move(100, 300) // over the drawer
+    await page.mouse.wheel(0, 400)
+    await page.waitForTimeout(200)
+    expect(await page.evaluate(() => scrollY)).toBe(before)
+    await page.keyboard.press("Escape")
+    await page.mouse.move(200, 300)
+    await page.mouse.wheel(0, -400)
+    await expect.poll(() => page.evaluate(() => scrollY)).toBeLessThan(before)
   })
 
   test("Menu opens the pages by keyboard; Escape closes it and focus goes back to Menu", async ({ page }) => {

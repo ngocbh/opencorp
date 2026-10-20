@@ -167,6 +167,12 @@ export function Shell(props: ParentProps) {
     document.addEventListener("keydown", escape)
     onCleanup(() => document.removeEventListener("keydown", escape))
   })
+  // The page behind the open drawer stays put, so no undimmed strip scrolls into view.
+  createEffect(() => {
+    if (!open()) return
+    document.documentElement.classList.add("overflow-hidden")
+    onCleanup(() => document.documentElement.classList.remove("overflow-hidden"))
+  })
   const close = () => setOpen(false)
   return (
     <Show
@@ -181,7 +187,7 @@ export function Shell(props: ParentProps) {
         <nav
           aria-label="HQ"
           inert={covered()}
-          class="flex shrink-0 flex-col border-b border-neutral-200 md:sticky md:top-0 md:h-screen md:w-56 md:border-r md:border-b-0 dark:border-neutral-800"
+          class="sticky top-0 z-[5] flex shrink-0 flex-col border-b border-neutral-200 bg-white md:z-auto md:h-screen md:w-56 md:border-r md:border-b-0 md:bg-transparent dark:border-neutral-800 dark:bg-neutral-950 md:dark:bg-transparent"
         >
           <div class="flex h-12 items-center gap-2 px-3 md:h-auto md:flex-col md:items-stretch md:gap-1 md:px-5 md:pt-4 md:pb-2">
             <button
@@ -209,6 +215,7 @@ export function Shell(props: ParentProps) {
               {connection()}
             </p>
           </div>
+          {/* The backdrop and the drawer start at top-12, where the bar (h-12) ends. */}
           <Show when={open()}>
             <div aria-hidden="true" onClick={close} class="fixed inset-x-0 top-12 bottom-0 z-20 bg-black/30 md:hidden" />
           </Show>
