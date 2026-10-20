@@ -614,7 +614,7 @@ class Event(BaseModel):
         extra='forbid',
     )
     id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
-    type: Literal['work_item.created', 'work_item.updated', 'comment.created', 'session.created', 'session.updated', 'question.created', 'question.updated', 'feedback.created', 'feedback.updated', 'debrief.created', 'debrief.updated', 'profile.updated', 'profile_proposal.created', 'profile_proposal.updated', 'company.updated']
+    type: Literal['work_item.created', 'work_item.updated', 'comment.created', 'session.created', 'session.updated', 'question.created', 'question.updated', 'feedback.created', 'feedback.updated', 'debrief.created', 'debrief.updated', 'profile.updated', 'profile_proposal.created', 'profile_proposal.updated', 'company.updated', 'run.updated']
     at: Annotated[
         str,
         Field(
@@ -626,7 +626,7 @@ class Event(BaseModel):
     data: Annotated[
         dict[str, Any],
         Field(
-            description='The entity after the change; for company.updated, `{sha}` of the new company commit.'
+            description='The entity after the change; for company.updated, `{sha}` of the new company commit; for run.updated, a RunUpdated.'
         ),
     ]
 
@@ -854,6 +854,427 @@ class CompanyFile(BaseModel):
             description="True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept."
         ),
     ] = False
+
+
+type Reason = Annotated[
+    str,
+    Field(
+        description='Why it failed or was interrupted, secrets removed.', max_length=200
+    ),
+]
+
+
+type FailedNode = Annotated[
+    str,
+    Field(description='The node it failed at, when it failed at one.', min_length=1),
+]
+
+
+class RunSummary(BaseModel):
+    """
+    One run the office launched, as the Run Logs list shows it: from the office's runs table, the session, its questions and memory. No run log is read for it.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    run_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    session_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    flow: Annotated[
+        str,
+        Field(
+            description='What ran: chat, side_chat, profile_manager or debrief; later SOPs and discussions.',
+            min_length=1,
+        ),
+    ]
+    flow_path: Annotated[
+        str,
+        Field(
+            description="The flow's path in the company repo, at the session's pinned commit.",
+            min_length=1,
+        ),
+    ]
+    person: Annotated[
+        str,
+        Field(
+            description='The employee whose flow it is.',
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    driver: Annotated[
+        str,
+        Field(
+            description="Who started the run, fixed at launch: a human's handle, or `office` for runs the office starts itself.",
+            min_length=1,
+        ),
+    ]
+    participants: Annotated[
+        list[Handle],
+        Field(
+            description='Everyone else in it, the employee first: whoever answered its turns, cards or questions, or opened a side chat on its cards. Never the driver.'
+        ),
+    ] = []
+    parent_run_id: Annotated[
+        Ulid | None,
+        Field(
+            description="The run it was started from: a side chat's card's run, a debrief's session's last run. Null for a top-level run."
+        ),
+    ] = None
+    status: Literal['running', 'waiting', 'idle', 'finished', 'failed', 'interrupted']
+    reason: Annotated[
+        Reason | None,
+        Field(description='Why it failed or was interrupted, secrets removed.'),
+    ] = None
+    failed_node: Annotated[
+        FailedNode | None,
+        Field(description='The node it failed at, when it failed at one.'),
+    ] = None
+    current_nodes: Annotated[
+        list[str],
+        Field(
+            description='While running, waiting or idle: the node ids it is at now, deepest only. Empty while running means it is starting.'
+        ),
+    ] = []
+    asking: Annotated[
+        bool,
+        Field(
+            description='While waiting: a model question (one with no node) is open.'
+        ),
+    ] = False
+    held: Annotated[
+        bool,
+        Field(
+            description='While waiting: it is held at its cost cap, with nothing else open.'
+        ),
+    ] = False
+    codex: Annotated[bool, Field(description='A debrief of a Codex session.')] = False
+    launched_at: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+    ended_at: Annotated[
+        Timestamp | None,
+        Field(
+            description='When the office learned it ended. Null while open, and for a run an office stop interrupted.'
+        ),
+    ] = None
+    replaces: Annotated[
+        Ulid | None,
+        Field(description='The run of the same session this fresh run replaced.'),
+    ] = None
+    replaced_by: Annotated[
+        Ulid | None,
+        Field(description='The fresh run of the same session that replaced this one.'),
+    ] = None
+    children: Annotated[
+        list[RunSummary],
+        Field(
+            description="On a top-level row of a list page and on a run's page: the newest 200 runs started from it, newest first.",
+            validate_default=True,
+        ),
+    ] = []
+    children_total: Annotated[
+        int,
+        Field(description='How many runs were started from it, shown or not.', ge=0),
+    ] = 0
+
+
+class RunPage(BaseModel):
+    """
+    One page of GET /runs: top-level runs, newest first, each with its children.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    runs: list[RunSummary]
+    next: Annotated[
+        Ulid | None,
+        Field(description='The `before` of the next page; null on the last.'),
+    ] = None
+
+
+class RunUsage(BaseModel):
+    """
+    What a run's model calls used, as the chat harness recorded them.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    input_tokens: Annotated[int, Field(ge=0)]
+    output_tokens: Annotated[int, Field(ge=0)]
+    usd: Annotated[float, Field(ge=0.0)]
+
+
+type FlowFingerprint = Annotated[str, Field(pattern='^[0-9a-f]{64}$')]
+
+
+type BytesDone = Annotated[
+    int, Field(description='While indexing: bytes of the log read so far.', ge=0)
+]
+
+
+type BytesTotal = Annotated[
+    int, Field(description="While indexing: the log's size in bytes.", ge=0)
+]
+
+
+class RunDetail(BaseModel):
+    """
+    GET /runs/{id}: the run's summary, what its log's first record says, and whether the log can be read.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    run: RunSummary
+    parent: RunSummary | None = None
+    repo_commit: Annotated[
+        str,
+        Field(
+            description="The session's pinned commit: which version of the flow ran.",
+            pattern='^[0-9a-f]{40,64}$',
+        ),
+    ]
+    flow_fingerprint: FlowFingerprint | None = None
+    learnable: Annotated[
+        bool | None,
+        Field(
+            description='Whether the log keeps evidence (prompts, model turns, tool calls); null until the log is read.'
+        ),
+    ] = None
+    models: Annotated[dict[str, str], Field(description="The model of each agent node, by static path, from the log's first record.")] = {
+
+    }
+    usage: Annotated[
+        RunUsage | None,
+        Field(
+            description='Null when not recorded: the office records usage only for runs the chat harness runs, not debriefs.'
+        ),
+    ] = None
+    log_state: Literal['ok', 'indexing', 'missing', 'not_started', 'unsupported_schema']
+    log_message: Annotated[
+        str | None, Field(description='What to show for any log_state but ok.')
+    ] = None
+    bytes_done: Annotated[
+        BytesDone | None,
+        Field(description='While indexing: bytes of the log read so far.'),
+    ] = None
+    bytes_total: Annotated[
+        BytesTotal | None, Field(description="While indexing: the log's size in bytes.")
+    ] = None
+
+
+type EndSeq = Annotated[
+    int,
+    Field(
+        description="The outcome record's seq; null while open or once restarted.", ge=0
+    ),
+]
+
+
+type Error = Annotated[
+    str,
+    Field(description='For a failed node: its error, secrets removed.', max_length=200),
+]
+
+
+class RunNode(BaseModel):
+    """
+    One node attempt, from its start record and its outcome record.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    seq: Annotated[int, Field(description="The start record's seq.", ge=0)]
+    end_seq: Annotated[
+        EndSeq | None,
+        Field(
+            description="The outcome record's seq; null while open or once restarted."
+        ),
+    ] = None
+    node_id: Annotated[str, Field(min_length=1)]
+    kind: Annotated[
+        str | None,
+        Field(
+            description="agent, case, loop, map, call, …: the node's kind by static path. Always null until Yian lists a flow's nodes publicly (yian#943); clients show nothing for null."
+        ),
+    ] = None
+    status: Literal['open', 'succeeded', 'routed', 'expanded', 'failed', 'restarted']
+    handle: Annotated[
+        str | None, Field(description='For a routed case: the handle it took.')
+    ] = None
+    error: Annotated[
+        Error | None,
+        Field(description='For a failed node: its error, secrets removed.'),
+    ] = None
+
+
+class RunDivider(BaseModel):
+    """
+    A run_resumed record: where the run was resumed and which nodes it retried.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    seq: Annotated[int, Field(ge=0)]
+    retried: list[str]
+
+
+type NextBefore = Annotated[
+    int,
+    Field(
+        description='The `before` of the next (older) page; null on the oldest.', ge=0
+    ),
+]
+
+
+class RunNodePage(BaseModel):
+    """
+    GET /runs/{id}/nodes: node attempts, newest start first, and the resume dividers among them.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    nodes: list[RunNode]
+    dividers: Annotated[list[RunDivider], Field(validate_default=True)] = []
+    next_before: Annotated[
+        NextBefore | None,
+        Field(description='The `before` of the next (older) page; null on the oldest.'),
+    ] = None
+    dropped: Annotated[
+        bool,
+        Field(
+            description='True when older attempts were dropped from the table (past 100,000): see Raw.'
+        ),
+    ] = False
+    indexing: Annotated[
+        bool,
+        Field(
+            description='True when the log is still being read for the first time: nodes is empty; ask again.'
+        ),
+    ] = False
+    bytes_done: Annotated[
+        BytesDone | None,
+        Field(description='While indexing: bytes of the log read so far.'),
+    ] = None
+    bytes_total: Annotated[
+        BytesTotal | None, Field(description="While indexing: the log's size in bytes.")
+    ] = None
+
+
+type Size1 = Annotated[
+    int,
+    Field(
+        description="The record's size in bytes, when it was too large to preview.",
+        ge=0,
+    ),
+]
+
+
+class RunEvent(BaseModel):
+    """
+    One run-log record as written, secrets removed.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    seq: Annotated[int, Field(ge=0)]
+    kind: Annotated[str, Field(min_length=1)]
+    node_id: str | None = None
+    payload: Annotated[
+        dict[str, Any] | None,
+        Field(
+            description="The record's payload, scrubbed; null when withheld or too large to preview."
+        ),
+    ] = None
+    cut: Annotated[
+        list[str],
+        Field(
+            description='JSON pointers (into payload) of strings cut at 4 KiB; fetch the event by seq for the whole.'
+        ),
+    ] = []
+    evidence_left_out: Annotated[
+        bool,
+        Field(
+            description='True when evidence was left out of a page; fetch the event by seq for it.'
+        ),
+    ] = False
+    withheld: Annotated[
+        str | None,
+        Field(description="Why the payload isn't shown: a secret couldn't be removed."),
+    ] = None
+    size: Annotated[
+        Size1 | None,
+        Field(
+            description="The record's size in bytes, when it was too large to preview."
+        ),
+    ] = None
+
+
+type NextAfter = Annotated[
+    int,
+    Field(
+        description='The `after` of the next page; null at the end of the log so far.',
+        ge=0,
+    ),
+]
+
+
+class RunEventPage(BaseModel):
+    """
+    GET /runs/{id}/events: records in seq order, at most 500 or 256 KiB of JSON.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    events: list[RunEvent]
+    next_after: Annotated[
+        NextAfter | None,
+        Field(
+            description='The `after` of the next page; null at the end of the log so far.'
+        ),
+    ] = None
+    cut: Annotated[
+        bool, Field(description='True when the page stopped at its byte cap.')
+    ] = False
+    indexing: Annotated[
+        bool,
+        Field(
+            description='True when the log is still being read for the first time: events is empty; ask again.'
+        ),
+    ] = False
+    bytes_done: Annotated[
+        BytesDone | None,
+        Field(description='While indexing: bytes of the log read so far.'),
+    ] = None
+    bytes_total: Annotated[
+        BytesTotal | None, Field(description="While indexing: the log's size in bytes.")
+    ] = None
+
+
+class RunUpdated(BaseModel):
+    """
+    The data of a run.updated event: from the store and memory, node ids only.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    run_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    session_id: Annotated[str, Field(pattern='^[0-9A-HJKMNP-TV-Z]{26}$')]
+    parent_run_id: Ulid | None = None
+    status: Literal['running', 'waiting', 'idle', 'finished', 'failed', 'interrupted']
+    current_nodes: list[str] = []
 
 
 class PersonCost(BaseModel):
@@ -1689,3 +2110,4 @@ class Message(BaseModel):
 
 
 AnswerField.model_rebuild()
+RunSummary.model_rebuild()

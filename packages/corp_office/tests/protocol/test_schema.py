@@ -48,7 +48,8 @@ BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "Rep
           "ConnectionList", "ModelOption", "ModelList", "SetModelRequest", "AddConnectionRequest",
           "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView", "CostReport",
           "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
-          "HqLoginRequest", "CompanyTree", "CompanyFile"}
+          "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
+          "RunEvent"}
 
 
 def test_every_route_body_has_a_fixture():
@@ -124,3 +125,46 @@ def test_a_commit_names_its_author_without_an_email():
     assert sub["required"] == ["id", "subject", "author", "time"]
     assert sub["properties"].keys() == {"id", "subject", "author", "time"}
     assert sub["properties"]["time"] == {"$ref": "#/$defs/Timestamp"}
+
+
+RUNS = {"RunSummary", "RunPage", "RunUsage", "RunDetail", "RunNode", "RunDivider", "RunNodePage", "RunEvent",
+        "RunEventPage", "RunUpdated"}
+RUN_STATUSES = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
+
+
+def test_run_defs_have_fixtures():
+    assert RUNS <= {p.stem for p in FIXTURES.glob("*.json")}
+    assert RUNS <= {p.name.split(".", 1)[0] for p in (FIXTURES / "invalid").glob("*.json")}
+
+
+def test_run_statuses_node_statuses_and_log_states():
+    defs = _schema()["$defs"]
+    assert defs["RunSummary"]["properties"]["status"]["enum"] == RUN_STATUSES
+    assert defs["RunUpdated"]["properties"]["status"]["enum"] == RUN_STATUSES
+    assert defs["RunNode"]["properties"]["status"]["enum"] == [
+        "open", "succeeded", "routed", "expanded", "failed", "restarted"]
+    assert defs["RunDetail"]["properties"]["log_state"]["enum"] == [
+        "ok", "indexing", "missing", "not_started", "unsupported_schema"]
+
+
+def test_run_updated_is_an_event_type():
+    assert "run.updated" in _schema()["$defs"]["Event"]["properties"]["type"]["enum"]
+
+
+def test_a_reason_and_a_node_error_are_capped_at_200_characters():
+    defs = _schema()["$defs"]
+    assert defs["RunSummary"]["properties"]["reason"]["anyOf"][0]["maxLength"] == 200
+    assert defs["RunNode"]["properties"]["error"]["anyOf"][0]["maxLength"] == 200
+
+
+def test_node_and_record_pages_can_say_the_log_is_still_being_read():
+    defs = _schema()["$defs"]
+    for name in ("RunNodePage", "RunEventPage"):
+        props = defs[name]["properties"]
+        assert (props["indexing"]["type"], props["indexing"]["default"]) == ("boolean", False)
+        assert {"bytes_done", "bytes_total"} <= props.keys()
+
+
+def test_a_node_kind_is_nullable_and_optional():
+    kind = _schema()["$defs"]["RunNode"]["properties"]["kind"]
+    assert kind["default"] is None and {"type": "null"} in kind["anyOf"]

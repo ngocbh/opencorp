@@ -582,11 +582,12 @@ export interface Event {
     | "profile.updated"
     | "profile_proposal.created"
     | "profile_proposal.updated"
-    | "company.updated";
+    | "company.updated"
+    | "run.updated";
   at: Timestamp;
   subject_id: string;
   /**
-   * The entity after the change; for company.updated, `{sha}` of the new company commit.
+   * The entity after the change; for company.updated, `{sha}` of the new company commit; for run.updated, a RunUpdated.
    */
   data: {
     [k: string]: unknown;
@@ -760,6 +761,297 @@ export interface CompanyFile {
    * True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept.
    */
   rewritten?: boolean;
+}
+/**
+ * One run the office launched, as the Run Logs list shows it: from the office's runs table, the session, its questions and memory. No run log is read for it.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunSummary".
+ */
+export interface RunSummary {
+  run_id: Ulid;
+  session_id: Ulid;
+  /**
+   * What ran: chat, side_chat, profile_manager or debrief; later SOPs and discussions.
+   */
+  flow: string;
+  /**
+   * The flow's path in the company repo, at the session's pinned commit.
+   */
+  flow_path: string;
+  /**
+   * A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.
+   */
+  person: string;
+  /**
+   * Who started the run, fixed at launch: a human's handle, or `office` for runs the office starts itself.
+   */
+  driver: string;
+  /**
+   * Everyone else in it, the employee first: whoever answered its turns, cards or questions, or opened a side chat on its cards. Never the driver.
+   */
+  participants?: Handle[];
+  /**
+   * The run it was started from: a side chat's card's run, a debrief's session's last run. Null for a top-level run.
+   */
+  parent_run_id?: Ulid | null;
+  status: "running" | "waiting" | "idle" | "finished" | "failed" | "interrupted";
+  /**
+   * Why it failed or was interrupted, secrets removed.
+   */
+  reason?: string | null;
+  /**
+   * The node it failed at, when it failed at one.
+   */
+  failed_node?: string | null;
+  /**
+   * While running, waiting or idle: the node ids it is at now, deepest only. Empty while running means it is starting.
+   */
+  current_nodes?: string[];
+  /**
+   * While waiting: a model question (one with no node) is open.
+   */
+  asking?: boolean;
+  /**
+   * While waiting: it is held at its cost cap, with nothing else open.
+   */
+  held?: boolean;
+  /**
+   * A debrief of a Codex session.
+   */
+  codex?: boolean;
+  launched_at: Timestamp;
+  /**
+   * When the office learned it ended. Null while open, and for a run an office stop interrupted.
+   */
+  ended_at?: Timestamp | null;
+  /**
+   * The run of the same session this fresh run replaced.
+   */
+  replaces?: Ulid | null;
+  /**
+   * The fresh run of the same session that replaced this one.
+   */
+  replaced_by?: Ulid | null;
+  /**
+   * On a top-level row of a list page and on a run's page: the newest 200 runs started from it, newest first.
+   */
+  children?: RunSummary[];
+  /**
+   * How many runs were started from it, shown or not.
+   */
+  children_total?: number;
+}
+/**
+ * One page of GET /runs: top-level runs, newest first, each with its children.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunPage".
+ */
+export interface RunPage {
+  runs: RunSummary[];
+  /**
+   * The `before` of the next page; null on the last.
+   */
+  next?: Ulid | null;
+}
+/**
+ * What a run's model calls used, as the chat harness recorded them.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunUsage".
+ */
+export interface RunUsage {
+  input_tokens: number;
+  output_tokens: number;
+  usd: number;
+}
+/**
+ * GET /runs/{id}: the run's summary, what its log's first record says, and whether the log can be read.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunDetail".
+ */
+export interface RunDetail {
+  run: RunSummary;
+  parent?: RunSummary | null;
+  /**
+   * A git commit or blob id.
+   */
+  repo_commit: string;
+  flow_fingerprint?: string | null;
+  /**
+   * Whether the log keeps evidence (prompts, model turns, tool calls); null until the log is read.
+   */
+  learnable?: boolean | null;
+  /**
+   * The model of each agent node, by static path, from the log's first record.
+   */
+  models?: {
+    [k: string]: string;
+  };
+  /**
+   * Null when not recorded: the office records usage only for runs the chat harness runs, not debriefs.
+   */
+  usage?: RunUsage | null;
+  log_state: "ok" | "indexing" | "missing" | "not_started" | "unsupported_schema";
+  /**
+   * What to show for any log_state but ok.
+   */
+  log_message?: string | null;
+  /**
+   * While indexing: bytes of the log read so far.
+   */
+  bytes_done?: number | null;
+  /**
+   * While indexing: the log's size in bytes.
+   */
+  bytes_total?: number | null;
+}
+/**
+ * One node attempt, from its start record and its outcome record.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunNode".
+ */
+export interface RunNode {
+  /**
+   * The start record's seq.
+   */
+  seq: number;
+  /**
+   * The outcome record's seq; null while open or once restarted.
+   */
+  end_seq?: number | null;
+  node_id: string;
+  /**
+   * agent, case, loop, map, call, …: the node's kind by static path. Always null until Yian lists a flow's nodes publicly (yian#943); clients show nothing for null.
+   */
+  kind?: string | null;
+  status: "open" | "succeeded" | "routed" | "expanded" | "failed" | "restarted";
+  /**
+   * For a routed case: the handle it took.
+   */
+  handle?: string | null;
+  /**
+   * For a failed node: its error, secrets removed.
+   */
+  error?: string | null;
+}
+/**
+ * A run_resumed record: where the run was resumed and which nodes it retried.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunDivider".
+ */
+export interface RunDivider {
+  seq: number;
+  retried: string[];
+}
+/**
+ * GET /runs/{id}/nodes: node attempts, newest start first, and the resume dividers among them.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunNodePage".
+ */
+export interface RunNodePage {
+  nodes: RunNode[];
+  dividers?: RunDivider[];
+  /**
+   * The `before` of the next (older) page; null on the oldest.
+   */
+  next_before?: number | null;
+  /**
+   * True when older attempts were dropped from the table (past 100,000): see Raw.
+   */
+  dropped?: boolean;
+  /**
+   * True when the log is still being read for the first time: nodes is empty; ask again.
+   */
+  indexing?: boolean;
+  /**
+   * While indexing: bytes of the log read so far.
+   */
+  bytes_done?: number | null;
+  /**
+   * While indexing: the log's size in bytes.
+   */
+  bytes_total?: number | null;
+}
+/**
+ * One run-log record as written, secrets removed.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunEvent".
+ */
+export interface RunEvent {
+  seq: number;
+  kind: string;
+  node_id?: string | null;
+  /**
+   * The record's payload, scrubbed; null when withheld or too large to preview.
+   */
+  payload?: {
+    [k: string]: unknown;
+  } | null;
+  /**
+   * JSON pointers (into payload) of strings cut at 4 KiB; fetch the event by seq for the whole.
+   */
+  cut?: string[];
+  /**
+   * True when evidence was left out of a page; fetch the event by seq for it.
+   */
+  evidence_left_out?: boolean;
+  /**
+   * Why the payload isn't shown: a secret couldn't be removed.
+   */
+  withheld?: string | null;
+  /**
+   * The record's size in bytes, when it was too large to preview.
+   */
+  size?: number | null;
+}
+/**
+ * GET /runs/{id}/events: records in seq order, at most 500 or 256 KiB of JSON.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunEventPage".
+ */
+export interface RunEventPage {
+  events: RunEvent[];
+  /**
+   * The `after` of the next page; null at the end of the log so far.
+   */
+  next_after?: number | null;
+  /**
+   * True when the page stopped at its byte cap.
+   */
+  cut?: boolean;
+  /**
+   * True when the log is still being read for the first time: events is empty; ask again.
+   */
+  indexing?: boolean;
+  /**
+   * While indexing: bytes of the log read so far.
+   */
+  bytes_done?: number | null;
+  /**
+   * While indexing: the log's size in bytes.
+   */
+  bytes_total?: number | null;
+}
+/**
+ * The data of a run.updated event: from the store and memory, node ids only.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "RunUpdated".
+ */
+export interface RunUpdated {
+  run_id: Ulid;
+  session_id: Ulid;
+  parent_run_id?: Ulid | null;
+  status: "running" | "waiting" | "idle" | "finished" | "failed" | "interrupted";
+  current_nodes?: string[];
 }
 /**
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
