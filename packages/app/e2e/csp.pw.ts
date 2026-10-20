@@ -44,6 +44,20 @@ test("the sign-in form, its error and signing in with a password load with no CS
   expect(await violations()).toEqual([])
 })
 
+test("the sidebar's Sign out, and the sign-in page it lands on, load with no CSP violation", async ({ page }) => {
+  const violations = await watchCsp(page)
+  await page.goto("/sign-in")
+  await page.getByLabel("Handle").fill("ngocbh")
+  await page.getByLabel("Password").fill("correct horse")
+  await page.getByRole("button", { name: "Sign in" }).click()
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await page.getByRole("navigation", { name: "HQ" }).getByRole("button", { name: "Sign out" }).focus()
+  await violations()
+  await page.getByRole("navigation", { name: "HQ" }).getByRole("button", { name: "Sign out" }).click()
+  await expect(page.getByRole("heading", { name: "Sign in to OpenCorp HQ" })).toBeVisible()
+  expect(await violations()).toEqual([])
+})
+
 test("pairing, the shell, the reconnecting banner and the blocked page load with no CSP violation", async ({ page, request }) => {
   const violations = await watchCsp(page)
   await page.goto("/pair#nope")
