@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { CARD, layout, type LayoutNode } from "../src/company/layout"
+import { CARD, fit, layout, zoomAt, type LayoutNode } from "../src/company/layout"
 
 const n = (id: string, ...children: LayoutNode[]): LayoutNode => ({ id, children })
 const slot = CARD.w + CARD.gapX
@@ -58,4 +58,30 @@ test("a few hundred people lay out in one pass", () => {
   expect(r.boxes).toHaveLength(421)
   expect(r.edges).toHaveLength(420)
   expect(r.width).toBe(400 * slot - CARD.gapX)
+})
+
+test("fit scales the whole chart into the view, never above 1, and centres it", () => {
+  expect(fit({ width: 2000, height: 500 }, { width: 1000, height: 1000 })).toEqual({ k: 0.5, x: 0, y: 375 })
+  expect(fit({ width: 100, height: 100 }, { width: 1000, height: 1000 })).toEqual({ k: 1, x: 450, y: 450 })
+  // No floor: a very wide company still fits entirely.
+  expect(fit({ width: 14000, height: 200 }, { width: 1000, height: 600 }).k).toBeCloseTo(1000 / 14000)
+})
+
+test("fit leaves a margin around the chart when asked", () => {
+  expect(fit({ width: 960, height: 100 }, { width: 1000, height: 1000 }, 20)).toEqual({ k: 1, x: 20, y: 450 })
+  expect(fit({ width: 1920, height: 100 }, { width: 1000, height: 1000 }, 20).k).toBe(0.5)
+})
+
+test("an empty view or chart fits without dividing by zero", () => {
+  expect(fit({ width: 0, height: 0 }, { width: 1000, height: 500 })).toEqual({ k: 1, x: 500, y: 250 })
+  expect(fit({ width: 500, height: 500 }, { width: 0, height: 0 }).k).toBeGreaterThan(0)
+})
+
+test("zooming keeps the point under the cursor still, within 0.2 and 2", () => {
+  expect(zoomAt({ k: 1, x: 0, y: 0 }, 2, [100, 100])).toEqual({ k: 2, x: -100, y: -100 })
+  expect(zoomAt({ k: 2, x: 0, y: 0 }, 4, [0, 0]).k).toBe(2)
+  expect(zoomAt({ k: 1, x: 0, y: 0 }, 0.01, [0, 0]).k).toBe(0.2)
+  // Below the floor after a fit: zooming out goes no further, zooming in works.
+  expect(zoomAt({ k: 0.1, x: 0, y: 0 }, 0.5, [0, 0]).k).toBe(0.1)
+  expect(zoomAt({ k: 0.1, x: 0, y: 0 }, 1.5, [0, 0]).k).toBeCloseTo(0.15)
 })

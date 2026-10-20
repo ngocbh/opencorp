@@ -61,3 +61,28 @@ export function layout(roots: LayoutNode[], open: (id: string) => boolean) {
   }
   return { boxes, edges, width: Math.max(0, left - CARD.gapX), height: roots.length ? depthMax * row + CARD.h : 0 }
 }
+
+/** How the canvas is shown: scaled by `k`, then moved by `x`, `y` (view pixels). */
+export type Transform = { k: number; x: number; y: number }
+export type Size = { width: number; height: number }
+export const ZOOM = { min: 0.2, max: 2 }
+
+/**
+ * The transform that shows all of `size` in `view`, `margin` pixels in from each side, centred, never above 1. No
+ * floor, so every card of a very wide company fits.
+ */
+export function fit(size: Size, view: Size, margin = 0): Transform {
+  const room = (v: number) => Math.max(v - 2 * margin, 1)
+  const k = Math.min(1, room(view.width) / Math.max(size.width, 1), room(view.height) / Math.max(size.height, 1))
+  return { k, x: (view.width - size.width * k) / 2, y: (view.height - size.height * k) / 2 }
+}
+
+/**
+ * `t` zoomed by `factor` about the view point `[px, py]`, which stays still. `k` stays within ZOOM, except that a fit
+ * below the floor can only zoom in from there.
+ */
+export function zoomAt(t: Transform, factor: number, [px, py]: [number, number]): Transform {
+  const k = Math.min(ZOOM.max, Math.max(Math.min(ZOOM.min, t.k), t.k * factor))
+  const r = k / t.k
+  return { k, x: px - (px - t.x) * r, y: py - (py - t.y) * r }
+}
