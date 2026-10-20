@@ -29,6 +29,10 @@ test("the fixture's /api/login: one 401 for every failure, 429 with Retry-After,
   }
   expect((await login({ handle: "@NgocBH", password: "x" })).status()).toBe(422)
   expect((await login({ handle: "ngocbh", password: "" })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", label: 5 })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", label: "x".repeat(101) })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", extra: 1 })).status()).toBe(422)
+  expect((await login({ handle: "ngocbh", password: "x", label: null })).status()).toBe(401)
   expect((await request.get("/api/company")).status()).toBe(401)
   await request.post("/__fixture/set", { data: { login: { retryAfter: 600, busy: false } } })
   const limited = await login({ handle: "ngocbh", password: "correct horse" })

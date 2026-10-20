@@ -157,7 +157,8 @@ async function login(req: Request): Promise<Response> {
     !HANDLE.test(body.handle) ||
     typeof body.password !== "string" ||
     !body.password ||
-    keys.some((k) => !["handle", "password", "label"].includes(k))
+    keys.some((k) => !["handle", "password", "label"].includes(k)) ||
+    (body.label != null && (typeof body.label !== "string" || body.label.length > 100))
   )
     return json({ error: "invalid_body", message: "the body isn't an HqLoginRequest" }, 422)
   const { handle, password, label = null } = body
