@@ -830,7 +830,8 @@ export function createFakeOffice(
     const at = new Date()
     const b: BrowserSession = {
       id: nextId(),
-      name: `web-${randomBytes(3).toString("hex")}`,
+      // From a-z0-9, as the office names them.
+      name: `web-${Array.from(randomBytes(6), (x) => "abcdefghijklmnopqrstuvwxyz0123456789"[x % 36]).join("")}`,
       label: null,
       via: "pair",
       created_at: at.toISOString(),
