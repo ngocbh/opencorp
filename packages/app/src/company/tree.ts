@@ -9,6 +9,8 @@ export type Tree = {
   unplaced: Person[]
   /** `company.ceo_has_manager`: the CEO stays a root and the edge up isn't drawn. */
   ceoHasManager: boolean
+  /** Each placed person's node, by handle; unplaced people have none. */
+  nodes: Map<string, TreeNode>
 }
 
 /** Orders people by name, then handle. */
@@ -43,16 +45,19 @@ export function buildTree(people: Person[], company: Company | null): Tree {
     for (const handle of path) placed.set(handle, ok)
     return ok
   }
-  const nodes = new Map(people.map((p) => [p.handle, { person: p, children: [] as TreeNode[] }]))
+  const nodes = new Map<string, TreeNode>(people.map((p) => [p.handle, { person: p, children: [] }]))
   const roots: TreeNode[] = []
   const unplaced: Person[] = []
   for (const p of [...people].sort(byName)) {
+    const node = nodes.get(p.handle)!
     const manager = up(p)
-    if (!reaches(p)) unplaced.push(p)
-    else if (manager === null) roots.push(nodes.get(p.handle)!)
-    else nodes.get(manager)!.children.push(nodes.get(p.handle)!)
+    if (!reaches(p)) {
+      unplaced.push(p)
+      nodes.delete(p.handle)
+    } else if (manager === null) roots.push(node)
+    else nodes.get(manager)!.children.push(node)
   }
   const i = roots.findIndex((n) => n.person === ceo)
   if (i > 0) roots.unshift(...roots.splice(i, 1))
-  return { roots, unplaced, ceoHasManager: !!ceo?.manager }
+  return { roots, unplaced, ceoHasManager: !!ceo?.manager, nodes }
 }

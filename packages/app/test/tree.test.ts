@@ -45,6 +45,13 @@ test("a CEO missing from the people changes nothing", () => {
 })
 
 test("an empty company is an empty tree", () => {
-  expect(buildTree([], company)).toEqual({ roots: [], unplaced: [], ceoHasManager: false })
-  expect(buildTree([], null)).toEqual({ roots: [], unplaced: [], ceoHasManager: false })
+  expect(buildTree([], company)).toEqual({ roots: [], unplaced: [], ceoHasManager: false, nodes: new Map() })
+  expect(buildTree([], null)).toEqual({ roots: [], unplaced: [], ceoHasManager: false, nodes: new Map() })
+})
+
+test("nodes finds each placed person's node by handle; unplaced people have none", () => {
+  const t = buildTree([person("ceo", null), person("al", "ceo"), person("bo", "ghost")], company)
+  expect([...t.nodes.keys()].sort()).toEqual(["al", "ceo"])
+  expect(t.nodes.get("al")).toBe(t.roots[0].children[0])
+  expect(t.nodes.get("bo")).toBeUndefined()
 })
