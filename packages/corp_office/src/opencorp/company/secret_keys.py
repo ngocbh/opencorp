@@ -27,8 +27,9 @@ SECRET_PATTERNS = (
 )
 """Secrets with a known format, each replaced whole by ``scrub_text``."""
 
-URL_CREDENTIALS = re.compile(r"(://[^\s/@:]*:)(?!\(hidden\)@)[^\s/@]+@")
-"""The password in ``scheme://user:password@``; one already scrubbed doesn't match again."""
+URL_CREDENTIALS = re.compile(r"(://[^\s/@:]*:)(?!\(hidden\)@)\S+@(?=[^\s/@?#'\"]*(?:[\s/?#'\"]|$))")
+"""The password in ``scheme://user:password@host``, up to the last ``@`` before the host, so one holding ``/`` or
+``@`` is hidden whole; one already scrubbed doesn't match again."""
 
 MIN_KNOWN = 8
 """Known secret values shorter than this are ignored by ``check_clean``, so they don't match everywhere."""
@@ -47,9 +48,10 @@ def is_secret_key(key: object) -> bool:
 
 def blank_secrets[M: BaseModel](model: M) -> M:
     """``model`` with every secret-named field (a person's devices and password hash) set to its default."""
-    fields = type(model).model_fields
-    return model.model_copy(update={name: info.get_default(call_default_factory=True)
-                                    for name, info in fields.items() if is_secret_key(name)})
+    secret = {name: info for name, info in type(model).model_fields.items() if is_secret_key(name)}
+    # A required field has no default to blank it to; the schema must give secret fields one.
+    assert not any(info.is_required() for info in secret.values()), f"a required secret field in {type(model)}"
+    return model.model_copy(update={name: info.get_default(call_default_factory=True) for name, info in secret.items()})
 
 
 def scrub_text(text: str) -> str:
@@ -70,6 +72,10 @@ class UnsafeYaml(Exception):
     """A YAML text couldn't be read safely: it doesn't parse, holds several documents, recurses or is too big."""
 
 
+class NotYaml(UnsafeYaml):
+    """The text doesn't parse as one YAML document."""
+
+
 @dataclass
 class YamlSecrets:
     """A parsed YAML text and its secrets."""
@@ -79,6 +85,8 @@ class YamlSecrets:
     """The path to each secret key not inside another secret key's value, in document order."""
     values: set[str] = field(default_factory=set)
     """Every string under a secret key, keys included; under ``devices``, only those under secret keys within."""
+    plain: set[str] = field(default_factory=set)
+    """Every other string, keys included, decoded: an escaped or split secret is whole here."""
 
 
 _PLAIN, _DEVICES, _SECRET = range(3)
@@ -88,15 +96,21 @@ def find_secrets(text: str) -> YamlSecrets:
     """Parse ``text`` with the pure-Python SafeLoader and collect its secret keys and values; ``UnsafeYaml`` on any
     failure, so callers can fail closed."""
     try:
-        found = YamlSecrets(yaml.load(text, Loader=yaml.SafeLoader))  # pure Python, never the C loader
+        data = yaml.load(text, Loader=yaml.SafeLoader)  # pure Python, never the C loader
+    except yaml.YAMLError as exc:
+        raise NotYaml(type(exc).__name__) from None
+    except Exception as exc:  # RecursionError on deep nesting, and anything else: not safe
+        raise UnsafeYaml(type(exc).__name__) from None
+    found = YamlSecrets(data)
+    try:
         _walk(found)
-    except Exception as exc:  # YAMLError, RecursionError, a cycle, the budget: all mean "not safe"
+    except Exception as exc:  # a cycle, the budget: not safe
         raise UnsafeYaml(type(exc).__name__) from None
     return found
 
 
 def _walk(found: YamlSecrets) -> None:
-    """Fill ``found.keys`` and ``found.values``, walking aliases each time they are referenced.
+    """Fill ``found.keys``, ``found.values`` and ``found.plain``, walking aliases each time they are referenced.
 
     ``on_path`` holds the containers on the current path, so a recursive anchor raises instead of looping.
     """
@@ -113,8 +127,7 @@ def _walk(found: YamlSecrets) -> None:
         if visits > YAML_BUDGET:
             raise UnsafeYaml("too many values")
         if isinstance(node, str):
-            if ctx == _SECRET:
-                found.values.add(node)
+            (found.values if ctx == _SECRET else found.plain).add(node)
             continue
         if not isinstance(node, (dict, list)):
             continue
@@ -129,7 +142,9 @@ def _walk(found: YamlSecrets) -> None:
                 child = ctx
                 if ctx == _SECRET:
                     children.append((key, (*path, key), _SECRET))
-                elif is_secret_key(key):
+                elif isinstance(key, str):
+                    found.plain.add(key)
+                if ctx != _SECRET and is_secret_key(key):
                     if ctx == _PLAIN:
                         found.keys.append((*path, key))
                     child = _DEVICES if key.lower() == DEVICES else _SECRET

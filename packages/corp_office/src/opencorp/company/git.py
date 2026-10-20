@@ -43,6 +43,13 @@ def is_commit_id(value: object) -> bool:
     return isinstance(value, str) and _COMMIT_ID.fullmatch(value) is not None
 
 
+def _full_id(commit: str) -> str:
+    """``commit`` if it is a full hex commit id; ValueError otherwise, so no rev expression reaches git."""
+    if not is_commit_id(commit):
+        raise ValueError(f"not a full commit id: {commit!r}")
+    return commit
+
+
 def _replace_surrogates(text: str) -> str:
     """``text`` with the lone surrogates of bytes that weren't UTF-8 as U+FFFD, so it can go into JSON."""
     return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
@@ -135,16 +142,10 @@ class CompanyGit:
                 found[path] = blob
         return found
 
-    def _full_id(self, commit: str) -> str:
-        """``commit`` if it is a full hex commit id; ValueError otherwise, so no rev expression reaches git."""
-        if not is_commit_id(commit):
-            raise ValueError(f"not a full commit id: {commit!r}")
-        return commit
-
     def list_tree(self, commit: str) -> list[TreeEntry]:
         """Every entry of the tree at ``commit`` (a full hex id), folders included; modes other than a folder, a
         file, a symlink or a submodule are left out."""
-        out = self._git("ls-tree", "-r", "-t", "-z", "-l", "--full-tree", self._full_id(commit)).stdout
+        out = self._git("ls-tree", "-r", "-t", "-z", "-l", "--full-tree", _full_id(commit)).stdout
         found = []
         for entry in filter(None, out.split("\0")):
             info, _, path = entry.partition("\t")
@@ -155,7 +156,9 @@ class CompanyGit:
 
     def commit_info(self, commit: str) -> CommitInfo:
         """The subject, author name (never the email) and commit time of ``commit`` (a full hex id)."""
-        out = self._git("log", "-1", "--format=%H%x00%s%x00%an%x00%ct", self._full_id(commit)).stdout
+        # --no-show-signature: a repo's log.showSignature would put gpg's output before the format.
+        out = self._git("log", "-1", "--no-show-signature", "--format=%H%x00%s%x00%an%x00%ct",
+                        _full_id(commit)).stdout
         sha, subject, author, ct = out.rstrip("\n").split("\0")
         return CommitInfo(id=sha, subject=_replace_surrogates(subject), author=_replace_surrogates(author),
                           time=stamp(datetime.fromtimestamp(int(ct), UTC)))

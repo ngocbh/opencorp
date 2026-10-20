@@ -405,6 +405,15 @@ def test_list_tree_and_commit_info_take_only_a_full_hex_id(g, ref):
         g.commit_info(ref)
 
 
+def test_commit_info_never_shows_a_signature(g, company, monkeypatch):
+    # Repo-local config still applies, and log.showSignature would put gpg's output into the format.
+    _git(company, "config", "log.showSignature", "true")
+    head, seen, real = g.head(), [], g._git
+    monkeypatch.setattr(g, "_git", lambda *args, **kw: seen.append(args) or real(*args, **kw))
+    assert g.commit_info(head).subject == "init"
+    assert "--no-show-signature" in seen[0]
+
+
 def test_commit_info_has_the_subject_author_name_and_time(g, company):
     (company / PROFILE).write_text("# edited\n")
     sha = g.commit([PROFILE], "edit the profile\n\nA body line.")

@@ -2,6 +2,7 @@ import time
 
 import pytest
 import yaml
+from pydantic import BaseModel
 
 from opencorp.company.secret_keys import (SECRET_KEYS, UnsafeYaml, blank_secrets, check_clean, find_secrets,
                                           is_secret_key, scrub_text)
@@ -114,6 +115,35 @@ def test_find_secrets_reads_block_scalars_and_a_bom():
 def test_hostile_yaml_raises(text):
     with pytest.raises(UnsafeYaml):
         _found(text)
+
+
+@pytest.mark.parametrize("text,out", [
+    ("https://bob:pa/ss@host/x", "https://bob:(hidden)@host/x"),
+    ("https://bob:p@ss@host/x", "https://bob:(hidden)@host/x"),
+    ("clone https://bob:p@ss@host and more", "clone https://bob:(hidden)@host and more"),
+    ("url: 'https://bob:p@ss@host'", "url: 'https://bob:(hidden)@host'"),
+])
+def test_url_passwords_with_a_slash_or_an_at_sign_are_hidden_whole(text, out):
+    assert scrub_text(text) == out and check_clean(out, set())
+
+
+def test_find_secrets_collects_every_plain_string_decoded():
+    found = _found('a: "\\x24scrypt\\x24abc\\x24def"\nb: >-\n  act_AAAA\n  BBBB\nkey "\\x41": [x]\n')
+    assert {"$scrypt$abc$def", "act_AAAA BBBB", 'key "\\x41"', "a", "x"} <= found.plain
+    assert not check_clean("$scrypt$abc$def", set())
+
+
+def test_plain_strings_leave_out_secret_values():
+    found = _found(f"password_hash: '{HASH}'\nname: Ánh\n")
+    assert HASH not in found.plain and "Ánh" in found.plain
+
+
+def test_blank_secrets_refuses_a_required_secret_field():
+    class Leaky(BaseModel):
+        token: str
+
+    with pytest.raises(AssertionError):
+        blank_secrets(Leaky(token="x"))
 
 
 def test_an_alias_bomb_raises_quickly():

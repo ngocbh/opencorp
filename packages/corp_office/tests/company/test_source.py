@@ -268,6 +268,11 @@ async def test_large_files_are_too_large_without_being_read(src, git, company, m
     assert reads == []
 
 
+async def test_json_over_the_yaml_limit_is_too_large(src, company):
+    got = await show(src, company, {"big.json": "[" + "1," * (130 << 10) + "1]"})
+    assert got.content == "too_large"
+
+
 @pytest.mark.parametrize("data", [b"a\x00b", b"bell \x07", b"esc \x1b[0m", b"\xff\xfe", b"caf\xe9"])
 async def test_binary_files(src, company, data):
     assert (await show(src, company, {"f.txt": data})).content == "binary"
@@ -279,7 +284,8 @@ async def test_text_keeps_tabs_and_crlf(src, company):
 
 
 @pytest.mark.parametrize("name", [".env", ".env.local", "deploy/server.pem", "certs/X.KEY", ".ssh/id_rsa.pub",
-                                  "id_ed25519", "id_ecdsa", ".netrc", ".git-credentials", ".ENV"])
+                                  "id_ed25519", "id_ecdsa", ".netrc", ".git-credentials", ".ENV", ".npmrc",
+                                  "pkg/.pypirc", "web/.htpasswd", "certs/me.p12", "certs/me.PFX", "id_dsa.pub"])
 async def test_credential_file_names_are_hidden_unread(src, git, company, monkeypatch, name):
     sha = commit(company, {name: "nothing secret\n"})
     tree = await src.tree(sha)
@@ -358,9 +364,15 @@ async def test_a_secret_key_in_a_yaml_pair_list_hides_it(src, company):
     assert got.content == "hidden"
 
 
-async def test_a_hash_in_a_yaml_list_without_a_key_is_scrubbed(src, company):
+async def test_a_hash_in_a_yaml_list_without_a_key_is_hidden(src, company):
+    # The hash is a parsed string that fails the check, so the file is hidden, not scrubbed.
     got = await show(src, company, {"notes/pairs.yaml": f"- [password_hash, '{HASH}']\n"})
-    assert got.content == "text" and HASH not in got.text and "(hidden)" in got.text
+    assert (got.content, got.reason) == ("hidden", "a secret couldn't be removed")
+
+
+async def test_a_hash_in_a_yaml_comment_is_scrubbed(src, company):
+    got = await show(src, company, {"notes/x.yaml": f"# old: {HASH}\nk: v\n"})
+    assert (got.content, got.text) == ("text", "# old: (hidden)\nk: v\n")
 
 
 @pytest.mark.parametrize("text", [
@@ -382,6 +394,48 @@ async def test_an_alias_bomb_is_hidden_quickly(src, company):
     assert got.content == "hidden" and time.monotonic() - start < 3
 
 
+@pytest.mark.parametrize("text", [
+    'note: "\\x24scrypt\\x24ln=15\\x24salt\\x24hash"\n',  # a PHC string spelled with escapes
+    'note: "act_' + "Z" * 20 + '\\\n  ' + "Z" * 23 + '"\n',  # a token split by an escaped line break
+])
+async def test_an_encoded_secret_in_yaml_hides_the_file(src, company, text):
+    got = await show(src, company, {"assets/x.yaml": text})
+    assert (got.content, got.reason) == ("hidden", "a secret couldn't be removed")
+
+
+async def test_an_escaped_known_value_in_yaml_hides_the_file(src, company):
+    commit(company, {HUMAN: dump(human(devices=[{"name": "mac", "token_sha256": SHA}]))})
+    got = await show(src, company, {"assets/x.yaml": f'old: "\\x64{SHA[1:]}"\n'})
+    assert (got.content, got.reason) == ("hidden", "a secret couldn't be removed")
+
+
+async def test_a_rerendered_person_yaml_passes_the_decoded_check(src, company):
+    got = await show(src, company, {HUMAN: dump(human(password_hash=HASH))})
+    assert (got.content, got.rewritten) == ("text", True)
+
+
+async def test_json_with_a_secret_key_is_hidden(src, company):
+    got = await show(src, company, {"assets/creds.json": '{"id": "x", "client_secret": "abcdefghij"}\n'})
+    assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
+
+
+async def test_json_with_an_escaped_hash_is_hidden(src, company):
+    got = await show(src, company, {"notes/x.json": '{"note": "\\u0024scrypt\\u0024ln=15\\u0024s\\u0024h"}\n'})
+    assert (got.content, got.reason) == ("hidden", "a secret couldn't be removed")
+
+
+async def test_plain_json_is_shown_as_written(src, company):
+    text = '{"id": "x", "secrets": ["OPENAI_KEY"], "max_tokens": 10}\n'
+    got = await show(src, company, {"notes/x.json": text})
+    assert (got.content, got.text) == ("text", text)
+
+
+async def test_json_yaml_cant_parse_falls_back_to_the_scrub(src, company):
+    text = '{\n\t"note": "' + HASH + '",\n\t"x": 1\n}\n'  # tab indents, which PyYAML refuses
+    got = await show(src, company, {"notes/x.json": text})
+    assert (got.content, got.text) == ("text", text.replace(HASH, "(hidden)"))
+
+
 async def test_a_harmless_alias_is_shown_as_written(src, company):
     text = "# shared\ndefaults: &d {model: gpt}\nminh: *d\n"
     got = await show(src, company, {"assets/alias.yaml": text})
@@ -398,7 +452,7 @@ async def test_a_commented_out_hash_in_an_agents_person_yaml(src, company):
     assert got.text == text.replace(HASH, "(hidden)")
 
 
-@pytest.mark.parametrize("rel", [PROFILE, f"{HUMAN}.bak", "notes/x.json"])
+@pytest.mark.parametrize("rel", [PROFILE, f"{HUMAN}.bak", "notes/x.txt"])
 async def test_a_hash_or_token_anywhere_is_scrubbed(src, company, rel):
     got = await show(src, company, {rel: f"see {HASH} and glued{TOKEN}x and https://bob:hunter22@host/\n"})
     assert got.content == "text"
