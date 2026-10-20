@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test"
 import type { Question, Session } from "@opencorp/protocol"
 import { buildTree } from "../src/company/tree"
-import { branchStatus, needsYou, recipient, statusByPerson } from "../src/company/status"
+import { branchStatus, needsYou, recipient, statusByPerson, totals } from "../src/company/status"
 import { person } from "./people"
 
 const s = (id: string, who: string, status: Session["status"], kind: Session["kind"] = "main") =>
@@ -59,4 +59,15 @@ test("needs you counts, per asking person, the open cards whose recipient is the
 
 test("a card on a session the app doesn't have counts for its asker", () => {
   expect(Object.fromEntries(needsYou("ceo", [], [q("a", "gone", { asker: "zoe" })], "ceo", () => undefined))).toEqual({ zoe: 1 })
+})
+
+test("a collapsed branch totals people, busy, waiting, needs you and cost", () => {
+  const tree = buildTree([person("ceo", null), person("al", "ceo"), person("bo", "al")], { name: "A", ceo: "ceo" })
+  const status = new Map([["al", "busy" as const], ["bo", "waiting" as const]])
+  const needs = new Map([["bo", 2]])
+  const costs = { since: "x", people: { al: { usd: 1.5, unpriced_sessions: 0 }, bo: { usd: 0.25, unpriced_sessions: 3 } } }
+  expect(totals(tree.roots[0], status, needs, costs)).toEqual({ people: 3, busy: 1, waiting: 1, needsYou: 2, usd: 1.75, unpriced: 3 })
+  expect(totals(tree.roots[0].children[0].children[0], status, needs, null)).toEqual(
+    { people: 1, busy: 0, waiting: 1, needsYou: 2, usd: 0, unpriced: 0 },
+  )
 })

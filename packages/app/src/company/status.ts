@@ -1,5 +1,5 @@
 import { isTurn } from "@opencorp/client"
-import type { Question, Session } from "@opencorp/protocol"
+import type { CostReport, Question, Session } from "@opencorp/protocol"
 import type { TreeNode } from "./tree"
 
 export type Status = "waiting" | "busy" | "idle" | "away"
@@ -68,4 +68,32 @@ export function needsYou(
     out.set(asker, (out.get(asker) ?? 0) + 1)
   }
   return out
+}
+
+export type Totals = { people: number; busy: number; waiting: number; needsYou: number; usd: number; unpriced: number }
+
+/** What a collapsed branch shows: counts and cost over everyone in it. */
+export function totals(node: TreeNode, status: Map<string, Status>, needs: Map<string, number>, costs: CostReport | null): Totals {
+  const h = node.person.handle
+  const st = status.get(h)
+  const cost = costs?.people[h]
+  const own: Totals = {
+    people: 1,
+    busy: st === "busy" ? 1 : 0,
+    waiting: st === "waiting" ? 1 : 0,
+    needsYou: needs.get(h) ?? 0,
+    usd: cost?.usd ?? 0,
+    unpriced: cost?.unpriced_sessions ?? 0,
+  }
+  return node.children.reduce((t, c) => {
+    const k = totals(c, status, needs, costs)
+    return {
+      people: t.people + k.people,
+      busy: t.busy + k.busy,
+      waiting: t.waiting + k.waiting,
+      needsYou: t.needsYou + k.needsYou,
+      usd: t.usd + k.usd,
+      unpriced: t.unpriced + k.unpriced,
+    }
+  }, own)
 }
