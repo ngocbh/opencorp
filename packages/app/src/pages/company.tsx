@@ -95,6 +95,10 @@ export default function Company() {
   const [selected, setSelected] = createSignal<string>()
   const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
   const shown = () => byHandle().get(selected() ?? "")
+  // Someone who leaves the company closes their panel: coming back at a later commit mustn't reopen it.
+  createEffect(() => {
+    if (selected() !== undefined && !shown()) setSelected(undefined)
+  })
   const select = (handle: string) => setSelected(handle)
   // On a phone the panel is a sheet over the whole screen: nothing behind it can take focus.
   const sheet = () => !desktop() && !!shown()

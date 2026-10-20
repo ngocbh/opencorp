@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test"
-import { acme, session } from "./company"
+import { acme, session, SHA } from "./company"
 
 test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
@@ -107,6 +107,24 @@ test("the row of the panel's person is the selected one", async ({ page }) => {
   await expect(row(/Lead/)).toHaveAttribute("aria-selected", "false")
   await panel(page, "Kai").getByRole("button", { name: "Close" }).click()
   await expect(page.locator("[role=treeitem][aria-selected=true]")).toHaveCount(0)
+})
+
+test("someone who leaves the company closes their panel, and coming back doesn't reopen it", async ({ page, request }) => {
+  const commit = async (sha: string, people: ReturnType<typeof acme>["view"]["people"]) => {
+    await request.post("/__fixture/set", { data: { view: { sha, people } } })
+    await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha } } } })
+  }
+  await page.getByRole("treeitem", { name: /Kai/ }).click()
+  await expect(panel(page, "Kai")).toBeVisible()
+  const search = page.getByRole("searchbox", { name: "Search people" })
+  await search.focus()
+  await commit(SHA.replace(/^0/, "f"), acme().view.people.filter((p) => p.handle !== "kai"))
+  await expect(page.getByRole("treeitem", { name: /Kai/ })).toHaveCount(0)
+  await expect(page.getByRole("complementary")).toHaveCount(0)
+  await commit(SHA.replace(/^0/, "e"), acme().view.people)
+  await expect(page.getByRole("treeitem", { name: /Kai/ })).toBeVisible()
+  await expect(page.getByRole("complementary")).toHaveCount(0)
+  await expect(search).toBeFocused()
 })
 
 /** The panel on a phone: a modal dialog. */
