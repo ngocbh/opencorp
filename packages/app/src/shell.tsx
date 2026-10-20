@@ -1,5 +1,5 @@
 import { A } from "@solidjs/router"
-import { Show, type ParentProps } from "solid-js"
+import { ErrorBoundary, onMount, Show, type ParentProps } from "solid-js"
 import { useOffice } from "./data/office"
 
 /** What the shell shows in place of the app when the built app can't run against this office. */
@@ -7,6 +7,23 @@ const BLOCKED = {
   out_of_date: "The web app doesn't match the office. Run `bun run build`, or `opencorp restart`.",
   not_built: "The web app isn't built: run `bun run build` in the checkout.",
 } as const
+
+/**
+ * What a page that failed to load shows. It checks the version itself too: Vite may not wrap a chunk that has no
+ * dependencies of its own in the helper that fires vite:preloadError.
+ */
+function LoadFailed() {
+  const office = useOffice()
+  onMount(() => void office.checkVersion())
+  return (
+    <div role="alert" class="p-6">
+      This screen didn't load.{" "}
+      <button type="button" class="underline" onClick={() => location.reload()}>
+        Reload
+      </button>
+    </div>
+  )
+}
 
 /** The sidebar (company, screens, who is signed in, the connection) and the main area. */
 export function Shell(props: ParentProps) {
@@ -43,7 +60,7 @@ export function Shell(props: ParentProps) {
           <Show when={office.ready() && office.status() !== "online"}>
             <p class="bg-amber-100 px-4 py-2 text-sm dark:bg-amber-950">Reconnecting to the office…</p>
           </Show>
-          {props.children}
+          <ErrorBoundary fallback={<LoadFailed />}>{props.children}</ErrorBoundary>
         </main>
       </div>
     </Show>

@@ -120,6 +120,11 @@ function createOffice(toSignIn: () => void) {
     )
   })
 
+  // Vite reports a dynamic import that failed (a rebuild deleted the chunk). No preventDefault: the error must still
+  // reach the shell's ErrorBoundary, or lazy() would render nothing.
+  const onPreloadError = () => void checkVersion()
+  window.addEventListener("vite:preloadError", onPreloadError)
+
   onMount(async () => {
     if (!(await checkSignedIn())) return
     sync.start()
@@ -127,6 +132,7 @@ function createOffice(toSignIn: () => void) {
     stopPausing = pauseWhenHidden({ start: () => void (signedOut || sync.start()), stop: sync.stop }, document)
   })
   onCleanup(() => {
+    window.removeEventListener("vite:preloadError", onPreloadError)
     sync.stop()
     stopPausing?.()
     clearTimeout(timer)

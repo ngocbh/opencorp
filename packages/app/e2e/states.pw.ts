@@ -65,3 +65,14 @@ test("a reconnect with an open card in view never asks for the card by id", asyn
   const log = await (await request.get("/__fixture/log")).json()
   expect(log.api.filter((p: string) => p.startsWith("/api/questions/"))).toEqual([])
 })
+
+test("a missing lazy chunk checks the version and offers a reload instead of a blank page", async ({ page, request }) => {
+  await page.route(/\/assets\/company-[^/]*\.js$/, (route) => route.fulfill({ status: 404, body: "not found" }))
+  let loads = 0
+  page.on("load", () => loads++)
+  await page.goto("/")
+  await expect(page.getByRole("alert")).toContainText("This screen didn't load.")
+  await expect(page.getByRole("button", { name: "Reload" })).toBeVisible()
+  await expect.poll(async () => (await (await request.get("/__fixture/log")).json()).health).toBeGreaterThanOrEqual(2)
+  expect(loads).toBe(1) // the build matches, so no reload: the extra check came from the failed chunk
+})
