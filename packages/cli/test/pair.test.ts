@@ -1,6 +1,9 @@
-import { expect, test } from "bun:test"
+import { afterEach, beforeEach, expect, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
 import type { PairCode } from "@opencorp/protocol"
-import { canOpen, pairOutput } from "../src/commands/pair"
+import { createFakeOffice, type FakeOffice } from "../../tui/script/stub"
+import { canOpen, pair, pairOutput, type PairDeps } from "../src/commands/pair"
 
 const code = (over: Partial<PairCode> = {}): PairCode => ({
   path: "/pair#CODE1234567890abcdefgh",
@@ -72,4 +75,114 @@ test("when HQ's status can't be read, it says so rather than guess, and forwards
   expect(out.join("\n")).not.toContain("is off")
   expect(out.join("\n")).not.toContain('"tcp": true')
   expect(out).toContain("  ssh -N -L 49380:/home/u/.opencorp/office/hq.sock misha")
+})
+
+let office: FakeOffice | undefined
+let home: string
+const saved = process.env.OPENCORP_HOME
+beforeEach(() => {
+  home = fs.mkdtempSync("/tmp/ocp-")
+  fs.mkdirSync(path.join(home, "office"))
+  process.env.OPENCORP_HOME = home
+})
+afterEach(() => {
+  office?.stop()
+  office = undefined
+  process.env.OPENCORP_HOME = saved
+  fs.rmSync(home, { recursive: true, force: true })
+})
+
+/** A fake office on the home's socket, with HQ's TCP listener as `hq` says. */
+const start = (hq: NonNullable<Parameters<typeof createFakeOffice>[0]>["hq"], missing: string[] = []) =>
+  (office = createFakeOffice({ socket: path.join(home, "office", "office.sock"), hq, missing }))
+
+/** The body of the last POST /hq/pair the fake office got. */
+const pairBody = () => office!.requests.findLast((r) => r.method === "POST" && r.path === "/hq/pair")?.body
+
+function deps(env: Record<string, string> = {}, platform = "darwin") {
+  const spawned: string[][] = []
+  const printed: string[] = []
+  const d: PairDeps = {
+    env,
+    platform,
+    hostname: () => "mac",
+    spawn: (argv) => void spawned.push(argv),
+    print: (l) => void printed.push(l),
+  }
+  return { d, spawned, printed }
+}
+
+test("on a Mac it asks for a redirect file and opens it; the opener gets only the file's path", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned, printed } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: true })
+  const code = printed.join("\n").match(/pair#([A-Za-z0-9_-]+)/)![1]
+  expect(spawned).toHaveLength(1)
+  expect(spawned[0]).toHaveLength(2)
+  expect(spawned[0][0]).toBe("open")
+  expect(spawned[0][1]).toMatch(new RegExp(`^${home}/office/pair-[0-9a-f]+\\.html$`))
+  expect(spawned[0].join(" ")).not.toContain(code)
+})
+
+test("on a Linux desktop it opens the file with xdg-open", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned } = deps({ DISPLAY: ":0" }, "linux")
+  expect(await pair([], d)).toBe(0)
+  expect(spawned.map((argv) => argv[0])).toEqual(["xdg-open"])
+})
+
+test("--no-open and --handle", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned } = deps()
+  expect(await pair(["--no-open", "--handle", "ngocbh"], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: "ngocbh", open_file: false })
+  expect(spawned).toEqual([])
+})
+
+test("over SSH it never asks for a file or opens anything", async () => {
+  start({ tcp: true, listening: true })
+  const { d, spawned, printed } = deps({ SSH_CONNECTION: "1 2 3 4" }, "linux")
+  expect(await pair([], d)).toBe(0)
+  expect(pairBody()).toEqual({ handle: null, open_file: false })
+  expect(spawned).toEqual([])
+  expect(printed).toContain("  ssh -N -L 49380:127.0.0.1:49380 mac")
+})
+
+test("with the web port taken it reads GET /hq and says so", async () => {
+  start({ tcp: true, listening: false, error: "Address already in use" })
+  const { d, printed, spawned } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(office!.requests.some((r) => r.method === "GET" && r.path === "/hq")).toBe(true)
+  expect(printed).toContain("HQ's web port 49380 is taken (Address already in use); `opencorp doctor` says more.")
+  expect(spawned).toEqual([])
+})
+
+test("with TCP off it says how to turn it on", async () => {
+  start({ tcp: false })
+  const { d, printed } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(printed).toContain("HQ's web port is off here.")
+  expect(printed.join("\n")).toContain(`"tcp": true to ${path.join(home, "office", "hq.json")}`)
+})
+
+test("when GET /hq can't be read it says so, not that the web port is off", async () => {
+  start({ tcp: false }, ["GET /hq"])
+  const { d, printed } = deps()
+  expect(await pair([], d)).toBe(0)
+  expect(printed).toContain("Couldn't read the web port's status.")
+  expect(printed.join("\n")).not.toContain("is off")
+})
+
+test("an office without HQ's routes says to update", async () => {
+  start({ tcp: true }, ["POST /hq/pair"])
+  expect(await pair([], deps().d)).toBe(1)
+})
+
+test("without an office it says so and exits 3", async () => {
+  expect(await pair([], deps().d)).toBe(3)
+})
+
+test("an unknown option is a usage error", async () => {
+  expect(await pair(["--nope"], deps().d)).toBe(2)
 })
