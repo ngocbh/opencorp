@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 
+import httpx
 import psutil
 
 from opencorp.chat.connections import ConnectionFile, Connections
@@ -42,7 +43,7 @@ def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, 
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
                          codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={},
-                         hq=lambda socket, home: None)
+                         hq=lambda socket, home: "unreachable")
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -483,7 +484,33 @@ async def test_hq_status_is_read_with_this_devices_token(office, short_dir, comp
         status = await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir)
         assert status["socket"].endswith("hq.sock")
         (short_dir / "identity.json").unlink()
-        assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) is None  # 401
+        assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) == "refused"  # 401
+
+
+async def test_an_office_without_hq_or_no_office_at_all_is_unreachable(office, short_dir):
+    from tests.daemon.conftest import served
+
+    async with served(office, short_dir / "o.sock"):  # HQ not attached: 501
+        assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) == "unreachable"
+    assert doctor.hq_status(short_dir / "nothing.sock", short_dir) == "unreachable"
+
+
+def answering(monkeypatch, handler):
+    """Make hq_status's socket transport answer with ``handler`` instead."""
+    monkeypatch.setattr(doctor.httpx, "HTTPTransport", lambda uds: httpx.MockTransport(handler))
+
+
+def test_an_office_from_before_hq_is_unreachable(tmp_path, monkeypatch):
+    answering(monkeypatch, lambda request: httpx.Response(404, json={"error": "no_route"}))
+    assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == "unreachable"
+
+
+def test_an_office_that_doesnt_answer_in_time_is_unreachable(tmp_path, monkeypatch):
+    def slow(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    answering(monkeypatch, slow)
+    assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == "unreachable"
 
 
 def status(**tcp):
@@ -521,9 +548,14 @@ def test_the_offices_warnings_are_shown(tmp_path):
     assert [c.detail for c in doctor.hq_checks(s, tmp_path, tmp_path) if c.name == "hq warning"] == s["warnings"]
 
 
-def test_no_status_warns_and_names_both_fixes(tmp_path):
-    [got] = doctor.hq_checks(None, tmp_path, tmp_path)
-    assert got.status == "warn" and "`opencorp restart`" in got.detail and "`opencorp login`" in got.detail
+def test_a_refused_device_is_told_to_log_in(tmp_path):
+    [got] = doctor.hq_checks("refused", tmp_path, tmp_path)
+    assert got.status == "warn" and "`opencorp login`" in got.detail and "restart" not in got.detail
+
+
+def test_an_unreachable_hq_is_told_to_restart(tmp_path):
+    [got] = doctor.hq_checks("unreachable", tmp_path, tmp_path)
+    assert got.status == "warn" and "`opencorp restart`" in got.detail and "login" not in got.detail
 
 
 def test_a_running_office_reports_hq(tmp_path):

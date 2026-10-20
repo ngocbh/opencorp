@@ -294,24 +294,43 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
     return Check("version", "ok", f"pid {pid} runs the current code")
 
 
-def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | None:
-    """``GET /hq`` from the office on ``socket``, sent with this device's token if it has one; None if it can't be
-    read (no office, an office from before HQ, or a token it refuses)."""
+HqUnread = Literal["refused", "unreachable", "unreadable"]
+"""Why ``GET /hq`` couldn't be read: the office refused this device's token; no office answered, or one from before
+HQ, in time; or its answer isn't an HQ status."""
+
+
+def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | HqUnread:
+    """``GET /hq`` from the office on ``socket``, sent with this device's token if it has one, or why it couldn't be
+    read."""
     me = read_identity(identity_path(home))
     try:
         with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office", timeout=timeout,
                           headers=me.headers() if me else {}) as client:
             r = client.get("/hq")
-        return r.json() if r.status_code == 200 else None
-    except (httpx.HTTPError, ValueError):
-        return None
+    except httpx.HTTPError:
+        return "unreachable"
+    if r.status_code == 401:
+        return "refused"
+    if r.status_code != 200:  # 404 from an office before HQ, 501 from one without it attached
+        return "unreachable"
+    try:
+        return r.json()
+    except ValueError:
+        return "unreadable"
 
 
-def hq_checks(status: dict | None, office_dir: Path, repo: Path) -> list[Check]:
+_UNREAD = {
+    "refused": "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
+    "unreachable": "the office didn't say where HQ listens (an office from before HQ?): run `opencorp restart`",
+    "unreadable": "the office's answer about HQ isn't one doctor can read (an office running other code?): "
+                  "run `opencorp restart`",
+}
+
+
+def hq_checks(status: dict | HqUnread, office_dir: Path, repo: Path) -> list[Check]:
     """Where HQ listens, whether the web app is built for this office, and HQ's own warnings."""
-    if status is None:
-        return [Check("hq", "warn", "the office didn't say where HQ listens: an office from before HQ needs "
-                                    "`opencorp restart`, and a device it doesn't know needs `opencorp login`")]
+    if isinstance(status, str):
+        return [Check("hq", "warn", _UNREAD[status])]
     tcp = status["tcp"]
     if tcp["listening"]:
         found = [Check("hq", "ok", f"web app at {status['url']}, and on {status['socket']}")]
@@ -337,7 +356,7 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
            codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check,
            environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None,
-           hq: Callable[[Path, Path], dict | None] = hq_status) -> list[Check]:
+           hq: Callable[[Path, Path], dict | HqUnread] = hq_status) -> list[Check]:
     """Every check, in the order onboarding sets things up, with what an install from before the rename left.
 
     ``leftovers`` is what ``legacy.find`` already found for ``environ`` and ``repo``; it is looked for when None.
