@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import time
+from importlib.resources import files
 
 import pytest
 import yaml
@@ -440,6 +441,35 @@ async def test_a_harmless_alias_is_shown_as_written(src, company):
     text = "# shared\ndefaults: &d {model: gpt}\nminh: *d\n"
     got = await show(src, company, {"assets/alias.yaml": text})
     assert (got.content, got.text) == ("text", text)
+
+
+@pytest.mark.parametrize("flow", [
+    f for d in (files("opencorp.company_template") / "shared" / "flows", files("opencorp.install") / "flows")
+    for f in d.iterdir() if f.name.endswith(".yaml")], ids=lambda f: f.name)
+async def test_every_packaged_flow_file_is_shown_as_written(src, company, flow):
+    text = flow.read_text()
+    got = await show(src, company, {f"shared/flows/{flow.name}": text})
+    if flow.name == "init.yaml":  # never in a company; its node "password" is a secret-named key, not a tag problem
+        assert got.content == "hidden" and got.reason != "couldn't read this YAML safely"
+    else:
+        assert (got.content, got.text, got.rewritten) == ("text", text, False)
+
+
+async def test_a_tagged_mapping_holding_a_secret_key_is_hidden(src, company):
+    text = f"input:\n  person: !Person {{name: x, password_hash: '{HASH}'}}\n"
+    got = await show(src, company, {"shared/flows/leak.yaml": text})
+    assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
+
+
+async def test_a_tagged_scalar_holding_a_hash_is_hidden(src, company):
+    got = await show(src, company, {"shared/flows/leak.yaml": f'note: !str "{HASH}"\n'})
+    assert (got.content, got.reason) == ("hidden", "a secret couldn't be removed")
+
+
+async def test_a_humans_person_yaml_with_a_custom_tag_and_a_hash_is_hidden_not_rerendered(src, company):
+    text = dump(human()).replace("kind: human", "kind: !Kind human") + f"password_hash: {HASH}\n"
+    got = await show(src, company, {HUMAN: text})
+    assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
 
 
 # Secrets: layer 2 scrubs every text

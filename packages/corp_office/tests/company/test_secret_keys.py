@@ -1,4 +1,5 @@
 import time
+from importlib.resources import files
 
 import pytest
 import yaml
@@ -11,6 +12,10 @@ from opencorp.protocol.models import Device, Person
 HASH = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
 TOKEN = "act_" + "A" * 20 + "-_" + "b" * 21
 SHA = "c" * 64
+
+FLOWS = sorted([*(files("opencorp.company_template") / "shared" / "flows").iterdir(),
+                *(files("opencorp.install") / "flows").iterdir()], key=lambda f: f.name)
+"""Every flow file the office ships, typed with tags such as ``!Person`` and ``!str``."""
 
 
 def test_secret_keys_cover_every_secret_person_and_device_field():
@@ -153,3 +158,65 @@ def test_an_alias_bomb_raises_quickly():
     with pytest.raises(UnsafeYaml):
         _found(bomb)
     assert time.monotonic() - start < 2
+
+
+@pytest.mark.parametrize("flow", [f for f in FLOWS if f.name.endswith(".yaml")], ids=lambda f: f.name)
+def test_every_packaged_flow_file_passes(flow):
+    found = _found(flow.read_text())
+    # init's flow, which the office runs and never copies into a company, names a node and an output after secrets.
+    secret = [("nodes", "password"), ("output", "password_hash")] if flow.name == "init.yaml" else []
+    assert found.keys == secret and found.plain
+
+
+def test_custom_tags_dont_matter():
+    found = _found("input:\n  person: !Person\n  talking_to: !str\n  kinds: !list(str) [a, b]\n")
+    assert found.keys == [] and {"input", "person", "talking_to", "kinds", "a", "b"} <= found.plain
+
+
+def test_a_tagged_mapping_holding_a_secret_key_is_caught():
+    found = _found(f"user: !Person {{name: Ánh, password_hash: '{HASH}'}}\n")
+    assert found.keys == [("user", "password_hash")] and found.values == {HASH}
+
+
+def test_a_tagged_secret_key_is_caught():
+    found = _found("!str password: hunter2hunter2\n")
+    assert found.keys == [("password",)] and found.values == {"hunter2hunter2"}
+
+
+def test_a_tagged_scalar_holding_a_hash_fails_the_decoded_check():
+    found = _found(f'note: !str "{HASH}"\nother: !Secret "\\x24scrypt\\x24abc\\x24def"\n')
+    assert found.keys == [] and {HASH, "$scrypt$abc$def"} <= found.plain
+    assert not all(check_clean(s, set()) for s in found.plain)
+
+
+def test_every_scalar_is_checked_whatever_it_resolves_to():
+    found = _found("n: 12345678901\npassword: 98765432109\n")
+    assert "12345678901" in found.plain and found.values == {"98765432109"}
+
+
+def test_a_merge_list_and_a_tagged_merge_are_followed():
+    found = _found("a: &a {x: 1}\nb: &b {token: mergedsecret}\nc:\n  <<: [*a, *b]\n")
+    assert found.keys == [("b", "token"), ("c", "token")] and found.values == {"mergedsecret"}
+    found = _found("b: &b !Thing {token: mergedsecret}\nc:\n  <<: *b\n")
+    assert ("c", "token") in found.keys
+
+
+def test_a_recursive_merge_raises():
+    with pytest.raises(UnsafeYaml):
+        _found("a: &a {<<: *a}\n")
+
+
+@pytest.mark.parametrize("text", [
+    "? [password, x]\n: v\n",
+    "? {a: b}\n: v\n",
+    "a:\n  password:\n    ? [x]\n    : v\n",
+])
+def test_a_non_scalar_key_raises(text):
+    with pytest.raises(UnsafeYaml):
+        _found(text)
+
+
+def test_data_is_none_when_safeloader_cant_build_it():
+    assert _found("person: !Person {name: x}\n").data is None
+    assert _found("a: 1\n").data == {"a": 1}
+    assert _found("").data is None
