@@ -15,6 +15,7 @@ import { useNavigate } from "@solidjs/router"
 import { batch, createContext, createSignal, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { hqSnapshot } from "./snapshot"
+import { RELOADED_FOR, verdict } from "./version"
 import { since, type CostWindow } from "./window"
 
 /** Live updates are applied in one batch per frame, as in the TUI. */
@@ -34,6 +35,8 @@ function createOffice(toSignIn: () => void) {
   const [ready, setReady] = createSignal(false)
   const [me, setMe] = createSignal<string>()
   const [costWindow, setCostWindowSignal] = createSignal<CostWindow>(savedWindow())
+  /** Set when the built app can't run against this office: the shell shows a full page instead. */
+  const [blocked, setBlocked] = createSignal<"out_of_date" | "not_built">()
   let queue: ((s: OfficeState) => void)[] = []
   let after: (() => void)[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -67,7 +70,10 @@ function createOffice(toSignIn: () => void) {
 
   function onStatus(next: OfficeStatus) {
     setStatus(next)
-    if (next === "online") setReady(true)
+    if (next === "online") {
+      setReady(true)
+      void checkVersion()
+    }
     // The stream's 401 shows as "error": ask who this browser is, and go to sign-in if the session is gone.
     else if (next === "error") void checkSignedIn()
   }
@@ -88,6 +94,23 @@ function createOffice(toSignIn: () => void) {
       if (e instanceof UnknownDevice) signOut() // the client maps every 401 to UnknownDevice
       return false
     }
+  }
+
+  /** Reads /api/health and acts on the verdict: reload once for a new build, or block on a mismatch. */
+  async function checkVersion() {
+    let health
+    try {
+      health = await client.health()
+    } catch {
+      return // the reconnect after this tries again
+    }
+    if (!("office" in health)) return // only the socket's /health lacks the keys
+    const v = verdict(health, __HQ_BUILD__, { dev: import.meta.env.DEV, reloadedFor: sessionStorage.getItem(RELOADED_FOR) })
+    if (v === "reload") {
+      sessionStorage.setItem(RELOADED_FOR, health.app!.build)
+      return location.reload()
+    }
+    setBlocked(v === "ok" ? undefined : v)
   }
 
   sync.on("company.updated", () => {
@@ -119,7 +142,7 @@ function createOffice(toSignIn: () => void) {
     }
   }
 
-  return { client, state: state as Readonly<OfficeState>, status, ready, me, pairedBy, costWindow }
+  return { client, state: state as Readonly<OfficeState>, status, ready, me, pairedBy, costWindow, blocked, checkVersion }
 }
 
 export type Office = ReturnType<typeof createOffice>
