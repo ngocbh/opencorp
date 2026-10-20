@@ -71,6 +71,19 @@ test("'now doing' is the work item's title, read when the panel opens", async ({
   expect(await read()).toContain("W-minh")
 })
 
+test("a work item that failed to read isn't asked for again on every unrelated session update", async ({ page, request }) => {
+  // Every /api request, the failed ones included.
+  const read = async () =>
+    ((await (await request.get("/__fixture/log")).json()).api as string[]).filter((p) => p === "/api/work-items/W-minh")
+  await request.post("/__fixture/set", { data: { fail: { "/api/work-items/W-minh": 500 } } })
+  await page.getByRole("treeitem", { name: /Minh/ }).click()
+  await expect.poll(read).toHaveLength(1)
+  const ann = session("S-ann", "ann", "busy", { updated_at: "2026-10-19T12:00:00.000Z" })
+  await request.post("/__fixture/emit", { data: { event: { type: "session.updated", data: ann } } })
+  await expect(page.getByRole("treeitem", { name: /Ann/ }).getByTestId("status")).toHaveAttribute("data-status", "busy")
+  expect(await read()).toHaveLength(1)
+})
+
 test("Enter opens it from the keyboard and focus moves in; Escape closes it and focus goes back to the row", async ({ page }) => {
   await page.getByRole("treeitem", { name: /Ann/ }).focus()
   await page.keyboard.press("Enter")

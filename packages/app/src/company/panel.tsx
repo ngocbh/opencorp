@@ -1,5 +1,5 @@
 import type { Group, Person } from "@opencorp/protocol"
-import { createEffect, createUniqueId, For, on, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createUniqueId, For, on, onCleanup, onMount, Show } from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
 import { costText } from "./format"
@@ -24,14 +24,22 @@ export function Panel(props: {
 }) {
   const office = useOffice()
   /** The person's own live work: main and side sessions in a live status (profile_manager work is the office's). */
-  const sessions = () =>
+  const sessions = createMemo(() =>
     office.state.sessions.filter(
       (x) => x.person === props.person.handle && (x.kind === "main" || x.kind === "side") && LIVE.includes(x.status),
-    )
-  // Sessions carry no title, so "now doing" is their work item's: read once, when the panel shows the session.
-  createEffect(() => {
-    for (const x of sessions()) if (x.work_item_id) office.loadWorkItem(x.work_item_id)
-  })
+    ),
+  )
+  /** Their work item ids, as one string: unchanged by updates that don't change the set. */
+  const workItemIds = createMemo(() =>
+    [...new Set(sessions().flatMap((x) => (x.work_item_id ? [x.work_item_id] : [])))].sort().join(" "),
+  )
+  // Sessions carry no title, so "now doing" is their work item's: read when the panel shows a new one, not on every
+  // session update (a failed read would be tried again each time).
+  createEffect(
+    on(workItemIds, (ids) => {
+      for (const id of ids.split(" ")) if (id) office.loadWorkItem(id)
+    }),
+  )
   const headingId = createUniqueId()
   let root!: HTMLDivElement
   let heading!: HTMLHeadingElement
