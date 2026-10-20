@@ -100,3 +100,10 @@ test("a tab opened while the office is down connects once it's back", async ({ p
   await expect(connection(page)).toHaveText("live", { timeout: 15_000 })
   await expect(page.getByText("@ngocbh")).toBeVisible()
 })
+
+test("an office whose snapshot this app can't read still gets the version check", async ({ page, request }) => {
+  // An upgraded office the old bundle can't read: the check must not wait for a snapshot that never comes.
+  await request.post("/__fixture/set", { data: { health: { officeApi: "9.9.9+other" }, fail: { "/api/company": 500 } } })
+  await page.goto("/")
+  await expect(page.getByText("The web app doesn't match the office.", { exact: false })).toBeVisible()
+})

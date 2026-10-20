@@ -56,9 +56,12 @@ type Fixture = Data & {
   whoami: { person: string; device: string | null }
   /** Milliseconds to hold a route's answer, by path. */
   delay: Record<string, number>
+  /** A status to fail a route with, by path. */
+  fail: Record<string, number>
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
+  fail: {},
 })
 const emptyLog = () => ({ pairs: [] as unknown[], health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
 let state = fresh()
@@ -123,6 +126,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   log.api.push(p)
   if (Date.now() < downUntil) return json({ error: "office_unavailable", message: "the office is restarting" }, 503)
   if (state.delay[p]) await Bun.sleep(state.delay[p])
+  if (state.fail[p]) return json({ error: "internal", message: `${p} failed` }, state.fail[p])
   if (p === "/api/health") return log.health++, json(health())
   if (p === "/api/pair" && req.method === "POST") {
     const body = await req.json().catch(() => ({}))

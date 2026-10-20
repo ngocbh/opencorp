@@ -76,8 +76,9 @@ function createOffice(toSignIn: () => void) {
     client,
     state: () => state,
     mutate,
-    // Every snapshot reads the costs too, so the refetch window starts then.
-    snapshot: async (c) => (costs.ran(), snapshot(c)),
+    // Every snapshot reads the costs too, so the refetch window starts then. The version check runs beside it, on
+    // every connect: an office this bundle can't read must still get "out of date", not a snapshot that never comes.
+    snapshot: async (c) => (costs.ran(), void checkVersion(), snapshot(c)),
     onStatus: (next) => whenFlushed(() => onStatus(next)),
   })
 
@@ -85,7 +86,6 @@ function createOffice(toSignIn: () => void) {
     setStatus(next)
     if (next === "online") {
       setReady(true)
-      void checkVersion()
       // The first whoami may have failed while the office was down: fill in who is signed in now.
       if (!me()) void checkSignedIn()
     }
