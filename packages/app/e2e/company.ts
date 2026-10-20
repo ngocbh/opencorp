@@ -62,3 +62,9 @@ export function acme(): Data {
     },
   }
 }
+
+/** A company with `n` agents under the CEO: one very wide level, for the chart's fit. */
+export function wide(n: number): Data["view"] {
+  const agents = Array.from({ length: n }, (_, i) => person(`a${i}`, `Agent ${String(i).padStart(2, "0")}`, "agent", "Worker", "ngocbh"))
+  return { ...acme().view, people: [person("ngocbh", "Ngoc", "human", "CEO", null), ...agents], groups: [], issues: [] }
+}

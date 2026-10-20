@@ -1,7 +1,7 @@
-import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, lazy, onCleanup, Show } from "solid-js"
 import { Banners, Unplaced } from "../company/banners"
 import { totalsText } from "../company/format"
-import { CompanyList } from "../company/list"
+import { CompanyList, type ListProps } from "../company/list"
 import { createPrefs } from "../company/prefs"
 import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../company/rows"
 import { branchStatus, cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
@@ -11,6 +11,9 @@ import { Toolbar } from "../company/toolbar"
 import { buildTree, byName } from "../company/tree"
 import { useOffice } from "../data/office"
 import { useShell } from "../shell"
+
+// Its own chunk: phones and list users never load it.
+const Chart = lazy(() => import("../company/chart"))
 
 /** Whether the window is at least Tailwind's md breakpoint: phones always get the list. */
 function useDesktop() {
@@ -89,8 +92,8 @@ export default function Company() {
     const p = personOf(item)
     return !!group() && !!p && !(p.groups ?? []).includes(group())
   }
-  /** What the page shows; the chart comes with its own change, and the list stays the default until then. */
-  const view = () => (desktop() ? (prefs.view() ?? "list") : "list")
+  /** The chart on a desktop unless this browser chose the list; phones always get the list. */
+  const view = () => (desktop() ? (prefs.view() ?? "chart") : "list")
   /** The person the side panel shows. */
   const [selected, setSelected] = createSignal<string>()
   const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
@@ -112,15 +115,41 @@ export default function Company() {
     opener = from instanceof HTMLElement && from !== document.body ? from : undefined
     setSelected(handle)
   }
-  /** Where focus goes when the panel closes: its opener, or the tree's current row once the opener is gone. */
+  /** Where focus goes when the panel closes: its opener, or the tree's current row (or chart card) once it's gone. */
   const returnTo = () =>
-    opener?.isConnected ? opener : (document.querySelector<HTMLElement>('[role=treeitem][tabindex="0"]') ?? undefined)
+    opener?.isConnected
+      ? opener
+      : (document.querySelector<HTMLElement>('[role=treeitem][tabindex="0"], [data-card] [tabindex="0"]') ?? undefined)
   // On a phone the panel is a sheet over the whole screen: nothing behind it can take focus.
   const sheet = () => !desktop() && !!shown()
   const shell = useShell()
   createEffect(() => shell?.setCovered(sheet()))
   onCleanup(() => shell?.setCovered(false))
   const name = () => s.company?.name ?? "Company"
+  /** What either view shows and does; getters keep it reactive when it's spread into one. */
+  const shownProps: ListProps = {
+    get label() {
+      return name()
+    },
+    get items() {
+      return items()
+    },
+    isOpen,
+    setOpen,
+    status: (h) => status().get(h) ?? "away",
+    branchStatus: branchStatusOf,
+    needs: (h) => needs().get(h) ?? 0,
+    cost: (h) => s.costs?.people[h],
+    get groups() {
+      return groups()
+    },
+    totals: totalsOf,
+    dimmed,
+    onSelect: select,
+    get selected() {
+      return shown()?.handle
+    },
+  }
   return (
     <Show when={office.ready()} fallback={<Skeleton />}>
       <div class="flex">
@@ -141,24 +170,9 @@ export default function Company() {
             canChart={desktop()}
           />
           <Banners noCompany={!s.company} ceoHasManager={tree().ceoHasManager} issues={s.issues} />
-          <Show when={view() === "chart"}>
-            <p class="px-3 pt-3 text-sm text-neutral-500 dark:text-neutral-400">The chart isn't built yet; this is the list.</p>
+          <Show when={view() === "chart"} fallback={<CompanyList {...shownProps} />}>
+            <Chart {...shownProps} />
           </Show>
-          <CompanyList
-            label={name()}
-            items={items()}
-            isOpen={isOpen}
-            setOpen={setOpen}
-            status={(h) => status().get(h) ?? "away"}
-            branchStatus={branchStatusOf}
-            needs={(h) => needs().get(h) ?? 0}
-            cost={(h) => s.costs?.people[h]}
-            groups={groups()}
-            totals={totalsOf}
-            dimmed={dimmed}
-            onSelect={select}
-            selected={shown()?.handle}
-          />
           <Unplaced people={tree().unplaced} onSelect={select} />
         </div>
         <Show when={shown()}>

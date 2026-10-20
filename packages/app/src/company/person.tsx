@@ -18,7 +18,8 @@ const initials = (name: string) => name.split(/\s+/).map((w) => w[0] ?? "").join
 
 /**
  * One person, as a list row's body or a chart card's: avatar, status, name and title, group chips (when `groups` is
- * given), the viewer's cards from them, and the window's cost.
+ * given), the viewer's cards from them, and the window's cost. A card stacks the title under the name and puts the
+ * cost on its own line, to fit the card's width.
  */
 export function PersonBody(props: {
   person: Person
@@ -28,9 +29,11 @@ export function PersonBody(props: {
   groups?: Map<string, Group>
   /** Whether `status` is the person's closed branch's (its most urgent member's), not their own. */
   branch?: boolean
+  /** Laid out for a chart card. */
+  card?: boolean
 }) {
   return (
-    <span class="flex min-w-0 flex-1 items-center gap-2">
+    <span class={`flex min-w-0 flex-1 items-center ${props.card ? "flex-wrap gap-x-2 gap-y-1" : "gap-2"}`}>
       <span
         aria-hidden="true"
         class="relative grid h-7 w-7 shrink-0 place-items-center rounded-full bg-neutral-200 text-xs dark:bg-neutral-800"
@@ -46,9 +49,19 @@ export function PersonBody(props: {
       >
         <span class="sr-only">{props.branch ? `${props.status} in this branch` : props.status}</span>
       </span>
-      <span class="min-w-0 truncate">
-        <span class="font-medium">{props.person.name}</span> <span class="text-neutral-500 dark:text-neutral-400">{props.person.title}</span>
-      </span>
+      <Show
+        when={props.card}
+        fallback={
+          <span class="min-w-0 truncate">
+            <span class="font-medium">{props.person.name}</span> <span class="text-neutral-500 dark:text-neutral-400">{props.person.title}</span>
+          </span>
+        }
+      >
+        <span class="flex min-w-0 flex-1 flex-col leading-tight">
+          <span class="truncate font-medium">{props.person.name}</span>
+          <span class="truncate text-sm text-neutral-500 dark:text-neutral-400">{props.person.title}</span>
+        </span>
+      </Show>
       <Show when={props.groups}>
         {(groups) => (
           <For each={props.person.groups ?? []}>
@@ -61,7 +74,10 @@ export function PersonBody(props: {
           {props.needs}
         </span>
       </Show>
-      <span data-testid="cost" class="ml-auto shrink-0 text-sm tabular-nums text-neutral-500 dark:text-neutral-400">
+      <span
+        data-testid="cost"
+        class={`shrink-0 tabular-nums text-neutral-500 dark:text-neutral-400 ${props.card ? "basis-full truncate text-xs" : "ml-auto text-sm"}`}
+      >
         {personCost(props.cost)}
       </span>
     </span>

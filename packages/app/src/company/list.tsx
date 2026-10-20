@@ -15,7 +15,7 @@ import { PersonBody } from "./person"
 import { isMuted, label, moveFocus, personOf, teamName, visibleRows, type Item } from "./rows"
 import type { Status } from "./status"
 
-/** What the list (and, later, the chart) show, and what they do. */
+/** What the list and the chart show, and what they do. */
 export type ListProps = {
   /** The tree's accessible name: the company's name. */
   label: string
