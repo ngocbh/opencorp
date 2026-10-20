@@ -26,3 +26,13 @@ test("a row shows status, needs you, cost and +n unpriced", async ({ page }) => 
   await expect(row(page, /Ann/).getByTestId("status")).toHaveAttribute("data-status", "away")
   await expect(row(page, /Ann/).getByTestId("needs-you")).toHaveCount(0)
 })
+
+test("a branch closes with its chevron, shows totals while closed, and stays closed across reloads", async ({ page }) => {
+  await row(page, /Lead/).getByTestId("toggle").click()
+  await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "false")
+  await expect(row(page, /Kai/)).toHaveCount(0)
+  await expect(row(page, /Lead/)).toContainText("3 people · 1 busy · 2 waiting")
+  await expect(row(page, /Lead/)).toContainText("$0.42 +1 unpriced")
+  await page.reload()
+  await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "false")
+})

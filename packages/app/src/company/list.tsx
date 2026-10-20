@@ -62,6 +62,19 @@ export function CompanyList(props: ListProps) {
                     if (p) props.onSelect(p.handle)
                   }}
                 >
+                  <Show when={row().item.children.length} fallback={<span aria-hidden="true" class="w-4 shrink-0" />}>
+                    <span
+                      aria-hidden="true"
+                      data-testid="toggle"
+                      class="w-4 shrink-0 cursor-pointer select-none text-neutral-500"
+                      onClick={(e) => {
+                        e.stopPropagation() // toggling isn't selecting
+                        props.setOpen(id, !row().open)
+                      }}
+                    >
+                      {row().open ? "▾" : "▸"}
+                    </span>
+                  </Show>
                   <Show when={person()} fallback={<span class="font-medium">{teamName(row().item)}</span>}>
                     {(p) => (
                       <PersonBody

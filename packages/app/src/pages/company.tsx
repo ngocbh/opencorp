@@ -1,8 +1,9 @@
 import { createMemo, createSignal } from "solid-js"
+import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
 import { fromTree, holds, type Item } from "../company/rows"
-import { inOffice, needsYou, statusByPerson, type OfficeFilter } from "../company/status"
+import { inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { buildTree } from "../company/tree"
 import { useOffice } from "../data/office"
 
@@ -23,6 +24,11 @@ export default function Company() {
   const groups = createMemo(() => new Map(s.groups.map((g) => [g.id, g])))
   const items = createMemo(() => fromTree(tree().roots))
   const isOpen = (item: Item, depth: number) => prefs.isOpen(item.id, { depth, holdsNeedsYou: holds(item, needs()) })
+  /** A person's branch totals, from their node in the tree by manager. */
+  const totalsOf = (item: Item) => {
+    const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
+    return node ? totalsText(totals(node, status(), needs(), s.costs)) : undefined
+  }
   return (
     <CompanyList
       label={s.company?.name ?? "Company"}
@@ -33,7 +39,7 @@ export default function Company() {
       needs={(h) => needs().get(h) ?? 0}
       cost={(h) => s.costs?.people[h]}
       groups={groups()}
-      totals={() => undefined}
+      totals={totalsOf}
       dimmed={() => false}
       onSelect={() => {}}
     />
