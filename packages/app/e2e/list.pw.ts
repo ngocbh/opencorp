@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test"
-import { acme } from "./company"
+import { acme, session } from "./company"
 
 test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
@@ -144,4 +144,20 @@ test("no readable company.yaml: a banner, and everyone without a manager at the 
   await page.reload()
   await expect(page.getByRole("alert").filter({ hasText: "company.yaml" })).toBeVisible()
   await expect(page.getByRole("tree", { name: "Company" })).toBeVisible()
+})
+
+test("an ask_manager card counts for its work item's assignee, read once", async ({ page, request }) => {
+  await expect(row(page, /Lead/).getByTestId("needs-you")).toHaveText("1")
+  await request.post("/__fixture/emit", {
+    data: { event: { type: "session.updated", data: session("S-lead", "lead", "idle", { updated_at: "2026-10-19T11:00:00.000Z" }) } },
+  })
+  await page.waitForTimeout(300)
+  expect((await (await request.get("/__fixture/log")).json()).workItems).toEqual(["W1"])
+})
+
+test("a live status change shows without a reload", async ({ page, request }) => {
+  await request.post("/__fixture/emit", {
+    data: { event: { type: "session.updated", data: session("S-ann", "ann", "busy", { updated_at: "2026-10-19T12:00:00.000Z" }) } },
+  })
+  await expect(row(page, /Ann/).getByTestId("status")).toHaveAttribute("data-status", "busy")
 })

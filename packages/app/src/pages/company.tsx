@@ -1,10 +1,10 @@
-import { createMemo, createSignal, onCleanup, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, onCleanup, Show } from "solid-js"
 import { Banners, Unplaced } from "../company/banners"
 import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
 import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../company/rows"
-import { inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
+import { cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { byTeam } from "../company/teams"
 import { Toolbar } from "../company/toolbar"
 import { buildTree } from "../company/tree"
@@ -39,6 +39,12 @@ export default function Company() {
   const needs = createMemo(() =>
     needsYou(office.me() ?? "", sessions(), Object.values(s.questions), s.company?.ceo ?? null, assignee),
   )
+  // An ask_manager card goes to its work item's assignee (the asker's manager at the session's commit): read each
+  // such work item once. Open ask_manager cards are few.
+  createEffect(() => {
+    for (const q of cards(Object.values(s.questions)))
+      if (q.source === "ask_manager" && q.work_item_id) office.loadWorkItem(q.work_item_id)
+  })
   const groups = createMemo(() => new Map(s.groups.map((g) => [g.id, g])))
   const items = createMemo(() => {
     const t = teamView() ? byTeam(s.people, s.groups) : undefined

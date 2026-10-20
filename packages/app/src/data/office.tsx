@@ -163,6 +163,20 @@ function createOffice(toSignIn: () => void) {
   }
   sync.on("session.updated", () => costs.call())
 
+  const askedFor = new Set<string>()
+  /** Reads work item `id` once into `state.workItems` (work_item.* events keep it current after that). */
+  function loadWorkItem(id: string) {
+    if (disposed || askedFor.has(id) || state.workItems[id]) return
+    askedFor.add(id)
+    client.workItems.get(id).then(
+      (w) => mutate((s) => void (s.workItems[w.id] = w)),
+      (error) => {
+        askedFor.delete(id) // the next look tries again
+        console.error("Failed to read a work item", { id, error })
+      },
+    )
+  }
+
   let companyReads = 0
   /** Reads the company at a new commit; only the latest read's answer is kept. */
   sync.on("company.updated", (e) => {
@@ -219,6 +233,7 @@ function createOffice(toSignIn: () => void) {
     setCostWindow,
     blocked,
     checkVersion,
+    loadWorkItem,
   }
 }
 
