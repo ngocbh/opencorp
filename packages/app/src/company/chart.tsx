@@ -6,6 +6,7 @@ import {
   createSignal,
   createUniqueId,
   For,
+  on,
   onCleanup,
   onMount,
   Show,
@@ -41,7 +42,7 @@ export default function Chart(props: ListProps) {
   const uid = createUniqueId()
   let viewport!: HTMLDivElement
   const [t, setT] = createSignal<Transform>({ k: 1, x: 0, y: 0 })
-  // Until the viewer touches the chart, it fits the view again whenever the view changes size.
+  // Until the viewer pans or zooms, the chart fits the view again whenever the view or the chart changes size.
   let fitted = true
   const fitNow = () => {
     fitted = true
@@ -62,7 +63,6 @@ export default function Chart(props: ListProps) {
   }
   function down(e: PointerEvent) {
     if (e.pointerType === "mouse" && e.button !== 0) return // the right button opens a menu; it doesn't pan
-    fitted = false
     pointers.set(e.pointerId, local(e))
     dragging = false
   }
@@ -162,6 +162,26 @@ export default function Chart(props: ListProps) {
       if (document.activeElement === el) lost = id
     })
   }
+  /** The card to keep in view when the view changes size: the panel's person's, else the focused one. */
+  function kept() {
+    const handle = props.selected
+    if (handle !== undefined)
+      for (const id of ids()) {
+        const item = byId().get(id)?.item
+        if (item && personOf(item)?.handle === handle && !isMuted(item)) return id
+      }
+    return ids().find((id) => elements.get(id) === document.activeElement)
+  }
+  /** The view changed size: fit again if the chart still shows its fit, and keep the kept card in view. */
+  function resized() {
+    if (fitted) fitNow()
+    const id = kept()
+    const box = id === undefined ? undefined : boxes().get(id)
+    // Not moveTo: this follows the view, it isn't the viewer moving the chart.
+    if (box) setT(reveal(t(), box, { width: viewport.clientWidth, height: viewport.clientHeight }, MARGIN))
+  }
+  const size = createMemo(() => `${drawn().width}x${drawn().height}`)
+  createEffect(on(size, () => fitted && fitNow(), { defer: true }))
   onMount(() => {
     viewport.addEventListener("scroll", unscroll)
     onCleanup(() => viewport.removeEventListener("scroll", unscroll))
@@ -171,9 +191,9 @@ export default function Chart(props: ListProps) {
     viewport.addEventListener("click", swallowDragClick, { capture: true })
     onCleanup(() => viewport.removeEventListener("click", swallowDragClick, { capture: true }))
     fitNow()
-    const resized = new ResizeObserver(() => fitted && fitNow())
-    resized.observe(viewport)
-    onCleanup(() => resized.disconnect())
+    const observer = new ResizeObserver(resized)
+    observer.observe(viewport)
+    onCleanup(() => observer.disconnect())
   })
   return (
     <figure aria-label={`${props.label} org chart`} class="relative m-0 h-[calc(100vh-8rem)] min-h-80">

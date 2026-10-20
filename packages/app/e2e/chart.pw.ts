@@ -111,6 +111,66 @@ test("the wheel over the chart doesn't scroll the page", async ({ page }) => {
   expect(await page.evaluate(() => scrollY)).toBe(0)
 })
 
+test("while the chart shows its fit, it fits again when the view resizes or the chart changes size", async ({ page }) => {
+  const chart = await openChart(page)
+  const canvas = page.getByTestId("chart-canvas")
+  const first = await canvas.getAttribute("data-transform")
+  await page.setViewportSize({ width: 1000, height: 700 })
+  await expect(canvas).not.toHaveAttribute("data-transform", first!)
+  const resized = await canvas.getAttribute("data-transform")
+  await page.getByRole("button", { name: "Fit" }).click()
+  await expect(canvas).toHaveAttribute("data-transform", resized!)
+  await chart.getByRole("button", { name: "Lead's branch" }).click() // narrower: two cards wide, not three
+  await expect(canvas).not.toHaveAttribute("data-transform", resized!)
+  const closed = await canvas.getAttribute("data-transform")
+  await page.getByRole("button", { name: "Fit" }).click()
+  await expect(canvas).toHaveAttribute("data-transform", closed!)
+})
+
+test("after a drag, a resize keeps the chart where the viewer put it", async ({ page }) => {
+  await openChart(page)
+  const view = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.mouse.move(view.x + 10, view.y + 10)
+  await page.mouse.down()
+  await page.mouse.move(view.x + 60, view.y + 30, { steps: 3 })
+  await page.mouse.up()
+  const dragged = await page.getByTestId("chart-canvas").getAttribute("data-transform")
+  await page.setViewportSize({ width: 1000, height: 700 })
+  await expect.poll(() => page.getByTestId("chart-viewport").evaluate((el) => el.clientWidth)).toBeLessThan(view.width)
+  expect(await page.getByTestId("chart-canvas").getAttribute("data-transform")).toBe(dragged)
+})
+
+test("opening the panel by mouse or by Enter does the same, and keeps the selected card in view", async ({ page }) => {
+  const chart = await openChart(page)
+  const canvas = page.getByTestId("chart-canvas")
+  const ann = chart.getByRole("button", { name: "Ann, Designer" })
+  await ann.click()
+  await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
+  await expect.poll(() => page.getByTestId("chart-viewport").evaluate((el) => el.clientWidth)).toBeLessThan(900)
+  const byMouse = await canvas.getAttribute("data-transform")
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("complementary")).toHaveCount(0)
+  await ann.focus()
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
+  await expect(canvas).toHaveAttribute("data-transform", byMouse!)
+  await page.keyboard.press("Escape")
+  // Zoomed in, the viewer's own view: the panel takes room from the right, and the selected card stays in view.
+  for (let i = 0; i < 3; i++) await page.getByRole("button", { name: "Zoom in" }).click()
+  const minh = chart.getByRole("button", { name: "Minh, Engineer" })
+  await ann.focus()
+  await page.keyboard.press("End")
+  await expect(minh).toBeFocused()
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("complementary", { name: "Minh" })).toBeVisible()
+  const inView = async () => {
+    const v = (await page.getByTestId("chart-viewport").boundingBox())!
+    const b = (await minh.boundingBox())!
+    return b.x >= v.x && b.x + b.width <= v.x + v.width
+  }
+  await expect.poll(inView).toBe(true)
+})
+
 test("two pointers moving apart zoom in", async ({ page }) => {
   await openChart(page)
   const [before] = await transform(page)
