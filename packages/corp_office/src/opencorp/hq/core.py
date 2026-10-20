@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from opencorp.company.snapshot import CompanySnapshots
+from opencorp.company.source import CompanySource
 from opencorp.hq.config import HqConfig, load_config
 from opencorp.hq.login import Logins
 from opencorp.hq.pairing import PairCodes
@@ -34,6 +35,8 @@ class Hq:
     sessions: BrowserSessions
     codes: PairCodes
     logins: Logins
+    source: CompanySource
+    """The Source view's trees and files."""
     listen: bool = False
     """Whether starting HQ starts its listeners (the daemon); tests attach without them."""
     bound_port: int | None = None
@@ -53,7 +56,7 @@ class Hq:
         sessions = BrowserSessions(office.store, snapshots)
         return cls(office=office, config=config, api=office_api(), build=BuildInfo(config.app_dir),
                    snapshots=snapshots, sessions=sessions, codes=PairCodes(office.paths.office),
-                   logins=Logins(sessions))
+                   logins=Logins(sessions), source=CompanySource(office.git))
 
     @property
     def socket(self) -> Path:
