@@ -62,3 +62,28 @@ test("after a drag, a click or Enter on a card opens the side panel again", asyn
   await page.keyboard.press("Enter")
   await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
 })
+
+test("the wheel and the buttons zoom; Fit goes back to the whole chart", async ({ page }) => {
+  await openChart(page)
+  const fitted = await page.getByTestId("chart-canvas").getAttribute("data-transform")
+  const box = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  const [k0] = await transform(page)
+  await page.mouse.wheel(0, -300)
+  await expect.poll(async () => (await transform(page))[0]).toBeGreaterThan(k0)
+  const [k1] = await transform(page)
+  await page.getByRole("button", { name: "Zoom out" }).click()
+  expect((await transform(page))[0]).toBeLessThan(k1)
+  await page.getByRole("button", { name: "Zoom in" }).click()
+  await page.getByRole("button", { name: "Fit" }).click()
+  expect(await page.getByTestId("chart-canvas").getAttribute("data-transform")).toBe(fitted)
+})
+
+test("the wheel over the chart doesn't scroll the page", async ({ page }) => {
+  await openChart(page)
+  const box = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+  await page.mouse.wheel(0, 300)
+  await expect.poll(async () => (await transform(page))[0]).toBeLessThan(1)
+  expect(await page.evaluate(() => scrollY)).toBe(0)
+})

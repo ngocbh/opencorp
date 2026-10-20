@@ -1,6 +1,6 @@
 import { createMemo, createSelector, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js"
 import { describe, personCost } from "./format"
-import { fit, layout, pan, type Box, type Transform } from "./layout"
+import { fit, layout, pan, zoomAt, type Box, type Transform } from "./layout"
 import type { ListProps } from "./list"
 import { PersonBody } from "./person"
 import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./rows"
@@ -9,6 +9,8 @@ import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./ro
 const elbow = (p: [number, number][]) => `M ${p[0][0]} ${p[0][1]} V ${p[1][1]} H ${p[2][0]} V ${p[3][1]}`
 /** The transform as "k,x,y", for the tests to read. */
 const written = (t: Transform) => `${t.k.toFixed(3)},${t.x.toFixed(1)},${t.y.toFixed(1)}`
+const CONTROL =
+  "min-w-8 rounded border border-neutral-300 bg-white px-2 py-0.5 outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-visible:ring-neutral-100"
 /** Room left around the chart when it fits the view, in view pixels. */
 const MARGIN = 24
 
@@ -72,7 +74,15 @@ export default function Chart(props: ListProps) {
   const swallowDragClick = (e: MouseEvent) => {
     if (dragging && e.detail > 0) e.stopPropagation()
   }
+  const center = (): [number, number] => [viewport.clientWidth / 2, viewport.clientHeight / 2]
+  function onWheel(e: WheelEvent) {
+    e.preventDefault() // the page doesn't scroll under the chart
+    moveTo(zoomAt(t(), Math.exp(-e.deltaY / 500), local(e)))
+  }
   onMount(() => {
+    // Not Solid's onWheel: preventDefault needs a listener that isn't passive.
+    viewport.addEventListener("wheel", onWheel, { passive: false })
+    onCleanup(() => viewport.removeEventListener("wheel", onWheel))
     viewport.addEventListener("click", swallowDragClick, { capture: true })
     onCleanup(() => viewport.removeEventListener("click", swallowDragClick, { capture: true }))
     fitNow()
@@ -122,6 +132,17 @@ export default function Chart(props: ListProps) {
             )}
           </For>
         </div>
+      </div>
+      <div class="absolute bottom-3 right-3 flex gap-1">
+        <button type="button" aria-label="Zoom in" class={CONTROL} onClick={() => moveTo(zoomAt(t(), 1.25, center()))}>
+          +
+        </button>
+        <button type="button" aria-label="Zoom out" class={CONTROL} onClick={() => moveTo(zoomAt(t(), 0.8, center()))}>
+          −
+        </button>
+        <button type="button" class={CONTROL} onClick={fitNow}>
+          Fit
+        </button>
       </div>
     </figure>
   )
