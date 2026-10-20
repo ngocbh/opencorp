@@ -7,7 +7,7 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -357,6 +357,12 @@ def hq_checks(status: dict | HqUnread, office_dir: Path, repo: Path) -> list[Che
         found = [Check("hq", "warn", f"port {tcp['port']} isn't free ({error}); HQ tries it again every {RETRY_S:g} s."
                                      f" Free it, or set another \"port\" in {office_dir / 'hq.json'} and run "
                                      "`opencorp restart`")]
+    if socket_error := status.get("socket_error"):  # an office from before the field has none
+        # The web port keeps a line of its own, so what's wrong with it isn't lost under the socket's problem.
+        port = Check("hq port", "ok", f"web app at {status['url']}") if tcp["listening"] else \
+            replace(found[0], name="hq port")
+        found = [Check("hq", "warn", f"not listening on {status['socket']}: {socket_error}; run `opencorp restart` "
+                                     "once that's fixed"), *([port] if tcp["enabled"] else [])]
     app, office = status["health"]["app"], status["health"]["office"]
     if app is None and not (repo / "packages" / "app").is_dir():  # installed from a package, not a checkout
         found.append(Check("web app", "warn", "this install has no web app; it's built in a checkout of the "

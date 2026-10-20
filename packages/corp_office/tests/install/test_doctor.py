@@ -6,6 +6,7 @@ import time
 
 import httpx
 import psutil
+import pytest
 
 from opencorp.chat.connections import ConnectionFile, Connections
 from opencorp.company_template import Owner, write_company
@@ -562,6 +563,25 @@ def test_an_install_without_the_apps_sources_says_it_has_no_web_app(tmp_path):
     s["health"]["app"] = None
     got = by_name(doctor.hq_checks(s, tmp_path, tmp_path / "site-packages"))["web app"]
     assert got.status == "warn" and "this install has no web app" in got.detail and "bun" not in got.detail
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_hq_sock_not_listening_warns_and_says_to_restart(tmp_path, enabled):
+    s = {**status(enabled=enabled, listening=enabled), "socket_error": "AF_UNIX path too long"}
+    got = by_name(doctor.hq_checks(s, tmp_path, tmp_path))
+    assert got["hq"].status == "warn" and got["hq"].detail.startswith("not listening on /h/office/hq.sock: AF_UNIX")
+    assert "`opencorp restart`" in got["hq"].detail
+    if enabled:  # the web port is a separate line, so its own state isn't lost
+        assert got["hq port"].status == "ok" and "http://127.0.0.1:49380/" in got["hq port"].detail
+    else:
+        assert "hq port" not in got
+
+
+def test_hq_sock_and_a_taken_port_are_two_warnings(tmp_path):
+    s = {**status(listening=False, error="Address already in use"), "socket_error": "Permission denied"}
+    got = by_name(doctor.hq_checks(s, tmp_path, tmp_path))
+    assert got["hq"].status == "warn" and "Permission denied" in got["hq"].detail
+    assert got["hq port"].status == "warn" and "Address already in use" in got["hq port"].detail
 
 
 def test_the_offices_warnings_are_shown(tmp_path):
