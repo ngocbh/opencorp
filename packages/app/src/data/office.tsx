@@ -14,6 +14,7 @@ import {
 import { useNavigate } from "@solidjs/router"
 import { batch, createContext, createSignal, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
+import { throttle } from "./costs"
 import { hqSnapshot } from "./snapshot"
 import { RELOADED_FOR, verdict } from "./version"
 import { since, type CostWindow } from "./window"
@@ -21,12 +22,19 @@ import { since, type CostWindow } from "./window"
 /** Live updates are applied in one batch per frame, as in the TUI. */
 const FLUSH_MS = 16
 
+/** Costs are read again on session.updated at most this often (the design's 10 s). */
+const COST_EVERY_MS = 10_000
+
 /** The cost window the person last picked, kept in localStorage. */
 function savedWindow(): CostWindow {
   const w = localStorage.getItem("hq.window")
   return w === "7d" || w === "30d" ? w : "today"
 }
 
+/**
+ * The office for this tab: the client, the live state and its connection status, who is signed in, the version check
+ * and the cost window. `toSignIn` sends the browser to sign-in once its session is gone.
+ */
 function createOffice(toSignIn: () => void) {
   const client = createOfficeClient({ baseUrl: "/api" })
   const [state, setState] = createStore<OfficeState>(emptyState())
@@ -60,11 +68,14 @@ function createOffice(toSignIn: () => void) {
   /** Runs `fn` once the queued changes are in `state`: "online" never shows next to the old snapshot. */
   const whenFlushed = (fn: () => void) => void (timer ? after.push(fn) : fn())
 
+  const costs = throttle(() => void readCosts(), COST_EVERY_MS)
+  const snapshot = hqSnapshot(() => since(costWindow()))
   const sync = createOfficeSync({
     client,
     state: () => state,
     mutate,
-    snapshot: hqSnapshot(() => since(costWindow())),
+    // Every snapshot reads the costs too, so the refetch window starts then.
+    snapshot: async (c) => (costs.ran(), snapshot(c)),
     onStatus: (next) => whenFlushed(() => onStatus(next)),
   })
 
@@ -105,13 +116,34 @@ function createOffice(toSignIn: () => void) {
       return // the reconnect after this tries again
     }
     if (!("office" in health)) return // only the socket's /health lacks the keys
-    const v = verdict(health, __HQ_BUILD__, { dev: import.meta.env.DEV, reloadedFor: sessionStorage.getItem(RELOADED_FOR) })
+    const reloadedFor = sessionStorage.getItem(RELOADED_FOR)
+    const v = verdict(health, __HQ_BUILD__, { dev: import.meta.env.DEV, reloadedFor })
     if (v === "reload") {
       sessionStorage.setItem(RELOADED_FOR, health.app!.build)
       return location.reload()
     }
     setBlocked(v === "ok" ? undefined : v)
   }
+
+  let costReads = 0
+  /** Reads the costs for the window; only the latest read's answer is kept. */
+  async function readCosts() {
+    const ask = ++costReads
+    try {
+      const report = await client.costs.since(since(costWindow()))
+      if (ask === costReads) mutate((s) => void (s.costs = report))
+    } catch (error) {
+      console.error("Failed to read costs", { error })
+    }
+  }
+  /** A new window reads at once, and starts a new 10 s window. */
+  function setCostWindow(w: CostWindow) {
+    localStorage.setItem("hq.window", w)
+    setCostWindowSignal(w)
+    costs.ran()
+    void readCosts()
+  }
+  sync.on("session.updated", () => costs.call())
 
   sync.on("company.updated", () => {
     client.company.get().then(
@@ -148,7 +180,18 @@ function createOffice(toSignIn: () => void) {
     }
   }
 
-  return { client, state: state as Readonly<OfficeState>, status, ready, me, pairedBy, costWindow, blocked, checkVersion }
+  return {
+    client,
+    state: state as Readonly<OfficeState>,
+    status,
+    ready,
+    me,
+    pairedBy,
+    costWindow,
+    setCostWindow,
+    blocked,
+    checkVersion,
+  }
 }
 
 export type Office = ReturnType<typeof createOffice>

@@ -39,9 +39,11 @@ export default function Pair() {
     history.replaceState(null, "", "/pair")
     if (!code) return setFailed(EXPIRED)
     try {
-      const session = await createOfficeClient({ baseUrl: "/api" }).pair({ code, label: browserLabel(navigator.userAgent) })
+      const client = createOfficeClient({ baseUrl: "/api" })
+      const session = await client.pair({ code, label: browserLabel(navigator.userAgent) })
       // Not a secret (the cookie is HttpOnly): only who paired this browser, for the sidebar.
-      localStorage.setItem("hq.session", JSON.stringify({ id: session.id, name: session.name, issued_by: session.issued_by }))
+      const { id, name, issued_by } = session
+      localStorage.setItem("hq.session", JSON.stringify({ id, name, issued_by }))
       navigate("/", { replace: true })
     } catch (e) {
       setFailed(

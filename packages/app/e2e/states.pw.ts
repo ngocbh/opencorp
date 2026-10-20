@@ -76,3 +76,20 @@ test("a missing lazy chunk checks the version and offers a reload instead of a b
   await expect.poll(async () => (await (await request.get("/__fixture/log")).json()).health).toBeGreaterThanOrEqual(2)
   expect(loads).toBe(1) // the build matches, so no reload: the extra check came from the failed chunk
 })
+
+test("session.updated refetches costs at most once every 10 s", async ({ page, request }) => {
+  await page.clock.install() // the page's timers, under the test's control; time still flows
+  await page.goto("/")
+  await expect(connection(page)).toHaveText("live")
+  const costReads = async () => (await (await request.get("/__fixture/log")).json()).costs.length
+  expect(await costReads()).toBe(1) // the snapshot's
+  const updated = { type: "session.updated", data: session("S1", "ngocbh", "busy") }
+  await request.post("/__fixture/emit", { data: { event: updated } })
+  await request.post("/__fixture/emit", { data: { event: updated } })
+  await page.waitForTimeout(500)
+  expect(await costReads()).toBe(1) // inside the snapshot's window: one run waits for its end
+  await page.clock.fastForward("00:11")
+  await expect.poll(costReads).toBe(2)
+  await page.waitForTimeout(500)
+  expect(await costReads()).toBe(2)
+})
