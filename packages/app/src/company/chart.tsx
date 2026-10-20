@@ -61,6 +61,7 @@ export default function Chart(props: ListProps) {
     return [e.clientX - r.left, e.clientY - r.top]
   }
   function down(e: PointerEvent) {
+    if (e.pointerType === "mouse" && e.button !== 0) return // the right button opens a menu; it doesn't pan
     fitted = false
     pointers.set(e.pointerId, local(e))
     dragging = false
@@ -68,6 +69,8 @@ export default function Chart(props: ListProps) {
   function move(e: PointerEvent) {
     const prev = pointers.get(e.pointerId)
     if (!prev) return
+    // A release we never heard of (outside the window, say): the mouse is only hovering now.
+    if (e.pointerType === "mouse" && e.buttons === 0) return void pointers.delete(e.pointerId)
     const next = local(e)
     if (pointers.size === 2) {
       const other = [...pointers].find(([id]) => id !== e.pointerId)![1]
@@ -182,6 +185,7 @@ export default function Chart(props: ListProps) {
         onPointerMove={move}
         onPointerUp={up}
         onPointerCancel={up}
+        onLostPointerCapture={up}
       >
         <div
           data-testid="chart-canvas"

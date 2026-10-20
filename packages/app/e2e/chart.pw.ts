@@ -51,6 +51,28 @@ test("dragging pans the chart by the pointer's travel, even when it starts on a 
   expect(Math.round((await transform(page))[1] - x1)).toBe(30)
 })
 
+test("only a primary-button press pans: a right-button press or a hover after a lost release doesn't", async ({ page }) => {
+  await openChart(page)
+  const before = await page.getByTestId("chart-canvas").getAttribute("data-transform")
+  const view = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.mouse.move(view.x + 10, view.y + 10)
+  await page.mouse.down({ button: "right" })
+  await page.mouse.move(view.x + 80, view.y + 40, { steps: 4 })
+  await page.mouse.up({ button: "right" })
+  await page.mouse.move(view.x + 150, view.y + 60, { steps: 4 })
+  expect(await page.getByTestId("chart-canvas").getAttribute("data-transform")).toBe(before)
+  // A press whose release happened outside the window: the next move comes with no button held.
+  await page.getByTestId("chart-viewport").evaluate((el) => {
+    const r = el.getBoundingClientRect()
+    const send = (type: string, x: number, buttons: number) =>
+      el.dispatchEvent(new PointerEvent(type, { pointerId: 1, pointerType: "mouse", button: type === "pointerdown" ? 0 : -1, buttons, clientX: r.left + x, clientY: r.top + 20, bubbles: true }))
+    send("pointerdown", 20, 1)
+    send("pointermove", 60, 0)
+    send("pointermove", 120, 0)
+  })
+  expect(await page.getByTestId("chart-canvas").getAttribute("data-transform")).toBe(before)
+})
+
 test("after a drag, a click or Enter on a card opens the side panel again", async ({ page }) => {
   const chart = await openChart(page)
   const ann = chart.getByRole("button", { name: "Ann, Designer" })
