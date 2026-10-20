@@ -99,7 +99,17 @@ export default function Company() {
   createEffect(() => {
     if (selected() !== undefined && !shown()) setSelected(undefined)
   })
-  const select = (handle: string) => setSelected(handle)
+  /** The row (or Unplaced button) that opened the panel: focus goes back there when it closes. */
+  let opener: HTMLElement | undefined
+  /** Opens the panel on `handle` from the list or Unplaced; a move inside the panel keeps the opener. */
+  const select = (handle: string) => {
+    const from = document.activeElement
+    opener = from instanceof HTMLElement && from !== document.body ? from : undefined
+    setSelected(handle)
+  }
+  /** Where focus goes when the panel closes: its opener, or the tree's current row once the opener is gone. */
+  const returnTo = () =>
+    opener?.isConnected ? opener : (document.querySelector<HTMLElement>('[role=treeitem][tabindex="0"]') ?? undefined)
   // On a phone the panel is a sheet over the whole screen: nothing behind it can take focus.
   const sheet = () => !desktop() && !!shown()
   const shell = useShell()
@@ -153,8 +163,9 @@ export default function Company() {
               manager={p().manager ? byHandle().get(p().manager!) : undefined}
               reports={s.people.filter((x) => x.manager === p().handle).sort(byName)}
               groups={groups()}
-              onSelect={select}
+              onSelect={setSelected}
               onClose={() => setSelected(undefined)}
+              returnTo={returnTo}
               modal={!desktop()}
             />
           )}

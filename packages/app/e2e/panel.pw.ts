@@ -88,6 +88,20 @@ test("Close sends focus back to the row that opened the panel, even after moving
   await expect(page.getByRole("treeitem", { name: /Kai/ })).toBeFocused()
 })
 
+test("when the row that opened the panel is gone, focus goes back to the tree's current row", async ({ page, request }) => {
+  await page.getByRole("region", { name: "Unplaced" }).getByRole("button", { name: "Zoe" }).click()
+  await expect(panel(page, "Zoe").getByRole("heading", { name: "Zoe" })).toBeFocused()
+  // Zoe gets a manager who exists: "Unplaced", and the button that opened the panel, go away.
+  const sha = SHA.replace(/^0/, "f")
+  const people = acme().view.people.map((p) => (p.handle === "zoe" ? { ...p, manager: "ngocbh" } : p))
+  await request.post("/__fixture/set", { data: { view: { sha, people } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "company.updated", data: { sha } } } })
+  await expect(page.getByRole("region", { name: "Unplaced" })).toHaveCount(0)
+  await page.keyboard.press("Escape")
+  await expect(page.getByRole("complementary")).toHaveCount(0)
+  await expect(page.getByRole("treeitem", { name: /Ngoc/ })).toBeFocused()
+})
+
 test("Escape in the search box is the search box's", async ({ page }) => {
   await page.getByRole("treeitem", { name: /Lead/ }).click()
   await page.getByRole("searchbox", { name: "Search people" }).fill("k")

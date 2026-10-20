@@ -19,6 +19,8 @@ export function Panel(props: {
   onClose: () => void
   /** Whether it's a sheet over everything (a phone), so a modal dialog. */
   modal: boolean
+  /** Where focus goes back to when the panel closes. */
+  returnTo: () => HTMLElement | undefined
 }) {
   const office = useOffice()
   /** The person's own live work: main and side sessions in a live status (profile_manager work is the office's). */
@@ -33,20 +35,9 @@ export function Panel(props: {
   const headingId = createUniqueId()
   let root!: HTMLDivElement
   let heading!: HTMLHeadingElement
-  /** Where focus goes back to on close: the row (or button) that last opened or moved the panel. */
-  let back: HTMLElement | undefined
   // Focus moves into the panel when it opens and when it moves to someone else (the manager button it was on may be
-  // gone), remembering the row it came from.
-  createEffect(
-    on(
-      () => props.person.handle,
-      () => {
-        const from = document.activeElement
-        if (from instanceof HTMLElement && from !== document.body && !root.contains(from)) back = from
-        heading.focus()
-      },
-    ),
-  )
+  // gone).
+  createEffect(on(() => props.person.handle, () => heading.focus()))
   // Escape closes the panel from anywhere but a form control, which has its own use for it (a search box clears).
   const onKey = (e: KeyboardEvent) => {
     if (e.key !== "Escape" || e.defaultPrevented) return
@@ -60,7 +51,7 @@ export function Panel(props: {
     // page (the search box, say) stays there.
     queueMicrotask(() => {
       const at = document.activeElement
-      if ((!at || at === document.body || root.contains(at)) && back?.isConnected) back.focus()
+      if (!at || at === document.body || root.contains(at)) props.returnTo()?.focus()
     })
   })
   return (
