@@ -1,6 +1,7 @@
 import { OfficeError, createOfficeClient } from "@opencorp/client"
 import { useNavigate } from "@solidjs/router"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
+import { store } from "../data/storage"
 
 const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
 
@@ -36,7 +37,7 @@ export default function Pair() {
   async function spend() {
     const code = location.hash.slice(1)
     // The code leaves the URL (and the history entry) before anything else runs.
-    history.replaceState(null, "", "/pair")
+    history.replaceState(history.state, "", "/pair")
     setFailed(undefined)
     if (!code) return setFailed(EXPIRED)
     try {
@@ -44,14 +45,12 @@ export default function Pair() {
       const session = await client.pair({ code, label: browserLabel(navigator.userAgent) })
       // Not a secret (the cookie is HttpOnly): only who paired this browser, for the sidebar.
       const { id, name, issued_by } = session
-      localStorage.setItem("hq.session", JSON.stringify({ id, name, issued_by }))
+      store("localStorage", "hq.session", JSON.stringify({ id, name, issued_by }))
       navigate("/", { replace: true })
     } catch (e) {
-      setFailed(
-        e instanceof OfficeError && e.code === "pair_code_invalid"
-          ? EXPIRED
-          : `Couldn't sign in: ${e instanceof Error ? e.message : e}`,
-      )
+      if (e instanceof OfficeError && e.code === "pair_code_invalid") return setFailed(EXPIRED)
+      // The code has left the URL, so this tab can't try it again.
+      setFailed(`Couldn't sign in: ${e instanceof Error ? e.message : e}. Run \`opencorp pair\` again.`)
     }
   }
   // A new link opened in this tab changes only the fragment, so the page stays mounted.

@@ -16,6 +16,7 @@ import { batch, createContext, createSignal, onCleanup, onMount, useContext, typ
 import { createStore, produce } from "solid-js/store"
 import { throttle } from "./costs"
 import { hqSnapshot } from "./snapshot"
+import { readStored, store } from "./storage"
 import { RELOADED_FOR, verdict } from "./version"
 import { since, type CostWindow } from "./window"
 
@@ -30,7 +31,7 @@ const COST_EVERY_MS = 10_000
 
 /** The cost window the person last picked, kept in localStorage. */
 function savedWindow(): CostWindow {
-  const w = localStorage.getItem("hq.window")
+  const w = readStored("localStorage", "hq.window")
   return w === "7d" || w === "30d" ? w : "today"
 }
 
@@ -123,11 +124,12 @@ function createOffice(toSignIn: () => void) {
       return // the reconnect after this tries again
     }
     if (!("office" in health)) return // only the socket's /health lacks the keys
-    const reloadedFor = sessionStorage.getItem(RELOADED_FOR)
+    const reloadedFor = readStored("sessionStorage", RELOADED_FOR)
     const v = verdict(health, __HQ_BUILD__, { dev: import.meta.env.DEV, reloadedFor })
+    // Without the guard stored, a reload could loop: then the tab stays on the build it has.
     if (v === "reload") {
-      sessionStorage.setItem(RELOADED_FOR, health.app!.build)
-      return location.reload()
+      if (store("sessionStorage", RELOADED_FOR, health.app!.build)) location.reload()
+      return
     }
     setBlocked(v === "ok" ? undefined : v)
     // Nothing else would notice the build landing: the stream may be up and quiet.
@@ -149,7 +151,7 @@ function createOffice(toSignIn: () => void) {
   }
   /** A new window reads at once, and starts a new 10 s window. */
   function setCostWindow(w: CostWindow) {
-    localStorage.setItem("hq.window", w)
+    store("localStorage", "hq.window", w)
     setCostWindowSignal(w)
     costs.ran()
     void readCosts()
@@ -193,7 +195,7 @@ function createOffice(toSignIn: () => void) {
   /** Who paired this browser, when it wasn't the signed-in person; the pair page keeps it. */
   const pairedBy = () => {
     try {
-      const by = JSON.parse(localStorage.getItem("hq.session") ?? "null")?.issued_by
+      const by = JSON.parse(readStored("localStorage", "hq.session") ?? "null")?.issued_by
       return typeof by === "string" && by !== me() ? by : undefined
     } catch {
       return undefined

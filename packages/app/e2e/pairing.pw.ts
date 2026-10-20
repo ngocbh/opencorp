@@ -55,3 +55,24 @@ test("a new link opened in the tab that showed a failed one signs in", async ({ 
   await expect(page).toHaveURL("/")
   await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
 })
+
+test("a link that can't reach the office says to pair again", async ({ page }) => {
+  await page.route("**/api/pair", (route) => route.abort())
+  await page.goto("/pair#good-code-123")
+  await expect(page.getByRole("alert")).toContainText("Run `opencorp pair` again.")
+})
+
+test("a browser that refuses storage still signs in", async ({ page, request }) => {
+  await page.addInitScript(() => {
+    Storage.prototype.setItem = () => {
+      throw new DOMException("refused", "SecurityError")
+    }
+    Storage.prototype.getItem = () => {
+      throw new DOMException("refused", "SecurityError")
+    }
+  })
+  await request.post("/__fixture/code", { data: { code: "good-code-123" } })
+  await page.goto("/pair#good-code-123")
+  await expect(page).toHaveURL("/")
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+})
