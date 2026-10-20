@@ -9,7 +9,7 @@ import socket
 import httpx
 import pytest
 import uvicorn
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from opencorp.hq import guard
 from opencorp.hq.api import create_hq_app
@@ -386,3 +386,30 @@ async def test_the_security_headers_replace_a_routes_own():
         r = await c.get("/")
     assert r.headers.get_list("x-frame-options") == ["DENY"]
     assert r.headers.get_list("content-security-policy") == [guard.CSP]
+
+
+async def test_a_streamed_response_passes_through_unbuffered():
+    finished = asyncio.Event()
+    arrived_early = []
+
+    async def stream(scope, receive, send):
+        async def chunks():
+            for i in range(3):
+                yield f"data: {i}\n\n".encode()
+                await asyncio.sleep(0.01)
+            finished.set()
+
+        await StreamingResponse(chunks(), media_type="text/event-stream")(scope, receive, send)
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("more_body"):
+            arrived_early.append(not finished.is_set())
+
+    async def receive():
+        await asyncio.sleep(10)  # no disconnect while the stream runs
+        return {"type": "http.disconnect"}
+
+    scope = {"type": "http", "method": "GET", "path": "/api/stream", "raw_path": b"/api/stream", "query_string": b"",
+             "headers": [(b"host", f"127.0.0.1:{PORT}".encode())]}
+    await HqGuard(stream, port=PORT)(scope, receive, send)
+    assert len(arrived_early) >= 3 and all(arrived_early)
