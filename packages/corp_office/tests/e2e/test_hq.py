@@ -141,7 +141,9 @@ def test_a_throttled_sign_in_reaches_the_office_log(web_office, local):
         for _ in range(5):
             assert stranger.post("/api/login", json={"handle": "ngocbh", "password": PASSWORD}).status_code == 401
         assert stranger.post("/api/login", json={"handle": "ngocbh", "password": PASSWORD}).status_code == 429
-    assert "sign-in for @ngocbh from 127.0.0.1 throttled" in (web_office.paths.office / "office.log").read_text()
+    log = (web_office.paths.office / "office.log").read_text()
+    assert "sign-in for @ngocbh from 127.0.0.1 throttled" in log
+    assert PASSWORD not in log
 
 
 def test_over_ssh_pair_prints_the_same_port_forward_and_the_hq_sock_one(web_office, tmp_path, monkeypatch):
