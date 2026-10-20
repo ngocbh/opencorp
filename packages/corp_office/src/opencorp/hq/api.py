@@ -5,12 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp
 
 from opencorp.daemon.http import EXCEPTION_HANDLERS, error, ok
+from opencorp.daemon.routes.devices import whoami
+from opencorp.hq.auth import BrowserAuth
 from opencorp.hq.guard import HqGuard
 from opencorp.hq.static import serve_app
 
@@ -43,12 +46,15 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
     """
     api = [
         Route("/health", health, methods=["GET"]),
+        Route("/whoami", whoami, methods=["GET"]),
         Route("/{rest:path}", no_route, methods=ANY),
     ]
     app = Starlette(
         routes=[Route("/api", no_route, methods=ANY), Mount("/api", routes=api),
                 Route("/{path:path}", serve_app, methods=["GET"])],
         exception_handlers=EXCEPTION_HANDLERS,
+        # Inside Starlette's error handling, so a failing check is a 500 that still passes through the guard.
+        middleware=[Middleware(BrowserAuth, hq=hq)],
     )
     app.state.office = office
     app.state.hq = hq

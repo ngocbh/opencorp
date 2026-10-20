@@ -102,7 +102,7 @@ async def test_a_write_without_an_origin_is_403(office, hq):
 async def test_a_dev_origin_passes(office, hq):
     hq.config = dataclasses.replace(hq.config, dev_origins=("http://localhost:5173",))
     async with hq_client(office, hq, origin="http://localhost:5173") as c:
-        assert (await c.post("/api/nope", json={})).status_code == 404  # past the guard, to the router
+        assert (await c.post("/api/nope", json={})).status_code == 401  # past the guard, to the session check
 
 
 async def test_a_websocket_scope_is_closed_without_reaching_the_app(office, hq):
@@ -142,7 +142,7 @@ async def test_a_write_that_isnt_json_is_415(web, kind):
 
 async def test_a_body_less_write_with_the_json_type_passes(web):
     r = await web.post("/api/nope", headers={"content-type": "application/json; charset=utf-8"})
-    assert r.status_code == 404  # past the guard, to the router
+    assert r.status_code == 401  # past the guard, to the session check
 
 
 async def test_the_guard_refuses_in_order_host_then_fetch_metadata_then_origin_then_json(office, hq):
