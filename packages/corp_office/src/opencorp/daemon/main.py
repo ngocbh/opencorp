@@ -28,6 +28,7 @@ from opencorp.daemon.app import Office, OfficePaths, create_app
 from opencorp.daemon.bus import Bus
 from opencorp.extensions import ExtensionError, load_extensions
 from opencorp.harness.sessions import CodexSessions
+from opencorp.hq.core import attach as attach_hq
 from opencorp.perm.monitor import Monitor
 from opencorp.profile import GitProfileStore
 from opencorp.secrets import SecretStore
@@ -223,6 +224,8 @@ async def run(paths: OfficePaths, *, extensions: str = "opencorp.extensions") ->
                 load_extensions(office, extensions)
             except ExtensionError as exc:
                 raise OfficeStartError(str(exc)) from exc
+            # Last, so HQ starts after everything else and stops first.
+            attach_hq(office)
             remove_stale_socket(paths.socket)  # we hold the lock, so no live daemon owns it
             sock = bind_socket(paths.socket)
             server = OfficeServer(uvicorn.Config(create_app(office), lifespan="on", log_level="info",

@@ -171,7 +171,22 @@ def _stop(home, proc, sig=signal.SIGTERM):
 @pytest.fixture
 def home(short_dir):
     write_repo(short_dir / "company", base_files())
+    # No daemon a test starts binds HQ's TCP port, which is on by default on macOS.
+    (short_dir / "office").mkdir(mode=0o700)
+    (short_dir / "office" / "hq.json").write_text('{"tcp": false}')
     return short_dir
+
+
+def test_the_daemon_attaches_hq_after_the_extensions(home):
+    proc = _daemon(home)
+    try:
+        _wait_until_serving(home, proc)
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(OfficePaths(home).socket)),
+                          base_url="http://localhost") as c:
+            assert c.get("/hq").json()["tcp"]["enabled"] is False
+            assert c.post("/hq/pair", json={}).json()["path"].startswith("/pair#")
+    finally:
+        _stop(home, proc)
 
 
 def test_daemon_serves_turns_away_a_second_and_stops_cleanly(home):
@@ -203,7 +218,7 @@ def test_sigint_and_sighup_stop_the_daemon_cleanly(home, sig):
 
 def test_stale_socket_file_is_replaced(home):
     paths = OfficePaths(home)
-    paths.office.mkdir(parents=True)
+    paths.office.mkdir(parents=True, exist_ok=True)
     bind_socket(paths.socket).close()  # left by a crash
     proc = _daemon(home)
     try:
