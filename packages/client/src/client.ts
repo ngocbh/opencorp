@@ -36,6 +36,12 @@ import type {
   ProfileWriteRequest,
   PromptRequest,
   Question,
+  RunDetail,
+  RunEvent,
+  RunEventPage,
+  RunNodePage,
+  RunPage,
+  RunSummary,
   SendBackRequest,
   Session,
   SetDefaultConnectionRequest,
@@ -88,6 +94,7 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
   const post = <T>(path: string, body?: unknown) => call<T>("POST", path, body)
   const s = (id: string) => `/sessions/${seg(id)}`
   const q = (id: string) => `/questions/${seg(id)}`
+  const r = (id: string) => `/runs/${seg(id)}`
   return {
     socket,
     whoami: () => get<WhoAmI>("/whoami"),
@@ -109,6 +116,27 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     },
     /** Spend per person since `since`, a Timestamp (HQ only). */
     costs: { since: (since: string) => get<CostReport>(`/costs${query({ since })}`) },
+    runs: {
+      /** Top-level runs, newest first, each with its children; `before` is the last page's `next`. */
+      list: (
+        opts: { flow?: string; person?: string; status?: RunSummary["status"]; q?: string; before?: string; limit?: number } = {},
+      ) => get<RunPage>(`/runs${query(opts)}`),
+      /** Every run started from run `id`: the list's "Show all". */
+      children: (id: string) => get<RunSummary[]>(`/runs${query({ parent: id })}`),
+      /** One run's header: summary, parent, children, fingerprint, pinned commit, models, usage and log state. */
+      get: (id: string) => get<RunDetail>(r(id)),
+      /**
+       * Node attempts, newest start first; `before` is the last page's `next_before`. Fails with
+       * `isUnsupportedSchema`, `isNoLog` or `isSecretsUnavailable`.
+       */
+      nodes: (id: string, before?: number) => get<RunNodePage>(`${r(id)}/nodes${query({ before })}`),
+      /** Records after seq `after`, scrubbed, evidence left out; fails as `nodes` does. */
+      events: (id: string, after?: number) => get<RunEventPage>(`${r(id)}/events${query({ after })}`),
+      /** One record by seq, scrubbed, evidence included; fails as `nodes` does, or with `isIndexing`. */
+      event: (id: string, seq: number) => get<RunEvent>(`${r(id)}/events/${seq}`),
+      /** Where the scrubbed log downloads from, for a link (HQ only: the browser's cookie authorizes it). */
+      logUrl: (id: string) => `${socket}${r(id)}/log`,
+    },
     /** Spends a pairing code and signs this browser in (HQ only). */
     pair: (req: PairRequest) => post<BrowserSession>("/pair", req),
     /**

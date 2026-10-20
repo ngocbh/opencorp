@@ -82,6 +82,20 @@ export const isNoFile = (e: unknown) => e instanceof OfficeError && e.status ===
 /** Whether `e` is a company file read's `400 bad_path`: the path isn't repo-relative and `/`-separated. */
 export const isBadPath = (e: unknown) => e instanceof OfficeError && e.status === 400 && e.code === "bad_path"
 
+/** Whether `e` is a run page read's `409 unsupported_schema`: the log uses a run-log schema this office can't read. */
+export const isUnsupportedSchema = (e: unknown) =>
+  e instanceof OfficeError && e.status === 409 && e.code === "unsupported_schema"
+
+/** Whether `e` is a run page read's `404 no_log`: the run has no log (it didn't start, or the log is gone). */
+export const isNoLog = (e: unknown) => e instanceof OfficeError && e.status === 404 && e.code === "no_log"
+
+/** Whether `e` is a run page read's `503 secrets_unavailable`: the office couldn't load the secrets to remove. */
+export const isSecretsUnavailable = (e: unknown) =>
+  e instanceof OfficeError && e.status === 503 && e.code === "secrets_unavailable"
+
+/** Whether `e` is one record's `503 indexing`: the log is still being read for the first time; ask again. */
+export const isIndexing = (e: unknown) => e instanceof OfficeError && e.status === 503 && e.code === "indexing"
+
 /**
  * What kind of failure `e` is, to tell a new failure from a repeat of the last: the class and status when the office
  * answered, "network" when it didn't (no answer, a dropped connection), "none" for no failure.

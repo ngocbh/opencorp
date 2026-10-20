@@ -1,9 +1,19 @@
 import { afterEach, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
-import type { CompanyFile, CompanyTree, CompanyView } from "@opencorp/protocol"
+import type { CompanyFile, CompanyTree, CompanyView, RunDetail, RunPage } from "@opencorp/protocol"
 import { createOfficeClient } from "../src/client"
-import { isBadPath, isMissingRoute, isNoFile, isStaleCommit, OfficeError } from "../src/errors"
+import {
+  isBadPath,
+  isIndexing,
+  isMissingRoute,
+  isNoFile,
+  isNoLog,
+  isSecretsUnavailable,
+  isStaleCommit,
+  isUnsupportedSchema,
+  OfficeError,
+} from "../src/errors"
 import { applyCompany, emptyState } from "../src/store"
 import { onStop, serve, stopServers } from "./serve"
 
@@ -151,4 +161,59 @@ test("a file read's 409 stale_commit, 404 no_file and 400 bad_path are errors th
     isNoFile(new Error("no_file")),
     isBadPath(new OfficeError(409, "bad_path", "bad_path")),
   ]).toEqual([false, false, false])
+})
+
+const RUN = "01JA1H00000000000000000001"
+
+test("the Run Logs reads hit /api/runs with their query params", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  await c.runs.list({ flow: "chat", person: "minh", status: "idle", q: "a1b2", before: RUN, limit: 50 })
+  await c.runs.list()
+  await c.runs.children(RUN)
+  await c.runs.get(RUN)
+  await c.runs.nodes(RUN)
+  await c.runs.nodes(RUN, 80)
+  await c.runs.events(RUN, 13)
+  await c.runs.event(RUN, 7)
+  expect(seen.map((s) => `${s.method} ${s.path}${s.query}`)).toEqual([
+    `GET /api/runs?flow=chat&person=minh&status=idle&q=a1b2&before=${RUN}&limit=50`,
+    "GET /api/runs",
+    `GET /api/runs?parent=${RUN}`,
+    `GET /api/runs/${RUN}`,
+    `GET /api/runs/${RUN}/nodes`,
+    `GET /api/runs/${RUN}/nodes?before=80`,
+    `GET /api/runs/${RUN}/events?after=13`,
+    `GET /api/runs/${RUN}/events/7`,
+  ])
+  expect(c.runs.logUrl(RUN)).toBe(`${base}/runs/${RUN}/log`)
+})
+
+test("a run page read returns the office's body as sent", async () => {
+  const page: RunPage = { runs: [], next: null }
+  const detail = { run: { run_id: RUN }, repo_commit: "a".repeat(40), log_state: "ok" } as RunDetail
+  const { base } = serve({ answer: (req) => Response.json(new URL(req.url).pathname.endsWith("/runs") ? page : detail) })
+  const c = createOfficeClient({ baseUrl: base })
+  expect(await c.runs.list()).toEqual(page)
+  expect(await c.runs.get(RUN)).toEqual(detail)
+})
+
+test("a run page read's 409 unsupported_schema, 404 no_log, 503 secrets_unavailable and 503 indexing can be told apart", async () => {
+  const answers: Record<string, [number, string]> = {
+    nodes: [409, "unsupported_schema"],
+    events: [404, "no_log"],
+    "7": [503, "indexing"],
+  }
+  const { base } = serve({
+    answer: (req) => {
+      const [status, error] = answers[new URL(req.url).pathname.split("/").pop()!]!
+      return Response.json({ error, message: `${error} here` }, { status })
+    },
+  })
+  const c = createOfficeClient({ baseUrl: base })
+  const errors = await Promise.all([failure(c.runs.nodes(RUN)), failure(c.runs.events(RUN)), failure(c.runs.event(RUN, 7))])
+  const checks = [isUnsupportedSchema, isNoLog, isSecretsUnavailable, isIndexing]
+  expect(errors.map((e) => checks.map((f) => f(e)))).toEqual([
+    [true, false, false, false], [false, true, false, false], [false, false, false, true]])
+  expect(isSecretsUnavailable(new OfficeError(503, "secrets_unavailable", "x"))).toBe(true)
 })
