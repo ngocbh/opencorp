@@ -16,7 +16,7 @@ import { useNavigate } from "@solidjs/router"
 import { batch, createContext, createSignal, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { throttle } from "./costs"
-import { forgetSession, setSignOutPending, signOutPending } from "./sign-in"
+import { forgetSession, setSignOutPending, signedOutElsewhere, signOutPending, storedSession } from "./sign-in"
 import { hqSnapshot } from "./snapshot"
 import { readStored, store } from "./storage"
 import { RELOADED_FOR, verdict } from "./version"
@@ -58,8 +58,8 @@ function createOffice(toSignIn: () => void) {
   const [blocked, setBlocked] = createSignal<"out_of_date" | "not_built">()
   /** Set when this load starts with a sign-out the office didn't hear of: it's sent again before anything else. */
   const pendingSignOut = signOutPending()
-  /** Whether Sign out is waiting for the office. */
-  const [signingOut, setSigningOut] = createSignal(pendingSignOut)
+  /** Whether a sign-out is waiting for the office. */
+  const [signingOut, setSigningOut] = createSignal(false)
   let queue: ((s: OfficeState) => void)[] = []
   let after: (() => void)[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -106,18 +106,20 @@ function createOffice(toSignIn: () => void) {
     })
     if (next === "online") {
       setReady(true)
+      // A tab that missed another's sign-out (asleep, say) sends it now that the office answers.
+      if (signOutPending()) void finishPendingSignOut()
       // The first whoami may have failed while the office was down: fill in who is signed in now.
-      if (!me()) void checkSignedIn()
+      else if (!me()) void checkSignedIn()
     }
     // The stream's 401 shows as "error": ask who this browser is, and go to sign-in if the session is gone.
     else if (next === "error") void checkSignedIn()
   }
 
-  /** Signs this tab out: forgets the session it kept, stops the sync, and goes to sign-in. */
-  function leave() {
+  /** Signs this tab out: forgets the session it kept (unless `keep`), stops the sync, and goes to sign-in. */
+  function leave(keep = false) {
     if (signedOut) return
     signedOut = true
-    forgetSession()
+    if (!keep) forgetSession()
     sync.stop()
     toSignIn()
   }
@@ -143,11 +145,31 @@ function createOffice(toSignIn: () => void) {
   async function signOut() {
     if (signingOut() || signedOut) return
     setSigningOut(true)
+    sync.stop()
+    const kept = storedSession()
+    const ended = await endSession()
+    // Another tab signed in meanwhile: that session is the person's choice, so neither mark it for sign-out nor forget
+    // it.
+    const replaced = storedSession() !== kept
     // The HttpOnly cookie outlives anything this page can clear: a session the office didn't end would sign the next
     // load back in, so that load asks again.
-    setSignOutPending(!(await endSession()))
-    leave()
+    if (!replaced) setSignOutPending(!ended)
+    if (!disposed) leave(replaced)
   }
+
+  /** Sends a sign-out an earlier load or another tab left pending, then signs this tab out whatever the answer. */
+  async function finishPendingSignOut() {
+    if (signingOut() || signedOut) return
+    setSigningOut(true)
+    sync.stop()
+    if (await endSession()) setSignOutPending(false)
+    if (!disposed) leave()
+  }
+
+  // The cookie is the browser's, so another tab's sign-out signs this tab out too; a pending one is that tab's (or the
+  // next load's) to send.
+  const onStorage = (e: StorageEvent) => void (signedOutElsewhere(e) && leave())
+  window.addEventListener("storage", onStorage)
 
   /** Reads who this browser is; a 401 (no session, expired, revoked, a password change, offboarded) is sign-in. */
   async function checkSignedIn() {
@@ -234,23 +256,20 @@ function createOffice(toSignIn: () => void) {
   window.addEventListener("vite:preloadError", onPreloadError)
 
   onMount(async () => {
-    if (pendingSignOut) {
-      if (await endSession()) setSignOutPending(false)
-      if (!disposed) leave()
-      return
-    }
+    if (pendingSignOut) return void (await finishPendingSignOut())
     // Only a 401 signs out; any other failure (the office restarting, say) leaves the stream's backoff to retry, and a
     // later 401 on the stream reaches checkSignedIn through "error".
     await checkSignedIn()
     if (signedOut || disposed) return
     sync.start()
     // A hidden tab lets go of its stream after a minute and takes a fresh snapshot when shown again.
-    stopPausing = pauseWhenHidden({ start: () => void (signedOut || sync.start()), stop: sync.stop }, document)
+    stopPausing = pauseWhenHidden({ start: () => void (signedOut || signingOut() || sync.start()), stop: sync.stop }, document)
   })
   onCleanup(() => {
     disposed = true
     clearTimeout(recheck)
     window.removeEventListener("vite:preloadError", onPreloadError)
+    window.removeEventListener("storage", onStorage)
     sync.stop()
     stopPausing?.()
     clearTimeout(timer)
@@ -259,7 +278,7 @@ function createOffice(toSignIn: () => void) {
   /** Who signed this browser in, when it wasn't the signed-in person; pairing and sign-in keep it (rememberSession). */
   const pairedBy = () => {
     try {
-      const by = JSON.parse(readStored("localStorage", "hq.session") ?? "null")?.issued_by
+      const by = JSON.parse(storedSession() ?? "null")?.issued_by
       return typeof by === "string" && by !== me() ? by : undefined
     } catch {
       return undefined
@@ -293,7 +312,17 @@ export function OfficeProvider(props: ParentProps) {
   const navigate = useNavigate()
   const office = createOffice(() => navigate("/sign-in", { replace: true }))
   // Nothing of the company shows while a sign-out from an earlier load is sent again.
-  return <OfficeContext.Provider value={office}>{office.pendingSignOut ? null : props.children}</OfficeContext.Provider>
+  return (
+    <OfficeContext.Provider value={office}>
+      {office.pendingSignOut ? (
+        <p role="status" class="p-8">
+          Signing out…
+        </p>
+      ) : (
+        props.children
+      )}
+    </OfficeContext.Provider>
+  )
 }
 
 /** The office, inside an OfficeProvider. */

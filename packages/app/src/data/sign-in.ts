@@ -80,3 +80,10 @@ export const signOutPending = () => readStored("localStorage", PENDING_LOGOUT) !
 /** Marks a sign-out as waiting for the office, or clears the mark. */
 export const setSignOutPending = (pending: boolean) =>
   void (pending ? store("localStorage", PENDING_LOGOUT, "1") : forget("localStorage", PENDING_LOGOUT))
+
+/** What rememberSession kept, as stored, or null. */
+export const storedSession = () => readStored("localStorage", "hq.session")
+
+/** Whether `e`, a storage event from another tab, is that tab signing this browser out (ended or pending). */
+export const signedOutElsewhere = (e: StorageEvent) =>
+  (e.key === PENDING_LOGOUT && e.newValue !== null) || (e.key === "hq.session" && e.newValue === null)
