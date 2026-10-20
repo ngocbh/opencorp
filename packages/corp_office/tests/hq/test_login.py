@@ -50,6 +50,11 @@ async def test_the_cookie_is_the_one_pairing_sets(web, with_password):
     assert "Path=/" in cookie and "Max-Age=2592000" in cookie and "Secure" not in cookie
 
 
+async def test_without_a_session_the_401_names_both_ways_to_sign_in(web):
+    message = (await web.get("/api/whoami")).json()["message"]
+    assert "handle and password" in message and "`opencorp pair`" in message
+
+
 async def test_a_wrong_password_is_401_bad_credentials(web, with_password):
     r = await login(web, password="not the password")
     assert r.status_code == 401 and r.json() == {"error": "bad_credentials", "message": "wrong handle or password"}

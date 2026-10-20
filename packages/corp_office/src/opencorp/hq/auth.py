@@ -15,7 +15,8 @@ if TYPE_CHECKING:
 OPEN = frozenset({("GET", "/api/health"), ("HEAD", "/api/health"), ("POST", "/api/pair"), ("POST", "/api/login")})
 """The /api requests served without a session; every non-/api path (the app itself) is open too."""
 
-SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."
+SIGN_IN = ("Sign in with your handle and password, or run `opencorp pair` on the office machine and open the link it "
+           "prints.")
 
 
 def cookie_name(scope: Scope) -> str:
