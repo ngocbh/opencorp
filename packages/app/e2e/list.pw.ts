@@ -81,6 +81,24 @@ test("search filters by name, handle or title, keeping the people above a match"
   await expect(row(page, /Minh/)).toBeVisible()
 })
 
+test("closing a branch while searching works for that search only, and left then reaches the parent", async ({ page }) => {
+  const search = page.getByRole("searchbox", { name: "Search people" })
+  await search.fill("kai")
+  await row(page, /Lead/).focus()
+  await page.keyboard.press("ArrowLeft")
+  await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "false")
+  await expect(row(page, /Kai/)).toHaveCount(0)
+  await page.keyboard.press("ArrowLeft")
+  await expect(row(page, /Ngoc/)).toBeFocused()
+  await search.fill("ka") // a new search starts with every kept branch open
+  await expect(row(page, /Kai/)).toBeVisible()
+  await search.fill("")
+  await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "true")
+  await page.reload()
+  await page.getByRole("radio", { name: "List" }).click()
+  await expect(row(page, /Lead/)).toHaveAttribute("aria-expanded", "true") // nothing was saved
+})
+
 test("the group filter dims everyone outside the group", async ({ page }) => {
   await page.getByRole("combobox", { name: "Group" }).selectOption("ops")
   await expect(row(page, /Kai/)).toHaveAttribute("data-dimmed", "true")

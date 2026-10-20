@@ -61,9 +61,17 @@ export default function Company() {
     const t = teamView() ? byTeam(s.people, s.groups) : undefined
     return keep(t ? fromTeams(t.teams, t.noTeam) : fromTree(tree().roots), query())
   })
-  // While searching, every kept branch is open, so the matches show.
+  // A search opens every kept branch, so the matches show; branches closed during it stay closed for that search
+  // only, and the remembered choices are left alone.
+  const [searchOpen, setSearchOpen] = createSignal<{ query: string; open: Record<string, boolean> }>({ query: "", open: {} })
+  const searching = () => query().trim()
+  const openInSearch = () => (searchOpen().query === searching() ? searchOpen().open : {})
   const isOpen = (item: Item, depth: number) =>
-    query().trim() !== "" || prefs.isOpen(item.id, { depth, holdsNeedsYou: holds(item, needs()) })
+    searching()
+      ? (openInSearch()[item.id] ?? true)
+      : prefs.isOpen(item.id, { depth, holdsNeedsYou: holds(item, needs()) })
+  const setOpen = (id: string, open: boolean) =>
+    searching() ? setSearchOpen({ query: searching(), open: { ...openInSearch(), [id]: open } }) : prefs.setOpen(id, open)
   /** A manager's branch totals, from their node in the tree by manager; leaves and "By team" rows have none. */
   const totalsOf = (item: Item) => {
     const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
@@ -103,7 +111,7 @@ export default function Company() {
         label={name()}
         items={items()}
         isOpen={isOpen}
-        setOpen={prefs.setOpen}
+        setOpen={setOpen}
         status={(h) => status().get(h) ?? "away"}
         needs={(h) => needs().get(h) ?? 0}
         cost={(h) => s.costs?.people[h]}
