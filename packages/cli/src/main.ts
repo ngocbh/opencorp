@@ -19,6 +19,10 @@ export const commands: Record<string, { summary: string; load: () => Promise<{ r
   logout: { summary: "Remove this device from the office and forget it", load: () => import("./commands/logout") },
   devices: { summary: "List, add or remove a person's devices", load: () => import("./commands/devices") },
   whoami: { summary: "Show who this device acts as", load: () => import("./commands/whoami") },
+  pair: {
+    summary: "Print or open a one-time link that signs a browser in to HQ",
+    load: () => import("./commands/pair"),
+  },
   init: { summary: "Create the company, then set up this office", load: () => import("./commands/init") },
   onboard: { summary: "Set up this office for an existing company", load: () => import("./commands/onboard") },
   offboard: { summary: "Remove this office from this machine", load: () => import("./commands/offboard") },
