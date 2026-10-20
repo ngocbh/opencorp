@@ -58,6 +58,14 @@ test("needs you counts, per asking person, the open cards whose recipient is the
   expect(Object.fromEntries(needsYou("ann", sessions, questions, "ceo", () => undefined))).toEqual({ kai: 1 })
 })
 
+test("an ask_manager card counts for its work item's assignee, under the person who asked", () => {
+  const sessions = [{ ...s("1", "minh", "idle"), opened_by: "ceo" } as Session]
+  const questions = [q("a", "1", { source: "ask_manager", work_item_id: "W1", asker: "minh" })]
+  const assignee = (id: string) => (id === "W1" ? "lead" : undefined)
+  expect(Object.fromEntries(needsYou("lead", sessions, questions, "ceo", assignee))).toEqual({ minh: 1 })
+  expect(Object.fromEntries(needsYou("ceo", sessions, questions, "ceo", assignee))).toEqual({})
+})
+
 test("a card counts only when its session is in the list, as for status", () => {
   expect(Object.fromEntries(needsYou("ceo", [], [q("a", "gone", { asker: "zoe" })], "ceo", () => undefined))).toEqual({})
   const mac = { ...s("1", "ann", "idle"), office: "mac" } as Session
