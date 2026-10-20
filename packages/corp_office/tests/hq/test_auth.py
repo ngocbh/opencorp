@@ -5,7 +5,7 @@ import logging
 import pytest
 
 from opencorp.auth.tokens import new_token
-from tests.hq.conftest import hq_client
+from tests.hq.conftest import PORT, hq_client
 
 
 async def test_without_a_cookie_api_is_401_even_with_no_devices(web):
@@ -25,7 +25,7 @@ async def test_a_bearer_token_is_ignored(web):
 
 async def test_a_valid_cookie_acts_as_its_person(web, hq):
     public, cookie = await hq.sessions.issue("ngocbh", issued_by="ngocbh", label=None)
-    web.cookies.set("opencorp_hq_49380", cookie, domain="127.0.0.1")
+    web.cookies.set(f"opencorp_hq_{PORT}", cookie, domain="127.0.0.1")
     assert (await web.get("/api/whoami")).json() == {"person": "ngocbh", "device": public.name}
 
 
@@ -51,7 +51,7 @@ async def test_pairing_sets_a_strict_http_only_cookie_and_returns_the_session(we
     assert r.status_code == 200 and r.json()["person"] == "ngocbh" and r.json()["label"] == "Safari on Mac"
     assert r.json()["issued_by"] == "ngocbh" and "secret_sha256" not in r.json()
     cookie = r.headers["set-cookie"]
-    assert cookie.startswith("opencorp_hq_49380=") and "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert cookie.startswith(f"opencorp_hq_{PORT}=") and "HttpOnly" in cookie and "SameSite=Strict" in cookie
     assert "Path=/" in cookie and "Max-Age=2592000" in cookie and "Secure" not in cookie
     assert (await web.get("/api/whoami")).json()["person"] == "ngocbh"
 
@@ -81,7 +81,7 @@ async def test_pairing_again_in_the_same_browser_revokes_the_old_session(web, hq
 
 async def test_pairing_with_a_cookie_that_proves_nothing_revokes_nothing(web, hq, office):
     other, _ = await hq.sessions.issue("ngocbh", issued_by="ngocbh", label=None)
-    web.cookies.set("opencorp_hq_49380", f"{other.id}.forged", domain="127.0.0.1")
+    web.cookies.set(f"opencorp_hq_{PORT}", f"{other.id}.forged", domain="127.0.0.1")
     assert (await pair(web, hq)).status_code == 200
     assert office.store.get_hq_session(other.id) is not None
 

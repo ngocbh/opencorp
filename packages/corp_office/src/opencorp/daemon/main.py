@@ -27,8 +27,8 @@ from opencorp.company.watch import HeadWatcher
 from opencorp.daemon.app import Office, OfficePaths, create_app
 from opencorp.daemon.bus import Bus
 from opencorp.extensions import ExtensionError, load_extensions
-from opencorp.hq.core import attach as attach_hq
 from opencorp.harness.sessions import CodexSessions
+from opencorp.hq.core import attach as attach_hq
 from opencorp.perm.monitor import Monitor
 from opencorp.profile import GitProfileStore
 from opencorp.secrets import SecretStore
