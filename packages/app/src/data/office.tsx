@@ -68,6 +68,8 @@ function createOffice(toSignIn: () => void) {
   function onStatus(next: OfficeStatus) {
     setStatus(next)
     if (next === "online") setReady(true)
+    // The stream's 401 shows as "error": ask who this browser is, and go to sign-in if the session is gone.
+    else if (next === "error") void checkSignedIn()
   }
 
   function signOut() {
