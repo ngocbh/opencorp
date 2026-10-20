@@ -358,7 +358,10 @@ def hq_checks(status: dict | HqUnread, office_dir: Path, repo: Path) -> list[Che
                                      f" Free it, or set another \"port\" in {office_dir / 'hq.json'} and run "
                                      "`opencorp restart`")]
     app, office = status["health"]["app"], status["health"]["office"]
-    if app is None:
+    if app is None and not (repo / "packages" / "app").is_dir():  # installed from a package, not a checkout
+        found.append(Check("web app", "warn", "this install has no web app; it's built in a checkout of the "
+                                              "opencorp repo"))
+    elif app is None:
         found.append(Check("web app", "warn", f"not built: run `bun run build` in {repo}"))
     elif app["api"] != office["api"]:
         found.append(Check("web app", "warn", f"built for {app['api']}, which doesn't match the office's "

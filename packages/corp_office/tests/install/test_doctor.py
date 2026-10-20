@@ -549,11 +549,19 @@ def test_tcp_off_points_at_pair(tmp_path):
 
 
 def test_an_unbuilt_or_stale_app_warns(tmp_path):
+    (tmp_path / "packages" / "app").mkdir(parents=True)
     s = status()
     s["health"]["app"] = None
     assert "bun run build" in by_name(doctor.hq_checks(s, tmp_path, tmp_path))["web app"].detail
     s["health"]["app"] = {"build": "b", "api": "0.0.1+bbb"}
     assert "doesn't match" in by_name(doctor.hq_checks(s, tmp_path, tmp_path))["web app"].detail
+
+
+def test_an_install_without_the_apps_sources_says_it_has_no_web_app(tmp_path):
+    s = status()
+    s["health"]["app"] = None
+    got = by_name(doctor.hq_checks(s, tmp_path, tmp_path / "site-packages"))["web app"]
+    assert got.status == "warn" and "this install has no web app" in got.detail and "bun" not in got.detail
 
 
 def test_the_offices_warnings_are_shown(tmp_path):
