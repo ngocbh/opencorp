@@ -189,7 +189,42 @@ class BrowserSessions:
             live = self._live.setdefault(sid, _Live(row.expires_at, row.person, row.password_fp))
         if live is not None:
             live.revoked = True
+            for sub in list(live.streams):
+                sub.end()
         return await asyncio.to_thread(self.store.delete_hq_session, sid)
+
+    def register(self, sid: str, sub: Subscription) -> None:
+        """Track an open stream of session ``sid``, so revoking the session ends it; a revoked or unknown session
+        ends it now (expiry is left to the stream's ``alive`` check)."""
+        live = self._live.get(sid)
+        if live is None or live.revoked:
+            sub.end()
+        else:
+            live.streams.add(sub)
+
+    def unregister(self, sid: str, sub: Subscription) -> None:
+        """Forget a stream that ended."""
+        if (live := self._live.get(sid)) is not None:
+            live.streams.discard(sub)
+
+    def alive(self, sid: str) -> bool:
+        """Whether ``sid`` is neither revoked nor expired, without a store read: checked on every frame."""
+        live = self._live.get(sid)
+        return live is not None and not live.revoked and live.expires_at > stamp(self.clock())
+
+    async def still_valid(self, sid: str, sha: str) -> bool:
+        """Whether ``sid``'s person is still a human with the same password at commit ``sha``; ends the session if
+        not. A ``person.yaml`` that can't be read there refuses without ending it, as ``check`` does."""
+        live = self._live.get(sid)
+        if live is None or live.revoked:
+            return False
+        humans = await self._fingerprints.at(sha)
+        if live.person in humans.unreadable:
+            return False
+        if humans.fps.get(live.person) == live.password_fp:
+            return not live.revoked  # a revoke during the load wins
+        await self.revoke(sid)
+        return False
 
     def _forget_expired(self, now: str) -> None:
         """Drop the in-memory entries of sessions past their expiry that no stream holds, so ``_live`` stays bounded

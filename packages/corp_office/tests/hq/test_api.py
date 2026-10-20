@@ -1,6 +1,12 @@
 """HQ's /api: the allowlist."""
 
+import pytest
+import yaml
+
+from opencorp.auth.passwords import hash_password
+from tests.company.conftest import _git
 from tests.hq.conftest import PORT
+from tests.store.conftest import question, session, work_item
 
 
 async def test_health_is_open_and_says_both_keys(web, hq, dist):
@@ -20,3 +26,64 @@ async def test_anything_else_under_api_is_a_json_404(web, hq):
     for path in ("/api", "/api/people", "/api/hq/pair", "/api/hq/browsers"):
         r = await web.get(path)
         assert (r.status_code, r.json()["error"]) == (404, "no_route"), path
+
+
+async def test_company_is_the_head_snapshot_without_devices(signed_in, office, company):
+    path = company / "people" / "ngocbh" / "person.yaml"
+    data = yaml.safe_load(path.read_text())
+    data["devices"] = [{"name": "mac", "token_sha256": "a" * 64}]  # a device, not a password: the session lives on
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    _git(company, "commit", "-qam", "a device")
+    r = await signed_in.get("/api/company")
+    body = r.json()
+    assert r.status_code == 200 and body["sha"] == office.git.head() and body["company"]["ceo"] == "ngocbh"
+    assert all(p["devices"] == [] and p["password_hash"] is None for p in body["people"])
+    assert [g["id"] for g in body["groups"]] == ["eng"] and body["issues"] == []
+
+
+async def test_company_strips_devices_and_password_hashes_whatever_the_snapshot_holds(signed_in, hq, monkeypatch):
+    # The snapshot strips them already; the handler strips them again, since the response goes to a browser.
+    view = await hq.snapshots.head()
+    leaky = view.model_copy(update={"people": [
+        p.model_copy(update={"devices": [{"name": "mac", "token_sha256": "a" * 64}],
+                             "password_hash": hash_password("a secret")})
+        for p in view.people]})
+
+    async def head():
+        return leaky
+
+    monkeypatch.setattr(hq.snapshots, "head", head)
+    r = await signed_in.get("/api/company")
+    assert r.status_code == 200 and r.json()["people"]
+    assert all(p["devices"] == [] and p["password_hash"] is None for p in r.json()["people"])
+    assert "token_sha256" not in r.text and "$scrypt$" not in r.text
+
+
+@pytest.mark.parametrize("status", [["busy", "idle"], ["busy,idle"]])
+async def test_sessions_filter_by_status(signed_in, office, status):
+    a = office.store.create_session(session(status="busy"))
+    b = office.store.create_session(session(status="idle"))
+    office.store.create_session(session(status="ended"))
+    r = await signed_in.get("/api/sessions", params=[("status", s) for s in status])
+    assert {s["id"] for s in r.json()} == {a.id, b.id}
+
+
+async def test_open_questions_a_work_item_and_costs(signed_in, office):
+    s = office.store.create_session(session())
+    q = office.store.add_question(question(s.id))
+    item = office.store.create_work_item(work_item(assignee="ngocbh"))
+    assert [x["id"] for x in (await signed_in.get("/api/questions", params={"status": "open"})).json()] == [q.id]
+    assert (await signed_in.get(f"/api/work-items/{item.id}")).json()["assignee"] == "ngocbh"
+    r = await signed_in.get("/api/costs", params={"since": "2026-10-19T00:00:00.000Z"})
+    assert r.status_code == 200 and r.json()["since"] == "2026-10-19T00:00:00.000Z"
+
+
+@pytest.mark.parametrize("path", ["/api/people", "/api/sessions/X/messages", "/api/connections", "/api/hq"])
+async def test_routes_off_the_allowlist_are_a_json_404(signed_in, path):
+    r = await signed_in.get(path)
+    assert (r.status_code, r.json()["error"]) == (404, "no_route")
+
+
+async def test_writes_off_the_allowlist_are_a_json_404(signed_in):
+    for path in ("/api/sessions", "/api/people", "/api/questions/X/answer"):
+        assert (await signed_in.post(path, json={})).status_code == 404

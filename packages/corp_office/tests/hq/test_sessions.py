@@ -211,3 +211,84 @@ async def test_fingerprints_are_loaded_once_per_recent_commit(office, hq, compan
     for sha in (second, first, second):
         await cache.at(sha)
     assert loads == [first, second]
+
+
+async def test_revoking_ends_registered_streams_and_alive_turns_false(office, hq):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    sub = office.bus.subscribe()
+    s.register(public.id, sub)
+    assert s.alive(public.id)
+    await s.revoke(public.id)
+    assert await sub.next(timeout=1) is None and not s.alive(public.id)
+
+
+async def test_an_unregistered_stream_outlives_the_revoke(office, hq):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    sub = office.bus.subscribe()
+    s.register(public.id, sub)
+    s.unregister(public.id, sub)
+    await s.revoke(public.id)
+    assert office.bus.subscriber_count == 1
+    sub.close()
+
+
+async def test_registering_on_a_session_that_isnt_live_ends_the_stream(office, hq):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    await s.revoke(public.id)
+    for sid in (public.id, "unknown"):
+        sub = office.bus.subscribe()
+        s.register(sid, sub)
+        assert await sub.next(timeout=1) is None and not s.alive(sid)
+
+
+async def test_alive_turns_false_at_expiry(office, hq):
+    clock = Clock()
+    s = sessions_for(office, clock)
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    clock.now = T0 + TTL
+    assert not s.alive(public.id)
+
+
+async def test_still_valid_rechecks_the_person_at_a_new_sha(office, hq, company):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    assert await s.still_valid(public.id, office.git.head())
+    hand_edit(company, "ngocbh", password_hash=hash_password("changed it"))
+    assert not await s.still_valid(public.id, office.git.head())
+    assert office.store.get_hq_session(public.id) is None and not s.alive(public.id)
+
+
+async def test_still_valid_is_false_for_a_session_that_isnt_live(office, hq):
+    s = sessions_for(office, Clock())
+    assert not await s.still_valid("unknown", office.git.head())
+
+
+async def test_still_valid_refuses_without_ending_while_the_persons_file_cant_be_read(office, hq, company):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    hand_edit(company, "ngocbh", kind="robot")
+    assert not await s.still_valid(public.id, office.git.head())
+    assert office.store.get_hq_session(public.id) is not None and s.alive(public.id)
+
+
+async def test_a_revoke_during_the_fingerprint_load_wins_over_a_match(office, hq, company, monkeypatch):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    hand_edit(company, "ngocbh", title="Boss")  # a new commit, whose fingerprints aren't loaded yet
+    entered, gate = threading.Event(), threading.Event()
+    real = sessions_module.password_fps
+
+    def gated(git, sha):
+        entered.set()
+        gate.wait(5)
+        return real(git, sha)
+
+    monkeypatch.setattr(sessions_module, "password_fps", gated)
+    checking = asyncio.create_task(s.still_valid(public.id, office.git.read_head()))
+    assert await asyncio.to_thread(entered.wait, 5)
+    await s.revoke(public.id)
+    gate.set()
+    assert await checking is False

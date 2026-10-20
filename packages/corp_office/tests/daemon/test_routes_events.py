@@ -6,7 +6,8 @@ import json
 import pytest
 
 from opencorp.daemon.routes import events
-from opencorp.protocol.models import LiveEvent
+from opencorp.protocol import now
+from opencorp.protocol.models import Event, LiveEvent
 from opencorp.store import new_id
 from tests.daemon.conftest import served
 from tests.store.conftest import message, session
@@ -135,3 +136,19 @@ async def test_head_is_405_and_leaves_the_connection_usable(office, short_dir):
         assert r.status_code == 405 and r.headers["allow"] == "GET"
         assert (await c.get("/people")).status_code == 200
         assert office.bus.subscriber_count == 0
+
+
+async def test_the_socket_stream_still_carries_every_type(office, short_dir):
+    # HQ's stream filters by type; the socket's must not.
+    types = ["profile.updated", "feedback.created", "debrief.updated", "profile_proposal.created",
+             "comment.created", "session.updated"]
+    async with served(office, short_dir / "o.sock") as c, c.stream("GET", "/events") as r:
+        it = frames(r)
+        await take(it, 1)
+        office.bus.publish_live(LiveEvent(type="part.delta", session_id=new_id(),
+                                          data={"message_id": "m", "part_id": "p", "text": "x"}))
+        for t in types:
+            office.bus.publish_meta(Event(id=new_id(), type=t, at=now(), subject_id="S", data={}))
+        got = await take(it, 1 + len(types))
+        expected = [("live", "part.delta"), *(("meta", t) for t in types)]
+        assert [(kind, data["type"]) for kind, _, data in got] == expected

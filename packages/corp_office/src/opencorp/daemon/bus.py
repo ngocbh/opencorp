@@ -62,6 +62,11 @@ class Subscription:
         self._done = True
         self._bus._remove(self)
 
+    def end(self) -> None:
+        """End it from the loop's thread: a waiting ``next()`` returns None, as when the bus closes."""
+        self._bus._remove(self)
+        self._end()
+
     def _end(self) -> None:
         self._queue.put_nowait(None)
 

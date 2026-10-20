@@ -1,10 +1,14 @@
 """HQ fixtures: an office with HQ attached but not listening, and clients for its HQ app."""
 
+import asyncio
+import contextlib
 import json
 
 import httpx
 import pytest
+import uvicorn
 
+from opencorp.daemon.main import bind_socket
 from opencorp.hq.api import create_hq_app
 from opencorp.hq.core import attach
 from tests.company.conftest import make_company  # noqa: F401
@@ -55,3 +59,50 @@ async def web(office, hq):
     """A client of the TCP listener's HQ app that sends the app's own origin, as the app's pages do."""
     async with hq_client(office, hq, origin=ORIGIN) as c:
         yield c
+
+
+@pytest.fixture
+async def signed_in(web, hq):
+    """``web`` with a browser session for the CEO."""
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
+    assert (await web.post("/api/pair", json={"code": code})).status_code == 200
+    return web
+
+
+@contextlib.asynccontextmanager
+async def hq_served(office, hq, socket_path, *, host="127.0.0.1:5555"):
+    """Serve the hq.sock flavour of the HQ app on ``socket_path`` in this loop; yields a signed-in client over it.
+
+    Streams need a real server: httpx's ASGITransport buffers whole responses.
+    """
+    sock = bind_socket(socket_path)
+    server = _Quiet(uvicorn.Config(create_hq_app(office, hq, port=None), lifespan="off", log_config=None,
+                                   timeout_graceful_shutdown=2))
+    task = asyncio.create_task(server.serve(sockets=[sock]))
+    async with asyncio.timeout(10):
+        while not server.started:
+            if task.done():
+                sock.close()
+                await task  # re-raises what stopped it
+                raise RuntimeError("uvicorn stopped before it started")
+            await asyncio.sleep(0.01)
+    transport = httpx.AsyncHTTPTransport(uds=str(socket_path))
+    async with httpx.AsyncClient(transport=transport, base_url=f"http://{host}", timeout=10,
+                                 headers={"origin": f"http://{host}"}) as c:
+        try:
+            code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
+            assert (await c.post("/api/pair", json={"code": code})).status_code == 200
+            yield c
+        finally:
+            office.bus.close()  # ends open streams, as the office's own shutdown does
+            server.should_exit = True
+            await task
+            socket_path.unlink(missing_ok=True)
+
+
+class _Quiet(uvicorn.Server):
+    """A test server that leaves the signals alone."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        yield

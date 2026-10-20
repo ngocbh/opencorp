@@ -150,3 +150,12 @@ async def test_types_given_as_one_string_is_a_type_error():
     with pytest.raises(TypeError):
         bus.subscribe(types="company.updated")  # would otherwise be a set of its characters and match nothing
     assert bus.subscriber_count == 0
+
+
+async def test_end_wakes_a_waiting_next_and_removes_the_subscription():
+    bus = attached()
+    sub = bus.subscribe()
+    waiting = asyncio.create_task(sub.next(timeout=5))
+    await asyncio.sleep(0)
+    sub.end()
+    assert await waiting is None and bus.subscriber_count == 0
