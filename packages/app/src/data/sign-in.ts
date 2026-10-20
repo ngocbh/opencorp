@@ -2,7 +2,7 @@
 // session they keep.
 import { OfficeError, UnknownDevice } from "@opencorp/client"
 import type { BrowserSession } from "@opencorp/protocol"
-import { store } from "./storage"
+import { forget, readStored, store } from "./storage"
 
 /** "Safari on Mac", from the user agent, to name this browser in `opencorp devices list`. */
 export function browserLabel(ua: string) {
@@ -64,4 +64,26 @@ export function signInFailure(e: unknown) {
  */
 export function rememberSession({ id, name, issued_by }: BrowserSession) {
   store("localStorage", "hq.session", JSON.stringify({ id, name, issued_by }))
+  // Signing in is the person's choice now: an older sign-out still waiting must not end this new session.
+  setSignOutPending(false)
 }
+
+/** Forgets what rememberSession kept, once this browser is signed out. */
+export const forgetSession = () => forget("localStorage", "hq.session")
+
+/** Marks a sign-out the office didn't hear of, for the next load to send again. A flag only, no secret. */
+const PENDING_LOGOUT = "hq.pendingLogout"
+
+/** Whether a sign-out is waiting for the office. */
+export const signOutPending = () => readStored("localStorage", PENDING_LOGOUT) !== null
+
+/** Marks a sign-out as waiting for the office, or clears the mark. */
+export const setSignOutPending = (pending: boolean) =>
+  void (pending ? store("localStorage", PENDING_LOGOUT, "1") : forget("localStorage", PENDING_LOGOUT))
+
+/** What rememberSession kept, as stored, or null. */
+export const storedSession = () => readStored("localStorage", "hq.session")
+
+/** Whether `e`, a storage event from another tab, is that tab signing this browser out (ended or pending). */
+export const signedOutElsewhere = (e: StorageEvent) =>
+  (e.key === PENDING_LOGOUT && e.newValue !== null) || (e.key === "hq.session" && e.newValue === null)

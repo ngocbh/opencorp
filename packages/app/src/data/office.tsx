@@ -16,6 +16,7 @@ import { useNavigate } from "@solidjs/router"
 import { batch, createContext, createSignal, onCleanup, onMount, useContext, type ParentProps } from "solid-js"
 import { createStore, produce } from "solid-js/store"
 import { throttle } from "./costs"
+import { forgetSession, setSignOutPending, signedOutElsewhere, signOutPending, storedSession } from "./sign-in"
 import { hqSnapshot } from "./snapshot"
 import { readStored, store } from "./storage"
 import { RELOADED_FOR, verdict } from "./version"
@@ -29,6 +30,9 @@ const NOT_BUILT_RECHECK_MS = 3_000
 
 /** Costs are read again on session.updated at most this often (the design's 10 s). */
 const COST_EVERY_MS = 10_000
+
+/** How long Sign out waits for the office to end the session before signing out here anyway. */
+const LOGOUT_WAIT_MS = 3_000
 
 /** The cost window the person last picked, kept in localStorage. */
 function savedWindow(): CostWindow {
@@ -52,6 +56,10 @@ function createOffice(toSignIn: () => void) {
   const [costWindow, setCostWindowSignal] = createSignal<CostWindow>(savedWindow())
   /** Set when the built app can't run against this office: the shell shows a full page instead. */
   const [blocked, setBlocked] = createSignal<"out_of_date" | "not_built">()
+  /** Set when this load starts with a sign-out the office didn't hear of: it's sent again before anything else. */
+  const pendingSignOut = signOutPending()
+  /** Whether a sign-out is waiting for the office. */
+  const [signingOut, setSigningOut] = createSignal(false)
   let queue: ((s: OfficeState) => void)[] = []
   let after: (() => void)[] = []
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -98,26 +106,77 @@ function createOffice(toSignIn: () => void) {
     })
     if (next === "online") {
       setReady(true)
+      // A tab that missed another's sign-out (asleep, say) sends it now that the office answers.
+      if (signOutPending()) void finishPendingSignOut()
       // The first whoami may have failed while the office was down: fill in who is signed in now.
-      if (!me()) void checkSignedIn()
+      else if (!me()) void checkSignedIn()
     }
     // The stream's 401 shows as "error": ask who this browser is, and go to sign-in if the session is gone.
     else if (next === "error") void checkSignedIn()
   }
 
-  function signOut() {
+  /** Signs this tab out: forgets the session it kept (unless `keep`), stops the sync, and goes to sign-in. */
+  function leave(keep = false) {
     if (signedOut) return
     signedOut = true
+    if (!keep) forgetSession()
     sync.stop()
     toSignIn()
   }
+
+  /** Asks the office to end this browser's session, waiting LOGOUT_WAIT_MS at most; whether it's ended. */
+  async function endSession(): Promise<boolean> {
+    let wait: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([
+        client.logout().then(() => true),
+        new Promise<boolean>((done) => (wait = setTimeout(done, LOGOUT_WAIT_MS, false))),
+      ])
+    } catch (error) {
+      if (error instanceof UnknownDevice) return true // the session is gone already
+      console.warn("Sign out didn't reach the office", { error })
+      return false
+    } finally {
+      clearTimeout(wait)
+    }
+  }
+
+  /** Ends this browser's session at the office, then signs out here whatever the office answers. */
+  async function signOut() {
+    if (signingOut() || signedOut) return
+    setSigningOut(true)
+    sync.stop()
+    const kept = storedSession()
+    const ended = await endSession()
+    // Another tab signed in meanwhile: that session is the person's choice, so neither mark it for sign-out nor forget
+    // it.
+    const replaced = storedSession() !== kept
+    // The HttpOnly cookie outlives anything this page can clear: a session the office didn't end would sign the next
+    // load back in, so that load asks again.
+    if (!replaced) setSignOutPending(!ended)
+    if (!disposed) leave(replaced)
+  }
+
+  /** Sends a sign-out an earlier load or another tab left pending, then signs this tab out whatever the answer. */
+  async function finishPendingSignOut() {
+    if (signingOut() || signedOut) return
+    setSigningOut(true)
+    sync.stop()
+    if (await endSession()) setSignOutPending(false)
+    if (!disposed) leave()
+  }
+
+  // The cookie is the browser's, so another tab's sign-out signs this tab out too; a pending one is that tab's (or the
+  // next load's) to send.
+  const onStorage = (e: StorageEvent) => void (signedOutElsewhere(e) && leave())
+  window.addEventListener("storage", onStorage)
 
   /** Reads who this browser is; a 401 (no session, expired, revoked, a password change, offboarded) is sign-in. */
   async function checkSignedIn() {
     try {
       setMe((await client.whoami()).person)
     } catch (e) {
-      if (e instanceof UnknownDevice) signOut() // the client maps every 401 to UnknownDevice
+      if (e instanceof UnknownDevice) leave() // the client maps every 401 to UnknownDevice
     }
   }
 
@@ -197,18 +256,20 @@ function createOffice(toSignIn: () => void) {
   window.addEventListener("vite:preloadError", onPreloadError)
 
   onMount(async () => {
+    if (pendingSignOut) return void (await finishPendingSignOut())
     // Only a 401 signs out; any other failure (the office restarting, say) leaves the stream's backoff to retry, and a
     // later 401 on the stream reaches checkSignedIn through "error".
     await checkSignedIn()
     if (signedOut || disposed) return
     sync.start()
     // A hidden tab lets go of its stream after a minute and takes a fresh snapshot when shown again.
-    stopPausing = pauseWhenHidden({ start: () => void (signedOut || sync.start()), stop: sync.stop }, document)
+    stopPausing = pauseWhenHidden({ start: () => void (signedOut || signingOut() || sync.start()), stop: sync.stop }, document)
   })
   onCleanup(() => {
     disposed = true
     clearTimeout(recheck)
     window.removeEventListener("vite:preloadError", onPreloadError)
+    window.removeEventListener("storage", onStorage)
     sync.stop()
     stopPausing?.()
     clearTimeout(timer)
@@ -217,7 +278,7 @@ function createOffice(toSignIn: () => void) {
   /** Who signed this browser in, when it wasn't the signed-in person; pairing and sign-in keep it (rememberSession). */
   const pairedBy = () => {
     try {
-      const by = JSON.parse(readStored("localStorage", "hq.session") ?? "null")?.issued_by
+      const by = JSON.parse(storedSession() ?? "null")?.issued_by
       return typeof by === "string" && by !== me() ? by : undefined
     } catch {
       return undefined
@@ -226,6 +287,7 @@ function createOffice(toSignIn: () => void) {
 
   return {
     client,
+    pendingSignOut,
     state: state as Readonly<OfficeState>,
     status,
     error,
@@ -235,6 +297,8 @@ function createOffice(toSignIn: () => void) {
     costWindow,
     setCostWindow,
     blocked,
+    signOut,
+    signingOut,
     checkVersion,
     loadWorkItem,
   }
@@ -247,7 +311,18 @@ const OfficeContext = createContext<Office>()
 export function OfficeProvider(props: ParentProps) {
   const navigate = useNavigate()
   const office = createOffice(() => navigate("/sign-in", { replace: true }))
-  return <OfficeContext.Provider value={office}>{props.children}</OfficeContext.Provider>
+  // Nothing of the company shows while a sign-out from an earlier load is sent again.
+  return (
+    <OfficeContext.Provider value={office}>
+      {office.pendingSignOut ? (
+        <p role="status" class="p-8">
+          Signing out…
+        </p>
+      ) : (
+        props.children
+      )}
+    </OfficeContext.Provider>
+  )
 }
 
 /** The office, inside an OfficeProvider. */

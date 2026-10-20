@@ -78,7 +78,7 @@ const fresh = (): Fixture => ({
   fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
 })
 // `logins` keeps each sign-in's handle and label, never its password.
-const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
+const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
 let state = fresh()
 let log = emptyLog()
 let downUntil = 0
@@ -176,6 +176,17 @@ async function login(req: Request): Promise<Response> {
   return json(session("login", handle, label), 200, cookie())
 }
 
+/** POST /api/logout as the office's guard, then its route, answer it: ends the session and clears the cookie. */
+function logout(req: Request): Response {
+  if (!req.headers.get("origin")) return json({ error: "origin_not_allowed", message: "HQ's API answers only its own pages" }, 403)
+  if (req.headers.get("content-type")?.split(";")[0].trim().toLowerCase() !== "application/json")
+    return json({ error: "json_required", message: "HQ's API takes only JSON bodies" }, 415)
+  if (!state.signedIn) return json({ error: "sign_in_required", message: SIGN_IN }, 401)
+  log.logouts++
+  state.signedIn = false
+  return json({ ok: true }, 200, { "set-cookie": `opencorp_hq_${port}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` })
+}
+
 const SIGN_IN = "Sign in: run `opencorp pair` on the office machine and open the link it prints."
 const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
 
@@ -197,8 +208,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(session("pair", issued_by, body.label ?? null), 200, cookie())
   }
   if (p === "/api/login" && req.method === "POST") return login(req)
+  if (p === "/api/logout" && req.method === "POST") return logout(req)
   if (!state.signedIn) return json({ error: "sign_in_required", message: SIGN_IN }, 401)
-  if (p === "/api/logout" && req.method === "POST") return (state.signedIn = false), json({ ok: true })
   if (req.method !== "GET") return json({ error: "no_route", message: `no route ${req.method} ${p}` }, 404)
   const workItem = /^\/api\/work-items\/([^/]+)$/.exec(p)?.[1]
   if (workItem) {
