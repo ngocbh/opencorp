@@ -3,6 +3,8 @@ name = "opencorp"
 version = "0.0.1"
 description = "OpenCorp office: daemon, run workers, sandbox, permissions."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.12"
 dependencies = [
     "yian[all]>=0.0.3",

@@ -57,6 +57,9 @@ retries, run views), borrow the designs below instead of re-solving them.
 
 Research notes on these live in `docs/plans/research/` (local only).
 
+OpenCorp is MIT-licensed. When you copy or substantially port code from another project, credit it in
+`THIRD_PARTY_NOTICES.md` (project, license, upstream paths and commit, our paths).
+
 ## Layout
 
 ```

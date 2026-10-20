@@ -1,5 +1,6 @@
 {
   "name": "opencorp-workspace",
+  "license": "MIT",
   "private": true,
   "packageManager": "bun@1.4.2",
   "workspaces": ["packages/*"],
