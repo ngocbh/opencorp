@@ -207,3 +207,14 @@ test("a live update keeps the focused card's element", async ({ page, request })
   await expect(ann).toBeFocused()
   expect(await ann.evaluate((el) => (el as any).__kept)).toBe(true)
 })
+
+test("By team draws team headers over their members, with copies muted", async ({ page }) => {
+  const chart = await openChart(page)
+  await page.getByText("By team", { exact: true }).click()
+  await expect(chart.getByRole("group", { name: "ENG", exact: true })).toBeVisible()
+  await expect(chart.getByRole("group", { name: "No team", exact: true })).toBeVisible()
+  await expect(chart.locator('[data-muted="true"]')).toHaveCount(1) // Minh's copy under OPS
+  await expect(chart.locator('[data-muted="true"]').getByRole("button", { name: "Minh, Engineer" })).toBeVisible()
+  await chart.getByRole("button", { name: "Close OPS's branch" }).click()
+  await expect(chart.locator('[data-muted="true"]')).toHaveCount(0)
+})
