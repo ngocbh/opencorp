@@ -9,6 +9,7 @@
     "build": "vite build",
     "test": "bun test ./test",
     "test:e2e": "playwright test",
+    "test:real": "playwright test -c playwright.real.config.ts",
     "typecheck": "tsc -p ."
   },
   "dependencies": {
