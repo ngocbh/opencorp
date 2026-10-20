@@ -691,7 +691,7 @@ export interface CommitInfo {
   time: Timestamp;
 }
 /**
- * A file or folder in the company repo at one commit.
+ * An entry (file, folder, symlink or submodule) of the company repo at one commit.
  *
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "CompanyTreeEntry".
@@ -724,12 +724,12 @@ export interface CompanyTree {
    */
   truncated: boolean;
   /**
-   * Paths left out because they aren't valid UTF-8 or would reveal a secret; they can't be read.
+   * Paths left out because they aren't valid UTF-8, have a `.` or `..` segment, or would reveal a secret; they can't be read.
    */
   skipped: number;
 }
 /**
- * One file of the company repo at a served commit, as GET /api/company/file serves it. A stale commit gets 409 stale_commit, a malformed path 400 bad_path, and a path that isn't a file at that commit 404 no_file, each as an ApiError.
+ * One file of the company repo at a served commit, as GET /api/company/file serves it. Errors come as an ApiError: a malformed path gets 400 bad_path; a path that isn't in that commit's listing, or is a folder, gets 404 no_file; 409 stale_commit means `at` isn't one of the last 8 HEADs the office served, so refetch the tree.
  *
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "CompanyFile".
