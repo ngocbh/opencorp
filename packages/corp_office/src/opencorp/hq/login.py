@@ -45,11 +45,12 @@ class Busy(Exception):
 
 
 class Throttled(Exception):
-    """Too many failed sign-ins for this peer and handle; ``retry_after`` is the wait in whole seconds."""
+    """Too many failed sign-ins for this peer and handle; ``retry_after`` is the wait in whole seconds, and ``first``
+    whether this is the first refusal under this lock."""
 
-    def __init__(self, retry_after: int) -> None:
+    def __init__(self, retry_after: int, first: bool) -> None:
         super().__init__(f"retry after {retry_after} s")
-        self.retry_after = retry_after
+        self.retry_after, self.first = retry_after, first
 
 
 @dataclass
@@ -70,6 +71,7 @@ class Throttle:
     def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.clock = clock
         self._tries: dict[Key, _Tries] = {}  # in order of last failure, oldest first
+        self._told: dict[Key | None, float] = {}  # the lock end each pair was last refused under, for logging it once
 
     def __len__(self) -> int:
         return len(self._tries)
@@ -78,12 +80,27 @@ class Throttle:
         """The seconds left on ``key``'s lock, or None when it isn't locked. A pair not remembered while every
         remembered pair is locked waits for the first lock to end: there's no room to count its failures."""
         now = self.clock()
+        until = self._until(key, now)
+        return None if until is None else math.ceil(until - now)
+
+    def refuse(self, key: Key) -> tuple[int, bool] | None:
+        """``wait(key)`` and whether this is the first refusal under that lock, or None when it isn't locked."""
+        now = self.clock()
+        until = self._until(key, now)
+        if until is None:
+            return None
+        told = key if key in self._tries else None  # refusals for a full table share one entry, so this stays bounded
+        first = until != self._told.get(told)
+        self._told[told] = until
+        return math.ceil(until - now), first
+
+    def _until(self, key: Key, now: float) -> float | None:
         self._forget(now)
         tries = self._tries.get(key)
         if tries is not None:
-            return None if tries.until <= now else math.ceil(tries.until - now)
+            return None if tries.until <= now else tries.until
         if len(self._tries) >= MAX_KEYS and all(t.until > now for t in self._tries.values()):
-            return math.ceil(min(t.until for t in self._tries.values()) - now)
+            return min(t.until for t in self._tries.values())
         return None
 
     def failed(self, key: Key) -> None:
@@ -111,8 +128,11 @@ class Throttle:
         while self._tries:
             key, tries = next(iter(self._tries.items()))
             if tries.failures[-1] > now - WINDOW_S:
-                return
+                break
             del self._tries[key]
+        # A refusal is remembered only while its lock lasts: at most the locked pairs, and one for a full table.
+        for key in [k for k, until in self._told.items() if until <= now]:
+            del self._told[key]
 
 
 class Logins:
@@ -131,8 +151,8 @@ class Logins:
         Pairing never comes here, so no number of failures here can lock anyone out of ``opencorp pair``.
         """
         key = (peer, handle)
-        if (wait := self.throttle.wait(key)) is not None:
-            raise Throttled(wait)
+        if (refused := self.throttle.refuse(key)) is not None:
+            raise Throttled(*refused)
         if self._checks.locked():  # never a queue without bound
             raise Busy
         await self._checks.acquire()  # free, just checked: returns at once

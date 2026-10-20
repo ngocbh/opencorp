@@ -225,6 +225,7 @@ def test_a_table_full_of_locks_refuses_new_pairs_until_the_first_lock_ends():
     assert t.wait(("p", "new")) == 53  # the oldest lock, from 7.8 s ago, ends first
     t.failed(("p", "new"))  # a check that started before the table filled: dropped, not a lock evicted
     assert len(t) == MAX_KEYS and t.wait(("p", "h0")) is not None
+    assert t.refuse(("p", "new"))[1] and not t.refuse(("p", "new"))[1] and not t.refuse(("p", "other"))[1]
     clock.now += 60
     assert t.wait(("p", "new")) is None
 
@@ -320,3 +321,30 @@ async def test_a_check_whose_request_went_away_still_holds_its_slot(hq, with_pas
     async with asyncio.timeout(5):
         while hq.logins._checks.locked():
             await asyncio.sleep(0.01)
+
+
+async def test_a_throttled_pair_is_logged_once_per_lock(web, hq, with_password, fast_checks, caplog):
+    caplog.set_level(logging.INFO)
+    clock = Clock()
+    hq.logins.throttle.clock = clock
+    for _ in range(5):
+        await login(web, password="a wrong guess")
+    for _ in range(3):
+        assert (await login(web)).status_code == 429
+    clock.now += 60
+    await login(web, password="a wrong guess")  # locks it again, for twice as long
+    for _ in range(2):
+        assert (await login(web)).status_code == 429
+    lines = [r.getMessage() for r in caplog.records if "throttled" in r.getMessage()]
+    assert lines == ["sign-in for @ngocbh from 127.0.0.1 throttled for 60 s",
+                     "sign-in for @ngocbh from 127.0.0.1 throttled for 120 s"]
+
+
+async def test_on_hq_sock_the_peer_is_logged_as_hq_sock(office, hq, with_password, caplog):
+    caplog.set_level(logging.INFO)
+    app = create_hq_app(office, hq, port=None)
+    host = "127.0.0.1:5555"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=None), base_url=f"http://{host}",
+                                 headers={"host": host, "origin": f"http://{host}"}) as c:
+        assert (await login(c, password="a wrong guess")).status_code == 401
+    assert "sign-in for @ngocbh from hq.sock failed" in caplog.text

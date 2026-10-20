@@ -93,6 +93,9 @@ async def login(request: Request) -> JSONResponse:
     """
     hq = get_hq(request)
     body = await parse(request, HqLoginRequest)
+    # HQ listens only on 127.0.0.1 and hq.sock, so the peer is in practice always 127.0.0.1 or "" (hq.sock): the
+    # throttle keyed on it is per handle. Anyone who reaches HQ can lock a handle's password sign-in for a while,
+    # which is why `opencorp pair` never goes through it and stays the way in.
     peer = request.client.host if request.client else ""
     who = f"@{body.handle} from {peer or 'hq.sock'}"
     try:
@@ -110,6 +113,8 @@ async def login(request: Request) -> JSONResponse:
         log.info("sign-in for %s failed", who)
         return error(401, "bad_credentials", BAD_CREDENTIALS)
     except Throttled as exc:
+        if exc.first:  # once per lock: a client retrying in a loop mustn't flood the log
+            log.info("sign-in for %s throttled for %d s", who, exc.retry_after)
         minutes = math.ceil(exc.retry_after / 60)
         return error(429, "too_many_attempts",
                      f"too many tries; wait {minutes} minute{'s' * (minutes != 1)}, or run `opencorp pair` on the "
