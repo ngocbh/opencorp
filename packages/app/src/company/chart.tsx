@@ -12,7 +12,7 @@ import {
   Show,
 } from "solid-js"
 import { describe, personCost } from "./format"
-import { arrow, fit, layout, pan, pinch, reveal, zoomAt, type Box, type Transform } from "./layout"
+import { arrow, firstView, fit, layout, pan, pinch, readable, reveal, zoomAt, type Box, type Transform } from "./layout"
 import type { ListProps } from "./list"
 import { PersonBody } from "./person"
 import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./rows"
@@ -42,15 +42,18 @@ export default function Chart(props: ListProps) {
   const uid = createUniqueId()
   let viewport!: HTMLDivElement
   const [t, setT] = createSignal<Transform>({ k: 1, x: 0, y: 0 })
-  // Until the viewer pans or zooms, the chart fits the view again whenever the view or the chart changes size.
-  let fitted = true
-  const fitNow = () => {
-    fitted = true
-    setT(fit(drawn(), { width: viewport.clientWidth, height: viewport.clientHeight }, MARGIN))
+  const view = () => ({ width: viewport.clientWidth, height: viewport.clientHeight })
+  // Until the viewer pans or zooms, the chart shows its first view (readable) or, after Fit, all of it, and shows it
+  // again whenever the view or the chart changes size.
+  let fitting: "first" | "all" | null = "first"
+  /** Shows the first view (`"first"`) or the whole chart (`"all"`). */
+  const fitNow = (how: "first" | "all") => {
+    fitting = how
+    setT(how === "all" ? fit(drawn(), view(), MARGIN) : firstView(drawn(), view(), MARGIN))
   }
   /** Moves the canvas for the viewer: from then on, it keeps where they put it. */
   const moveTo = (next: Transform) => {
-    fitted = false
+    fitting = null
     setT(next)
   }
   // Pointers down on the chart, in viewport coordinates: one pans, two pinch.
@@ -114,18 +117,21 @@ export default function Chart(props: ListProps) {
     viewport.scrollLeft = viewport.scrollTop = 0
     moveTo(pan(t(), -x, -y))
   }
-  /** Card `id` became the current one: pan it into view if it isn't. */
-  function onCardFocus(id: string) {
+  /**
+   * Card `id` became the current one: pan it into view if it isn't. Keyboard focus also zooms in to where a card
+   * reads; a click leaves the zoom alone.
+   */
+  function onCardFocus(id: string, keyboard: boolean) {
     setFocused(id)
     unscroll()
     // A press focuses the card under it: moving the card then could take it from under the pointer before the click.
     if (pointers.size) return
     const box = boxes().get(id)
-    const next = box && reveal(t(), box, { width: viewport.clientWidth, height: viewport.clientHeight }, MARGIN)
+    const next = box && (keyboard ? readable : reveal)(t(), box, view(), MARGIN)
     if (next && next !== t()) moveTo(next)
   }
   function focusCard(id: string) {
-    onCardFocus(id)
+    onCardFocus(id, true)
     elements.get(id)?.focus({ preventScroll: true })
   }
   function onCardKey(e: KeyboardEvent, id: string) {
@@ -174,14 +180,14 @@ export default function Chart(props: ListProps) {
   }
   /** The view changed size: fit again if the chart still shows its fit, and keep the kept card in view. */
   function resized() {
-    if (fitted) fitNow()
+    if (fitting) fitNow(fitting)
     const id = kept()
     const box = id === undefined ? undefined : boxes().get(id)
     // Not moveTo: this follows the view, it isn't the viewer moving the chart.
-    if (box) setT(reveal(t(), box, { width: viewport.clientWidth, height: viewport.clientHeight }, MARGIN))
+    if (box) setT(reveal(t(), box, view(), MARGIN))
   }
   const size = createMemo(() => `${drawn().width}x${drawn().height}`)
-  createEffect(on(size, () => fitted && fitNow(), { defer: true }))
+  createEffect(on(size, () => fitting && fitNow(fitting), { defer: true }))
   onMount(() => {
     viewport.addEventListener("scroll", unscroll)
     onCleanup(() => viewport.removeEventListener("scroll", unscroll))
@@ -190,7 +196,7 @@ export default function Chart(props: ListProps) {
     onCleanup(() => viewport.removeEventListener("wheel", onWheel))
     viewport.addEventListener("click", swallowDragClick, { capture: true })
     onCleanup(() => viewport.removeEventListener("click", swallowDragClick, { capture: true }))
-    fitNow()
+    fitNow("first")
     const observer = new ResizeObserver(resized)
     observer.observe(viewport)
     onCleanup(() => observer.disconnect())
@@ -234,7 +240,7 @@ export default function Chart(props: ListProps) {
                     current={isCurrent(id)}
                     chart={props}
                     focusable={(el) => register(id, el)}
-                    onFocus={() => onCardFocus(id)}
+                    onFocus={(keyboard) => onCardFocus(id, keyboard)}
                     onKey={(e) => onCardKey(e, id)}
                   />
                 )}
@@ -250,7 +256,7 @@ export default function Chart(props: ListProps) {
         <button type="button" aria-label="Zoom out" class={CONTROL} onClick={() => moveTo(zoomAt(t(), 0.8, center()))}>
           −
         </button>
-        <button type="button" class={CONTROL} onClick={fitNow}>
+        <button type="button" class={CONTROL} onClick={() => fitNow("all")}>
           Fit
         </button>
       </div>
@@ -270,7 +276,8 @@ function Card(props: {
   chart: ListProps
   /** Takes the card's focusable element. */
   focusable: (el: HTMLElement) => void
-  onFocus: () => void
+  /** The card took focus (`true`: not from a click). */
+  onFocus: (keyboard: boolean) => void
   onKey: (e: KeyboardEvent) => void
 }) {
   const person = () => personOf(props.item)
@@ -307,7 +314,7 @@ function Card(props: {
             aria-label={teamName(props.item)}
             tabindex={props.current ? 0 : -1}
             class="grid h-full place-items-center rounded-lg border-2 border-neutral-400 bg-white font-semibold outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-600 dark:bg-neutral-950 dark:focus-visible:ring-neutral-100"
-            onFocus={props.onFocus}
+            onFocus={() => props.onFocus(true)}
             onKeyDown={(e) => props.onKey(e)}
           >
             {teamName(props.item)}
@@ -324,10 +331,10 @@ function Card(props: {
             // "By team" shows someone once in full and muted elsewhere: only the full card is the selected one.
             aria-current={props.selected && !isMuted(props.item) ? "true" : undefined}
             class="flex h-full w-full flex-col justify-center gap-1 overflow-hidden rounded-lg border border-neutral-300 bg-white px-2 py-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=true]:border-neutral-900 aria-[current=true]:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950 dark:focus-visible:ring-neutral-100 dark:aria-[current=true]:border-neutral-100 dark:aria-[current=true]:bg-neutral-900"
-            onFocus={props.onFocus}
+            onFocus={() => props.onFocus(true)}
             onKeyDown={(e) => props.onKey(e)}
             onClick={() => {
-              props.onFocus() // a click doesn't focus a button in every browser; the panel gives focus back here
+              props.onFocus(false) // a click doesn't focus a button in every browser; the panel gives focus back here
               props.chart.onSelect(p().handle)
             }}
           >

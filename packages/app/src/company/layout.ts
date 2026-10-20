@@ -77,6 +77,20 @@ export function fit(size: Size, view: Size, margin = 0): Transform {
   return { k, x: (view.width - size.width * k) / 2, y: (view.height - size.height * k) / 2 }
 }
 
+/** The smallest zoom a card reads at: the first view and keyboard focus don't go below it. */
+export const FLOOR = 0.6
+
+/**
+ * The view a chart opens on: the fit when it's readable (`k` at FLOOR or above), else FLOOR with the first root
+ * centred across the view and `margin` from the top. Fit (the button) still shows everything.
+ */
+export function firstView(drawn: Size & { boxes: Box[] }, view: Size, margin = 0): Transform {
+  const all = fit(drawn, view, margin)
+  const root = drawn.boxes[0]
+  if (all.k >= FLOOR || !root) return all
+  return { k: FLOOR, x: view.width / 2 - (root.x + CARD.w / 2) * FLOOR, y: margin }
+}
+
 /**
  * `t` zoomed by `factor` about the view point `[px, py]`, which stays still. `k` stays within ZOOM, except that a fit
  * below the floor can only zoom in from there.
@@ -147,4 +161,10 @@ export function reveal(t: Transform, box: Box, view: Size, margin = 0): Transfor
   const dx = shift(t.x + box.x * t.k, CARD.w * t.k, view.width)
   const dy = shift(t.y + box.y * t.k, CARD.h * t.k, view.height)
   return dx || dy ? pan(t, dx, dy) : t
+}
+
+/** `t` zoomed up to FLOOR about `box` if it's below, then panned to show `box`: a card that takes focus can be read. */
+export function readable(t: Transform, box: Box, view: Size, margin = 0): Transform {
+  const zoomed = t.k < FLOOR ? zoomAt(t, FLOOR / t.k, [t.x + (box.x + CARD.w / 2) * t.k, t.y + (box.y + CARD.h / 2) * t.k]) : t
+  return reveal(zoomed, box, view, margin)
 }

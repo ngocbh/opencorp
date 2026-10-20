@@ -320,11 +320,18 @@ test("phones get the list, with no chart", async ({ page }) => {
   await expect(page.getByRole("figure")).toHaveCount(0)
 })
 
-test("Fit brings every card of a wide company into view", async ({ page, request }) => {
+test("a wide company opens readable on its CEO; Fit brings every card into view", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { view: wide(60) } })
   const chart = await openChart(page)
-  await page.getByRole("button", { name: "Zoom in" }).click()
+  const within = async (name: string | RegExp) => {
+    const v = (await page.getByTestId("chart-viewport").boundingBox())!
+    const b = (await chart.getByRole("button", { name }).first().boundingBox())!
+    return b.x >= v.x - 1 && b.x + b.width <= v.x + v.width + 1 && b.y >= v.y - 1 && b.y + b.height <= v.y + v.height + 1
+  }
+  expect((await transform(page))[0]).toBeGreaterThanOrEqual(0.6)
+  expect(await within("Ngoc, CEO")).toBe(true)
   await page.getByRole("button", { name: "Fit" }).click()
+  expect((await transform(page))[0]).toBeLessThan(0.6)
   const view = (await page.getByTestId("chart-viewport").boundingBox())!
   const cards = chart.getByRole("button", { name: /^Agent / })
   await expect(cards).toHaveCount(60)
@@ -335,6 +342,14 @@ test("Fit brings every card of a wide company into view", async ({ page, request
     expect(b.y).toBeGreaterThanOrEqual(view.y - 1)
     expect(b.y + b.height).toBeLessThanOrEqual(view.y + view.height + 1)
   }
+  // Keyboard focus on a card too small to read zooms in to read it, and shows it.
+  await page.getByRole("radio", { name: "Chart" }).focus()
+  await page.keyboard.press("Tab")
+  await expect(chart.getByRole("button", { name: "Ngoc, CEO" })).toBeFocused()
+  expect((await transform(page))[0]).toBeGreaterThanOrEqual(0.6)
+  expect(await within("Ngoc, CEO")).toBe(true)
+  await page.keyboard.press("End")
+  expect(await within("Agent 59, Worker")).toBe(true)
 })
 
 test("a few hundred people draw, pan and zoom", async ({ page, request }) => {

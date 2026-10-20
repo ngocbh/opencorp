@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { arrow, CARD, fit, layout, pan, pinch, reveal, zoomAt, type LayoutNode } from "../src/company/layout"
+import { arrow, CARD, firstView, fit, FLOOR, layout, pan, pinch, readable, reveal, zoomAt, type LayoutNode } from "../src/company/layout"
 
 const n = (id: string, ...children: LayoutNode[]): LayoutNode => ({ id, children })
 const slot = CARD.w + CARD.gapX
@@ -133,4 +133,33 @@ test("reveal pans a card just into view, and leaves a card in view alone", () =>
   expect(reveal(t, { id: "a", x: 100, y: -300 }, view, 10)).toEqual({ k: 1, x: 0, y: 310 })
   // Scaled: the card's view position is k * x + t.x.
   expect(reveal({ k: 2, x: 0, y: 0 }, { id: "a", x: -100, y: 50 }, view, 10)).toEqual({ k: 2, x: 210, y: 0 })
+})
+
+test("the first view is the fit when the fit is readable", () => {
+  const drawn = layout([n("ceo", n("a"), n("b"))], () => true)
+  const view = { width: 1000, height: 600 }
+  expect(firstView(drawn, view, 24)).toEqual(fit(drawn, view, 24))
+})
+
+test("a chart too big to read whole starts at FLOOR, its first root centred and MARGIN from the top", () => {
+  const drawn = layout([n("ceo", ...Array.from({ length: 60 }, (_, i) => n(`a${i}`)))], () => true)
+  const view = { width: 1000, height: 600 }
+  expect(fit(drawn, view, 24).k).toBeLessThan(FLOOR)
+  const t = firstView(drawn, view, 24)
+  const ceo = drawn.boxes[0]
+  expect(t.k).toBe(FLOOR)
+  expect(t.x + (ceo.x + CARD.w / 2) * t.k).toBeCloseTo(500)
+  expect(t.y).toBe(24)
+})
+
+test("readable zooms up to FLOOR about a card, then pans it into view; at FLOOR or above it only pans", () => {
+  const view = { width: 1000, height: 600 }
+  const box = { id: "a", x: 4000, y: 0 }
+  const small = readable({ k: 0.1, x: 0, y: 0 }, box, view, 10)
+  expect(small.k).toBe(FLOOR)
+  const left = small.x + box.x * small.k
+  expect(left).toBeGreaterThanOrEqual(10)
+  expect(left + CARD.w * small.k).toBeLessThanOrEqual(990)
+  const t = { k: 1, x: 0, y: 0 }
+  expect(readable(t, { id: "b", x: 100, y: 100 }, view, 10)).toBe(t)
 })
