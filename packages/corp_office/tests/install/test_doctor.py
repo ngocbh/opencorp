@@ -521,8 +521,9 @@ def test_the_offices_warnings_are_shown(tmp_path):
     assert [c.detail for c in doctor.hq_checks(s, tmp_path, tmp_path) if c.name == "hq warning"] == s["warnings"]
 
 
-def test_no_status_warns(tmp_path):
-    assert doctor.hq_checks(None, tmp_path, tmp_path)[0].status == "warn"
+def test_no_status_warns_and_names_both_fixes(tmp_path):
+    [got] = doctor.hq_checks(None, tmp_path, tmp_path)
+    assert got.status == "warn" and "`opencorp restart`" in got.detail and "`opencorp login`" in got.detail
 
 
 def test_a_running_office_reports_hq(tmp_path):

@@ -310,8 +310,8 @@ def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | None:
 def hq_checks(status: dict | None, office_dir: Path, repo: Path) -> list[Check]:
     """Where HQ listens, whether the web app is built for this office, and HQ's own warnings."""
     if status is None:
-        return [Check("hq", "warn", "the office didn't say where HQ listens (an office from before HQ? "
-                                    "`opencorp restart`)")]
+        return [Check("hq", "warn", "the office didn't say where HQ listens: an office from before HQ needs "
+                                    "`opencorp restart`, and a device it doesn't know needs `opencorp login`")]
     tcp = status["tcp"]
     if tcp["listening"]:
         found = [Check("hq", "ok", f"web app at {status['url']}, and on {status['socket']}")]
