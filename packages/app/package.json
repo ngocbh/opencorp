@@ -17,6 +17,7 @@
     "@opencorp/client": "workspace:*",
     "@opencorp/protocol": "workspace:*",
     "@solidjs/router": "catalog:",
+    "lucide-solid": "1.60.0",
     "solid-js": "catalog:"
   },
   "devDependencies": {

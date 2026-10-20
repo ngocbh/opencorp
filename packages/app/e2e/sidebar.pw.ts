@@ -108,6 +108,35 @@ test("a soon item is announced unavailable, says what it will be, and can't take
   await expect(nav(page).getByRole("button", { name: "Sign out" })).toBeFocused()
 })
 
+/** Each item's Lucide icon, as Paperclip's sidebar picks them. */
+const ICONS: [string, string][] = [
+  ["Inbox", "inbox"],
+  ["Issues", "circle-check"],
+  ["Goals", "target"],
+  ["Routines", "repeat"],
+  ["Org", "network"],
+  ["SOPs", "boxes"],
+  ["Connections", "unplug"],
+  ["Activity", "rotate-ccw-clock"],
+]
+
+test("every item has a small icon before its label, hidden from assistive tech", async ({ page }) => {
+  await page.goto("/org")
+  for (const [name, icon] of ICONS) {
+    const item = name === "Org" ? org(page) : soon(page, name)
+    const svg = item.locator("svg")
+    await expect(svg).toHaveCount(1)
+    await expect(svg).toHaveClass(new RegExp(`\\blucide-${icon}\\b`))
+    await expect(svg).toHaveAttribute("aria-hidden", "true")
+    const box = (await svg.boundingBox())!
+    expect([box.width, box.height]).toEqual([16, 16])
+    // The icon comes first, on the label's line.
+    const label = (await item.getByText(name, { exact: true }).boundingBox())!
+    expect(box.x).toBeLessThan(label.x)
+    expect(Math.abs(box.y + box.height / 2 - (label.y + label.height / 2))).toBeLessThanOrEqual(2)
+  }
+})
+
 test("the connection status follows the office", async ({ page, request }) => {
   await page.goto("/org")
   const connection = nav(page).getByRole("status", { name: "Connection" })

@@ -30,7 +30,9 @@ license, the upstream paths and commit, and our paths.
   - the sections, rows and badges, adapted from `ui/src/components/Sidebar.tsx`,
     `ui/src/components/SidebarSection.tsx`, `ui/src/components/SidebarNavItem.tsx` and
     `ui/src/components/primary-sidebar-styles.ts`;
-  - the phone drawer, adapted from `ui/src/components/Layout.tsx`.
+  - the phone drawer, adapted from `ui/src/components/Layout.tsx`;
+  - the Lucide icon before each item's label, at 16 px, picked as `ui/src/components/Sidebar.tsx` picks them (read at
+    commit `98d17da`). The icons come from the `lucide-solid` dependency (ISC), not from Paperclip.
 - **Upstream:** https://github.com/paperclipai/paperclip, read at commit `3bbc210` (2026-10-20).
 - **Ours:** `packages/app/src/shell.tsx`.
 - **License:**
