@@ -25,6 +25,7 @@ export function buildTree(people: Person[], company: Company | null): Tree {
   const placed = new Map<string, boolean>()
   const reaches = (start: Person) => {
     const path: string[] = []
+    const onPath = new Set<string>()
     let at: Person | undefined = start
     let ok = false
     while (at) {
@@ -33,8 +34,9 @@ export function buildTree(people: Person[], company: Company | null): Tree {
         ok = known
         break
       }
-      if (path.includes(at.handle)) break // a cycle
+      if (onPath.has(at.handle)) break // a cycle
       path.push(at.handle)
+      onPath.add(at.handle)
       const manager = up(at)
       if (manager === null) {
         ok = true
