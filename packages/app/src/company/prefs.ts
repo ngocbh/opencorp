@@ -34,14 +34,22 @@ function save(storage: Storage, key: string, value: unknown) {
 /** What this browser remembers about the company view: open branches and the Chart/List choice. */
 export function createPrefs(storage: Storage = local) {
   const [open, setOpenMap] = createSignal<Record<string, boolean>>(read(storage, "hq.open", isOpenMap, {}))
+  // Branches that started open with no saved choice: they stay open for this page, so answering the card that opened
+  // one doesn't close it under the viewer. Not saved, so a reload decides again.
+  const openedHere = new Set<string>()
   const [view, setViewSignal] = createSignal<View | null>(read(storage, "hq.view", isView, null))
   return {
     /**
      * Whether branch `id` is open: this browser's choice, else open for the CEO and level one, and for a branch
-     * that holds someone with a card for the viewer.
+     * that holds someone with a card for the viewer (or did, since this page opened it).
      */
     isOpen(id: string, o: { depth: number; holdsNeedsYou: boolean }) {
-      return open()[id] ?? (o.depth <= 1 || o.holdsNeedsYou)
+      const saved = open()[id]
+      if (saved !== undefined) return saved
+      if (openedHere.has(id)) return true
+      const start = o.depth <= 1 || o.holdsNeedsYou
+      if (start) openedHere.add(id)
+      return start
     },
     setOpen(id: string, value: boolean) {
       const next = { ...open(), [id]: value }

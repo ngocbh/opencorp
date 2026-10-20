@@ -41,3 +41,11 @@ test("a browser that refuses storage still opens, closes and switches for this t
   prefs.setView("list")
   expect([prefs.isOpen("ceo", { depth: 0, holdsNeedsYou: false }), prefs.view()]).toEqual([false, "list"])
 })
+
+test("a branch that opened for a card stays open once the card is answered, for this page only", () => {
+  const storage = memory()
+  const prefs = createPrefs(storage)
+  expect(prefs.isOpen("deep", { depth: 2, holdsNeedsYou: true })).toBe(true)
+  expect(prefs.isOpen("deep", { depth: 2, holdsNeedsYou: false })).toBe(true)
+  expect(createPrefs(storage).isOpen("deep", { depth: 2, holdsNeedsYou: false })).toBe(false)
+})

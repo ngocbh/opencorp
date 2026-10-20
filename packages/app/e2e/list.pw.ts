@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test"
-import { acme, session } from "./company"
+import { acme, card, person, session } from "./company"
 
 test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
@@ -43,6 +43,25 @@ test("a leaf shows no branch totals", async ({ page }) => {
   await expect(row(page, /Kai/).getByTestId("cost")).toHaveText("$0.42")
   await expect(row(page, /Ann/)).not.toContainText("person")
   await expect(row(page, /Kai/)).not.toContainText("person")
+})
+
+test("a branch that opened for a card stays open once the card is answered", async ({ page, request }) => {
+  const data = acme()
+  await request.post("/__fixture/set", {
+    data: {
+      view: { people: [...data.view.people, person("eve", "Eve", "agent", "Intern", "kai")] },
+      sessions: [...data.sessions, session("S-eve", "eve", "idle", { opened_by: "ngocbh" })],
+      questions: [...data.questions, card("Q-eve", "S-eve", "eve")],
+    },
+  })
+  await page.reload()
+  await page.getByRole("radio", { name: "List" }).click()
+  await expect(row(page, /Kai/)).toHaveAttribute("aria-expanded", "true")
+  await request.post("/__fixture/emit", {
+    data: { event: { type: "question.updated", data: card("Q-eve", "S-eve", "eve", { status: "answered", updated_at: "2026-10-19T12:00:00.000Z" }) } },
+  })
+  await expect(row(page, /Eve/).getByTestId("status")).toHaveAttribute("data-status", "idle")
+  await expect(row(page, /Kai/)).toHaveAttribute("aria-expanded", "true")
 })
 
 test("arrow keys move, open and close, as the tree pattern says", async ({ page }) => {
