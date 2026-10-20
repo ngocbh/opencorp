@@ -27,3 +27,13 @@ test("static files: a malformed path is a page like any other, and only GET and 
   const post = await request.post("/some/page", { data: {} })
   expect([post.status(), post.headers()["allow"], (await post.json()).error]).toEqual([405, "GET, HEAD", "method_not_allowed"])
 })
+
+test("Acme: six people, two groups, a broken file, three live sessions, two cards, costs", async ({ request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true } })
+  const view = await (await request.get("/api/company")).json()
+  expect(view.people.map((p: { handle: string }) => p.handle)).toEqual(["ngocbh", "lead", "minh", "kai", "ann", "zoe"])
+  expect([view.groups.length, view.issues[0].path]).toEqual([2, "people/bad/person.yaml"])
+  expect((await (await request.get("/api/sessions")).json()).length).toBe(3)
+  expect((await (await request.get("/api/questions")).json()).map((q: { id: string }) => q.id)).toEqual(["Q-kai", "Q-lead"])
+  expect((await (await request.get("/api/costs?since=x")).json()).people.minh).toEqual({ usd: 0, unpriced_sessions: 1 })
+})

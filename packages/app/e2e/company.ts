@@ -27,14 +27,38 @@ export const card = (id: string, sessionId: string, asker: string, over: Partial
 export const item = (id: string, title: string, over: Partial<WorkItem> = {}): WorkItem =>
   ({ id, title, kind: "task", status: "in_progress", requester: "ngocbh", created_at: T, updated_at: T, ...over })
 
-/** Acme, with its CEO only. */
+/**
+ * Acme: the CEO @ngocbh (human); @lead (agent, head of ENG) with @minh (also in OPS) and @kai under them; @ann
+ * (human); @zoe, whose manager doesn't exist (unplaced); a file that doesn't parse. @minh is busy in Codex, @kai is
+ * idle with a card for the CEO, @lead is idle with an ask_manager card whose work item W1 the CEO is assigned.
+ */
 export function acme(): Data {
+  const people = [
+    person("ngocbh", "Ngoc", "human", "CEO", null),
+    person("lead", "Lead", "agent", "Tech lead", "ngocbh", ["eng"]),
+    person("minh", "Minh", "agent", "Engineer", "lead", ["eng", "ops"]),
+    person("kai", "Kai", "agent", "Engineer", "lead", ["eng"]),
+    person("ann", "Ann", "human", "Designer", "ngocbh"),
+    person("zoe", "Zoe", "agent", "Analyst", "ghost"),
+  ]
   return {
-    view: { sha: SHA, company: { name: "Acme", ceo: "ngocbh" }, people: [person("ngocbh", "Ngoc", "human", "CEO", null)],
-            groups: [], issues: [] },
-    sessions: [],
-    questions: [],
-    costs: {},
-    workItems: {},
+    view: {
+      sha: SHA,
+      company: { name: "Acme", ceo: "ngocbh" },
+      people,
+      groups: [{ id: "eng", name: "ENG", parent: null, head: "lead" }, { id: "ops", name: "OPS", parent: "eng", head: null }],
+      issues: [{ path: "people/bad/person.yaml", code: "repo.schema", message: "kind: isn't an allowed value", severity: "error" }],
+    },
+    sessions: [
+      session("S-minh", "minh", "busy", { harness: "codex", work_item_id: "W-minh" }),
+      session("S-kai", "kai", "idle", { opened_by: "ngocbh", cost: 0.42 }),
+      session("S-lead", "lead", "idle", { cost: 0 }),
+    ],
+    questions: [card("Q-kai", "S-kai", "kai"), card("Q-lead", "S-lead", "lead", { source: "ask_manager", work_item_id: "W1" })],
+    costs: { minh: { usd: 0, unpriced_sessions: 1 }, kai: { usd: 0.42, unpriced_sessions: 0 } },
+    workItems: {
+      W1: item("W1", "Pick a database", { kind: "question", requester: "lead", assignee: "ngocbh" }),
+      "W-minh": item("W-minh", "Fix the build", { assignee: "minh" }),
+    },
   }
 }
