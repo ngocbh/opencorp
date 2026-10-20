@@ -53,11 +53,17 @@ def alive(pid: int) -> bool:
 
 
 class RunningOffice:
-    """An office daemon on ``home`` whose provider is ``fake``, driven over its unix socket."""
+    """An office daemon on ``home`` whose provider is ``fake``, driven over its unix socket.
 
-    def __init__(self, home: Path, fake):
+    HQ's TCP listener stays off (it is on by default on macOS, where the owner's own office holds its port) unless
+    ``hq`` gives the ``office/hq.json`` to write instead.
+    """
+
+    def __init__(self, home: Path, fake, *, hq: dict | None = None):
         self.home = home
         self.paths = OfficePaths(home)
+        self.paths.office.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (self.paths.office / "hq.json").write_text(json.dumps({"tcp": False} if hq is None else hq))
         self.fake = fake
         self.http = self.client()
         self.pids: set[int] = set()

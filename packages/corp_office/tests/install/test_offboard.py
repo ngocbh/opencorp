@@ -19,7 +19,7 @@ from opencorp.protocol.models import Device
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
-from .conftest import Runner, make_host
+from .conftest import Runner, make_host, no_web_port
 from .test_provider_setup import Script
 
 
@@ -207,6 +207,7 @@ def test_an_office_that_wont_stop_keeps_its_state(tmp_path):
 
 def test_offboard_removes_the_device_through_a_running_office(short_dir):
     paths = office(short_dir / "home")
+    no_web_port(paths.home)
     run = launch(paths.home)
     host = make_host(short_dir, Runner(), popen=subprocess.Popen, answers=office_answers)
     service.install(run, host, "background")

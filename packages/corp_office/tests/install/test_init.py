@@ -27,7 +27,7 @@ from opencorp.testing.fake_llm import LLM_CONFIG, FakeLLM
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
-from .conftest import Runner, make_host
+from .conftest import Runner, make_host, no_web_port
 from .test_interview import flow_replies
 from .test_onboard import _git, _stop
 from .test_provider_setup import Script
@@ -482,6 +482,7 @@ CEO = Known(company="Acme", name="Hong Ngoc Bui", handle="ngocbh")
 
 def test_init_sets_up_the_office_and_a_second_onboard_changes_nothing(short_dir):
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     first = Script("openai", "", "", PASSWORD, PASSWORD, "1", interactive=False)
     try:
         init(short_dir, first, known=CEO, mode="background")
@@ -509,6 +510,7 @@ def test_init_sets_up_the_office_and_a_second_onboard_changes_nothing(short_dir)
 
 def test_the_key_lands_only_in_the_provider_file(short_dir):
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     ask = Script("anthropic", KEY, "", PASSWORD, PASSWORD, "1", interactive=False)
     try:
         init(short_dir, ask, known=CEO, mode="background")

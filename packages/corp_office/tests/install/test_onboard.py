@@ -24,7 +24,7 @@ from opencorp.profile.manager import MANAGER_FLOW
 from tests.company.conftest import _isolate_git  # noqa: F401
 from tests.daemon.conftest import short_dir  # noqa: F401
 
-from .conftest import Runner, make_host
+from .conftest import Runner, make_host, no_web_port
 from .test_provider_setup import Script
 
 PROVIDER = '{"llm_config": {"provider": "openai"}}'
@@ -337,6 +337,7 @@ def test_a_second_onboard_of_a_cloned_company_changes_nothing_and_asks_nothing(t
 def test_a_cloned_office_takes_this_devices_token(short_dir, tmp_path):
     remote = published(tmp_path)
     paths = OfficePaths(short_dir)
+    no_web_port(short_dir)
     try:
         onboard(short_dir, Script("lan", "openai", "", ""), source=str(remote), mode="background")
         me = read_identity(short_dir / "identity.json")
