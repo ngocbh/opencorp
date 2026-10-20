@@ -1,6 +1,7 @@
 // The company as rows: the tree by manager (or "By team") as items, flattened to the rows a viewer sees, with what
 // each WAI-ARIA tree key does on them. Pure, so the list and its keys are tested without a browser.
 import type { Group, Person } from "@opencorp/protocol"
+import type { Team } from "./teams"
 import type { TreeNode } from "./tree"
 
 /** A row's subject: a person, or a team header in "By team" (`group` null: "No team"). */
@@ -77,4 +78,23 @@ export function keep(items: Item[], query: string): Item[] {
 /** Whether anyone under `item` (not `item` itself) has a card for the viewer: such branches start open. */
 export function holds(item: Item, needs: Map<string, number>): boolean {
   return item.children.some((c) => (c.kind === "person" && (needs.get(c.person.handle) ?? 0) > 0) || holds(c, needs))
+}
+
+/**
+ * Items for "By team": each team holds its sub-teams, then its members (muted after their first group); "No team"
+ * last. Ids carry the team, since a person in two groups appears twice.
+ */
+export function fromTeams(teams: Team[], noTeam: Person[]): Item[] {
+  const member = (team: string, p: Person, muted: boolean): Item =>
+    ({ kind: "person", id: `team:${team}/${p.handle}`, person: p, muted, children: [] })
+  const team = (t: Team): Item => ({
+    kind: "team",
+    id: `team:${t.group.id}`,
+    group: t.group,
+    children: [...t.children.map(team), ...t.members.map((m) => member(t.group.id, m.person, m.muted))],
+  })
+  const none: Item[] = noTeam.length
+    ? [{ kind: "team", id: "team:", group: null, children: noTeam.map((p) => member("", p, false)) }]
+    : []
+  return [...teams.map(team), ...none]
 }

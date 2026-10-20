@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test"
-import { fromTree, holds, keep, label, moveFocus, visibleRows, type Item } from "../src/company/rows"
+import { fromTeams, fromTree, holds, keep, label, moveFocus, visibleRows, type Item } from "../src/company/rows"
+import { byTeam } from "../src/company/teams"
 import { buildTree } from "../src/company/tree"
 import { person } from "./people"
 
@@ -61,4 +62,19 @@ test("search keeps people matching by name, handle or title, and the people abov
 test("a branch holds a card for the viewer when anyone under it has one", () => {
   const needs = new Map([["cy", 1]])
   expect([holds(items[0], needs), holds(items[0].children[0], needs), holds(items[0].children[1], needs)]).toEqual([true, true, false])
+})
+
+test("By team: a team holds its sub-teams, then its members; each copy of a person has its own id; No team last", () => {
+  const people = [person("al", null, { groups: ["eng", "ops"] }), person("bo", null)]
+  const { teams, noTeam } = byTeam(people, [{ id: "eng", name: "ENG", parent: null, head: null }, { id: "ops", name: "OPS", parent: "eng", head: null }])
+  const rows = visibleRows(fromTeams(teams, noTeam), () => true)
+  expect(rows.map((r) => [r.item.id, r.level, label(r.item)])).toEqual([
+    ["team:eng", 1, "ENG"],
+    ["team:ops", 2, "OPS"],
+    ["team:ops/al", 3, "Al, T"],
+    ["team:eng/al", 2, "Al, T"],
+    ["team:", 1, "No team"],
+    ["team:/bo", 2, "Bo, T"],
+  ])
+  expect(rows.filter((r) => r.item.kind === "person" && r.item.muted).map((r) => r.item.id)).toEqual(["team:ops/al"])
 })
