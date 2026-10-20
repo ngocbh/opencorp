@@ -483,3 +483,42 @@ async def test_hq_status_is_read_with_this_devices_token(office, short_dir, comp
         assert status["socket"].endswith("hq.sock")
         (short_dir / "identity.json").unlink()
         assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) is None  # 401
+
+
+def status(**tcp):
+    base = {"enabled": True, "port": 49380, "listening": True, "error": None, "next_retry_at": None}
+    health = {"ok": True, "office": {"api": "0.0.1+aaa"}, "app": {"build": "b", "api": "0.0.1+aaa"}}
+    return {"socket": "/h/office/hq.sock", "tcp": {**base, **tcp}, "url": "http://127.0.0.1:49380/", "health": health,
+            "warnings": []}
+
+
+def test_hq_listening_and_a_current_app(tmp_path):
+    got = by_name(doctor.hq_checks(status(), tmp_path, tmp_path / "repo"))
+    assert got["hq"].status == "ok" and "http://127.0.0.1:49380/" in got["hq"].detail and got["web app"].status == "ok"
+
+
+def test_a_taken_port_names_the_fix(tmp_path):
+    got = by_name(doctor.hq_checks(status(listening=False, error="Address already in use"), tmp_path, tmp_path))
+    assert got["hq"].status == "warn" and "Address already in use" in got["hq"].detail and "hq.json" in got["hq"].detail
+
+
+def test_tcp_off_points_at_pair(tmp_path):
+    got = by_name(doctor.hq_checks(status(enabled=False, listening=False), tmp_path, tmp_path))
+    assert got["hq"].status == "ok" and "opencorp pair" in got["hq"].detail
+
+
+def test_an_unbuilt_or_stale_app_warns(tmp_path):
+    s = status()
+    s["health"]["app"] = None
+    assert "bun run build" in by_name(doctor.hq_checks(s, tmp_path, tmp_path))["web app"].detail
+    s["health"]["app"] = {"build": "b", "api": "0.0.1+bbb"}
+    assert "doesn't match" in by_name(doctor.hq_checks(s, tmp_path, tmp_path))["web app"].detail
+
+
+def test_the_offices_warnings_are_shown(tmp_path):
+    s = {**status(), "warnings": ["the web port is on and this host has other users (ann): ..."]}
+    assert [c.detail for c in doctor.hq_checks(s, tmp_path, tmp_path) if c.name == "hq warning"] == s["warnings"]
+
+
+def test_no_status_warns(tmp_path):
+    assert doctor.hq_checks(None, tmp_path, tmp_path)[0].status == "warn"

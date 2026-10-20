@@ -21,6 +21,7 @@ from opencorp.company.loader import load_repo
 from opencorp.company_template import is_new, missing_files
 from opencorp.daemon.app import OfficePaths
 from opencorp.harness.codex import CodexMissing, codex_command
+from opencorp.hq.servers import RETRY_S
 from opencorp.install import launchd, legacy, service, systemd
 from opencorp.install.launch import REPO, Host, Launch, launch
 from opencorp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
@@ -304,6 +305,32 @@ def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | None:
         return r.json() if r.status_code == 200 else None
     except (httpx.HTTPError, ValueError):
         return None
+
+
+def hq_checks(status: dict | None, office_dir: Path, repo: Path) -> list[Check]:
+    """Where HQ listens, whether the web app is built for this office, and HQ's own warnings."""
+    if status is None:
+        return [Check("hq", "warn", "the office didn't say where HQ listens (an office from before HQ? "
+                                    "`opencorp restart`)")]
+    tcp = status["tcp"]
+    if tcp["listening"]:
+        found = [Check("hq", "ok", f"web app at {status['url']}, and on {status['socket']}")]
+    elif tcp["enabled"]:
+        why = f"isn't free ({tcp['error']})" if tcp["error"] else "isn't listening yet"
+        found = [Check("hq", "warn", f"port {tcp['port']} {why}; HQ tries it again every {RETRY_S:g} s. Free it, or "
+                                     f"set another \"port\" in {office_dir / 'hq.json'} and run `opencorp restart`")]
+    else:
+        found = [Check("hq", "ok", f"on {status['socket']} only (the web port is off); `opencorp pair` prints "
+                                   "the SSH forward")]
+    app, office = status["health"]["app"], status["health"]["office"]
+    if app is None:
+        found.append(Check("web app", "warn", f"not built: run `bun run build` in {repo}"))
+    elif app["api"] != office["api"]:
+        found.append(Check("web app", "warn", f"built for {app['api']}, which doesn't match the office's "
+                                              f"{office['api']}: run `bun run build` in {repo}, or `opencorp restart`"))
+    else:
+        found.append(Check("web app", "ok", f"built for {office['api']}"))
+    return found + [Check("hq warning", "warn", w) for w in status.get("warnings", [])]
 
 
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
