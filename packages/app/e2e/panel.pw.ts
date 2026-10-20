@@ -61,3 +61,11 @@ test("only the person's own main and side sessions are live work", async ({ page
   await page.getByRole("treeitem", { name: /Ann/ }).click()
   await expect(live(page, "Ann")).toHaveText(["busy · $0.00 · misha"])
 })
+
+test("'now doing' is the work item's title, read when the panel opens", async ({ page, request }) => {
+  const read = async () => (await (await request.get("/__fixture/log")).json()).workItems as string[]
+  expect(await read()).not.toContain("W-minh")
+  await page.getByRole("treeitem", { name: /Minh/ }).click()
+  await expect(live(page, "Minh")).toHaveText(["busy · unpriced · mac · now doing: Fix the build"])
+  expect(await read()).toContain("W-minh")
+})

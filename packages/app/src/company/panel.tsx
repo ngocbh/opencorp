@@ -1,5 +1,5 @@
 import type { Group, Person } from "@opencorp/protocol"
-import { For, Show } from "solid-js"
+import { createEffect, For, Show } from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
 import { costText } from "./format"
@@ -7,8 +7,8 @@ import { costText } from "./format"
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 
 /**
- * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, and live sessions.
- * Phones get it as a full-width sheet over the list.
+ * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, and live sessions with
+ * what each is doing. Phones get it as a full-width sheet over the list.
  */
 export function Panel(props: {
   person: Person
@@ -24,6 +24,10 @@ export function Panel(props: {
     office.state.sessions.filter(
       (x) => x.person === props.person.handle && (x.kind === "main" || x.kind === "side") && LIVE.includes(x.status),
     )
+  // Sessions carry no title, so "now doing" is their work item's: read once, when the panel shows the session.
+  createEffect(() => {
+    for (const x of sessions()) if (x.work_item_id) office.loadWorkItem(x.work_item_id)
+  })
   return (
     <aside
       aria-label={props.person.name}
@@ -89,6 +93,9 @@ export function Panel(props: {
               <li>
                 {/* The office prices composer tokens only; a harness session's spend isn't known here. */}
                 {x.status} · {x.harness === "composer" ? costText(x.cost ?? 0, 0) : "unpriced"} · {x.office}
+                <Show when={x.work_item_id ? office.state.workItems[x.work_item_id] : undefined}>
+                  {(w) => <> · now doing: {w().title}</>}
+                </Show>
               </li>
             )}
           </For>
