@@ -1,4 +1,4 @@
-import { Route, Router } from "@solidjs/router"
+import { Route, Router, type RouteSectionProps } from "@solidjs/router"
 import { lazy } from "solid-js"
 import { OfficeProvider } from "./data/office"
 import Pair from "./pages/pair"
@@ -8,12 +8,10 @@ import { Shell } from "./shell"
 // Lazy, so a rebuild that deletes this chunk fails as a missing script and the app checks its version.
 const Company = lazy(() => import("./pages/company"))
 
-/** The company view in the shell, with the office around it, at "/" and any other path. */
-const Office = () => (
+/** The office and the shell around every screen: a parent route, so moving between screens keeps one office. */
+const Office = (props: RouteSectionProps) => (
   <OfficeProvider>
-    <Shell>
-      <Company />
-    </Shell>
+    <Shell>{props.children}</Shell>
   </OfficeProvider>
 )
 
@@ -23,8 +21,10 @@ export function App() {
     <Router>
       <Route path="/pair" component={Pair} />
       <Route path="/sign-in" component={SignIn} />
-      <Route path="/" component={Office} />
-      <Route path="*" component={Office} />
+      <Route path="/" component={Office}>
+        <Route path="/" component={Company} />
+        <Route path="*" component={Company} />
+      </Route>
     </Router>
   )
 }

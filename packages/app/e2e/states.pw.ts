@@ -107,3 +107,13 @@ test("an office whose snapshot this app can't read still gets the version check"
   await page.goto("/")
   await expect(page.getByText("The web app doesn't match the office.", { exact: false })).toBeVisible()
 })
+
+test("moving between screens keeps the office: no second sign-in check or stream", async ({ page, request }) => {
+  await page.goto("/elsewhere")
+  await expect(connection(page)).toHaveText("live")
+  await page.getByRole("link", { name: "Company" }).click()
+  await expect(page).toHaveURL("/")
+  await page.waitForTimeout(500)
+  const log = await (await request.get("/__fixture/log")).json()
+  expect(log.api.filter((p: string) => p === "/api/whoami" || p === "/api/events")).toEqual(["/api/whoami", "/api/events"])
+})
