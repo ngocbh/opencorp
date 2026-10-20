@@ -2,12 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-from typing import Any
+import logging
+import socket
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
 import h11
 import uvicorn
 from uvicorn.protocols.http.h11_impl import H11Protocol
+
+from opencorp.daemon.sockets import OfficeStartError, bind_socket, bind_tcp, remove_stale_socket
+from opencorp.hq.api import create_hq_app
+from opencorp.protocol import stamp
+
+if TYPE_CHECKING:
+    from opencorp.hq.core import Hq
+
+log = logging.getLogger(__name__)
+
+RETRY_S = 5.0
+"""How often a TCP port someone else holds is tried again."""
 
 
 class HqH11Protocol(H11Protocol):
@@ -80,3 +96,67 @@ def hq_config(app: Any) -> uvicorn.Config:
     """
     return uvicorn.Config(app, lifespan="off", ws="none", proxy_headers=False, http=HqH11Protocol,
                           timeout_keep_alive=5, timeout_graceful_shutdown=5, log_config=None)
+
+
+class Listeners:
+    """HQ's servers for one office: on ``hq.sock`` always, and on TCP 127.0.0.1 when enabled, retried every
+    ``RETRY_S`` seconds until the port is free. A taken port never stops the office."""
+
+    def __init__(self, hq: Hq) -> None:
+        self.hq = hq
+        self._servers: list[tuple[HqServer, asyncio.Task[None], socket.socket]] = []
+        self._tcp: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        """Listen on hq.sock, and start binding TCP in the background."""
+        try:
+            remove_stale_socket(self.hq.socket)  # the office holds its pidfile, so no live office owns it
+            self._serve(bind_socket(self.hq.socket), port=None)
+            self.hq.socket_error = None
+        except OfficeStartError as exc:
+            # Logged and kept for GET /hq and doctor: a path too long for sun_path mustn't fail silently.
+            log.error("HQ can't listen on %s: %s", self.hq.socket, exc)
+            self.hq.socket_error = str(exc)
+        if self.hq.config.tcp:
+            self._tcp = asyncio.create_task(self._bind_tcp())
+
+    async def _bind_tcp(self) -> None:
+        said = None
+        while True:
+            try:
+                sock = bind_tcp(self.hq.config.port)
+            except OSError as exc:
+                why = exc.strerror or str(exc)
+                self.hq.tcp_error = why
+                self.hq.next_retry_at = stamp(datetime.now(UTC) + timedelta(seconds=RETRY_S))
+                if why != said:
+                    log.warning("HQ can't listen on 127.0.0.1:%d (%s); trying again every %g s",
+                                self.hq.config.port, why, RETRY_S)
+                    said = why
+                await asyncio.sleep(RETRY_S)
+                continue
+            port = sock.getsockname()[1]
+            self.hq.bound_port, self.hq.tcp_error, self.hq.next_retry_at = port, None, None
+            log.info("HQ listening on http://127.0.0.1:%d/", port)
+            self._serve(sock, port=port)
+            return
+
+    def _serve(self, sock: socket.socket, *, port: int | None) -> None:
+        server = HqServer(hq_config(create_hq_app(self.hq.office, self.hq, port=port)))
+        self._servers.append((server, asyncio.create_task(server.serve(sockets=[sock])), sock))
+
+    async def stop(self) -> None:
+        """Stop binding, stop every server (their streams already ended with the office's bus), remove hq.sock."""
+        if self._tcp is not None:
+            self._tcp.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._tcp
+            self._tcp = None
+        for server, _, _ in self._servers:
+            server.should_exit = True
+        await asyncio.gather(*(task for _, task, _ in self._servers), return_exceptions=True)
+        for _, _, sock in self._servers:
+            sock.close()
+        self._servers.clear()
+        self.hq.bound_port = self.hq.tcp_error = self.hq.next_retry_at = None
+        self.hq.socket.unlink(missing_ok=True)

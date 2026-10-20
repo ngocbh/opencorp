@@ -36,6 +36,8 @@ class Hq:
     """The TCP listener's port while it listens."""
     tcp_error: str | None = None
     next_retry_at: str | None = None
+    socket_error: str | None = None
+    """Why hq.sock isn't listening, when binding it failed."""
 
     @classmethod
     def create(cls, office: Office) -> Hq:
@@ -78,7 +80,10 @@ class Hq:
 
     def warnings(self) -> list[str]:
         """What ``opencorp doctor`` and ``opencorp pair`` should mention."""
-        return [] if self.config.problem is None else [f"settings ignored: {self.config.problem}"]
+        found = [] if self.config.problem is None else [f"settings ignored: {self.config.problem}"]
+        if self.socket_error is not None:
+            found.append(f"HQ isn't listening on {self.socket}: {self.socket_error}")
+        return found
 
     async def start(self) -> None:
         """Delete expired browser sessions and the redirect files a crash left."""

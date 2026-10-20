@@ -1,12 +1,35 @@
 """HQ's servers: limits per listener, isolation from office.sock, bind and rebind."""
 
 import asyncio
+import dataclasses
+import os
+import socket
+import stat
 
-from opencorp.hq.servers import HqH11Protocol
+import httpx
+import pytest
+
+from opencorp.daemon.sockets import bind_socket
+from opencorp.hq import servers
+from opencorp.hq.servers import HqH11Protocol, Listeners
+from opencorp.protocol.models import HqTcp
 from tests.daemon.conftest import served
 from tests.hq.conftest import hq_served
+from tests.hq.net import free_port
 
 REQUEST = b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:5555\r\n\r\n"
+
+
+@pytest.fixture
+def hq_settings(tmp_path):  # overrides tests/hq/conftest.py: TCP on, on a free port
+    return {"tcp": True, "port": free_port(), "app_dir": str(tmp_path / "dist")}
+
+
+@pytest.fixture
+def short_office(office, short_dir, monkeypatch):
+    """The office's dir on a short path, so hq.sock fits in sun_path."""
+    monkeypatch.setattr(office.paths, "office", short_dir)
+    return office
 
 
 async def test_the_65th_connection_is_closed_and_office_sock_still_answers(office, hq, short_dir):
@@ -76,3 +99,97 @@ async def test_hq_never_serves_socket_routes_and_the_socket_never_serves_hq(offi
         assert "application/json" not in r.headers["content-type"]  # the app's page, not HqStatus
         r = await sock_client.get("/api/health")
         assert (r.status_code, r.json()["error"]) == (404, "no_route")
+
+
+async def test_hq_sock_is_0600_and_tcp_listens_on_the_port(short_office, hq):
+    listeners = Listeners(hq)
+    await listeners.start()
+    try:
+        async with asyncio.timeout(3):
+            while hq.bound_port is None:
+                await asyncio.sleep(0.02)
+        assert stat.S_IMODE(os.stat(hq.socket).st_mode) == 0o600
+        assert hq.status().url == f"http://127.0.0.1:{hq.config.port}/"
+        async with httpx.AsyncClient(base_url=hq.status().url, trust_env=False) as c:
+            assert (await c.get("/api/health")).json()["ok"] is True
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(hq.socket)),
+                                     base_url="http://127.0.0.1:5555") as c:
+            assert (await c.get("/api/health")).json()["ok"] is True
+    finally:
+        await listeners.stop()
+    assert not hq.socket.exists() and hq.bound_port is None
+
+
+async def test_a_stale_hq_sock_is_replaced(short_office, hq):
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    bind_socket(hq.socket).close()  # closing leaves the file, as a crash does
+    listeners = Listeners(hq)
+    await listeners.start()
+    try:
+        assert hq.socket_error is None
+        async with httpx.AsyncClient(transport=httpx.AsyncHTTPTransport(uds=str(hq.socket)),
+                                     base_url="http://127.0.0.1:5555") as c:
+            assert (await c.get("/api/health")).status_code == 200
+    finally:
+        await listeners.stop()
+
+
+async def test_a_taken_port_is_retried_and_picked_up_once_free(short_office, hq, monkeypatch, caplog):
+    monkeypatch.setattr(servers, "RETRY_S", 0.2)
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", hq.config.port))
+    holder.listen()
+    listeners = Listeners(hq)
+    await listeners.start()
+    try:
+        await asyncio.sleep(0.5)
+        status = hq.status()
+        assert not status.tcp.listening and status.tcp.error and status.tcp.next_retry_at
+        assert caplog.text.count("can't listen on 127.0.0.1") == 1  # only state changes are logged
+        holder.close()
+        async with asyncio.timeout(2):
+            while hq.bound_port is None:
+                await asyncio.sleep(0.05)
+        assert hq.status().tcp.error is None and hq.status().tcp.next_retry_at is None
+    finally:
+        holder.close()
+        await listeners.stop()
+
+
+async def test_stop_ends_the_retries(short_office, hq, monkeypatch):
+    monkeypatch.setattr(servers, "RETRY_S", 0.1)
+    holder = socket.socket()
+    holder.bind(("127.0.0.1", hq.config.port))
+    holder.listen()
+    listeners = Listeners(hq)
+    await listeners.start()
+    await asyncio.sleep(0.2)
+    await listeners.stop()
+    holder.close()
+    await asyncio.sleep(0.3)
+    assert hq.bound_port is None
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", hq.config.port))  # nobody took the port after stop
+
+
+async def test_with_tcp_off_only_hq_sock_listens(short_office, hq):
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    listeners = Listeners(hq)
+    await listeners.start()
+    try:
+        assert hq.socket.exists() and hq.status().tcp == HqTcp(enabled=False, port=hq.config.port, listening=False)
+    finally:
+        await listeners.stop()
+
+
+async def test_a_failed_hq_sock_bind_is_a_warning(office, hq, short_dir, monkeypatch):
+    deep = short_dir / ("d" * 110)  # hq.sock's path is now past sun_path's 104 bytes
+    deep.mkdir()
+    monkeypatch.setattr(office.paths, "office", deep)
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    listeners = Listeners(hq)
+    await listeners.start()  # the office runs on
+    try:
+        assert any("isn't listening on" in w and "hq.sock" in w for w in hq.status().warnings)
+    finally:
+        await listeners.stop()
