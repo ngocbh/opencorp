@@ -10,20 +10,10 @@ import { Panel } from "../company/panel"
 import { Toolbar } from "../company/toolbar"
 import { buildTree, byName } from "../company/tree"
 import { useOffice } from "../data/office"
-import { useShell } from "../shell"
+import { useDesktop, useShell } from "../shell"
 
 // Its own chunk: phones and list users never load it.
 const Chart = lazy(() => import("../company/chart"))
-
-/** Whether the window is at least Tailwind's md breakpoint: phones always get the list. */
-function useDesktop() {
-  const query = matchMedia("(min-width: 768px)")
-  const [desktop, setDesktop] = createSignal(query.matches)
-  const changed = () => setDesktop(query.matches)
-  query.addEventListener("change", changed)
-  onCleanup(() => query.removeEventListener("change", changed))
-  return desktop
-}
 
 /** What the page shows before the first snapshot. */
 function Skeleton() {

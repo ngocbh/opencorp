@@ -74,8 +74,12 @@ test("the sidebar: the company and its connection, Inbox, then Work and Company,
   await expect(nav(page).locator("a[href]")).toHaveCount(1)
   await expect(nav(page).locator("a[href]")).toHaveAttribute("href", "/org")
   await expect(nav(page).getByRole("link", { disabled: false })).toHaveText(["Org"])
-  await expect(nav(page).getByText(/^@ngocbh$/)).toBeVisible()
-  await expect(nav(page).getByRole("button", { name: "Sign out" })).toBeVisible()
+  // The sidebar stays on screen however long the company view is: who is signed in and Sign out are in view.
+  await expect(page.getByRole("figure", { name: "Acme org chart" })).toBeVisible()
+  await expect(nav(page).getByText(/^@ngocbh$/)).toBeInViewport()
+  await expect(nav(page).getByRole("button", { name: "Sign out" })).toBeInViewport()
+  await page.mouse.wheel(0, 2000)
+  await expect(nav(page).getByRole("heading", { name: "Acme", level: 1 })).toBeInViewport()
 })
 
 test("a soon item is announced unavailable, says what it will be, and can't take focus", async ({ page }) => {
@@ -108,4 +112,86 @@ test("the connection status follows the office", async ({ page, request }) => {
   await request.post("/__fixture/drop", { data: { ms: 1000 } })
   await expect(connection).toHaveText("reconnecting…")
   await expect(connection).toHaveText("live", { timeout: 15_000 })
+})
+
+test.describe("on a phone", () => {
+  test.use({ viewport: { width: 390, height: 844 } })
+
+  const menu = (page: Page) => nav(page).getByRole("button", { name: "Menu" })
+
+  test("the sidebar folds into a top bar, and the company view gets the full width", async ({ page }) => {
+    await page.goto("/org")
+    await expect(nav(page).getByRole("heading", { name: "Acme", level: 1 })).toBeVisible()
+    await expect(nav(page).getByRole("status", { name: "Connection" })).toHaveText("live")
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
+    await expect(org(page)).toBeHidden()
+    const bar = (await nav(page).boundingBox())!
+    expect(bar.width).toBe(390)
+    expect(bar.height).toBeLessThanOrEqual(56)
+    const main = (await page.getByRole("main").boundingBox())!
+    expect([main.x, main.width]).toEqual([0, 390])
+    expect(main.y).toBeGreaterThanOrEqual(bar.height)
+    await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  })
+
+  test("Menu opens the pages by keyboard; Escape closes it and focus goes back to Menu", async ({ page }) => {
+    await page.goto("/org")
+    await menu(page).focus()
+    await page.keyboard.press("Enter")
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "true")
+    const drawer = page.locator(`#${await menu(page).getAttribute("aria-controls")}`)
+    await expect(drawer).toBeVisible()
+    await expect(soon(page, "Issues")).toBeVisible()
+    await expect(soon(page, "Issues")).toBeDisabled()
+    await expect(org(page)).toHaveAttribute("aria-current", "page")
+    // The company view behind the open menu can't take focus.
+    const row = page.getByRole("treeitem", { name: /Lead/ })
+    await row.evaluate((el: HTMLElement) => el.focus())
+    await expect(row).not.toBeFocused()
+    await menu(page).focus()
+    await page.keyboard.press("Tab")
+    await expect(org(page)).toBeFocused()
+    await page.keyboard.press("Tab")
+    await expect(nav(page).getByRole("button", { name: "Sign out" })).toBeFocused()
+    await page.keyboard.press("Escape")
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
+    await expect(drawer).toBeHidden()
+    await expect(menu(page)).toBeFocused()
+    await row.evaluate((el: HTMLElement) => el.focus())
+    await expect(row).toBeFocused()
+  })
+
+  test("choosing a page or tapping outside closes the menu", async ({ page }) => {
+    await page.goto("/nowhere")
+    await menu(page).click()
+    await org(page).click()
+    await expect(page).toHaveURL("/org")
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
+    await menu(page).click()
+    await org(page).click() // already there: the menu closes all the same
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
+    await menu(page).click()
+    await page.mouse.click(380, 400) // the backdrop, right of the drawer
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
+  })
+
+  test("Sign out works from the menu", async ({ page }) => {
+    await page.goto("/org")
+    await menu(page).click()
+    await nav(page).getByRole("button", { name: "Sign out" }).click()
+    await expect(page).toHaveURL("/sign-in")
+    expect((await (await page.request.get("/__fixture/log")).json()).logouts).toBe(1)
+  })
+
+  test("a menu left open closes when the window grows to a desktop's", async ({ page }) => {
+    await page.goto("/org")
+    await menu(page).click()
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await expect(menu(page)).toBeHidden()
+    await expect(org(page)).toBeVisible()
+    await page.getByRole("radio", { name: "List" }).click() // the main area takes input again
+    await page.setViewportSize({ width: 390, height: 844 })
+    await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
+    await expect(org(page)).toBeHidden()
+  })
 })
