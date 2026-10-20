@@ -726,6 +726,136 @@ class CompanyView(BaseModel):
     ]
 
 
+class CommitInfo(BaseModel):
+    """
+    A commit of the office's clone of the company repo.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    id: Annotated[
+        str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
+    ]
+    subject: Annotated[str, Field(description='The first line of the commit message.')]
+    author: Annotated[str, Field(description="The author's name, never their email.")]
+    time: Annotated[
+        str,
+        Field(
+            description='UTC, ISO-8601 in milliseconds with a Z suffix. Fixed width, so string order is time order; a plain string, so it round-trips unchanged.',
+            pattern='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$',
+        ),
+    ]
+
+
+type Size = Annotated[
+    int,
+    Field(
+        description="The blob's size in bytes for a file or symlink; null for a folder or submodule.",
+        ge=0,
+    ),
+]
+
+
+class CompanyTreeEntry(BaseModel):
+    """
+    A file or folder in the company repo at one commit.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    path: Annotated[
+        str,
+        Field(
+            description='Repo-relative and /-separated, with no leading or trailing /.',
+            pattern='^[^/]+(?:/[^/]+)*$',
+        ),
+    ]
+    type: Literal['file', 'folder', 'symlink', 'submodule']
+    size: Annotated[
+        Size | None,
+        Field(
+            description="The blob's size in bytes for a file or symlink; null for a folder or submodule."
+        ),
+    ] = None
+
+
+class CompanyTree(BaseModel):
+    """
+    The company repo's files at HEAD of the office's clone, as GET /api/company/tree serves it.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    commit: CommitInfo
+    entries: Annotated[
+        list[CompanyTreeEntry],
+        Field(description='At most 5,000, taken breadth-first: by depth, then name.'),
+    ]
+    truncated: Annotated[
+        bool, Field(description='True when entries past the cap were left out.')
+    ]
+    skipped: Annotated[
+        int,
+        Field(
+            description="Paths left out because they aren't valid UTF-8 or would reveal a secret; they can't be read.",
+            ge=0,
+        ),
+    ]
+
+
+class CompanyFile(BaseModel):
+    """
+    One file of the company repo at a served commit, as GET /api/company/file serves it. A stale commit gets 409 stale_commit, a malformed path 400 bad_path, and a path that isn't a file at that commit 404 no_file, each as an ApiError.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    path: Annotated[
+        str,
+        Field(
+            description='Repo-relative and /-separated, with no leading or trailing /.',
+            pattern='^[^/]+(?:/[^/]+)*$',
+        ),
+    ]
+    commit: Annotated[
+        str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
+    ]
+    content: Annotated[
+        Literal['text', 'binary', 'too_large', 'hidden', 'symlink', 'submodule'],
+        Field(
+            description="What the response holds: text in `text`, a symlink's target in `target`, a hidden file's reason in `reason`; nothing for the others."
+        ),
+    ]
+    text: Annotated[
+        str | None,
+        Field(
+            description="The file's text, secrets removed, when content is text; else null."
+        ),
+    ] = None
+    target: Annotated[
+        str | None,
+        Field(
+            description='Where the symlink points, shown and never followed, when content is symlink; else null.'
+        ),
+    ] = None
+    reason: Annotated[
+        str | None,
+        Field(
+            description='Why the file is hidden, a fixed message that never quotes the file, when content is hidden; else null.'
+        ),
+    ] = None
+    rewritten: Annotated[
+        bool,
+        Field(
+            description="True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept."
+        ),
+    ] = False
+
+
 class PersonCost(BaseModel):
     model_config = ConfigDict(
         extra='forbid',

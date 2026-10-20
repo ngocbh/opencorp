@@ -572,6 +572,78 @@
         "issues": { "type": "array", "items": { "$ref": "#/$defs/RepoIssue" }, "description": "The files at this commit that don't parse." }
       }
     },
+    "CommitInfo": {
+      "type": "object", "additionalProperties": false, "required": ["id", "subject", "author", "time"],
+      "description": "A commit of the office's clone of the company repo.",
+      "properties": {
+        "id": { "$ref": "#/$defs/GitId" },
+        "subject": { "type": "string", "description": "The first line of the commit message." },
+        "author": { "type": "string", "description": "The author's name, never their email." },
+        "time": { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+    "CompanyTreeEntry": {
+      "type": "object", "additionalProperties": false, "required": ["path", "type"],
+      "description": "A file or folder in the company repo at one commit.",
+      "properties": {
+        "path": {
+          "type": "string", "pattern": "^[^/]+(?:/[^/]+)*$",
+          "description": "Repo-relative and /-separated, with no leading or trailing /."
+        },
+        "type": { "enum": ["file", "folder", "symlink", "submodule"] },
+        "size": {
+          "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null,
+          "description": "The blob's size in bytes for a file or symlink; null for a folder or submodule."
+        }
+      }
+    },
+    "CompanyTree": {
+      "type": "object", "additionalProperties": false, "required": ["commit", "entries", "truncated", "skipped"],
+      "description": "The company repo's files at HEAD of the office's clone, as GET /api/company/tree serves it.",
+      "properties": {
+        "commit": { "$ref": "#/$defs/CommitInfo" },
+        "entries": {
+          "type": "array", "items": { "$ref": "#/$defs/CompanyTreeEntry" },
+          "description": "At most 5,000, taken breadth-first: by depth, then name."
+        },
+        "truncated": { "type": "boolean", "description": "True when entries past the cap were left out." },
+        "skipped": {
+          "type": "integer", "minimum": 0,
+          "description": "Paths left out because they aren't valid UTF-8 or would reveal a secret; they can't be read."
+        }
+      }
+    },
+    "CompanyFile": {
+      "type": "object", "additionalProperties": false, "required": ["path", "commit", "content"],
+      "description": "One file of the company repo at a served commit, as GET /api/company/file serves it. A stale commit gets 409 stale_commit, a malformed path 400 bad_path, and a path that isn't a file at that commit 404 no_file, each as an ApiError.",
+      "properties": {
+        "path": {
+          "type": "string", "pattern": "^[^/]+(?:/[^/]+)*$",
+          "description": "Repo-relative and /-separated, with no leading or trailing /."
+        },
+        "commit": { "$ref": "#/$defs/GitId" },
+        "content": {
+          "enum": ["text", "binary", "too_large", "hidden", "symlink", "submodule"],
+          "description": "What the response holds: text in `text`, a symlink's target in `target`, a hidden file's reason in `reason`; nothing for the others."
+        },
+        "text": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "The file's text, secrets removed, when content is text; else null."
+        },
+        "target": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "Where the symlink points, shown and never followed, when content is symlink; else null."
+        },
+        "reason": {
+          "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
+          "description": "Why the file is hidden, a fixed message that never quotes the file, when content is hidden; else null."
+        },
+        "rewritten": {
+          "type": "boolean", "default": false,
+          "description": "True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept."
+        }
+      }
+    },
     "PersonCost": {
       "type": "object", "additionalProperties": false, "required": ["usd", "unpriced_sessions"],
       "properties": {

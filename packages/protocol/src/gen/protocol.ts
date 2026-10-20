@@ -673,6 +673,95 @@ export interface CompanyView {
   issues: RepoIssue[];
 }
 /**
+ * A commit of the office's clone of the company repo.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "CommitInfo".
+ */
+export interface CommitInfo {
+  id: GitId;
+  /**
+   * The first line of the commit message.
+   */
+  subject: string;
+  /**
+   * The author's name, never their email.
+   */
+  author: string;
+  time: Timestamp;
+}
+/**
+ * A file or folder in the company repo at one commit.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "CompanyTreeEntry".
+ */
+export interface CompanyTreeEntry {
+  /**
+   * Repo-relative and /-separated, with no leading or trailing /.
+   */
+  path: string;
+  type: "file" | "folder" | "symlink" | "submodule";
+  /**
+   * The blob's size in bytes for a file or symlink; null for a folder or submodule.
+   */
+  size?: number | null;
+}
+/**
+ * The company repo's files at HEAD of the office's clone, as GET /api/company/tree serves it.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "CompanyTree".
+ */
+export interface CompanyTree {
+  commit: CommitInfo;
+  /**
+   * At most 5,000, taken breadth-first: by depth, then name.
+   */
+  entries: CompanyTreeEntry[];
+  /**
+   * True when entries past the cap were left out.
+   */
+  truncated: boolean;
+  /**
+   * Paths left out because they aren't valid UTF-8 or would reveal a secret; they can't be read.
+   */
+  skipped: number;
+}
+/**
+ * One file of the company repo at a served commit, as GET /api/company/file serves it. A stale commit gets 409 stale_commit, a malformed path 400 bad_path, and a path that isn't a file at that commit 404 no_file, each as an ApiError.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "CompanyFile".
+ */
+export interface CompanyFile {
+  /**
+   * Repo-relative and /-separated, with no leading or trailing /.
+   */
+  path: string;
+  commit: GitId;
+  /**
+   * What the response holds: text in `text`, a symlink's target in `target`, a hidden file's reason in `reason`; nothing for the others.
+   */
+  content: "text" | "binary" | "too_large" | "hidden" | "symlink" | "submodule";
+  /**
+   * The file's text, secrets removed, when content is text; else null.
+   */
+  text?: string | null;
+  /**
+   * Where the symlink points, shown and never followed, when content is symlink; else null.
+   */
+  target?: string | null;
+  /**
+   * Why the file is hidden, a fixed message that never quotes the file, when content is hidden; else null.
+   */
+  reason?: string | null;
+  /**
+   * True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept.
+   */
+  rewritten?: boolean;
+}
+/**
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "PersonCost".
  */

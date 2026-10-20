@@ -48,7 +48,7 @@ BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "Rep
           "ConnectionList", "ModelOption", "ModelList", "SetModelRequest", "AddConnectionRequest",
           "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView", "CostReport",
           "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
-          "HqLoginRequest"}
+          "HqLoginRequest", "CompanyTree", "CompanyFile"}
 
 
 def test_every_route_body_has_a_fixture():
@@ -100,3 +100,27 @@ def test_a_login_request_is_closed_and_needs_a_password():
     assert sub["additionalProperties"] is False
     assert sub["required"] == ["handle", "password"]
     assert sub["properties"]["password"]["minLength"] == 1
+
+
+SOURCE = {"CommitInfo", "CompanyTreeEntry", "CompanyTree", "CompanyFile"}
+
+
+def test_source_defs_have_fixtures():
+    assert SOURCE <= {p.stem for p in FIXTURES.glob("*.json")}
+    assert SOURCE <= {p.name.split(".", 1)[0] for p in (FIXTURES / "invalid").glob("*.json")}
+
+
+def test_source_entry_types_and_file_states():
+    defs = _schema()["$defs"]
+    assert defs["CompanyTreeEntry"]["properties"]["type"]["enum"] == ["file", "folder", "symlink", "submodule"]
+    assert defs["CompanyFile"]["properties"]["content"]["enum"] == [
+        "text", "binary", "too_large", "hidden", "symlink", "submodule"]
+    assert defs["CompanyFile"]["required"] == ["path", "commit", "content"]
+    assert defs["CompanyTree"]["required"] == ["commit", "entries", "truncated", "skipped"]
+
+
+def test_a_commit_names_its_author_without_an_email():
+    sub = _schema()["$defs"]["CommitInfo"]
+    assert sub["required"] == ["id", "subject", "author", "time"]
+    assert sub["properties"].keys() == {"id", "subject", "author", "time"}
+    assert sub["properties"]["time"] == {"$ref": "#/$defs/Timestamp"}
