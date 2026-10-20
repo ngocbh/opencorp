@@ -5,6 +5,7 @@ import Inbox from "lucide-solid/icons/inbox"
 import Network from "lucide-solid/icons/network"
 import Repeat from "lucide-solid/icons/repeat"
 import RotateCcwClock from "lucide-solid/icons/rotate-ccw-clock"
+import ScrollText from "lucide-solid/icons/scroll-text"
 import Target from "lucide-solid/icons/target"
 import Unplug from "lucide-solid/icons/unplug"
 import {
@@ -249,6 +250,7 @@ export function Shell(props: ParentProps) {
               </ul>
               <Section label="Work">
                 <For each={WORK}>{(soon) => <SoonItem soon={soon} />}</For>
+                <Item href="/runs" label="Run Logs" icon={ScrollText} onClick={close} />
               </Section>
               <Section label="Company">
                 <Item href="/org" label="Org" icon={Network} onClick={close} />

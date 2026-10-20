@@ -301,6 +301,8 @@ function createOffice(toSignIn: () => void) {
     signingOut,
     checkVersion,
     loadWorkItem,
+    /** Calls `fn` for each event of `type` once it is applied; returns an unsubscribe (as the sync's `on`). */
+    on: sync.on,
   }
 }
 

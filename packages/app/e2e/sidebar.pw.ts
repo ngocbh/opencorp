@@ -40,7 +40,7 @@ const SOON: [string, RegExp][] = [
 ]
 const soon = (page: Page, name: string) => nav(page).getByRole("link", { name: `${name} soon`, exact: true })
 
-test("the sidebar: the company and its connection, Inbox, then Work and Company, with only Org enabled", async ({ page }) => {
+test("the sidebar: the company and its connection, Inbox, then Work and Company, with Run Logs and Org enabled", async ({ page }) => {
   await page.goto("/org")
   await expect(nav(page).getByRole("heading", { name: "Acme", level: 1 })).toBeVisible()
   await expect(nav(page).getByRole("status", { name: "Connection" })).toHaveText("live")
@@ -57,6 +57,8 @@ test("the sidebar: the company and its connection, Inbox, then Work and Company,
           - link "Goals soon" [disabled]
         - listitem:
           - link "Routines soon" [disabled]
+        - listitem:
+          - link "Run Logs"
     - group "Company":
       - heading "Company" [level=2]
       - list:
@@ -70,10 +72,13 @@ test("the sidebar: the company and its connection, Inbox, then Work and Company,
           - link "Activity soon" [disabled]
   `)
   await expect(soon(page, "Inbox")).toBeVisible()
-  // Org is the one page there is: the only link with an address, and the only one enabled.
-  await expect(nav(page).locator("a[href]")).toHaveCount(1)
-  await expect(nav(page).locator("a[href]")).toHaveAttribute("href", "/org")
-  await expect(nav(page).getByRole("link", { disabled: false })).toHaveText(["Org"])
+  // Run Logs and Org are the pages there are: the only links with an address, and the only ones enabled.
+  await expect(nav(page).locator("a[href]")).toHaveCount(2)
+  expect(await nav(page).locator("a[href]").evaluateAll((as) => as.map((a) => a.getAttribute("href")))).toEqual([
+    "/runs",
+    "/org",
+  ])
+  await expect(nav(page).getByRole("link", { disabled: false })).toHaveText(["Run Logs", "Org"])
   // The sidebar stays on screen however long the company view is: who is signed in and Sign out are in view.
   await expect(page.getByRole("figure", { name: "Acme org chart" })).toBeVisible()
   await expect(nav(page).getByText(/^@ngocbh$/)).toBeInViewport()
@@ -114,6 +119,7 @@ const ICONS: [string, string][] = [
   ["Issues", "circle-check"],
   ["Goals", "target"],
   ["Routines", "repeat"],
+  ["Run Logs", "scroll-text"],
   ["Org", "network"],
   ["SOPs", "boxes"],
   ["Connections", "unplug"],
@@ -123,7 +129,7 @@ const ICONS: [string, string][] = [
 test("every item has a small icon before its label, hidden from assistive tech", async ({ page }) => {
   await page.goto("/org")
   for (const [name, icon] of ICONS) {
-    const item = name === "Org" ? org(page) : soon(page, name)
+    const item = name === "Org" || name === "Run Logs" ? nav(page).getByRole("link", { name, exact: true }) : soon(page, name)
     const svg = item.locator("svg")
     await expect(svg).toHaveCount(1)
     await expect(svg).toHaveClass(new RegExp(`\\blucide-${icon}\\b`))
@@ -206,6 +212,8 @@ test.describe("on a phone", () => {
     await expect(row).not.toBeFocused()
     await menu(page).focus()
     await page.keyboard.press("Tab")
+    await expect(nav(page).getByRole("link", { name: "Run Logs" })).toBeFocused()
+    await page.keyboard.press("Tab")
     await expect(org(page)).toBeFocused()
     await page.keyboard.press("Tab")
     await expect(nav(page).getByRole("button", { name: "Sign out" })).toBeFocused()
@@ -250,4 +258,12 @@ test.describe("on a phone", () => {
     await expect(menu(page)).toHaveAttribute("aria-expanded", "false")
     await expect(org(page)).toBeHidden()
   })
+})
+
+test("Run Logs is the current page at /runs and its runs", async ({ page }) => {
+  await page.goto("/org")
+  await nav(page).getByRole("link", { name: "Run Logs" }).click()
+  await expect(page).toHaveURL("/runs")
+  await expect(nav(page).getByRole("link", { name: "Run Logs" })).toHaveAttribute("aria-current", "page")
+  await expect(page.getByRole("table", { name: "Runs" })).toBeVisible()
 })

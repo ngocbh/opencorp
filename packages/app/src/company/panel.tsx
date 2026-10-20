@@ -1,7 +1,21 @@
-import type { Group, Person } from "@opencorp/protocol"
-import { createEffect, createMemo, createUniqueId, For, on, onCleanup, onMount, Show, type ParentProps } from "solid-js"
+import type { Group, Person, RunSummary } from "@opencorp/protocol"
+import { A } from "@solidjs/router"
+import {
+  createEffect,
+  createMemo,
+  createSignal,
+  createUniqueId,
+  For,
+  on,
+  onCleanup,
+  onMount,
+  Show,
+  type ParentProps,
+} from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
+import { hrefOf } from "../runs/filters"
+import { flowText, shortId } from "../runs/format"
 import { sourceHref } from "./address"
 import { costText } from "./format"
 
@@ -20,9 +34,12 @@ function Section(props: ParentProps<{ title: string }>) {
   )
 }
 
+/** How many of a person's runs the panel lists. */
+const RECENT = 5
+
 /**
- * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, and live sessions with
- * what each is doing. Beside the list it's a complementary region; on a phone it's a full-width modal sheet over it.
+ * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, live sessions with
+ * what each is doing, and their recent runs. Beside the list it's a complementary region; on a phone it's a full-width modal sheet over it.
  */
 export function Panel(props: {
   person: Person
@@ -53,6 +70,27 @@ export function Panel(props: {
     on(workItemIds, (ids) => {
       for (const id of ids.split(" ")) if (id) office.loadWorkItem(id)
     }),
+  )
+  /** Their newest runs, driven or taken part in, read when the panel opens on them; undefined until read. */
+  const [runs, setRuns] = createSignal<RunSummary[]>()
+  const [runsFailed, setRunsFailed] = createSignal(false)
+  createEffect(
+    on(
+      () => props.person.handle,
+      (person) => {
+        let current = true
+        onCleanup(() => (current = false))
+        setRuns(undefined)
+        setRunsFailed(false)
+        office.client.runs.list({ person, limit: RECENT }).then(
+          (page) => current && setRuns(page.runs.slice(0, RECENT)),
+          (error) => {
+            if (current) setRunsFailed(true)
+            console.error("Failed to read a person's runs", { person, error })
+          },
+        )
+      },
+    ),
   )
   const headingId = createUniqueId()
   let root!: HTMLDivElement
@@ -167,6 +205,34 @@ export function Panel(props: {
             </For>
           </ul>
         </Show>
+      </Section>
+      <Section title="Recent runs">
+        <Show when={!runsFailed()} fallback={<p class="text-sm">Couldn't read the runs.</p>}>
+          <Show when={runs()} fallback={<p class={`text-sm ${MUTED}`}>Reading…</p>}>
+            {(rs) => (
+              <Show when={rs().length} fallback={<p class="text-sm">None</p>}>
+                <ul aria-label="Recent runs" class="space-y-1 text-sm">
+                  <For each={rs()}>
+                    {(r) => (
+                      <li>
+                        <A href={`/runs/${r.run_id}`} class="font-mono underline">
+                          {shortId(r.run_id)}
+                        </A>{" "}
+                        · {r.status} · {flowText(r)}
+                      </li>
+                    )}
+                  </For>
+                </ul>
+              </Show>
+            )}
+          </Show>
+        </Show>
+        <A
+          href={hrefOf({ person: props.person.handle })}
+          class="mt-1 inline-block rounded text-sm underline outline-none focus-visible:ring-2"
+        >
+          All runs
+        </A>
       </Section>
     </div>
   )
