@@ -157,6 +157,8 @@ class Logins:
             raise Busy
         await self._checks.acquire()  # free, just checked: returns at once
         try:
+            # Read from git on every sign-in, not cached: every handle, known or not, pays the same read, so timing
+            # doesn't tell them apart, and the semaphore bounds how many reads run at once.
             phc = await self.sessions.password_hash(handle)
         except BaseException:
             self._checks.release()

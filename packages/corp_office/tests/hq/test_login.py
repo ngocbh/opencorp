@@ -348,3 +348,27 @@ async def test_on_hq_sock_the_peer_is_logged_as_hq_sock(office, hq, with_passwor
                                  headers={"host": host, "origin": f"http://{host}"}) as c:
         assert (await login(c, password="a wrong guess")).status_code == 401
     assert "sign-in for @ngocbh from hq.sock failed" in caplog.text
+
+
+async def test_a_password_changed_during_the_check_is_the_same_401(web, office, company, with_password, monkeypatch,
+                                                                   caplog):
+    caplog.set_level(logging.INFO)
+    real = login_module.check_password
+
+    def then_changed(pw, phc):
+        matched = real(pw, phc)
+        set_password(company, "ngocbh", hash_password("changed meanwhile"))
+        return matched
+
+    monkeypatch.setattr(login_module, "check_password", then_changed)
+    r = await login(web)
+    assert (r.status_code, r.json()["error"]) == (401, "bad_credentials") and "set-cookie" not in r.headers
+    assert office.store.list_hq_sessions() == [] and "sign-in for @ngocbh from 127.0.0.1 failed" in caplog.text
+
+
+async def test_a_throttled_request_never_checks_the_password(web, with_password, fast_checks, monkeypatch):
+    for _ in range(5):
+        await login(web, password="a wrong guess")
+    checked = []
+    monkeypatch.setattr(login_module, "check_password", lambda pw, phc: checked.append(phc) or True)
+    assert (await login(web)).status_code == 429 and checked == []
