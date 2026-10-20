@@ -1055,7 +1055,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6" },
     { name = "questionary", specifier = ">=2.1" },
     { name = "starlette", specifier = ">=1.0" },
-    { name = "uvicorn", specifier = ">=0.54" },
+    { name = "uvicorn", specifier = ">=0.54,<0.55" },
     { name = "yian", extras = ["all"], editable = "packages/yian" },
 ]
 

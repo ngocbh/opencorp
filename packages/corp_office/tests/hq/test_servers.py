@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import os
+import signal
 import socket
 import stat
 
@@ -287,3 +288,9 @@ async def test_stop_logs_what_went_wrong_instead_of_raising(short_office, hq, mo
     await asyncio.sleep(0.05)
     await listeners.stop()
     assert "no such port" in caplog.text and "failed on the way out" in caplog.text
+
+
+async def test_an_hq_server_leaves_the_signal_handlers_to_the_office(office, hq, short_dir):
+    before = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    async with hq_served(office, hq, short_dir / "hq.sock"):
+        assert {sig: signal.getsignal(sig) for sig in before} == before
