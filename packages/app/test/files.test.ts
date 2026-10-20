@@ -75,7 +75,7 @@ test("each content state's note; plain text has none", () => {
   expect(noteOf({ content: "submodule" })).toBe("Submodule.")
 })
 
-test("a file's lines:a final newline doesn't add an empty line; CRLF splits too", () => {
+test("a file's lines: a final newline doesn't add an empty line; CRLF splits too", () => {
   expect(lines("a\nb\n")).toEqual(["a", "b"])
   expect(lines("a\r\n\nb")).toEqual(["a", "", "b"])
   expect(lines("")).toEqual([""])

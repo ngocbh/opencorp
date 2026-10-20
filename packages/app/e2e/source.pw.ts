@@ -44,6 +44,11 @@ test("Source shows the tree, folders first, and opens a file with line numbers",
   await expect(pane(page).getByTestId("line-number")).toHaveText(["1", "2", "3", "4"])
   await expect(item(page, "README.md")).toHaveAttribute("aria-selected", "true")
   await expect(note(page)).toHaveCount(0)
+  // A row's name says what its hidden icon shows, for the types a name can't tell.
+  await expect(item(page, "latest.md, symlink")).toBeVisible()
+  await expect(item(page, "vendor")).toBeVisible()
+  await item(page, "vendor").click()
+  await expect(item(page, "yian, submodule")).toBeVisible()
 })
 
 test("a long line wraps, and Copy copies the text as shown", async ({ page, context }) => {
@@ -169,6 +174,7 @@ test("View source in the panel opens the person's folder and closes the panel", 
   await expect(page.getByRole("complementary")).toHaveCount(0)
   await expect(entries(page)).toHaveText(["person.yaml", "profile.md"])
   await expect(item(page, "kai")).toHaveAttribute("aria-selected", "true")
+  await expect(item(page, "kai")).toBeFocused() // the panel that had focus is gone
 })
 
 test("a new commit refetches the tree and the open file", async ({ page, request }) => {
@@ -202,6 +208,14 @@ test("a folder gone from the latest commit links the folder above it", async ({ 
   await expect(gone(page).getByRole("link", { name: "people" })).toBeVisible()
 })
 
+test("a gone path's breadcrumb links only the folders that exist", async ({ page }) => {
+  await page.goto("/org?view=source&path=people/nobody/notes/a.md")
+  await expect(gone(page)).toHaveText("people/nobody/notes/a.md isn't in the latest commit. Open people.")
+  const crumbs = pane(page).getByRole("navigation", { name: "Breadcrumb" })
+  await expect(crumbs.getByRole("listitem")).toHaveText(["Acme", "people", "nobody", "notes", "a.md"])
+  await expect(crumbs.getByRole("link")).toHaveText(["Acme", "people"])
+})
+
 test("a 409 on a file reads the tree again once and retries at its commit", async ({ page, request }) => {
   await page.goto("/org?view=source")
   await expect(tree(page)).toBeVisible()
@@ -221,7 +235,7 @@ test("a second 409 shows an error with Retry instead of reading again", async ({
   await request.post("/__fixture/set", { data: { source: { served: [], serve: false } } })
   await item(page, "README.md").click()
   const alert = pane(page).getByRole("alert")
-  await expect(alert).toContainText("Couldn't read README.md")
+  await expect(alert).toContainText("Couldn't read README.md. The office moved to a newer commit.")
   expect((await files(request)).length).toBe(2)
   await request.post("/__fixture/set", { data: { source: { serve: true } } })
   await alert.getByRole("button", { name: "Retry" }).click()
@@ -248,6 +262,20 @@ test("a truncated listing says so, and a deep link past it still opens", async (
   await expect(lines(page).first()).toHaveText("# Kai writes the code.")
   await expect(page.getByText(`Only the first ${s.tree.entries.length} entries are listed.`)).toBeVisible()
   await expect(page.getByText("2 paths aren't listed.")).toBeVisible()
+  const n = s.tree.entries.length
+  // A folder past the cap can't be told from a gone one, and a listed folder's entries may all be past it.
+  await page.goto("/org?view=source&path=people/kai")
+  await expect(gone(page)).toHaveText(`people/kai isn't in the first ${n} entries listed. Open people.`)
+  await page.goto("/org?view=source&path=people")
+  await expect(entries(page)).toHaveText([`Entries here are past the first ${n} listed.`])
+})
+
+test("a folder with no listed entries says so", async ({ page, request }) => {
+  const s = source()
+  s.tree.entries = s.tree.entries.filter((e) => !e.path.startsWith("people/"))
+  await request.post("/__fixture/set", { data: { source: { tree: s.tree } } })
+  await page.goto("/org?view=source&path=people")
+  await expect(entries(page)).toHaveText(["Nothing here is listed."])
 })
 
 test("the tree's keys: arrows, Home and End, expand and collapse; only Enter opens", async ({ page }) => {
@@ -288,6 +316,7 @@ test("a phone gets List | Source, the folder list with a breadcrumb, and files a
   await entries(page).getByRole("link", { name: "person.yaml" }).click()
   await expect(page).toHaveURL(/path=people\/kai\/person\.yaml$/)
   await expect(lines(page).first()).toHaveText("# Kai writes the code.")
+  await expect(pane(page)).toBeFocused() // the tapped link is gone; focus isn't left on the page
   const width = await pane(page).evaluate((el) => el.getBoundingClientRect().width)
   expect(width).toBeGreaterThan(370)
   const crumbs = pane(page).getByRole("navigation", { name: "Breadcrumb" })
@@ -299,6 +328,8 @@ test("a phone gets List | Source, the folder list with a breadcrumb, and files a
   await expect(page).toHaveURL(/\/org\?view=source$/)
   await page.getByRole("radio", { name: "List" }).click()
   await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
+  // A phone's choice isn't saved: a desktop still opens on the chart.
+  expect(await page.evaluate(() => localStorage.getItem("hq.view"))).toBeNull()
 })
 
 test("on a phone, View source in the sheet opens the person's folder", async ({ page }) => {
@@ -309,4 +340,5 @@ test("on a phone, View source in the sheet opens the person's folder", async ({ 
   await expect(page.getByRole("dialog")).toHaveCount(0)
   await expect(page).toHaveURL(/path=people\/kai$/)
   await expect(entries(page)).toHaveText(["person.yaml", "profile.md"])
+  await expect(pane(page)).toBeFocused()
 })

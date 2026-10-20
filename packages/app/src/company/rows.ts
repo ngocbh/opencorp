@@ -10,9 +10,16 @@ export type Item =
   | { kind: "team"; id: string; group: Group | null; children: Item[] }
 
 /** What the tree keys need of an item: the company's rows and Source's files both have it. */
-export type Node<T> = { id: string; children: T[] }
+export type Nested<T> = { id: string; children: T[] }
 
-export type Row<T extends Node<T> = Item> = { item: T; level: number; parent: string | null; open: boolean; setsize: number; posinset: number }
+export type Row<T extends Nested<T> = Item> = {
+  item: T
+  level: number
+  parent: string | null
+  open: boolean
+  setsize: number
+  posinset: number
+}
 
 /** Items for the tree by manager; an item's id is its person's handle. */
 export function fromTree(roots: TreeNode[]): Item[] {
@@ -26,7 +33,7 @@ export const teamName = (item: Item) => (item.kind === "team" ? (item.group?.nam
 export const label = (item: Item) => (item.kind === "person" ? `${item.person.name}, ${item.person.title}` : teamName(item)!)
 
 /** The rows a viewer sees: every root, and the children of open items. `level` starts at 1, as aria-level does. */
-export function visibleRows<T extends Node<T>>(items: T[], isOpen: (item: T, depth: number) => boolean): Row<T>[] {
+export function visibleRows<T extends Nested<T>>(items: T[], isOpen: (item: T, depth: number) => boolean): Row<T>[] {
   const rows: Row<T>[] = []
   const walk = (list: T[], level: number, parent: string | null) =>
     list.forEach((item, i) => {
@@ -41,7 +48,7 @@ export function visibleRows<T extends Node<T>>(items: T[], isOpen: (item: T, dep
 export type Move = { focus: string } | { open: string; to: boolean }
 
 /** What `key` does on the row `at` (the WAI-ARIA tree pattern); null for keys the tree doesn't use. */
-export function moveFocus<T extends Node<T>>(rows: Row<T>[], at: string, key: string): Move | null {
+export function moveFocus<T extends Nested<T>>(rows: Row<T>[], at: string, key: string): Move | null {
   const i = rows.findIndex((r) => r.item.id === at)
   if (i < 0) return rows.length ? { focus: rows[0].item.id } : null
   const row = rows[i]

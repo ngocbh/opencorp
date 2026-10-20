@@ -94,7 +94,8 @@ export default function Company() {
     if (v === view()) return
     if (v === "source") return navigate(sourceHref(""))
     const leaving = view() === "source"
-    prefs.setView(v)
+    // A phone always starts on the list: its taps don't change what a desktop opens on.
+    if (desktop()) prefs.setView(v)
     if (leaving) navigate("/org")
   }
   /** The person the side panel shows. */
