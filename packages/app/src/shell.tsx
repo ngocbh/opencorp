@@ -39,7 +39,12 @@ export function Shell(props: ParentProps) {
             </p>
           </div>
         </nav>
-        <main class="min-w-0 flex-1">{props.children}</main>
+        <main class="min-w-0 flex-1">
+          <Show when={office.ready() && office.status() !== "online"}>
+            <p class="bg-amber-100 px-4 py-2 text-sm dark:bg-amber-950">Reconnecting to the office…</p>
+          </Show>
+          {props.children}
+        </main>
       </div>
     </Show>
   )

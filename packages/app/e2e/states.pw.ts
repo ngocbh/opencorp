@@ -40,3 +40,28 @@ test("a rebuilt dist reloads the page once", async ({ page, request }) => {
   await page.waitForTimeout(1000)
   expect(loads).toBe(2) // the first load and one reload; the sessionStorage guard stops a loop
 })
+
+test("a dropped office shows reconnecting, then a fresh snapshot", async ({ page, request }) => {
+  await page.goto("/")
+  await expect(connection(page)).toHaveText("live")
+  await request.post("/__fixture/set", { data: { view: { company: { name: "Acme Two", ceo: "ngocbh" } } } })
+  await request.post("/__fixture/drop", { data: { ms: 1500 } })
+  await expect(connection(page)).toHaveText("reconnecting…")
+  await expect(page.getByText("Reconnecting to the office…")).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Acme Two" })).toBeVisible({ timeout: 15_000 })
+  await expect(connection(page)).toHaveText("live")
+})
+
+test("a reconnect with an open card in view never asks for the card by id", async ({ page, request }) => {
+  // HQ has no GET /api/questions/{id}: re-reading held cards by id would fail every bootstrap and loop.
+  await request.post("/__fixture/set", {
+    data: { sessions: [session("S1", "ngocbh", "idle")], questions: [card("Q1", "S1", "ngocbh")] },
+  })
+  await page.goto("/")
+  await expect(connection(page)).toHaveText("live")
+  await request.post("/__fixture/drop", { data: { ms: 500 } })
+  await expect(connection(page)).toHaveText("reconnecting…")
+  await expect(connection(page)).toHaveText("live", { timeout: 15_000 })
+  const log = await (await request.get("/__fixture/log")).json()
+  expect(log.api.filter((p: string) => p.startsWith("/api/questions/"))).toEqual([])
+})
