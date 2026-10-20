@@ -95,6 +95,11 @@ export default function Company() {
   const [selected, setSelected] = createSignal<string>()
   const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
   const shown = () => byHandle().get(selected() ?? "")
+  /** The panel's person's reports, by name. */
+  const reports = createMemo(() => {
+    const handle = shown()?.handle
+    return handle ? s.people.filter((x) => x.manager === handle).sort(byName) : []
+  })
   // Someone who leaves the company closes their panel: coming back at a later commit mustn't reopen it.
   createEffect(() => {
     if (selected() !== undefined && !shown()) setSelected(undefined)
@@ -161,7 +166,7 @@ export default function Company() {
             <Panel
               person={p()}
               manager={p().manager ? byHandle().get(p().manager!) : undefined}
-              reports={s.people.filter((x) => x.manager === p().handle).sort(byName)}
+              reports={reports()}
               groups={groups()}
               onSelect={setSelected}
               onClose={() => setSelected(undefined)}
