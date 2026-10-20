@@ -1,5 +1,5 @@
 """``opencorp doctor``: check the office home (there and private), company repo, provider and connections, service,
-daemon, sandbox, and Codex."""
+daemon, HQ, sandbox, and Codex."""
 
 import os
 import re
@@ -11,14 +11,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import httpx
 import psutil
 
+from opencorp.auth.identity import identity_path, read_identity
 from opencorp.chat.provider import ProviderError, load_provider
 from opencorp.company.lint import lint
 from opencorp.company.loader import load_repo
 from opencorp.company_template import is_new, missing_files
 from opencorp.daemon.app import OfficePaths
 from opencorp.harness.codex import CodexMissing, codex_command
+from opencorp.hq.servers import RETRY_S
 from opencorp.install import launchd, legacy, service, systemd
 from opencorp.install.launch import REPO, Host, Launch, launch
 from opencorp.install.onboard import SET_UP, OnboardError, check_provider, stop_to_top_up, with_default_model
@@ -291,13 +294,92 @@ def version_check(run: Launch, pid: int, newest: float) -> Check:
     return Check("version", "ok", f"pid {pid} runs the current code")
 
 
+HqUnread = Literal["refused", "unreachable", "unreadable"]
+"""Why ``GET /hq`` couldn't be read: the office refused this device's token; no office answered, or one from before
+HQ, in time; or its answer isn't an HQ status."""
+
+
+def hq_status(socket: Path, home: Path, timeout: float = 2.0) -> dict | HqUnread:
+    """``GET /hq`` from the office on ``socket``, sent with this device's token if it has one, or why it couldn't be
+    read."""
+    me = read_identity(identity_path(home))
+    try:
+        with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url="http://office", timeout=timeout,
+                          headers=me.headers() if me else {}) as client:
+            r = client.get("/hq")
+    except httpx.HTTPError:
+        return "unreachable"
+    if r.status_code == 401:
+        return "refused"
+    if r.status_code != 200:  # 404 from an office before HQ, 501 from one without it attached
+        return "unreachable"
+    try:
+        return _read_by_checks(r.json())
+    except (ValueError, KeyError, TypeError):
+        return "unreadable"
+
+
+def _read_by_checks(body: dict) -> dict:
+    """``body``, once every part of it that ``hq_checks`` reads is there; KeyError or TypeError if one isn't."""
+    tcp, health = body["tcp"], body["health"]
+    _ = (body["socket"], body["url"], tcp["enabled"], tcp["port"], tcp["listening"], tcp["error"],
+         health["office"]["api"], health["app"] and health["app"]["api"], list(body.get("warnings", [])))
+    return body
+
+
+_SERVER_ENDED = "its server ended"
+"""How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind."""
+
+_UNREAD = {
+    "refused": "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
+    "unreachable": "the office didn't say where HQ listens (an office from before HQ?): run `opencorp restart`",
+    "unreadable": "the office's answer about HQ isn't one doctor can read (an office running other code?): "
+                  "run `opencorp restart`",
+}
+
+
+def hq_checks(status: dict | HqUnread, office_dir: Path, repo: Path) -> list[Check]:
+    """Where HQ listens, whether the web app is built for this office, and HQ's own warnings."""
+    if isinstance(status, str):
+        return [Check("hq", "warn", _UNREAD[status])]
+    tcp = status["tcp"]
+    if tcp["listening"]:
+        found = [Check("hq", "ok", f"web app at {status['url']}, and on {status['socket']}")]
+    elif not tcp["enabled"]:
+        found = [Check("hq", "ok", f"on {status['socket']} only (the web port is off); `opencorp pair` prints "
+                                   "the SSH forward")]
+    elif not (error := tcp["error"]):
+        found = [Check("hq", "warn", f"port {tcp['port']} isn't listening yet (HQ is binding it)")]
+    elif error.startswith(_SERVER_ENDED):
+        found = [Check("hq", "warn", f"port {tcp['port']}: {error.removeprefix('its ')}; HQ binds it again in "
+                                     f"{RETRY_S:g} s, or run `opencorp restart`")]
+    else:
+        found = [Check("hq", "warn", f"port {tcp['port']} isn't free ({error}); HQ tries it again every {RETRY_S:g} s."
+                                     f" Free it, or set another \"port\" in {office_dir / 'hq.json'} and run "
+                                     "`opencorp restart`")]
+    app, office = status["health"]["app"], status["health"]["office"]
+    if app is None and not (repo / "packages" / "app").is_dir():  # installed from a package, not a checkout
+        found.append(Check("web app", "warn", "this install has no web app; it's built in a checkout of the "
+                                              "opencorp repo"))
+    elif app is None:
+        found.append(Check("web app", "warn", f"not built: run `bun run build` in {repo}"))
+    elif app["api"] != office["api"]:
+        found.append(Check("web app", "warn", f"built for {app['api']}, which doesn't match the office's "
+                                              f"{office['api']}: run `bun run build` in {repo}, or `opencorp restart`"))
+    else:
+        found.append(Check("web app", "ok", f"built for {office['api']}"))
+    return found + [Check("hq warning", "warn", w) for w in status.get("warnings", [])]
+
+
 def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
            probe: Callable[[], str | None] = sandbox_problem,
            codex: Callable[[dict[str, str], Mapping[str, str], str | None], Check] = codex_check,
-           environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None) -> list[Check]:
+           environ: Mapping[str, str] = os.environ, leftovers: legacy.Leftovers | None = None,
+           hq: Callable[[Path, Path], dict | HqUnread] = hq_status) -> list[Check]:
     """Every check, in the order onboarding sets things up, with what an install from before the rename left.
 
     ``leftovers`` is what ``legacy.find`` already found for ``environ`` and ``repo``; it is looked for when None.
+    ``hq`` reads HQ's status from the office socket and the OpenCorp home.
     """
     host = host or Host()
     run = launch(home, repo=repo, user_home=host.user_home)
@@ -319,6 +401,7 @@ def checks(home: Path, *, host: Host | None = None, repo: Path = REPO,
         found.append(Check("office", "ok", f"answering on {run.socket} (pid {pid or '?'})"))
         if pid.isdecimal():
             found.append(version_check(run, int(pid), newest_source(repo)))
+        found += hq_checks(hq(run.socket, run.home), paths.office, repo)
     elif error := _crash(run.log):
         found.append(Check("office", "fail", f"not answering on {run.socket}; its last start failed: {error}"
                                              f" (log: {run.log}). {_next_step(run, host)}"))

@@ -1,8 +1,10 @@
+import asyncio
 import json
 import os
 import subprocess
 import time
 
+import httpx
 import psutil
 
 from opencorp.chat.connections import ConnectionFile, Connections
@@ -15,6 +17,7 @@ from opencorp.install.onboard import SET_UP, write_private
 from opencorp.profile.debrief import DEBRIEF_FLOW
 from opencorp.worker.spawn import INHERITED_ENV
 from tests.company.conftest import _isolate_git  # noqa: F401
+from tests.daemon.conftest import company, office, profile_stores, short_dir  # noqa: F401
 
 from .conftest import Runner, make_host
 
@@ -39,7 +42,8 @@ def by_name(checks):
 def run_checks(tmp_path, paths, runner=None, answers=False, probe=lambda: None, platform="darwin"):
     host = make_host(tmp_path, runner or Runner(), answers=lambda s: answers, platform=platform)
     return doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=probe,
-                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={})
+                         codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={},
+                         hq=lambda socket, home: "unreachable")
 
 
 def test_a_company_without_a_first_commit_is_told_to_onboard(tmp_path):
@@ -463,3 +467,130 @@ def test_a_missing_default_home_next_to_the_old_one_says_where_the_office_is(tmp
     got = by_name(run_checks(tmp_path, OfficePaths(tmp_path / legacy.NEW_HOME)))
     assert got["home"] == Check("home", "fail", f"no office home at {tmp_path / legacy.NEW_HOME}; the office from"
                                 f" before the rename is at {old} (see leftovers)")
+
+
+async def test_hq_status_is_read_with_this_devices_token(office, short_dir, company):
+    from opencorp.auth.identity import Identity, identity_path, write_identity
+    from opencorp.auth.tokens import new_token
+    from opencorp.hq.core import attach
+    from tests.daemon.conftest import served
+    from tests.daemon.test_auth import give_device
+
+    token = new_token()
+    give_device(company, "ngocbh", "mac", token)  # enforced from now on
+    write_identity(identity_path(short_dir), Identity("ngocbh", "mac", token))
+    attach(office, listen=False)
+    async with served(office, short_dir / "o.sock"):
+        status = await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir)
+        assert status["socket"].endswith("hq.sock")
+        (short_dir / "identity.json").unlink()
+        assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) == "refused"  # 401
+
+
+async def test_an_office_without_hq_or_no_office_at_all_is_unreachable(office, short_dir):
+    from tests.daemon.conftest import served
+
+    async with served(office, short_dir / "o.sock"):  # HQ not attached: 501
+        assert await asyncio.to_thread(doctor.hq_status, short_dir / "o.sock", short_dir) == "unreachable"
+    assert doctor.hq_status(short_dir / "nothing.sock", short_dir) == "unreachable"
+
+
+def answering(monkeypatch, handler):
+    """Make hq_status's socket transport answer with ``handler`` instead."""
+    monkeypatch.setattr(doctor.httpx, "HTTPTransport", lambda uds: httpx.MockTransport(handler))
+
+
+def test_an_office_from_before_hq_is_unreachable(tmp_path, monkeypatch):
+    answering(monkeypatch, lambda request: httpx.Response(404, json={"error": "no_route"}))
+    assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == "unreachable"
+
+
+def test_an_office_that_doesnt_answer_in_time_is_unreachable(tmp_path, monkeypatch):
+    def slow(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    answering(monkeypatch, slow)
+    assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == "unreachable"
+
+
+def status(**tcp):
+    base = {"enabled": True, "port": 49380, "listening": True, "error": None, "next_retry_at": None}
+    health = {"ok": True, "office": {"api": "0.0.1+aaa"}, "app": {"build": "b", "api": "0.0.1+aaa"}}
+    return {"socket": "/h/office/hq.sock", "tcp": {**base, **tcp}, "url": "http://127.0.0.1:49380/", "health": health,
+            "warnings": []}
+
+
+def test_hq_listening_and_a_current_app(tmp_path):
+    got = by_name(doctor.hq_checks(status(), tmp_path, tmp_path / "repo"))
+    assert got["hq"].status == "ok" and "http://127.0.0.1:49380/" in got["hq"].detail and got["web app"].status == "ok"
+
+
+def test_a_taken_port_names_the_fix(tmp_path):
+    got = by_name(doctor.hq_checks(status(listening=False, error="Address already in use"), tmp_path, tmp_path))
+    assert got["hq"].status == "warn" and "Address already in use" in got["hq"].detail and "hq.json" in got["hq"].detail
+
+
+def test_a_port_not_bound_yet_says_so_without_a_fix(tmp_path):
+    got = by_name(doctor.hq_checks(status(listening=False), tmp_path, tmp_path))["hq"]
+    assert got.status == "warn" and "isn't listening yet (HQ is binding it)" in got.detail
+    assert "hq.json" not in got.detail and "restart" not in got.detail
+
+
+def test_a_web_port_server_that_ended_is_told_to_restart(tmp_path):
+    got = by_name(doctor.hq_checks(status(listening=False, error="its server ended (it stopped)"), tmp_path,
+                                   tmp_path))["hq"]
+    assert got.status == "warn" and "server ended (it stopped)" in got.detail and "`opencorp restart`" in got.detail
+    assert "hq.json" not in got.detail and "isn't free" not in got.detail
+
+
+def test_tcp_off_points_at_pair(tmp_path):
+    got = by_name(doctor.hq_checks(status(enabled=False, listening=False), tmp_path, tmp_path))
+    assert got["hq"].status == "ok" and "opencorp pair" in got["hq"].detail
+
+
+def test_an_unbuilt_or_stale_app_warns(tmp_path):
+    (tmp_path / "packages" / "app").mkdir(parents=True)
+    s = status()
+    s["health"]["app"] = None
+    assert "bun run build" in by_name(doctor.hq_checks(s, tmp_path, tmp_path))["web app"].detail
+    s["health"]["app"] = {"build": "b", "api": "0.0.1+bbb"}
+    assert "doesn't match" in by_name(doctor.hq_checks(s, tmp_path, tmp_path))["web app"].detail
+
+
+def test_an_install_without_the_apps_sources_says_it_has_no_web_app(tmp_path):
+    s = status()
+    s["health"]["app"] = None
+    got = by_name(doctor.hq_checks(s, tmp_path, tmp_path / "site-packages"))["web app"]
+    assert got.status == "warn" and "this install has no web app" in got.detail and "bun" not in got.detail
+
+
+def test_the_offices_warnings_are_shown(tmp_path):
+    s = {**status(), "warnings": ["the web port is on and this host has other users (ann): ..."]}
+    assert [c.detail for c in doctor.hq_checks(s, tmp_path, tmp_path) if c.name == "hq warning"] == s["warnings"]
+
+
+def test_an_answer_that_isnt_an_hq_status_is_unreadable(tmp_path, monkeypatch):
+    for body in (b"<html>", b'{"ok": true}', b'{"socket": "/s", "tcp": [], "url": null, "health": {}}', b"[1]"):
+        answering(monkeypatch, lambda request, body=body: httpx.Response(200, content=body))
+        assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == "unreadable", body
+    answering(monkeypatch, lambda request: httpx.Response(200, json=status()))
+    assert doctor.hq_status(tmp_path / "o.sock", tmp_path) == status()
+
+
+def test_a_refused_device_is_told_to_log_in(tmp_path):
+    [got] = doctor.hq_checks("refused", tmp_path, tmp_path)
+    assert got.status == "warn" and "`opencorp login`" in got.detail and "restart" not in got.detail
+
+
+def test_an_unreachable_hq_is_told_to_restart(tmp_path):
+    [got] = doctor.hq_checks("unreachable", tmp_path, tmp_path)
+    assert got.status == "warn" and "`opencorp restart`" in got.detail and "login" not in got.detail
+
+
+def test_a_running_office_reports_hq(tmp_path):
+    paths = onboarded(tmp_path)
+    host = make_host(tmp_path, Runner(), answers=lambda s: True)
+    got = by_name(doctor.checks(paths.home, host=host, repo=tmp_path / "repo", probe=lambda: None,
+                                codex=lambda env, environ, mode: Check("codex", "ok", "stand-in"), environ={},
+                                hq=lambda socket, home: status()))
+    assert got["hq"].status == "ok"
