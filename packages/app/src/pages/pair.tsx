@@ -3,7 +3,7 @@ import { useNavigate } from "@solidjs/router"
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { store } from "../data/storage"
 
-const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
+const EXPIRED = "This link has expired or was already used."
 
 /** "Safari on Mac", from the user agent, to name this browser in `opencorp devices list`. */
 export function browserLabel(ua: string) {
@@ -33,6 +33,7 @@ export function browserLabel(ua: string) {
 /** `/pair#<code>`: spends the code and signs this browser in. */
 export default function Pair() {
   const navigate = useNavigate()
+  /** Why this link didn't sign in; the page then says to run `opencorp pair` again. */
   const [failed, setFailed] = createSignal<string>()
   async function spend() {
     const code = location.hash.slice(1)
@@ -50,7 +51,7 @@ export default function Pair() {
     } catch (e) {
       if (e instanceof OfficeError && e.code === "pair_code_invalid") return setFailed(EXPIRED)
       // The code has left the URL, so this tab can't try it again.
-      setFailed(`Couldn't sign in: ${e instanceof Error ? e.message : e}. Run \`opencorp pair\` again.`)
+      setFailed(`Couldn't sign in: ${e instanceof Error ? e.message : e}.`)
     }
   }
   // A new link opened in this tab changes only the fragment, so the page stays mounted.
@@ -62,8 +63,18 @@ export default function Pair() {
   onCleanup(() => window.removeEventListener("hashchange", onHash))
   return (
     <main class="mx-auto max-w-md p-8">
-      <Show when={failed()} fallback={<p>Signing in…</p>}>
-        <p role="alert">{failed()}</p>
+      <h1 class="text-lg font-semibold">Sign in to OpenCorp HQ</h1>
+      <Show
+        when={failed()}
+        fallback={
+          <p role="status" class="mt-4">
+            Signing in…
+          </p>
+        }
+      >
+        <p role="alert" class="mt-4">
+          {failed()} Run <code>opencorp pair</code> again.
+        </p>
       </Show>
     </main>
   )

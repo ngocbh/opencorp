@@ -4,9 +4,17 @@ import { useOffice } from "./data/office"
 
 /** What the shell shows in place of the app when the built app can't run against this office. */
 const BLOCKED = {
-  out_of_date: "The web app doesn't match the office. Run `bun run build`, or `opencorp restart`.",
-  not_built: "The web app isn't built: run `bun run build` in the checkout.",
-} as const
+  out_of_date: () => (
+    <>
+      The web app doesn't match the office. Run <code>bun run build</code>, or <code>opencorp restart</code>.
+    </>
+  ),
+  not_built: () => (
+    <>
+      The web app isn't built: run <code>bun run build</code> in the checkout.
+    </>
+  ),
+}
 
 /**
  * What a page that failed to load shows. It checks the version itself too: Vite may not wrap a chunk that has no
@@ -34,7 +42,7 @@ export function Shell(props: ParentProps) {
       when={!office.blocked()}
       fallback={
         <main class="mx-auto max-w-lg p-8">
-          <p role="alert">{BLOCKED[office.blocked()!]}</p>
+          <p role="alert">{BLOCKED[office.blocked()!]()}</p>
         </main>
       }
     >
@@ -57,6 +65,13 @@ export function Shell(props: ParentProps) {
           </div>
         </nav>
         <main class="min-w-0 flex-1">
+          <Show when={!office.ready() && office.error()}>
+            {(error) => (
+              <p role="alert" class="bg-amber-100 px-4 py-2 text-sm dark:bg-amber-950">
+                Couldn't read the office: {error()}. Retrying…
+              </p>
+            )}
+          </Show>
           <Show when={office.ready() && office.status() !== "online"}>
             <p class="bg-amber-100 px-4 py-2 text-sm dark:bg-amber-950">Reconnecting to the office…</p>
           </Show>

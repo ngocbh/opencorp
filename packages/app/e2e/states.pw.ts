@@ -21,14 +21,15 @@ test("an app built for another office says so and doesn't reload", async ({ page
   page.on("load", () => loads++)
   await request.post("/__fixture/set", { data: { health: { officeApi: "9.9.9+other" } } })
   await page.goto("/")
-  await expect(page.getByText("The web app doesn't match the office. Run `bun run build`, or `opencorp restart`.")).toBeVisible()
+  await expect(page.getByRole("alert")).toHaveText("The web app doesn't match the office. Run bun run build, or opencorp restart.")
+  await expect(page.getByRole("alert").locator("code")).toHaveText(["bun run build", "opencorp restart"])
   expect(loads).toBe(1)
 })
 
 test("no build shows the not-built page", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { health: { app: null } } })
   await page.goto("/")
-  await expect(page.getByText("The web app isn't built: run `bun run build` in the checkout.")).toBeVisible()
+  await expect(page.getByRole("alert")).toHaveText("The web app isn't built: run bun run build in the checkout.")
 })
 
 test("a rebuilt dist reloads the page once", async ({ page, request }) => {
@@ -141,4 +142,13 @@ test("the not-built page goes away once the app is built", async ({ page, reques
   await expect(page.getByText("The web app isn't built", { exact: false })).toBeVisible()
   await request.post("/__fixture/set", { data: { health: {} } })
   await expect(connection(page)).toHaveText("live", { timeout: 10_000 })
+})
+
+test("a first snapshot that fails says why while it retries", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { fail: { "/api/company": 500 } } })
+  await page.goto("/")
+  await expect(page.getByRole("alert")).toHaveText("Couldn't read the office: /api/company failed. Retrying…")
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await expect(connection(page)).toHaveText("live", { timeout: 15_000 })
+  await expect(page.getByRole("alert")).toHaveCount(0)
 })

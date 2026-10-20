@@ -43,6 +43,8 @@ function createOffice(toSignIn: () => void) {
   const client = createOfficeClient({ baseUrl: "/api" })
   const [state, setState] = createStore<OfficeState>(emptyState())
   const [status, setStatus] = createSignal<OfficeStatus>("connecting")
+  /** Why the office's state couldn't be read, while the status is "error". */
+  const [error, setError] = createSignal<string>()
   /** Whether the first snapshot is in `state`. */
   const [ready, setReady] = createSignal(false)
   const [me, setMe] = createSignal<string>()
@@ -85,11 +87,14 @@ function createOffice(toSignIn: () => void) {
     // Every snapshot reads the costs too, so the refetch window starts then. The version check runs beside it, on
     // every connect: an office this bundle can't read must still get "out of date", not a snapshot that never comes.
     snapshot: async (c) => (costs.ran(), void checkVersion(), snapshot(c)),
-    onStatus: (next) => whenFlushed(() => onStatus(next)),
+    onStatus: (next, message) => whenFlushed(() => onStatus(next, message)),
   })
 
-  function onStatus(next: OfficeStatus) {
-    setStatus(next)
+  function onStatus(next: OfficeStatus, message?: string) {
+    batch(() => {
+      setStatus(next)
+      setError(message)
+    })
     if (next === "online") {
       setReady(true)
       // The first whoami may have failed while the office was down: fill in who is signed in now.
@@ -206,6 +211,7 @@ function createOffice(toSignIn: () => void) {
     client,
     state: state as Readonly<OfficeState>,
     status,
+    error,
     ready,
     me,
     pairedBy,
