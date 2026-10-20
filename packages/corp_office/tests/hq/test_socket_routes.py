@@ -78,3 +78,15 @@ async def test_without_hq_the_routes_are_501(office):
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app(office)), base_url="http://localhost") as c:
         assert (await c.get("/hq")).status_code == 501
         assert (await c.post("/hq/pair", json={})).status_code == 501
+
+
+async def test_get_hq_reports_off_retrying_and_listening(sock, hq):
+    assert (await sock.get("/hq")).json()["tcp"]["listening"] is False
+    hq.tcp_error, hq.next_retry_at = "Address already in use", "2026-10-19T10:00:05.000Z"
+    body = (await sock.get("/hq")).json()
+    assert body["tcp"]["error"] == "Address already in use" and body["url"] is None
+    hq.tcp_error = hq.next_retry_at = None
+    hq.bound_port = 49999
+    body = (await sock.get("/hq")).json()
+    assert body["tcp"] == {"enabled": False, "port": 49999, "listening": True, "error": None, "next_retry_at": None}
+    assert body["url"] == "http://127.0.0.1:49999/"
