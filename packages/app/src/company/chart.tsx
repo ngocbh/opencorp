@@ -1,6 +1,6 @@
 import { createMemo, createSelector, createSignal, createUniqueId, For, onCleanup, onMount, Show } from "solid-js"
 import { describe, personCost } from "./format"
-import { fit, layout, type Box, type Transform } from "./layout"
+import { fit, layout, pan, type Box, type Transform } from "./layout"
 import type { ListProps } from "./list"
 import { PersonBody } from "./person"
 import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./rows"
@@ -34,7 +34,47 @@ export default function Chart(props: ListProps) {
     fitted = true
     setT(fit(drawn(), { width: viewport.clientWidth, height: viewport.clientHeight }, MARGIN))
   }
+  /** Moves the canvas for the viewer: from then on, it keeps where they put it. */
+  const moveTo = (next: Transform) => {
+    fitted = false
+    setT(next)
+  }
+  // Pointers down on the chart, in viewport coordinates: one pans, two pinch.
+  const pointers = new Map<number, [number, number]>()
+  /** Whether the press so far is a drag, not a click. */
+  let dragging = false
+  const local = (e: { clientX: number; clientY: number }): [number, number] => {
+    const r = viewport.getBoundingClientRect()
+    return [e.clientX - r.left, e.clientY - r.top]
+  }
+  function down(e: PointerEvent) {
+    fitted = false
+    pointers.set(e.pointerId, local(e))
+    dragging = false
+  }
+  function move(e: PointerEvent) {
+    const prev = pointers.get(e.pointerId)
+    if (!prev) return
+    const next = local(e)
+    // A press on a card stays a click until the pointer has moved a few pixels; the travel so far still counts.
+    if (!dragging && Math.hypot(next[0] - prev[0], next[1] - prev[1]) < 4) return
+    if (!dragging) {
+      dragging = true
+      try {
+        viewport.setPointerCapture(e.pointerId) // the drag keeps going outside the chart
+      } catch {} // a synthetic pointer can't be captured
+    }
+    moveTo(pan(t(), next[0] - prev[0], next[1] - prev[1]))
+    pointers.set(e.pointerId, next)
+  }
+  const up = (e: PointerEvent) => void pointers.delete(e.pointerId)
+  // A drag that ends on a card isn't that card's click. A keyboard's click (Enter or Space on a card, detail 0) is.
+  const swallowDragClick = (e: MouseEvent) => {
+    if (dragging && e.detail > 0) e.stopPropagation()
+  }
   onMount(() => {
+    viewport.addEventListener("click", swallowDragClick, { capture: true })
+    onCleanup(() => viewport.removeEventListener("click", swallowDragClick, { capture: true }))
     fitNow()
     const resized = new ResizeObserver(() => fitted && fitNow())
     resized.observe(viewport)
@@ -46,7 +86,10 @@ export default function Chart(props: ListProps) {
         ref={viewport}
         data-testid="chart-viewport"
         class="relative h-full w-full cursor-grab touch-none select-none overflow-hidden"
-        onPointerDown={() => (fitted = false)}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerCancel={up}
       >
         <div
           data-testid="chart-canvas"

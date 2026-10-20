@@ -29,3 +29,36 @@ test("cards and elbow lines, one line per drawn manager and report", async ({ pa
   await expect(chart.getByRole("button", { name: "Minh, Engineer" }).getByTestId("cost")).toHaveText("$0.00 +1 unpriced")
   await expect(chart.getByRole("button", { name: "Kai, Engineer" })).toHaveAccessibleDescription("waiting · 1 card for you · $0.42")
 })
+
+test("dragging pans the chart by the pointer's travel, even when it starts on a card", async ({ page }) => {
+  const chart = await openChart(page)
+  const [, x0, y0] = await transform(page)
+  const card = (await chart.getByRole("button", { name: "Ann, Designer" }).boundingBox())!
+  await page.mouse.move(card.x + card.width / 2, card.y + card.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(card.x + card.width / 2 + 100, card.y + card.height / 2 + 20, { steps: 5 })
+  await page.mouse.up()
+  const [, x1, y1] = await transform(page)
+  expect([Math.round(x1 - x0), Math.round(y1 - y0)]).toEqual([100, 20])
+  await expect(page.getByRole("complementary")).toHaveCount(0) // a drag isn't a click
+  // A drag on the background pans too.
+  const view = (await page.getByTestId("chart-viewport").boundingBox())!
+  await page.mouse.move(view.x + 10, view.y + 10)
+  await page.mouse.down()
+  await page.mouse.move(view.x + 40, view.y + 10, { steps: 3 })
+  await page.mouse.up()
+  expect(Math.round((await transform(page))[1] - x1)).toBe(30)
+})
+
+test("after a drag, a click or Enter on a card opens the side panel again", async ({ page }) => {
+  const chart = await openChart(page)
+  const ann = chart.getByRole("button", { name: "Ann, Designer" })
+  const card = (await ann.boundingBox())!
+  await page.mouse.move(card.x + 20, card.y + 20)
+  await page.mouse.down()
+  await page.mouse.move(card.x + 60, card.y + 20, { steps: 3 })
+  await page.mouse.up()
+  await ann.focus()
+  await page.keyboard.press("Enter")
+  await expect(page.getByRole("complementary", { name: "Ann" })).toBeVisible()
+})
