@@ -5,6 +5,8 @@ import type {
   AnswerRequest,
   BrowserSession,
   Comment,
+  CompanyFile,
+  CompanyTree,
   CompanyView,
   ConfirmFollowUpsRequest,
   Connection,
@@ -94,8 +96,17 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
      * `/health` answers only `{ok: true}`.
      */
     health: () => get<Health | { ok: true }>("/health"),
-    /** The company at HEAD (HQ only). */
-    company: { get: () => get<CompanyView>("/company") },
+    company: {
+      /** The company at HEAD (HQ only). */
+      get: () => get<CompanyView>("/company"),
+      /** The company repo's files at HEAD (HQ only). */
+      tree: () => get<CompanyTree>("/company/tree"),
+      /**
+       * One file of the company repo at `at`, a commit a tree read returned (HQ only). Fails with `isStaleCommit`,
+       * `isNoFile` or `isBadPath`.
+       */
+      file: (at: string, path: string) => get<CompanyFile>(`/company/file${query({ at, path })}`),
+    },
     /** Spend per person since `since`, a Timestamp (HQ only). */
     costs: { since: (since: string) => get<CostReport>(`/costs${query({ since })}`) },
     /** Spends a pairing code and signs this browser in (HQ only). */

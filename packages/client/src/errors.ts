@@ -73,6 +73,15 @@ export const isNotImplemented = (e: unknown) => e instanceof OfficeError && e.st
 /** Whether `e` is an office's `404 no_route`: an office older than the route. */
 export const isMissingRoute = (e: unknown) => e instanceof OfficeError && e.status === 404 && e.code === "no_route"
 
+/** Whether `e` is a company file read's `409 stale_commit`: its `at` is no longer served, so refetch the tree. */
+export const isStaleCommit = (e: unknown) => e instanceof OfficeError && e.status === 409 && e.code === "stale_commit"
+
+/** Whether `e` is a company file read's `404 no_file`: the path isn't a file at that commit. */
+export const isNoFile = (e: unknown) => e instanceof OfficeError && e.status === 404 && e.code === "no_file"
+
+/** Whether `e` is a company file read's `400 bad_path`: the path isn't repo-relative and `/`-separated. */
+export const isBadPath = (e: unknown) => e instanceof OfficeError && e.status === 400 && e.code === "bad_path"
+
 /**
  * What kind of failure `e` is, to tell a new failure from a repeat of the last: the class and status when the office
  * answered, "network" when it didn't (no answer, a dropped connection), "none" for no failure.
