@@ -1,19 +1,50 @@
-import { expect, test } from "@playwright/test"
+import { expect, test, type Page } from "@playwright/test"
 
-test("the built app loads with no CSP violation", async ({ page }) => {
-  const violations: string[] = []
-  page.on("console", (m) => {
-    if (/content security policy/i.test(m.text())) violations.push(m.text())
-  })
+test.beforeEach(async ({ request }) => void (await request.post("/__fixture/reset")))
+
+/**
+ * Collects the CSP violations a page reports, from the console and from securitypolicyviolation events. Call the
+ * returned function before each navigation and at the end: the events are kept per document.
+ */
+async function watchCsp(page: Page) {
+  const seen: string[] = []
+  page.on("console", (m) => void (/content security policy/i.test(m.text()) && seen.push(m.text())))
   await page.addInitScript(() =>
     document.addEventListener("securitypolicyviolation", (e) =>
       ((window as any).__csp ??= []).push(`${e.violatedDirective} ${e.blockedURI}`),
     ),
   )
+  return async () => {
+    seen.push(...(await page.evaluate(() => (window as any).__csp?.splice(0) ?? [])))
+    return seen
+  }
+}
+
+test("the built app loads with no CSP violation", async ({ page }) => {
+  const violations = await watchCsp(page)
   const response = await page.goto("/")
   expect(response?.headers()["content-security-policy"]).toContain("script-src 'self'")
-  await expect(page.getByText("OpenCorp HQ")).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Sign in to OpenCorp HQ" })).toBeVisible()
   // theme.js ran: a missing one is a 404, not a CSP violation.
   expect(await page.locator("html").getAttribute("data-theme")).toMatch(/^(light|dark)$/)
-  expect([...violations, ...(await page.evaluate(() => (window as any).__csp ?? []))]).toEqual([])
+  expect(await violations()).toEqual([])
+})
+
+test("pairing, the shell, the reconnecting banner and the blocked page load with no CSP violation", async ({ page, request }) => {
+  const violations = await watchCsp(page)
+  await page.goto("/pair#nope")
+  await expect(page.getByRole("alert")).toBeVisible()
+  await violations()
+  await request.post("/__fixture/code", { data: { code: "from-ann-1234", issued_by: "ann" } })
+  await page.goto("/pair#from-ann-1234")
+  await expect(page.getByText("paired by @ann")).toBeVisible()
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await request.post("/__fixture/drop", { data: { ms: 1000 } })
+  await expect(page.getByText("Reconnecting to the office…")).toBeVisible()
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live", { timeout: 15_000 })
+  await violations()
+  await request.post("/__fixture/set", { data: { health: { officeApi: "9.9.9+other" } } })
+  await page.reload()
+  await expect(page.getByRole("alert")).toContainText("doesn't match the office")
+  expect(await violations()).toEqual([])
 })

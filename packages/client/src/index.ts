@@ -2,6 +2,7 @@
 // client-side state they keep current. `@opencorp/client/node` adds what needs Node (identity and paths).
 export * from "./client"
 export * from "./errors"
+export * from "./hidden"
 export * from "./http"
 export * from "./live"
 export * from "./models"
