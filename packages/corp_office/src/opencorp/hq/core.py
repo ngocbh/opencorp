@@ -103,10 +103,12 @@ class Hq:
 
     async def stop(self) -> None:
         """Stop the listeners, forget pending codes and delete their redirect files."""
-        if self.listeners is not None:
-            await self.listeners.stop()
-            self.listeners = None
-        self.codes.close()
+        try:
+            if self.listeners is not None:
+                listeners, self.listeners = self.listeners, None
+                await listeners.stop()
+        finally:
+            self.codes.close()
 
 
 def attach(office: Office, *, listen: bool = True) -> Hq:

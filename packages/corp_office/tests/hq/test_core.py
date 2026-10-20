@@ -3,8 +3,11 @@
 import dataclasses
 import json
 
+import pytest
+
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.hq.core import Hq, attach
+from opencorp.hq.servers import Listeners
 from opencorp.hq.version import office_api
 from tests.daemon.conftest import _isolate_git, company, office, profile_stores, short_dir  # noqa: F401
 from tests.store.test_hq_sessions import record
@@ -111,3 +114,22 @@ async def test_a_listening_hq_starts_and_stops_its_listeners_with_the_office(off
     finally:
         await office.stop()
     assert not hq.socket.exists()
+
+
+async def test_stop_forgets_the_codes_even_when_the_listeners_fail_to_stop(office, short_dir, monkeypatch):
+    monkeypatch.setattr(office.paths, "office", short_dir)
+    (short_dir / "hq.json").write_text(json.dumps({"tcp": False}))
+    hq = attach(office)
+    await office.start()
+    await hq.mint("ngocbh", issuer="ngocbh", open_file=False)
+
+    async def broken():
+        raise RuntimeError("boom")
+
+    listeners = hq.listeners
+    monkeypatch.setattr(listeners, "stop", broken)
+    with pytest.raises(RuntimeError):
+        await hq.stop()
+    assert hq.codes._pending == {}
+    await Listeners.stop(listeners)
+    await office.stop()

@@ -207,3 +207,17 @@ async def test_an_os_error_at_hq_sock_is_a_warning_too(short_office, hq, monkeyp
         assert any("isn't listening on" in w and "Permission denied" in w for w in hq.status().warnings)
     finally:
         await listeners.stop()
+
+
+@pytest.mark.parametrize("kind", ["file", "dir"])
+async def test_stop_leaves_alone_what_start_refused_at_hq_sock(short_office, hq, kind):
+    hq.config = dataclasses.replace(hq.config, tcp=False)
+    if kind == "file":
+        hq.socket.write_text("not ours")
+    else:
+        hq.socket.mkdir()
+    listeners = Listeners(hq)
+    await listeners.start()
+    assert hq.socket_error is not None
+    await listeners.stop()
+    assert hq.socket.exists() and hq.socket_error is None

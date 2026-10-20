@@ -106,12 +106,14 @@ class Listeners:
         self.hq = hq
         self._servers: list[tuple[HqServer, asyncio.Task[None], socket.socket]] = []
         self._tcp: asyncio.Task[None] | None = None
+        self._owns_socket = False
 
     async def start(self) -> None:
         """Listen on hq.sock, and start binding TCP in the background."""
         try:
             remove_stale_socket(self.hq.socket)  # the office holds its pidfile, so no live office owns it
             self._serve(bind_socket(self.hq.socket), port=None)
+            self._owns_socket = True
             self.hq.socket_error = None
         except (OfficeStartError, OSError) as exc:
             # Logged and kept for GET /hq and doctor: a path too long for sun_path mustn't fail silently, and
@@ -159,5 +161,7 @@ class Listeners:
         for _, _, sock in self._servers:
             sock.close()
         self._servers.clear()
-        self.hq.bound_port = self.hq.tcp_error = self.hq.next_retry_at = None
-        self.hq.socket.unlink(missing_ok=True)
+        self.hq.bound_port = self.hq.tcp_error = self.hq.next_retry_at = self.hq.socket_error = None
+        if self._owns_socket:  # never what start found there and refused
+            self._owns_socket = False
+            self.hq.socket.unlink(missing_ok=True)
