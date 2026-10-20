@@ -6,7 +6,12 @@ import shutil
 import stat
 import subprocess
 import threading
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+
+from opencorp.protocol import stamp
+from opencorp.protocol.models import CommitInfo
 
 _IDENTITY = ["-c", "user.name=OpenCorp office", "-c", "user.email=office@opencorp.local"]
 # Repo-local config and hooks still apply after the env is cleaned; never sign or run hooks.
@@ -17,6 +22,30 @@ _WRITE = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 _PROFILES = ":(glob)people/*/profile.md"
 _BLOB_ID = re.compile(r"[0-9a-f]{40}")
 _COMMIT_ID = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_KINDS = {"040000": "folder", "100644": "file", "100755": "file", "120000": "symlink", "160000": "submodule"}
+
+
+@dataclass(frozen=True)
+class TreeEntry:
+    """One entry of a commit's tree: its repo path, kind, object id and blob size (None for a folder or submodule).
+
+    ``path`` is decoded with surrogateescape, so a name that isn't UTF-8 holds lone surrogates.
+    """
+
+    path: str
+    type: str
+    blob: str
+    size: int | None
+
+
+def is_commit_id(value: object) -> bool:
+    """Whether ``value`` is a full hex commit id (sha-1 or sha-256), as opposed to any other rev expression."""
+    return isinstance(value, str) and _COMMIT_ID.fullmatch(value) is not None
+
+
+def _replace_surrogates(text: str) -> str:
+    """``text`` with the lone surrogates of bytes that weren't UTF-8 as U+FFFD, so it can go into JSON."""
+    return text.encode("utf-8", "surrogateescape").decode("utf-8", "replace")
 
 
 class CompanyGitError(Exception):
@@ -105,6 +134,31 @@ class CompanyGit:
             if kind == "blob":
                 found[path] = blob
         return found
+
+    def _full_id(self, commit: str) -> str:
+        """``commit`` if it is a full hex commit id; ValueError otherwise, so no rev expression reaches git."""
+        if not is_commit_id(commit):
+            raise ValueError(f"not a full commit id: {commit!r}")
+        return commit
+
+    def list_tree(self, commit: str) -> list[TreeEntry]:
+        """Every entry of the tree at ``commit`` (a full hex id), folders included; modes other than a folder, a
+        file, a symlink or a submodule are left out."""
+        out = self._git("ls-tree", "-r", "-t", "-z", "-l", "--full-tree", self._full_id(commit)).stdout
+        found = []
+        for entry in filter(None, out.split("\0")):
+            info, _, path = entry.partition("\t")
+            mode, _, blob, size = info.split()
+            if (kind := _KINDS.get(mode)) is not None:
+                found.append(TreeEntry(path, kind, blob, int(size) if size.isdecimal() else None))
+        return found
+
+    def commit_info(self, commit: str) -> CommitInfo:
+        """The subject, author name (never the email) and commit time of ``commit`` (a full hex id)."""
+        out = self._git("log", "-1", "--format=%H%x00%s%x00%an%x00%ct", self._full_id(commit)).stdout
+        sha, subject, author, ct = out.rstrip("\n").split("\0")
+        return CommitInfo(id=sha, subject=_replace_surrogates(subject), author=_replace_surrogates(author),
+                          time=stamp(datetime.fromtimestamp(int(ct), UTC)))
 
     def read_blob(self, blob_id: str) -> bytes | None:
         """Return the bytes of blob ``blob_id`` (40 lowercase hex), or None if the clone has no such blob."""

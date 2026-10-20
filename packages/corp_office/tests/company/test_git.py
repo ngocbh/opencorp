@@ -3,10 +3,12 @@ import stat
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 
 import pytest
 
 from opencorp.company.git import CompanyGit, CompanyGitError
+from opencorp.protocol import stamp
 from tests.company.conftest import _git, write_repo
 
 PROFILE = "people/minh/profile.md"
@@ -355,3 +357,59 @@ def test_a_hand_made_directory_name_cannot_forge_a_trailer(g, company):
     (company / rel).write_text("# M\n")
     assert g.commit_hand_edits() == [rel]
     assert _git(company, "log", "-1", "--format=%B").strip() == "profile(@m Commit-Id: c-1): hand edit"
+
+
+def _entries(g, commit=None):
+    return {e.path: e for e in g.list_tree(commit or g.head())}
+
+
+def test_list_tree_lists_every_entry_with_its_kind_blob_and_size(g, company):
+    (company / "run.sh").write_text("echo hi\n")
+    (company / "run.sh").chmod(0o755)
+    os.symlink("people/minh/profile.md", company / "link")
+    g.commit(["run.sh", "link"], "more kinds")
+    _git(company, "update-index", "--add", "--cacheinfo", f"160000,{g.head()},vendor/lib")
+    _git(company, "commit", "-q", "-m", "a submodule")
+    found = _entries(g)
+    assert (found["people"].type, found["people"].size) == ("folder", None)
+    assert (found["people/minh"].type, found["people/minh/profile.md"].type) == ("folder", "file")
+    assert found["people/minh/profile.md"].size == len("# Minh, Engineer\n")
+    assert found["people/minh/profile.md"].blob == g.blob_id(PROFILE)
+    assert (found["run.sh"].type, found["link"].type) == ("file", "symlink")
+    assert found["link"].size == len("people/minh/profile.md")
+    assert (found["vendor/lib"].type, found["vendor/lib"].size) == ("submodule", None)
+
+
+def test_list_tree_is_at_the_commit_not_the_working_tree_or_index(g, company):
+    head = g.head()
+    (company / PROFILE).write_text("# staged\n")
+    _git(company, "add", PROFILE)
+    (company / "new.md").write_text("x\n")
+    found = _entries(g, head)
+    assert "new.md" not in found and found[PROFILE].blob != _git(company, "rev-parse", f":{PROFILE}")
+
+
+def test_list_tree_keeps_non_utf8_names_as_surrogates(g, company):
+    odd = "b\udcffd.md"
+    blob = _git(company, "hash-object", "-w", PROFILE)
+    _git(company, "update-index", "--add", "--cacheinfo", f"100644,{blob},{odd}")
+    _git(company, "commit", "-q", "-m", "odd path")
+    assert odd in _entries(g)
+
+
+@pytest.mark.parametrize("ref", ["HEAD", "HEAD~1", "main", "-x", "0" * 39, "HEAD:company.yaml", ":/init"])
+def test_list_tree_and_commit_info_take_only_a_full_hex_id(g, ref):
+    with pytest.raises(ValueError):
+        g.list_tree(ref)
+    with pytest.raises(ValueError):
+        g.commit_info(ref)
+
+
+def test_commit_info_has_the_subject_author_name_and_time(g, company):
+    (company / PROFILE).write_text("# edited\n")
+    sha = g.commit([PROFILE], "edit the profile\n\nA body line.")
+    info = g.commit_info(sha)
+    assert (info.id, info.subject, info.author) == (sha, "edit the profile", "OpenCorp office")
+    ct = int(_git(company, "log", "-1", "--format=%ct", sha))
+    assert info.time == stamp(datetime.fromtimestamp(ct, UTC))
+    assert "@" not in info.model_dump_json()
