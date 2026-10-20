@@ -2,6 +2,7 @@ import type { Group, Person } from "@opencorp/protocol"
 import { createEffect, createMemo, createUniqueId, For, on, onCleanup, onMount, Show, type ParentProps } from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
+import { sourceHref } from "./address"
 import { costText } from "./format"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
@@ -112,6 +113,14 @@ export function Panel(props: {
         </Show>
       </dl>
       <p class={`mt-2 text-xs ${MUTED}`}>From person.yaml at the last commit; the profile isn't shown here yet.</p>
+      {/* The router follows the link; the panel closes as it does. */}
+      <a
+        href={sourceHref(`people/${props.person.handle}`)}
+        onClick={() => props.onClose()}
+        class="mt-2 inline-block rounded text-sm underline outline-none focus-visible:ring-2"
+      >
+        View source
+      </a>
       <Section title="Manager">
         <Show
           when={props.manager}

@@ -176,12 +176,12 @@ test("the cost window refetches costs and is remembered", async ({ page, request
   await expect(page.getByRole("radio", { name: "7 days" })).toHaveAttribute("aria-checked", "true")
 })
 
-test("Chart and List on a desktop; phones always get the list", async ({ page }) => {
-  await expect(page.getByRole("radiogroup", { name: "View" }).getByRole("radio")).toHaveText(["Chart", "List"])
+test("Chart, List and Source on a desktop; phones get the list, with List and Source", async ({ page }) => {
+  await expect(page.getByRole("radiogroup", { name: "View" }).getByRole("radio")).toHaveText(["Chart", "List", "Source"])
   await page.setViewportSize({ width: 390, height: 844 })
   await page.reload()
   await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
-  await expect(page.getByRole("radio", { name: "Chart" })).toHaveCount(0)
+  await expect(page.getByRole("radiogroup", { name: "View" }).getByRole("radio")).toHaveText(["List", "Source"])
 })
 
 test("a radio group is one tab stop, and arrow keys move its choice", async ({ page }) => {

@@ -1,4 +1,6 @@
-import { createEffect, createMemo, createSignal, lazy, onCleanup, Show } from "solid-js"
+import { useNavigate, useSearchParams } from "@solidjs/router"
+import { createEffect, createMemo, createSignal, lazy, Match, onCleanup, Show, Switch } from "solid-js"
+import { chooseView, pathOf, sourceHref, type Shown } from "../company/address"
 import { Banners, Unplaced } from "../company/banners"
 import { totalsText } from "../company/format"
 import { CompanyList, type ListProps } from "../company/list"
@@ -7,6 +9,7 @@ import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../compan
 import { branchStatus, cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { byTeam } from "../company/teams"
 import { Panel } from "../company/panel"
+import { Source } from "../company/source"
 import { Toolbar } from "../company/toolbar"
 import { buildTree, byName } from "../company/tree"
 import { useOffice } from "../data/office"
@@ -82,8 +85,18 @@ export default function Company() {
     const p = personOf(item)
     return !!group() && !!p && !(p.groups ?? []).includes(group())
   }
-  /** The chart on a desktop unless this browser chose the list; phones always get the list. */
-  const view = () => (desktop() ? (prefs.view() ?? "chart") : "list")
+  const [params] = useSearchParams()
+  const navigate = useNavigate()
+  /** Source when the address says so; else the chart on a desktop unless this browser chose the list, and the list on a phone. */
+  const view = () => chooseView(params.view, desktop(), prefs.view())
+  /** Chart and List are this browser's choice; only Source goes in the address, so leaving it pushes /org. */
+  const chooseShown = (v: Shown) => {
+    if (v === view()) return
+    if (v === "source") return navigate(sourceHref(""))
+    const leaving = view() === "source"
+    prefs.setView(v)
+    if (leaving) navigate("/org")
+  }
   /** The person the side panel shows. */
   const [selected, setSelected] = createSignal<string>()
   const byHandle = createMemo(() => new Map(s.people.map((p) => [p.handle, p])))
@@ -93,6 +106,8 @@ export default function Company() {
     const handle = shown()?.handle
     return handle ? s.people.filter((x) => x.manager === handle).sort(byName) : []
   })
+  // Source has no people: a panel open when it shows closes.
+  createEffect(() => view() === "source" && setSelected(undefined))
   // Someone who leaves the company closes their panel: coming back at a later commit mustn't reopen it.
   createEffect(() => {
     if (selected() !== undefined && !shown()) setSelected(undefined)
@@ -156,14 +171,21 @@ export default function Company() {
             window={office.costWindow()}
             onWindow={office.setCostWindow}
             view={view()}
-            onView={prefs.setView}
+            onView={chooseShown}
             canChart={desktop()}
           />
           <Banners noCompany={!s.company} ceoHasManager={tree().ceoHasManager} issues={s.issues} />
-          <Show when={view() === "chart"} fallback={<CompanyList {...shownProps} />}>
-            <Chart {...shownProps} />
+          <Switch fallback={<CompanyList {...shownProps} />}>
+            <Match when={view() === "source"}>
+              <Source company={name()} path={pathOf(params.path)} desktop={desktop()} />
+            </Match>
+            <Match when={view() === "chart"}>
+              <Chart {...shownProps} />
+            </Match>
+          </Switch>
+          <Show when={view() !== "source"}>
+            <Unplaced people={tree().unplaced} onSelect={select} />
           </Show>
-          <Unplaced people={tree().unplaced} onSelect={select} />
         </div>
         <Show when={shown()}>
           {(p) => (
