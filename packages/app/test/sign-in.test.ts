@@ -1,11 +1,17 @@
 import { expect, test } from "bun:test"
-import { OfficeError, OfficeTimeout, OfficeUnavailable } from "@opencorp/client"
-import { browserLabel, cleanHandle, signInFailure } from "../src/data/sign-in"
+import { OfficeError, OfficeTimeout, OfficeUnavailable, UnknownDevice } from "@opencorp/client"
+import { browserLabel, cleanHandle, isHandle, signInFailure } from "../src/data/sign-in"
 
 test("a handle is trimmed, loses one leading @, and is lowercased", () => {
   expect(cleanHandle("  @NgocBH ")).toBe("ngocbh")
   expect(cleanHandle("ann")).toBe("ann")
-  expect(cleanHandle("@@ann")).toBe("@ann") // only one: the office then refuses it like any other wrong handle
+  expect(cleanHandle("@@ann")).toBe("@ann") // only one: isHandle then refuses it
+})
+
+test("isHandle takes what the office's Handle pattern takes", () => {
+  for (const ok of ["ann", "a", "ngoc-bh", "a1", "x".repeat(32)]) expect([ok, isHandle(ok)]).toEqual([ok, true])
+  for (const bad of ["", "@ann", "Ann", "-ann", "ann-", "not a handle", "x".repeat(33)])
+    expect([bad, isHandle(bad)]).toEqual([bad, false])
 })
 
 test("the browser's label names the browser and the system", () => {
@@ -20,9 +26,14 @@ test("the browser's label names the browser and the system", () => {
 const err = (status: number, code: string, retryAfterS?: number) =>
   Object.assign(new OfficeError(status, code, code), { retryAfterS })
 
-test("a wrong handle or password, or one the office can't read, says so the same way", () => {
+test("a wrong handle or password says so", () => {
   expect(signInFailure(err(401, "bad_credentials"))).toBe("Wrong handle or password.")
-  expect(signInFailure(err(422, "invalid_body"))).toBe("Wrong handle or password.")
+})
+
+test("an office that can't take a password yet says to pair instead", () => {
+  expect(signInFailure(new UnknownDevice("sign_in_required", true))).toBe(
+    "This office can't take a password yet; run `opencorp pair`.",
+  )
 })
 
 test("too many tries says how long to wait, in whole minutes rounded up, and offers pairing", () => {
@@ -46,5 +57,7 @@ test("anything else, an unreachable office included, says what went wrong as the
   const slow = new OfficeTimeout("POST", "/login", 1000)
   expect(signInFailure(slow)).toBe(`Couldn't sign in: ${slow.message}.`)
   expect(signInFailure(new OfficeError(500, "internal", "it broke"))).toBe("Couldn't sign in: it broke.")
+  // The form checks the handle first, so a 422 is a body the office can't read: a bug to show, not a wrong password.
+  expect(signInFailure(new OfficeError(422, "invalid_body", "label: too long"))).toBe("Couldn't sign in: label: too long.")
   expect(signInFailure("odd")).toBe("Couldn't sign in: odd.")
 })

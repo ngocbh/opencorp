@@ -1,6 +1,6 @@
 // What the sign-in and pair pages share: the browser's name, the handle as typed, what a failure says, and the
 // session they keep.
-import { OfficeError } from "@opencorp/client"
+import { OfficeError, UnknownDevice } from "@opencorp/client"
 import type { BrowserSession } from "@opencorp/protocol"
 import { store } from "./storage"
 
@@ -35,11 +35,19 @@ export function browserLabel(ua: string) {
  */
 export const cleanHandle = (typed: string) => typed.trim().replace(/^@/, "").toLowerCase()
 
+/** The protocol's `Handle` pattern. */
+const HANDLE = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
+
+/** Whether `handle` (already cleaned) could be a handle; the form doesn't send one that couldn't. */
+export const isHandle = (handle: string) => HANDLE.test(handle)
+
 /** What the sign-in form says after `e`; `code` spans are in backticks. */
 export function signInFailure(e: unknown) {
+  // An office without /api/login refuses it as it refuses any request without a session.
+  if (e instanceof UnknownDevice && e.code === "sign_in_required")
+    return "This office can't take a password yet; run `opencorp pair`."
   if (e instanceof OfficeError) {
-    // A 422 is a handle or password the office can't even read: to the person, still a wrong one.
-    if (e.status === 401 || e.status === 422) return "Wrong handle or password."
+    if (e.status === 401) return "Wrong handle or password."
     if (e.status === 429) {
       const minutes = e.retryAfterS === undefined ? undefined : Math.max(1, Math.ceil(e.retryAfterS / 60))
       const wait = minutes === undefined ? "a few minutes" : minutes === 1 ? "1 minute" : `${minutes} minutes`
