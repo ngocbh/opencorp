@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
-import { acme, SHA } from "./company"
+import { acme, SHA, wide } from "./company"
 
 test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/reset")
@@ -236,4 +236,36 @@ test("phones get the list, with no chart", async ({ page }) => {
   await page.goto("/")
   await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
   await expect(page.getByRole("figure")).toHaveCount(0)
+})
+
+test("Fit brings every card of a wide company into view", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { view: wide(60) } })
+  const chart = await openChart(page)
+  await page.getByRole("button", { name: "Zoom in" }).click()
+  await page.getByRole("button", { name: "Fit" }).click()
+  const view = (await page.getByTestId("chart-viewport").boundingBox())!
+  const cards = chart.getByRole("button", { name: /^Agent / })
+  await expect(cards).toHaveCount(60)
+  for (const card of [cards.first(), cards.last(), chart.getByRole("button", { name: "Ngoc, CEO" })]) {
+    const b = (await card.boundingBox())!
+    expect(b.x).toBeGreaterThanOrEqual(view.x - 1)
+    expect(b.x + b.width).toBeLessThanOrEqual(view.x + view.width + 1)
+    expect(b.y).toBeGreaterThanOrEqual(view.y - 1)
+    expect(b.y + b.height).toBeLessThanOrEqual(view.y + view.height + 1)
+  }
+})
+
+test("a few hundred people draw, pan and zoom", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { view: wide(300) } })
+  const chart = await openChart(page)
+  await expect(chart.getByRole("button", { name: /^Agent / })).toHaveCount(300)
+  const view = (await page.getByTestId("chart-viewport").boundingBox())!
+  const started = Date.now()
+  await page.mouse.move(view.x + 20, view.y + 20)
+  await page.mouse.down()
+  await page.mouse.move(view.x + 220, view.y + 20, { steps: 20 })
+  await page.mouse.up()
+  await page.mouse.wheel(0, -300)
+  await expect.poll(async () => (await transform(page))[0]).toBeGreaterThan(0)
+  expect(Date.now() - started).toBeLessThan(5000)
 })
