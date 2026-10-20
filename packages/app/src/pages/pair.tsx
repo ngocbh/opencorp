@@ -1,6 +1,6 @@
 import { OfficeError, createOfficeClient } from "@opencorp/client"
 import { useNavigate } from "@solidjs/router"
-import { createSignal, onMount, Show } from "solid-js"
+import { createSignal, onCleanup, onMount, Show } from "solid-js"
 
 const EXPIRED = "This link has expired or was already used. Run `opencorp pair` again."
 
@@ -33,10 +33,11 @@ export function browserLabel(ua: string) {
 export default function Pair() {
   const navigate = useNavigate()
   const [failed, setFailed] = createSignal<string>()
-  onMount(async () => {
+  async function spend() {
     const code = location.hash.slice(1)
     // The code leaves the URL (and the history entry) before anything else runs.
     history.replaceState(null, "", "/pair")
+    setFailed(undefined)
     if (!code) return setFailed(EXPIRED)
     try {
       const client = createOfficeClient({ baseUrl: "/api" })
@@ -52,7 +53,14 @@ export default function Pair() {
           : `Couldn't sign in: ${e instanceof Error ? e.message : e}`,
       )
     }
+  }
+  // A new link opened in this tab changes only the fragment, so the page stays mounted.
+  const onHash = () => void (location.hash.length > 1 && spend())
+  onMount(() => {
+    window.addEventListener("hashchange", onHash)
+    void spend()
   })
+  onCleanup(() => window.removeEventListener("hashchange", onHash))
   return (
     <main class="mx-auto max-w-md p-8">
       <Show when={failed()} fallback={<p>Signing in…</p>}>

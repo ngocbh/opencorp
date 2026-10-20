@@ -43,3 +43,12 @@ test("a browser someone else paired says so", async ({ page, request }) => {
   await page.goto("/pair#from-ann-1234")
   await expect(page.getByText("paired by @ann")).toBeVisible()
 })
+
+test("a new link opened in the tab that showed a failed one signs in", async ({ page, request }) => {
+  await page.goto("/pair#nope")
+  await expect(page.getByRole("alert")).toBeVisible()
+  await request.post("/__fixture/code", { data: { code: "good-code-123" } })
+  await page.goto("/pair#good-code-123") // the same document: only the fragment changes
+  await expect(page).toHaveURL("/")
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+})
