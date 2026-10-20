@@ -23,6 +23,16 @@ license, the upstream paths and commit, and our paths.
 - **Upstream:** https://github.com/paperclipai/paperclip, read at commit `1a79c8b` (2026-10-18).
 - **Ours:** `packages/app/src/company/layout.ts`, `packages/app/src/company/chart.tsx`,
   `packages/app/src/company/list.tsx`.
+- **What:** the HQ sidebar follows Paperclip's sidebar: the company at the top, sections with small
+  uppercase headings, inset rounded rows with a highlighted current page and a text badge, and on a
+  phone a menu button that opens the sidebar as a drawer over a backdrop. It is a SolidJS rewrite of
+  the layout, not a copy of the files:
+  - the sections, rows and badges, adapted from `ui/src/components/Sidebar.tsx`,
+    `ui/src/components/SidebarSection.tsx`, `ui/src/components/SidebarNavItem.tsx` and
+    `ui/src/components/primary-sidebar-styles.ts`;
+  - the phone drawer, adapted from `ui/src/components/Layout.tsx`.
+- **Upstream:** https://github.com/paperclipai/paperclip, read at commit `3bbc210` (2026-10-20).
+- **Ours:** `packages/app/src/shell.tsx`.
 - **License:**
 
 ```
