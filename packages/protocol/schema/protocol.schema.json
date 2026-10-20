@@ -668,7 +668,7 @@
         "person": { "$ref": "#/$defs/Handle" },
         "name": { "type": "string", "description": "web-<6 characters>, made by the office." },
         "label": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
-        "via": { "enum": ["pair", "login"] },
+        "via": { "enum": ["pair", "login"], "description": "pair: a code from `opencorp pair`; login: a password." },
         "issued_by": { "$ref": "#/$defs/Handle", "description": "Who ran `opencorp pair`, or the person who signed in with a password." },
         "created_at": { "$ref": "#/$defs/Timestamp" },
         "expires_at": { "$ref": "#/$defs/Timestamp" },
@@ -677,10 +677,10 @@
     },
     "HqLoginRequest": {
       "type": "object", "additionalProperties": false, "required": ["handle", "password"],
-      "description": "The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie.",
+      "description": "The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie. A wrong handle or password gets 401 `bad_credentials`; too many tries get 429 `too_many_attempts` with a Retry-After header; success returns a `BrowserSession`, as for /api/pair.",
       "properties": {
         "handle": { "$ref": "#/$defs/Handle" },
-        "password": { "type": "string", "minLength": 1 },
+        "password": { "type": "string", "minLength": 1, "description": "Checked, then dropped: never stored, logged, or echoed in an error." },
         "label": { "anyOf": [{ "type": "string", "maxLength": 100 }, { "type": "null" }], "default": null, "description": "Free text naming the browser, such as 'Safari on Mac'." }
       }
     },

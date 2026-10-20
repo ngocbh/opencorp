@@ -952,7 +952,10 @@ class BrowserSession(BaseModel):
     ]
     name: Annotated[str, Field(description='web-<6 characters>, made by the office.')]
     label: str | None
-    via: Literal['pair', 'login']
+    via: Annotated[
+        Literal['pair', 'login'],
+        Field(description='pair: a code from `opencorp pair`; login: a password.'),
+    ]
     issued_by: Annotated[
         str,
         Field(
@@ -979,7 +982,7 @@ class BrowserSession(BaseModel):
 
 class HqLoginRequest(BaseModel):
     """
-    The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie.
+    The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie. A wrong handle or password gets 401 `bad_credentials`; too many tries get 429 `too_many_attempts` with a Retry-After header; success returns a `BrowserSession`, as for /api/pair.
     """
 
     model_config = ConfigDict(
@@ -992,7 +995,13 @@ class HqLoginRequest(BaseModel):
             pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
-    password: Annotated[str, Field(min_length=1)]
+    password: Annotated[
+        str,
+        Field(
+            description='Checked, then dropped: never stored, logged, or echoed in an error.',
+            min_length=1,
+        ),
+    ]
     label: Annotated[
         Label | None,
         Field(description="Free text naming the browser, such as 'Safari on Mac'."),
