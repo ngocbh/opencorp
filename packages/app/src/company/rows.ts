@@ -33,3 +33,31 @@ export function visibleRows(items: Item[], isOpen: (item: Item, depth: number) =
   walk(items, 1, null)
   return rows
 }
+
+export type Move = { focus: string } | { open: string; to: boolean }
+
+/** What `key` does on the row `at` (the WAI-ARIA tree pattern); null for keys the tree doesn't use. */
+export function moveFocus(rows: Row[], at: string, key: string): Move | null {
+  const i = rows.findIndex((r) => r.item.id === at)
+  if (i < 0) return rows.length ? { focus: rows[0].item.id } : null
+  const row = rows[i]
+  const branch = row.item.children.length > 0
+  switch (key) {
+    case "ArrowDown":
+      return i + 1 < rows.length ? { focus: rows[i + 1].item.id } : null
+    case "ArrowUp":
+      return i > 0 ? { focus: rows[i - 1].item.id } : null
+    case "Home":
+      return { focus: rows[0].item.id }
+    case "End":
+      return { focus: rows[rows.length - 1].item.id }
+    case "ArrowRight":
+      // An open branch's first child is the next visible row.
+      if (branch) return row.open ? { focus: rows[i + 1].item.id } : { open: at, to: true }
+      return null
+    case "ArrowLeft":
+      if (branch && row.open) return { open: at, to: false }
+      return row.parent ? { focus: row.parent } : null
+  }
+  return null
+}

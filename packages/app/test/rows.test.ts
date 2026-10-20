@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { fromTree, label, visibleRows } from "../src/company/rows"
+import { fromTree, label, moveFocus, visibleRows } from "../src/company/rows"
 import { buildTree } from "../src/company/tree"
 import { person } from "./people"
 
@@ -28,4 +28,23 @@ test("isOpen is asked only about branches, with each one's depth; a leaf is neve
 
 test("a person's label is their name and title", () => {
   expect(label(items[0])).toBe("Ceo, T")
+})
+
+test("up and down move through visible rows; home and end go to the ends", () => {
+  const rows = visibleRows(items, () => true) // ceo, al, bo, cy, dee
+  expect(moveFocus(rows, "al", "ArrowDown")).toEqual({ focus: "bo" })
+  expect(moveFocus(rows, "al", "ArrowUp")).toEqual({ focus: "ceo" })
+  expect(moveFocus(rows, "dee", "ArrowDown")).toBeNull()
+  expect(moveFocus(rows, "bo", "Home")).toEqual({ focus: "ceo" })
+  expect(moveFocus(rows, "bo", "End")).toEqual({ focus: "dee" })
+})
+
+test("right opens a closed branch, then moves to its first child; left closes, then moves to the parent", () => {
+  expect(moveFocus(visibleRows(items, (i) => i.id !== "al"), "al", "ArrowRight")).toEqual({ open: "al", to: true })
+  const open = visibleRows(items, () => true)
+  expect(moveFocus(open, "al", "ArrowRight")).toEqual({ focus: "bo" })
+  expect(moveFocus(open, "bo", "ArrowRight")).toBeNull()
+  expect(moveFocus(open, "al", "ArrowLeft")).toEqual({ open: "al", to: false })
+  expect(moveFocus(open, "bo", "ArrowLeft")).toEqual({ focus: "al" })
+  expect(moveFocus(open, "dee", "Enter")).toBeNull()
 })
