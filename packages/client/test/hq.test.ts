@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
-import type { CompanyView } from "@opencorp/protocol"
+import type { CompanyFile, CompanyTree, CompanyView } from "@opencorp/protocol"
 import { createOfficeClient } from "../src/client"
+import { isBadPath, isMissingRoute, isNoFile, isStaleCommit, OfficeError } from "../src/errors"
 import { applyCompany, emptyState } from "../src/store"
 import { onStop, serve, stopServers } from "./serve"
 
@@ -69,4 +70,85 @@ test("applyCompany sets people, groups, the company, the sha and the issues from
   } as unknown as CompanyView
   applyCompany(s, view)
   expect([s.company?.name, s.sha, s.groups, s.issues, s.costs]).toEqual(["Acme", "a".repeat(40), [], [], null])
+})
+
+const AT = "b".repeat(40)
+
+const failure = (p: Promise<unknown>): Promise<any> =>
+  p.then(
+    () => {
+      throw new Error("expected the request to fail")
+    },
+    (e) => e,
+  )
+
+test("the Source reads hit /api/company/tree and /api/company/file with at and path as query params", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  await c.company.tree()
+  await c.company.file(AT, "people/nguyen/person.yaml")
+  expect(seen.map((s) => `${s.method} ${s.path}${s.query}`)).toEqual([
+    "GET /api/company/tree",
+    `GET /api/company/file?at=${AT}&path=people%2Fnguyen%2Fperson.yaml`,
+  ])
+})
+
+test("an odd path reaches the office as written, in one query param", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  const odd = ["notes/a b+c&d=e#f?g.md", "100%/x;y,z'\"<>.txt", "người/hồ sơ.yaml", "../../etc/passwd", "a/b/../c"]
+  for (const p of odd) await c.company.file(AT, p)
+  const got = seen.map((s) => new URLSearchParams(s.query))
+  expect(got.map((q) => [...q.keys()])).toEqual(odd.map(() => ["at", "path"]))
+  expect(got.map((q) => [q.get("at"), q.get("path")])).toEqual(odd.map((p) => [AT, p]))
+  // The path stays in the query: nothing in it changes the route the office sees.
+  expect(seen.every((s) => s.path === "/api/company/file")).toBe(true)
+})
+
+test("the Source reads return the office's tree and file as sent", async () => {
+  const tree: CompanyTree = {
+    commit: { id: AT, subject: "Hire nguyen", author: "Ngoc Bui", time: "2026-10-20T00:00:00.000Z" },
+    entries: [
+      { path: "people", type: "folder", size: null },
+      { path: "people/nguyen/person.yaml", type: "file", size: 120 },
+    ],
+    truncated: false,
+    skipped: 0,
+  }
+  const file: CompanyFile = { path: "people/nguyen/person.yaml", commit: AT, content: "text", text: "handle: nguyen\n" }
+  const { base } = serve({
+    answer: (req) => Response.json(new URL(req.url).pathname.endsWith("/tree") ? tree : file),
+  })
+  const c = createOfficeClient({ baseUrl: base })
+  expect(await c.company.tree()).toEqual(tree)
+  expect(await c.company.file(AT, file.path)).toEqual(file)
+})
+
+test("a file read's 409 stale_commit, 404 no_file and 400 bad_path are errors the app can tell apart", async () => {
+  const answers: Record<string, [number, string]> = {
+    stale: [409, "stale_commit"],
+    gone: [404, "no_file"],
+    bad: [400, "bad_path"],
+    old: [404, "no_route"],
+  }
+  const { base } = serve({
+    answer: (req) => {
+      const [status, error] = answers[new URL(req.url).searchParams.get("path")!]!
+      return Response.json({ error, message: `${error} here` }, { status })
+    },
+  })
+  const c = createOfficeClient({ baseUrl: base })
+  const errors = await Promise.all(Object.keys(answers).map((p) => failure(c.company.file(AT, p))))
+  expect(errors.every((e) => e instanceof OfficeError)).toBe(true)
+  expect(errors.map((e) => [e.status, e.code, e.message])).toEqual(
+    Object.values(answers).map(([status, code]) => [status, code, `${code} here`]),
+  )
+  // Each predicate matches its own error only: an office older than the route (404 no_route) isn't a missing file.
+  const checks = [isStaleCommit, isNoFile, isBadPath, isMissingRoute]
+  expect(errors.map((e) => checks.map((f) => f(e)))).toEqual(checks.map((_, i) => checks.map((_, j) => i === j)))
+  expect([
+    isStaleCommit(undefined),
+    isNoFile(new Error("no_file")),
+    isBadPath(new OfficeError(409, "bad_path", "bad_path")),
+  ]).toEqual([false, false, false])
 })
