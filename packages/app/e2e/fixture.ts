@@ -4,7 +4,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
 import type { BrowserSession } from "@opencorp/protocol"
-import { acme, type Data } from "./company"
+import { acme, source, type Data, type Source } from "./company"
 
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -72,13 +72,17 @@ type Fixture = Data & {
   passwords: Record<string, string>
   /** /api/login's throttle: `retryAfter` (seconds) answers every sign-in 429, `busy` answers 503. */
   login: { retryAfter: number | null; busy: boolean }
+  /** The company repo, for Source. */
+  source: Source
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
   fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
+  source: source(),
 })
 // `logins` keeps each sign-in's handle and label, never its password.
-const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[] })
+const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[],
+  files: [] as { at: string; path: string }[] })
 let state = fresh()
 let log = emptyLog()
 let downUntil = 0
@@ -235,9 +239,35 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     case "/api/events":
       return events()
+    case "/api/company/tree":
+      return companyTree()
+    case "/api/company/file":
+      return companyFile(url)
   }
   // Everything else, GET /api/questions/{id} included, is off HQ's allowlist.
   return json({ error: "no_route", message: `no route GET ${p}` }, 404)
+}
+
+/** GET /api/company/tree: HEAD's listing; the office then serves files at its commit (the last 8 HEADs listed). */
+function companyTree(): Response {
+  const src = state.source
+  const id = src.tree.commit.id
+  if (src.serve) src.served = [id, ...src.served.filter((x) => x !== id)].slice(0, 8)
+  return json(src.tree)
+}
+
+/** GET /api/company/file?at=&path=, with the office's three errors: 409 stale_commit, 400 bad_path, 404 no_file. */
+function companyFile(url: URL): Response {
+  const at = url.searchParams.get("at") ?? ""
+  const path = url.searchParams.get("path") ?? ""
+  log.files.push({ at, path })
+  if (!state.source.served.includes(at))
+    return json({ error: "stale_commit", message: "that commit isn't served any more; read the tree again" }, 409)
+  if (!path || path.startsWith("/") || path.endsWith("/") || path.split("/").some((s) => !s || s === "." || s === ".."))
+    return json({ error: "bad_path", message: "the path isn't repo-relative and /-separated" }, 400)
+  const file = state.source.files[path]
+  if (!file) return json({ error: "no_file", message: `${path} isn't a file at ${at}` }, 404)
+  return json({ path, commit: at, ...file })
 }
 
 /** /__fixture/*: how tests set the office up and read what the app asked for. */
@@ -251,10 +281,11 @@ async function control(req: Request, url: URL): Promise<Response> {
       closeAll()
       return json({ ok: true })
     case "/__fixture/set": {
-      // `view` merges into the company view; anything else replaces the key.
-      const { view, ...rest } = body
+      // `view` and `source` merge into theirs; anything else replaces the key.
+      const { view, source, ...rest } = body
       Object.assign(state, rest)
       if (view) state.view = { ...state.view, ...view }
+      if (source) state.source = { ...state.source, ...source }
       return json({ ok: true })
     }
     case "/__fixture/code":
