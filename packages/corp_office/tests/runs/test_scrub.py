@@ -5,6 +5,7 @@ import json
 import pytest
 
 from opencorp.company.secret_keys import HIDDEN
+from opencorp.runs import scrub as scrub_mod
 from opencorp.runs.scrub import WITHHELD, Scrubber
 
 KEY = "conn-key-5f3a9c1e7b2d4a60"  # no secret shape: only the known-values step can catch it
@@ -47,3 +48,33 @@ def test_known_values_are_removed_plain_json_escaped_and_url_quoted():
                            "url": "https://h/?k=quote%22slash%5Ckey-0123"}}
     text = json.dumps(Scrubber([KEY, tricky, "short"]).record(record(payload)))
     assert KEY not in text and "quote" not in text and "[redacted]" in text
+
+
+def keeps_everything(values):
+    return lambda value: value
+
+
+def test_a_record_the_scrub_misses_is_withheld(monkeypatch):
+    monkeypatch.setattr(scrub_mod, "redactor", keeps_everything)  # a scrub that misses known values
+    out = Scrubber([KEY]).record(record({"node_id": "chat#1/reply", "failure": {"message": KEY}}))
+    assert out == {"seq": 4, "kind": "node_failed", "node_id": "chat#1/reply", "withheld": WITHHELD}
+
+
+def test_a_scrub_that_raises_withholds_only_that_record(monkeypatch):
+    scrubber = Scrubber([])
+    monkeypatch.setattr(scrubber, "value", lambda v: (_ for _ in ()).throw(RecursionError()))
+    assert scrubber.record(record({"x": 1}))["withheld"] == WITHHELD
+
+
+def test_one_string_is_scrubbed_or_withheld(monkeypatch):
+    assert Scrubber([KEY]).text(f"401: {KEY}") == "401: [redacted]"
+    assert Scrubber([]).text("401: Bearer abcdefgh12345") == "401: Bearer (hidden)"
+    monkeypatch.setattr(scrub_mod, "redactor", keeps_everything)
+    assert Scrubber([KEY]).text(f"401: {KEY}") == WITHHELD
+
+
+def test_a_download_line_is_scrubbed_and_a_line_that_doesnt_parse_is_withheld():
+    scrubber = Scrubber([KEY])
+    out = scrubber.line(json.dumps(record({"failure": {"message": KEY}})).encode())
+    assert KEY.encode() not in out and b"[redacted]" in out and out.endswith(b"\n")
+    assert json.loads(scrubber.line(b"{not json")) == {"withheld": WITHHELD}
