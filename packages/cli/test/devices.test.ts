@@ -230,6 +230,28 @@ test("an office without HQ, or from before it, lists devices as today; another f
   expect(await opencorp(trusted, "devices", "list")).toEqual(today)
 })
 
+test("remove-browser signs a browser out; a second time it's gone", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh" })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 0,
+    out: `Signed out browser ${b.name}.`,
+    err: "",
+  })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 1,
+    out: "",
+    err: `opencorp devices: no browser session ${b.id}`,
+  })
+  expect((await opencorp(trusted, "devices", "remove-browser")).code).toBe(2)
+  office.notImplemented.add("DELETE /hq/browsers/:id")
+  expect(await opencorp(trusted, "devices", "remove-browser", b.id)).toEqual({
+    code: 1,
+    out: "",
+    err: "opencorp devices: this office has no HQ yet; update the checkout and run `opencorp restart`",
+  })
+})
+
 test("logout removes this device with its own token, then the identity", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   const token = identity(trusted).token

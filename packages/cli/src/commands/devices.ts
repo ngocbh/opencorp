@@ -1,4 +1,6 @@
 // `opencorp devices`: the devices a human uses opencorp from, as their person.yaml lists them.
+// `opencorp devices remove-browser ID` signs one of this office's browsers out. It's a separate verb because browser
+// names and person.yaml device names are different namespaces.
 import { isMissingRoute, isNotImplemented, OfficeError, OfficeUnavailable, type OfficeClient } from "@opencorp/client"
 import type { BrowserSession, Person } from "@opencorp/protocol"
 import { parseArgs } from "node:util"
@@ -7,7 +9,7 @@ import { localIdentity, officeClient, officeNotRunning } from "../office"
 
 class Usage extends Error {}
 
-const USAGE = "usage: opencorp devices list [HANDLE] [--hashes] | add HANDLE NAME SHA256 | remove HANDLE NAME"
+const USAGE = "usage: opencorp devices list [HANDLE] [--hashes] | add HANDLE NAME SHA256 | remove HANDLE NAME | remove-browser ID"
 
 const day = (ts: string) => new Date(ts).toLocaleDateString()
 
@@ -44,7 +46,8 @@ function browserLines(browsers: BrowserSession[]): string[] {
 /**
  * `opencorp devices list [H] [--hashes]`: H's device names (this device's person by default), with
  * their token hashes only on `--hashes`. `list` also shows this office's browser sessions, when there are any you
- * may see. `opencorp devices add H NAME SHA256` and `opencorp devices remove H NAME` change H's list.
+ * may see. `opencorp devices add H NAME SHA256` and `opencorp devices remove H NAME` change H's list;
+ * `opencorp devices remove-browser ID` signs one of this office's browsers out.
  */
 export const run: CommandRun = async (argv) => {
   try {
@@ -80,6 +83,20 @@ export const run: CommandRun = async (argv) => {
       const [handle, name] = rest
       await office.devices.remove(handle, name)
       console.log(`Removed device ${name} from @${handle}.`)
+      return 0
+    }
+    if (sub === "remove-browser" && rest.length === 1) {
+      const [id] = rest
+      // Named by its web-xxxxxx name when it's one of the asker's own; the id otherwise.
+      const name = (await office.hq.browsers().catch(() => [])).find((b) => b.id === id)?.name ?? id
+      try {
+        await office.hq.removeBrowser(id)
+      } catch (e) {
+        if (isMissingRoute(e) || isNotImplemented(e))
+          throw new Error("this office has no HQ yet; update the checkout and run `opencorp restart`")
+        throw e
+      }
+      console.log(`Signed out browser ${name}.`)
       return 0
     }
     throw new Usage(USAGE)
