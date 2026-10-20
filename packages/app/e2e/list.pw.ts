@@ -219,13 +219,33 @@ test("no readable company.yaml: a banner, and everyone without a manager at the 
   await expect(page.getByRole("tree", { name: "Company" })).toBeVisible()
 })
 
+/** Emits `events`, then a status change for Ann, and waits for it: the app has applied everything before it. */
+async function emitAndSettle(page: import("@playwright/test").Page, request: import("@playwright/test").APIRequestContext,
+  events: { type: string; data: object }[]) {
+  const at = new Date().toISOString()
+  for (const event of [...events, { type: "session.updated", data: session("S-ann", "ann", "busy", { updated_at: at }) }])
+    await request.post("/__fixture/emit", { data: { event } })
+  await expect(row(page, /Ann/).getByTestId("status")).toHaveAttribute("data-status", "busy")
+}
+
+const workItemReads = async (request: import("@playwright/test").APIRequestContext) =>
+  (await (await request.get("/__fixture/log")).json()).workItems as string[]
+
 test("an ask_manager card counts for its work item's assignee, read once", async ({ page, request }) => {
   await expect(row(page, /Lead/).getByTestId("needs-you")).toHaveText("1")
-  await request.post("/__fixture/emit", {
-    data: { event: { type: "session.updated", data: session("S-lead", "lead", "idle", { updated_at: "2026-10-19T11:00:00.000Z" }) } },
-  })
-  await page.waitForTimeout(300)
-  expect((await (await request.get("/__fixture/log")).json()).workItems).toEqual(["W1"])
+  const again = card("Q-lead", "S-lead", "lead", { source: "ask_manager", work_item_id: "W1", updated_at: "2026-10-19T11:00:00.000Z" })
+  await emitAndSettle(page, request, [{ type: "question.updated", data: again }])
+  expect(await workItemReads(request)).toEqual(["W1"])
+})
+
+test("a work item that doesn't exist is asked for once", async ({ page, request }) => {
+  const gone = card("Q-lead", "S-lead", "lead", { source: "ask_manager", work_item_id: "W-gone" })
+  await request.post("/__fixture/set", { data: { questions: [acme().questions[0], gone] } })
+  await page.reload()
+  const gones = async () => (await workItemReads(request)).filter((id) => id === "W-gone").length
+  await expect.poll(gones).toBe(1)
+  await emitAndSettle(page, request, [{ type: "question.updated", data: { ...gone, updated_at: "2026-10-19T11:00:00.000Z" } }])
+  expect(await gones()).toBe(1)
 })
 
 test("a live status change shows without a reload", async ({ page, request }) => {

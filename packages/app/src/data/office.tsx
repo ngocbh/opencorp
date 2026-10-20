@@ -5,6 +5,7 @@ import {
   createOfficeClient,
   createOfficeSync,
   emptyState,
+  OfficeError,
   pauseWhenHidden,
   runEach,
   UnknownDevice,
@@ -171,7 +172,9 @@ function createOffice(toSignIn: () => void) {
     client.workItems.get(id).then(
       (w) => mutate((s) => void (s.workItems[w.id] = w)),
       (error) => {
-        askedFor.delete(id) // the next look tries again
+        // A missing work item stays missing (work_item.created would bring it); anything else is tried again on the
+        // next look.
+        if (!(error instanceof OfficeError && error.status === 404)) askedFor.delete(id)
         console.error("Failed to read a work item", { id, error })
       },
     )
