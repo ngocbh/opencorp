@@ -92,6 +92,8 @@ test("a soon item is announced unavailable, says what it will be, and can't take
     await expect(item).not.toHaveAttribute("href")
     await expect(item).not.toHaveAttribute("aria-current")
     await expect(item).toHaveAccessibleDescription(says)
+    // Read once, as the description: the text itself is hidden.
+    await expect(nav(page).getByText(says)).toBeHidden()
     await expect(item).toHaveAttribute("title", says)
     await expect(item.getByText("soon", { exact: true })).toBeVisible()
     await item.evaluate((el: HTMLElement) => el.focus())

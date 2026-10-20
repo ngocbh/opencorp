@@ -132,8 +132,8 @@ function SoonItem(props: { soon: Soon }) {
           soon
         </span>
       </span>
-      {/* Outside the link, so it describes the item without becoming part of its name. */}
-      <span id={id} class="sr-only">
+      {/* Outside the link, so it isn't part of its name; hidden, so it's read only as the description. */}
+      <span id={id} hidden>
         {props.soon.about}
       </span>
     </li>
