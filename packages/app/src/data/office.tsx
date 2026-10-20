@@ -22,6 +22,9 @@ import { since, type CostWindow } from "./window"
 /** Live updates are applied in one batch per frame, as in the TUI. */
 const FLUSH_MS = 16
 
+/** How often the not-built page asks again whether the app has been built. */
+const NOT_BUILT_RECHECK_MS = 3_000
+
 /** Costs are read again on session.updated at most this often (the design's 10 s). */
 const COST_EVERY_MS = 10_000
 
@@ -52,6 +55,7 @@ function createOffice(toSignIn: () => void) {
   // Set on unmount: a whoami or a read still in flight then must not start or change anything.
   let disposed = false
   let stopPausing: (() => void) | undefined
+  let recheck: ReturnType<typeof setTimeout> | undefined
 
   function flush() {
     timer = undefined
@@ -126,6 +130,9 @@ function createOffice(toSignIn: () => void) {
       return location.reload()
     }
     setBlocked(v === "ok" ? undefined : v)
+    // Nothing else would notice the build landing: the stream may be up and quiet.
+    clearTimeout(recheck)
+    if (v === "not_built" && !disposed) recheck = setTimeout(() => void checkVersion(), NOT_BUILT_RECHECK_MS)
   }
 
   let costReads = 0
@@ -176,6 +183,7 @@ function createOffice(toSignIn: () => void) {
   })
   onCleanup(() => {
     disposed = true
+    clearTimeout(recheck)
     window.removeEventListener("vite:preloadError", onPreloadError)
     sync.stop()
     stopPausing?.()

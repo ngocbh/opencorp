@@ -133,3 +133,11 @@ test("company.updated reads the company again only for a new commit", async ({ p
   await expect(page.getByRole("heading", { name: "Acme Two" })).toBeVisible()
   expect(await companyReads()).toBe(2)
 })
+
+test("the not-built page goes away once the app is built", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { health: { app: null } } })
+  await page.goto("/")
+  await expect(page.getByText("The web app isn't built", { exact: false })).toBeVisible()
+  await request.post("/__fixture/set", { data: { health: {} } })
+  await expect(connection(page)).toHaveText("live", { timeout: 10_000 })
+})
