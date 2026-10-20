@@ -5,7 +5,7 @@ test.beforeEach(async ({ request, page }) => {
   await request.post("/__fixture/reset")
   await request.post("/__fixture/set", { data: { signedIn: true } })
   await page.goto("/")
-  // Phones always get the list, with no Chart / List switch.
+  // Phones start on the list.
   if (page.viewportSize()!.width >= 768) await page.getByRole("radio", { name: "List" }).click()
 })
 

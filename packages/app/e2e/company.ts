@@ -1,5 +1,15 @@
 // Fixture data for Playwright: a company, its live sessions, open cards, costs and work items.
-import type { CompanyView, CostReport, Person, Question, Session, WorkItem } from "@opencorp/protocol"
+import type {
+  CompanyFile,
+  CompanyTree,
+  CompanyTreeEntry,
+  CompanyView,
+  CostReport,
+  Person,
+  Question,
+  Session,
+  WorkItem,
+} from "@opencorp/protocol"
 
 export const SHA = "0123456789abcdef0123456789abcdef01234567"
 export const T = "2026-10-19T10:00:00.000Z"
@@ -60,6 +70,62 @@ export function acme(): Data {
       W1: item("W1", "Pick a database", { kind: "question", requester: "lead", assignee: "ngocbh" }),
       "W-minh": item("W-minh", "Fix the build", { assignee: "minh" }),
     },
+  }
+}
+
+/** A file as /api/company/file answers it, less `path` and `commit`, which the fixture fills in. */
+export type SourceFile = Omit<CompanyFile, "path" | "commit">
+
+/**
+ * The company repo as Source reads it: the tree at HEAD, each file's answer, and the commits the office has served
+ * (a tree read adds its commit, as the office's ring of the last 8 HEADs does, unless `serve` is false).
+ */
+export type Source = { tree: CompanyTree; files: Record<string, SourceFile>; served: string[]; serve: boolean }
+
+export const LONG_LINE = `${"word ".repeat(80)}end`
+
+/**
+ * Acme's repo at SHA, committed two hours ago: text, a re-rendered human's person.yaml, and one file of every other
+ * content state (binary, too large, hidden twice, a symlink and a submodule).
+ */
+export function source(): Source {
+  const text = (text: string): SourceFile => ({ content: "text", text })
+  const files: Record<string, SourceFile> = {
+    "README.md": text(`# Acme\n\nThe company repo.\n${LONG_LINE}\n`),
+    "company.yaml": text("name: Acme\nceo: ngocbh\n"),
+    "people/ngocbh/person.yaml": {
+      content: "text",
+      text: "handle: ngocbh\nname: Ngoc\nkind: human\ntitle: CEO\nmanager: null\n",
+      rewritten: true,
+    },
+    "people/ngocbh/profile.md": text("# Ngoc\n\nRuns Acme.\n"),
+    "people/kai/person.yaml": text("# Kai writes the code.\nhandle: kai\nname: Kai\nkind: agent\ntitle: Engineer\nmanager: lead\n"),
+    "people/kai/profile.md": text("# Kai\n\nTests first.\n"),
+    "people/lead/person.yaml": text("handle: lead\nname: Lead\nkind: agent\ntitle: Tech lead\nmanager: ngocbh\n"),
+    "assets/logo.png": { content: "binary" },
+    "assets/big.csv": { content: "too_large" },
+    "assets/.env": { content: "hidden", reason: "may hold credentials" },
+    "assets/keys.yaml": { content: "hidden", reason: "holds a secret-named key" },
+    "latest.md": { content: "symlink", target: "README.md" },
+    "vendor/yian": { content: "submodule" },
+  }
+  const folders = ["assets", "people", "people/kai", "people/lead", "people/ngocbh", "vendor"]
+  const type = (f: SourceFile): CompanyTreeEntry["type"] =>
+    f.content === "symlink" ? "symlink" : f.content === "submodule" ? "submodule" : "file"
+  const entries: CompanyTreeEntry[] = [
+    // Folders and submodules have no size, as the office lists them.
+    ...folders.map((path): CompanyTreeEntry => ({ path, type: "folder", size: null })),
+    ...Object.entries(files).map(([path, f]): CompanyTreeEntry => {
+      const t = type(f)
+      return { path, type: t, size: t === "submodule" ? null : (f.text?.length ?? 100) }
+    }),
+  ]
+  const time = new Date(Date.now() - 2 * 3_600_000).toISOString()
+  return {
+    tree: { commit: { id: SHA, subject: "Add Kai", author: "Ngoc", time }, entries, truncated: false, skipped: 0 },
+    files,
+    served: [],
+    serve: true,
   }
 }
 
