@@ -327,6 +327,9 @@ def _read_by_checks(body: dict) -> dict:
     return body
 
 
+_SERVER_ENDED = "its server ended"
+"""How HQ's status starts the TCP error when the web port's server stopped after it bound, not a failed bind."""
+
 _UNREAD = {
     "refused": "the office doesn't know this device, so it won't say where HQ listens: run `opencorp login`",
     "unreachable": "the office didn't say where HQ listens (an office from before HQ?): run `opencorp restart`",
@@ -342,13 +345,18 @@ def hq_checks(status: dict | HqUnread, office_dir: Path, repo: Path) -> list[Che
     tcp = status["tcp"]
     if tcp["listening"]:
         found = [Check("hq", "ok", f"web app at {status['url']}, and on {status['socket']}")]
-    elif tcp["enabled"]:
-        why = f"isn't free ({tcp['error']})" if tcp["error"] else "isn't listening yet"
-        found = [Check("hq", "warn", f"port {tcp['port']} {why}; HQ tries it again every {RETRY_S:g} s. Free it, or "
-                                     f"set another \"port\" in {office_dir / 'hq.json'} and run `opencorp restart`")]
-    else:
+    elif not tcp["enabled"]:
         found = [Check("hq", "ok", f"on {status['socket']} only (the web port is off); `opencorp pair` prints "
                                    "the SSH forward")]
+    elif not (error := tcp["error"]):
+        found = [Check("hq", "warn", f"port {tcp['port']} isn't listening yet (HQ is binding it)")]
+    elif error.startswith(_SERVER_ENDED):
+        found = [Check("hq", "warn", f"port {tcp['port']}: {error.removeprefix('its ')}; HQ binds it again in "
+                                     f"{RETRY_S:g} s, or run `opencorp restart`")]
+    else:
+        found = [Check("hq", "warn", f"port {tcp['port']} isn't free ({error}); HQ tries it again every {RETRY_S:g} s."
+                                     f" Free it, or set another \"port\" in {office_dir / 'hq.json'} and run "
+                                     "`opencorp restart`")]
     app, office = status["health"]["app"], status["health"]["office"]
     if app is None:
         found.append(Check("web app", "warn", f"not built: run `bun run build` in {repo}"))

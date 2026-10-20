@@ -530,6 +530,19 @@ def test_a_taken_port_names_the_fix(tmp_path):
     assert got["hq"].status == "warn" and "Address already in use" in got["hq"].detail and "hq.json" in got["hq"].detail
 
 
+def test_a_port_not_bound_yet_says_so_without_a_fix(tmp_path):
+    got = by_name(doctor.hq_checks(status(listening=False), tmp_path, tmp_path))["hq"]
+    assert got.status == "warn" and "isn't listening yet (HQ is binding it)" in got.detail
+    assert "hq.json" not in got.detail and "restart" not in got.detail
+
+
+def test_a_web_port_server_that_ended_is_told_to_restart(tmp_path):
+    got = by_name(doctor.hq_checks(status(listening=False, error="its server ended (it stopped)"), tmp_path,
+                                   tmp_path))["hq"]
+    assert got.status == "warn" and "server ended (it stopped)" in got.detail and "`opencorp restart`" in got.detail
+    assert "hq.json" not in got.detail and "isn't free" not in got.detail
+
+
 def test_tcp_off_points_at_pair(tmp_path):
     got = by_name(doctor.hq_checks(status(enabled=False, listening=False), tmp_path, tmp_path))
     assert got["hq"].status == "ok" and "opencorp pair" in got["hq"].detail
