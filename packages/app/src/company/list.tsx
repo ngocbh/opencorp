@@ -138,7 +138,7 @@ export function CompanyList(props: ListProps) {
                     <span
                       aria-hidden="true"
                       data-testid="toggle"
-                      class="w-4 shrink-0 cursor-pointer select-none text-neutral-500"
+                      class="w-4 shrink-0 cursor-pointer select-none text-neutral-500 dark:text-neutral-400"
                       onClick={(e) => {
                         e.stopPropagation() // toggling isn't selecting
                         props.setOpen(id, !row().open)
@@ -160,7 +160,7 @@ export function CompanyList(props: ListProps) {
                     )}
                   </Show>
                   <Show when={totals()}>
-                    {(text) => <span class="shrink-0 text-xs text-neutral-500">{text()}</span>}
+                    {(text) => <span class="shrink-0 text-xs text-neutral-500 dark:text-neutral-400">{text()}</span>}
                   </Show>
                   <Show when={description()}>
                     {(text) => (

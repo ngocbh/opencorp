@@ -4,10 +4,11 @@ import { personCost } from "./format"
 import type { Status } from "./status"
 
 const DOT: Record<Status, string> = {
-  waiting: "bg-amber-500",
-  busy: "bg-green-500 animate-pulse",
-  idle: "bg-neutral-400",
-  away: "border border-neutral-400",
+  // Waiting also has a halo, so it doesn't rest on colour alone.
+  waiting: "bg-amber-600 ring-2 ring-amber-600/40 dark:bg-amber-500",
+  busy: "bg-green-600 motion-safe:animate-pulse dark:bg-green-500",
+  idle: "bg-neutral-500",
+  away: "border border-neutral-500",
 }
 
 /** A closed branch's dot is outlined, so it doesn't read as the person's own status. */
@@ -46,7 +47,7 @@ export function PersonBody(props: {
         <span class="sr-only">{props.branch ? `${props.status} in this branch` : props.status}</span>
       </span>
       <span class="min-w-0 truncate">
-        <span class="font-medium">{props.person.name}</span> <span class="text-neutral-500">{props.person.title}</span>
+        <span class="font-medium">{props.person.name}</span> <span class="text-neutral-500 dark:text-neutral-400">{props.person.title}</span>
       </span>
       <Show when={props.groups}>
         {(groups) => (
@@ -56,11 +57,11 @@ export function PersonBody(props: {
         )}
       </Show>
       <Show when={props.needs > 0}>
-        <span data-testid="needs-you" title="cards for you" class="rounded-full bg-amber-500 px-1.5 text-xs text-white">
+        <span data-testid="needs-you" title="cards for you" class="rounded-full bg-amber-700 px-1.5 text-xs text-white">
           {props.needs}
         </span>
       </Show>
-      <span data-testid="cost" class="ml-auto shrink-0 text-sm tabular-nums text-neutral-500">
+      <span data-testid="cost" class="ml-auto shrink-0 text-sm tabular-nums text-neutral-500 dark:text-neutral-400">
         {personCost(props.cost)}
       </span>
     </span>

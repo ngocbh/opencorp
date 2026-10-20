@@ -43,12 +43,12 @@ export function Unplaced(props: { people: Person[]; onSelect: (handle: string) =
                 <button type="button" class="underline" onClick={() => props.onSelect(p.handle)}>
                   {p.name}
                 </button>{" "}
-                <span class="text-neutral-500">@{p.handle}</span>
+                <span class="text-neutral-500 dark:text-neutral-400">@{p.handle}</span>
               </li>
             )}
           </For>
         </ul>
-        <p class="mt-2 text-sm text-neutral-500">
+        <p class="mt-2 text-sm text-neutral-500 dark:text-neutral-400">
           `opencorp doctor` names unknown managers and cycles. It checks the working tree, while HQ shows the last
           commit, so they differ until edits are committed.
         </p>

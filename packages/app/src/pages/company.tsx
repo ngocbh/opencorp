@@ -24,9 +24,9 @@ function useDesktop() {
 function Skeleton() {
   return (
     <div aria-busy="true" aria-label="Loading the company" class="space-y-3 p-6">
-      <div class="h-4 w-1/3 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
-      <div class="h-4 w-1/2 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
-      <div class="h-4 w-2/5 animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+      <div class="h-4 w-1/3 motion-safe:animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+      <div class="h-4 w-1/2 motion-safe:animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
+      <div class="h-4 w-2/5 motion-safe:animate-pulse rounded bg-neutral-200 dark:bg-neutral-800" />
     </div>
   )
 }
@@ -110,7 +110,7 @@ export default function Company() {
       />
       <Banners noCompany={!s.company} ceoHasManager={tree().ceoHasManager} issues={s.issues} />
       <Show when={view() === "chart"}>
-        <p class="px-3 pt-3 text-sm text-neutral-500">The chart isn't built yet; this is the list.</p>
+        <p class="px-3 pt-3 text-sm text-neutral-500 dark:text-neutral-400">The chart isn't built yet; this is the list.</p>
       </Show>
       <CompanyList
         label={name()}
