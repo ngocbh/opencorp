@@ -3,8 +3,9 @@
 // CSP must equal opencorp.hq.guard.CSP; packages/corp_office/tests/hq/test_app_fixture.py checks it.
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
-import type { BrowserSession } from "@opencorp/protocol"
+import type { BrowserSession, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
+import { runLogs, type Runs } from "./runs"
 
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -74,15 +75,18 @@ type Fixture = Data & {
   login: { retryAfter: number | null; busy: boolean }
   /** The company repo, for Source. */
   source: Source
+  /** Run Logs: the top-level runs and each run's children. */
+  runs: Runs
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
   fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
   source: source(),
+  runs: runLogs(),
 })
 // `logins` keeps each sign-in's handle and label, never its password.
 const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[],
-  files: [] as { at: string; path: string }[] })
+  files: [] as { at: string; path: string }[], runs: [] as string[] })
 let state = fresh()
 let log = emptyLog()
 let downUntil = 0
@@ -243,6 +247,8 @@ async function api(req: Request, url: URL): Promise<Response> {
       return companyTree()
     case "/api/company/file":
       return companyFile(url)
+    case "/api/runs":
+      return listRuns(url)
   }
   // Everything else, GET /api/questions/{id} included, is off HQ's allowlist.
   return json({ error: "no_route", message: `no route GET ${p}` }, 404)
@@ -270,6 +276,29 @@ function companyFile(url: URL): Response {
   if (!file) return json({ error: "no_file", message: `${path} isn't a file at ${at}` }, 404)
   // Every key, as the office's model_dump(mode="json") writes them.
   return json({ path, commit: at, text: null, target: null, reason: null, rewritten: false, ...file })
+}
+
+/** GET /api/runs as the office answers it: top-level runs newest first, a parent shown when it or a child matches,
+ * `limit` (50) at a time from `before`; `?parent=` lists one run's children. */
+function listRuns(url: URL): Response {
+  const p = url.searchParams
+  log.runs.push(url.search)
+  const parent = p.get("parent")
+  if (parent) {
+    const kids = state.runs.children[parent]
+    return kids ? json(kids) : json({ error: "not_found", message: `no run ${parent}` }, 404)
+  }
+  const [flow, person, status, q] = ["flow", "person", "status", "q"].map((k) => p.get(k))
+  const match = (r: RunSummary) =>
+    (!flow || r.flow === flow) && (!person || r.driver === person || (r.participants ?? []).includes(person)) &&
+    (!status || r.status === status) && (!q || r.run_id.includes(q.toUpperCase()))
+  const shown = state.runs.runs.filter((r) => match(r) || (r.children ?? []).some(match))
+  const before = p.get("before")
+  const from = before ? shown.findIndex((r) => r.run_id < before) : 0
+  const limit = Number(p.get("limit") ?? 50)
+  const page = from < 0 ? [] : shown.slice(from, from + limit)
+  const more = from >= 0 && from + limit < shown.length
+  return json({ runs: page, next: more ? page[page.length - 1]!.run_id : null })
 }
 
 /** /__fixture/*: how tests set the office up and read what the app asked for. */
