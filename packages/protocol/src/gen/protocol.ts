@@ -777,6 +777,10 @@ export interface HqStatus {
    */
   url: string | null;
   health: Health;
+  /**
+   * Why hq.sock isn't listening, or null when it is.
+   */
+  socket_error?: string | null;
   warnings?: string[];
 }
 /**
@@ -848,7 +852,10 @@ export interface BrowserSession {
    */
   name: string;
   label: string | null;
-  via: "pair";
+  /**
+   * pair: a code from `opencorp pair`; login: a password.
+   */
+  via: "pair" | "login";
   /**
    * A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.
    */
@@ -856,6 +863,23 @@ export interface BrowserSession {
   created_at: Timestamp;
   expires_at: Timestamp;
   last_used_at: Timestamp | null;
+}
+/**
+ * The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie. A wrong handle or password gets 401 `bad_credentials`; too many tries get 429 `too_many_attempts` with a Retry-After header; success returns a `BrowserSession`, as for /api/pair.
+ *
+ * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
+ * via the `definition` "HqLoginRequest".
+ */
+export interface HqLoginRequest {
+  handle: Handle;
+  /**
+   * Checked, then dropped: never stored, logged, or echoed in an error.
+   */
+  password: string;
+  /**
+   * Free text naming the browser, such as 'Safari on Mac'.
+   */
+  label?: string | null;
 }
 /**
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema

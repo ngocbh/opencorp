@@ -847,6 +847,10 @@ class HqStatus(BaseModel):
         ),
     ]
     health: Health
+    socket_error: Annotated[
+        str | None,
+        Field(description="Why hq.sock isn't listening, or null when it is."),
+    ] = None
     warnings: list[str] = []
 
 
@@ -948,11 +952,14 @@ class BrowserSession(BaseModel):
     ]
     name: Annotated[str, Field(description='web-<6 characters>, made by the office.')]
     label: str | None
-    via: Literal['pair']
+    via: Annotated[
+        Literal['pair', 'login'],
+        Field(description='pair: a code from `opencorp pair`; login: a password.'),
+    ]
     issued_by: Annotated[
         str,
         Field(
-            description='Who ran `opencorp pair`.',
+            description='Who ran `opencorp pair`, or the person who signed in with a password.',
             pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
         ),
     ]
@@ -971,6 +978,34 @@ class BrowserSession(BaseModel):
         ),
     ]
     last_used_at: Timestamp | None
+
+
+class HqLoginRequest(BaseModel):
+    """
+    The body of POST /api/login: a human's handle and password; the office answers with a browser session cookie. A wrong handle or password gets 401 `bad_credentials`; too many tries get 429 `too_many_attempts` with a Retry-After header; success returns a `BrowserSession`, as for /api/pair.
+    """
+
+    model_config = ConfigDict(
+        extra='forbid',
+    )
+    handle: Annotated[
+        str,
+        Field(
+            description="A person's unique, permanent name: shown as @handle, and the name of their people/<handle>/ directory.",
+            pattern='^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$',
+        ),
+    ]
+    password: Annotated[
+        str,
+        Field(
+            description='Checked, then dropped: never stored, logged, or echoed in an error.',
+            min_length=1,
+        ),
+    ]
+    label: Annotated[
+        Label | None,
+        Field(description="Free text naming the browser, such as 'Safari on Mac'."),
+    ] = None
 
 
 class HireRequest(BaseModel):

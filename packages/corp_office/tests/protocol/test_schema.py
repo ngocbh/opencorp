@@ -47,7 +47,8 @@ BODIES = {"CreateSessionRequest", "PromptRequest", "Ack", "CostCapRequest", "Rep
           "ConfirmFollowUpsRequest", "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection",
           "ConnectionList", "ModelOption", "ModelList", "SetModelRequest", "AddConnectionRequest",
           "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView", "CostReport",
-          "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession"}
+          "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
+          "HqLoginRequest"}
 
 
 def test_every_route_body_has_a_fixture():
@@ -78,17 +79,24 @@ def test_harness_session_fields_exist():
 
 
 HQ = {"CompanyView", "PersonCost", "CostReport", "ApiVersion", "AppBuild", "Health", "HqTcp", "HqStatus",
-      "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession"}
+      "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession", "HqLoginRequest"}
 
 
 def test_hq_defs_exist_and_company_updated_is_an_event_type():
     defs = _schema()["$defs"]
     assert HQ <= defs.keys()
     assert "company.updated" in defs["Event"]["properties"]["type"]["enum"]
-    assert "HqLoginRequest" not in defs  # password login is deferred
+    assert defs["HqStatus"]["properties"]["socket_error"]["default"] is None
 
 
 def test_a_browser_session_never_carries_its_secret_or_password_fingerprint():
     props = _schema()["$defs"]["BrowserSession"]["properties"]
     assert not {"secret", "secret_sha256", "password_fp"} & props.keys()
-    assert props["via"]["enum"] == ["pair"]
+    assert props["via"]["enum"] == ["pair", "login"]
+
+
+def test_a_login_request_is_closed_and_needs_a_password():
+    sub = _schema()["$defs"]["HqLoginRequest"]
+    assert sub["additionalProperties"] is False
+    assert sub["required"] == ["handle", "password"]
+    assert sub["properties"]["password"]["minLength"] == 1
