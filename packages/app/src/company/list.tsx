@@ -1,7 +1,7 @@
 import type { Group, PersonCost } from "@opencorp/protocol"
 import { createMemo, createSignal, For, Show } from "solid-js"
 import { PersonBody } from "./person"
-import { isMuted, label, personOf, teamName, visibleRows, type Item } from "./rows"
+import { isMuted, label, moveFocus, personOf, teamName, visibleRows, type Item } from "./rows"
 import type { Status } from "./status"
 
 /** What the list (and, later, the chart) show, and what they do. */
@@ -34,6 +34,21 @@ export function CompanyList(props: ListProps) {
   const [focused, setFocused] = createSignal<string>()
   /** The row with tabindex 0: the focused one while it's visible, else the first. */
   const current = () => (byId().has(focused() ?? "") ? focused() : ids()[0])
+  const elements = new Map<string, HTMLElement>()
+  function onKey(e: KeyboardEvent, id: string) {
+    const row = byId().get(id)
+    const p = row && personOf(row.item)
+    if (e.key === "Enter" && p) {
+      e.preventDefault()
+      return props.onSelect(p.handle)
+    }
+    const move = moveFocus(rows(), id, e.key)
+    if (!move) return
+    e.preventDefault()
+    if ("open" in move) return props.setOpen(move.open, move.to)
+    setFocused(move.focus)
+    elements.get(move.focus)?.focus()
+  }
   return (
     <ul role="tree" aria-label={props.label} class="p-2">
       <For each={ids()}>
@@ -56,7 +71,9 @@ export function CompanyList(props: ListProps) {
                   // Computed, so Solid sets it with style.setProperty, which the CSP allows.
                   style={{ "padding-left": `${row().level - 1 + 0.5}rem` }}
                   class="flex cursor-default items-center gap-2 rounded py-1 pr-2 outline-none focus-visible:ring-2 data-[dimmed=true]:opacity-40 data-[muted=true]:opacity-60"
+                  ref={(el) => elements.set(id, el)}
                   onFocus={() => setFocused(id)}
+                  onKeyDown={(e) => onKey(e, id)}
                   onClick={() => {
                     const p = person()
                     if (p) props.onSelect(p.handle)
