@@ -134,7 +134,6 @@ def test_password_sign_in_the_one_refusal_and_the_lock(web_office, tmp_path, loc
     assert PASSWORD not in (web_office.paths.office / "office.log").read_text()
 
 
-@pytest.mark.xfail(strict=True, reason="opencorp info lines don't reach office.log yet (issue #233)")
 def test_a_throttled_sign_in_reaches_the_office_log(web_office, local):
     """The positive side of the "not in office.log" checks above: HQ's sign-in lines do reach the log."""
     origin = wait_listening(web_office)["url"].rstrip("/")
