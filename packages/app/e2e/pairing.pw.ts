@@ -21,3 +21,10 @@ test("a link without a code says the same", async ({ page }) => {
   await page.goto("/pair")
   await expect(page.getByRole("alert")).toContainText("Run `opencorp pair` again.")
 })
+
+test("without a session the app shows sign-in, and never asks for a password", async ({ page }) => {
+  await page.goto("/")
+  await expect(page).toHaveURL("/sign-in")
+  await expect(page.getByText("Run `opencorp pair` on the office machine. HQ never asks for your password here.")).toBeVisible()
+  await expect(page.locator("input[type=password]")).toHaveCount(0)
+})
