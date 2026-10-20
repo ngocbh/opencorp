@@ -260,6 +260,18 @@ test("remove-browser signs a browser out; a second time it's gone", async () => 
   })
 })
 
+test("remove-browser takes one of your own sessions by its web- name too", async () => {
+  await opencorp(trusted, "login", "--device", "mac")
+  const b = office.addBrowser({ person: "ngocbh", issued_by: "ngocbh" })
+  expect(await opencorp(trusted, "devices", "remove-browser", b.name)).toEqual({
+    code: 0,
+    out: `Signed out browser ${b.name}.`,
+    err: "",
+  })
+  expect(office.requests.at(-1)?.raw).toBe(`/hq/browsers/${b.id}`)
+  expect((await opencorp(trusted, "devices", "remove-browser", b.id)).err).toBe(`opencorp devices: no browser session ${b.id}`)
+})
+
 test("logout removes this device with its own token, then the identity", async () => {
   await opencorp(trusted, "login", "--device", "mac")
   const token = identity(trusted).token
