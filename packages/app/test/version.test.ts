@@ -15,6 +15,8 @@ test("a new build reloads, once per target build", () => {
 test("an app built for another office is out of date, and never reloads", () => {
   expect(verdict(health({ build: "b1", api: "0.0.1+bbb" }), "b1", { dev: false, reloadedFor: null })).toBe("out_of_date")
 })
-test("under vite dev the build nonce isn't compared", () => {
+test("under vite dev the built dist isn't consulted at all", () => {
   expect(verdict(health({ build: "b9", api: "0.0.1+aaa" }), "dev", { dev: true, reloadedFor: null })).toBe("ok")
+  expect(verdict(health(null), "dev", { dev: true, reloadedFor: null })).toBe("ok")
+  expect(verdict(health({ build: "b9", api: "0.0.1+bbb" }), "dev", { dev: true, reloadedFor: null })).toBe("ok")
 })
