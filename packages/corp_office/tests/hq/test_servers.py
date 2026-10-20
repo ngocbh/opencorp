@@ -183,7 +183,7 @@ async def test_with_tcp_off_only_hq_sock_listens(short_office, hq):
         await listeners.stop()
 
 
-async def test_a_failed_hq_sock_bind_is_a_warning(office, hq, short_dir, monkeypatch):
+async def test_a_failed_hq_sock_bind_is_the_status_socket_error(office, hq, short_dir, monkeypatch):
     deep = short_dir / ("d" * 110)  # hq.sock's path is now past sun_path's 104 bytes
     deep.mkdir()
     monkeypatch.setattr(office.paths, "office", deep)
@@ -191,12 +191,14 @@ async def test_a_failed_hq_sock_bind_is_a_warning(office, hq, short_dir, monkeyp
     listeners = Listeners(hq)
     await listeners.start()  # the office runs on
     try:
-        assert any("isn't listening on" in w and "hq.sock" in w for w in hq.status().warnings)
+        status = hq.status()
+        assert status.socket_error == hq.socket_error and status.socket_error
+        assert not any("isn't listening on" in w for w in status.warnings)  # said once, by socket_error
     finally:
         await listeners.stop()
 
 
-async def test_an_os_error_at_hq_sock_is_a_warning_too(short_office, hq, monkeypatch):
+async def test_an_os_error_at_hq_sock_is_the_socket_error_too(short_office, hq, monkeypatch):
     def refused(path):
         raise PermissionError(13, "Permission denied")
 
@@ -205,7 +207,7 @@ async def test_an_os_error_at_hq_sock_is_a_warning_too(short_office, hq, monkeyp
     listeners = Listeners(hq)
     await listeners.start()  # the office runs on
     try:
-        assert any("isn't listening on" in w and "Permission denied" in w for w in hq.status().warnings)
+        assert "Permission denied" in hq.status().socket_error
     finally:
         await listeners.stop()
 
@@ -256,7 +258,7 @@ async def test_a_tcp_server_that_dies_is_noticed_and_the_port_bound_again(short_
         await listeners.stop()
 
 
-async def test_a_hq_sock_server_that_exits_is_a_warning_not_a_stopped_office(short_office, hq, monkeypatch):
+async def test_a_hq_sock_server_that_exits_is_a_socket_error_not_a_stopped_office(short_office, hq, monkeypatch):
     _failing_once(monkeypatch, SystemExit(1))
     hq.config = dataclasses.replace(hq.config, tcp=False)
     listeners = Listeners(hq)
@@ -265,7 +267,7 @@ async def test_a_hq_sock_server_that_exits_is_a_warning_not_a_stopped_office(sho
         async with asyncio.timeout(2):
             while hq.socket_error is None:
                 await asyncio.sleep(0.02)
-        assert any("isn't listening on" in w for w in hq.status().warnings)
+        assert hq.status().socket_error.startswith("its server ended")
     finally:
         await listeners.stop()
     assert not hq.socket.exists()

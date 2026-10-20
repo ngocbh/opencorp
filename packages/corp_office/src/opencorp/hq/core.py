@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from opencorp.company.snapshot import CompanySnapshots
 from opencorp.hq.config import HqConfig, load_config
+from opencorp.hq.login import Logins
 from opencorp.hq.pairing import PairCodes
 from opencorp.hq.servers import Listeners
 from opencorp.hq.sessions import BrowserSessions
@@ -32,6 +33,7 @@ class Hq:
     snapshots: CompanySnapshots
     sessions: BrowserSessions
     codes: PairCodes
+    logins: Logins
     listen: bool = False
     """Whether starting HQ starts its listeners (the daemon); tests attach without them."""
     bound_port: int | None = None
@@ -48,9 +50,10 @@ class Hq:
         registered in ``office.extras`` when it has none)."""
         config = load_config(office.paths.office)
         snapshots = office.extras.setdefault("company", CompanySnapshots(office.git))
+        sessions = BrowserSessions(office.store, snapshots)
         return cls(office=office, config=config, api=office_api(), build=BuildInfo(config.app_dir),
-                   snapshots=snapshots, sessions=BrowserSessions(office.store, snapshots),
-                   codes=PairCodes(office.paths.office))
+                   snapshots=snapshots, sessions=sessions, codes=PairCodes(office.paths.office),
+                   logins=Logins(sessions))
 
     @property
     def socket(self) -> Path:
@@ -79,13 +82,13 @@ class Hq:
                         tcp=HqTcp(enabled=self.config.tcp, port=self.bound_port or self.config.port,
                                   listening=self.bound_port is not None, error=self.tcp_error,
                                   next_retry_at=self.next_retry_at),
-                        url=self.url(), health=self.health(), warnings=self.warnings())
+                        url=self.url(), health=self.health(), socket_error=self.socket_error,
+                        warnings=self.warnings())
 
     def warnings(self) -> list[str]:
-        """What ``opencorp doctor`` and ``opencorp pair`` should mention."""
+        """What ``opencorp doctor`` and ``opencorp pair`` should mention, besides ``socket_error`` and TCP's own
+        state."""
         found = [] if self.config.problem is None else [f"settings ignored: {self.config.problem}"]
-        if self.socket_error is not None:
-            found.append(f"HQ isn't listening on {self.socket}: {self.socket_error}")
         if self.config.tcp and (others := other_users()):
             found.append(f"the web port is on and this host has other users ({', '.join(others)}): any of them could "
                          f"take the port while the office is down. Turn it off with \"tcp\": false in "

@@ -71,7 +71,15 @@ async def test_mint_while_listening_writes_a_file_that_stopping_deletes(office):
 async def test_status_before_listening(office):
     status = attach(office, listen=False).status()
     assert status.url is None and status.tcp.listening is False and status.health.office.api
-    assert status.socket == str(office.paths.office / "hq.sock")
+    assert status.socket == str(office.paths.office / "hq.sock") and status.socket_error is None
+
+
+async def test_status_carries_why_hq_sock_isnt_listening_once(office):
+    hq = attach(office, listen=False)
+    hq.socket_error = "AF_UNIX path too long"
+    status = hq.status()
+    assert status.socket_error == "AF_UNIX path too long"
+    assert not any("AF_UNIX" in w for w in status.warnings)
 
 
 async def test_status_names_ignored_settings(office):

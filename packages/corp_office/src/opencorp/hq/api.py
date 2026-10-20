@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -23,8 +24,9 @@ from opencorp.daemon.routes.sessions import list_sessions
 from opencorp.daemon.routes.work_items import get_work_item
 from opencorp.hq.auth import BrowserAuth, cookie_name, cookie_value
 from opencorp.hq.guard import HqGuard
+from opencorp.hq.login import BadCredentials, Busy, Throttled
 from opencorp.hq.static import serve_app
-from opencorp.protocol.models import Ack, CompanyView, PairRequest
+from opencorp.protocol.models import Ack, CompanyView, HqLoginRequest, PairRequest
 
 if TYPE_CHECKING:
     from opencorp.daemon.app import Office
@@ -75,6 +77,53 @@ async def pair(request: Request) -> JSONResponse:
     session, value = await hq.sessions.issue(pending.handle, issued_by=pending.issuer, label=body.label)
     if old is not None:
         await hq.sessions.revoke(old.id)  # pairing again replaces this browser's session
+    response = ok(session)
+    response.headers.append("set-cookie", _cookie(request.scope, value))
+    return response
+
+
+BAD_CREDENTIALS = "wrong handle or password"
+"""The one answer to every failed sign-in, so nobody can tell which handles exist."""
+
+
+async def login(request: Request) -> JSONResponse:
+    """Sign this browser in with a human's handle and password. Open without a session.
+
+    The session is the one pairing issues, with ``via`` "login"; the password is never logged.
+    """
+    hq = get_hq(request)
+    body = await parse(request, HqLoginRequest)
+    # HQ listens only on 127.0.0.1 and hq.sock, so the peer is in practice always 127.0.0.1 or "" (hq.sock): the
+    # throttle keyed on it is per handle. Anyone who reaches HQ can lock a handle's password sign-in for a while,
+    # which is why `opencorp pair` never goes through it and stays the way in.
+    peer = request.client.host if request.client else ""
+    who = f"@{body.handle} from {peer or 'hq.sock'}"
+    try:
+        checked = await hq.logins.check(peer, body.handle, body.password)
+        # Only a session the cookie really proves is replaced; a forged or stale cookie revokes nothing.
+        old = await hq.sessions.check(cookie_value(request.scope))
+        try:
+            session, value = await hq.sessions.issue(body.handle, issued_by=body.handle, label=body.label,
+                                                     via="login", checked=checked)
+        except HTTPError as exc:
+            if exc.code not in ("not_a_human", "password_changed"):  # HEAD moved since the check
+                raise
+            raise BadCredentials from None
+    except BadCredentials:
+        log.info("sign-in for %s failed", who)
+        return error(401, "bad_credentials", BAD_CREDENTIALS)
+    except Throttled as exc:
+        if exc.first:  # once per lock: a client retrying in a loop mustn't flood the log
+            log.info("sign-in for %s throttled for %d s", who, exc.retry_after)
+        minutes = math.ceil(exc.retry_after / 60)
+        return error(429, "too_many_attempts",
+                     f"too many tries; wait {minutes} minute{'s' * (minutes != 1)}, or run `opencorp pair` on the "
+                     "office machine", {"retry-after": str(exc.retry_after)})
+    except Busy:
+        return error(503, "busy", "the office is busy; try again", {"retry-after": "1"})
+    if old is not None:
+        await hq.sessions.revoke(old.id)  # signing in again replaces this browser's session
+    log.info("sign-in for %s ok", who)
     response = ok(session)
     response.headers.append("set-cookie", _cookie(request.scope, value))
     return response
@@ -153,8 +202,8 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
     """The app one HQ listener serves: ``port`` is the TCP listener's bound port, None for ``hq.sock``.
 
     It never mounts the socket's routes, and the socket's app never mounts these, so routing fails closed. /api
-    serves reads the Company page needs, pairing and logging out; writes (connections, devices, passwords, hire,
-    prompts) stay socket-only.
+    serves reads the Company page needs, pairing, signing in and logging out; writes (connections, devices,
+    passwords, hire, prompts) stay socket-only.
     """
     api = [
         Route("/health", health, methods=["GET"]),
@@ -166,6 +215,7 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
         Route("/costs", costs, methods=["GET"]),
         Route("/events", events, methods=["GET"]),
         Route("/pair", pair, methods=["POST"]),
+        Route("/login", login, methods=["POST"]),
         Route("/logout", logout, methods=["POST"]),
         Route("/{rest:path}", no_route, methods=ANY),
     ]
