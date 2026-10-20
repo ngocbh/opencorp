@@ -17,7 +17,13 @@ const code = (over: Partial<PairCode> = {}): PairCode => ({
 const opts = { host: "misha", noOpen: false, hqJson: "/home/u/.opencorp/office/hq.json", tcp: null }
 const tcpOff = { enabled: false, port: 49380, listening: false, error: null, next_retry_at: null }
 const SOCKET_FORWARD = "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49381:/home/u/.opencorp/office/hq.sock misha"
-const taken = { enabled: true, port: 49380, listening: false, error: "Address already in use", next_retry_at: null }
+const taken = {
+  enabled: true,
+  port: 49380,
+  listening: false,
+  error: "Address already in use" as string | null,
+  next_retry_at: null,
+}
 
 test("a desktop session not over SSH can open a browser", () => {
   expect(canOpen({}, "darwin")).toBe(true)
@@ -25,12 +31,30 @@ test("a desktop session not over SSH can open a browser", () => {
   expect(canOpen({ WAYLAND_DISPLAY: "wayland-0" }, "linux")).toBe(true)
   expect(canOpen({}, "linux")).toBe(false)
   expect(canOpen({ SSH_CONNECTION: "1 2 3 4" }, "darwin")).toBe(false)
+  expect(canOpen({ SSH_CLIENT: "1 2 3" }, "darwin")).toBe(false)
+  expect(canOpen({ SSH_TTY: "/dev/ttys001" }, "darwin")).toBe(false)
 })
 
 test("locally with TCP listening, it opens the redirect file and prints the URL", () => {
   const out = pairOutput(code(), { ...opts, env: {}, platform: "darwin" })
   expect(out.open).toBe("/home/u/.opencorp/office/pair-1a2b.html")
+  expect(out.lines).toContain("Opening it in your browser. If the page doesn't open or load, use:")
   expect(out.lines.join("\n")).toContain("http://127.0.0.1:49380/pair#CODE1234567890abcdefgh")
+})
+
+test("the expiry reads as minutes from now, then the clock time", () => {
+  const now = Date.parse("2026-10-19T10:00:00.000Z")
+  const first = pairOutput(code(), { ...opts, now, env: {}, platform: "darwin" }).lines[0]
+  expect(first).toMatch(/^This link signs a browser in once, in the next 5 minutes \(until \d\d?:\d\d.*\)\.$/)
+  const late = pairOutput(code(), { ...opts, now: now + 250_000, env: {}, platform: "darwin" }).lines[0]
+  expect(late).toContain("in the next 1 minute (until")
+})
+
+test("SSH_CLIENT or SSH_TTY count as over SSH too", () => {
+  for (const env of [{ SSH_CLIENT: "1 2 3" }, { SSH_TTY: "/dev/pts/1" }])
+    expect(pairOutput(code(), { ...opts, env, platform: "darwin" }).lines).toContain(
+      "  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:49380:127.0.0.1:49380 misha",
+    )
 })
 
 test("--no-open only prints", () => {
@@ -66,10 +90,16 @@ test("with TCP off, it prints a forward of hq.sock, and locally how to turn TCP 
   expect(remote.join("\n")).not.toContain('"tcp": true')
 })
 
-test("with TCP on but its port taken, it says so, forwards hq.sock, and doesn't say to turn TCP on", () => {
+test("with TCP on but not listening, it says why, forwards hq.sock, and doesn't say to turn TCP on", () => {
   const off = code({ url: null, open_file: null })
-  const out = pairOutput(off, { ...opts, tcp: taken, env: {}, platform: "darwin" }).lines
-  expect(out).toContain("HQ's web port 49380 is taken (Address already in use); `opencorp doctor` says more.")
+  const lines = (tcp: typeof taken) => pairOutput(off, { ...opts, tcp, env: {}, platform: "darwin" }).lines
+  expect(lines({ ...taken, error: null })).toContain("HQ's web port 49380 isn't listening yet.")
+  expect(lines({ ...taken, port: 0, error: null })).toContain("HQ's web port isn't listening yet.")
+  expect(lines({ ...taken, port: 0 })).toContain(
+    "HQ's web port isn't listening (Address already in use); `opencorp doctor` says more.",
+  )
+  const out = lines(taken)
+  expect(out).toContain("HQ's web port 49380 isn't listening (Address already in use); `opencorp doctor` says more.")
   expect(out).toContain(SOCKET_FORWARD)
   expect(out.join("\n")).not.toContain('"tcp": true')
 })
@@ -167,7 +197,9 @@ test("with the web port taken it reads GET /hq and says so", async () => {
   const { d, printed, spawned } = deps()
   expect(await pair([], d)).toBe(0)
   expect(office!.requests.some((r) => r.method === "GET" && r.path === "/hq")).toBe(true)
-  expect(printed).toContain("HQ's web port 49380 is taken (Address already in use); `opencorp doctor` says more.")
+  expect(printed).toContain(
+    "HQ's web port 49380 isn't listening (Address already in use); `opencorp doctor` says more.",
+  )
   expect(spawned).toEqual([])
 })
 

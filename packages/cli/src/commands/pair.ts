@@ -18,9 +18,12 @@ export const LOCAL_PORT = 49381
 
 type Env = Record<string, string | undefined>
 
+/** Whether this is an SSH session: sshd sets `SSH_CONNECTION` and `SSH_CLIENT`, and `SSH_TTY` with a terminal. */
+const overSsh = (env: Env) => !!(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
+
 /** Whether `pair` can open a browser here: a Mac or a Linux display, and not over SSH. */
 export function canOpen(env: Env, platform: string) {
-  if (env.SSH_CONNECTION) return false
+  if (overSsh(env)) return false
   return platform === "darwin" || !!env.DISPLAY || !!env.WAYLAND_DISPLAY
 }
 
@@ -31,8 +34,15 @@ const shellWord = (s: string) => (/^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.repla
 const forward = (port: number, target: string, host: string) =>
   `  ssh -N -o ExitOnForwardFailure=yes -L 127.0.0.1:${port}:${target} ${host}`
 
-/** `ts` as a local clock time, for "until 14:05". */
-const clock = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+/** When `ts` is, as "in the next 5 minutes (until 14:05)": the clock time is this machine's, which may not be yours. */
+function expiry(ts: string, now: number) {
+  const minutes = Math.max(1, Math.round((Date.parse(ts) - now) / 60_000))
+  const clock = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  return `in the next ${minutes} minute${minutes === 1 ? "" : "s"} (until ${clock})`
+}
+
+/** HQ's web port as a phrase: "HQ's web port 49380", or without a number for `port: 0` (any free one). */
+const webPort = (port: number) => (port ? `HQ's web port ${port}` : "HQ's web port")
 
 /**
  * What `pair` prints for `code`, and the redirect file to open, if it should open one. `tcp` is HQ's TCP status when
@@ -40,13 +50,13 @@ const clock = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: "2-dig
  */
 export function pairOutput(
   code: PairCode,
-  o: { env: Env; platform: string; host: string; noOpen: boolean; hqJson: string; tcp: HqTcp | null },
+  o: { env: Env; platform: string; host: string; noOpen: boolean; hqJson: string; tcp: HqTcp | null; now?: number },
 ): { lines: string[]; open?: string } {
-  const lines = [`This link signs a browser in once, until ${clock(code.expires_at)}.`]
-  const overSsh = !!o.env.SSH_CONNECTION
-  if (code.url && !overSsh) {
+  const lines = [`This link signs a browser in once, ${expiry(code.expires_at, o.now ?? Date.now())}.`]
+  const ssh = overSsh(o.env)
+  if (code.url && !ssh) {
     const open = !o.noOpen && canOpen(o.env, o.platform) && code.open_file ? code.open_file : undefined
-    lines.push(open ? "Opening it in your browser. If nothing opens, use:" : "Open it in your browser:")
+    lines.push(open ? "Opening it in your browser. If the page doesn't open or load, use:" : "Open it in your browser:")
     lines.push(`  ${code.url}`)
     return { lines, open }
   }
@@ -65,10 +75,9 @@ export function pairOutput(
   } else {
     if (!o.tcp) lines.push("Couldn't read the web port's status.")
     else if (!o.tcp.enabled) lines.push("HQ's web port is off here.")
-    else {
-      const why = o.tcp.error ?? "not listening yet"
-      lines.push(`HQ's web port ${o.tcp.port} is taken (${why}); \`opencorp doctor\` says more.`)
-    }
+    else if (o.tcp.error)
+      lines.push(`${webPort(o.tcp.port)} isn't listening (${o.tcp.error}); \`opencorp doctor\` says more.`)
+    else lines.push(`${webPort(o.tcp.port)} isn't listening yet.`)
     lines.push(
       "On the machine with your browser, forward HQ's socket:",
       forward(LOCAL_PORT, shellWord(code.socket), o.host),
@@ -76,7 +85,7 @@ export function pairOutput(
       `  http://127.0.0.1:${LOCAL_PORT}${code.path}`,
       `(hq.sock takes any port, so any free local port works in place of ${LOCAL_PORT}.)`,
     )
-    if (!overSsh && o.tcp && !o.tcp.enabled)
+    if (!ssh && o.tcp && !o.tcp.enabled)
       lines.push(`To open it here instead, add "tcp": true to ${shellWord(o.hqJson)}, then run \`opencorp restart\`.`)
   }
   lines.push(`(In place of ${o.host}, use however you reach this machine.)`)
