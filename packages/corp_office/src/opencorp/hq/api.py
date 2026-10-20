@@ -51,12 +51,13 @@ async def pair(request: Request) -> JSONResponse:
     """
     hq = get_hq(request)
     body = await parse(request, PairRequest)
+    # Only a session the cookie really proves is replaced; a forged or stale cookie revokes nothing. Checked before
+    # the code is spent, so a failing check doesn't burn it.
+    old = await hq.sessions.check(cookie_value(request.scope))
     pending = hq.codes.redeem(body.code)
     if pending is None:
         raise HTTPError(400, "pair_code_invalid",
                         "This link has expired or was already used. Run `opencorp pair` again.")
-    # Only a session the cookie really proves is replaced; a forged or stale cookie revokes nothing.
-    old = await hq.sessions.check(cookie_value(request.scope))
     session, value = await hq.sessions.issue(pending.handle, issued_by=pending.issuer, label=body.label)
     if old is not None:
         await hq.sessions.revoke(old.id)  # pairing again replaces this browser's session

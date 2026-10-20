@@ -2,6 +2,8 @@
 
 import logging
 
+import pytest
+
 from opencorp.auth.tokens import new_token
 from tests.hq.conftest import hq_client
 
@@ -93,3 +95,16 @@ async def test_logout_ends_the_session_and_clears_the_cookie(web, hq, office):
 
 async def test_logout_needs_a_session(web):
     assert (await web.post("/api/logout", json={})).status_code == 401
+
+
+async def test_a_failing_check_of_the_old_cookie_doesnt_burn_the_code(web, hq, monkeypatch):
+    code = hq.mint("ngocbh", issuer="ngocbh", open_file=False).path.split("#")[1]
+
+    async def broken(cookie):
+        raise RuntimeError("git went away")
+
+    with monkeypatch.context() as m:
+        m.setattr(hq.sessions, "check", broken)
+        with pytest.raises(RuntimeError):
+            await web.post("/api/pair", json={"code": code})
+    assert (await web.post("/api/pair", json={"code": code})).status_code == 200
