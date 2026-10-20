@@ -272,3 +272,23 @@ async def test_still_valid_refuses_without_ending_while_the_persons_file_cant_be
     hand_edit(company, "ngocbh", kind="robot")
     assert not await s.still_valid(public.id, office.git.head())
     assert office.store.get_hq_session(public.id) is not None and s.alive(public.id)
+
+
+async def test_a_revoke_during_the_fingerprint_load_wins_over_a_match(office, hq, company, monkeypatch):
+    s = sessions_for(office, Clock())
+    public, _ = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    hand_edit(company, "ngocbh", title="Boss")  # a new commit, whose fingerprints aren't loaded yet
+    entered, gate = threading.Event(), threading.Event()
+    real = sessions_module.password_fps
+
+    def gated(git, sha):
+        entered.set()
+        gate.wait(5)
+        return real(git, sha)
+
+    monkeypatch.setattr(sessions_module, "password_fps", gated)
+    checking = asyncio.create_task(s.still_valid(public.id, office.git.read_head()))
+    assert await asyncio.to_thread(entered.wait, 5)
+    await s.revoke(public.id)
+    gate.set()
+    assert await checking is False

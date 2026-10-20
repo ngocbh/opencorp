@@ -222,7 +222,7 @@ class BrowserSessions:
         if live.person in humans.unreadable:
             return False
         if humans.fps.get(live.person) == live.password_fp:
-            return True
+            return not live.revoked  # a revoke during the load wins
         await self.revoke(sid)
         return False
 
