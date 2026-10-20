@@ -100,8 +100,7 @@ class CodexSession:
         self.requests: dict[str, Pending] = {}  # question id -> the request Codex waits on
         self.by_request: dict[str, str] = {}  # str(request id) -> question id
         self._turnless: tuple[CodexProcess, str] | None = None  # an app-server and its turnless requests' run id
-        self.timer: threading.Timer | None = None  # idle_end while idle; END_WAIT while ending
-        self._idle_after: int | None = None  # idle_end in seconds, read by each load from the pinned company
+        self.timer: threading.Timer | None = None  # END_WAIT while ending
         self.ending = self.closed = self.stopped = False
         self._lock = threading.RLock()
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
@@ -125,7 +124,6 @@ class CodexSession:
             if self.ending:
                 raise HarnessError(409, "ending", f"session {self.session_id} is ending")
             self.transcript.user(text, author=by or self.author)
-            self._stop_timer()
             if self.loading or self.process is None:
                 self.pending.append(text)
                 if not self.loading:
@@ -233,11 +231,10 @@ class CodexSession:
             self._jobs.put(None)
 
     def idle_after_restore(self, status: str) -> None:
-        """Go idle with no app-server, as a restarted office finds the session (stored as ``status``): its next
-        message reloads the thread, and ``idle_end`` (read on the session's thread) ends it if none comes."""
+        """Go idle with no app-server, as a restarted office finds the session (stored as ``status``); its next
+        message reloads the thread."""
         with self._lock:
             self._idle(write=status != "idle")
-        self._post(self._idle_end_after_restore)
 
     def launching_as(self, process: CodexProcess) -> bool:
         """Record ``process`` as the app-server being started, so office stop kills it; False once stopped."""
@@ -276,9 +273,6 @@ class CodexSession:
 
     def _load(self, resume: bool) -> None:
         try:
-            idle_after = self.owner.idle_seconds(self.session_id)  # here, not under the lock: it reads the company
-            with self._lock:  # before the launch, so a reload that fails still ends after idle_end
-                self._idle_after = idle_after
             process = self.owner.launch(self)
             params = owner_load(self.cwd, self.owner.policy(self.session_id))
             # The office never reads past turns, so a resume needn't send them.
@@ -326,14 +320,6 @@ class CodexSession:
             self.closed = True
         self.owner.finished(self, "failed")
         self._jobs.put(None)
-
-    def _idle_end_after_restore(self) -> None:
-        idle_after = self.owner.idle_seconds(self.session_id)  # not under the lock: it reads the company
-        with self._lock:
-            if self._idle_after is not None or self.loading or self.process is not None or self.turn_id is not None:
-                return  # a message came first: its load reads idle_end
-            self._idle_after = idle_after
-            self._idle(write=False)  # stored idle already: this only arms the timer
 
     def _flush(self) -> None:
         """Send what waited for the load, in order, then go idle if nothing was sent. ``loading`` stays set until
@@ -412,8 +398,7 @@ class CodexSession:
         if method == "turn/started":
             with self._lock:
                 self.turn_id = params["turn"]["id"]
-                if not self.ending:  # while ending, the timer is END_WAIT's, which must still close the session
-                    self._stop_timer()
+                if not self.ending:
                     self.store.update_session(self.session_id, status="busy")
         elif method == "turn/completed":
             turn = params["turn"]
@@ -575,7 +560,7 @@ class CodexSession:
                 self._expire(question_id)
             self.by_request.clear()
         # A dead leader leaves its group to whatever it started (command children, #57): kill it now, which also
-        # removes the record, so an end or idle_end that comes before any reload never finds them. An app-server
+        # removes the record, so an end that comes before any reload never finds them. An app-server
         # that only unloaded the thread is alive: close it through its stdin, which kills its group after.
         if said is None:
             process.close(self.owner.close_grace)
@@ -612,32 +597,15 @@ class CodexSession:
         self._jobs.put(None)  # nothing more to do: let the session's thread end after this job
 
     def _idle(self, *, write: bool = True) -> None:
-        """(Under the lock.) Go idle (``write`` stores the status); ``idle_end`` later, the session ends. Nothing once
-        the office stops or the session is ending."""
+        """(Under the lock.) Go idle (``write`` stores the status); nothing once the office stops or the session is
+        ending."""
         if self.stopped or self.ending or self.closed:
             return
-        self._stop_timer()
         if write:
             self.store.update_session(self.session_id, status="idle")
-        if self._idle_after is None:  # not read yet: the first load reads it
-            return
-        timer = self.timer = threading.Timer(self._idle_after, self._post)
-        timer.args = (self._idle_end, timer)  # the job knows its timer, so one a message stopped ends nothing
-        timer.daemon = True
-        timer.start()
-
-    def _idle_end(self, timer: threading.Timer) -> None:
-        with self._lock:
-            still_idle = self.timer is timer and self.turn_id is None and not self.pending and not self.loading \
-                and not self.ending
-        if still_idle:
-            try:
-                self.end()
-            except HarnessError:
-                pass  # the office stopped meanwhile: restore decides
 
     def _stop_timer(self) -> None:
-        """(Under the lock.) Cancel the idle or end timer."""
+        """(Under the lock.) Cancel the end timer."""
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None

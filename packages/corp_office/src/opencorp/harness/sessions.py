@@ -8,11 +8,10 @@ from typing import Any
 from opencorp.chat.harness import LIVE, HarnessError
 from opencorp.chat.hooks import Hooks
 from opencorp.chat.transcript import INTERRUPTED_TEXT
-from opencorp.chat.turns import seconds
 from opencorp.company.loader import load_repo
 from opencorp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
 from opencorp.harness.session import CodexSession
-from opencorp.protocol.models import CompanyDefaults, HarnessPolicy, Message, Question, Session
+from opencorp.protocol.models import HarnessPolicy, Message, Question, Session
 from opencorp.store import InvalidTransition
 from opencorp.worker.spawn import worker_env
 
@@ -165,12 +164,6 @@ class CodexSessions:
         session = self.store.get_session(session_id)
         person = load_repo(self.office.git.pin(session.repo_commit)).people.get(session.person)
         return person.harness_policy if person else None
-
-    def idle_seconds(self, session_id: str) -> int:
-        """How long the session may sit idle before it ends: ``idle_end`` of its pinned company."""
-        session = self.store.get_session(session_id)
-        repo = load_repo(self.office.git.pin(session.repo_commit))
-        return seconds(((repo.company.defaults if repo.company else None) or CompanyDefaults()).idle_end)
 
     def opener(self, session: Session) -> str | None:
         """Who a message with no named sender is from: the session's opener, else the pinned company's CEO."""
