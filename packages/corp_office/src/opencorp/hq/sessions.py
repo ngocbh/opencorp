@@ -44,8 +44,16 @@ def _secret_sha256(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
-def password_fps(git: CompanyGit, sha: str) -> dict[str, str]:
-    """``{handle: password_fp}`` of the humans at commit ``sha``, read from git objects in one batch.
+@dataclass(frozen=True)
+class Humans:
+    """The humans' password fingerprints at one commit, and the handles whose ``person.yaml`` can't be read there."""
+
+    fps: dict[str, str]
+    unreadable: frozenset[str]
+
+
+def password_fps(git: CompanyGit, sha: str) -> Humans:
+    """The humans' password fingerprints at commit ``sha``, read from git objects in one batch.
 
     The company snapshot drops password hashes, since it goes to browsers, so they are read here.
     """
@@ -53,14 +61,18 @@ def password_fps(git: CompanyGit, sha: str) -> dict[str, str]:
              if path.count("/") == 2 and path.endswith("/person.yaml")}
     data = git.read_blobs(list(blobs.values()))
     found: dict[str, str] = {}
+    unreadable: set[str] = set()
     for handle, blob in blobs.items():
         try:
             person = Person.model_validate(yaml.safe_load(data.get(blob) or b""))
         except (ValidationError, yaml.YAMLError, UnicodeDecodeError, RecursionError):
-            continue  # the snapshot reports a broken file; here it just lets no one in through it
-        if person.handle == handle and person.kind == "human":
+            unreadable.add(handle)  # the snapshot reports the broken file
+            continue
+        if person.handle != handle:
+            unreadable.add(handle)
+        elif person.kind == "human":
             found[handle] = password_fp(person.password_hash)
-    return found
+    return Humans(found, frozenset(unreadable))
 
 
 class _Fingerprints:
@@ -69,9 +81,9 @@ class _Fingerprints:
     def __init__(self, git: CompanyGit) -> None:
         self.git = git
         self._sha: str | None = None
-        self._load: asyncio.Future[dict[str, str]] | None = None
+        self._load: asyncio.Future[Humans] | None = None
 
-    async def at(self, sha: str) -> dict[str, str]:
+    async def at(self, sha: str) -> Humans:
         load = self._load
         failed = load is not None and load.done() and (load.cancelled() or load.exception() is not None)
         if load is None or sha != self._sha or failed:
@@ -113,10 +125,10 @@ class BrowserSessions:
         self._fingerprints = _Fingerprints(snapshots.git)
         self._live: dict[str, _Live] = {}
 
-    async def _at_head(self) -> tuple[CompanyView | None, dict[str, str]]:
+    async def _at_head(self) -> tuple[CompanyView | None, Humans]:
         """The company at HEAD and its humans' password fingerprints."""
         view = await self.snapshots.head()
-        return view, ({} if view is None else await self._fingerprints.at(view.sha))
+        return view, (Humans({}, frozenset()) if view is None else await self._fingerprints.at(view.sha))
 
     async def issue(self, person: str, *, issued_by: str, label: str | None) -> tuple[BrowserSession, str]:
         """A new session for the human ``person``; returns it and the cookie value ``<id>.<secret>``.
@@ -124,7 +136,8 @@ class BrowserSessions:
         The name is made here (``web-<6 characters>``), so no name conflict can fail the request after a pairing
         code is spent.
         """
-        _, fps = await self._at_head()
+        _, humans = await self._at_head()
+        fps = humans.fps
         if person not in fps:
             raise HTTPError(403, "not_a_human", f"@{person} isn't a human in the company at HEAD")
         secret = secrets.token_urlsafe(32)
@@ -149,8 +162,11 @@ class BrowserSessions:
         row = await asyncio.to_thread(self.store.hq_session_by_secret, _secret_sha256(secret), now)
         if row is None or row.id != sid:  # only a cookie that proves the secret gets past here
             return None
-        view, fps = await self._at_head()
-        if view is None or row.expires_at <= now or fps.get(row.person) != row.password_fp:
+        view, humans = await self._at_head()
+        if row.person in humans.unreadable:
+            # A typo, or a field from a newer writer, isn't offboarding: refuse until the file reads again.
+            return None
+        if view is None or humans.fps.get(row.person) != row.password_fp:
             await self.revoke(sid)
             return None
         # A revoke that ran while this check read the row left a revoked entry here, which wins.

@@ -95,6 +95,29 @@ async def test_a_session_issued_after_the_password_lives(office, hq, company):
     assert await s.check(cookie) is not None
 
 
+async def test_a_person_file_that_doesnt_validate_refuses_without_ending_the_session(office, hq, company):
+    s = sessions_for(office, Clock())
+    public, cookie = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    hand_edit(company, "ngocbh", nickname="typo")  # a field Person doesn't know
+    assert await s.check(cookie) is None and office.store.get_hq_session(public.id) is not None
+    with pytest.raises(HTTPError):
+        await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    path = company / "people" / "ngocbh" / "person.yaml"
+    data = yaml.safe_load(path.read_text())
+    del data["nickname"]
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    _git(company, "commit", "-qam", "fix ngocbh")
+    assert (await s.check(cookie)).id == public.id
+
+
+async def test_deleting_the_person_ends_the_session(office, hq, company):
+    s = sessions_for(office, Clock())
+    public, cookie = await s.issue("ngocbh", issued_by="ngocbh", label=None)
+    _git(company, "rm", "-q", "people/ngocbh/person.yaml")
+    _git(company, "commit", "-qm", "offboard ngocbh")
+    assert await s.check(cookie) is None and office.store.get_hq_session(public.id) is None
+
+
 async def test_offboarding_ends_the_session(office, hq, company):
     s = sessions_for(office, Clock())
     _, cookie = await s.issue("ngocbh", issued_by="ngocbh", label=None)
