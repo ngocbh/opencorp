@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import json
 import os
 import resource
 import signal
@@ -19,6 +20,7 @@ from opencorp.daemon.main import (AlreadyRunning, OfficeStartError, PidFile, bin
                                     raise_fd_limit, remove_stale_socket, server_config)
 from opencorp.daemon.sockets import bind_tcp
 from tests.daemon.conftest import base_files, served, write_repo
+from tests.hq.net import free_port
 
 
 def test_socket_is_0600_even_with_a_loose_umask(short_dir):
@@ -444,3 +446,43 @@ async def test_a_websocket_upgrade_is_served_as_plain_http_on_the_office_socket(
     # With ws="none" uvicorn ignores the upgrade and serves /health. Without it, the upgrade reaches Starlette,
     # which has no WebSocket route, and uvicorn answers 403, so this pins the setting rather than only "not 101".
     assert status.startswith(b"HTTP/1.1 200")
+
+
+def test_a_restart_with_an_open_web_stream_rebinds_the_port_at_once(home):
+    port = free_port()
+    (home / "office" / "hq.json").write_text(json.dumps({"tcp": True, "port": port}))
+    paths = OfficePaths(home)
+
+    def sock_client():
+        return httpx.Client(transport=httpx.HTTPTransport(uds=str(paths.socket)), base_url="http://localhost")
+
+    def listening(within):
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            with sock_client() as c:
+                if c.get("/hq").json()["tcp"]["listening"]:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    proc = _daemon(home)
+    try:
+        _wait_until_serving(home, proc)
+        assert listening(3)
+        with sock_client() as c:
+            code = c.post("/hq/pair", json={}).json()["path"].split("#")[1]
+        origin = f"http://127.0.0.1:{port}"
+        with httpx.Client(base_url=origin, headers={"origin": origin}, trust_env=False) as web:
+            assert web.post("/api/pair", json={"code": code}).status_code == 200
+            with web.stream("GET", "/api/events") as r:
+                assert next(r.iter_lines()) == ": connected"
+                _stop(home, proc)  # SIGTERM with the stream open: the server side closes first, into TIME_WAIT
+    finally:
+        if proc.poll() is None:
+            _stop(home, proc)
+    proc = _daemon(home)
+    try:
+        _wait_until_serving(home, proc)
+        assert listening(1.5)  # well before the first retry at 5 s: the first bind worked
+    finally:
+        _stop(home, proc)
