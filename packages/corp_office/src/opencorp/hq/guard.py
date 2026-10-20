@@ -99,6 +99,9 @@ class HqGuard:
 
     def _refusal(self, scope: Scope) -> Response | None:
         """The response that refuses the request, or None to let it through."""
+        if not scope["path"].startswith("/"):
+            # An absolute-form or asterisk target: its path wouldn't start with /api, so it would skip the API checks.
+            return error(400, "bad_target", "HQ takes only origin-form request targets")
         host = header(scope, b"host") or ""
         name, _, port = host.rpartition(":")
         api = is_api(scope["path"])

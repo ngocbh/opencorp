@@ -341,3 +341,36 @@ async def test_a_read_body_keeps_the_connection_open():
                               headers={"origin": f"http://127.0.0.1:{port}"}) as c:
         r = await c.post("/api/pair", json={"code": "x"})
     assert r.status_code == 200 and "connection" not in r.headers
+
+
+async def run_scope(app, scope: dict, body: bytes = b"") -> list[dict]:
+    """Run one request ``scope`` through ``app``; the messages it sent."""
+    messages = iter([{"type": "http.request", "body": body, "more_body": False}])
+    sent = []
+
+    async def receive():
+        return next(messages, {"type": "http.disconnect"})
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    return sent
+
+
+@pytest.mark.parametrize(("method", "target", "host"), [
+    ("POST", f"http://127.0.0.1:{PORT}/api/pair", f"127.0.0.1:{PORT}"),
+    ("GET", "http://evil.example/x", f"localhost:{PORT}"),
+    ("OPTIONS", "*", f"127.0.0.1:{PORT}"),
+])
+async def test_only_origin_form_targets_pass(method, target, host):
+    reached = []
+
+    async def app(scope, receive, send):
+        reached.append(scope)
+
+    scope = {"type": "http", "method": method, "path": target, "raw_path": target.encode(), "query_string": b"",
+             "headers": [(b"host", host.encode()), (b"content-type", b"text/plain"), (b"content-length", b"2")]}
+    sent = await run_scope(HqGuard(app, port=PORT), scope, b"hi")
+    assert reached == [] and sent[0]["status"] == 400
+    assert json.loads(sent[1]["body"])["error"] == "bad_target"
