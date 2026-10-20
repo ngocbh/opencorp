@@ -166,6 +166,8 @@ def test_with_tcp_off_pair_prints_the_socket_forward_and_hq_sock_serves_any_loca
 
 
 def test_the_code_never_reaches_a_process_list_or_the_log(sock_office, tmp_path):
+    """The code is in no running process's arguments, the daemon's and its children's included (the CLI that printed
+    it has exited by now), and not in the office's log."""
     import psutil
 
     out = sock_office.opencorp("pair", "--no-open", cwd=tmp_path).stdout
