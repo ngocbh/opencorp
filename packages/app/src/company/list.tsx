@@ -58,8 +58,14 @@ export function CompanyList(props: ListProps) {
   createEffect(() => {
     const visible = byId()
     if (lost === undefined) return
+    // Parents as last seen can loop after a reorg (two people swapped), so each is visited once.
+    const seen = new Set([lost])
     let to: string | null | undefined = parents.get(lost)
-    while (to && !visible.has(to)) to = parents.get(to)
+    while (to && !visible.has(to) && !seen.has(to)) {
+      seen.add(to)
+      to = parents.get(to)
+    }
+    if (to && !visible.has(to)) to = undefined
     lost = undefined
     const target = to ?? ids()[0]
     if (!target) return
