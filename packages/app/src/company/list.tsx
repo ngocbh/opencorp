@@ -1,5 +1,16 @@
 import type { Group, PersonCost } from "@opencorp/protocol"
-import { createComputed, createEffect, createMemo, createSelector, createSignal, For, onCleanup, Show } from "solid-js"
+import {
+  createComputed,
+  createEffect,
+  createMemo,
+  createSelector,
+  createSignal,
+  createUniqueId,
+  For,
+  onCleanup,
+  Show,
+} from "solid-js"
+import { describe, personCost } from "./format"
 import { PersonBody } from "./person"
 import { isMuted, label, moveFocus, personOf, teamName, visibleRows, type Item } from "./rows"
 import type { Status } from "./status"
@@ -37,6 +48,7 @@ export function CompanyList(props: ListProps) {
   /** The row with tabindex 0: the focused one while it's visible, else the first. */
   const current = () => (byId().has(focused() ?? "") ? focused() : ids()[0])
   const isCurrent = createSelector(current)
+  const uid = createUniqueId()
   const elements = new Map<string, HTMLElement>()
   // Each row's parent as last seen, kept for rows that have gone: every ancestor of a row was visible with it.
   const parents = new Map<string, string | null>()
@@ -77,6 +89,21 @@ export function CompanyList(props: ListProps) {
               const person = () => personOf(row().item)
               const closed = () => row().item.children.length > 0 && !row().open
               const branchStatus = () => (closed() ? props.branchStatus(row().item) : undefined)
+              const totals = () => (closed() ? props.totals(row().item) : undefined)
+              // The row's name is only "Name, title" (an aria-label replaces its content), so the rest is here.
+              const description = () => {
+                const p = person()
+                if (!p) return undefined
+                const branch = branchStatus()
+                return describe({
+                  status: branch ?? props.status(p.handle),
+                  branch: branch !== undefined,
+                  needs: props.needs(p.handle),
+                  cost: personCost(props.cost(p.handle)),
+                  totals: totals(),
+                })
+              }
+              const descId = `${uid}-${id}`
               return (
                 <li
                   role="treeitem"
@@ -86,6 +113,7 @@ export function CompanyList(props: ListProps) {
                   aria-posinset={row().posinset}
                   aria-expanded={row().item.children.length ? row().open : undefined}
                   tabindex={isCurrent(id) ? 0 : -1}
+                  aria-describedby={person() ? descId : undefined}
                   data-dimmed={String(props.dimmed(row().item))}
                   data-muted={isMuted(row().item) ? "true" : undefined}
                   // Computed, so Solid sets it with style.setProperty, which the CSP allows.
@@ -131,8 +159,15 @@ export function CompanyList(props: ListProps) {
                       />
                     )}
                   </Show>
-                  <Show when={closed() && props.totals(row().item)}>
+                  <Show when={totals()}>
                     {(text) => <span class="shrink-0 text-xs text-neutral-500">{text()}</span>}
+                  </Show>
+                  <Show when={description()}>
+                    {(text) => (
+                      <span id={descId} class="sr-only">
+                        {text()}
+                      </span>
+                    )}
                   </Show>
                 </li>
               )

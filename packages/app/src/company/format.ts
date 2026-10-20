@@ -1,5 +1,5 @@
 import type { PersonCost } from "@opencorp/protocol"
-import type { Totals } from "./status"
+import type { Status, Totals } from "./status"
 
 /** "$0.42", or "$0.00 +1 unpriced" when harness sessions (Codex, Claude) ran: the office doesn't price their tokens. */
 export function costText(usd: number, unpriced: number) {
@@ -17,6 +17,21 @@ export function totalsText(t: Totals) {
     t.waiting && `${t.waiting} waiting`,
     t.needsYou && `${t.needsYou} for you`,
     costText(t.usd, t.unpriced),
+  ]
+    .filter(Boolean)
+    .join(" · ")
+}
+
+/**
+ * What a person's row says to a screen reader after its name: their status (the branch's while it's closed), the
+ * viewer's cards from them, their cost, and a closed branch's totals.
+ */
+export function describe(d: { status: Status; branch: boolean; needs: number; cost: string; totals?: string }) {
+  return [
+    d.branch ? `${d.status} in this branch` : d.status,
+    d.needs > 0 && `${d.needs} ${d.needs === 1 ? "card" : "cards"} for you`,
+    d.cost,
+    d.totals,
   ]
     .filter(Boolean)
     .join(" · ")

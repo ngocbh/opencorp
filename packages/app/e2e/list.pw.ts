@@ -47,6 +47,15 @@ test("a closed branch's dot shows the most urgent status in it, marked as the br
   await expect(row(page, /Ngoc/).getByTestId("status")).toContainText("waiting in this branch")
 })
 
+test("a row's description gives what its name leaves out: status, cards for you, cost, totals", async ({ page }) => {
+  await expect(row(page, /Kai/)).toHaveAccessibleName("Kai, Engineer")
+  await expect(row(page, /Kai/)).toHaveAccessibleDescription("waiting · 1 card for you · $0.42")
+  await expect(row(page, /Ann/)).toHaveAccessibleDescription("away · $0.00")
+  await row(page, /Lead/).getByTestId("toggle").click()
+  await expect(row(page, /Lead/)).toHaveAccessibleDescription(
+    "waiting in this branch · 1 card for you · $0.00 · 3 people · 1 busy · 2 waiting · 2 for you · $0.42 +1 unpriced")
+})
+
 test("a leaf shows no branch totals", async ({ page }) => {
   await expect(row(page, /Kai/).getByTestId("cost")).toHaveText("$0.42")
   await expect(row(page, /Ann/)).not.toContainText("person")
