@@ -1,6 +1,7 @@
 """The daemon process: a 0600 socket, one daemon per home, clean shutdown."""
 
 import asyncio
+import errno
 import importlib
 import json
 import os
@@ -421,6 +422,39 @@ def test_the_tcp_socket_reuses_addresses_but_never_shares_the_port():
         sock.close()
 
 
+def _left_in_time_wait() -> int:
+    """A port on 127.0.0.1 whose listener is closed and whose one connection the server side closed first, so that
+    connection sits in TIME_WAIT on the server's port, as after a restart with a browser stream open."""
+    listener = bind_tcp(0)
+    port = listener.getsockname()[1]
+    listener.setblocking(True)
+    client = socket.create_connection(("127.0.0.1", port))
+    conn, _ = listener.accept()
+    conn.close()
+    assert client.recv(1) == b""  # the client reads to EOF, then closes: a FIN, not a RST that clears TIME_WAIT
+    client.close()
+    listener.close()
+    return port
+
+
+def _blocked_without_reuse(port: int) -> bool:
+    """Whether a socket without SO_REUSEADDR can't bind ``port`` right now."""
+    with socket.socket() as plain:
+        try:
+            plain.bind(("127.0.0.1", port))
+        except OSError as exc:
+            assert exc.errno == errno.EADDRINUSE
+            return True
+    return False
+
+
+def test_the_tcp_socket_binds_a_port_left_in_time_wait():
+    port = _left_in_time_wait()
+    if not _blocked_without_reuse(port):
+        pytest.skip("this kernel lets a plain socket bind past TIME_WAIT, so there's nothing to show")
+    bind_tcp(port).close()
+
+
 def test_the_office_server_has_websockets_off():
     assert server_config(lambda *a: None).ws == "none"
 
@@ -475,11 +509,16 @@ def test_a_restart_with_an_open_web_stream_rebinds_the_port_at_once(home):
         with httpx.Client(base_url=origin, headers={"origin": origin}, trust_env=False) as web:
             assert web.post("/api/pair", json={"code": code}).status_code == 200
             with web.stream("GET", "/api/events") as r:
-                assert next(r.iter_lines()) == ": connected"
+                lines = r.iter_lines()
+                assert next(lines) == ": connected"
                 _stop(home, proc)  # SIGTERM with the stream open: the server side closes first, into TIME_WAIT
+                for _ in lines:  # read to EOF, so closing sends a FIN, not a RST that clears TIME_WAIT
+                    pass
     finally:
         if proc.poll() is None:
             _stop(home, proc)
+    if not _blocked_without_reuse(port):
+        pytest.skip("this kernel lets a plain socket bind past TIME_WAIT, so there's nothing to show")
     proc = _daemon(home)
     try:
         _wait_until_serving(home, proc)
