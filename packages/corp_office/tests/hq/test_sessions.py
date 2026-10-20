@@ -1,7 +1,9 @@
 """Browser sessions: hashed, 30 days, checked against the person at HEAD on every request."""
 
+import asyncio
 import hashlib
 import re
+import threading
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -150,3 +152,24 @@ async def test_a_check_that_read_the_row_before_a_revoke_still_refuses(office, h
     # The row as read just before the delete.
     monkeypatch.setattr(office.store, "hq_session_by_secret", lambda sha, now: stale)
     assert await s.check(cookie) is None
+
+
+async def test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row(office, hq, monkeypatch):
+    public, cookie = await sessions_for(office, Clock()).issue("ngocbh", issued_by="ngocbh", label=None)
+    s = sessions_for(office, Clock())  # nothing in memory yet, as after a restart
+    entered, gate = threading.Event(), threading.Event()
+    real = office.store.get_hq_session
+
+    def gated(sid):
+        entered.set()
+        gate.wait(5)
+        return real(sid)
+
+    monkeypatch.setattr(office.store, "get_hq_session", gated)
+    revoking = asyncio.create_task(s.revoke(public.id))
+    await asyncio.to_thread(entered.wait, 5)
+    assert await s.check(cookie) is not None
+    made = s._live[public.id]
+    gate.set()
+    assert await revoking is True
+    assert s._live[public.id] is made and made.revoked

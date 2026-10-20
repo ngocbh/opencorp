@@ -168,10 +168,11 @@ class BrowserSessions:
         A live session stays in memory as revoked until it would have expired, so a check that read its row just
         before the delete still refuses it. An unknown or expired id adds nothing.
         """
-        live = self._live.get(sid)
         row = await asyncio.to_thread(self.store.get_hq_session, sid)
+        # Looked up after the read, and never replaced: a check may have made the entry meanwhile.
+        live = self._live.get(sid)
         if live is None and row is not None and row.expires_at > stamp(self.clock()):
-            live = self._live[sid] = _Live(row.expires_at, row.person, row.password_fp)
+            live = self._live.setdefault(sid, _Live(row.expires_at, row.person, row.password_fp))
         if live is not None:
             live.revoked = True
         return await asyncio.to_thread(self.store.delete_hq_session, sid)
