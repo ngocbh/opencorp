@@ -57,3 +57,18 @@ test("arrow keys move, open and close, as the tree pattern says", async ({ page 
   await page.keyboard.press("Home")
   await expect(row(page, /Ngoc/)).toBeFocused()
 })
+
+test("the toolbar names the company", async ({ page }) => {
+  await expect(page.getByRole("main").getByRole("heading", { name: "Acme", level: 2 })).toBeVisible()
+})
+
+test("search filters by name, handle or title, keeping the people above a match", async ({ page }) => {
+  await page.getByRole("searchbox", { name: "Search people" }).fill("kai")
+  await expect(row(page, /Kai/)).toBeVisible()
+  await expect(row(page, /Lead/)).toBeVisible()
+  await expect(row(page, /Ann/)).toHaveCount(0)
+  await page.getByRole("searchbox", { name: "Search people" }).fill("designer")
+  await expect(row(page, /Ann/)).toBeVisible()
+  await page.getByRole("searchbox", { name: "Search people" }).fill("")
+  await expect(row(page, /Minh/)).toBeVisible()
+})

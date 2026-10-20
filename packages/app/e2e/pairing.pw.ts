@@ -39,7 +39,7 @@ test("without a session the app shows sign-in, and never asks for a password", a
 test("after pairing, the sidebar names the company and the person, and the connection is live", async ({ page, request }) => {
   await request.post("/__fixture/code", { data: { code: "good-code-123" } })
   await page.goto("/pair#good-code-123")
-  await expect(page.getByRole("heading", { name: "Acme" })).toBeVisible()
+  await expect(page.getByRole("navigation", { name: "HQ" }).getByRole("heading", { name: "Acme" })).toBeVisible()
   await expect(page.getByText("@ngocbh")).toBeVisible()
   await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
   await expect(page.getByText(/paired by/)).toHaveCount(0) // paired by themselves
