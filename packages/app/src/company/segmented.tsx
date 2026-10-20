@@ -20,7 +20,7 @@ export function Segmented<T extends string>(props: {
     <div
       role="radiogroup"
       aria-label={props.label}
-      class="inline-flex overflow-hidden rounded border border-neutral-300 dark:border-neutral-700"
+      class="inline-flex rounded border border-neutral-300 dark:border-neutral-700"
     >
       <For each={props.options}>
         {([value, text], i) => (
@@ -30,7 +30,7 @@ export function Segmented<T extends string>(props: {
             data-value={value}
             aria-checked={props.value === value}
             tabindex={props.value === value ? 0 : -1}
-            class="px-2 py-1 text-sm aria-checked:bg-neutral-900 aria-checked:text-white dark:aria-checked:bg-neutral-100 dark:aria-checked:text-neutral-900"
+            class="px-2 py-1 text-sm outline-none first:rounded-l last:rounded-r focus-visible:ring-2 focus-visible:ring-neutral-500 focus-visible:ring-offset-1 aria-checked:bg-neutral-900 aria-checked:text-white dark:aria-checked:bg-neutral-100 dark:aria-checked:text-neutral-900"
             onClick={() => props.onChange(value)}
             onKeyDown={(e) => onKey(e, i())}
           >

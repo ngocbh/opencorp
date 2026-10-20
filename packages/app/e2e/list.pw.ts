@@ -240,3 +240,26 @@ test("a skeleton shows until the first snapshot", async ({ page, request }) => {
   await expect(page.getByRole("tree", { name: "Acme" })).toBeVisible()
   await expect(page.locator("[aria-busy=true]")).toHaveCount(0)
 })
+
+test("keyboard focus shows on the switch and the radio groups; the chevron is a 24px target", async ({ page }) => {
+  const box = await row(page, /Lead/).getByTestId("toggle").boundingBox()
+  expect([box!.width >= 24, box!.height >= 24]).toEqual([true, true])
+  await page.getByRole("combobox", { name: "Group" }).focus()
+  await page.keyboard.press("Tab")
+  await expect(page.getByRole("switch", { name: "By team" })).toBeFocused()
+  const ring = (el: Element) => getComputedStyle(el).boxShadow
+  expect(await page.locator("[data-testid=switch-control]").evaluate(ring)).not.toBe("none")
+  await page.keyboard.press("Tab")
+  await expect(page.getByRole("radio", { name: "Today" })).toBeFocused()
+  expect(await page.getByRole("radio", { name: "Today" }).evaluate(ring)).not.toBe("none")
+  expect(await page.getByRole("radiogroup", { name: "Cost window" }).evaluate((el) => getComputedStyle(el).overflow)).toBe("visible")
+})
+
+test("on a phone a row drops its group chips and totals", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(row(page, /Minh/).getByText("OPS")).toBeHidden()
+  await row(page, /Lead/).getByTestId("toggle").click()
+  await expect(row(page, /Lead/).getByTestId("totals")).toBeHidden()
+  await page.setViewportSize({ width: 1280, height: 800 })
+  await expect(row(page, /Lead/).getByTestId("totals")).toBeVisible()
+})

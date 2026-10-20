@@ -52,7 +52,7 @@ export function PersonBody(props: {
       <Show when={props.groups}>
         {(groups) => (
           <For each={props.person.groups ?? []}>
-            {(id) => <span class="rounded bg-neutral-100 px-1.5 text-xs dark:bg-neutral-800">{groups().get(id)?.name ?? id}</span>}
+            {(id) => <span class="hidden rounded bg-neutral-100 px-1.5 text-xs md:inline dark:bg-neutral-800">{groups().get(id)?.name ?? id}</span>}
           </For>
         )}
       </Show>

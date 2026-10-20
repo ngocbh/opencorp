@@ -45,8 +45,11 @@ export function Toolbar(props: {
         <For each={props.groups}>{(g) => <option value={g.id}>{g.name}</option>}</For>
       </select>
       <Switch checked={props.byTeam} onChange={props.onByTeam} class="flex items-center gap-2">
-        <Switch.Input />
-        <Switch.Control class="inline-flex h-5 w-9 items-center rounded-full bg-neutral-300 transition data-[checked]:bg-neutral-900 dark:data-[checked]:bg-neutral-100">
+        <Switch.Input class="peer" />
+        <Switch.Control
+          data-testid="switch-control"
+          class="inline-flex h-5 w-9 items-center rounded-full bg-neutral-300 ring-offset-2 transition peer-focus-visible:ring-2 peer-focus-visible:ring-neutral-900 data-[checked]:bg-neutral-900 dark:bg-neutral-700 dark:ring-offset-neutral-950 dark:peer-focus-visible:ring-neutral-100 dark:data-[checked]:bg-neutral-100"
+        >
           <Switch.Thumb class="h-4 w-4 translate-x-0.5 rounded-full bg-white transition data-[checked]:translate-x-4 dark:bg-neutral-900" />
         </Switch.Control>
         <Switch.Label>By team</Switch.Label>
