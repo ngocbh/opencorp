@@ -147,3 +147,80 @@ test("Sign out with the office not answering signs out here after a short wait",
   expect(await storedSession(page)).toBeNull()
   expect(await pendingLogout(page)).not.toBeNull()
 })
+
+/** Leaves a sign-out pending: signs in, then signs out with the office down, and brings the office back. */
+async function leavePending(page: Page) {
+  await signIn(page)
+  await page.request.post("/__fixture/drop", { data: { ms: 60_000 } })
+  await signOutButton(page).click()
+  await expect(page).toHaveURL("/sign-in")
+  expect(await pendingLogout(page)).not.toBeNull()
+  await page.request.post("/__fixture/drop", { data: { ms: 0 } })
+}
+
+test("A pending sign-out the office answers with 401 clears the flag after one try", async ({ page }) => {
+  await leavePending(page)
+  await page.request.post("/__fixture/set", { data: { signedIn: false } }) // the session ended some other way
+  const before = (await fixtureLog(page)).api.length
+  await page.goto("/")
+  await expect(page).toHaveURL("/sign-in")
+  await expect.poll(() => pendingLogout(page)).toBeNull()
+  const log = await fixtureLog(page)
+  expect(log.api.slice(before)).toEqual(["/api/logout"])
+  expect(log.logouts).toBe(0)
+})
+
+test("A pending load says Signing out… while it waits for the office", async ({ page }) => {
+  await leavePending(page)
+  await page.route("**/api/logout", () => {}) // held, never answered
+  await page.goto("/")
+  await expect(page.getByRole("status")).toHaveText("Signing out…")
+  await expect(page.getByRole("navigation", { name: "HQ" })).toHaveCount(0)
+  await expect(page).toHaveURL("/sign-in", { timeout: 10_000 })
+  expect(await pendingLogout(page)).not.toBeNull() // no answer: kept for next time
+})
+
+test("Signing out with the office down signs out the browser's other tabs too", async ({ page, context }) => {
+  await signIn(page)
+  const other = await context.newPage()
+  await other.goto("/")
+  await expect(other.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await page.request.post("/__fixture/drop", { data: { ms: 60_000 } })
+  await signOutButton(page).click()
+  await expect(page).toHaveURL("/sign-in")
+  await expect(other).toHaveURL("/sign-in")
+})
+
+test("Signing out signs out the browser's other tabs too", async ({ page, context }) => {
+  await signIn(page)
+  const other = await context.newPage()
+  await other.goto("/")
+  await expect(other.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await signOutButton(page).click()
+  await expect(page).toHaveURL("/sign-in")
+  await expect(other).toHaveURL("/sign-in")
+  expect((await fixtureLog(page)).logouts).toBe(1)
+})
+
+test("A tab that comes back online with a sign-out pending sends it and signs out", async ({ page }) => {
+  await signIn(page)
+  // Set in this tab, so no storage event: as when the tab missed the other tab's sign-out.
+  await page.evaluate(() => localStorage.setItem("hq.pendingLogout", "1"))
+  await page.request.post("/__fixture/drop", { data: { ms: 500 } })
+  await expect(page).toHaveURL("/sign-in", { timeout: 15_000 })
+  await expect.poll(async () => (await fixtureLog(page)).logouts).toBe(1)
+  expect(await pendingLogout(page)).toBeNull()
+})
+
+test("A sign-out that didn't reach the office leaves no flag when another tab signed in meanwhile", async ({ page }) => {
+  await signIn(page)
+  await page.route("**/api/logout", () => {}) // held, never answered
+  await signOutButton(page).click()
+  await expect(signOutButton(page)).toBeDisabled()
+  // As another tab signing in would: a new session kept while this one waits.
+  const fresh = JSON.stringify({ id: "01JA1H0000000000000000000B", name: "web-def456", issued_by: "ngocbh" })
+  await page.evaluate((s) => localStorage.setItem("hq.session", s), fresh)
+  await expect(page).toHaveURL("/sign-in", { timeout: 10_000 })
+  expect(await pendingLogout(page)).toBeNull()
+  expect(await storedSession(page)).toBe(fresh)
+})
