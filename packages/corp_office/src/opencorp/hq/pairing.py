@@ -52,25 +52,25 @@ class PairCodes:
         self.clock = clock
         self._pending: OrderedDict[str, Pending] = OrderedDict()
 
-    def mint(self, handle: str, *, issuer: str, url: Callable[[str], str | None], open_file: bool) -> Minted:
-        """A new code for ``handle``; with ``open_file`` and a URL for it, a 0600 redirect file in the office dir."""
-        self.sweep()
-        while len(self._pending) >= MAX_PENDING:
-            self._drop(next(iter(self._pending)))
+    async def mint(self, handle: str, *, issuer: str, url: Callable[[str], str | None], open_file: bool) -> Minted:
+        """A new code for ``handle``; with ``open_file`` and a URL for it, a 0600 redirect file in the office dir,
+        written in a thread."""
         code = secrets.token_urlsafe(16)
-        expires_at = self.clock() + TTL
         link = url(code)
         file = None
         if open_file and link is not None:
             file = self.office_dir / f"pair-{secrets.token_hex(8)}.html"
             href = html.escape(link, quote=True)
-            write_private(file, (f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={href}">'
-                                 f'<title>OpenCorp HQ</title><a href="{href}">Open OpenCorp HQ</a>\n').encode())
+            page = (f'<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url={href}">'
+                    f'<title>OpenCorp HQ</title><a href="{href}">Open OpenCorp HQ</a>\n')
+            await asyncio.to_thread(write_private, file, page.encode())
+        # After the write, so other mints that ran meanwhile count toward the cap.
+        self.sweep()
+        while len(self._pending) >= MAX_PENDING:
+            self._drop(next(iter(self._pending)))
+        expires_at = self.clock() + TTL
         self._pending[_key(code)] = Pending(handle, issuer, expires_at, file)
-        try:
-            asyncio.get_running_loop().call_later(TTL.total_seconds() + 1, self.sweep)
-        except RuntimeError:  # no running loop; mint and redeem sweep anyway
-            pass
+        asyncio.get_running_loop().call_later(TTL.total_seconds() + 1, self.sweep)
         log.info("pairing code minted for @%s by @%s", handle, issuer)  # never the code
         return Minted(code, expires_at, file)
 

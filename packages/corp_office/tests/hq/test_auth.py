@@ -42,7 +42,7 @@ async def test_on_hq_sock_the_cookie_is_named_for_the_forwarded_port(office, hq)
 
 
 async def pair(web, hq, label="Safari on Mac"):
-    code = hq.mint("ngocbh", issuer="ngocbh", open_file=False).path.split("#")[1]
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
     return await web.post("/api/pair", json={"code": code, "label": label})
 
 
@@ -57,7 +57,7 @@ async def test_pairing_sets_a_strict_http_only_cookie_and_returns_the_session(we
 
 
 async def test_a_used_or_wrong_code_says_to_pair_again(web, hq):
-    code = hq.mint("ngocbh", issuer="ngocbh", open_file=False).path.split("#")[1]
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
     assert (await web.post("/api/pair", json={"code": code})).status_code == 200
     for bad in (code, "nonsense"):
         r = await web.post("/api/pair", json={"code": bad})
@@ -67,7 +67,7 @@ async def test_a_used_or_wrong_code_says_to_pair_again(web, hq):
 
 async def test_pairing_never_logs_the_code_or_the_cookie(web, hq, caplog):
     caplog.set_level(logging.DEBUG)
-    code = hq.mint("ngocbh", issuer="ngocbh", open_file=False).path.split("#")[1]
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
     r = await web.post("/api/pair", json={"code": code})
     secret = r.headers["set-cookie"].split("=", 1)[1].split(";")[0].split(".")[1]
     assert code not in caplog.text and secret not in caplog.text
@@ -98,7 +98,7 @@ async def test_logout_needs_a_session(web):
 
 
 async def test_a_failing_check_of_the_old_cookie_doesnt_burn_the_code(web, hq, monkeypatch):
-    code = hq.mint("ngocbh", issuer="ngocbh", open_file=False).path.split("#")[1]
+    code = (await hq.mint("ngocbh", issuer="ngocbh", open_file=False)).path.split("#")[1]
 
     async def broken(cookie):
         raise RuntimeError("git went away")

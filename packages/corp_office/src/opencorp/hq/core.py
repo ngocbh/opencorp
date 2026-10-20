@@ -60,9 +60,9 @@ class Hq:
         """``GET /api/health``: the office's key and the built app's, if there is one."""
         return Health(ok=True, office=ApiVersion(api=self.api), app=self.build.read())
 
-    def mint(self, handle: str, *, issuer: str, open_file: bool) -> PairCode:
+    async def mint(self, handle: str, *, issuer: str, open_file: bool) -> PairCode:
         """A one-time link for ``handle``, asked for by ``issuer``."""
-        minted = self.codes.mint(handle, issuer=issuer, url=lambda code: self.url(f"/pair#{code}"),
+        minted = await self.codes.mint(handle, issuer=issuer, url=lambda code: self.url(f"/pair#{code}"),
                                  open_file=open_file)
         return PairCode(path=f"/pair#{minted.code}", url=self.url(f"/pair#{minted.code}"), socket=str(self.socket),
                         port=self.bound_port or self.config.port, expires_at=stamp(minted.expires_at),

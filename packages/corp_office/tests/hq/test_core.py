@@ -44,7 +44,7 @@ async def test_attach_puts_hq_on_the_office_and_prunes_expired_sessions_at_start
 
 async def test_mint_without_tcp_has_no_url_or_file(office):
     hq = attach(office, listen=False)
-    code = hq.mint("ngocbh", issuer="ngocbh", open_file=True)
+    code = await hq.mint("ngocbh", issuer="ngocbh", open_file=True)
     assert code.url is None and code.open_file is None and code.path.startswith("/pair#")
     assert code.socket == str(office.paths.office / "hq.sock") and code.port == hq.config.port
     assert hq.codes.redeem(code.path.split("#")[1]).handle == "ngocbh"
@@ -56,7 +56,7 @@ async def test_mint_while_listening_writes_a_file_that_stopping_deletes(office):
     hq.bound_port = 49999
     await office.start()
     try:
-        code = hq.mint("ngocbh", issuer="ngocbh", open_file=True)
+        code = await hq.mint("ngocbh", issuer="ngocbh", open_file=True)
         assert code.url == f"http://127.0.0.1:49999{code.path}" and code.port == 49999
         assert code.url in (office.paths.office / code.open_file).read_text()
     finally:

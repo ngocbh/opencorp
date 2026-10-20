@@ -50,7 +50,7 @@ async def pair(request: Request) -> JSONResponse:
     actor = acting_person(request)
     handle = body.handle or actor
     _for(await hq.snapshots.head(), handle, actor)
-    return ok(hq.mint(handle, issuer=actor, open_file=body.open_file))
+    return ok(await hq.mint(handle, issuer=actor, open_file=body.open_file))
 
 
 async def browsers(request: Request) -> JSONResponse:
