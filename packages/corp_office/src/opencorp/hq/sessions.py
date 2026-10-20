@@ -76,19 +76,21 @@ def password_fps(git: CompanyGit, sha: str) -> Humans:
 
 
 class _Fingerprints:
-    """``password_fps`` at the newest commit asked for, loaded once however many checks ask at the same time."""
+    """``password_fps`` by commit, loaded once however many checks ask at the same time; the last ``KEEP`` are
+    kept."""
+
+    KEEP = 4
 
     def __init__(self, git: CompanyGit) -> None:
         self.git = git
-        self._sha: str | None = None
-        self._load: asyncio.Future[Humans] | None = None
+        self._loads: dict[str, asyncio.Future[Humans]] = {}
 
     async def at(self, sha: str) -> Humans:
-        load = self._load
-        failed = load is not None and load.done() and (load.cancelled() or load.exception() is not None)
-        if load is None or sha != self._sha or failed:
-            self._sha = sha
-            load = self._load = asyncio.ensure_future(asyncio.to_thread(password_fps, self.git, sha))
+        load = self._loads.get(sha)
+        if load is None or (load.done() and (load.cancelled() or load.exception() is not None)):
+            load = self._loads[sha] = asyncio.ensure_future(asyncio.to_thread(password_fps, self.git, sha))
+            while len(self._loads) > self.KEEP:
+                self._loads.pop(next(iter(self._loads)))
         # Shielded: one caller going away mustn't cancel the load the others wait on.
         return await asyncio.shield(load)
 

@@ -11,6 +11,7 @@ import yaml
 
 from opencorp.auth.passwords import hash_password
 from opencorp.daemon.http import HTTPError
+from opencorp.hq import sessions as sessions_module
 from opencorp.hq.sessions import TTL, BrowserSessions, password_fp
 from tests.company.conftest import _git
 
@@ -196,3 +197,17 @@ async def test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row(offic
     gate.set()
     assert await revoking is True
     assert s._live[public.id] is made and made.revoked
+
+
+async def test_fingerprints_are_loaded_once_per_recent_commit(office, hq, company, monkeypatch):
+    loads = []
+    real = sessions_module.password_fps
+    monkeypatch.setattr(sessions_module, "password_fps", lambda git, sha: loads.append(sha) or real(git, sha))
+    cache = sessions_for(office, Clock())._fingerprints
+    first = office.git.read_head()
+    await asyncio.gather(cache.at(first), cache.at(first))
+    hand_edit(company, "ngocbh", title="Boss")
+    second = office.git.read_head()
+    for sha in (second, first, second):
+        await cache.at(sha)
+    assert loads == [first, second]
