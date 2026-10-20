@@ -2,7 +2,7 @@ import { createMemo, createSignal } from "solid-js"
 import { totalsText } from "../company/format"
 import { CompanyList } from "../company/list"
 import { createPrefs } from "../company/prefs"
-import { fromTree, holds, keep, type Item } from "../company/rows"
+import { fromTree, holds, keep, personOf, type Item } from "../company/rows"
 import { inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { Toolbar } from "../company/toolbar"
 import { buildTree } from "../company/tree"
@@ -16,6 +16,7 @@ export default function Company() {
   // The toolbar's state. The office filter is one value today (every office); its slot is here so status and cards
   // follow it once HQ shows several offices.
   const [query, setQuery] = createSignal("")
+  const [group, setGroup] = createSignal("")
   const [officeFilter] = createSignal<OfficeFilter>(null)
   const sessions = createMemo(() => inOffice(s.sessions, officeFilter()))
   const tree = createMemo(() => buildTree(s.people, s.company))
@@ -34,10 +35,22 @@ export default function Company() {
     const node = item.kind === "person" ? tree().nodes.get(item.id) : undefined
     return node ? totalsText(totals(node, status(), needs(), s.costs)) : undefined
   }
+  // The group filter highlights its members and dims everyone else, keeping the tree's shape.
+  const dimmed = (item: Item) => {
+    const p = personOf(item)
+    return !!group() && !!p && !(p.groups ?? []).includes(group())
+  }
   const name = () => s.company?.name ?? "Company"
   return (
     <>
-      <Toolbar company={name()} query={query()} onQuery={setQuery} />
+      <Toolbar
+        company={name()}
+        query={query()}
+        onQuery={setQuery}
+        groups={s.groups}
+        group={group()}
+        onGroup={setGroup}
+      />
       <CompanyList
         label={name()}
         items={items()}
@@ -48,7 +61,7 @@ export default function Company() {
         cost={(h) => s.costs?.people[h]}
         groups={groups()}
         totals={totalsOf}
-        dimmed={() => false}
+        dimmed={dimmed}
         onSelect={() => {}}
       />
     </>

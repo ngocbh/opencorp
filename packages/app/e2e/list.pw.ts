@@ -72,3 +72,11 @@ test("search filters by name, handle or title, keeping the people above a match"
   await page.getByRole("searchbox", { name: "Search people" }).fill("")
   await expect(row(page, /Minh/)).toBeVisible()
 })
+
+test("the group filter dims everyone outside the group", async ({ page }) => {
+  await page.getByRole("combobox", { name: "Group" }).selectOption("ops")
+  await expect(row(page, /Kai/)).toHaveAttribute("data-dimmed", "true")
+  await expect(row(page, /Minh/)).toHaveAttribute("data-dimmed", "false")
+  await page.getByRole("combobox", { name: "Group" }).selectOption("")
+  await expect(row(page, /Kai/)).toHaveAttribute("data-dimmed", "false")
+})
