@@ -374,3 +374,15 @@ async def test_only_origin_form_targets_pass(method, target, host):
     sent = await run_scope(HqGuard(app, port=PORT), scope, b"hi")
     assert reached == [] and sent[0]["status"] == 400
     assert json.loads(sent[1]["body"])["error"] == "bad_target"
+
+
+async def test_the_security_headers_replace_a_routes_own():
+    async def own_headers(scope, receive, send):
+        await JSONResponse({}, headers={"x-frame-options": "SAMEORIGIN", "Content-Security-Policy": "default-src *"})(
+            scope, receive, send)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=HqGuard(own_headers, port=PORT)),
+                                 base_url=ORIGIN, headers={"host": f"127.0.0.1:{PORT}"}) as c:
+        r = await c.get("/")
+    assert r.headers.get_list("x-frame-options") == ["DENY"]
+    assert r.headers.get_list("content-security-policy") == [guard.CSP]
