@@ -111,6 +111,10 @@ class RunningOffice:
         response.raise_for_status()
         return response.json()
 
+    def hq_status(self) -> dict:
+        """HQ's status as `opencorp pair` and `opencorp doctor` read it: ``GET /hq`` on the office socket."""
+        return self.get("/hq")
+
     def person(self, handle: str) -> str:
         """``handle``, once the office lists a person with it; fail otherwise."""
         return next(p["handle"] for p in self.get("/people") if p["handle"] == handle)
