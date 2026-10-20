@@ -10,9 +10,12 @@ import type {
   Feedback,
   HireRequest,
   HireResponse,
+  HqStatus,
   LiveEvent,
   Message,
   ModelList,
+  PairCode,
+  PairCodeRequest,
   Person,
   Profile,
   ProfileProposal,
@@ -23,7 +26,7 @@ import type {
   WorkItem,
 } from "@opencorp/protocol"
 import { createTwoFilesPatch } from "diff"
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { mkdtempSync, rmSync } from "node:fs"
 import path from "node:path"
 import type { TuiInput } from "../src/app"
@@ -196,6 +199,8 @@ export function createFakeOffice(
     missing?: Iterable<string>
     /** The company's `profile_max_chars`; a longer profile is `over_budget`. */
     profileMaxChars?: number
+    /** HQ's TCP listener: off by default; on, it listens unless `listening` is false (`error` says why not). */
+    hq?: { tcp?: boolean; listening?: boolean; port?: number; error?: string }
   } = {},
 ) {
   const nextId = counter()
@@ -768,9 +773,56 @@ export function createFakeOffice(
     }
   }
 
+  const hqOpts = { tcp: false, port: 49380, ...opts.hq }
+  // The socket's path is known only once serveUnix has run, after the routes are built: read it at request time.
+  const hqSocket = () => path.join(path.dirname(server.socket), "hq.sock")
+  const hqListening = () => hqOpts.tcp && (hqOpts.listening ?? true)
+  function hqStatus(): HqStatus {
+    return {
+      socket: hqSocket(),
+      tcp: {
+        enabled: hqOpts.tcp,
+        port: hqOpts.port,
+        listening: hqListening(),
+        error: hqOpts.error ?? null,
+        next_retry_at: null,
+      },
+      url: hqListening() ? `http://127.0.0.1:${hqOpts.port}/` : null,
+      health: { ok: true, office: { api: "0.0.1+fake" }, app: null },
+      warnings: [],
+    }
+  }
+  /** A one-time HQ link for `body.handle` (the actor by default), under the rule for devices. */
+  function mintPair(body: PairCodeRequest, actor: string): PairCode {
+    const handle = body.handle ?? actor
+    const person = need(
+      state.people.find((p) => p.handle === handle),
+      `person @${handle}`,
+    )
+    if (person.kind !== "human") throw fail(422, "not_a_human", `@${handle} is an agent; agents don't sign in to HQ`)
+    if (actor !== handle && actor !== ceo())
+      throw fail(403, "forbidden", `only @${handle} or the CEO can do this for @${handle}`)
+    const code = randomBytes(16).toString("base64url")
+    const url = hqListening() ? `http://127.0.0.1:${hqOpts.port}/pair#${code}` : null
+    return {
+      path: `/pair#${code}`,
+      url,
+      socket: hqSocket(),
+      port: hqOpts.port,
+      expires_at: new Date(Date.now() + 300_000).toISOString(),
+      // Only the path: the fake writes no file.
+      open_file:
+        body.open_file && url
+          ? path.join(path.dirname(server.socket), `pair-${randomBytes(8).toString("hex")}.html`)
+          : null,
+    }
+  }
+
   const routes: [string, string, Handler][] = [
     ["GET", "/health", () => Response.json({ ok: true })],
     ["GET", "/whoami", ({ actor, device }) => Response.json({ person: actor, device })],
+    ["GET", "/hq", () => Response.json(hqStatus())],
+    ["POST", "/hq/pair", ({ body, actor }) => Response.json(mintPair(body ?? {}, actor))],
     ["POST", "/people/:handle/devices", ({ params, body, actor }) => Response.json(addDevice(params.handle, body, actor))],
     ["POST", "/login", ({ body }) => Response.json(login(body))],
     [
