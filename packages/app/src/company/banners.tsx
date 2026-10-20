@@ -1,32 +1,37 @@
 import type { Person, RepoIssue } from "@opencorp/protocol"
 import { For, Show } from "solid-js"
 
-const ALERT = "rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-950"
+const BANNER = "rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm dark:border-amber-800 dark:bg-amber-950"
 
-/** What's wrong with the company repo at the commit HQ shows. */
+/**
+ * What's wrong with the company repo at the commit HQ shows: a labelled section, not alerts, since it's there on
+ * every load rather than news.
+ */
 export function Banners(props: { noCompany: boolean; ceoHasManager: boolean; issues: RepoIssue[] }) {
   return (
-    <div class="space-y-2 px-3 pt-3 empty:hidden">
-      <Show when={props.noCompany}>
-        <p role="alert" class={ALERT}>
-          company.yaml is missing or doesn't parse at the last commit, so there's no CEO: everyone without a manager is
-          at the top. `opencorp doctor` says more.
-        </p>
-      </Show>
-      <Show when={props.ceoHasManager}>
-        <p role="alert" class={ALERT}>
-          The CEO has a manager (company.ceo_has_manager): the CEO stays at the top and that line isn't drawn. Fix the
-          CEO's person.yaml; `opencorp doctor` says more.
-        </p>
-      </Show>
-      <For each={props.issues}>
-        {(issue) => (
-          <p role="alert" class={ALERT}>
-            <code>{issue.path}</code>: {issue.message}
+    <Show when={props.noCompany || props.ceoHasManager || props.issues.length}>
+      <section aria-label="Problems in the company repo" class="space-y-2 px-3 pt-3">
+        <Show when={props.noCompany}>
+          <p class={BANNER}>
+            company.yaml is missing or doesn't parse at the last commit, so there's no CEO: everyone without a manager
+            is at the top. `opencorp doctor` says more.
           </p>
-        )}
-      </For>
-    </div>
+        </Show>
+        <Show when={props.ceoHasManager}>
+          <p class={BANNER}>
+            The CEO has a manager (company.ceo_has_manager): the CEO stays at the top and that line isn't drawn. Fix
+            the CEO's person.yaml; `opencorp doctor` says more.
+          </p>
+        </Show>
+        <For each={props.issues}>
+          {(issue) => (
+            <p class={BANNER}>
+              <code>{issue.path}</code>: {issue.message}
+            </p>
+          )}
+        </For>
+      </section>
+    </Show>
   )
 }
 

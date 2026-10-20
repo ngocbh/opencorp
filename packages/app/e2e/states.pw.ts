@@ -150,6 +150,5 @@ test("a first snapshot that fails says why while it retries", async ({ page, req
   await expect(page.getByRole("alert")).toHaveText("Couldn't read the office: /api/company failed. Retrying…")
   await request.post("/__fixture/set", { data: { fail: {} } })
   await expect(connection(page)).toHaveText("live", { timeout: 15_000 })
-  // Acme's broken file has a banner of its own.
-  await expect(page.getByRole("alert").filter({ hasText: "Couldn't read the office" })).toHaveCount(0)
+  await expect(page.getByRole("alert")).toHaveCount(0)
 })
