@@ -462,8 +462,8 @@ def test_a_question_answered_while_its_side_chat_starts_ends_it(office, fake_llm
     _, q = ask(office, fake_llm, workspace)
     start_run = h.start_run
 
-    def start_then_answer(session, spec):
-        run_id = start_run(session, spec)
+    def start_then_answer(session, spec, **kw):
+        run_id = start_run(session, spec, **kw)
         h.store.answer_question(q.id, "Retry", "option")  # another client answered meanwhile
         return run_id
 
@@ -595,3 +595,44 @@ def test_a_side_session_whose_wake_for_its_end_fails_stays_failed(make_harness, 
         assert status(h, side.id) == "failed"  # not relabelled ended
     finally:
         stop(second)
+
+
+def test_each_side_chat_run_nests_under_the_cards_run_with_its_opener_as_driver(office, fake_llm, workspace):  # noqa: F811
+    fake_llm.script(ASK, {"content": "Quota."}, {"content": "Per hour."})
+    h = office.extras["harness"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    h.end(side.id)
+    wait_for(lambda: status(h, side.id) == "ended", what="the side session to end")
+    chat(office, q, "how often?", 2)  # a reopen is a new run of the same side session
+    first, again = h.store.runs_of_session(side.id)
+    assert [(r.flow, r.flow_path, r.driver, r.parent_run_id) for r in (first, again)] == [
+        ("side_chat", "shared/flows/side_chat.yaml", "ngocbh", q.run_id)] * 2
+    assert (first.outcome, again.outcome) == ("finished", None)
+
+
+def test_a_restored_or_woken_side_chat_keeps_the_cards_run_as_its_parent(make_harness, fake_llm, workspace):  # noqa: F811
+    fake_llm.script({"content": "Postgres scales."}, {"content": "SQLite is simpler."})
+    first = gate_office(make_harness)
+    q = gate_card(first, workspace)
+    side = chat(first, q, "why Postgres?", 1)
+    assert first.extras["harness"]._live[side.id].parent_run_id == q.run_id
+    stop(first)
+    first.extras["harness"].close_all()
+    first.extras["harness"].store.update_session(side.id, status="busy")  # mid-reply: restore resumes it now
+    second = gate_office(make_harness)
+    h = second.extras["harness"]
+    try:
+        h.restore()
+        assert h._live[side.id].parent_run_id == q.run_id
+        wait_for(lambda: status(h, side.id) == "idle", what="the resumed side chat's turn")
+    finally:
+        stop(second)
+    h.close_all()
+    third = gate_office(make_harness)  # not restored: the side session sleeps, and its next message wakes it
+    h = third.extras["harness"]
+    try:
+        chat(third, q, "and SQLite?", 2)
+        assert h._live[side.id].parent_run_id == q.run_id
+    finally:
+        stop(third)

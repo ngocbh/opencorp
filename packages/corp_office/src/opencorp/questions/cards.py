@@ -77,12 +77,12 @@ class Cards:
             side = self.store.get_session(question.side_session_id) if question.side_session_id else None
             if side is None:
                 side, spec = self._create_side(question, opened_by=by)
-                self.harness.start_run(side, spec)
+                self.harness.start_run(side, spec, parent_run_id=question.run_id)
             elif not is_live(side):  # ended or failed: a new run continues its stored memory
                 side = side.model_copy(update={"opened_by": by or side.opened_by})  # whoever reopens it is in it now
                 spec = side_spec(self.harness, side)
                 side = self.store.update_session(side.id, status="starting", opened_by=side.opened_by)
-                self.harness.start_run(side, spec)
+                self.harness.start_run(side, spec, parent_run_id=question.run_id)
         if self.store.get_question(question_id).status != "open":  # answered while it started
             try:
                 self.harness.end(side.id)

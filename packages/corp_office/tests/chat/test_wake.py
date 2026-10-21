@@ -319,8 +319,8 @@ def test_worker_exit_right_after_wake_spawn_is_misread_as_stopping(make_harness,
     h.registry.spawn = spy
     resume, first = h._resume, []
 
-    def killing(live):
-        resume(live)
+    def killing(live, why):
+        resume(live, why)
         if not first:
             first.append(1)
             os.killpg(live.worker.pgid, signal.SIGKILL)
