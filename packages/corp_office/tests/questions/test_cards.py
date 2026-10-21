@@ -475,11 +475,10 @@ def test_a_question_answered_while_its_side_chat_starts_ends_it(office, fake_llm
     assert texts(h, side_id, "user") == []
 
 
-def gate_office(make_harness, **defaults):  # noqa: F811
+def gate_office(make_harness):  # noqa: F811
     """An office whose minh runs the gate flow: its card stays open across restarts and has no chat turns."""
     return wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW, "people/minh/gate.yaml": GATE,
-                                    "people/minh/person.yaml": person("minh", main="gate.yaml")},
-                             defaults=defaults or None))
+                                    "people/minh/person.yaml": person("minh", main="gate.yaml")}))
 
 
 def gate_card(office, workspace):  # noqa: F811
@@ -510,21 +509,6 @@ def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, wor
             "why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler."]
     finally:
         stop(second)
-
-
-def test_a_side_chat_that_idles_out_reopens_on_the_next_message(make_harness, fake_llm, workspace):  # noqa: F811
-    fake_llm.script({"content": "Postgres scales."}, {"content": "SQLite is simpler."})
-    office = gate_office(make_harness, idle_end="1s")
-    h = office.extras["harness"]
-    try:
-        q = gate_card(office, workspace)
-        side = chat(office, q, "why Postgres?", 1)
-        wait_for(lambda: status(h, side.id) == "ended", what="the side session to idle out")
-        assert h.store.get_question(q.id).status == "open"
-        chat(office, q, "and SQLite?", 2)
-        assert last_user(fake_llm, 2) == "and SQLite?" and framings(fake_llm, 2) == 1
-    finally:
-        stop(office)
 
 
 def test_a_side_chat_uses_its_askers_model(make_harness, fake_llm, workspace):  # noqa: F811

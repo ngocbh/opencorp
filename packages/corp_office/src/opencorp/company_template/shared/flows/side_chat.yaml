@@ -80,5 +80,4 @@ nodes:
       exited: false
       reply: ""
     while: not exited
-    max: 10000
 output: ${chat.output.reply}
