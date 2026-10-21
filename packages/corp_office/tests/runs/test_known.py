@@ -218,6 +218,38 @@ async def test_requests_at_once_share_reads(tmp_path, company_git, monkeypatch):
     assert len({id(s) for s in got}) == 1 and len(calls) <= 2
 
 
+def test_each_part_is_read_again_only_when_a_file_it_came_from_changes(tmp_path, company_git, monkeypatch):
+    known = a_known(tmp_path, company_git)
+    default = tmp_path / "home" / ".config" / "yian"
+    default.mkdir(parents=True, mode=0o700)
+    write_private(default / "auth.json", yian_store({"api_key": DEFAULT_KEY}, method="api_key"))
+    reads = {"connections": 0, "store": 0, "yian": 0}
+    for name, func in (("connections", "connection_values"), ("store", "store_values"), ("yian", "yian_values")):
+        real = getattr(known_mod, func)
+        monkeypatch.setattr(known_mod, func, lambda *a, _n=name, _r=real: (reads.__setitem__(_n, reads[_n] + 1),
+                                                                          _r(*a))[1])
+    assert {KEY, ASSET, DEFAULT_KEY} <= known.values()
+    assert known.values() and reads == {"connections": 1, "store": 1, "yian": 1}
+    with open(known.secrets.root / "db_password", "r+") as f:  # by hand, same size
+        f.write("Z")
+    assert "Z" + ASSET[1:] in known.values() and reads == {"connections": 1, "store": 2, "yian": 1}
+    known.secrets.set("new_secret", UNNAMED)
+    assert UNNAMED in known.values() and reads["store"] == 3
+    an_office(tmp_path, key=OTHER)
+    assert OTHER in known.values() and reads == {"connections": 2, "store": 3, "yian": 1}
+    known.connections.put("other", ConnectionFile(llm_config={"provider": "vllm", "model": "m", "api_key": AZURE},
+                                                  env={"XDG_CONFIG_HOME": str(tmp_path / "xdg")}))
+    assert AZURE in known.values() and reads["connections"] == 3
+    (tmp_path / "xdg" / "yian").mkdir(parents=True, mode=0o700)
+    write_private(tmp_path / "xdg" / "yian" / "auth.json", yian_store({"api_key": REFRESH}, method="api_key"))
+    assert REFRESH in known.values() and reads == {"connections": 3, "store": 3, "yian": 3}
+    known.connections.remove("other")
+    assert AZURE not in known.values() and reads["connections"] == 4
+    (default / "auth.json").chmod(0o644)  # a mode change is a change too, and now fails closed
+    with pytest.raises(SecretsUnavailable):
+        known.values()
+
+
 async def test_scrubbers_and_person_secrets_are_cached(tmp_path, company_git, monkeypatch):
     known = a_known(tmp_path, company_git)
     calls, real = [], known_mod.person_secrets

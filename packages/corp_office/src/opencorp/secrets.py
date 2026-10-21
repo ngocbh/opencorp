@@ -12,6 +12,16 @@ NAME = re.compile(r"^[a-z0-9_][a-z0-9_.-]{0,127}$")
 MIN_VALUE_CHARS = 8
 """Shortest value accepted: results are scrubbed of every secret value, so a short one would mangle them."""
 
+type Stamp = tuple[int, int, int, int, int, int, int]
+"""What says a file changed, from its stat: device, inode, size, mtime, ctime, mode and owner. An edit in place moves
+the ctime even when the size and mtime are kept."""
+
+
+def stamp(st: os.stat_result) -> Stamp:
+    """``st`` as a ``Stamp``."""
+    return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_mode, st.st_uid
+
+
 # The final component of a symlink under O_NOFOLLOW fails with ELOOP (EMLINK on some BSDs).
 _SYMLINK_ERRNOS = (errno.ELOOP, errno.EMLINK)
 
@@ -86,6 +96,27 @@ class SecretStore:
             return []
         try:
             return sorted(name for name in os.listdir(root) if NAME.fullmatch(name))
+        finally:
+            os.close(root)
+
+    def stamps(self) -> tuple[Stamp, tuple[tuple[str, Stamp | None], ...]] | None:
+        """What says a secret changed: the root's stamp and each name's (``names``), not following symlinks; None
+        when there is no root.
+
+        Raises:
+            PermissionError: the root is not a private directory of this user.
+        """
+        root = self._open_root(create=False)
+        if root is None:
+            return None
+        try:
+            found = []
+            for name in sorted(n for n in os.listdir(root) if NAME.fullmatch(n)):
+                try:
+                    found.append((name, stamp(os.stat(name, dir_fd=root, follow_symlinks=False))))
+                except FileNotFoundError:  # removed meanwhile
+                    found.append((name, None))
+            return stamp(os.fstat(root)), tuple(found)
         finally:
             os.close(root)
 
