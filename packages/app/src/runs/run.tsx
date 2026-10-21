@@ -1,6 +1,6 @@
 // One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, the Timeline
 // of its node attempts with the detail of the one selected, Raw and the download, kept current by run.updated.
-import { isSecretsUnavailable } from "@opencorp/client"
+import { isMissingRoute, isSecretsUnavailable } from "@opencorp/client"
 import type { RunDetail, RunDivider, RunNode, RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
 import {
@@ -20,7 +20,7 @@ import { throttle } from "../data/costs"
 import { useOffice } from "../data/office"
 import { useDesktop, useShell } from "../shell"
 import { flowText, shortId, STATUS_DOT, took, where } from "./format"
-import { CopyId } from "./list"
+import { CopyId, RunsUnavailable } from "./list"
 import { NodeDetail } from "./node"
 import { LogLine, Raw, reading, type LogStatus, type Progress, type RawApi } from "./raw"
 import { readQueue } from "./queue"
@@ -75,6 +75,8 @@ export function RunPage(props: { id: string }) {
   /** A node page's progress, while it answers "indexing". */
   const [indexing, setIndexing] = createSignal<Progress>()
   const [failure, setFailure] = createSignal<Failure>()
+  /** The office has no runs routes (it's older than Run Logs): live updates don't read again until it reconnects. */
+  const [unavailable, setUnavailable] = createSignal(false)
   const [kidsError, setKidsError] = createSignal<string>()
   const [kidsLoading, setKidsLoading] = createSignal(false)
   let olderButton: HTMLButtonElement | undefined
@@ -110,15 +112,21 @@ export function RunPage(props: { id: string }) {
     clearTimeout(poll)
   })
 
-  /** Queues `read`; its failure shows inline, and a later success clears it. */
+  /** Queues `read`; its failure shows inline (unless the office has no runs routes), and a later success clears it. */
   function enqueue(read: () => Promise<void>, key?: string) {
     queue(async () => {
       if (disposed) return
       try {
         await read()
-        if (!disposed) setFailure(undefined)
+        if (disposed) return
+        setFailure(undefined)
+        setUnavailable(false)
       } catch (e) {
-        if (!disposed) setFailure({ message: e instanceof Error ? e.message : String(e), secrets: isSecretsUnavailable(e) })
+        if (disposed) return
+        const missing = isMissingRoute(e)
+        setUnavailable(missing)
+        const message = e instanceof Error ? e.message : String(e)
+        setFailure(missing ? undefined : { message, secrets: isSecretsUnavailable(e) })
       }
     }, key)
   }
@@ -218,12 +226,14 @@ export function RunPage(props: { id: string }) {
   }, REFETCH_MS)
   onMount(() => {
     refetch.call()
+    // An office without the runs routes won't grow them until it restarts: live updates don't read it again.
     const off = office.on("run.updated", (e) =>
-      e.data.run_id === props.id || e.data.parent_run_id === props.id ? refetch.call() : undefined,
+      !unavailable() && (e.data.run_id === props.id || e.data.parent_run_id === props.id) ? refetch.call() : undefined,
     )
     onCleanup(off)
   })
-  // Events missed while the office was away: read again once it's back. Not deferred, so a page opened while the
+  // Events missed while the office was away, or an office without the runs routes restarted (updated, perhaps): read
+  // again once it's back. Not deferred, so a page opened while the
   // office is away knows the status it opened with (`before` is undefined only on this first run).
   createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
@@ -251,6 +261,11 @@ export function RunPage(props: { id: string }) {
   return (
     <div>
       <div inert={sheet()}>
+        <Show when={unavailable()}>
+          <div class="px-1">
+            <RunsUnavailable />
+          </div>
+        </Show>
         <Show when={failure()}>
           {(f) => (
             <div class="flex items-center gap-2 px-4 pt-3 text-sm">

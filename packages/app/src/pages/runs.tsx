@@ -1,10 +1,11 @@
+import { isMissingRoute } from "@opencorp/client"
 import type { RunSummary } from "@opencorp/protocol"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js"
 import { createStore, reconcile, unwrap } from "solid-js/store"
 import { throttle } from "../data/costs"
 import { useOffice } from "../data/office"
-import { RunTable } from "../runs/list"
+import { RunsUnavailable, RunTable } from "../runs/list"
 import { flowsOf, hrefOf, isRunId, paramsOf, parse, queryOfAddress } from "../runs/query"
 import { readQueue } from "../runs/queue"
 import { SearchBox } from "../runs/search"
@@ -37,6 +38,8 @@ export default function Runs() {
   const [runs, setRuns] = createStore<RunSummary[]>([])
   const [next, setNext] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string>()
+  /** The office has no /api/runs (it's older than Run Logs): live updates don't read again until it reconnects. */
+  const [unavailable, setUnavailable] = createSignal(false)
   const [loading, setLoading] = createSignal(true)
   /** Whether a Load more is queued or reading: only that disables the button, not a live re-read it can queue after. */
   const [more, setMore] = createSignal(false)
@@ -53,7 +56,10 @@ export default function Runs() {
   onCleanup(() => (disposed = true))
   const current = (gen: number) => gen === generation && !disposed
 
-  /** Queues `read` after the reads before it (once per `key` while one waits); its failure shows as the page's error. */
+  /**
+   * Queues `read` after the reads before it (once per `key` while one waits); its failure shows as the page's error,
+   * unless the office has no runs route.
+   */
   function enqueue(read: (gen: number) => Promise<void>, key?: string) {
     const gen = generation
     queue(
@@ -63,7 +69,9 @@ export default function Runs() {
         try {
           await read(gen)
         } catch (e) {
-          if (current(gen)) setError(e instanceof Error ? e.message : String(e))
+          if (!current(gen)) return
+          setUnavailable(isMissingRoute(e))
+          setError(isMissingRoute(e) ? undefined : e instanceof Error ? e.message : String(e))
         } finally {
           if (current(gen)) setLoading(false)
         }
@@ -89,6 +97,7 @@ export default function Runs() {
         setRuns(reconcile(before ? [...unwrap(runs), ...page.runs] : page.runs, { key: "run_id" }))
         setNext(page.next ?? null)
         setError(undefined)
+        setUnavailable(false)
       } finally {
         if (before) setMore(false)
       }
@@ -119,6 +128,7 @@ export default function Runs() {
       setRuns(reconcile(all, { key: "run_id" }))
       setNext(more)
       setError(undefined)
+      setUnavailable(false)
       setRefreshed((n) => n + 1)
     }, "reread")
   }
@@ -134,11 +144,14 @@ export default function Runs() {
       load()
     }),
   )
+  // An office without the runs route won't grow one until it restarts: live updates don't read it again.
+  const live = () => void (unavailable() || refetch.call())
   onMount(() => {
-    const offs = [office.on("run.updated", () => refetch.call()), office.on("session.updated", () => refetch.call())]
+    const offs = [office.on("run.updated", live), office.on("session.updated", live)]
     onCleanup(() => offs.forEach((off) => off()))
   })
-  // Events missed while the office was away: read again once it's back. Not deferred, so a page opened while the
+  // Events missed while the office was away, or an office without the runs route restarted (updated, perhaps): read
+  // again once it's back. Not deferred, so a page opened while the
   // office is away knows the status it opened with (`before` is undefined only on this first run).
   createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
@@ -166,34 +179,38 @@ export default function Runs() {
     <div>
       <div class="flex flex-wrap items-start gap-3 border-b border-neutral-200 p-3 dark:border-neutral-800">
         <h2 class="mr-auto py-1 text-base font-semibold">Run Logs</h2>
-        <SearchBox query={address().text} sources={sources()} onSearch={search} onOpen={readFlows} />
-      </div>
-      <p class="px-3 pt-3 text-xs text-neutral-500 dark:text-neutral-400">
-        Codex sessions themselves aren't listed: they have no run log yet. Their debriefs are.
-      </p>
-      <Show when={error()}>
-        {(message) => (
-          <div class="flex items-center gap-2 px-3 pt-3 text-sm">
-            <p role="alert">Couldn't read the runs: {message()}.</p>
-            <button type="button" class={BUTTON} onClick={() => reread()}>
-              Retry
-            </button>
-          </div>
-        )}
-      </Show>
-      <div class="p-3 max-md:px-2">
-        <RunTable runs={runs} filters={shownWith()} refreshed={refreshed()} />
-        <Show when={!loading() && !error() && runs.length === 0}>
-          <p class="px-3 py-4 text-sm text-neutral-500 dark:text-neutral-400">No runs.</p>
+        <Show when={!unavailable()}>
+          <SearchBox query={address().text} sources={sources()} onSearch={search} onOpen={readFlows} />
         </Show>
-        <Show when={next()}>
-          {(before) => (
-            <button type="button" disabled={more()} onClick={() => loadMore(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
-              Load more
-            </button>
+      </div>
+      <Show when={!unavailable()} fallback={<RunsUnavailable />}>
+        <p class="px-3 pt-3 text-xs text-neutral-500 dark:text-neutral-400">
+          Codex sessions themselves aren't listed: they have no run log yet. Their debriefs are.
+        </p>
+        <Show when={error()}>
+          {(message) => (
+            <div class="flex items-center gap-2 px-3 pt-3 text-sm">
+              <p role="alert">Couldn't read the runs: {message()}.</p>
+              <button type="button" class={BUTTON} onClick={() => reread()}>
+                Retry
+              </button>
+            </div>
           )}
         </Show>
-      </div>
+        <div class="p-3 max-md:px-2">
+          <RunTable runs={runs} filters={shownWith()} refreshed={refreshed()} />
+          <Show when={!loading() && !error() && runs.length === 0}>
+            <p class="px-3 py-4 text-sm text-neutral-500 dark:text-neutral-400">No runs.</p>
+          </Show>
+          <Show when={next()}>
+            {(before) => (
+              <button type="button" disabled={more()} onClick={() => loadMore(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
+                Load more
+              </button>
+            )}
+          </Show>
+        </div>
+      </Show>
     </div>
   )
 }
