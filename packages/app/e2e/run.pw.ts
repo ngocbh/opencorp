@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test"
+import { expect, test, type APIRequestContext, type Page } from "@playwright/test"
 import { crowded, node, rid } from "./runs"
 
 test.beforeEach(async ({ request }) => {
@@ -9,6 +9,12 @@ test.beforeEach(async ({ request }) => {
 const header = (page: Page) => page.getByRole("region", { name: "Run" })
 const timeline = (page: Page) => page.getByRole("tree", { name: "Timeline" })
 const logStatus = (page: Page) => page.getByRole("status", { name: "Log" })
+/**
+ * When the fixture says run `n` was launched. Fixture times are relative to when its process started, so this asks
+ * it rather than computing `run(n)` here, which could land in another hour.
+ */
+const launched = async (request: APIRequestContext, n: number) =>
+  Date.parse((await (await request.get(`/api/runs/${rid(n)}`)).json()).run.launched_at)
 
 test("the header says what ran, who drove it, when, and where the session is", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"])
@@ -26,7 +32,7 @@ test("the header says what ran, who drove it, when, and where the session is", a
 test("the status doesn't repeat its word, or how long a finished run took", async ({ page, request }) => {
   const status = () => header(page).getByRole("definition").first()
   await request.post("/__fixture/run", { data: { id: rid(3), detail: { run: { status: "finished", ended_at:
-    "2026-10-20T10:09:00.000Z" } } } })
+    new Date((await launched(request, 3)) + 6 * 60_000).toISOString() } } } })
   await page.goto(`/runs/${rid(3)}`)
   await expect(status()).toHaveText("finished")
   await expect(header(page)).toContainText("took 6m 0s")
@@ -100,7 +106,7 @@ test("run.updated for this run refetches its page", async ({ page, request }) =>
   await page.goto(`/runs/${rid(3)}`)
   await expect(header(page)).toContainText("waiting")
   await request.post("/__fixture/run", { data: { id: rid(3), detail: { run: { status: "finished", ended_at:
-    "2026-10-20T10:09:00.000Z" } } } })
+    new Date((await launched(request, 3)) + 6 * 60_000).toISOString() } } } })
   await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
     run_id: rid(3), session_id: "S3", status: "finished", current_nodes: [] } } } })
   await expect(header(page)).toContainText("finished")

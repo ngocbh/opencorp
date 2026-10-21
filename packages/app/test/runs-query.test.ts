@@ -106,7 +106,9 @@ test("local days follow daylight saving: a 23-hour day and a 25-hour day", () =>
     expect(startedRange("2026-03-28..2026-03-29", NOW)).toEqual({
       since: "2026-03-27T23:00:00.000Z", until: "2026-03-29T22:00:00.000Z" })
   } finally {
-    process.env.TZ = tz
+    // Unset, TZ would become the string "undefined"; deleting it brings back the machine's zone.
+    if (tz === undefined) delete process.env.TZ
+    else process.env.TZ = tz
   }
 })
 

@@ -80,6 +80,7 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
     // A finished filter closes the list; a qualifier's name stays open for its values.
     if (option.complete) setOpen(false)
     input.focus()
+    settle()
   }
 
   function onKeyDown(e: KeyboardEvent) {
