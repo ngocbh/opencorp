@@ -8,6 +8,7 @@ from typing import Any
 
 from opencorp.chat.connections import OFFICE
 from opencorp.chat.harness import Harness, HarnessError, RunSpec
+from opencorp.chat.state import not_waiting
 from opencorp.chat.turns import MAIN_CHAT
 from opencorp.company.loader import load_repo
 from opencorp.protocol import now
@@ -212,7 +213,7 @@ class Cards:
             session = self.store.get_session(q.session_id)
             if session is not None and not is_live(session):
                 self.ended(session)
-        for side in self.store.list_sessions(kind="side", status=("starting", "idle", "busy"), limit=None):
+        for side in self.store.list_sessions(kind="side", status=("starting", "idle", "busy", "waiting"), limit=None):
             question = self.store.get_question(side.question_id) if side.question_id else None
             if question is None or question.status != "open":
                 self._close(side.id, question)
@@ -240,7 +241,7 @@ class Cards:
                 if exc.code == "stopping" or not is_live(self.store.get_session(side_id)):
                     return
                 log.warning("side session %s has no live run to end", side_id)
-                self.ended(self.store.update_session(side_id, status="ended"))
+                self.ended(self.store.update_session(side_id, **not_waiting("ended")))
 
     # --- helpers -------------------------------------------------------------------------
 

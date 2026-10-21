@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from opencorp.chat.harness import HarnessError
+from opencorp.chat.state import not_waiting, run_state, write_state
 from opencorp.chat.transcript import Transcript
 from opencorp.harness.codex import CodexProcess, CodexStartError, owner_load
 from opencorp.harness.rpc import RpcClosed, RpcError
@@ -135,7 +136,7 @@ class CodexSession:
         except HarnessError:
             with self._lock:
                 if self.turn_id is None:
-                    self._idle()  # a refused message leaves the session idle
+                    self._settle()  # a refused message leaves the session idle (or waiting on a card)
             raise
 
     def interrupt(self) -> None:
@@ -161,7 +162,7 @@ class CodexSession:
             self.pending.clear()
             self._stop_timer()
             busy = self.turn_id is not None
-            self.store.update_session(self.session_id, status="ending")
+            self.store.update_session(self.session_id, **not_waiting("ending"))
             if busy:
                 # Armed first: an interrupt Codex never answers fails at once when this closes the app-server.
                 self.timer = threading.Timer(END_WAIT, self._post, (self._close,))
@@ -230,11 +231,11 @@ class CodexSession:
             self.closed = True
             self._jobs.put(None)
 
-    def idle_after_restore(self, status: str) -> None:
-        """Go idle with no app-server, as a restarted office finds the session (stored as ``status``); its next
-        message reloads the thread."""
+    def idle_after_restore(self) -> None:
+        """Settle with no app-server, as a restarted office finds the session; its next message reloads the
+        thread."""
         with self._lock:
-            self._idle(write=status != "idle")
+            self._settle()
 
     def launching_as(self, process: CodexProcess) -> bool:
         """Record ``process`` as the app-server being started, so office stop kills it; False once stopped."""
@@ -315,7 +316,7 @@ class CodexSession:
             if self.ending:
                 return  # the end posted meanwhile closes it
             if session.status != "starting":  # a reload: say why and wait for the next message
-                self._idle()
+                self._settle()
                 return
             self.closed = True
         self.owner.finished(self, "failed")
@@ -332,7 +333,7 @@ class CodexSession:
                 if not self.pending:
                     self.loading = False
                     if not sent and self.turn_id is None:
-                        self._idle()
+                        self._settle()
                     return
                 text, process = "\n\n".join(self.pending), self.process
                 self.pending.clear()
@@ -399,7 +400,7 @@ class CodexSession:
             with self._lock:
                 self.turn_id = params["turn"]["id"]
                 if not self.ending:
-                    self.store.update_session(self.session_id, status="busy")
+                    self._settle()
         elif method == "turn/completed":
             turn = params["turn"]
             self.translator.turn_completed(turn["id"], turn["status"], turn.get("error"))
@@ -409,8 +410,8 @@ class CodexSession:
                 self._expire_turn(turn["id"])
                 if self.ending:
                     self._post(self._close)
-                elif self.turn_id is None and not self.loading:
-                    self._idle()
+                elif self.turn_id is not None or not self.loading:
+                    self._settle()  # its expired cards may leave a turn that raced it running, no longer waiting
         elif method == "serverRequest/resolved":
             self._resolved(params["requestId"])
         elif method == "thread/tokenUsage/updated":
@@ -452,6 +453,7 @@ class CodexSession:
         with self._lock:
             self.requests[card.question.id] = Pending(request_id, card)
             self.by_request[str(request_id)] = card.question.id
+            self._settle()
 
     def _turnless_run(self, process: CodexProcess) -> str:
         """The run id of ``process``'s requests with no turn. Request ids restart with each app-server and a pid can
@@ -478,6 +480,7 @@ class CodexSession:
             pending, process = self.requests.pop(question_id, None), self.process
             if pending is not None:
                 self.by_request.pop(str(pending.request_id), None)
+                self._settle()
         return pending, process
 
     def _write_reply(self, question_id: str, answer: Any, by: str | None) -> bool:
@@ -513,6 +516,8 @@ class CodexSession:
         with self._lock:
             question_id = self.by_request.pop(str(request_id), None)
             pending = self.requests.pop(question_id, None) if question_id else None
+            if pending is not None:
+                self._settle()
         if pending is not None:
             self._expire(question_id)
 
@@ -579,7 +584,7 @@ class CodexSession:
             if self.ending:
                 self._post(self._close)
             else:
-                self._idle()
+                self._settle()
 
     def _close(self) -> None:
         with self._lock:
@@ -596,13 +601,14 @@ class CodexSession:
         self.owner.finished(self, "ended")
         self._jobs.put(None)  # nothing more to do: let the session's thread end after this job
 
-    def _idle(self, *, write: bool = True) -> None:
-        """(Under the lock.) Go idle (``write`` stores the status); nothing once the office stops or the session is
-        ending."""
+    def _settle(self) -> None:
+        """(Under the lock.) Write the run state: waiting while Codex waits on a card (on the opener), busy while a
+        turn runs, else idle. Nothing once the office stops or the session is ending or closed."""
         if self.stopped or self.ending or self.closed:
             return
-        if write:
-            self.store.update_session(self.session_id, status="idle")
+        waiting = bool(self.requests)
+        write_state(self.store, self.session_id, run_state(waiting=waiting, running=self.turn_id is not None),
+                    [self.author] if waiting else [], from_starting=("idle", "busy", "waiting"))
 
     def _stop_timer(self) -> None:
         """(Under the lock.) Cancel the end timer."""

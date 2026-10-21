@@ -161,7 +161,7 @@ def test_a_restore_after_office_stop_restores_nothing(make_codex, fake_codex, wo
     h = make_codex()
     h.codex.close_all()
     h.codex.restore()
-    assert h.codex._live == {} and status(h, sid) == "busy"
+    assert h.codex._live == {} and status(h, sid) == "waiting"
     assert [q.status for q in h.store.list_questions(session_id=sid)] == ["open"]
 
 

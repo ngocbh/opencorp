@@ -119,8 +119,9 @@ def test_the_discussion_is_human_messages_and_final_reply_text(store):  # noqa: 
         ("user", "why not fail fast?"), ("assistant", "The sandbox is rate-limited."), ("user", "ok\n\nand retries?")]
 
 
-def test_a_reply_still_running_is_not_in_the_discussion(store):  # noqa: F811
-    side = store.create_session(session(kind="side", status="busy"))
+@pytest.mark.parametrize("left", ["busy", "waiting"])  # waiting: held at its cost cap, the reply not final
+def test_a_reply_still_running_is_not_in_the_discussion(store, left):  # noqa: F811
+    side = store.create_session(session(kind="side", status=left))
     store.add_message(message(side.id, [text("why?")], role="user"))
     store.add_message(message(side.id, [text("Because")]))
     assert [e.role for e in discussion(store, side.id)] == ["user"]

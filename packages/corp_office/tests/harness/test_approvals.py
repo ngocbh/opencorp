@@ -31,13 +31,13 @@ def approval_turn(request_id=1, wait=True):
             fc.command("c1", "touch a")[1]]
 
 
-def test_an_approval_is_an_open_card_on_a_busy_session(harness, fake_codex, workspace):
+def test_an_approval_is_an_open_card_on_a_waiting_session(harness, fake_codex, workspace):
     fake_codex.script([approval_turn()])
     sid = start(harness, workspace)
     harness.prompt(sid, "make a")
     q = open_card(harness, sid)
     assert (q.source, q.run_id, q.node_id, q.asker, q.options[0]) == ("harness", "turn_1", "1", "minh", "Approve")
-    assert status(harness, sid) == "busy"  # the session stays busy while a card is open
+    wait_for(lambda: status(harness, sid) == "waiting", what="waiting on the card")  # someone must answer it
 
 
 def test_a_request_no_card_can_be_made_from_gets_a_json_rpc_error(harness, fake_codex, workspace):
@@ -245,7 +245,7 @@ def test_an_unanswered_card_goes_stale_when_codex_resolves_it(harness, fake_code
     harness.prompt(sid, "make a")
     q = open_card(harness, sid)
     wait_for(lambda: harness.store.get_question(q.id).status == "stale", what="stale")
-    assert status(harness, sid) == "busy"  # the turn goes on
+    wait_for(lambda: status(harness, sid) == "busy", what="busy")  # the turn goes on
 
 
 def test_a_card_codex_left_waiting_at_its_turns_end_goes_stale(harness, fake_codex, workspace):

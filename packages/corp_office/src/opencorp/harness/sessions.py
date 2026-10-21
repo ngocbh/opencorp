@@ -7,10 +7,12 @@ from typing import Any
 
 from opencorp.chat.harness import LIVE, HarnessError
 from opencorp.chat.hooks import Hooks
+from opencorp.chat.state import not_waiting
 from opencorp.chat.transcript import INTERRUPTED_TEXT
 from opencorp.company.loader import load_repo
 from opencorp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
 from opencorp.harness.session import CodexSession
+from opencorp.harness.translate import TURNLESS
 from opencorp.protocol.models import HarnessPolicy, Message, Question, Session
 from opencorp.store import InvalidTransition
 from opencorp.worker.spawn import worker_env
@@ -88,8 +90,9 @@ class CodexSessions:
 
     def restore(self) -> None:
         """After an office restart, for each Codex session that was live. Idle stays idle with no app-server (its
-        next message reloads the thread). Busy becomes idle with ``[interrupted]``: Codex reports that turn
-        interrupted on resume and never reruns it. Starting fails. Ending finishes ending. Open cards go stale."""
+        next message reloads the thread). Busy, or waiting on a turn's card, becomes idle with ``[interrupted]``: Codex
+        reports that turn interrupted on resume and never reruns it. Waiting only on turnless cards becomes idle
+        without it. Starting fails. Ending finishes ending. Open cards go stale."""
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if self._closed:  # the office is stopping: what is left stays as it is, for the next restore
                 return
@@ -101,7 +104,12 @@ class CodexSessions:
                 log.exception("can't restore Codex session %s", session.id)
 
     def _restore(self, session: Session) -> None:
-        for q in self.store.list_questions(session_id=session.id, status="open"):
+        cards = self.store.list_questions(session_id=session.id, status="open")
+        # Inside a turn, unless it waited only on turnless cards (run ids TURNLESS…): Codex reports that turn
+        # interrupted.
+        in_turn = session.status == "busy" or (
+            session.status == "waiting" and any(not q.run_id.startswith(TURNLESS) for q in cards))
+        for q in cards:
             try:
                 self.store.set_question_status(q.id, "stale")
             except InvalidTransition:
@@ -124,9 +132,9 @@ class CodexSessions:
             live.release()
             self.finished(live, "ended")
         else:
-            if session.status == "busy" and not _ends_interrupted(self.store.list_messages(session.id)):
+            if in_turn and not _ends_interrupted(self.store.list_messages(session.id)):
                 live.translator.turn_completed("restored", "interrupted", None)  # unless office stop stored it
-            live.idle_after_restore(session.status)
+            live.idle_after_restore()
 
     # --- calls from CodexSession -----------------------------------------------------
 
@@ -157,7 +165,7 @@ class CodexSessions:
             status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
             if session.work_item_id:  # first, so no client sees an ended session with its work still open
                 self.store.update_work_item(session.work_item_id, status="done")
-        self.hooks.fire("session_ended", self.store.update_session(live.session_id, status=status))
+        self.hooks.fire("session_ended", self.store.update_session(live.session_id, **not_waiting(status)))
 
     def policy(self, session_id: str) -> HarnessPolicy | None:
         """The session's person's harness policy at the session's pinned commit."""

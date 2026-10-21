@@ -1,20 +1,18 @@
 import { applyCompany, upsertSession, type OfficeState, type Snapshot } from "@opencorp/client"
 import type { Session } from "@opencorp/protocol"
 
-/** The statuses HQ fetches: a session with a run, or one debriefing. */
-export const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending", "debriefing"]
-/** Current work, which HQ counts and lists. An idle session is history, reopened with /sessions in the TUI. */
+/** Current work, which HQ fetches, counts and lists. An idle session is history, reopened with /sessions in the TUI. */
 export const ACTIVE: Session["status"][] = ["starting", "busy", "waiting", "ending", "debriefing"]
 
 /**
- * HQ's snapshot on every (re)connect: the company at HEAD, live sessions, open questions, and costs since `from()`.
+ * HQ's snapshot on every (re)connect: the company at HEAD, active sessions, open questions, and costs since `from()`.
  * It replaces every open question it held, so the sync never re-reads them by id (HQ serves no route for that).
  */
 export function hqSnapshot(from: () => string): Snapshot {
   return async (client) => {
     const [view, sessions, questions, costs] = await Promise.all([
       client.company.get(),
-      client.sessions.list({ status: LIVE, limit: 500 }),
+      client.sessions.list({ status: ACTIVE, limit: 500 }),
       client.questions.list({ status: "open" }),
       client.costs.since(from()),
     ])

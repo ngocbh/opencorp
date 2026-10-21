@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test"
 import { emptyState } from "@opencorp/client"
-import { hqSnapshot, LIVE } from "../src/data/snapshot"
+import { ACTIVE, hqSnapshot } from "../src/data/snapshot"
 
-test("HQ's snapshot reads the company, live sessions, open questions and costs, and replaces them", async () => {
+test("HQ's snapshot reads the company, active sessions, open questions and costs, and replaces them", async () => {
   const asked: unknown[] = []
   const client: any = {
     company: { get: async () => ({ sha: "s1", company: { name: "Acme", ceo: "ngocbh" }, people: [], groups: [], issues: [] }) },
@@ -16,5 +16,5 @@ test("HQ's snapshot reads the company, live sessions, open questions and costs, 
   ;(await hqSnapshot(() => "2026-10-19T00:00:00.000Z")(client))(s)
   expect([s.company?.name, s.sessions.map((x) => x.id), Object.keys(s.questions), s.costs?.since]).toEqual([
     "Acme", ["S1"], [], "2026-10-19T00:00:00.000Z"])
-  expect(asked).toEqual([{ status: LIVE, limit: 500 }, { status: "open" }])
+  expect(asked).toEqual([{ status: ACTIVE, limit: 500 }, { status: "open" }])
 })
