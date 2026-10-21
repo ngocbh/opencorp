@@ -218,3 +218,17 @@ test("Source's syntax colors: YAML, JSON, Markdown, a big file, hostile text and
   expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined()
   expect(await violations()).toEqual([])
 })
+
+test("a run page: the header and the Timeline unfolded, older nodes, and the phone layout, with no CSP violation", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true } })
+  const violations = await watchCsp(page)
+  await page.goto("/runs/01JA1H00000000000000000005")
+  const tree = page.getByRole("tree", { name: "Timeline" })
+  await tree.getByRole("treeitem", { name: /^iteration chat#2/ }).first().click()
+  await page.getByRole("button", { name: "Older nodes" }).click()
+  await violations()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto("/runs/01JA1H00000000000000000005")
+  await expect(tree).toBeVisible()
+  expect(await violations()).toEqual([])
+})

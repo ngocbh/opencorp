@@ -173,9 +173,26 @@ test("the list is read again when the office is back", async ({ page, request })
   await expect(table(page).getByRole("row")).toHaveCount(1, { timeout: 15_000 })
 })
 
+test("the list opened while the office reconnects reads again once it's back", async ({ page, request }) => {
+  await page.goto(`/runs/${rid(5)}`)
+  await expect(page.getByRole("region", { name: "Run" })).toBeVisible()
+  // The reconnect's snapshot waits, so the list opens while the office is "connecting", and its first read fails.
+  await request.post("/__fixture/set", { data: { delay: { "/api/company": 3000 }, fail: { "/api/runs": 500 } } })
+  await request.post("/__fixture/drop", { data: { ms: 0 } })
+  await expect(page.getByText("Reconnecting to the office…")).toBeVisible()
+  await page.getByRole("navigation", { name: "HQ" }).getByRole("link", { name: "Run Logs" }).click()
+  await expect(page.getByRole("alert")).toContainText("Couldn't read the runs")
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await expect(row(page, 3)).toBeVisible({ timeout: 10_000 })
+})
+
 test("a failed read says why, and Retry reads again", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { fail: { "/api/runs": 500 } } })
   await page.goto("/runs")
+  await expect(page.getByRole("alert")).toContainText("Couldn't read the runs")
+  // The page also reads again once the office is first online (throttled to a second); let that read fail too.
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await page.waitForTimeout(1500)
   await expect(page.getByRole("alert")).toContainText("Couldn't read the runs")
   await request.post("/__fixture/set", { data: { fail: {} } })
   await page.getByRole("button", { name: "Retry" }).click()
@@ -214,6 +231,43 @@ test("Show all's children are read again on a refetch, and a failed read says so
   await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
     run_id: rid(4000), session_id: "S4000", status: "finished", current_nodes: [] } } } })
   await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(202)
+})
+
+test("a live refetch keeps focus on a child Show all brought", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(201) } })
+  await page.goto("/runs")
+  await table(page).getByRole("button", { name: /Runs under/ }).click()
+  await page.getByRole("button", { name: "Show all 201" }).click()
+  const link = row(page, 5001).getByRole("link", { name: rid(5001).slice(-8) }) // only in Show all's read
+  await link.focus()
+  const data = crowded(201)
+  const kids = data.children[rid(4000)]!
+  kids[200] = { ...kids[200]!, status: "failed" }
+  await request.post("/__fixture/set", { data: { runs: data } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(5001), session_id: "S5001", parent_run_id: rid(4000), status: "failed", current_nodes: [] } } } })
+  await expect(row(page, 5001)).toContainText("failed")
+  await expect(link).toBeFocused()
+})
+
+test("Load more can be pressed while a live re-read runs", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: many(120) } })
+  await page.goto("/runs")
+  const tops = table(page).locator("tr[aria-level='1']")
+  await expect(tops).toHaveCount(50)
+  await page.waitForTimeout(1500) // past the read once the office is first online
+  // `api` logs a request as it arrives, before its delay.
+  const reads = async () =>
+    ((await (await request.get("/__fixture/log")).json()).api as string[]).filter((p) => p === "/api/runs").length
+  const before = await reads()
+  await request.post("/__fixture/set", { data: { delay: { "/api/runs": 1500 } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(1240), session_id: "S1240", status: "finished", current_nodes: [] } } } })
+  await expect.poll(reads).toBeGreaterThan(before) // the re-read is on its way
+  // Within the re-read's 1.5 s, not once it's done.
+  await expect(page.getByRole("button", { name: "Load more" })).toBeEnabled({ timeout: 500 })
+  await page.getByRole("button", { name: "Load more" }).click()
+  await expect(tops).toHaveCount(100, { timeout: 10_000 })
 })
 
 test("a refetch during Load more keeps the page it brings", async ({ page, request }) => {

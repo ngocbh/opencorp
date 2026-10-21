@@ -8,6 +8,7 @@ import { Shell } from "./shell"
 // Lazy, so a rebuild that deletes this chunk fails as a missing script and the app checks its version.
 const Company = lazy(() => import("./pages/company"))
 const Runs = lazy(() => import("./pages/runs"))
+const Run = lazy(() => import("./pages/run"))
 
 /** The office and the shell around every screen: a parent route, so moving between screens keeps one office. */
 const Office = (props: RouteSectionProps) => (
@@ -40,6 +41,7 @@ export function App() {
         <Route path="/" component={() => <Navigate href="/org" />} />
         <Route path="/org" component={Company} />
         <Route path="/runs" component={Runs} />
+        <Route path="/runs/:id" component={Run} />
         <Route path="*" component={NoPage} />
       </Route>
     </Router>

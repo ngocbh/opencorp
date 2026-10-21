@@ -1,5 +1,6 @@
-// Run Logs data for the fixture HQ: top-level runs as GET /api/runs answers them, newest first, children attached.
-import type { RunSummary } from "@opencorp/protocol"
+// Run Logs data for the fixture HQ: top-level runs as GET /api/runs answers them, newest first, children attached;
+// and each run's page (its header and node pages) as GET /api/runs/{id} and its routes answer them.
+import type { RunDetail, RunDivider, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
 export const rid = (n: number) => `01JA1H${String(n).padStart(20, "0")}`
@@ -52,4 +53,50 @@ export function crowded(total: number): Runs {
   const kids = Array.from({ length: total }, (_, i) =>
     run(5000 + total - i, { flow: "side_chat", parent_run_id: rid(4000), driver: "ann" }))
   return { runs: [run(4000, { children: kids.slice(0, 200), children_total: total })], children: { [rid(4000)]: kids } }
+}
+
+/** One run's page as the fixture serves it; `indexing` makes its node and record pages answer "indexing". */
+export type RunFixturePage = { detail: RunDetail; nodes: RunNode[]; dividers: RunDivider[]; events: RunEvent[];
+                               indexing?: boolean }
+export type RunPages = Record<string, RunFixturePage>
+
+/** A node attempt as the office sends it: succeeded, ended at the next seq, no kind (until yian#943). */
+export const node = (seq: number, node_id: string, over: Partial<RunNode> = {}): RunNode =>
+  ({ seq, end_seq: seq + 1, node_id, kind: null, status: "succeeded", handle: null, error: null, ...over })
+
+/** Run 5's page: three turns of @kai's chat, the second resumed once, the third waiting at its turn; and simple pages
+ * for the others (run 6, a side chat that keeps no evidence; run 1, a log this office can't read; run 4, no log). */
+export function runPages(runs: RunSummary[]): RunPages {
+  const byId = Object.fromEntries(runs.flatMap((r) => [r, ...(r.children ?? [])]).map((r) => [r.run_id, r]))
+  const detail = (id: string, over: Partial<RunDetail> = {}): RunDetail => ({
+    run: byId[id]!, parent: null, repo_commit: "a".repeat(40), flow_fingerprint: "b".repeat(64), learnable: true,
+    models: { "chat/reply": "gpt-5" }, usage: { input_tokens: 1200, output_tokens: 300, usd: 0.0123 },
+    log_state: "ok", log_message: null, bytes_done: null, bytes_total: null, ...over })
+  const turn = (k: number, base: number): RunNode[] => [
+    node(base + 5, `chat#${k}/reply`),
+    node(base + 3, `chat#${k}/route`, { status: "routed", handle: "reply" }),
+    node(base + 1, `chat#${k}/ask`),
+    node(base, `chat~${k}`, { status: "expanded" }),
+  ]
+  const nodes5 = [
+    node(41, "chat#3/ask", { status: "open", end_seq: null }),
+    ...turn(3, 34).slice(3),
+    node(31, "chat#2/reply"),
+    node(25, "chat#2/reply", { status: "restarted", end_seq: null }),
+    ...turn(2, 20).slice(1),
+    node(15, "chat#1/reply", { status: "failed", error: "AuthError: 401 key (hidden)" }),
+    ...turn(1, 10).slice(1),
+    node(1, "chat", { status: "expanded" }),
+  ]
+  return {
+    [rid(5)]: { detail: detail(rid(5)), nodes: nodes5, dividers: [{ seq: 30, retried: ["chat#2/reply"] }], events: [] },
+    [rid(3)]: { detail: detail(rid(3)), nodes: [], dividers: [], events: [] },
+    [rid(6)]: { detail: detail(rid(6), { learnable: false, usage: { input_tokens: 10, output_tokens: 2, usd: 0 } }),
+                nodes: [node(3, "chat#0/reply")], dividers: [], events: [] },
+    [rid(4)]: { detail: detail(rid(4), { log_state: "not_started", log_message: "no run log: the run didn't start",
+                                         flow_fingerprint: null, learnable: null, models: {} }), nodes: [], dividers: [], events: [] },
+    [rid(2)]: { detail: detail(rid(2), { usage: null }), nodes: [node(1, "debrief")], dividers: [], events: [] },
+    [rid(1)]: { detail: detail(rid(1), { log_state: "unsupported_schema", log_message:
+                "This log uses run-log schema 8, which is older than this office supports" }), nodes: [], dividers: [], events: [] },
+  }
 }

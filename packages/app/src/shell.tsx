@@ -115,14 +115,17 @@ function Section(props: ParentProps<{ label: string }>) {
   )
 }
 
-/** A page HQ has: a link, highlighted while it's the current page. */
+/**
+ * A page HQ has: a link, highlighted while it's the current page or one under it (`A` gives the `active` class on a
+ * prefix match, as on `/runs/<id>`, and `aria-current` only on an exact one).
+ */
 function Item(props: { href: string; label: string; icon: Icon; onClick?: () => void }) {
   return (
     <li>
       <A
         href={props.href}
         onClick={() => props.onClick?.()}
-        class={`${ROW} text-neutral-700 outline-none hover:bg-neutral-100 hover:text-neutral-900 focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=page]:bg-neutral-200/70 aria-[current=page]:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-100 dark:aria-[current=page]:bg-neutral-800 dark:aria-[current=page]:text-neutral-50`}
+        class={`${ROW} text-neutral-700 outline-none hover:bg-neutral-100 hover:text-neutral-900 focus-visible:ring-2 focus-visible:ring-neutral-900 aria-[current=page]:bg-neutral-200/70 aria-[current=page]:text-neutral-900 [&.active]:bg-neutral-200/70 [&.active]:text-neutral-900 dark:text-neutral-300 dark:hover:bg-neutral-900 dark:hover:text-neutral-50 dark:focus-visible:ring-neutral-100 dark:aria-[current=page]:bg-neutral-800 dark:aria-[current=page]:text-neutral-50 dark:[&.active]:bg-neutral-800 dark:[&.active]:text-neutral-50`}
       >
         <ItemIcon icon={props.icon} />
         <span class="min-w-0 flex-1 truncate">{props.label}</span>

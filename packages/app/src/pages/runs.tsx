@@ -6,6 +6,7 @@ import { throttle } from "../data/costs"
 import { useOffice } from "../data/office"
 import { filtersOf, isRunId, type RunFilters } from "../runs/filters"
 import { RunTable } from "../runs/list"
+import { readQueue } from "../runs/queue"
 
 /** Top-level runs per page. */
 const PAGE = 50
@@ -31,6 +32,8 @@ export default function Runs() {
   const [next, setNext] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string>()
   const [loading, setLoading] = createSignal(true)
+  /** Whether a Load more is queued or reading: only that disables the button, not a live re-read it can queue after. */
+  const [more, setMore] = createSignal(false)
   /** Counts finished refetches, so the table reads its "Show all" children again. */
   const [refreshed, setRefreshed] = createSignal(0)
   const [text, setText] = createSignal(filters().q ?? "")
@@ -39,25 +42,29 @@ export default function Runs() {
   // Reads run one at a time, so a refetch never drops the page a Load more brings. A filter change starts a new
   // generation, and a read queued or answered in an older one is dropped.
   let generation = 0
-  let queue: Promise<void> = Promise.resolve()
+  const queue = readQueue()
   let disposed = false
   onCleanup(() => (disposed = true))
   const current = (gen: number) => gen === generation && !disposed
 
-  /** Queues `read` after the reads before it; its failure shows as the page's error. */
-  function enqueue(read: (gen: number) => Promise<void>) {
+  /** Queues `read` after the reads before it (once per `key` while one waits); its failure shows as the page's error. */
+  function enqueue(read: (gen: number) => Promise<void>, key?: string) {
     const gen = generation
-    queue = queue.then(async () => {
-      if (!current(gen)) return
-      setLoading(true)
-      try {
-        await read(gen)
-      } catch (e) {
-        if (current(gen)) setError(e instanceof Error ? e.message : String(e))
-      } finally {
-        if (current(gen)) setLoading(false)
-      }
-    })
+    queue(
+      async () => {
+        if (!current(gen)) return
+        setLoading(true)
+        try {
+          await read(gen)
+        } catch (e) {
+          if (current(gen)) setError(e instanceof Error ? e.message : String(e))
+        } finally {
+          if (current(gen)) setLoading(false)
+        }
+      },
+      // Per generation: a read waiting in an older one is dropped when it starts, so it mustn't hold back a new one.
+      key === undefined ? undefined : `${key} ${gen}`,
+    )
   }
 
   const read = (f: RunFilters, before?: string) => office.client.runs.list({ ...f, before, limit: PAGE })
@@ -65,15 +72,26 @@ export default function Runs() {
   /** Reads the page after `before` (the first without it) and appends it. */
   function load(before?: string) {
     enqueue(async (gen) => {
-      const page = await read(filters(), before)
-      if (!current(gen)) return
-      setRuns(reconcile(before ? [...unwrap(runs), ...page.runs] : page.runs, { key: "run_id" }))
-      setNext(page.next ?? null)
-      setError(undefined)
+      try {
+        const page = await read(filters(), before)
+        if (!current(gen)) return
+        setRuns(reconcile(before ? [...unwrap(runs), ...page.runs] : page.runs, { key: "run_id" }))
+        setNext(page.next ?? null)
+        setError(undefined)
+      } finally {
+        if (before) setMore(false)
+      }
     })
   }
 
-  /** Re-reads the pages already shown, from the start, as one answer. */
+  /** Load more: one page at a time, however often it's pressed. */
+  function loadMore(before: string) {
+    if (more()) return
+    setMore(true)
+    load(before)
+  }
+
+  /** Re-reads the pages already shown, from the start, as one answer; not queued again while one waits to start. */
   function reread() {
     enqueue(async (gen) => {
       const want = Math.max(runs.length, 1)
@@ -91,7 +109,7 @@ export default function Runs() {
       setNext(more)
       setError(undefined)
       setRefreshed((n) => n + 1)
-    })
+    }, "reread")
   }
   const refetch = throttle(() => void (disposed || reread()), REFETCH_MS)
 
@@ -100,6 +118,7 @@ export default function Runs() {
       generation++
       setRuns(reconcile([]))
       setNext(null)
+      setMore(false) // a Load more queued in the old generation is dropped before it reads
       setError(undefined)
       load()
     }),
@@ -108,8 +127,9 @@ export default function Runs() {
     const offs = [office.on("run.updated", () => refetch.call()), office.on("session.updated", () => refetch.call())]
     onCleanup(() => offs.forEach((off) => off()))
   })
-  // Events missed while the office was away: read again once it's back.
-  createEffect(on(office.status, (now, before) => void (now === "online" && before && before !== "online" && refetch.call()), { defer: true }))
+  // Events missed while the office was away: read again once it's back. Not deferred, so a page opened while the
+  // office is away knows the status it opened with (`before` is undefined only on this first run).
+  createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
   function search(e: SubmitEvent) {
     e.preventDefault()
@@ -190,7 +210,7 @@ export default function Runs() {
         </Show>
         <Show when={next()}>
           {(before) => (
-            <button type="button" disabled={loading()} onClick={() => load(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
+            <button type="button" disabled={more()} onClick={() => loadMore(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
               Load more
             </button>
           )}

@@ -4,7 +4,7 @@ import { A } from "@solidjs/router"
 import Check from "lucide-solid/icons/check"
 import Copy from "lucide-solid/icons/copy"
 import { createEffect, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js"
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import { useOffice } from "../data/office"
 import { matches, type RunFilters } from "./filters"
 import { flowText, shortId, STATUS_DOT, where } from "./format"
@@ -24,8 +24,11 @@ const CELL = "px-3 py-2 max-md:p-0 max-md:min-w-0 max-md:leading-6"
 const at = (t: string, time = false) =>
   new Date(t).toLocaleString(undefined, time ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" })
 
-/** Copies a run's full id, and says whether it could: the clipboard needs a secure page (not plain http). */
-function CopyId(props: { id: string }) {
+/**
+ * Copies a full id (a run's, unless `label` names another), and says whether it could: the clipboard needs a secure
+ * page (not plain http).
+ */
+export function CopyId(props: { id: string; label?: string }) {
   const [state, setState] = createSignal<"idle" | "copied" | "failed">("idle")
   let timer: ReturnType<typeof setTimeout> | undefined
   onCleanup(() => clearTimeout(timer))
@@ -43,7 +46,7 @@ function CopyId(props: { id: string }) {
     <>
       <button
         type="button"
-        aria-label="Copy run id"
+        aria-label={props.label ?? "Copy run id"}
         title={props.id}
         onClick={() => void copy()}
         class={`grid size-6 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 ${MUTED} ${RING}`}
@@ -167,7 +170,10 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunFilters; refre
   async function showAll(id: string) {
     setFolds(id, { loading: true })
     try {
-      setFolds(id, { all: await office.client.runs.children(id), error: undefined })
+      const all = await office.client.runs.children(id)
+      // Reconciled by run_id, as the list is: a re-read updates the rows in place, so focus stays where it was.
+      setFolds(id, "all", reconcile(all, { key: "run_id" }))
+      setFolds(id, { error: undefined })
     } catch (error) {
       const why = error instanceof Error ? error.message : String(error)
       setFolds(id, { error: `Couldn't read the runs under …${id.slice(-4)}: ${why}.` })
