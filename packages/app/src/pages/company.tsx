@@ -9,7 +9,6 @@ import { fromTeams, fromTree, holds, keep, personOf, type Item } from "../compan
 import { branchStatus, cards, inOffice, needsYou, statusByPerson, totals, type OfficeFilter } from "../company/status"
 import { byTeam } from "../company/teams"
 import { Panel } from "../company/panel"
-import { Source } from "../company/source"
 import { Toolbar } from "../company/toolbar"
 import { buildTree, byName } from "../company/tree"
 import { useOffice } from "../data/office"
@@ -17,6 +16,8 @@ import { useDesktop, useShell } from "../shell"
 
 // Its own chunk: phones and list users never load it.
 const Chart = lazy(() => import("../company/chart"))
+// Its own chunk too, with highlight.js: only Source loads it.
+const Source = lazy(() => import("../company/source"))
 
 /** What the page shows before the first snapshot. */
 function Skeleton() {

@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test"
-import { LONG_LINE, SHA, source } from "./company"
+import { EXTRA_FILES, FLOW, HOSTILE, LONG_LINE, SHA, source, withFiles } from "./company"
 
 const NEXT = SHA.replace(/^0/, "f")
 
@@ -341,4 +341,148 @@ test("on a phone, View source in the sheet opens the person's folder", async ({ 
   await expect(page).toHaveURL(/path=people\/kai$/)
   await expect(entries(page)).toHaveText(["person.yaml", "profile.md"])
   await expect(pane(page)).toBeFocused()
+})
+
+/** Adds EXTRA_FILES (a flow, JSON, hostile text, a scrubbed file and a big one) under flows/. */
+const addFlows = (request: APIRequestContext) =>
+  request.post("/__fixture/set", { data: { source: withFiles(source(), EXTRA_FILES) } })
+const color = (page: Page, selector: string) =>
+  pane(page).locator(selector).first().evaluate((el) => getComputedStyle(el).color)
+const header = (page: Page) => pane(page).getByTestId("file-header")
+
+test("a YAML flow is colored like GitHub: keys, tags, strings, numbers, booleans and comments", async ({ page, request }) => {
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/hire.yaml")
+  await expect(lines(page)).toHaveText(FLOW.trimEnd().split("\n"))
+  const code = pane(page).getByTestId("code")
+  await expect(code.locator(".hljs-comment")).toHaveText(["# Hire an engineer."])
+  await expect(code.locator(".hljs-attr").first()).toHaveText("name:")
+  await expect(code.locator(".hljs-type")).toHaveText(["!str", "!Person"])
+  await expect(code.locator(".hljs-number")).toHaveText(["2", "3"])
+  await expect(code.locator(".hljs-literal")).toHaveText(["true"])
+  await expect(code.locator(".hljs-string").first()).toHaveText("hire")
+  // A block scalar runs over three lines: each line has its own span.
+  await expect(lines(page).nth(11).locator(".hljs-string")).toHaveText("      Ask the lead first.")
+  // GitHub light.
+  expect(await color(page, ".hljs-attr")).toBe("rgb(0, 92, 197)")
+  expect(await color(page, ".hljs-type")).toBe("rgb(215, 58, 73)")
+  expect(await color(page, ".hljs-string")).toBe("rgb(3, 47, 98)")
+  expect(await color(page, ".hljs-comment")).toBe("rgb(106, 115, 125)")
+  // No inline style anywhere in the file view.
+  await expect(pane(page).locator("[style]")).toHaveCount(0)
+})
+
+test("JSON and Markdown are colored too; an unknown file stays plain", async ({ page, request }) => {
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/office.json")
+  const code = pane(page).getByTestId("code")
+  await expect(code.locator(".hljs-attr")).toHaveText(['"tcp"', '"port"', '"name"', '"dev_origins"'])
+  await expect(code.locator(".hljs-literal")).toHaveText(["false", "null"])
+  await expect(code.locator(".hljs-number")).toHaveText(["49380"])
+  await expect(code.locator(".hljs-string")).toHaveText(['"HQ"'])
+  await page.goto("/org?view=source&path=README.md")
+  await expect(code.locator(".hljs-section")).toHaveText(["# Acme"])
+  expect(await code.locator(".hljs-section").evaluate((el) => getComputedStyle(el).fontWeight)).toBe("700")
+  await page.goto("/org?view=source&path=flows/hostile.txt")
+  await expect(lines(page).first()).toHaveText("<script>window.__xss = 1</script>")
+  await expect(code.locator("[class*=hljs-]")).toHaveCount(0)
+  await expect(header(page)).toContainText("Text")
+})
+
+test("the dark theme follows the app's: GitHub dark colors", async ({ page, request }) => {
+  await addFlows(request)
+  await page.emulateMedia({ colorScheme: "dark" })
+  await page.goto("/org?view=source&path=flows/hire.yaml")
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark")
+  await expect(pane(page).getByTestId("code").locator(".hljs-attr").first()).toHaveText("name:")
+  expect(await color(page, ".hljs-attr")).toBe("rgb(121, 192, 255)")
+  expect(await color(page, ".hljs-type")).toBe("rgb(255, 123, 114)")
+  expect(await color(page, ".hljs-string")).toBe("rgb(165, 214, 255)")
+  expect(await color(page, ".hljs-comment")).toBe("rgb(139, 148, 158)")
+  // A saved light theme wins over the system's dark one.
+  await page.evaluate(() => localStorage.setItem("hq.theme", "light"))
+  await page.reload()
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light")
+  await expect(pane(page).getByTestId("code").locator(".hljs-attr").first()).toHaveText("name:")
+  expect(await color(page, ".hljs-attr")).toBe("rgb(0, 92, 197)")
+})
+
+test("the header bar has the name, language, line count, size and Copy; the gutter is muted", async ({ page, request, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"])
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/hire.yaml")
+  const bar = header(page)
+  await expect(bar.getByTestId("file-name")).toHaveText("hire.yaml")
+  await expect(bar.getByTestId("file-language")).toHaveText("YAML")
+  await expect(bar.getByTestId("file-lines")).toHaveText("13 lines")
+  await expect(bar.getByTestId("file-size")).toHaveText(`${FLOW.length} bytes`)
+  await bar.getByRole("button", { name: "Copy" }).click()
+  await expect(bar.getByRole("button", { name: "Copied" })).toBeVisible()
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(FLOW)
+  // Line numbers sit in a gutter with its own background, and aren't copied with a selection.
+  const number = pane(page).getByTestId("line-number").first()
+  expect(await number.evaluate((el) => getComputedStyle(el).userSelect)).toBe("none")
+  const gutter = pane(page).getByTestId("gutter")
+  expect(await gutter.evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)")
+  const [g, n] = await Promise.all([gutter.boundingBox(), number.boundingBox()])
+  expect(n!.x + n!.width).toBeLessThanOrEqual(g!.x + g!.width + 1)
+  // The gutter runs the whole height of the code.
+  const code = (await pane(page).getByTestId("code").boundingBox())!
+  expect(g!.height).toBeGreaterThanOrEqual(code.height - 1)
+})
+
+test("a long line still wraps when colored", async ({ page, request }) => {
+  const s = withFiles(source(), { "flows/long.yaml": { content: "text", text: `key: ${"word ".repeat(80)}end\n` } })
+  await request.post("/__fixture/set", { data: { source: s } })
+  await page.goto("/org?view=source&path=flows/long.yaml")
+  const line = lines(page).first()
+  await expect(line.locator(".hljs-attr")).toHaveText("key:")
+  const fits = await line.evaluate((el) => el.scrollWidth <= el.clientWidth && el.getBoundingClientRect().height > 30)
+  expect(fits).toBe(true)
+})
+
+test("a file over 512 KB isn't colored, and its header says so", async ({ page, request }) => {
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/big.yaml")
+  await expect(lines(page)).toHaveCount(1)
+  await expect(pane(page).getByTestId("code").locator("[class*=hljs-]")).toHaveCount(0)
+  await expect(header(page).getByTestId("file-language")).toHaveText("YAML, not colored (over 512 KB)")
+  await expect(header(page).getByTestId("file-size")).toHaveText("512.0 KB")
+})
+
+test("a file with a line over 5,000 characters isn't colored, opens quickly, and its header says so", async ({ page, request }) => {
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/words.yaml")
+  await expect(header(page).getByTestId("file-language")).toHaveText("YAML, not colored (a line over 5,000 characters)", {
+    timeout: 3_000,
+  })
+  await expect(lines(page)).toHaveCount(3)
+  await expect(lines(page).first()).toHaveText("name: words")
+  await expect(pane(page).getByTestId("code").locator("[class*=hljs-]")).toHaveCount(0)
+})
+
+test("(hidden) markers keep their own styling inside colored text", async ({ page, request }) => {
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/scrubbed.yaml")
+  await expect(lines(page)).toHaveText(["url: https://kai:(hidden)@example.com", "token: (hidden)"])
+  const markers = pane(page).getByTestId("hidden-marker")
+  await expect(markers).toHaveText(["(hidden)", "(hidden)"])
+  expect(await markers.first().evaluate((el) => getComputedStyle(el).fontStyle)).toBe("italic")
+  // Not the string color around it.
+  expect(await markers.first().evaluate((el) => getComputedStyle(el).color)).not.toBe("rgb(3, 47, 98)")
+  // The person.yaml note keeps its look beside colored text.
+  await page.goto("/org?view=source&path=people/ngocbh/person.yaml")
+  await expect(note(page)).toHaveText("Shown without devices and password hash; comments and layout aren't kept.")
+  await expect(pane(page).getByTestId("code").locator(".hljs-attr").first()).toHaveText("handle:")
+})
+
+test("a file that looks like HTML or a template stays text, colored or plain", async ({ page, request }) => {
+  await addFlows(request)
+  const want = HOSTILE.trimEnd().split("\n")
+  for (const path of ["flows/hostile.md", "flows/hostile.txt"]) {
+    await page.goto(`/org?view=source&path=${path}`)
+    await expect(lines(page)).toHaveText(want)
+    await expect(pane(page).locator("script, img")).toHaveCount(0)
+    expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined()
+  }
 })

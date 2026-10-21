@@ -25,9 +25,11 @@ import {
 } from "solid-js"
 import { useOffice } from "../data/office"
 import { sourceHref } from "./address"
-import { ancestors, buildFiles, crumbs, lines, nearestFolder, noteOf, typeOf, type Entry, type EntryType } from "./files"
+import { ancestors, buildFiles, crumbs, nameOf, nearestFolder, noteOf, typeOf, type Entry, type EntryType } from "./files"
 import { ago } from "./format"
+import { byteLength, colorWith, languageOf, plainReason, sizeText, tokenLines, type Token } from "./highlight"
 import { moveFocus, visibleRows } from "./rows"
+import "./source.css"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
@@ -181,30 +183,82 @@ function CopyButton(props: { text: string }) {
   )
 }
 
-/** A text file: line numbers, wrapped lines, and Copy. Text renders as text nodes only. */
-function Code(props: { text: string }) {
-  const all = createMemo(() => lines(props.text))
+/** A line's tokens: text nodes, highlight.js spans (classes only) and `(hidden)` markers. Never HTML. */
+function Tokens(props: { tokens: Token[] }) {
+  return (
+    <For each={props.tokens}>
+      {(t) =>
+        typeof t === "string" ? (
+          t
+        ) : "hidden" in t ? (
+          <span
+            data-testid="hidden-marker"
+            class="rounded-sm bg-neutral-200 px-0.5 text-neutral-600 italic dark:bg-neutral-800 dark:text-neutral-400"
+          >
+            (hidden)
+          </span>
+        ) : (
+          <span class={t.class}>
+            <Tokens tokens={t.children} />
+          </span>
+        )
+      }
+    </For>
+  )
+}
+
+/**
+ * A text file: a header bar (name, language, line count, size, Copy), then the lines with syntax colors when its
+ * extension names a language, beside line numbers in a muted gutter. Long lines wrap.
+ */
+function Code(props: { path: string; text: string }) {
+  const bytes = createMemo(() => byteLength(props.text))
+  const language = createMemo(() => languageOf(props.path))
+  const plain = createMemo(() => plainReason(props.text, bytes()))
+  const all = createMemo(() => tokenLines(props.text, colorWith(props.path, props.text, bytes())))
+  const languageText = () => {
+    const l = language()
+    if (!l) return "Text"
+    return plain() ? `${l.name}, not colored (${plain()})` : l.name
+  }
   return (
     <div class="overflow-hidden rounded border border-neutral-200 dark:border-neutral-800">
-      <div class={`flex items-center justify-between border-b border-neutral-200 px-3 py-1 text-xs dark:border-neutral-800 ${MUTED}`}>
-        <span>
-          {all().length} {all().length === 1 ? "line" : "lines"}
+      <div
+        data-testid="file-header"
+        class="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-neutral-200 bg-neutral-50 py-1 pr-1 pl-3 text-xs dark:border-neutral-800 dark:bg-neutral-900"
+      >
+        <span data-testid="file-name" class="min-w-0 truncate font-semibold">
+          {nameOf(props.path)}
         </span>
-        <CopyButton text={props.text} />
+        <span class={`flex flex-wrap items-center gap-x-3 ${MUTED}`}>
+          <span data-testid="file-language">{languageText()}</span>
+          <span data-testid="file-lines">
+            {all().length.toLocaleString("en")} {all().length === 1 ? "line" : "lines"}
+          </span>
+          <span data-testid="file-size">{sizeText(bytes())}</span>
+        </span>
+        <span class="ml-auto">
+          <CopyButton text={props.text} />
+        </span>
       </div>
-      <div class="py-2 font-mono text-[13px] leading-5">
+      <div data-testid="code" class="relative py-2 font-mono text-[13px] leading-5">
+        <div
+          data-testid="gutter"
+          aria-hidden="true"
+          class="absolute inset-y-0 left-0 w-12 border-r border-neutral-200 bg-neutral-50 dark:border-neutral-800 dark:bg-neutral-900"
+        />
         <Index each={all()}>
           {(line, i) => (
-            <div class="flex">
+            <div class="relative flex">
               <span
                 data-testid="line-number"
                 aria-hidden="true"
-                class="w-12 shrink-0 pr-3 text-right text-neutral-400 select-none dark:text-neutral-600"
+                class="w-12 shrink-0 pr-3 text-right text-neutral-500 select-none"
               >
                 {i + 1}
               </span>
-              <span data-testid="line-text" class="min-h-5 min-w-0 flex-1 pr-3 whitespace-pre-wrap wrap-anywhere">
-                {line()}
+              <span data-testid="line-text" class="min-h-5 min-w-0 flex-1 pr-3 pl-3 whitespace-pre-wrap wrap-anywhere">
+                <Tokens tokens={line()} />
               </span>
             </div>
           )}
@@ -237,7 +291,7 @@ type Read = { path: string; file?: CompanyFile; error?: unknown }
  * The company repo's files, read-only, at the commit HQ serves: the folder tree beside the open entry on a desktop,
  * one pane with a breadcrumb on a phone. Follows the store's commit: a new one reads the tree, then the open file.
  */
-export function Source(props: { company: string; path: string; desktop: boolean }) {
+export default function Source(props: { company: string; path: string; desktop: boolean }) {
   const office = useOffice()
   const navigate = useNavigate()
   const open = (path: string) => navigate(sourceHref(path))
@@ -477,7 +531,9 @@ export function Source(props: { company: string; path: string; desktop: boolean 
                       </p>
                     )}
                   </Show>
-                  <Show when={file().content === "text" ? file().text : undefined}>{(text) => <Code text={text()} />}</Show>
+                  <Show when={file().content === "text" ? file().text : undefined}>
+                    {(text) => <Code path={file().path} text={text()} />}
+                  </Show>
                 </>
               )}
             </Match>

@@ -67,6 +67,53 @@ notice too. For example, `packages/adapters/hermes` (MIT, Nous Research) and
 `ui/public/brands/adapters`, are trademarks of their owners and aren't covered by these licenses;
 we don't use them.
 
+## highlight.js
+
+- **What:** HQ Source's syntax colors use the `highlight.js` dependency. Beside it, we copied:
+  - the GitHub and GitHub Dark themes' color rules, with the dark ones scoped to the app's dark mode, from
+    `src/styles/github.css` and `src/styles/github-dark.css` (theme author github.com, maintainer @Hirse);
+  - the scope-to-class rule (`title.function` is `hljs-title function_`), ported from `scopeToCSSClass` in
+    `src/lib/html_renderer.js`.
+- **Upstream:** https://github.com/highlightjs/highlight.js, release `11.12.0`, commit `f7f7d38`
+  (`f7f7d3803bd898e37c017ffb881317f0cde04a70`); the npm package's `styles/` and `lib/core.js` are built from it.
+- **Origin of the colors:** the themes say their colors come from GitHub's CSS, on top of Primer's
+  https://github.com/primer/github-syntax-light and https://github.com/primer/github-syntax-dark (both MIT). We copied
+  highlight.js's theme files, not Primer's.
+- **Ours:** `packages/app/src/company/source.css`, `packages/app/src/company/highlight.ts`.
+- **License:**
+
+```
+BSD 3-Clause License
+
+Copyright (c) 2006, Ivan Sagalaev.
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of the copyright holder nor the names of its
+  contributors may be used to endorse or promote products derived from
+  this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
 ## Dependencies
 
 Yian (`packages/yian`, Apache-2.0) and the packages in `uv.lock` and `bun.lock` are dependencies

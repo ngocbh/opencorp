@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import { EXTRA_FILES, source, withFiles } from "./company"
 
 test.beforeEach(async ({ request }) => void (await request.post("/__fixture/reset")))
 
@@ -197,5 +198,23 @@ test("Run Logs: the list, a fold, filters, search and the phone layout, with no 
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto("/runs")
   await expect(page.getByRole("table", { name: "Runs" })).toBeVisible()
+  expect(await violations()).toEqual([])
+})
+
+test("Source's syntax colors: YAML, JSON, Markdown, a big file, hostile text and the dark theme, with no CSP violation", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true, source: withFiles(source(), EXTRA_FILES) } })
+  const violations = await watchCsp(page)
+  const pane = page.getByTestId("source-pane")
+  for (const path of ["flows/hire.yaml", "flows/office.json", "README.md", "flows/scrubbed.yaml", "flows/big.yaml", "flows/hostile.md", "flows/hostile.txt"]) {
+    await page.goto(`/org?view=source&path=${path}`)
+    await expect(pane.getByTestId("line-text").first()).toBeVisible()
+    await violations()
+  }
+  await expect(pane.getByTestId("line-text").first()).toHaveText("<script>window.__xss = 1</script>")
+  await page.emulateMedia({ colorScheme: "dark" })
+  await page.goto("/org?view=source&path=flows/hire.yaml")
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark")
+  await expect(pane.locator(".hljs-attr").first()).toHaveText("name:")
+  expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined()
   expect(await violations()).toEqual([])
 })
