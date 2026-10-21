@@ -3,6 +3,22 @@ import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../script/stub"
 import { bootFrame } from "./fixture/frame"
 
+test("a waiting session's header names who it waits on, and a capped one says so", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh · idle"))
+    office.updateSession(s.id, { status: "waiting", waiting_on: ["ngocbh"] })
+    await app.until((f) => f.includes("@minh · waiting on @ngocbh"))
+    office.updateSession(s.id, { status: "waiting", waiting_on: ["ngocbh"], capped: true })
+    await app.until((f) => f.includes("@minh · cost cap reached, waiting on @ngocbh"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("a session shows text and tool parts, and streams deltas", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

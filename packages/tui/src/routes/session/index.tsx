@@ -47,7 +47,7 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
-import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented } from "@opencorp/client"
+import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
@@ -542,9 +542,11 @@ export function Session() {
                 <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
                   <text fg={theme.text} wrapMode="none">
                     <b>{person()}</b>
-                    <span style={{ fg: current().status === "busy" ? theme.warning : theme.textMuted }}>
+                    <span
+                      style={{ fg: ["busy", "waiting"].includes(current().status) ? theme.warning : theme.textMuted }}
+                    >
                       {" "}
-                      · {current().status}
+                      · {statusLabel(current())}
                     </span>
                     <Show when={costLabel(current(), office.connections())}>
                       {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}

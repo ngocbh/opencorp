@@ -3,7 +3,7 @@ import { createMemo, Show } from "solid-js"
 import { useTheme } from "../../context/theme"
 import { useTuiConfig } from "../../config"
 import { useOffice } from "../../context/office"
-import { sessionModel } from "@opencorp/client"
+import { sessionModel, statusLabel } from "@opencorp/client"
 import { useTuiPaths } from "../../context/runtime"
 import { abbreviateHome } from "../../runtime"
 import { personLabel } from "../../util/transcript"
@@ -80,7 +80,7 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
               <box>
                 <text fg={theme.textMuted}>{abbreviateHome(current().cwd, paths.home)}</text>
                 <text fg={theme.textMuted}>
-                  {current().status}
+                  {statusLabel(current())}
                   <Show when={costLabel(current(), office.connections())}>{(cost) => <span> · {cost()}</span>}</Show>
                 </text>
               </box>
