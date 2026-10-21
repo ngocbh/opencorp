@@ -25,13 +25,17 @@ CHAT_FLOW = (files("opencorp.company_template") / "shared" / "flows" / "chat.yam
 
 
 class LiveLog:
-    """A bus that records live events."""
+    """A bus that records live events, and the metadata events published straight to it (run.updated)."""
 
     def __init__(self):
         self.events = []
+        self.metas = []
 
     def publish_live(self, event):
         self.events.append(event)
+
+    def publish_meta(self, event):
+        self.metas.append(event)
 
 
 def wait_for(predicate, timeout: float = 30, what: str = "condition"):

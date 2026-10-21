@@ -61,19 +61,26 @@ class FeedbackHandlers(BaseHandlers):
     ``exited(outcome)`` is called on the worker's reader thread once it exits, with its
     result or error frame, or None. Each write's commit id is also appended to ``commit_log``,
     so an office that stopped before taking the outcome can still find what the attempt committed.
+    ``on_event(name, data)`` gets each event frame, on the worker's reader thread.
     """
 
     def __init__(self, *, tools: Mapping[str, Mapping[str, Any]] | None = None,
                  stores: Mapping[str, MarkdownStore] | None = None, source: str | None = None,
                  exited: Callable[[dict[str, Any] | None], None] | None = None,
-                 commit_log: Path | None = None) -> None:
+                 commit_log: Path | None = None,
+                 on_event: Callable[[str, dict[str, Any]], None] | None = None) -> None:
         super().__init__(tools=tools, stores=stores)
         self.source = source
         self.commit_log = commit_log
         self.commit_ids: list[str] = []
         self.outcome: dict[str, Any] | None = None
         self._on_exit = exited
+        self._on_event = on_event
         self._lock = threading.Lock()
+
+    def event(self, worker: Any, frame: dict[str, Any]) -> None:
+        if self._on_event is not None:
+            self._on_event(frame["name"], frame["data"])
 
     def store_write(self, worker: Any, store: str, text: str, base_version: str,
                     provenance: dict[str, Any] | None) -> str:
