@@ -194,3 +194,61 @@ def test_a_cap_raise_whose_settle_fails_still_stands(harness, workspace, monkeyp
 
     monkeypatch.setattr(harness, "_settle", broken)
     assert harness.set_cost_cap(sid, 20).cost_cap_usd == 20  # logged, not a route error
+
+
+def test_a_session_waiting_at_a_question_node_sleeps_and_an_answer_wakes_it_to_the_node(make_harness, workspace):
+    first = make_harness(files=GATE_FILES)
+    sid, q = at_the_gate(first, workspace)
+    first.close_all()
+    second = make_harness()
+    second.restore()
+    assert sid not in second._live and second.store.get_question(q.id).status == "open"
+    assert state(second, sid) == ("waiting", ["ngocbh"])
+    second.answer(q.id, GATE_ANSWER, "option", by="ngocbh")
+    wait_for(lambda: status(second, sid) == "ended", what="the flow's end")
+
+
+def test_a_session_waiting_on_ask_user_resumes_at_start_and_asks_again(make_harness, fake_llm, workspace):
+    fake_llm.script(ASK_USER, ASK_USER)
+    first = make_harness()
+    sid = start(first, workspace)
+    first.prompt(sid, "hi")
+    old = card(first, sid, "ask_user")
+    wait_for(lambda: status(first, sid) == "waiting", what="waiting")
+    first.close_all()
+    second = make_harness()
+    second.restore()
+    assert sid in second._live
+    wait_for(lambda: [q for q in second.store.list_questions(session_id=sid, status="open", source="ask_user")
+                      if q.id != old.id], what="asked again")
+    assert second.store.get_question(old.id).status == "stale"
+    wait_for(lambda: state(second, sid) == ("waiting", ["ngocbh"]), what="waiting again")
+
+
+def test_end_on_a_session_asleep_at_a_question_node_stays_ending_across_a_restart(make_harness, workspace):
+    first = make_harness(files=GATE_FILES)
+    sid, q = at_the_gate(first, workspace)
+    first.close_all()
+    second = make_harness()
+    second.restore()
+    assert sid not in second._live
+    second.end(sid)  # wakes it for the end; the node comes before the exit
+    assert state(second, sid) == ("ending", []) and second.store.get_question(q.id).status == "open"
+    second.close_all()
+    third = make_harness()
+    third.restore()
+    assert sid in third._live and third._live[sid].ending  # an ending session resumes at every start
+    assert status(third, sid) == "ending"
+    third.answer(q.id, GATE_ANSWER, "option", by="ngocbh")
+    wait_for(lambda: status(third, sid) == "ended", what="the end")
+
+
+def test_restore_settles_a_sleeping_session_held_at_its_cap(make_harness, workspace):
+    first = make_harness()
+    sid = start(first, workspace)
+    first.close_all()
+    first.store.update_session(sid, cost=6)  # over the $5 cap, but stored idle, as an older office left it
+    second = make_harness()
+    second.restore()
+    assert sid not in second._live
+    assert state(second, sid) == ("waiting", ["ngocbh"]) and second.store.get_session(sid).capped

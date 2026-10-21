@@ -514,23 +514,29 @@ class Harness:
     def restore(self) -> None:
         """At office start: resume each live session whose run can't wait, under the same run id where it can.
 
-        Tool parts a dead office left running are marked interrupted first, for every live session. An idle session
-        then sleeps, with no worker, until a prompt, steer, end or answer wakes it (``_awake``), unless its current run
-        has an answered question it hasn't read: that one resumes now to read it.
+        Tool parts a dead office left running are marked interrupted first, for every live session. An idle session,
+        or one waiting only on question-node cards or its cost hold, then sleeps (settled), with no worker, until a
+        prompt, steer, end or answer wakes it (``_awake``), unless its current run has an answered question it hasn't
+        read: that one resumes now to read it.
         """
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
             # One session that can't resume must not stop the others, or the office's start.
-            live = None
+            live, asleep = None, False
             try:
                 self._interrupt_running_tools(session.id)
-                if self._sleeps(session):
-                    continue
-                if session.run_ids:  # else the office stopped before its first run was recorded
+                asleep = self._sleeps(session)
+                if not asleep and session.run_ids:  # else the office stopped before its first run was recorded
                     live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
             except Exception:
                 log.exception("can't resume session %s", session.id)
+            if asleep:
+                try:
+                    self._settle(session.id)  # an older office may have stored a held session idle
+                except Exception:
+                    log.exception("session %s: no state at restore", session.id)
+                continue
             if live is None:
                 self._fail(session.id)
                 continue
@@ -546,9 +552,16 @@ class Harness:
             self.codex.restore()
 
     def _sleeps(self, session: Session) -> bool:
-        """Whether restore leaves ``session`` asleep: idle, with no answered question its current run hasn't read."""
-        return session.status == "idle" and bool(session.run_ids) and not self.store.list_questions(
-            run_id=session.run_ids[-1], status="answered")
+        """Whether restore leaves ``session`` asleep: idle, or waiting only on question-node cards or its cost hold;
+        and with no answered question its current run hasn't read. A model's question can't wait: its reply re-runs
+        and asks again."""
+        if not session.run_ids or session.status not in ("idle", "waiting"):
+            return False
+        run_id = session.run_ids[-1]
+        if self.store.list_questions(run_id=run_id, status="answered"):
+            return False
+        return session.status == "idle" or not any(
+            q.node_id is None for q in self.store.list_questions(run_id=run_id, status="open"))
 
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
@@ -720,7 +733,8 @@ class Harness:
                 self._settle(sid)
             raise HarnessError(503, "stopping", "the office is stopping")
         if ending:
-            guarded_update(self.store, sid, ("idle", "busy"), **not_waiting("ending"))
+            # From waiting too: a session parked at a question node never shows its turn again, so nothing else would.
+            guarded_update(self.store, sid, ("idle", "busy", "waiting"), **not_waiting("ending"))
         return live
 
     def _check_provider(self, session: Session) -> None:
