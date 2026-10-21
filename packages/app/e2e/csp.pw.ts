@@ -184,3 +184,18 @@ test("Source: the tree, every content state, Copy, a gone file and the phone pan
   await expect(page.getByRole("navigation", { name: "Breadcrumb" })).toContainText("kai")
   expect(await violations()).toEqual([])
 })
+
+test("Run Logs: the list, a fold, filters, search and the phone layout, with no CSP violation", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true } })
+  const violations = await watchCsp(page)
+  await page.goto("/runs")
+  await page.getByRole("table", { name: "Runs" }).getByRole("button", { name: /Runs under/ }).first().click()
+  await page.getByRole("combobox", { name: "Status" }).selectOption("failed")
+  await page.getByRole("searchbox", { name: "Search runs" }).fill("0001")
+  await page.getByRole("searchbox", { name: "Search runs" }).press("Enter")
+  await violations()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto("/runs")
+  await expect(page.getByRole("table", { name: "Runs" })).toBeVisible()
+  expect(await violations()).toEqual([])
+})

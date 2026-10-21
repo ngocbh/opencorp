@@ -206,3 +206,14 @@ test.describe("on a phone", () => {
     await expect(menu).toBeFocused()
   })
 })
+
+test("the person panel lists their recent runs and links to all of them, filtered", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true } })
+  await page.goto("/org")
+  await page.getByRole("radio", { name: "List" }).click()
+  await page.getByRole("treeitem", { name: /Kai/ }).click()
+  const panel = page.getByRole("complementary", { name: "Kai" })
+  await expect(panel.getByRole("list", { name: "Recent runs" }).getByRole("listitem")).toHaveCount(2)
+  await panel.getByRole("link", { name: "All runs" }).click()
+  await expect(page).toHaveURL("/runs?person=kai")
+})
