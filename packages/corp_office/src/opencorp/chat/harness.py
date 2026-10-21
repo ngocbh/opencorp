@@ -802,13 +802,17 @@ class Harness:
             worker.interrupt(node)
 
     def end(self, session_id: str) -> None:
-        """End the session through the flow's exit, interrupting a busy reply first."""
+        """End the session through the flow's exit, interrupting a busy reply first; a sleeping one is woken for it.
+
+        A session parked at a question node stays ``ending``, with the card open, until someone answers the card: the
+        exit is the next turn's answer, and the node comes first. It resumes at every start until then.
+        """
         if self._codex_session(session_id):
             return self.codex.end(session_id)
+        live = self._awake(session_id, ending=True)
         with self._lock:
-            live = self._must(session_id)
-            if live.ending:
-                return
+            if live.ending or not self._current(live):
+                return  # already ending, or the wake ran its exit (and maybe finished)
             live.ending = True
             live.pending.clear()
             self.store.update_session(session_id, status="ending")

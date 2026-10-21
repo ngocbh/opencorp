@@ -154,3 +154,42 @@ def test_a_wake_never_resumes_a_session_whose_finish_is_in_flight(make_harness, 
     release.set()
     wait_for(lambda: status(h, sid) == "ended", what="the end")
     assert jobs == [] and ended == ["ended"] and not h._finishing
+
+
+def test_end_on_a_sleeping_session_runs_its_exit(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    ended = []
+    h.hooks.session_ended.append(lambda session: ended.append(session.status))
+    h.end(sid)
+    wait_for(lambda: status(h, sid) == "ended", what="the end")
+    assert ended == ["ended"]
+    assert fake_llm.requests() == []  # the exit needs no reply
+
+
+def test_an_end_that_wakes_the_session_turns_a_racing_prompt_away(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    entered, release = hold_builds(h)
+    ender, _ = calling(h.end, sid)
+    assert entered.wait(10)
+    sender, got = calling(h.prompt, sid, "late")
+    time.sleep(0.2)
+    release.set()
+    ender.join(10), sender.join(10)
+    wait_for(lambda: status(h, sid) == "ended", what="the end")
+    # ending while the run lives; not_live while _finish runs or after it
+    assert got and got[0] in ((409, "ending"), (409, "not_live"))
+    assert fake_llm.requests() == []
+
+
+def test_an_end_racing_the_prompt_that_wakes_the_session_ends_it(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    jobs = spawned(h, lambda job: job.kind)
+    entered, release = hold_builds(h)
+    sender, _ = calling(h.prompt, sid, "hi")
+    assert entered.wait(10)
+    ender, got = calling(h.end, sid)
+    time.sleep(0.2)
+    release.set()
+    sender.join(10), ender.join(10)
+    wait_for(lambda: status(h, sid) == "ended", what="the end")
+    assert got == [None] and jobs == ["resume"]
