@@ -129,6 +129,52 @@ export function source(): Source {
   }
 }
 
+/** A Yian flow with its custom tags, for syntax colors. */
+export const FLOW = `# Hire an engineer.
+name: hire
+version: 2
+strict: true
+inputs:
+  role: !str "Engineer"
+  manager: !Person lead
+steps:
+  - ask: Who should we hire?
+    retries: 3
+    notes: |
+      Ask the lead first.
+      Then the CEO.
+`
+
+/** A file that looks like HTML and a template: it must show as text. */
+export const HOSTILE = '<script>window.__xss = 1</script>\n<img src="x" onerror="window.__xss = 2">\n{{ constructor.constructor("window.__xss = 3")() }}\n'
+
+/** Extra files for Source, in folders the default repo doesn't have: `flows/hire.yaml`, JSON, hostile text and more. */
+export const EXTRA_FILES: Record<string, SourceFile> = {
+  "flows/hire.yaml": { content: "text", text: FLOW },
+  "flows/office.json": { content: "text", text: '{\n  "tcp": false,\n  "port": 49380,\n  "name": "HQ",\n  "dev_origins": null\n}\n' },
+  "flows/hostile.md": { content: "text", text: HOSTILE },
+  "flows/hostile.txt": { content: "text", text: HOSTILE },
+  "flows/scrubbed.yaml": { content: "text", text: "url: https://kai:(hidden)@example.com\ntoken: (hidden)\n" },
+  "flows/big.yaml": { content: "text", text: `big: ${"x".repeat(512 * 1024)}\n` },
+}
+
+/** `s` with `files` added to its files and its listing, and their folders listed. */
+export function withFiles(s: Source, files: Record<string, SourceFile>): Source {
+  const listed = new Set(s.tree.entries.map((e) => e.path))
+  for (const [path, f] of Object.entries(files)) {
+    const parts = path.split("/")
+    for (let i = 1; i < parts.length; i++) {
+      const folder = parts.slice(0, i).join("/")
+      if (!listed.has(folder)) s.tree.entries.push({ path: folder, type: "folder", size: null })
+      listed.add(folder)
+    }
+    s.files[path] = f
+    if (!listed.has(path)) s.tree.entries.push({ path, type: "file", size: f.text?.length ?? 100 })
+    listed.add(path)
+  }
+  return s
+}
+
 /** A company with `n` agents under the CEO: one very wide level, for the chart's fit. */
 export function wide(n: number): Data["view"] {
   const agents = Array.from({ length: n }, (_, i) => person(`a${i}`, `Agent ${String(i).padStart(2, "0")}`, "agent", "Worker", "ngocbh"))
