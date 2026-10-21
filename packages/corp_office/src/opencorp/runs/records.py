@@ -29,7 +29,8 @@ _warned: set[str] = set()  # runs already warned about; cleared at WARNED_CAP so
 @dataclass(frozen=True)
 class Live:
     """What memory says about runs (one read, or several merged): the sessions' live runs and learning's debriefs in
-    flight, each as (session id, run id) pairs, the sessions being woken or finishing, and a run's open nodes."""
+    flight, each as (session id, run id) pairs, the sessions being started, woken or finishing, and a run's open
+    nodes."""
 
     runs: frozenset[tuple[str, str]] = frozenset()
     waking: frozenset[str] = frozenset()
