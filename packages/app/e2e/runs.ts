@@ -1,5 +1,5 @@
 // Run Logs data for the fixture HQ: top-level runs as GET /api/runs answers them, newest first, children attached;
-// and each run's page (its header and node pages) as GET /api/runs/{id} and its routes answer them.
+// and each run's page (its header, node and record pages) as GET /api/runs/{id} and its routes answer them.
 import type { RunDetail, RunDivider, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
@@ -55,9 +55,10 @@ export function crowded(total: number): Runs {
   return { runs: [run(4000, { children: kids.slice(0, 200), children_total: total })], children: { [rid(4000)]: kids } }
 }
 
-/** One run's page as the fixture serves it; `indexing` makes its node and record pages answer "indexing". */
+/** One run's page as the fixture serves it; `indexing` makes its node and record pages answer "indexing", and
+ * `fail` is an error code its record reads answer with. */
 export type RunFixturePage = { detail: RunDetail; nodes: RunNode[]; dividers: RunDivider[]; events: RunEvent[];
-                               indexing?: boolean }
+                               indexing?: boolean; fail?: string | null }
 export type RunPages = Record<string, RunFixturePage>
 
 /** A node attempt as the office sends it: succeeded, ended at the next seq, no kind (until yian#943). */
@@ -88,11 +89,29 @@ export function runPages(runs: RunSummary[]): RunPages {
     ...turn(1, 10).slice(1),
     node(1, "chat", { status: "expanded" }),
   ]
+  // Records as a page shows them: a cut traceback, evidence left out, one too large to preview and one withheld.
+  const events5: RunEvent[] = [
+    { seq: 0, kind: "run_started", node_id: null, payload: { flow_fingerprint: "b".repeat(64), learnable: true },
+      cut: [], evidence_left_out: false, withheld: null, size: null },
+    { seq: 14, kind: "node_succeeded", node_id: null, payload: null, cut: [], evidence_left_out: false, withheld: null,
+      size: 3145728 },
+    { seq: 16, kind: "node_failed", node_id: "chat#1/reply", payload: { failure: { message: "AuthError: 401 key (hidden)",
+      traceback: "Traceback (most recent call last): …" }, evidence: null }, cut: ["/failure/traceback"],
+      evidence_left_out: true, withheld: null, size: null },
+    { seq: 17, kind: "node_started", node_id: "chat#2/ask", payload: null, cut: [], evidence_left_out: false,
+      withheld: "a secret couldn't be removed", size: null },
+    { seq: 30, kind: "run_resumed", node_id: null, payload: { retry_node_ids: ["chat#2/reply"], num_workers: 0 },
+      cut: [], evidence_left_out: false, withheld: null, size: null },
+    { seq: 32, kind: "node_succeeded", node_id: "chat#2/reply", payload: { value: { output: "Done." }, evidence: null },
+      cut: [], evidence_left_out: true, withheld: null, size: null },
+  ]
   return {
-    [rid(5)]: { detail: detail(rid(5)), nodes: nodes5, dividers: [{ seq: 30, retried: ["chat#2/reply"] }], events: [] },
+    [rid(5)]: { detail: detail(rid(5)), nodes: nodes5, dividers: [{ seq: 30, retried: ["chat#2/reply"] }], events: events5 },
     [rid(3)]: { detail: detail(rid(3)), nodes: [], dividers: [], events: [] },
     [rid(6)]: { detail: detail(rid(6), { learnable: false, usage: { input_tokens: 10, output_tokens: 2, usd: 0 } }),
-                nodes: [node(3, "chat#0/reply")], dividers: [], events: [] },
+                nodes: [node(3, "chat#0/reply")], dividers: [], events: [{ seq: 4, kind: "node_succeeded",
+                node_id: "chat#0/reply", payload: { value: { output: "Quota." }, evidence: null }, cut: [],
+                evidence_left_out: false, withheld: null, size: null }] },
     [rid(4)]: { detail: detail(rid(4), { log_state: "not_started", log_message: "no run log: the run didn't start",
                                          flow_fingerprint: null, learnable: null, models: {} }), nodes: [], dividers: [], events: [] },
     [rid(2)]: { detail: detail(rid(2), { usage: null }), nodes: [node(1, "debrief")], dividers: [], events: [] },
@@ -100,3 +119,21 @@ export function runPages(runs: RunSummary[]): RunPages {
                 "This log uses run-log schema 8, which is older than this office supports" }), nodes: [], dividers: [], events: [] },
   }
 }
+
+/** The whole record a node opens to, by run id and seq: run 5's reply with its evidence and its failed reply, run 6's
+ * reply, and run 2's debrief (a node whose static path has no model). */
+export const wholeEvents = (): Record<string, Record<number, RunEvent>> => ({
+  [rid(5)]: {
+    32: { seq: 32, kind: "node_succeeded", node_id: "chat#2/reply", payload: { value: { output: "Done." }, evidence: {
+      prompt: "Fix the build", base_system_prompt: "You are Kai…", bound_inputs: { message: "Fix the build" },
+      memory_sections: [], interactions: [{ kind: "tool_call", name: "workspace.read", args: { path: "README.md" } }] } },
+      cut: [], evidence_left_out: false, withheld: null, size: null },
+    16: { seq: 16, kind: "node_failed", node_id: "chat#1/reply", payload: { failure: { message: "AuthError: 401 key (hidden)",
+      traceback: "Traceback (most recent call last): …whole…" }, evidence: null }, cut: [], evidence_left_out: false,
+      withheld: null, size: null },
+  },
+  [rid(6)]: { 4: { seq: 4, kind: "node_succeeded", node_id: "chat#0/reply", payload: { value: { output: "Quota." },
+    evidence: null }, cut: [], evidence_left_out: false, withheld: null, size: null } },
+  [rid(2)]: { 2: { seq: 2, kind: "node_succeeded", node_id: "debrief", payload: { value: { output: { lessons: [] } },
+    evidence: null }, cut: [], evidence_left_out: false, withheld: null, size: null } },
+})
