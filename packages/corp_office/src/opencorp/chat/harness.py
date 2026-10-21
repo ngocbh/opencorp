@@ -33,8 +33,9 @@ from opencorp.protocol import now
 from opencorp.protocol.models import CompanyDefaults, Event, Question, Session, WorkItem
 from opencorp.questions.ask import Answers, OnQuestion, make_ask_user
 from opencorp.questions.format import INTERRUPTED
-from opencorp.runs.outcomes import (ANOTHER_START, COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, OFFICE as OFFICE_DRIVER,
-                                    WORKER_STOPPED, RunEnd, flow_label)
+from opencorp.runs.outcomes import (ANOTHER_START, COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, NEW_MODEL,
+                                    OFFICE as OFFICE_DRIVER, OFFICE_REPLACED, WORKER_REPLACED, WORKER_STOPPED, RunEnd,
+                                    flow_label)
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from opencorp.store import InvalidTransition, RunRow, new_id
 from opencorp.tools import ToolContext, build
@@ -558,7 +559,7 @@ class Harness:
             with self._lock:
                 self._live[session.id] = live
             try:
-                self._resume(live)
+                self._resume(live, OFFICE_REPLACED)
             except Exception:
                 continue  # it logged why and failed the session
             self._try_settle(session.id, "at restore")
@@ -577,8 +578,9 @@ class Harness:
         return session.status == "idle" or not any(
             q.node_id is None for q in self.store.list_questions(run_id=run_id, status="open"))
 
-    def _resume(self, live: _Live) -> None:
-        """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
+    def _resume(self, live: _Live, why: str) -> None:
+        """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note, and
+        end the old run as interrupted for ``why`` (failed, as it couldn't start, if it never ran)."""
         provider: Provider | None
         try:
             stored = self.store.get_session(live.session_id)
@@ -604,7 +606,9 @@ class Harness:
             self._cant_start(live, COULDNT_RESUME)
             raise
         if provider is None:
-            self._new_run(live)  # on failure, it fails the session and raises
+            # A run with no log never started (its worker couldn't spawn); any other is replaced for ``why``.
+            end = RunEnd("failed", COULDNT_START) if never_ran else RunEnd("interrupted", why)
+            self._new_run(live, end)  # on failure, it fails the session and raises
         else:
             self._spawn(live, "resume", provider)
 
@@ -732,7 +736,7 @@ class Harness:
                 # Before the worker: once it runs, its re-shown turn settles the session, which must win.
                 self._try_settle(sid, "at a wake")
         try:
-            self._resume(live)  # a failure drops the entry (live.waking) and raises
+            self._resume(live, OFFICE_REPLACED)  # a failure drops the entry (live.waking) and raises
         except Exception as exc:
             if not ending:
                 self._try_settle(sid, "after a failed wake")  # the wake's own error is the one to answer
@@ -1293,7 +1297,7 @@ class Harness:
                 self._finish(live, "failed", None)
             else:
                 live.exits += 1
-                self._resume(live)
+                self._resume(live, WORKER_REPLACED)
                 self._settle(live.session_id)
             return
         live.exits = 0
@@ -1307,7 +1311,7 @@ class Harness:
                 if _refused_key(failure, why) else ""
             live.transcript.error(f"The reply failed ({why}). Send your message again.{hint}")
             self._run_finished(live, session, outcome)
-            self._new_run(live)
+            self._new_run(live, RunEnd("failed", why, failure.get("node_id")))
         else:
             self._finish(live, "failed", outcome)
 
@@ -1319,17 +1323,29 @@ class Harness:
             record = None
         return record.connection if record is not None else session.connection or OFFICE
 
-    def _new_run(self, live: _Live) -> None:
-        """Start a fresh chat run for ``live``; the old run's open questions go stale.
+    def _new_run(self, live: _Live, end: RunEnd) -> None:
+        """Start a fresh chat run for ``live``; ``end`` is how its old run ended.
 
-        If it can't start, the session fails and the error is raised.
+        The old run's outcome, the new run and its row are written in one transaction, with the old run's end time
+        the new run's launch time (that is how a run page knows one replaced the other). The new run keeps the old
+        run's driver and parent: ``live.owner`` and none when the old run has no row. The old run's open questions go
+        stale. If it can't start, the session fails and the error is raised.
         """
         try:
-            run_id = new_id()
-            self.store.add_session_run(live.session_id, run_id)
-            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+            run_id, at = new_id(), now()
+            with self.store.transaction():
+                old = self.store.get_run(live.run_id)
+                self.store.end_run(live.run_id, end.outcome, reason=end.reason, failed_node=end.failed_node, at=at)
+                self.store.add_session_run(live.session_id, run_id)
+                flow = old.flow if old else flow_label(self.store.get_session(live.session_id).kind)
+                row = self.store.add_run(RunRow(
+                    run_id=run_id, session_id=live.session_id, flow=flow,
+                    flow_path=posixpath.normpath(live.spec.flow),
+                    driver=old.driver if old else (live.owner or OFFICE_DRIVER),
+                    parent_run_id=old.parent_run_id if old else None, launched_at=at))
+            old_run, live.run_id, live.parent_run_id = live.run_id, run_id, row.parent_run_id
+            for q in self.store.list_questions(run_id=old_run, status="open"):
                 self.store.set_question_status(q.id, "stale")
-            live.run_id = run_id
         except Exception:
             self._cant_start(live)
             raise
@@ -1376,7 +1392,7 @@ class Harness:
                 return
         self._run_finished(live, self.store.get_session(live.session_id), None)
         try:
-            self._new_run(live)
+            self._new_run(live, RunEnd("interrupted", NEW_MODEL))
         except Exception:
             pass  # it logged why and failed the session
 

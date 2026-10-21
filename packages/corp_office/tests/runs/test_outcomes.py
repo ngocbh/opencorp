@@ -1,12 +1,19 @@
 """Every end path writes the run's outcome once, in the transaction of the write that makes the end visible."""
 
+import json
+import os
+import signal
+
 import pytest
 
 from opencorp.chat.harness import HarnessError, _run_end
 from opencorp.chat.provider import Provider
 from opencorp.runs.outcomes import RunEnd
+from opencorp.secrets import write_private
+from opencorp.store import new_id
 from opencorp.testing.fake_llm import LLM_CONFIG
-from tests.chat.conftest import status, texts, wait_for
+from tests.chat.conftest import say, status, texts, wait_for
+from tests.store.conftest import session as stored_session
 
 KEY = "sk-outcome-key-0123456789"
 
@@ -120,3 +127,90 @@ def test_an_outcome_and_the_sessions_end_commit_together(harness, workspace, mon
         harness._finish(live, "failed", None)
     assert status(harness, sid) == "idle" and rows(harness, sid)[0].outcome is None
 
+
+def rekey(harness, key):
+    """Give office/provider.json the model key ``key``."""
+    path = harness.office.paths.office / "provider.json"
+    provider = json.loads(path.read_text())
+    write_private(path, json.dumps({**provider, "llm_config": {**provider["llm_config"], "api_key": key}}).encode())
+
+
+def test_a_failed_reply_fails_its_run_and_the_fresh_run_replaces_it(harness, fake_llm, workspace):
+    fake_llm.script({"error": 500}, {"content": "Back."})
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: len(harness.store.get_session(sid).run_ids) == 2 and status(harness, sid) == "idle",
+             what="the new run")
+    old, new = rows(harness, sid)
+    assert old.outcome == "failed" and old.failed_node.endswith("/reply") and old.reason
+    assert (new.outcome, new.driver, new.parent_run_id, new.launched_at) == (None, old.driver, None, old.ended_at)
+
+
+def test_a_provider_change_interrupts_the_run_it_replaces(harness, fake_llm, workspace):
+    fake_llm.script({"content": "One."}, {"content": "Two."})
+    sid = start(harness, workspace)
+    rekey(harness, "sk-a-new-key-0123456789")
+    harness.prompt(sid, "hi")
+    wait_for(lambda: len(harness.store.get_session(sid).run_ids) == 2, what="the fresh run")
+    old, new = rows(harness, sid)
+    assert (old.outcome, old.reason, new.launched_at) == (
+        "interrupted", "replaced by a fresh run on the new model", old.ended_at)
+
+
+def test_a_wake_on_a_new_key_interrupts_the_old_run_because_the_office_stopped(make_harness, fake_llm, workspace):
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(first, workspace)
+    first.close_all()
+    second = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-another-key-0123456789"})
+    second.restore()  # the idle session sleeps
+    second.prompt(sid, "hi")  # its wake finds the key changed: a fresh run
+    wait_for(lambda: len(second.store.get_session(sid).run_ids) == 2, what="the fresh run")
+    old, _ = rows(second, sid)
+    assert (old.outcome, old.reason) == ("interrupted", "the office stopped; a fresh run replaced it")
+
+
+def test_a_crash_resume_on_a_new_key_says_the_worker_stopped(make_harness, fake_llm, workspace):
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(harness, workspace)
+    rekey(harness, "sk-another-key-0123456789")
+    os.killpg(harness._live[sid].worker.pgid, signal.SIGKILL)
+    wait_for(lambda: len(harness.store.get_session(sid).run_ids) == 2, what="the fresh run")
+    old, _ = rows(harness, sid)
+    assert (old.outcome, old.reason) == ("interrupted", "its worker stopped; a fresh run replaced it")
+
+
+def test_a_fresh_run_that_never_started_couldnt_start_when_the_next_wake_replaces_it(make_harness, fake_llm,
+                                                                                    workspace):
+    fake_llm.script({"content": "b's reply"})
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(first, workspace)
+    first.close_all()
+    second = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-another-key-0123456789"})  # a fresh run
+    spawn, calls = second.registry.spawn, []
+
+    def once_bad(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("can't start the worker")
+        return spawn(*args)
+
+    second.registry.spawn = once_bad
+    with pytest.raises(HarnessError):
+        second.prompt(sid, "a")  # its fresh run is recorded, then can't spawn, so it has no log
+    assert say(second, sid, "b") == "b's reply"
+    a, b, c = rows(second, sid)
+    assert [(r.outcome, r.reason) for r in (a, b, c)] == [
+        ("interrupted", "the office stopped; a fresh run replaced it"), ("failed", "couldn't start"), (None, None)]
+    assert (b.launched_at, c.launched_at) == (a.ended_at, b.ended_at)
+
+
+def test_a_fresh_run_after_a_run_with_no_row_is_driven_by_the_opener(harness, fake_llm, workspace):
+    s = harness.store.create_session(stored_session(cwd=os.path.realpath(workspace), repo_commit=harness.git.head(),
+                                                    status="idle", opened_by="lan"))
+    harness.store.add_session_run(s.id, new_id())  # launched before rows were written, and with no log
+    harness.restore()
+    fake_llm.script({"content": "Hi."})
+    harness.prompt(s.id, "hello")  # the wake starts fresh: its run never started
+    wait_for(lambda: len(harness.store.get_session(s.id).run_ids) == 2, what="the fresh run")
+    (row,) = rows(harness, s.id)
+    assert (row.driver, row.parent_run_id, row.outcome) == ("lan", None, None)
