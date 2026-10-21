@@ -1,6 +1,6 @@
 // One node attempt's detail on the run page: its output, route or error, its model, and its evidence, read from the
 // record that ended it. Beside the Timeline on a desktop; a modal sheet over everything on a phone.
-import { isIndexing, isSecretsUnavailable } from "@opencorp/client"
+import { isIndexing } from "@opencorp/client"
 import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
 import { createEffect, createSignal, createUniqueId, For, on, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useOffice } from "../data/office"
@@ -10,9 +10,8 @@ const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
 const PRE = "overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-neutral-900"
 
-/** What a failed record read says: the secrets and the first read of the log each say to try again. */
+/** What a failed record read says: the first read of the log says to try again. */
 export function failureText(e: unknown): string {
-  if (isSecretsUnavailable(e)) return "Couldn't load the secrets to remove; try again."
   if (isIndexing(e)) return "The log is still being read; try again."
   return e instanceof Error ? e.message : String(e)
 }
@@ -182,7 +181,6 @@ export function NodeDetail(props: {
         <Show when={record()}>
           {(r) => (
             <>
-              <Show when={r().withheld}>{(text) => <p class={MUTED}>{text()}</p>}</Show>
               <Show when={r().size}>{(size) => <p class={MUTED}>{tooLarge(size())}</p>}</Show>
               <Show when={payload() && "value" in payload()!}>
                 <Part title="Output">

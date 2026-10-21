@@ -134,9 +134,6 @@ test("the people controls and Unplaced hide in Source", async ({ page }) => {
 
 test("each content state has its note", async ({ page }) => {
   const notes: [string, string][] = [
-    ["people/ngocbh/person.yaml", "Shown without devices and password hash; comments and layout aren't kept."],
-    ["assets/.env", "Hidden: may hold credentials."],
-    ["assets/keys.yaml", "Hidden: holds a secret-named key."],
     ["assets/logo.png", "Binary file."],
     ["assets/big.csv", "Too large to show."],
     ["latest.md", "Symlink to README.md."],
@@ -146,23 +143,11 @@ test("each content state has its note", async ({ page }) => {
     await page.goto(`/org?view=source&path=${path}`)
     await expect(note(page)).toHaveText(text)
   }
-  // Only a re-rendered file has text beside its note.
-  await page.goto("/org?view=source&path=people/ngocbh/person.yaml")
-  await expect(lines(page)).toHaveText(["handle: ngocbh", "name: Ngoc", "kind: human", "title: CEO", "manager: null"])
-  await page.goto("/org?view=source&path=assets/keys.yaml")
+  // A file with a note has no text.
+  await page.goto("/org?view=source&path=assets/logo.png")
   await expect(note(page)).toBeVisible()
   await expect(lines(page)).toHaveCount(0)
   await expect(pane(page).getByRole("button", { name: "Copy" })).toHaveCount(0)
-})
-
-test("a human's person.yaml shows no secret", async ({ page }) => {
-  await page.goto("/org?view=source&path=people/ngocbh/person.yaml")
-  await expect(lines(page).first()).toHaveText("handle: ngocbh")
-  const text = await page.locator("body").innerText()
-  expect(text).not.toContain("password_hash")
-  expect(text).not.toContain("devices:")
-  expect(text).not.toContain("$scrypt$")
-  expect(text).not.toContain("token_sha256")
 })
 
 test("View source in the panel opens the person's folder and closes the panel", async ({ page }) => {
@@ -343,7 +328,7 @@ test("on a phone, View source in the sheet opens the person's folder", async ({ 
   await expect(pane(page)).toBeFocused()
 })
 
-/** Adds EXTRA_FILES (a flow, JSON, hostile text, a scrubbed file and a big one) under flows/. */
+/** Adds EXTRA_FILES (a flow, JSON, hostile text and big ones) under flows/. */
 const addFlows = (request: APIRequestContext) =>
   request.post("/__fixture/set", { data: { source: withFiles(source(), EXTRA_FILES) } })
 const color = (page: Page, selector: string) =>
@@ -459,21 +444,6 @@ test("a file with a line over 5,000 characters isn't colored, opens quickly, and
   await expect(lines(page)).toHaveCount(3)
   await expect(lines(page).first()).toHaveText("name: words")
   await expect(pane(page).getByTestId("code").locator("[class*=hljs-]")).toHaveCount(0)
-})
-
-test("(hidden) markers keep their own styling inside colored text", async ({ page, request }) => {
-  await addFlows(request)
-  await page.goto("/org?view=source&path=flows/scrubbed.yaml")
-  await expect(lines(page)).toHaveText(["url: https://kai:(hidden)@example.com", "token: (hidden)"])
-  const markers = pane(page).getByTestId("hidden-marker")
-  await expect(markers).toHaveText(["(hidden)", "(hidden)"])
-  expect(await markers.first().evaluate((el) => getComputedStyle(el).fontStyle)).toBe("italic")
-  // Not the string color around it.
-  expect(await markers.first().evaluate((el) => getComputedStyle(el).color)).not.toBe("rgb(3, 47, 98)")
-  // The person.yaml note keeps its look beside colored text.
-  await page.goto("/org?view=source&path=people/ngocbh/person.yaml")
-  await expect(note(page)).toHaveText("Shown without devices and password hash; comments and layout aren't kept.")
-  await expect(pane(page).getByTestId("code").locator(".hljs-attr").first()).toHaveText("handle:")
 })
 
 test("a file that looks like HTML or a template stays text, colored or plain", async ({ page, request }) => {

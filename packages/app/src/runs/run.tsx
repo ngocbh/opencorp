@@ -1,6 +1,6 @@
 // One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, the Timeline
 // of its node attempts with the detail of the one selected, Raw and the download, kept current by run.updated.
-import { isMissingRoute, isSecretsUnavailable } from "@opencorp/client"
+import { isMissingRoute } from "@opencorp/client"
 import type { RunDetail, RunDivider, RunNode, RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
 import {
@@ -51,8 +51,8 @@ const LOG_STATE: Record<RunDetail["log_state"], string> = {
 /** A time to the minute, in the browser's locale. */
 const at = (t: string) => new Date(t).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
 
-/** A read's failure: its message, and whether it was the office failing to load the secrets to remove. */
-type Failure = { message: string; secrets: boolean }
+/** A read's failure: its message. */
+type Failure = { message: string }
 
 /** What the Timeline can do for the page around it. */
 type TimelineApi = { focusNode: (seq: number) => void }
@@ -126,7 +126,7 @@ export function RunPage(props: { id: string }) {
         const missing = isMissingRoute(e)
         setUnavailable(missing)
         const message = e instanceof Error ? e.message : String(e)
-        setFailure(missing ? undefined : { message, secrets: isSecretsUnavailable(e) })
+        setFailure(missing ? undefined : { message })
       }
     }, key)
   }
@@ -270,7 +270,7 @@ export function RunPage(props: { id: string }) {
           {(f) => (
             <div class="flex items-center gap-2 px-4 pt-3 text-sm">
               <p role="alert">
-                {f().secrets ? "Couldn't load the secrets to remove; try again." : `Couldn't read the run: ${f().message}.`}
+                {`Couldn't read the run: ${f().message}.`}
               </p>
               <button type="button" class={LINK} onClick={() => refresh()}>
                 Retry
@@ -298,7 +298,7 @@ export function RunPage(props: { id: string }) {
                 <Show when={d().log_state === "ok"} fallback={<h3 class="text-sm font-semibold">Timeline</h3>}>
                   <Tabs id={tabsId} tab={tab()} onTab={chooseTab} />
                 </Show>
-                {/* The scrubbed log downloads even when this office can't read it for the Timeline or Raw. */}
+                {/* The log downloads even when this office can't read it for the Timeline or Raw. */}
                 <Show when={d().log_state === "ok" || d().log_state === "unsupported_schema"}>
                   <a download={`${props.id}.jsonl`} href={office.client.runs.logUrl(props.id)} class={`text-sm ${LINK}`}>
                     Download
@@ -549,7 +549,7 @@ function Header(props: {
           </span>
         </Fact>
       </dl>
-      <p class={`text-xs ${MUTED}`}>Every signed-in human can read every run log; only secrets are removed.</p>
+      <p class={`text-xs ${MUTED}`}>Every signed-in human can read every run log, as it is stored.</p>
     </section>
   )
 }

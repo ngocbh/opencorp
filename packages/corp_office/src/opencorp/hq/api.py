@@ -153,13 +153,13 @@ async def company(request: Request) -> JSONResponse:
 
 async def company_tree(request: Request) -> JSONResponse:
     """The company repo's files at the commit this request's session was checked against, which becomes a commit
-    files can be read at. Secret-revealing and non-UTF-8 paths are left out."""
+    files can be read at. Malformed and non-UTF-8 paths are left out."""
     view: CompanyView = request.state.company
     return ok(await get_hq(request).source.tree(view.sha))
 
 
 async def company_file(request: Request) -> JSONResponse:
-    """One file at ``at``, one of the last commits the tree route served, with secrets hidden: 400 ``bad_path``,
+    """One file at ``at``, one of the last commits the tree route served, as stored: 400 ``bad_path``,
     404 ``no_file`` or 409 ``stale_commit`` otherwise."""
     query = request.query_params
     try:

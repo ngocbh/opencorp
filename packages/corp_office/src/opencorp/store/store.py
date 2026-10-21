@@ -217,8 +217,7 @@ _HQ_COLUMNS = tuple(f.name for f in fields(HqSessionRecord))
 REASON_CHARS = 200
 """The longest reason a run's outcome shows."""
 REASON_KEPT = 2_000
-"""The longest reason a run's outcome keeps. Well past REASON_CHARS: a reason is cut to be shown only after its secrets
-are removed, and a secret the cut would split is still whole when that runs."""
+"""The longest reason a run's outcome keeps."""
 
 
 def cut_reason(reason: str, limit: int = REASON_CHARS) -> str:

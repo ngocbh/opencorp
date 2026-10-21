@@ -47,14 +47,14 @@ def test_an_ended_chat_is_finished_with_its_end_time(harness, fake_llm, workspac
     assert (row.outcome, row.reason) == ("finished", None) and row.ended_at >= row.launched_at
 
 
-def test_a_failed_run_says_why_and_where_without_the_key(make_harness, workspace):
+def test_a_failed_run_says_why_and_where_without_the_providers_key(make_harness, workspace):
     harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
     sid = start(harness, workspace)
     harness._finish(harness._live[sid], "failed", {"type": "result", "status": "failed", "output": None, "failure": {
         "node_id": "chat#0/reply", "cause_type": "AuthError", "message": f"bad key {KEY}; sent Bearer abcdefgh12345"}})
     (row,) = rows(harness, sid)
     assert (row.outcome, row.failed_node) == ("failed", "chat#0/reply")
-    assert row.reason == "AuthError: bad key [redacted]; sent Bearer (hidden)"  # its key, then every secret shape
+    assert row.reason == "AuthError: bad key [redacted]; sent Bearer abcdefgh12345"  # only the provider's key
 
 
 def test_a_worker_that_cant_start_fails_its_run_with_couldnt_start(harness, workspace):

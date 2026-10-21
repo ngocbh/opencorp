@@ -152,5 +152,3 @@ def test_a_long_stored_reason_is_cut_to_be_shown(store):  # noqa: F811
     store.end_run(run_id, "failed", reason="x" * 1500)
     (built,) = Summaries(store, Live()).build([store.get_run(run_id)]).values()
     assert len(built.reason) == 200 and built.reason.endswith("…")
-    cleaned = Summaries(store, Live(), clean=lambda text: text[:3]).build([store.get_run(run_id)])
-    assert cleaned[run_id].reason == "xxx"

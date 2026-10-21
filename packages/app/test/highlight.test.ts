@@ -15,11 +15,11 @@ import {
 
 /** A line's text, as the page shows it. */
 const textOf = (tokens: Token[]): string =>
-  tokens.map((t) => (typeof t === "string" ? t : "hidden" in t ? "(hidden)" : textOf(t.children))).join("")
+  tokens.map((t) => (typeof t === "string" ? t : textOf(t.children))).join("")
 
 /** The spans of `tokens`, as [class, text] pairs, outermost first. */
 const spans = (tokens: Token[]): [string, string][] =>
-  tokens.flatMap((t) => (typeof t === "string" || "hidden" in t ? [] : [[t.class, textOf(t.children)] as [string, string], ...spans(t.children)]))
+  tokens.flatMap((t) => (typeof t === "string" ? [] : [[t.class, textOf(t.children)] as [string, string], ...spans(t.children)]))
 
 test("the language comes from the extension, any case; anything else is plain", () => {
   const cases: [string, string | undefined][] = [
@@ -157,7 +157,7 @@ test("a token over several lines is cut into one span per line, with no empty sp
     [],
   ])
   const empty = (tokens: Token[]): boolean =>
-    tokens.some((t) => typeof t !== "string" && !("hidden" in t) && (t.children.length === 0 || empty(t.children)))
+    tokens.some((t) => typeof t !== "string" && (t.children.length === 0 || empty(t.children)))
   for (const [text, id] of [
     ["function f(\n  a\n) {}\n", "typescript"],
     ['x = (\n  "a"\n)\ns = """\nline\n"""\n', "python"],
@@ -182,11 +182,10 @@ test("HTML in a file stays text: no token is markup", () => {
   }
 })
 
-test("a (hidden) marker is its own token, colored or not", () => {
+test("a file's (hidden) is plain text like any other", () => {
   for (const id of [undefined, "yaml"]) {
     const [line] = tokenLines("token: (hidden)", id)
     expect(textOf(line)).toBe("token: (hidden)")
-    expect(JSON.stringify(line)).toContain('{"hidden":true}')
-    expect(JSON.stringify(line)).not.toContain('"(hidden)"')
+    expect(JSON.stringify(line)).not.toContain('"hidden":')
   }
 })

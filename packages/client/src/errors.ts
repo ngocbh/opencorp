@@ -89,10 +89,6 @@ export const isUnsupportedSchema = (e: unknown) =>
 /** Whether `e` is a run page read's `404 no_log`: the run has no log (it didn't start, or the log is gone). */
 export const isNoLog = (e: unknown) => e instanceof OfficeError && e.status === 404 && e.code === "no_log"
 
-/** Whether `e` is a run page read's `503 secrets_unavailable`: the office couldn't load the secrets to remove. */
-export const isSecretsUnavailable = (e: unknown) =>
-  e instanceof OfficeError && e.status === 503 && e.code === "secrets_unavailable"
-
 /** Whether `e` is one record's `503 indexing`: the log is still being read for the first time; ask again. */
 export const isIndexing = (e: unknown) => e instanceof OfficeError && e.status === 503 && e.code === "indexing"
 

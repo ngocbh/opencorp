@@ -1,6 +1,6 @@
 """The Run Logs list: top-level runs newest first with how many runs each started, filters that keep a parent whose
 child matches, search by any part of an id, a launch range read in SQL, one run's children paged the same way, and
-reasons scrubbed when served."""
+reasons shown as stored."""
 
 import threading
 from types import SimpleNamespace
@@ -8,9 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from opencorp.runs import service
-from opencorp.runs.known import SecretsUnavailable
-from opencorp.runs.scrub import Scrubber
-from opencorp.runs.service import REASON_HIDDEN, RunLogs
+from opencorp.runs.service import RunLogs
 from opencorp.store import REASON_CHARS, RunRow, new_id
 from tests.store.conftest import session, store  # noqa: F401
 
@@ -18,20 +16,8 @@ T = "2026-10-20T10:00:00.000Z"
 KEY = "conn-key-5f3a9c1e7b2d4a60"
 
 
-class Known:
-    """KnownValues' one method, with fixed values (or none to be had)."""
-
-    def __init__(self, values=(), *, fails=False):
-        self.values, self.fails = values, fails
-
-    async def scrubber(self):
-        if self.fails:
-            raise SecretsUnavailable("couldn't load the secrets to remove in time")
-        return Scrubber(self.values)
-
-
-def runs_for(store, known=None):  # noqa: F811
-    return RunLogs(SimpleNamespace(store=store, extras={}), known=known)
+def runs_for(store):  # noqa: F811
+    return RunLogs(SimpleNamespace(store=store, extras={}))
 
 
 def chat_with(store, *, kids=0, driver="ngocbh", outcome="finished", harness="composer", reason=None,  # noqa: F811
@@ -194,28 +180,16 @@ async def test_a_codex_debrief_is_top_level_and_says_so(store):  # noqa: F811
     assert (row.run_id, row.codex, row.parent_run_id, row.driver) == (run_id, True, None, "office")
 
 
-async def test_a_reason_is_fully_scrubbed_when_served(store):  # noqa: F811
-    # Stored as given (no RunEnd), as a missed write path would leave it.
+async def test_a_reason_is_shown_as_stored(store):  # noqa: F811
     top = chat_with(store, outcome="failed", reason=f"AuthError: Bearer abcdefgh12345 with {KEY}")
-    (row,) = (await runs_for(store, Known([KEY])).page()).runs
-    assert row.reason == "AuthError: Bearer (hidden) with [redacted]" and row.run_id == top
+    (row,) = (await runs_for(store).page()).runs
+    assert row.reason == f"AuthError: Bearer abcdefgh12345 with {KEY}" and row.run_id == top
     parent = store.get_run(top)
     side = store.create_session(session(kind="side", status="ended"))
     kid = store.add_run(RunRow(new_id(), side.id, "side_chat", "shared/flows/side_chat.yaml", "lan", parent.run_id, T))
     store.end_run(kid.run_id, "failed", reason=f"leaked {KEY}")
-    (child,) = (await runs_for(store, Known([KEY])).children(top)).runs
-    assert child.reason == "leaked [redacted]"
-
-
-async def test_a_list_whose_secrets_cant_be_read_hides_reasons_and_still_answers(store):  # noqa: F811
-    top = chat_with(store, outcome="failed", reason="AuthError: 401")
-    (row,) = (await runs_for(store, Known(fails=True)).page()).runs
-    assert (row.status, row.reason) == ("failed", REASON_HIDDEN)
-    side = store.create_session(session(kind="side", status="ended"))
-    kid = store.add_run(RunRow(new_id(), side.id, "side_chat", "shared/flows/side_chat.yaml", "lan", top, T))
-    store.end_run(kid.run_id, "failed", reason="AuthError: 401")
-    (child,) = (await runs_for(store, Known(fails=True)).children(top)).runs
-    assert child.reason == REASON_HIDDEN
+    (child,) = (await runs_for(store).children(top)).runs
+    assert child.reason == f"leaked {KEY}"
 
 
 async def test_the_list_never_opens_a_log(store, monkeypatch):  # noqa: F811
@@ -338,20 +312,10 @@ async def test_children_are_read_only_when_they_can_match(store, monkeypatch):  
     assert open_kid.parent_run_id == top
 
 
-async def test_a_reason_the_scrub_lengthens_is_cut_as_the_store_cuts_it(store):  # noqa: F811
-    short = "k3y-v4l-9"  # 9 characters, hidden as "[redacted]" (10)
-    reason = "x" * 191 + short  # REASON_CHARS as stored, one more once scrubbed
-    top = chat_with(store, outcome="failed", reason=reason)
-    assert len(store.get_run(top).reason) == REASON_CHARS
-    (row,) = (await runs_for(store, Known([short])).page()).runs
-    assert len(row.reason) == REASON_CHARS and row.reason.endswith("…") and short not in row.reason
-
-
-async def test_a_known_value_across_the_shown_length_is_removed_whole(store):  # noqa: F811
+async def test_a_reason_longer_than_shown_is_cut(store):  # noqa: F811
     top = chat_with(store, outcome="failed", reason="z" * 186 + KEY)  # the key runs from 186 to 211
-    (row,) = (await runs_for(store, Known([KEY])).page()).runs
-    assert row.reason == "z" * 186 + "[redacted]"
-    assert not any(KEY[i:] in row.reason for i in range(len(KEY) - 3)) and row.run_id == top
+    (row,) = (await runs_for(store).page()).runs
+    assert row.reason == ("z" * 186 + KEY)[:REASON_CHARS - 1] + "…" and row.run_id == top
 
 
 async def test_open_or_recent_lists_open_runs_of_any_age_and_runs_launched_since(store):  # noqa: F811

@@ -67,7 +67,7 @@ test("the Timeline: newest first, the latest iteration open, older ones folded, 
   await expect(timeline(page).getByRole("treeitem", { name: /^chat expanded/ })).toBeVisible()
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#1/ }).click()
   await expect(timeline(page).getByRole("treeitem", { name: /chat#1\/reply.*failed/ })).toContainText(
-    "AuthError: 401 key (hidden)")
+    "AuthError: 401 invalid key")
 })
 
 test("no log, and a log this office can't read", async ({ page }) => {
@@ -164,7 +164,7 @@ test("a divider and a node's error describe the items they belong to", async ({ 
   await expect(turn2.nth(1)).toHaveAccessibleDescription("resumed; retried reply")
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#1/ }).click()
   await expect(timeline(page).getByRole("treeitem", { name: /^chat#1\/reply/ })).toHaveAccessibleDescription(
-    "AuthError: 401 key (hidden)")
+    "AuthError: 401 invalid key")
 })
 
 test("an indexing header with no message says its progress from its bytes, which aren't announced", async ({ page, request }) => {
@@ -184,7 +184,7 @@ test("run.updated for a child refetches the page", async ({ page, request }) => 
   await expect(header(page)).toContainText("running")
 })
 
-test("a failed read says why, with Retry; failing to load the secrets says so", async ({ page, request }) => {
+test("a failed read says why, with Retry", async ({ page, request }) => {
   const path = `/api/runs/${rid(5)}`
   await request.post("/__fixture/set", { data: { fail: { [path]: 500 } } })
   await page.goto(`/runs/${rid(5)}`)
@@ -192,10 +192,7 @@ test("a failed read says why, with Retry; failing to load the secrets says so", 
   // The page also reads again once the office is first online (throttled to a second); let that read fail too.
   await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
   await page.waitForTimeout(1500)
-  await request.post("/__fixture/set", { data: { fail: { [path]: { status: 503, error: "secrets_unavailable",
-    message: "couldn't load the secrets to remove" } } } })
-  await page.getByRole("button", { name: "Retry" }).click()
-  await expect(page.getByRole("alert")).toHaveText("Couldn't load the secrets to remove; try again.")
+  await expect(page.getByRole("alert")).toHaveText(`Couldn't read the run: ${path} failed.`)
   await request.post("/__fixture/set", { data: { fail: {} } })
   await page.getByRole("button", { name: "Retry" }).click()
   await expect(header(page)).toBeVisible()

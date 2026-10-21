@@ -8,7 +8,7 @@ from urllib.parse import quote, quote_plus
 import pytest
 
 from opencorp.assets.registry import KindTool
-from opencorp.perm.monitor import Monitor, redact, redactor
+from opencorp.perm.monitor import Monitor, redact
 from tests.perm.conftest import KINDS, TOKEN
 
 PADDED = "p4dded-secret-value"
@@ -186,21 +186,11 @@ def test_encoded_forms_dont_scrub_ordinary_text():
 
 
 def test_scrubbing_known_values_stays_fast():
-    scrub = redactor([f"secret-value-{i:04d}-abcdefghij" for i in range(40)])
+    values = [f"secret-value-{i:04d}-abcdefghij" for i in range(40)]
     blob = "x" * 1_000_000
     many = [f"line {i} with nothing secret in it" for i in range(20_000)]
     start = time.perf_counter()
-    scrub(blob)
-    scrub(many)
+    redact(blob, (), values)
+    redact(many, (), values)
     assert time.perf_counter() - start < 2
 
-
-def test_a_redactor_scrubs_as_redact_does_with_its_needles_built_once(monkeypatch):
-    from opencorp.perm import monitor
-
-    value = {"a": "x hunter2hunter2 y", "b": ["hunter2hunter2"], "c": 3}
-    built = []
-    real = monitor._needles
-    monkeypatch.setattr(monitor, "_needles", lambda values: (built.append(1), real(values))[1])
-    scrub = redactor(["hunter2hunter2"])
-    assert scrub(value) == scrub(value) == redact(value, (), ["hunter2hunter2"]) and len(built) == 2

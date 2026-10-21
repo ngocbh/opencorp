@@ -63,20 +63,17 @@ async def test_the_guard_applies(office, hq, signed_in):
             assert r.status_code == 403, path
 
 
-async def test_a_secret_never_reaches_the_browser(signed_in, company):
+async def test_files_reach_the_browser_as_stored(signed_in, company):
     path = company / "people" / "ngocbh" / "person.yaml"
     data = yaml.safe_load(path.read_text())
     data["devices"] = [{"name": "mac", "token_sha256": "e" * 64}]  # a device, not a password: the session lives on
     path.write_text(yaml.safe_dump(data, sort_keys=False))
-    (company / PROFILE).write_text(f"pasted {hash_password('a secret')}\n")
+    pasted = f"pasted {hash_password('a secret')}\n"
+    (company / PROFILE).write_text(pasted)
     _git(company, "commit", "-qam", "a device and a pasted hash")
-    tree = (await signed_in.get("/api/company/tree")).json()
-    at = tree["commit"]["id"]
-    texts = [str(tree)]
-    for e in tree["entries"]:
-        if e["type"] != "folder":
-            texts.append((await signed_in.get("/api/company/file", params={"at": at, "path": e["path"]})).text)
-    joined = "\n".join(texts)
-    assert "$scrypt$" not in joined and "e" * 64 not in joined
+    at = (await signed_in.get("/api/company/tree")).json()["commit"]["id"]
     person = (await signed_in.get("/api/company/file", params={"at": at, "path": "people/ngocbh/person.yaml"})).json()
-    assert person["rewritten"] is True and "devices" not in person["text"]
+    assert (person["content"], person["text"], person["rewritten"]) == ("text", path.read_text(), False)
+    assert "e" * 64 in person["text"]
+    profile = (await signed_in.get("/api/company/file", params={"at": at, "path": PROFILE})).json()
+    assert profile["text"] == pasted

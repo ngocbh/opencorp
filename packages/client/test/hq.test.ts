@@ -9,7 +9,6 @@ import {
   isMissingRoute,
   isNoFile,
   isNoLog,
-  isSecretsUnavailable,
   isStaleCommit,
   isUnsupportedSchema,
   OfficeError,
@@ -238,7 +237,7 @@ test("a run page read returns the office's body as sent", async () => {
   expect(await c.runs.get(RUN)).toEqual(detail)
 })
 
-test("a run page read's 409 unsupported_schema, 404 no_log, 503 secrets_unavailable and 503 indexing can be told apart", async () => {
+test("a run page read's 409 unsupported_schema, 404 no_log and 503 indexing can be told apart", async () => {
   const answers: Record<string, [number, string]> = {
     nodes: [409, "unsupported_schema"],
     events: [404, "no_log"],
@@ -252,8 +251,6 @@ test("a run page read's 409 unsupported_schema, 404 no_log, 503 secrets_unavaila
   })
   const c = createOfficeClient({ baseUrl: base })
   const errors = await Promise.all([failure(c.runs.nodes(RUN)), failure(c.runs.events(RUN)), failure(c.runs.event(RUN, 7))])
-  const checks = [isUnsupportedSchema, isNoLog, isSecretsUnavailable, isIndexing]
-  expect(errors.map((e) => checks.map((f) => f(e)))).toEqual([
-    [true, false, false, false], [false, true, false, false], [false, false, false, true]])
-  expect(isSecretsUnavailable(new OfficeError(503, "secrets_unavailable", "x"))).toBe(true)
+  const checks = [isUnsupportedSchema, isNoLog, isIndexing]
+  expect(errors.map((e) => checks.map((f) => f(e)))).toEqual([[true, false, false], [false, true, false], [false, false, true]])
 })

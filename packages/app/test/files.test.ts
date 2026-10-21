@@ -65,10 +65,6 @@ test("ancestors, breadcrumb segments and the nearest folder that still exists", 
 
 test("each content state's note; plain text has none", () => {
   expect(noteOf({ content: "text" })).toBeUndefined()
-  expect(noteOf({ content: "text", rewritten: true })).toBe(
-    "Shown without devices and password hash; comments and layout aren't kept.")
-  expect(noteOf({ content: "hidden", reason: "holds a secret-named key" })).toBe("Hidden: holds a secret-named key.")
-  expect(noteOf({ content: "hidden", reason: "may hold credentials." })).toBe("Hidden: may hold credentials.")
   expect(noteOf({ content: "binary" })).toBe("Binary file.")
   expect(noteOf({ content: "too_large" })).toBe("Too large to show.")
   expect(noteOf({ content: "symlink", target: "../README.md" })).toBe("Symlink to ../README.md.")

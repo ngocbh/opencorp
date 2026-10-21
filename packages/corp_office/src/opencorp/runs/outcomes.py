@@ -3,8 +3,6 @@ a run ends."""
 
 from dataclasses import dataclass
 
-from opencorp.runs.scrub import scrub_string
-
 OFFICE = "office"
 """The driver of the runs the office starts itself (debriefs)."""
 FLOWS = {"main": "chat", "side": "side_chat", "profile_manager": "profile_manager"}
@@ -25,17 +23,11 @@ BAD_OUTPUT = "bad output"
 
 @dataclass(frozen=True)
 class RunEnd:
-    """How a run ended, as its outcome is written. Every outcome whose reason carries a failure message is built as
-    one: the reason loses every secret of a known shape here (the run page and the list remove known values when they
-    show it)."""
+    """How a run ended, as its outcome is written."""
 
     outcome: str
     reason: str | None = None
     failed_node: str | None = None
-
-    def __post_init__(self) -> None:
-        if self.reason is not None:
-            object.__setattr__(self, "reason", scrub_string(self.reason))
 
 
 def flow_label(kind: str) -> str:

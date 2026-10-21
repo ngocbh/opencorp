@@ -38,11 +38,10 @@ EVENT_BYTES = 2 << 20
 LRU_BYTES = 128 << 20
 LRU_LOGS = 128
 ERROR_CHARS = 200
-"""How much of a node's error is shown, cut after the scrub."""
+"""How much of a node's error is shown."""
 ERROR_KEPT = 1 << 10
-"""How much of a node's error the index keeps, to bound a log with many failed nodes. A longer error is cut with "…",
-and the word the cut splits is dropped before the scrub (``shown_reason``), so a secret longer than this (a
-subscription token can be 2,000 characters) never shows in part."""
+"""How much of a node's error the index keeps, to bound a log with many failed nodes; a longer error is cut with
+"…"."""
 # Yian writes sorted-key JSON (log.py:2786-2796), so a record starts with "kind" ("at" first from schema 10): an
 # oversized line's kind can be read without parsing it. Its seq is its line number (log.py:2843-2866), so no line's
 # seq is ever read from its text.
@@ -265,8 +264,6 @@ def _ended(index: Index, seq: int, kind: str, payload: dict[str, Any]) -> None:
     if kind == "node_routed" and isinstance(payload.get("handle"), str):
         attempt.handle = payload["handle"]
     if failure is not None:
-        # Kept long, its cut marked, and cut to ERROR_CHARS only once scrubbed, so a known value cut in two can't show
-        # its head.
         attempt.error = cut_reason(str(failure.get("message") or failure.get("code") or ""), ERROR_KEPT) or None
         index.held += len(attempt.error or "")
 
@@ -350,8 +347,7 @@ def _size(payload: dict[str, Any]) -> int:
     return len(json.dumps(payload, ensure_ascii=False).encode())
 
 
-def _event(line: bytes, seq: int, scrub: Callable[[dict[str, Any]], dict[str, Any]], *,
-           whole: bool) -> RunEvent | None:
+def _event(line: bytes, seq: int, *, whole: bool) -> RunEvent | None:
     """Line ``seq`` as a page shows it (``whole``: as one opened record shows it, evidence included); None when it no
     longer parses as record ``seq`` (the file changed since it was indexed)."""
     if len(line) > BIG_LINE and not whole:
@@ -368,11 +364,8 @@ def _event(line: bytes, seq: int, scrub: Callable[[dict[str, Any]], dict[str, An
         for key in EVIDENCE:
             if payload.get(key) is not None:
                 payload[key], left_out = None, True
-    clean = scrub(record)
-    kind = clean.get("kind") if isinstance(clean.get("kind"), str) and clean.get("kind") else "unknown"
-    if "withheld" in clean:
-        return RunEvent(seq=seq, kind=kind, node_id=clean.get("node_id"), withheld=clean["withheld"])
-    payload = clean.get("payload") if isinstance(clean.get("payload"), dict) else None
+    kind = record.get("kind") if isinstance(record.get("kind"), str) and record.get("kind") else "unknown"
+    payload = payload if isinstance(payload, dict) else None
     cut: list[str] = []
     if payload is not None and (not whole or _size(payload) > EVENT_BYTES):
         payload = _cut(payload, "", cut)
@@ -382,10 +375,9 @@ def _event(line: bytes, seq: int, scrub: Callable[[dict[str, Any]], dict[str, An
                     evidence_left_out=left_out)
 
 
-def read_events(path: Path, index: Index, *, after: int | None, limit: int,
-                scrub: Callable[[dict[str, Any]], dict[str, Any]]) -> RunEventPage:
-    """Records after seq ``after`` (from the first when None), scrubbed, up to ``limit`` or PAGE_BYTES of JSON. A
-    line's seq is its line number, counted from a sparse entry; a line that no longer matches ends the page there."""
+def read_events(path: Path, index: Index, *, after: int | None, limit: int) -> RunEventPage:
+    """Records after seq ``after`` (from the first when None), up to ``limit`` or PAGE_BYTES of JSON. A line's seq is
+    its line number, counted from a sparse entry; a line that no longer matches ends the page there."""
     first = 0 if after is None else after + 1
     base, start, stop = _window(index, first)
     events: list[RunEvent] = []
@@ -394,7 +386,7 @@ def read_events(path: Path, index: Index, *, after: int | None, limit: int,
         for seq, line in enumerate(_lines(f, start, stop), base):
             if seq < first:
                 continue
-            event = _event(line, seq, scrub, whole=False)
+            event = _event(line, seq, whole=False)
             if event is None:  # rewritten since it was indexed: the next request's refresh rebuilds
                 next_after = events[-1].seq if events else after
                 break
@@ -407,28 +399,27 @@ def read_events(path: Path, index: Index, *, after: int | None, limit: int,
     return RunEventPage(events=events, next_after=next_after, cut=cut)
 
 
-def read_event(path: Path, index: Index, seq: int,
-               scrub: Callable[[dict[str, Any]], dict[str, Any]]) -> RunEvent | None:
-    """The record with ``seq``, scrubbed, evidence included; its strings cut only when its payload is over EVENT_BYTES,
-    and a stub with its size when it is still over after that. None if there is none."""
+def read_event(path: Path, index: Index, seq: int) -> RunEvent | None:
+    """The record with ``seq``, evidence included; its strings cut only when its payload is over EVENT_BYTES, and a
+    stub with its size when it is still over after that. None if there is none."""
     base, start, stop = _window(index, seq)
     with open(path, "rb") as f:
         for at, line in enumerate(_lines(f, start, stop), base):
             if at == seq:
-                return _event(line, seq, scrub, whole=True)
+                return _event(line, seq, whole=True)
     return None
 
 
-def scrubbed_lines(path: Path, scrub_line: Callable[[bytes], bytes]) -> Iterator[bytes]:
-    """Every complete line of ``path`` as it is when called, through ``scrub_line``: the download, one line in memory.
-    The file is opened at once (FileNotFoundError here, not mid-stream). It needs no index, so a log this office
-    can't read still downloads."""
+def log_lines(path: Path) -> Iterator[bytes]:
+    """Every complete line of ``path`` as it is when called, as stored: the download, one line in memory. The file is
+    opened at once (FileNotFoundError here, not mid-stream). It needs no index, so a log this office can't read still
+    downloads."""
     f = open(path, "rb")  # noqa: SIM115 - the generator below closes it
     size = os.fstat(f.fileno()).st_size
 
     def stream() -> Iterator[bytes]:
         with f:
-            yield from (scrub_line(line) for line in _lines(f, 0, size))
+            yield from _lines(f, 0, size)
 
     return stream()
 

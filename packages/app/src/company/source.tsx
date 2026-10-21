@@ -183,20 +183,13 @@ function CopyButton(props: { text: string }) {
   )
 }
 
-/** A line's tokens: text nodes, highlight.js spans (classes only) and `(hidden)` markers. Never HTML. */
+/** A line's tokens: text nodes and highlight.js spans (classes only). Never HTML. */
 function Tokens(props: { tokens: Token[] }) {
   return (
     <For each={props.tokens}>
       {(t) =>
         typeof t === "string" ? (
           t
-        ) : "hidden" in t ? (
-          <span
-            data-testid="hidden-marker"
-            class="rounded-sm bg-neutral-200 px-0.5 text-neutral-600 italic dark:bg-neutral-800 dark:text-neutral-400"
-          >
-            (hidden)
-          </span>
         ) : (
           <span class={t.class}>
             <Tokens tokens={t.children} />

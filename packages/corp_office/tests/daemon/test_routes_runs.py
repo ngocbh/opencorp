@@ -2,16 +2,13 @@
 
 import pytest
 
-from opencorp.chat.connections import ConnectionFile, Connections
-from opencorp.runs.known import KnownValues, SecretsUnavailable
 from opencorp.runs.service import RunLogs
-from opencorp.secrets import SecretStore
 from opencorp.store import RunRow, new_id
 from tests.runs.logs import chat_log, failed, line, run_started, started
 from tests.store.conftest import session
 
 T = "2026-10-20T10:00:00.000Z"
-KEY = "conn-key-5f3a9c1e7b2d4a60"  # no provider shape: only the known-values step can catch it
+KEY = "conn-key-5f3a9c1e7b2d4a60"
 
 
 def a_run(office, **over):
@@ -62,12 +59,12 @@ async def test_get_runs_filters_by_statuses_and_a_launch_range_and_pages(office,
     assert ids(await client.get("/runs", params={"parent": done, "status": "running,interrupted"})) == [kid]
 
 
-async def test_a_bearer_token_in_a_failure_never_reaches_get_runs(office, client):
+async def test_a_failure_reaches_get_runs_as_stored(office, client):
     office.extras["runs"] = RunLogs(office)
     run_id = a_run(office)
-    office.store.end_run(run_id, "failed", reason="AuthError: Bearer abcdefgh12345")  # stored as given
+    office.store.end_run(run_id, "failed", reason="AuthError: Bearer abcdefgh12345")
     r = await client.get("/runs")
-    assert r.status_code == 200 and "abcdefgh12345" not in r.text and "Bearer (hidden)" in r.text
+    assert r.status_code == 200 and r.json()["runs"][0]["reason"] == "AuthError: Bearer abcdefgh12345"
 
 
 @pytest.mark.parametrize("params", [
@@ -137,9 +134,8 @@ def with_log(office, *, schema=9, log=True):
     """Run Logs on the office (made once), and a run whose log is a synthetic chat log, one line in ``schema``, the
     bytes ``log``, or none."""
     runs = office.extras.get("runs")
-    if not isinstance(runs, RunLogs) or runs.known is None:
-        office.extras["runs"] = runs = RunLogs(office, known=KnownValues(
-            connections=Connections(office.paths.office), secrets=SecretStore(office.paths.secrets), git=office.git))
+    if not isinstance(runs, RunLogs):
+        office.extras["runs"] = runs = RunLogs(office)
     s = office.store.create_session(session(status="ended", repo_commit=office.git.head()))
     row = RunRow(new_id(), s.id, "chat", "shared/flows/chat.yaml", "ngocbh", None, T)
     office.store.add_run(row)
@@ -167,6 +163,8 @@ async def test_one_runs_routes(office, client):
     log = await client.get(f"/runs/{run_id}/log")
     assert log.headers["content-disposition"] == f'attachment; filename="{run_id}.jsonl"'
     assert log.headers["cache-control"] == "no-store"
+    runs = office.extras["runs"]
+    assert log.content == runs.log_path(office.store.get_run(run_id)).read_bytes()  # as stored
     assert len(log.content.splitlines()) == 16
 
 
@@ -183,14 +181,6 @@ async def test_one_runs_routes_say_what_went_wrong(office, client):
     r = await client.get(f"/runs/{none}/events")
     assert (r.status_code, r.json()["error"]) == (404, "no_log")
 
-    async def unavailable():
-        raise SecretsUnavailable("couldn't load the secrets to remove in time")
-
-    office.extras["runs"].known.scrubber = unavailable
-    r = await client.get(f"/runs/{run_id}/events")
-    assert (r.status_code, r.json()["error"]) == (503, "secrets_unavailable")
-    assert (await client.get(f"/runs/{run_id}")).status_code == 200  # the header hides reasons instead
-
 
 async def test_one_runs_routes_while_its_log_is_first_read(office, client):
     run_id = with_log(office)
@@ -205,24 +195,23 @@ async def test_one_runs_routes_while_its_log_is_first_read(office, client):
     assert (r.status_code, r.json()["error"]) == (503, "indexing")
 
 
-async def test_a_known_value_past_a_node_errors_cut_never_reaches_nodes(office, client):
+async def test_a_node_error_is_shown_as_stored_cut_to_200(office, client):
     run_id = with_log(office, log=run_started(0) + started(1, "a") + failed(2, "a", "x" * 186 + KEY))
-    Connections(office.paths.office).put("k", ConnectionFile(llm_config={"provider": "vllm", "model": "stub",
-                                                                         "api_key": KEY}))
     r = await client.get(f"/runs/{run_id}/nodes")
-    assert KEY[:8] not in r.text and r.json()["nodes"][0]["error"] == "x" * 186 + "[redacted]"
+    assert r.json()["nodes"][0]["error"] == ("x" * 186 + KEY)[:199] + "…"
 
 
 async def test_a_log_removed_before_it_streams_has_no_log(office, client):
     run_id = with_log(office)
     runs = office.extras["runs"]
-    real = runs.scrubber
+    real = runs._log
 
-    async def removing():  # between the lookup and the read
-        runs.log_path(office.store.get_run(run_id)).unlink()
-        return await real()
+    async def removing(rid):  # between the lookup and the read
+        found = await real(rid)
+        found[1].unlink()
+        return found
 
-    runs.scrubber = removing
+    runs._log = removing
     r = await client.get(f"/runs/{run_id}/log")
     assert (r.status_code, r.json()["error"]) == (404, "no_log")
 

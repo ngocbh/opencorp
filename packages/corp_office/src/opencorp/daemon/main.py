@@ -36,7 +36,6 @@ from opencorp.harness.sessions import CodexSessions
 from opencorp.hq.core import attach as attach_hq
 from opencorp.perm.monitor import Monitor
 from opencorp.profile import GitProfileStore
-from opencorp.runs.known import KnownValues
 from opencorp.runs.service import RunLogs
 from opencorp.secrets import SecretStore
 from opencorp.store import Store
@@ -210,8 +209,7 @@ def build_office(paths: OfficePaths) -> Office:
     harness = Harness(office, monitor, connections=connections, models=models, hooks=hooks, codex=codex)
     office.workers = harness
     office.extras["harness"] = harness
-    office.extras["runs"] = RunLogs(office, known=KnownValues(connections=connections, secrets=monitor.secrets,
-                                                              git=office.git))
+    office.extras["runs"] = RunLogs(office)
     office.extras["hiring"] = Hiring(git)
     office.extras["connections"] = connections
     office.extras["models"] = models

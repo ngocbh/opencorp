@@ -27,7 +27,7 @@ def test_people_groups_and_the_company_come_from_one_commit(company):
 
 
 def test_people_are_blanked_by_secret_keys(company, monkeypatch):
-    # One constant drives the snapshot, /api/company and Source: a new secret key is blanked here too.
+    # One constant drives the snapshot and /api/company: a new secret key is blanked here too.
     monkeypatch.setattr(secret_keys, "SECRET_KEYS", secret_keys.SECRET_KEYS | {"skills"})
     git = git_of(company)
     minh = next(p for p in load_company_at(git, git.head()).people if p.handle == "minh")

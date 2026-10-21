@@ -62,12 +62,8 @@ export function nearestFolder(path: string, isFolder: (path: string) => boolean)
 }
 
 /** What the pane says about a file it can't show as written, or undefined for plain text. */
-export function noteOf(f: Pick<CompanyFile, "content" | "target" | "reason" | "rewritten">): string | undefined {
+export function noteOf(f: Pick<CompanyFile, "content" | "target">): string | undefined {
   switch (f.content) {
-    case "text":
-      return f.rewritten ? "Shown without devices and password hash; comments and layout aren't kept." : undefined
-    case "hidden":
-      return `Hidden: ${(f.reason ?? "it may hold a secret").replace(/\.$/, "")}.`
     case "binary":
       return "Binary file."
     case "too_large":
