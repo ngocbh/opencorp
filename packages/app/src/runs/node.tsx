@@ -1,13 +1,17 @@
 // One node attempt's detail on the run page: its output, route or error, its model, and its evidence, read from the
-// record that ended it. Beside the Timeline on a desktop; a modal sheet over everything on a phone.
+// record that ended it. Beside the Timeline on a desktop (or over its whole width, expanded); a modal sheet over
+// everything on a phone.
 import { isIndexing } from "@opencorp/client"
 import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
+import Maximize2 from "lucide-solid/icons/maximize-2"
+import Minimize2 from "lucide-solid/icons/minimize-2"
 import { createEffect, createSignal, createUniqueId, For, on, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useOffice } from "../data/office"
 import { handleText, staticPath } from "./timeline"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
+const ICON_BUTTON = "grid h-8 w-8 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800"
 const PRE = "overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-neutral-900"
 
 /** What a failed record read says: the first read of the log says to try again. */
@@ -60,6 +64,8 @@ function Part(props: { title: string; children: JSX.Element }) {
 
 /** A node attempt's detail, read from the record at its `end_seq`; no per-node tokens or times (the log has none). */
 export function NodeDetail(props: {
+  /** Its element's id, for the splitter that resizes it. */
+  id?: string
   runId: string
   node: RunNode
   detail: RunDetail
@@ -68,6 +74,10 @@ export function NodeDetail(props: {
   onClose: () => void
   /** Where focus goes back to when it closes. */
   returnTo: () => HTMLElement | undefined
+  /** Whether it has the Timeline's width too (a desktop only). */
+  expanded?: boolean
+  /** Expands it over the Timeline, or puts it back beside it. */
+  onExpand?: (expanded: boolean) => void
 }) {
   const office = useOffice()
   const headingId = createUniqueId()
@@ -138,7 +148,11 @@ export function NodeDetail(props: {
       role={props.modal ? "dialog" : "region"}
       aria-modal={props.modal ? "true" : undefined}
       aria-labelledby={headingId}
-      class="fixed inset-0 z-10 space-y-3 overflow-y-auto bg-white p-4 text-sm md:sticky md:top-0 md:inset-auto md:max-h-screen md:w-96 md:shrink-0 md:self-start md:border-l md:border-neutral-200 dark:bg-neutral-950 dark:md:border-neutral-800"
+      id={props.id}
+      // Its desktop width is --detail-w, which the run page sets through the CSSOM (the CSP forbids style attributes).
+      class={`fixed inset-0 z-10 space-y-3 overflow-y-auto bg-white p-4 text-sm md:sticky md:top-0 md:max-h-screen md:self-start md:min-w-0 dark:bg-neutral-950 ${
+        props.expanded ? "md:flex-1" : "md:w-[var(--detail-w,50%)]"
+      }`}
     >
       <div class="flex items-start justify-between gap-2">
         {/* Labelled "Node <id>": the id alone reads as a path. */}
@@ -146,14 +160,25 @@ export function NodeDetail(props: {
           <span class="sr-only">Node </span>
           <span class="font-mono">{props.node.node_id}</span>
         </h2>
-        <button
-          type="button"
-          aria-label="Close"
-          class={`grid h-8 w-8 shrink-0 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 ${RING}`}
-          onClick={() => props.onClose()}
-        >
-          <span aria-hidden="true">×</span>
-        </button>
+        <div class="flex shrink-0 items-center gap-1">
+          <Show when={!props.modal && props.onExpand}>
+            <button
+              type="button"
+              aria-label="Expand"
+              aria-pressed={!!props.expanded}
+              title={props.expanded ? "Show the Timeline beside it" : "Expand over the Timeline"}
+              class={`${ICON_BUTTON} ${RING}`}
+              onClick={() => props.onExpand?.(!props.expanded)}
+            >
+              <Show when={props.expanded} fallback={<Maximize2 size={16} class="h-4 w-4" />}>
+                <Minimize2 size={16} class="h-4 w-4" />
+              </Show>
+            </button>
+          </Show>
+          <button type="button" aria-label="Close" class={`${ICON_BUTTON} ${RING}`} onClick={() => props.onClose()}>
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
       </div>
       <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
         <dt class={MUTED}>Status</dt>

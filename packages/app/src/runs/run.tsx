@@ -4,6 +4,7 @@ import { isMissingRoute } from "@opencorp/client"
 import type { RunDetail, RunDivider, RunNode, RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
 import {
+  batch,
   createEffect,
   createMemo,
   createSignal,
@@ -24,6 +25,7 @@ import { CopyId, RunsUnavailable } from "./list"
 import { NodeDetail } from "./node"
 import { LogLine, Raw, reading, type LogStatus, type Progress, type RawApi } from "./raw"
 import { readQueue } from "./queue"
+import { detailBounds, detailWidth, readDetailWidth, saveDetailWidth, Splitter, SPLITTER_PX } from "./split"
 import { dividerText, isBoundary, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
 
 /** How often a log being read for the first time is asked about again. */
@@ -101,6 +103,31 @@ export function RunPage(props: { id: string }) {
   const shell = useShell()
   createEffect(() => shell?.setCovered(sheet()))
   onCleanup(() => shell?.setCovered(false))
+
+  // On a desktop node detail sits beside the Timeline at the width this browser chose (null: half), clamped to the
+  // room the page has; or, expanded, over the Timeline's width too.
+  const [chosen, setChosen] = createSignal(readDetailWidth())
+  const [room, setRoom] = createSignal(0)
+  const bounds = () => detailBounds(room())
+  const width = () => detailWidth(chosen(), room())
+  const [expandedSignal, setExpanded] = createSignal(false)
+  // Only while a node's detail shows: one that leaves (gone from a refetch) doesn't keep the Timeline hidden.
+  const expanded = () => desktop() && expandedSignal() && !!selectedNode()
+  const detailId = createUniqueId()
+  /** Keeps the row holding the Timeline and node detail measured, and gives it node detail's width. */
+  function measure(row: HTMLDivElement) {
+    const observer = new ResizeObserver(() => setRoom(Math.max(0, row.clientWidth - SPLITTER_PX)))
+    observer.observe(row)
+    onCleanup(() => observer.disconnect())
+    // Through the CSSOM: the CSP forbids style attributes.
+    createEffect(() => row.style.setProperty("--detail-w", `${width()}px`))
+  }
+  function closeDetail() {
+    batch(() => {
+      setExpanded(false)
+      setSelected(undefined)
+    })
+  }
 
   // Reads run one at a time, so a refetch and an older page never interleave; a keyed read waiting to start isn't
   // queued again.
@@ -292,8 +319,8 @@ export function RunPage(props: { id: string }) {
       </div>
       <Show when={detail.value}>
         {(d) => (
-          <div class="flex">
-            <div class="min-w-0 flex-1 space-y-2 p-4 max-md:px-3" inert={sheet()}>
+          <div ref={measure} class="flex">
+            <div class="min-w-0 flex-1 space-y-2 p-4 max-md:px-3" inert={sheet()} hidden={expanded()}>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <Show when={d().log_state === "ok"} fallback={<h3 class="text-sm font-semibold">Timeline</h3>}>
                   <Tabs id={tabsId} tab={tab()} onTab={chooseTab} />
@@ -349,14 +376,35 @@ export function RunPage(props: { id: string }) {
             </div>
             <Show when={selectedNode()}>
               {(node) => (
-                <NodeDetail
-                  runId={props.id}
-                  node={node()}
-                  detail={d()}
-                  modal={!desktop()}
-                  onClose={() => setSelected(undefined)}
-                  returnTo={returnTo}
-                />
+                // On a desktop as tall as the row, so the splitter runs its whole height while node detail stays in
+                // view as the page scrolls; on a phone node detail is a fixed sheet and this holds nothing in the flow.
+                <div class={`md:flex md:self-stretch ${expanded() ? "md:min-w-0 md:flex-1" : "md:shrink-0"}`}>
+                  <Show when={desktop() && !expanded()}>
+                    <Splitter
+                      controls={detailId}
+                      value={width()}
+                      min={bounds().min}
+                      max={bounds().max}
+                      onResize={(w) => setChosen(detailWidth(w, room()))}
+                      onCommit={() => saveDetailWidth(chosen())}
+                      onReset={() => {
+                        setChosen(null)
+                        saveDetailWidth(null)
+                      }}
+                    />
+                  </Show>
+                  <NodeDetail
+                    id={detailId}
+                    runId={props.id}
+                    node={node()}
+                    detail={d()}
+                    modal={!desktop()}
+                    onClose={closeDetail}
+                    returnTo={returnTo}
+                    expanded={expanded()}
+                    onExpand={setExpanded}
+                  />
+                </div>
               )}
             </Show>
           </div>
