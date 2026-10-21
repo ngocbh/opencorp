@@ -1,6 +1,7 @@
 """The reference monitor: asset tools checked against the company repo, run with office secrets, audited."""
 
 import base64
+import functools
 import json
 import re
 from collections.abc import Callable, Collection, Iterable, Mapping
@@ -156,11 +157,13 @@ def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     Each secret is scrubbed as stored, without surrounding whitespace, and line by line
     for lines of at least ``SECRET_LINE_CHARS`` (one line of a PEM key; a line that is not
     secret, such as the key's armor, may be scrubbed too). Each of those is also scrubbed as
-    it reads escaped inside JSON (once or twice), a Python repr, or a URL (``quote`` and
-    ``quote_plus``), in any letter case. A whole secret is also scrubbed base64-encoded, in
-    either alphabet and at any offset (inside ``Basic`` credentials, say); a block of base64
-    wrapped at 76 columns that holds one is scrubbed whole. All are scrubbed longest first, so
-    a secret inside a longer one never leaves the longer one's ends behind.
+    it reads escaped inside JSON (up to three times), a Python repr (or a repr of one), or a
+    URL (``quote`` and ``quote_plus``, once or twice), in any letter case (``ß`` as ``SS``
+    too). A whole secret is also scrubbed hex-encoded, and base64- and base32-encoded at any
+    offset (inside ``Basic`` credentials, say), base64 in either alphabet; a block of base64
+    wrapped at 64 or 76 columns that holds one is scrubbed whole, its lines indented or not,
+    its line breaks plain or escaped. All are scrubbed longest first, so a secret inside a
+    longer one never leaves the longer one's ends behind.
     """
     return _scrub(value, keys, _needles(values))
 
@@ -174,25 +177,37 @@ def redactor(values: Iterable[str]) -> Callable[[Any], Any]:
 
 _FOLD = str.maketrans("-_", "+/")
 """Folds the URL-safe base64 alphabet into the standard one, for the quick tests."""
-_WRAPPED = re.compile(r"(?<![A-Za-z0-9+/_-])(?:[A-Za-z0-9+/_-]{76}(?:\r?\n|(?:\\r)?\\n))+[A-Za-z0-9+/_=-]{0,76}")
-"""Base64 wrapped at 76 columns, as MIME (``base64.encodebytes``) writes it, its line breaks plain or JSON-escaped."""
-_BREAKS = re.compile(r"\r?\n|(?:\\r)?\\n")
-_WRAP_ENDS = tuple(re.compile(rf"{re.escape(end)}(?<=[A-Za-z0-9+/_-]{{76}}{re.escape(end)})")
-                   for end in ("\n", "\r\n", "\\n", "\\r\\n"))
+_B64 = "A-Za-z0-9+/_-"
+_BREAK = r"(?:\r?\n|(?:\\{1,15}r)?\\{1,15}n)[ \t]*"  # plain or escaped up to 4 times, and the next line's indent
+_WRAPPED = re.compile(rf"(?<![{_B64}])(?:(?:[{_B64}]{{76}}|[{_B64}]{{64}}){_BREAK})+[={_B64}]{{0,76}}")
+"""Base64 wrapped at 76 columns, as MIME (``base64.encodebytes``) writes it, or at 64, as openssl and PEM do."""
+_BREAKS = re.compile(_BREAK)
+_WRAP_ENDS = (re.compile(rf"\n(?<=[{_B64}]{{64}}\n)"), re.compile(rf"\r(?<=[{_B64}]{{64}}\r)\n"),
+              re.compile(rf"\\(?<=[{_B64}]{{64}}\\)\\{{0,14}}(?:r\\{{1,15}})?n"))
 """A full line of wrapped base64 and its break, found from the break (a literal, so quick) before ``_WRAPPED``,
 which has none to look for, runs."""
+_PIECE = 8
+_PIECES = re.compile(f".{{{_PIECE}}}", re.DOTALL)
+"""A text cut into pieces of ``_PIECE`` characters from its start: a form at least ``2 * _PIECE - 1`` long that the
+text holds holds one of them at one of its first ``_PIECE`` offsets."""
 
 
 @dataclass(frozen=True)
 class _Needles:
     """What ``_scrub`` looks for, built once per set of secrets."""
 
-    forms: list[tuple[str, str, re.Pattern[str]]]
+    forms: list[tuple[str, str, bool]]
     """Each form of a secret, longest first: its text, the text casefolded and with ``-_`` as ``+/`` (a quick test on
-    the value folded the same way, before the search), and its pattern: case-blind, or for base64 exact but for
-    the alphabet."""
-    quick: tuple[str, ...]
-    """Each form's quick test, in the same order."""
+    the value folded the same way, before the search), and whether it is a base64 core, searched for exactly but for
+    the alphabet rather than case-blind (``_pattern``)."""
+    starts: dict[str, list[int]]
+    """The piece at each of the first ``_PIECE`` offsets of each form whose quick test has at least
+    ``2 * _PIECE - 1`` characters, with the forms (indexes into ``forms``) holding it there: one set lookup per piece
+    of a value finds every such form it may hold, however many forms there are."""
+    pieces: frozenset[str]
+    """The keys of ``starts``."""
+    short: tuple[int, ...]
+    """The other forms, tested by substring search."""
     cores: frozenset[str]
     """Each secret's base64 core, in the standard alphabet, looked for in wrapped base64."""
     shortest: int
@@ -210,17 +225,40 @@ def _needles(values: Iterable[str]) -> _Needles:
         plain.update(line.strip() for line in value.splitlines() if len(line.strip()) >= SECRET_LINE_CHARS)
     texts = set()
     for needle in plain:
-        for once in (json.dumps(needle)[1:-1], json.dumps(needle, ensure_ascii=False)[1:-1]):
-            texts.update((once, json.dumps(once)[1:-1], json.dumps(once, ensure_ascii=False)[1:-1]))
-        texts.update((needle, repr(needle)[1:-1], quote(needle, safe=""), quote(needle), quote_plus(needle)))
+        level = {needle}
+        for _ in range(3):  # JSON inside JSON inside JSON
+            level = {json.dumps(n, ensure_ascii=ascii)[1:-1] for n in level for ascii in (True, False)}
+            texts |= level
+        once = quote(needle, safe="")
+        texts.update((needle, repr(needle)[1:-1], repr(repr(needle)[1:-1])[1:-1], once, quote(once, safe=""),
+                      quote(needle), quote_plus(needle), quote_plus(quote_plus(needle))))
+    texts |= {text.casefold() for text in texts if text.casefold() != text.lower()}  # ß as ss, matching SS
+    for value in whole:
+        texts.add(value.encode().hex())
+        texts |= _base32(value)
     cores = frozenset().union(*map(_base64, whole))
-    forms = {(n, re.IGNORECASE): re.compile(re.escape(n), re.IGNORECASE) for n in texts if n}
-    for core in cores:  # either alphabet, so the URL-safe copy needs no form of its own
-        forms[core, 0] = re.compile(re.escape(core).replace(r"\+", "[+-]").replace("/", "[/_]"))
-    found = sorted(((text, text.casefold().translate(_FOLD), pattern) for (text, _), pattern in forms.items()),
-                   key=lambda n: (-len(n[0]), n[0]))
-    quick = tuple(n[1] for n in found)
-    return _Needles(found, quick, cores, min((len(n[0]) for n in found), default=0), not any("\0" in q for q in quick))
+    forms = {(text, False) for text in texts if text} | {(core, True) for core in cores}
+    found = sorted(((text, text.casefold().translate(_FOLD), core) for text, core in forms),
+                   key=lambda n: (-len(n[0]), n[0], n[2]))
+    starts: dict[str, list[int]] = {}
+    short = []
+    for i, (_, quick, _) in enumerate(found):
+        if len(quick) < 2 * _PIECE - 1:
+            short.append(i)
+            continue
+        for at in range(_PIECE):
+            starts.setdefault(quick[at:at + _PIECE], []).append(i)
+    return _Needles(found, starts, frozenset(starts), tuple(short), cores, min((len(n[0]) for n in found), default=0),
+                    not any("\0" in n[1] for n in found))
+
+
+@functools.lru_cache(maxsize=4096)
+def _pattern(text: str, core: bool) -> re.Pattern[str]:
+    """A form's search, compiled when a value first may hold it: case-blind, or for a base64 core exact but in either
+    alphabet, so the URL-safe copy needs no form of its own."""
+    if core:
+        return re.compile(re.escape(text).replace(r"\+", "[+-]").replace("/", "[/_]"))
+    return re.compile(re.escape(text), re.IGNORECASE)
 
 
 def _base64(value: str) -> set[str]:
@@ -234,21 +272,40 @@ def _base64(value: str) -> set[str]:
     return {core for core in found if len(core) >= SECRET_LINE_CHARS}
 
 
+def _base32(value: str) -> set[str]:
+    """``_base64`` for base32: what the base32 of any text holding ``value`` holds, at each of its 5 offsets."""
+    data = value.encode()
+    found = set()
+    for pad in range(5):
+        coded = base64.b32encode(b"\0" * pad + data).decode()
+        found.add(coded[-(-8 * pad // 5):8 * (pad + len(data)) // 5])
+    return {core for core in found if len(core) >= SECRET_LINE_CHARS}
+
+
 def _scrub_text(value: str, needles: _Needles) -> str:
     if len(value) < needles.shortest:
         return value
     folded = value.casefold().translate(_FOLD)
-    if any(map(folded.__contains__, needles.quick)):  # the usual miss, without a Python loop over every form
-        value = _scrub_forms(value, folded, needles)
+    if found := _candidates(folded, needles):
+        value = _scrub_forms(value, folded, needles, found)
     if needles.cores and any(end.search(value) for end in _WRAP_ENDS):
         value = _WRAPPED.sub(lambda m: REDACTED if _holds_core(m[0], needles.cores) else m[0], value)
     return value
 
 
-def _scrub_forms(value: str, folded: str, needles: _Needles) -> str:
-    for _, quick, pattern in needles.forms:
+def _candidates(folded: str, needles: _Needles) -> list[int]:
+    """The forms (indexes into ``needles.forms``, so longest first) ``folded``, a value folded as quick tests are, may
+    hold: those starting with one of its pieces, and the short ones it holds."""
+    found = {i for piece in needles.pieces.intersection(_PIECES.findall(folded)) for i in needles.starts[piece]}
+    found.update(i for i in needles.short if needles.forms[i][1] in folded)
+    return sorted(found)
+
+
+def _scrub_forms(value: str, folded: str, needles: _Needles, found: list[int]) -> str:
+    for i in found:
+        text, quick, core = needles.forms[i]
         if quick in folded:
-            new = pattern.sub(REDACTED, value)
+            new = _pattern(text, core).sub(REDACTED, value)
             if new != value:
                 value, folded = new, new.casefold().translate(_FOLD)
     return value
@@ -274,7 +331,8 @@ def _may_hold(value: Any, needles: _Needles) -> bool:
     _texts(value, parts)
     joined = "\0".join(parts)
     folded = joined.casefold().translate(_FOLD)
-    return (any(map(folded.__contains__, needles.quick))
+    return (not needles.pieces.isdisjoint(_PIECES.findall(folded))
+            or any(needles.forms[i][1] in folded for i in needles.short)
             or bool(needles.cores and any(end.search(joined) for end in _WRAP_ENDS)))
 
 
@@ -308,8 +366,8 @@ def _scrub_all(value: Any, keys: Collection[str], needles: _Needles) -> Any:
     if isinstance(value, list | tuple):
         return [_scrub_all(v, keys, needles) for v in value]
     if isinstance(value, int | float) and not isinstance(value, bool):
-        text = str(value)
-        if any(n[0] in text for n in needles.forms):
+        text = str(value).casefold().translate(_FOLD)
+        if any(needles.forms[i][1] in text for i in _candidates(text, needles)):
             return REDACTED  # an all-digit secret
     return value
 

@@ -2,6 +2,8 @@
 
 import base64
 import json
+import random
+import re
 import time
 from urllib.parse import quote, quote_plus
 
@@ -178,6 +180,63 @@ def test_a_secret_in_base64_wrapped_at_76_columns_is_scrubbed(prefix):
 def test_wrapped_base64_without_a_secret_is_kept():
     text = base64.encodebytes(b"z" * 400).decode()
     assert redact(text, (), [CONN]) == text
+    coded = base64.b64encode(b"z" * 400).decode()
+    text = "\n".join("    " + coded[i:i + 64] for i in range(0, len(coded), 64))
+    assert redact(text, (), [CONN]) == text
+
+
+def wrap(data, width, indent="", sep="\n"):
+    coded = base64.b64encode(data).decode()
+    return sep.join(indent + coded[i:i + width] for i in range(0, len(coded), width))
+
+
+@pytest.mark.parametrize("prefix", [0, 50, 56, 300])
+@pytest.mark.parametrize("form", [
+    lambda d: wrap(d, 64),  # openssl and PEM
+    lambda d: wrap(d, 64, sep="\r\n"),
+    lambda d: wrap(d, 64, indent="    "),  # inside a YAML block
+    lambda d: wrap(d, 76, indent="\t"),
+    lambda d: json.dumps(wrap(d, 64, indent="  ")),
+    lambda d: json.dumps(json.dumps(wrap(d, 64))),  # line breaks escaped twice
+    lambda d: json.dumps(json.dumps(wrap(d, 76, sep="\r\n"))),
+    lambda d: json.dumps(json.dumps(json.dumps(wrap(d, 64, indent="  ")))),
+], ids=["64", "64 crlf", "64 indented", "76 tab", "64 json", "64 json twice", "76 crlf json twice", "64 json thrice"])
+def test_a_secret_in_base64_wrapped_at_64_columns_indented_or_escaped_is_scrubbed(prefix, form):
+    data = ("x" * prefix + CONN + "y" * 80).encode()
+    text = form(data)
+    out = redact(f"cert:\n{text}\nend", (), [CONN])
+    assert "[redacted]" in out
+    joined = re.sub(r"\\+[rnt]|\s", "", out)
+    assert b64("x" * prefix + CONN)[-28:-4] not in joined, out
+
+
+@pytest.mark.parametrize("text", [
+    CONN.encode().hex(), CONN.encode().hex().upper(), ("ab:" + CONN).encode().hex(),
+    *(base64.b32encode(("?" * pad + CONN + "!").encode()).decode() for pad in range(5)),
+    base64.b32encode(CONN.encode()).decode().lower(),
+])
+def test_a_secret_in_hex_or_base32_is_scrubbed(text):
+    out = redact(f"said: {text}.", (), [CONN])
+    assert "[redacted]" in out and text[len(text) // 3:2 * len(text) // 3] not in out
+
+
+def test_hex_and_base32_dont_scrub_ordinary_text():
+    text = f"sha {'ab' * 32} and {base64.b32encode(b'conn-key-0000000000').decode()}"
+    assert redact(text, (), [CONN]) == text
+
+
+@pytest.mark.parametrize("text", ["STRASSE-geheim-0123", "strasse-GEHEIM-0123", "Strasse-Geheim-0123"])
+def test_a_secret_with_a_sharp_s_is_scrubbed_uppercased(text):
+    assert redact(f"said: {text}.", (), ["Straße-geheim-0123"]) == "said: [redacted]."
+
+
+@pytest.mark.parametrize("encode", [
+    lambda s: json.dumps(json.dumps(json.dumps(s))), lambda s: repr(repr(s)),
+    lambda s: quote(quote(s, safe=""), safe=""), lambda s: quote_plus(quote_plus(s)),
+], ids=["json thrice", "repr of repr", "quoted twice", "quote_plus twice"])
+def test_a_secret_escaped_three_times_or_quoted_twice_is_scrubbed(encode):
+    out = redact(f"said: {encode(QUOTED + ' ü')}.", (), [QUOTED + " ü"])
+    assert "[redacted]" in out and "ote-secret-99" not in out
 
 
 def test_encoded_forms_dont_scrub_ordinary_text():
@@ -193,6 +252,38 @@ def test_scrubbing_known_values_stays_fast():
     scrub(blob)
     scrub(many)
     assert time.perf_counter() - start < 2
+
+
+def test_the_piece_lookup_finds_every_form_a_text_holds():
+    from opencorp.perm import monitor
+
+    rng = random.Random(5)
+    alphabet = "abcXYZ019-_+/%\\\"' üß"
+    values = ["".join(rng.choice(alphabet) for _ in range(rng.randint(8, 40))) for _ in range(30)]
+    needles = monitor._needles(values)
+    for _ in range(5000):
+        form = rng.choice(needles.forms)[0]
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 20))) + form + "".join(
+            rng.choice(alphabet) for _ in range(rng.randint(0, 20)))
+        folded = text.casefold().translate(monitor._FOLD)
+        held = {i for i, (_, quick, _) in enumerate(needles.forms) if quick in folded}
+        assert held <= set(monitor._candidates(folded, needles)), text
+
+
+@pytest.mark.parametrize("blob", [
+    "A" * 64 + "\\" * 1_000_000,  # a full line, then a run of backslashes
+    ("A" * 64 + "\\n") * 15_000,  # one block of wrapped base64
+    ("A" * 64 + "\\" * 16 + "x") * 12_000,  # escapes too deep to be a break
+    ("A" * 64 + "\n" + " " * 1000) * 900,
+    ("A" * 63 + "\n") * 15_000,  # lines one short
+    ("A" * 76 + "\r\n" + "B" * 65 + "\n") * 6_000,
+    ("A" * 64 + "\\\\r\\") * 13_000,  # an escaped CR without its LF
+], ids=["backslashes", "block", "deep escapes", "indents", "short lines", "mixed widths", "lone cr"])
+def test_hostile_text_is_scrubbed_in_linear_time(blob):
+    scrub = redactor([CONN, "Straße-geheim-0123", QUOTED])
+    start = time.perf_counter()
+    scrub({"m": blob})
+    assert time.perf_counter() - start < 1
 
 
 def test_a_redactor_scrubs_as_redact_does_with_its_needles_built_once(monkeypatch):
