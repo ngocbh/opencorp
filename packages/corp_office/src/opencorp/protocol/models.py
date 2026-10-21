@@ -91,7 +91,6 @@ class CompanyDefaults(BaseModel):
     )
     provider_policy: str = 'default'
     cost_cap_usd: Annotated[float, Field(ge=0.0)] = 5
-    idle_end: Annotated[str, Field(pattern='^[0-9]+[smhd]$')] = '2h'
     max_turns: Annotated[int, Field(ge=1)] = 500
     profile_max_chars: Annotated[int, Field(ge=1)] = 32000
     side_chat_cost_cap_usd: Annotated[float, Field(ge=0.0)] = 1
@@ -2003,8 +2002,20 @@ class Session(BaseModel):
     repo_commit: Annotated[
         str, Field(description='A git commit or blob id.', pattern='^[0-9a-f]{40,64}$')
     ]
-    status: Literal['starting', 'idle', 'busy', 'ending', 'debriefing', 'ended', 'failed', 'interrupted']
+    status: Literal['starting', 'idle', 'busy', 'waiting', 'ending', 'debriefing', 'ended', 'failed', 'interrupted']
     kind: Literal['main', 'side', 'profile_manager']
+    waiting_on: Annotated[
+        list[Handle],
+        Field(
+            description='While status is waiting: who must act (answer an open question, or raise the cost cap), in the order those opened. Empty otherwise.'
+        ),
+    ] = []
+    capped: Annotated[
+        bool,
+        Field(
+            description="True while the session's cost is at or over its cost cap: its turns wait until someone raises the cap, and its status is waiting."
+        ),
+    ] = False
     harness_session_id: str | None = None
     work_item_id: Ulid | None = None
     run_ids: list[str] = []
