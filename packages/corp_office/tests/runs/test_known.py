@@ -22,6 +22,22 @@ REFRESH = "subscription-refresh-token-def"
 ACCOUNT = "acct-visible-0001-0002"
 ASSET = "asset-secret-value-7777"
 PHC = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$Z2lHqGqVnSkfU3gS2tlFp2Yzqm7AAw0EC5lyE4X4bMI"
+DEFAULT_KEY = "yian-default-store-key-0123"
+CREDENTIAL_ID = "c0ffee" * 5 + "ab"
+
+
+@pytest.fixture(autouse=True)
+def _home(tmp_path, monkeypatch):
+    """A home of the test's own, so Yian's default store is never the real one."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
+def yian_store(credentials, method="subscription"):
+    """A Yian credential store (yian/llm_clients/auth/store.py ``_write``) with one login holding ``credentials``."""
+    return (json.dumps({"version": 1, "default_provider": "openai", "providers": {"openai": {
+        "method": method, "model": "gpt-5", "credential_id": CREDENTIAL_ID, "credentials": credentials}}},
+        sort_keys=True) + "\n").encode()
 
 
 @pytest.fixture
@@ -53,12 +69,36 @@ def test_known_values_are_the_secrets_not_everything_in_the_files(tmp_path, comp
     connections.put("azure", ConnectionFile(llm_config={
         "provider": "azure", "model": "gpt", "azure_ad_token": AZURE, "default_headers": {"Authorization": HEADER},
         "api_version": "2024-10-21-preview"}))
-    write_private(connections.dir / "pro.auth.json", json.dumps({"default": "openai", "logins": {"openai": {
-        "credentials": {"access_token": ACCESS, "refresh_token": REFRESH, "account_id": ACCOUNT,
-                        "expires_at": 1792000000.0}}}}).encode())
+    write_private(connections.dir / "pro.auth.json", yian_store({"access_token": ACCESS, "refresh_token": REFRESH,
+                                                                 "expires_at": 1792000000.0, "account_id": ACCOUNT,
+                                                                 "residency": None}))
     found = office_values(connections, secrets, company_git, company_git.head())
     assert {KEY, AZURE, HEADER, ACCESS, REFRESH, ASSET, PHC} <= found
-    assert not {ACCOUNT, "access_token", "2024-10-21-preview"} & found  # values and keys that aren't secrets
+    # values and keys that aren't secrets
+    assert not {ACCOUNT, CREDENTIAL_ID, "access_token", "2024-10-21-preview"} & found
+
+
+def test_yians_default_store_counts_and_a_change_to_it_is_seen(tmp_path, company_git):
+    connections, secrets = sources(tmp_path, company_git)
+    default = tmp_path / "home" / ".config" / "yian"
+    default.mkdir(parents=True, mode=0o700)
+    write_private(default / "auth.json", yian_store({"api_key": DEFAULT_KEY}, method="api_key"))
+    found = office_values(connections, secrets, company_git, company_git.head())
+    assert DEFAULT_KEY in found and CREDENTIAL_ID not in found
+    known = KnownValues(connections=connections, secrets=secrets, git=company_git)
+    assert DEFAULT_KEY in known.values([])
+    write_private(default / "auth.json", yian_store({"api_key": OTHER}, method="api_key"))  # a new login
+    assert OTHER in known.values([]) and DEFAULT_KEY not in known.values([])
+
+
+def test_yians_default_store_that_cant_be_read_fails_closed(tmp_path, company_git):
+    connections, secrets = sources(tmp_path, company_git)
+    default = tmp_path / "home" / ".config" / "yian"
+    default.mkdir(parents=True, mode=0o700)
+    (default / "auth.json").write_bytes(yian_store({"api_key": DEFAULT_KEY}, method="api_key"))
+    (default / "auth.json").chmod(0o644)  # not private: read_private refuses it
+    with pytest.raises(SecretsUnavailable):
+        KnownValues(connections=connections, secrets=secrets, git=company_git).values([])
 
 
 def test_a_connection_file_that_cant_be_read_fails_closed(tmp_path, company_git):
