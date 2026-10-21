@@ -303,8 +303,12 @@ function Header(props: {
   const total = () => Math.max(run().children_total ?? 0, kids().length)
   const usage = () => props.detail.usage
   const fingerprint = () => props.detail.flow_fingerprint
-  // Where the run is, as the list says it; and its reason, when that says more.
-  const place = () => where(run())
+  // Where the run is, as the list says it, unless that repeats the status word or (once finished) the "took" below;
+  // and its reason, when that says more.
+  const place = () => {
+    const text = where(run())
+    return text && text !== run().status && run().status !== "finished" ? text : null
+  }
   const reason = () => (run().reason && run().reason !== place() ? run().reason : null)
   return (
     <section aria-label="Run" class="space-y-3 border-b border-neutral-200 p-4 max-md:px-3 dark:border-neutral-800">
