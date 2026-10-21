@@ -1,10 +1,12 @@
 """The reference monitor: asset tools checked against the company repo, run with office secrets, audited."""
 
+import base64
 import json
+import re
 from collections.abc import Callable, Collection, Iterable, Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, quote_plus
 
 from langchain_core.tools import BaseTool, StructuredTool
 
@@ -153,8 +155,10 @@ def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     Each secret is scrubbed as stored, without surrounding whitespace, and line by line
     for lines of at least ``SECRET_LINE_CHARS`` (one line of a PEM key; a line that is not
     secret, such as the key's armor, may be scrubbed too). Each of those is also scrubbed as
-    it reads escaped inside JSON, a Python repr, or a URL. All are scrubbed longest first,
-    so a secret inside a longer one never leaves the longer one's ends behind.
+    it reads escaped inside JSON (once or twice), a Python repr, or a URL (``quote`` and
+    ``quote_plus``), in any letter case; a whole secret is also scrubbed base64-encoded, at
+    any offset (inside ``Basic`` credentials, say). All are scrubbed longest first, so a
+    secret inside a longer one never leaves the longer one's ends behind.
     """
     return _scrub(value, keys, _needles(values))
 
@@ -166,22 +170,49 @@ def redactor(values: Iterable[str]) -> Callable[[Any], Any]:
     return lambda value: _scrub(value, (), needles)
 
 
-def _needles(values: Iterable[str]) -> list[str]:
+type _Needle = tuple[str, str, re.Pattern[str] | None]
+"""A form of a secret, it casefolded (a quick test before the scrub), and a case-blind pattern, or None to match it
+exactly (base64)."""
+
+
+def _needles(values: Iterable[str]) -> list[_Needle]:
     plain: set[str] = set()
+    whole: set[str] = set()
     for value in values:
+        whole.update((value, value.strip()))
         plain.update((value, value.strip()))
         plain.update(line.strip() for line in value.splitlines() if len(line.strip()) >= SECRET_LINE_CHARS)
-    found = set()
+    texts = set()
     for needle in plain:
-        found.update((needle, json.dumps(needle)[1:-1], json.dumps(needle, ensure_ascii=False)[1:-1],
-                      repr(needle)[1:-1], quote(needle, safe="")))
-    return sorted((n for n in found if n), key=lambda n: (-len(n), n))
+        for once in (json.dumps(needle)[1:-1], json.dumps(needle, ensure_ascii=False)[1:-1]):
+            texts.update((once, json.dumps(once)[1:-1], json.dumps(once, ensure_ascii=False)[1:-1]))
+        texts.update((needle, repr(needle)[1:-1], quote(needle, safe=""), quote(needle), quote_plus(needle)))
+    exact = set().union(*map(_base64, whole)) - texts
+    found = [(n, n.casefold(), re.compile(re.escape(n), re.IGNORECASE)) for n in texts if n]
+    found += [(n, n.casefold(), None) for n in exact]
+    return sorted(found, key=lambda n: (-len(n[0]), n[0]))
 
 
-def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
+def _base64(value: str) -> set[str]:
+    """What the base64 of any text holding ``value`` holds, whatever ``value``'s offset in a 3-byte group: the
+    characters made only of its bits, in the standard and URL-safe alphabets."""
+    data = value.encode()
+    found = set()
+    for pad in range(3):
+        coded = base64.b64encode(b"\0" * pad + data).decode()
+        core = coded[-(-4 * pad // 3):8 * (pad + len(data)) // 6]
+        found.update((core, core.replace("+", "-").replace("/", "_")))
+    return {core for core in found if len(core) >= SECRET_LINE_CHARS}
+
+
+def _scrub(value: Any, keys: Collection[str], needles: list[_Needle]) -> Any:
     if isinstance(value, str):
-        for needle in needles:
-            value = value.replace(needle, REDACTED)
+        folded = value.casefold()
+        for needle, quick, pattern in needles:
+            if quick in folded:
+                new = value.replace(needle, REDACTED) if pattern is None else pattern.sub(REDACTED, value)
+                if new != value:
+                    value, folded = new, new.casefold()
         return value
     if isinstance(value, Mapping):
         scrubbed: dict[Any, Any] = {}
@@ -195,7 +226,7 @@ def _scrub(value: Any, keys: Collection[str], needles: list[str]) -> Any:
         return scrubbed
     if isinstance(value, list | tuple):
         return [_scrub(v, keys, needles) for v in value]
-    if isinstance(value, int | float) and not isinstance(value, bool) and any(n in str(value) for n in needles):
+    if isinstance(value, int | float) and not isinstance(value, bool) and any(n[0] in str(value) for n in needles):
         return REDACTED  # an all-digit secret
     return value
 

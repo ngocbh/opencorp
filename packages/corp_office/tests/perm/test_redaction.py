@@ -1,7 +1,9 @@
 """Secret values never leave the monitor, whatever shape a kind's result or error takes."""
 
+import base64
 import json
-from urllib.parse import quote
+import time
+from urllib.parse import quote, quote_plus
 
 import pytest
 
@@ -131,6 +133,49 @@ def test_an_interrupt_inside_a_kind_is_audited_then_raised(monitor, store):
 def test_keys_that_scrub_to_the_same_text_keep_every_value():
     got = redact({"x-abcdefgh": 1, "x-12345678": 2, "[redacted]": 3, "abcdefgh": 4}, set(), ["abcdefgh", "12345678"])
     assert got == {"x-[redacted]": 1, "x-[redacted]#2": 2, "[redacted]": 3, "[redacted]#2": 4}
+
+
+CONN = "conn-key-5f3a9c1e7b2d4a60"
+URLISH = "a b/c+key-0123"
+QUOTED = 'qu"ote-secret-99'
+
+
+def b64(text, alphabet=base64.b64encode):
+    return alphabet(text.encode()).decode()
+
+
+@pytest.mark.parametrize("text, gone", [
+    (b64(CONN), b64(CONN)),
+    ("Basic " + b64(f"user:{CONN}"), b64(f"user:{CONN}")[8:-4]),  # the secret at each offset in its group of 3
+    ("Basic " + b64(f"u:{CONN}"), b64(f"u:{CONN}")[4:-4]),
+    ("Basic " + b64(f"ab:{CONN}"), b64(f"ab:{CONN}")[4:-4]),
+    (b64(f"??{CONN}>>", base64.urlsafe_b64encode), b64(f"??{CONN}>>", base64.urlsafe_b64encode)[4:-4]),
+    (CONN.upper(), CONN.upper()),
+    ("Conn-Key-5F3A9c1e7b2d4a60", "5F3A9c1e7b2d4a60"),
+    ("https://h/?k=" + quote_plus(URLISH), "c%2Bkey"),
+    ("https://h/?k=" + quote(URLISH), "c%2Bkey"),
+    ("https://h/?k=" + quote(URLISH, safe="").lower(), "c%2bkey"),
+    (json.dumps(json.dumps({"k": QUOTED})), "ote-secret-99"),
+    (json.dumps(json.dumps({"k": QUOTED}, ensure_ascii=False), ensure_ascii=False), "ote-secret-99"),
+])
+def test_encoded_and_recased_forms_of_a_secret_are_scrubbed(text, gone):
+    out = redact(f"said: {text}.", (), [CONN, URLISH, QUOTED])
+    assert "[redacted]" in out and gone not in out
+
+
+def test_encoded_forms_dont_scrub_ordinary_text():
+    text = "hello conn-key world, Y29ubi1rZXk= and https://h/?q=conn"
+    assert redact(text, (), [CONN]) == text
+
+
+def test_scrubbing_known_values_stays_fast():
+    scrub = redactor([f"secret-value-{i:04d}-abcdefghij" for i in range(40)])
+    blob = "x" * 1_000_000
+    many = [f"line {i} with nothing secret in it" for i in range(20_000)]
+    start = time.perf_counter()
+    scrub(blob)
+    scrub(many)
+    assert time.perf_counter() - start < 2
 
 
 def test_a_redactor_scrubs_as_redact_does_with_its_needles_built_once(monkeypatch):
