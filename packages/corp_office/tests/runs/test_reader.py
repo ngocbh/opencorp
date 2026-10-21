@@ -1,6 +1,7 @@
 """The run-log reader: a lazy, bounded index per log with its node table; node and record pages; plain reads only."""
 
 import asyncio
+import hashlib
 import os
 import threading
 import tracemalloc
@@ -311,3 +312,77 @@ def test_one_record_is_capped_in_bytes_and_a_payload_still_too_large_is_a_size_s
     stub = read_event(path, index, 2, nothing)
     assert (stub.kind, stub.node_id, stub.payload, stub.size) == ("node_succeeded", "many", None, len(many))
     assert len(stub.model_dump_json().encode()) <= reader_mod.EVENT_BYTES
+
+
+def test_a_log_rewritten_during_a_read_is_read_again_from_the_start(tmp_path, monkeypatch):
+    path = tmp_path / "r.jsonl"
+    whole = chat_log(tmp_path / "whole.jsonl").read_bytes()
+    path.write_bytes(run_started(0) + started(2, "a"))  # caught mid-rollback: seq 1 isn't there yet
+    calls, real = [], reader_mod._read
+
+    def read(f, index, *args):
+        calls.append(1)
+        try:
+            return real(f, index, *args)
+        finally:
+            if len(calls) == 1:
+                path.write_bytes(whole)  # the writer finishes while the bad read is under way
+
+    monkeypatch.setattr(reader_mod, "_read", read)
+    assert refresh(path, None).last_seq == 15 and len(calls) == 2
+
+
+def test_a_log_unreadable_twice_in_a_row_says_so(tmp_path, monkeypatch):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + started(2, "a"))
+    calls, real = [], reader_mod._read
+
+    def read(f, index, *args):
+        calls.append(1)
+        try:
+            return real(f, index, *args)
+        finally:
+            path.write_bytes(run_started(0) + started(len(calls) + 2, "a"))  # still changing, still unreadable
+
+    monkeypatch.setattr(reader_mod, "_read", read)
+    with pytest.raises(UnreadableLog):
+        refresh(path, None)
+    assert len(calls) == 2
+
+
+def test_the_cost_counts_the_ids_errors_and_retried_ids_it_holds(tmp_path, monkeypatch):
+    short, long = tmp_path / "s.jsonl", tmp_path / "l.jsonl"
+    short.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x") + resumed(3, ["b"]))
+    long.write_bytes(run_started(0) + started(1, "a" * 5000) + failed(2, "a" * 5000, "x" * 500)
+                     + resumed(3, ["b" * 3000]))
+    assert refresh(long, None).cost() - refresh(short, None).cost() == 4999 + 199 + 2999
+    monkeypatch.setattr(reader_mod, "NODE_CAP", 5)
+    many = tmp_path / "m.jsonl"
+    many.write_bytes(run_started(0) + b"".join(started(n, f"{n:04d}" + "n" * 996) for n in range(1, 101)))
+    assert refresh(many, None).cost() < 100 * 1000  # trimmed attempts no longer count
+
+
+def test_lines_are_hashed_outside_the_index_lock(tmp_path, monkeypatch):
+    path = chat_log(tmp_path / "r.jsonl")
+    index = refresh(path, None)
+    with path.open("ab") as f:
+        f.write(line(16, "backward_started", {}) + line(17, "backward_started", {}))
+    locked, real = [], hashlib.sha256
+    monkeypatch.setattr(hashlib, "sha256", lambda data: (locked.append(index.lock.locked()), real(data))[1])
+    assert refresh(path, index).last_seq == 17 and len(locked) >= 2 and not any(locked)
+
+
+def test_progress_and_size_never_say_less_than_was_read(tmp_path, monkeypatch):
+    monkeypatch.setattr(reader_mod, "CHUNK", 256)
+    path = chat_log(tmp_path / "r.jsonl")
+    seen = []
+
+    def progress(done, total):
+        if not seen:
+            with path.open("ab") as f:
+                f.write(line(16, "backward_started", {"x": "y" * 4000}))  # appended while it is read
+        seen.append((done, total))
+
+    index = refresh(path, None, progress=progress)
+    assert index.last_seq == 16 and all(0 <= done <= total for done, total in seen)
+    assert index.size >= index.offset == path.stat().st_size

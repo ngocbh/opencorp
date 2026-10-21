@@ -94,21 +94,39 @@ class Index:
     sparse: list[tuple[int, int]] = field(default_factory=list)  # (seq, byte offset), every 64th record
     nodes: list[Attempt] = field(default_factory=list)  # every attempt by start, the newest NODE_CAP
     dropped: bool = False
+    held: int = 0  # the characters of the node ids, errors and retried ids it keeps
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def cost(self) -> int:
         """An estimate of the bytes it holds, for the LRU."""
-        return 512 + 160 * len(self.open) + 48 * len(self.sparse) + 96 * len(self.dividers) + 160 * len(self.nodes)
+        return (512 + 160 * len(self.open) + 48 * len(self.sparse) + 96 * len(self.dividers) + 160 * len(self.nodes)
+                + self.held)
 
 
 def refresh(path: Path, index: Index | None, *, progress: Callable[[int, int], None] | None = None) -> Index:
     """``index`` brought up to date with ``path`` by reading only what was appended, or a new index read from the start
     when the file was replaced, shrank, rewrote its last line, or its next record isn't the next seq. A torn last line
-    is left for the next call. ``progress(done, total)`` is called after each 1 MiB read.
+    is left for the next call. ``progress(done, total)`` is called after each 1 MiB read. A line it can't read while
+    the file changed under the read is read again once, from the start.
 
     Raises UnsupportedSchema or UnreadableLog for a complete line this office can't read, or FileNotFoundError.
     """
     st = os.stat(path)
+    try:
+        return _refresh(path, index, st, progress)
+    except UnsupportedSchema:
+        raise
+    except UnreadableLog:
+        now = os.stat(path)
+        if (now.st_size, now.st_mtime_ns) == (st.st_size, st.st_mtime_ns):
+            raise
+        # A writer rewrote the file while it was read (a rollback), so the bad line may be half of each version.
+        return _refresh(path, None, now, progress)
+
+
+def _refresh(path: Path, index: Index | None, st: os.stat_result,
+             progress: Callable[[int, int], None] | None) -> Index:
+    """``refresh`` against the file as ``st`` found it, without the retry."""
     if index is not None and not _continues(path, index, st):
         index = None
     resumed = index is not None
@@ -119,8 +137,8 @@ def refresh(path: Path, index: Index | None, *, progress: Callable[[int, int], N
             f.seek(index.offset)
             _read(f, index, st.st_size, resumed, progress)
     except _Rebuild:
-        return refresh(path, None, progress=progress)
-    index.size = st.st_size
+        return _refresh(path, None, os.stat(path), progress)
+    index.size = max(st.st_size, index.offset)  # it may have grown while it was read
     return index
 
 
@@ -144,15 +162,15 @@ def _read(f: BinaryIO, index: Index, total: int, resumed: bool, progress: Callab
         while (nl := chunk.find(b"\n", start)) >= 0:
             parts.append(chunk[start:nl + 1])
             line, parts = b"".join(parts), []
-            record = _parse(line, pos)
+            record, sha = _parse(line, pos), hashlib.sha256(line).hexdigest()
             with index.lock:
-                _apply(index, record, line, pos, first)
+                _apply(index, record, sha, pos, first)
                 index.offset = pos + len(line)
             pos, first, start = pos + len(line), False, nl + 1
         if start < len(chunk):
             parts.append(chunk[start:])
         if progress is not None:
-            progress(pos, total)
+            progress(pos, max(pos, total))
 
 
 def _parse(line: bytes, start: int) -> dict[str, Any]:
@@ -165,8 +183,8 @@ def _parse(line: bytes, start: int) -> dict[str, Any]:
     return record
 
 
-def _apply(index: Index, record: dict[str, Any], line: bytes, start: int, first: bool) -> None:
-    """Fold one parsed line, starting at byte ``start``, into ``index``; ``first`` is the first line past an earlier
+def _apply(index: Index, record: dict[str, Any], sha: str, start: int, first: bool) -> None:
+    """Fold one parsed line, starting at byte ``start`` and hashing to ``sha``, into ``index``; ``first`` is the first line past an earlier
     read. Only the envelope and the few payload fields the index keeps are looked at; every check comes before any
     change."""
     schema, seq, kind = record.get("schema"), record.get("seq"), record.get("kind")
@@ -178,7 +196,7 @@ def _apply(index: Index, record: dict[str, Any], line: bytes, start: int, first:
             raise _Rebuild
         raise UnreadableLog(f"This log's records are out of order at line {expected + 1}")
     index.schemas.add(schema)
-    index.last_seq, index.last_start, index.last_sha = seq, start, hashlib.sha256(line).hexdigest()
+    index.last_seq, index.last_start, index.last_sha = seq, start, sha
     if seq % SPARSE_EVERY == 0:
         index.sparse.append((seq, start))
     payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
@@ -200,8 +218,9 @@ def _apply(index: Index, record: dict[str, Any], line: bytes, start: int, first:
         index.open.clear()
         retried = [n for n in payload.get("retry_node_ids") or [] if isinstance(n, str)][:OPEN_CAP]
         index.dividers.append((seq, retried))
+        index.held += sum(map(len, retried))
         if len(index.dividers) > DIVIDER_CAP:
-            del index.dividers[0]
+            index.held -= sum(map(len, index.dividers.pop(0)[1]))
 
 
 def _started(index: Index, seq: int, node_id: object) -> None:
@@ -213,8 +232,11 @@ def _started(index: Index, seq: int, node_id: object) -> None:
     if len(index.open) > OPEN_CAP:
         del index.open[next(iter(index.open))]
     index.nodes.append(attempt)
+    index.held += len(node_id)
     if len(index.nodes) > NODE_CAP * 11 // 10:  # trimmed in batches: one del per append would be quadratic
-        del index.nodes[:len(index.nodes) - NODE_CAP]
+        gone = len(index.nodes) - NODE_CAP
+        index.held -= sum(len(a.node_id) + len(a.error or "") for a in index.nodes[:gone])
+        del index.nodes[:gone]
         index.dropped = True
 
 
@@ -235,6 +257,7 @@ def _ended(index: Index, seq: int, kind: str, payload: dict[str, Any]) -> None:
         attempt.handle = payload["handle"]
     if failure is not None:
         attempt.error = str(failure.get("message") or failure.get("code") or "")[:ERROR_CHARS] or None
+        index.held += len(attempt.error or "")
 
 
 @dataclass(frozen=True)
