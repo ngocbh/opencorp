@@ -45,7 +45,6 @@
       "properties": {
         "provider_policy": { "type": "string", "default": "default" },
         "cost_cap_usd": { "type": "number", "minimum": 0, "default": 5 },
-        "idle_end": { "type": "string", "pattern": "^[0-9]+[smhd]$", "default": "2h" },
         "max_turns": { "type": "integer", "minimum": 1, "default": 500 },
         "profile_max_chars": { "type": "integer", "minimum": 1, "default": 32000 },
         "side_chat_cost_cap_usd": { "type": "number", "minimum": 0, "default": 1 },
@@ -195,8 +194,16 @@
         "office": { "type": "string" },
         "cwd": { "type": "string" },
         "repo_commit": { "$ref": "#/$defs/GitId" },
-        "status": { "enum": ["starting", "idle", "busy", "ending", "debriefing", "ended", "failed", "interrupted"] },
+        "status": { "enum": ["starting", "idle", "busy", "waiting", "ending", "debriefing", "ended", "failed", "interrupted"] },
         "kind": { "enum": ["main", "side", "profile_manager"] },
+        "waiting_on": {
+          "type": "array", "items": { "$ref": "#/$defs/Handle" }, "default": [],
+          "description": "While status is waiting: who must act (answer an open question, or raise the cost cap), in the order those opened. Empty otherwise."
+        },
+        "capped": {
+          "type": "boolean", "default": false,
+          "description": "True while the session's cost is at or over its cost cap: its turns wait until someone raises the cap, and its status is waiting."
+        },
         "harness_session_id": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
         "work_item_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null },
         "run_ids": { "type": "array", "items": { "type": "string" }, "default": [] },

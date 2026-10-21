@@ -166,3 +166,32 @@ def test_a_session_stored_before_0004_reads_back_none(tmp_path):
     with Store(path) as store:
         got = store.get_session(s.id)
         assert got == s and (got.harness_model, got.harness_usage, got.parent_session_id) == (None, None, None)
+
+
+def test_a_session_keeps_who_it_waits_on_and_whether_its_cap_holds_it(store):
+    s = store.create_session(session(status="waiting", waiting_on=["ngocbh", "lan"], capped=True))
+    got = store.get_session(s.id)
+    assert got == s and (got.waiting_on, got.capped) == (["ngocbh", "lan"], True)
+    changed = store.update_session(s.id, status="idle", waiting_on=[], capped=False)
+    assert (changed.waiting_on, changed.capped) == ([], False)
+
+
+def test_a_session_stored_before_0006_waits_on_no_one(tmp_path):
+    path = tmp_path / "store.sqlite"
+    conn = sqlite3.connect(path, isolation_level=None)
+    first = tmp_path / "m"
+    first.mkdir()
+    for name in ("0001_initial.sql", "0002_session_opened_by.sql", "0003_session_model.sql",
+                 "0004_codex_sessions.sql", "0005_hq_sessions.sql"):
+        (first / name).write_text((MIGRATIONS / name).read_text())
+    migrate(conn, first)
+    s = session()
+    conn.execute(
+        "INSERT INTO sessions (id, person, harness, office, cwd, repo_commit, status, kind, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (s.id, s.person, s.harness, s.office, s.cwd, s.repo_commit, s.status, s.kind, s.created_at, s.updated_at),
+    )
+    conn.close()
+    with Store(path) as store:
+        got = store.get_session(s.id)
+        assert got == s and (got.waiting_on, got.capped) == ([], False)

@@ -91,7 +91,6 @@ export interface Device {
 export interface CompanyDefaults {
   provider_policy?: string;
   cost_cap_usd?: number;
-  idle_end?: string;
   max_turns?: number;
   profile_max_chars?: number;
   side_chat_cost_cap_usd?: number;
@@ -258,8 +257,16 @@ export interface Session {
   office: string;
   cwd: string;
   repo_commit: GitId;
-  status: "starting" | "idle" | "busy" | "ending" | "debriefing" | "ended" | "failed" | "interrupted";
+  status: "starting" | "idle" | "busy" | "waiting" | "ending" | "debriefing" | "ended" | "failed" | "interrupted";
   kind: "main" | "side" | "profile_manager";
+  /**
+   * While status is waiting: who must act (answer an open question, or raise the cost cap), in the order those opened. Empty otherwise.
+   */
+  waiting_on?: Handle[];
+  /**
+   * True while the session's cost is at or over its cost cap: its turns wait until someone raises the cap, and its status is waiting.
+   */
+  capped?: boolean;
   harness_session_id?: string | null;
   work_item_id?: Ulid | null;
   run_ids?: string[];

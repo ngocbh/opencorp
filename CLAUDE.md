@@ -103,6 +103,8 @@ bun install
   `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
 - only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
   type of anything merged code uses;
+- while the PyPI releases are 0.0.x placeholders (see Releases), may also remove a field once
+  the code that read it has merged without it, and says in the PR what stops loading;
 - adds the matching store migration (`packages/corp_office/src/opencorp/store/migrations/`)
   when a new field lands on a `$def` the store persists, since inserts fail until the column
   exists;

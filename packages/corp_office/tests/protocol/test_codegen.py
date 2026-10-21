@@ -106,3 +106,8 @@ def test_a_choice_takes_no_typed_answer_unless_it_says_so():
     assert choose.typed is False
     assert json.loads(choose.model_dump_json())["typed"] is False
     assert models.SetupChoose.model_validate_json((FIXTURES / "SetupChoose.json").read_text()).typed is True
+
+
+def test_company_defaults_no_longer_take_idle_end():
+    with pytest.raises(pydantic.ValidationError):
+        models.CompanyDefaults.model_validate({"idle_end": "2h"})
