@@ -125,6 +125,19 @@ test("--continue opens the newest main session in the folder", async () => {
   }
 })
 
+test("--continue finds this folder's session behind more than 50 newer ones elsewhere", async () => {
+  const fake = office(["proj"])
+  for (let i = 0; i < 60; i++)
+    fake.state.sessions.unshift({ ...fake.state.sessions.at(-1)!, id: fake.nextId(), cwd: "/tmp/other", updated_at: ago(1000) })
+  const app = await bootFrame(createStub(fake), { continue: true })
+  try {
+    await app.until((f) => f.includes("fix the flaky test"))
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
 test("--continue stays home when the folder has no session", async () => {
   const fake = office(["other"])
   const app = await bootFrame(createStub(fake), { continue: true })
