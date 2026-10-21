@@ -309,35 +309,38 @@ class Learning:
         session's end."""
         self._release(session_id)
         with self._lock:
-            if self._debriefs.get(session_id, (None, None))[0] == run_id:
-                del self._debriefs[session_id]
-            self._open.pop(run_id, None)
-        session = self.store.get_session(session_id)
-        record = self.store.get_debrief_record(session_id)
-        attempts = (record.attempts if record else 0) + 1
-        debrief, why = None, COULDNT_START
-        if not started:
-            log.warning("the debrief of session %s couldn't start", session_id)
-        elif outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
-            try:
-                debrief = ready_debrief(session, outcome["output"])
-            except (KeyError, TypeError, ValidationError) as exc:
-                self._log_exception(exc, "the debrief of session %s returned a bad output", session_id)
-                why = BAD_OUTPUT
-        else:
-            why = self._failure(outcome)
-            log.warning("the debrief of session %s failed: %s", session_id, why)
-        end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
-        with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
-            if debrief is not None:
-                self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
+            self._open.pop(run_id, None)  # its trailing run.updated sends nothing now
+        try:
+            session = self.store.get_session(session_id)
+            record = self.store.get_debrief_record(session_id)
+            attempts = (record.attempts if record else 0) + 1
+            debrief, why = None, COULDNT_START
+            if not started:
+                log.warning("the debrief of session %s couldn't start", session_id)
+            elif outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
+                try:
+                    debrief = ready_debrief(session, outcome["output"])
+                except (KeyError, TypeError, ValidationError) as exc:
+                    self._log_exception(exc, "the debrief of session %s returned a bad output", session_id)
+                    why = BAD_OUTPUT
             else:
-                self.store.save_debrief(pending_debrief(session), attempts=attempts)
-            self.store.end_run(run_id, end.outcome, reason=end.reason)
-            if session.status == "debriefing":
-                self.store.update_session(session_id, status="ended")
-        if debrief is not None:
-            self._mark_finished(session_id, run_id)  # once the debrief is stored: feedback needs its run
+                why = self._failure(outcome)
+                log.warning("the debrief of session %s failed: %s", session_id, why)
+            end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
+            with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
+                if debrief is not None:
+                    self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
+                else:
+                    self.store.save_debrief(pending_debrief(session), attempts=attempts)
+                self.store.end_run(run_id, end.outcome, reason=end.reason)
+                if session.status == "debriefing":
+                    self.store.update_session(session_id, status="ended")
+            if debrief is not None:
+                self._mark_finished(session_id, run_id)  # once the debrief is stored: feedback needs its run
+        finally:  # claimed until its outcome is stored, so it never reads as one that stopped without one
+            with self._lock:
+                if self._debriefs.get(session_id, (None, None))[0] == run_id:
+                    del self._debriefs[session_id]
         self._drain(session_id)
 
     def debriefing(self) -> dict[str, str]:

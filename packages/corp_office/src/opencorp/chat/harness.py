@@ -1115,9 +1115,11 @@ class Harness:
             self._closed = True
 
     def live_runs(self) -> tuple[dict[str, str], frozenset[str]]:
-        """Each session's live run id, and the sessions being woken (a snapshot)."""
+        """Each session's live run id, and the sessions being woken or finishing (a snapshot). A finishing session's
+        run is still writing its outcome after ``_finish`` dropped it, so it isn't taken for one that stopped."""
         with self._lock:
-            return {sid: live.run_id for sid, live in self._live.items()}, frozenset(self._waking)
+            live = {sid: live.run_id for sid, live in self._live.items()}
+            return live, frozenset(self._waking) | frozenset(self._finishing)
 
     def open_nodes(self, run_id: str) -> list[str]:
         """The nodes the live run ``run_id`` is executing now, deepest only; empty if it isn't live."""
@@ -1385,6 +1387,7 @@ class Harness:
                     driver=old.driver if old else (live.owner or OFFICE_DRIVER),
                     parent_run_id=old.parent_run_id if old else None, launched_at=at))
             old_run, live.run_id, live.parent_run_id = live.run_id, run_id, row.parent_run_id
+            live.open_nodes.clear()  # the new run has run nothing yet
             for q in self.store.list_questions(run_id=old_run, status="open"):
                 self.store.set_question_status(q.id, "stale")
         except Exception:
