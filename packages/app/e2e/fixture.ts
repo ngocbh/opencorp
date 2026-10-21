@@ -288,8 +288,11 @@ function companyFile(url: URL): Response {
   return json({ path, commit: at, text: null, target: null, reason: null, rewritten: false, ...file })
 }
 
+const RUN_STATUSES = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
+
 /** GET /api/runs as the office answers it: top-level runs newest first, a parent shown when it or a child matches,
- * `limit` (50) at a time from `before`; `?parent=` lists one run's children. */
+ * `limit` (50) at a time from `before`; `?parent=` lists one run's children. `status` is a comma-separated list (any
+ * matches); `since` (inclusive) and `until` (exclusive) bound `launched_at`; a bad one of these is a 422. */
 function listRuns(url: URL): Response {
   const p = url.searchParams
   log.runs.push(url.search)
@@ -298,10 +301,17 @@ function listRuns(url: URL): Response {
     const kids = state.runs.children[parent]
     return kids ? json(kids) : json({ error: "not_found", message: `no run ${parent}` }, 404)
   }
-  const [flow, person, status, q] = ["flow", "person", "status", "q"].map((k) => p.get(k))
+  const [flow, person, q] = ["flow", "person", "q"].map((k) => p.get(k))
+  const statuses = p.get("status")?.split(",") ?? []
+  const unknown = statuses.find((s) => !RUN_STATUSES.includes(s))
+  if (unknown !== undefined) return json({ error: "invalid_body", message: `unknown status ${unknown}` }, 422)
+  const [since, until] = ["since", "until"].map((k) => (p.has(k) ? Date.parse(p.get(k)!) : null))
+  if (Number.isNaN(since) || Number.isNaN(until))
+    return json({ error: "invalid_body", message: "since and until are ISO timestamps" }, 422)
   const match = (r: RunSummary) =>
     (!flow || r.flow === flow) && (!person || r.driver === person || (r.participants ?? []).includes(person)) &&
-    (!status || r.status === status) && (!q || r.run_id.includes(q.toUpperCase()))
+    (!statuses.length || statuses.includes(r.status)) && (!q || r.run_id.includes(q.toUpperCase())) &&
+    (since === null || Date.parse(r.launched_at) >= since) && (until === null || Date.parse(r.launched_at) < until)
   const shown = state.runs.runs.filter((r) => match(r) || (r.children ?? []).some(match))
   const before = p.get("before")
   const from = before ? shown.findIndex((r) => r.run_id < before) : 0

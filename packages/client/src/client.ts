@@ -117,10 +117,23 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     /** Spend per person since `since`, a Timestamp (HQ only). */
     costs: { since: (since: string) => get<CostReport>(`/costs${query({ since })}`) },
     runs: {
-      /** Top-level runs, newest first, each with its children; `before` is the last page's `next`. */
+      /**
+       * Top-level runs, newest first, each with its children; `before` is the last page's `next`. `status` is one
+       * status or several (a run matches any of them); `since` (inclusive) and `until` (exclusive) are Timestamps
+       * bounding when a run was launched.
+       */
       list: (
-        opts: { flow?: string; person?: string; status?: RunSummary["status"]; q?: string; before?: string; limit?: number } = {},
-      ) => get<RunPage>(`/runs${query(opts)}`),
+        opts: {
+          flow?: string
+          person?: string
+          status?: RunSummary["status"] | RunSummary["status"][]
+          since?: string
+          until?: string
+          q?: string
+          before?: string
+          limit?: number
+        } = {},
+      ) => get<RunPage>(`/runs${query({ ...opts, status: [opts.status ?? []].flat().join(",") || undefined })}`),
       /** Every run started from run `id`: the list's "Show all". */
       children: (id: string) => get<RunSummary[]>(`/runs${query({ parent: id })}`),
       /** One run's header: summary, parent, children, fingerprint, pinned commit, models, usage and log state. */

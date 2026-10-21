@@ -6,7 +6,7 @@ import Copy from "lucide-solid/icons/copy"
 import { createEffect, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { useOffice } from "../data/office"
-import { matches, type RunFilters } from "./filters"
+import { matches, type RunParams } from "./query"
 import { flowText, shortId, STATUS_DOT, where } from "./format"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
@@ -158,11 +158,11 @@ function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean
 type Fold = { open?: boolean; rest?: boolean; all?: RunSummary[]; loading?: boolean; error?: string }
 
 /**
- * The runs table. A run's children start folded, except when the filters are set and a child matches: then it starts
- * open with only the matching children, until "Show the rest". Past the newest 200 children, "Show all" reads them,
- * and reads them again each time the list is refetched (`refreshed` changes).
+ * The runs table. A run's children start folded, except when the run is listed only because a child matches the
+ * filters: then it starts open with only the matching children, until "Show the rest". Past the newest 200 children,
+ * "Show all" reads them, and reads them again each time the list is refetched (`refreshed` changes).
  */
-export function RunTable(props: { runs: RunSummary[]; filters: RunFilters; refreshed: number }) {
+export function RunTable(props: { runs: RunSummary[]; filters: RunParams; refreshed: number }) {
   const office = useOffice()
   const [folds, setFolds] = createStore<Record<string, Fold>>({})
   const filtered = () => Object.keys(props.filters).length > 0
@@ -208,7 +208,9 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunFilters; refre
             const all = fold().all
             return all && all.length > (run.children ?? []).length ? all : (run.children ?? [])
           }
-          const matching = () => (filtered() ? kids().filter((k) => matches(k, props.filters)) : [])
+          // A run that doesn't match is listed for its matching children: they say why it's here.
+          const matching = () =>
+            filtered() && !matches(run, props.filters) ? kids().filter((k) => matches(k, props.filters)) : []
           const open = () => fold().open ?? matching().length > 0
           // Only the matching children, while some match and "Show the rest" hasn't been pressed.
           const shown = () => (matching().length && !fold().rest ? matching() : kids())
