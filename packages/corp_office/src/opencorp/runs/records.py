@@ -57,7 +57,8 @@ def status_of(row: RunRow, session: Session | None, live: Live) -> tuple[str, st
 def current_nodes(status: str, run_id: str, open_questions: list[Question], live: Live) -> tuple[list[str], bool, bool]:
     """(the node ids a run in ``status`` is at, whether a model question is open, whether it's held at its cost cap)."""
     if status == "idle":
-        return [q.node_id for q in open_questions if q.source == "human_input" and MAIN_CHAT.is_turn(q.node_id)], False, False
+        turns = [q.node_id for q in open_questions if q.source == "human_input" and MAIN_CHAT.is_turn(q.node_id)]
+        return turns, False, False
     if status == "waiting":
         nodes = [q.node_id for q in open_questions
                  if q.node_id and not (q.source == "human_input" and MAIN_CHAT.is_turn(q.node_id))]

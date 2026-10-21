@@ -255,7 +255,8 @@ def run_page_sql(*, parent: bool = False, since: bool = False, until: bool = Fal
 RUN_PAGE_SQL = run_page_sql()
 """A page of top-level runs, newest first: (before, limit)."""
 CHILD_COUNTS_SQL = "SELECT parent_run_id, COUNT(*) FROM runs WHERE parent_run_id IN ({}) GROUP BY parent_run_id"
-"""How many runs each of some runs started, read from an index on parent_run_id alone; format with one ``?`` per parent."""
+"""How many runs each of some runs started, read from an index on parent_run_id alone; format with one ``?`` per
+parent."""
 
 
 @dataclass(frozen=True)
