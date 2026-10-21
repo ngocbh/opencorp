@@ -14,7 +14,7 @@ import {
 } from "solid-js"
 import { useOffice } from "../data/office"
 import { LIVE } from "../data/snapshot"
-import { hrefOf } from "../runs/filters"
+import { DEFAULT_QUERY, hrefOf } from "../runs/query"
 import { flowText, shortId } from "../runs/format"
 import { sourceHref } from "./address"
 import { costText } from "./format"
@@ -228,7 +228,7 @@ export function Panel(props: {
           </Show>
         </Show>
         <A
-          href={hrefOf({ person: props.person.handle })}
+          href={hrefOf(`@${props.person.handle} ${DEFAULT_QUERY}`)}
           class="mt-1 inline-block rounded text-sm underline outline-none focus-visible:ring-2"
         >
           All runs

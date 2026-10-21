@@ -215,5 +215,9 @@ test("the person panel lists their recent runs and links to all of them, filtere
   const panel = page.getByRole("complementary", { name: "Kai" })
   await expect(panel.getByRole("list", { name: "Recent runs" }).getByRole("listitem")).toHaveCount(2)
   await panel.getByRole("link", { name: "All runs" }).click()
-  await expect(page).toHaveURL("/runs?person=kai")
+  await expect(page).toHaveURL("/runs?q=@kai+is:open+started:7d")
+  await expect(page.getByRole("combobox", { name: "Search runs" })).toHaveValue("@kai is:open started:7d")
+  // run 5 is Kai's and idle; run 4, also Kai's, failed.
+  const runs = page.getByRole("table", { name: "Runs" })
+  await expect(runs.locator("tr[aria-level='1']")).toHaveCount(1)
 })
