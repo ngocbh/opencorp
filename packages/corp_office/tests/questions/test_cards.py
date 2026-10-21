@@ -5,6 +5,7 @@ import os
 import signal
 import stat
 import threading
+import time
 from importlib.resources import files
 
 import pytest
@@ -575,3 +576,22 @@ def test_a_harness_card_takes_only_an_answer(office, workspace):  # noqa: F811
             act()
         assert (e.value.status, e.value.code) == (422, "harness_card")
     assert office.store.get_question(q.id).status == "open"
+
+
+def test_a_side_session_whose_wake_for_its_end_fails_stays_failed(make_harness, fake_llm, workspace):  # noqa: F811
+    fake_llm.script({"content": "Postgres scales."})
+    first = gate_office(make_harness)
+    q = gate_card(first, workspace)
+    side = chat(first, q, "why Postgres?", 1)
+    stop(first)
+    first.extras["harness"].close_all()
+    second = gate_office(make_harness)  # not restored: the side session sleeps
+    h = second.extras["harness"]
+    os.chmod(h.office.paths.office / "provider.json", 0o644)  # its wake can't resolve the connection
+    try:
+        second.extras["cards"].answer(q.id, {"db": "Postgres", "features": ["auth"]}, "option")
+        wait_for(lambda: status(h, side.id) == "failed", what="the failed end")
+        time.sleep(0.3)
+        assert status(h, side.id) == "failed"  # not relabelled ended
+    finally:
+        stop(second)
