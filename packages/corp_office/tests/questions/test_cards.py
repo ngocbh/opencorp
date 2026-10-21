@@ -698,10 +698,23 @@ def test_a_card_that_closes_while_its_side_chat_isnt_running_interrupts_the_side
     _, q = ask(office, fake_llm, workspace)
     side = chat(office, q, "why?", 1)
     monkeypatch.setattr(h, "end", no_live_run)
+    monkeypatch.delitem(h._live, side.id)
     cards._close(side.id, h.store.get_question(q.id))
     (row,) = h.store.runs_of_session(side.id)
     assert (status(h, side.id), row.outcome, row.reason) == (
         "ended", "interrupted", "its card closed while it wasn't running")
+
+
+def test_a_card_that_closes_as_its_side_chat_registers_leaves_the_side_run_alone(office, fake_llm, workspace,  # noqa: F811
+                                                                                monkeypatch):
+    fake_llm.script(ASK, {"content": "Quota."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    monkeypatch.setattr(h, "end", no_live_run)  # its 409 came just before the start registered its live run
+    cards._close(side.id, h.store.get_question(q.id))
+    (row,) = h.store.runs_of_session(side.id)
+    assert (status(h, side.id), row.outcome, side.id in h._live) == ("idle", None, True)
 
 
 def test_a_closed_cards_side_chat_and_its_runs_outcome_commit_together(office, fake_llm, workspace,  # noqa: F811
@@ -711,6 +724,7 @@ def test_a_closed_cards_side_chat_and_its_runs_outcome_commit_together(office, f
     _, q = ask(office, fake_llm, workspace)
     side = chat(office, q, "why?", 1)
     monkeypatch.setattr(h, "end", no_live_run)
+    monkeypatch.delitem(h._live, side.id)
     end_run = h.store.end_run
 
     def written_then_fails(run_id, outcome, **kw):

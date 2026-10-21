@@ -240,10 +240,11 @@ class Cards:
             except HarnessError as exc:
                 # A failed wake for the end has already failed it, a stopping office leaves it to the next start, a
                 # run finishing on its own stores its end and outcome itself, and open_side ends a side chat that is
-                # still starting once its start returns (it checks the question then).
+                # still starting once its start returns (it checks the question then), including one whose start
+                # registered its live run after the 409.
                 current = self.store.get_session(side_id)
                 if exc.code == "stopping" or side_id in self.harness._finishing or side_id in self.harness._starting \
-                        or not is_live(current) or current.status == "starting":
+                        or side_id in self.harness._live or not is_live(current) or current.status == "starting":
                     return
                 log.warning("side session %s has no live run to end", side_id)
                 with self.store.transaction():  # the side run's outcome commits with the session's end
