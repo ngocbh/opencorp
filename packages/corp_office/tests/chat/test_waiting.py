@@ -266,3 +266,46 @@ def test_esc_answers_an_ask_manager_card_interrupted_and_closes_its_item(harness
     # Answered, not stale, so Cards.stored carries none of its discussion into a later card.
     wait_for(lambda: harness.store.get_work_item(q.work_item_id).status == "done", what="the item closed")
     wait_for(lambda: status(harness, sid) != "waiting", what="no longer waiting")
+
+
+def broken_settle(session_id):
+    raise OSError("the pin can't be read")
+
+
+def test_a_settle_that_fails_after_a_resume_at_restore_stops_no_other_session(make_harness, workspace, monkeypatch):
+    first = make_harness()
+    a, b = start(first, workspace), start(first, workspace)
+    first.close_all()
+    for sid in (a, b):
+        first.store.update_session(sid, status="busy")  # resumed at start, not left asleep
+    second = make_harness()
+    monkeypatch.setattr(second, "_settle", broken_settle)
+    second.restore()  # logged, not raised
+    assert a in second._live and b in second._live
+
+
+def test_a_late_cap_check_after_the_cap_was_raised_does_nothing(harness, workspace):
+    sid = start(harness, workspace)
+    harness._over_cap(harness._live[sid])  # under the cap: posted before a raise, run after it
+    assert cap_item(harness) is None and state(harness, sid) == ("idle", [])
+
+
+def test_a_failed_wake_whose_settle_fails_still_answers_cant_wake(make_harness, workspace, monkeypatch):
+    import pytest
+
+    from opencorp.chat.harness import HarnessError
+
+    first = make_harness()
+    sid = start(first, workspace)
+    first.close_all()
+    second = make_harness()  # not restored: the session sleeps
+
+    def no_worker(*args):
+        raise OSError("can't start the worker")
+
+    second.registry.spawn = no_worker
+    monkeypatch.setattr(second, "_settle", broken_settle)
+    with pytest.raises(HarnessError) as err:
+        second.prompt(sid, "hi")
+    assert (err.value.status, err.value.code) == (503, "cant_wake")
+    assert sid not in second._live and not second._waking and status(second, sid) == "idle"

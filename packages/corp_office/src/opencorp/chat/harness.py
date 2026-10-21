@@ -532,10 +532,7 @@ class Harness:
             except Exception:
                 log.exception("can't resume session %s", session.id)
             if asleep:
-                try:
-                    self._settle(session.id)  # an older office may have stored a held session idle
-                except Exception:
-                    log.exception("session %s: no state at restore", session.id)
+                self._try_settle(session.id, "at restore")  # an older office may have stored a held session idle
                 continue
             if live is None:
                 self._fail(session.id)
@@ -547,7 +544,7 @@ class Harness:
                 self._resume(live)
             except Exception:
                 continue  # it logged why and failed the session
-            self._settle(session.id)
+            self._try_settle(session.id, "at restore")
         if self.codex is not None:
             self.codex.restore()
 
@@ -716,12 +713,12 @@ class Harness:
             self._live[sid] = live  # before its worker exists, as restore does, so its first frames find it current
             if not ending:
                 # Before the worker: once it runs, its re-shown turn settles the session, which must win.
-                self._settle(sid)
+                self._try_settle(sid, "at a wake")
         try:
             self._resume(live)  # a failure drops the entry (live.waking) and raises
         except Exception as exc:
             if not ending:
-                self._settle(sid)
+                self._try_settle(sid, "after a failed wake")  # the wake's own error is the one to answer
             raise self._wake_failed(sid, live, ending, exc) from exc
         # Only a spawn clears waking, so it is still set when close_all began before the spawn. live.worker can't
         # tell: a woken worker that already exited has none either, while _exited respawns it.
@@ -730,7 +727,7 @@ class Harness:
                 if self._current(live):
                     del self._live[sid]
             if not ending:
-                self._settle(sid)
+                self._try_settle(sid, "after a failed wake")
             raise HarnessError(503, "stopping", "the office is stopping")
         if ending:
             # From waiting too: a session parked at a question node never shows its turn again, so nothing else would.
@@ -820,6 +817,14 @@ class Harness:
                     who.append(item.assignee if item is not None else pins.manager)
                 write_state(self.store, session_id, run_state(waiting=bool(asks) or held, running=running), who,
                             capped=held)
+
+    def _try_settle(self, session_id: str, when: str) -> None:
+        """``_settle``, logging a failure instead of raising, where the step around it must go on; ``when`` names the
+        step. A status that lags is fixed by the session's next settle."""
+        try:
+            self._settle(session_id)
+        except Exception:
+            log.exception("session %s: no state %s", session_id, when)
 
     def _asked(self, question: Question) -> str | None:
         """Who an ``ask_manager`` question waits on: its work item's assignee."""
@@ -1002,10 +1007,7 @@ class Harness:
             if live is not None:
                 live.capped = False
                 self._deliver(live)
-        try:
-            self._settle(session_id)
-        except Exception:  # the cap is raised and its item closed; a status that lags is fixed by the next settle
-            log.exception("session %s: no state after its cap was raised", session_id)
+        self._try_settle(session_id, "after its cap was raised")  # the cap is raised and its item closed
         return self.store.get_session(session_id)
 
     def set_model(self, session_id: str, connection: str, model: str) -> Session:
@@ -1228,8 +1230,8 @@ class Harness:
             self._post(self._over_cap, live)  # interrupt() must not run on the reader thread
 
     def _over_cap(self, live: _Live) -> None:
-        if not self._current(live):
-            return
+        if not self._current(live) or not self._held(live):
+            return  # finished, or the cap was raised after the charge posted this
         self.interrupt(live.session_id)
         session = self.store.get_session(live.session_id)
         if self._cap_item(session) is None:  # else the manager already has one to act on
