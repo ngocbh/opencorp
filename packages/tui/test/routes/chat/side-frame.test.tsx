@@ -352,6 +352,30 @@ test("Esc interrupts a starting side session; /Back returns in any case", async 
   }
 })
 
+test("a waiting side session still has its run: a message goes to it, and Esc interrupts it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "waiting" as const, waiting_on: ["ngocbh"] }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · waiting"))
+    app.input.typeText("go on")
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/prompt`))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/interrupt`))
+    expect(office.requests.some((r) => r.path.endsWith("/side"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("the typed box lets go of the keys while the side chat shows and keeps its text after /back", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

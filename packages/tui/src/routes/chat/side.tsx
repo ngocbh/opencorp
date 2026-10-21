@@ -9,6 +9,7 @@ import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
 import { OfficeUnavailable, isNotImplemented } from "@opencorp/client"
 import { errorMessage } from "../../util/error"
+import { interruptible } from "../../util/status"
 import { personLabel } from "../../util/transcript"
 import { leaveBindings } from "./leave"
 
@@ -18,7 +19,7 @@ const SIDE_MODE = "side"
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
 
 /** The statuses a session takes prompts in; any other goes back through the side route, which restarts it. */
-const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
+const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending"]
 
 /** The side chat's header: who explains which question, and, for a gate, whose side they are on. */
 export function SideHeader(props: { question: Question; session: Session | undefined }) {
@@ -126,7 +127,7 @@ export function SideChat(props: {
 
   function interrupt() {
     const s = props.session
-    if (s?.status !== "busy" && s?.status !== "starting") return
+    if (!s || !interruptible(s.status)) return
     props.onInterrupt()
     office.client.sessions.interrupt(s.id).catch(fail)
   }

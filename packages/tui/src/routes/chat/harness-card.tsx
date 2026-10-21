@@ -8,6 +8,7 @@ import { OfficeError } from "@opencorp/client"
 import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { errorMessage } from "../../util/error"
+import { interruptible } from "../../util/status"
 import { buildAnswer, cardModel } from "./answer"
 import { leaveBindings } from "./leave"
 import { QuestionView } from "./question-view"
@@ -33,11 +34,10 @@ export function HarnessCard(props: {
   const model = createMemo(() => cardModel(props.question))
   const title = () => props.question.title ?? props.question.question
   const focusKey = useCommandShortcut("session.card.focus")
-  // Esc interrupts only while a turn is starting or running, as in the prompt.
-  const working = createMemo(() => {
-    const status = office.state.sessions.find((s) => s.id === props.question.session_id)?.status
-    return status === "starting" || status === "busy"
-  })
+  // Esc interrupts while a turn is starting, running or waiting, as in the prompt.
+  const working = createMemo(() =>
+    interruptible(office.state.sessions.find((s) => s.id === props.question.session_id)?.status),
+  )
   // One answer call at a time: a second pick while one is in flight would race it.
   let sending = false
 
