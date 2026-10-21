@@ -608,6 +608,7 @@ def test_each_side_chat_run_nests_under_the_cards_run_with_its_opener_as_driver(
     first, again = h.store.runs_of_session(side.id)
     assert [(r.flow, r.flow_path, r.driver, r.parent_run_id) for r in (first, again)] == [
         ("side_chat", "shared/flows/side_chat.yaml", "ngocbh", q.run_id)] * 2
+    assert (first.outcome, again.outcome) == ("finished", None)
 
 
 def test_a_restored_or_woken_side_chat_keeps_the_cards_run_as_its_parent(make_harness, fake_llm, workspace):  # noqa: F811

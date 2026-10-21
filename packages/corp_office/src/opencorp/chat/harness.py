@@ -33,7 +33,8 @@ from opencorp.protocol import now
 from opencorp.protocol.models import CompanyDefaults, Event, Question, Session, WorkItem
 from opencorp.questions.ask import Answers, OnQuestion, make_ask_user
 from opencorp.questions.format import INTERRUPTED
-from opencorp.runs.outcomes import ANOTHER_START, OFFICE as OFFICE_DRIVER, flow_label
+from opencorp.runs.outcomes import (ANOTHER_START, COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, OFFICE as OFFICE_DRIVER,
+                                    WORKER_STOPPED, RunEnd, flow_label)
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from opencorp.store import InvalidTransition, RunRow, new_id
 from opencorp.tools import ToolContext, build
@@ -551,7 +552,7 @@ class Harness:
                 self._try_settle(session.id, "at restore")  # an older office may have stored a held session idle
                 continue
             if live is None:
-                self._fail(session.id)
+                self._fail(session.id, session.run_ids[-1] if session.run_ids else None)
                 continue
             live.ending = session.status == "ending"
             with self._lock:
@@ -600,7 +601,7 @@ class Harness:
                     self.store.update_session(live.session_id,
                                               model_note=_WOKEN_NOTE if live.waking else _FRESH_NOTE)
         except Exception:
-            self._cant_start(live)
+            self._cant_start(live, COULDNT_RESUME)
             raise
         if provider is None:
             self._new_run(live)  # on failure, it fails the session and raises
@@ -657,20 +658,20 @@ class Harness:
                 live.worker = self.registry.spawn(job, run_dir, _Handlers(self, live, ask, tools))
                 live.waking = False
         except Exception:
-            self._cant_start(live)
+            self._cant_start(live, COULDNT_RESUME if kind == "resume" else COULDNT_START)
             raise
         self._post(self.hooks.fire, "run_started", session, live.run_id)
 
-    def _cant_start(self, live: _Live) -> None:
-        """Log why ``live``'s worker can't start, and fail its session; a wake's is only dropped, for the wake to
-        answer."""
+    def _cant_start(self, live: _Live, why: str = COULDNT_START) -> None:
+        """Log why ``live``'s worker can't start, and fail its session and its run with ``why``; a wake's is only
+        dropped, for the wake to answer."""
         log.exception("can't start a worker for session %s", live.session_id)
         if live.waking:
             with self._lock:
                 if self._current(live):
                     del self._live[live.session_id]
             return
-        self._finish(live, "failed", None)
+        self._finish(live, "failed", None, why=why)
 
     # --- waking ----------------------------------------------------------------------
 
@@ -768,9 +769,10 @@ class Harness:
         """
         if ending:
             if live is not None:
-                self._finish(live, "failed", None)
+                self._finish(live, "failed", None, why=COULDNT_RESUME)
             else:
-                self._fail(session_id)
+                session = self.store.get_session(session_id)
+                self._fail(session_id, session.run_ids[-1] if session and session.run_ids else None)
         if isinstance(exc, HarnessError):
             return exc
         log.warning("session %s can't wake: %s", session_id, exc)
@@ -1382,7 +1384,10 @@ class Harness:
         return any(live.spec.chat.is_turn(q.node_id)
                    for q in self.store.list_questions(run_id=live.run_id, source="human_input"))
 
-    def _finish(self, live: _Live, status: str, outcome: dict[str, Any] | None) -> None:
+    def _finish(self, live: _Live, status: str, outcome: dict[str, Any] | None, *, why: str | None = None) -> None:
+        """End ``live``'s session with ``status`` (``ended`` or ``failed``) and its current run with what that
+        means (``_run_end``; ``why`` says why a run with no ``outcome`` failed), in one transaction."""
+        end = _run_end(status, outcome, live.provider, why)  # before end_status may make status "debriefing"
         with self._lock:
             dropped = self._live.get(live.session_id) is live
             if dropped:
@@ -1399,7 +1404,9 @@ class Harness:
                 # Close the item first, so no client sees an ended session with its work still open.
                 if session.work_item_id:
                     self.store.update_work_item(session.work_item_id, status="done")
-            session = self.store.update_session(live.session_id, **not_waiting(status))
+            with self.store.transaction():  # the run's outcome commits with the session's end, or neither does
+                session = self.store.update_session(live.session_id, **not_waiting(status))
+                self.store.end_run(live.run_id, end.outcome, reason=end.reason, failed_node=end.failed_node)
             if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
                 self._run_finished(live, session, outcome)
             self.hooks.fire("session_ended", session)
@@ -1413,9 +1420,14 @@ class Harness:
         live.announced = live.run_id
         self.hooks.fire("run_finished", session, live.run_id, _redact(outcome, live.provider))
 
-    def _fail(self, session_id: str) -> None:
-        """Fail a session that has no live run."""
-        self.hooks.fire("session_ended", self.store.update_session(session_id, **not_waiting("failed")))
+    def _fail(self, session_id: str, run_id: str | None = None, why: str = COULDNT_RESUME) -> None:
+        """Fail a session that has no live run; ``run_id`` (its current run) fails with ``why`` in the same
+        transaction."""
+        with self.store.transaction():
+            session = self.store.update_session(session_id, **not_waiting("failed"))
+            if run_id is not None:
+                self.store.end_run(run_id, "failed", reason=why)
+        self.hooks.fire("session_ended", session)
 
     # --- helpers ---------------------------------------------------------------------
 
@@ -1556,6 +1568,17 @@ def _why(outcome: dict[str, Any] | None, provider: Provider) -> str:
     cause, message = failure.get("cause_type"), failure.get("message") or outcome.get("message") or "no reason given"
     why = _redact(f"{cause}: {message}" if cause else str(message), provider)
     return why if len(why) <= _WHY_CHARS else why[:_WHY_CHARS - 1] + "…"
+
+
+def _run_end(status: str, outcome: dict[str, Any] | None, provider: Provider, why: str | None) -> RunEnd:
+    """How a run ``_finish`` ends with ``status`` (``ended`` or ``failed``) ended: a loop limit is a normal end; a
+    failure with no outcome is ``why``, else the worker stopped."""
+    failure = (outcome or {}).get("failure") or {}
+    if status == "ended":
+        return RunEnd("finished", LOOP_LIMIT if failure.get("cause_type") == "LoopMaxExceeded" else None)
+    if outcome is None:
+        return RunEnd("failed", why or WORKER_STOPPED)
+    return RunEnd("failed", _why(outcome, provider), failure.get("node_id"))
 
 
 def _refused_key(failure: dict[str, Any], why: str) -> bool:
