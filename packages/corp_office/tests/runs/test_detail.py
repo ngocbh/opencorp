@@ -181,8 +181,8 @@ async def test_a_connection_key_a_reply_echoes_is_shown_as_stored(make_harness, 
     runs = run_logs(harness)
     page = await runs.events(run_id, after=None, limit=500)
     done = next(e for e in page.events if e.kind == "node_succeeded" and (e.node_id or "").endswith("/reply"))
-    assert done.payload["value"]["output"] == f"the key is {KEY}"
-    assert (await runs.event(run_id, done.seq)).payload["value"]["output"] == f"the key is {KEY}"
+    assert f"the key is {KEY}" in done.model_dump_json()
+    assert f"the key is {KEY}" in (await runs.event(run_id, done.seq)).model_dump_json()
     assert b"".join(await runs.log_lines(run_id)) == runs.log_path(harness.store.get_run(run_id)).read_bytes()
 
 

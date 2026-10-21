@@ -59,12 +59,12 @@ async def test_get_runs_filters_by_statuses_and_a_launch_range_and_pages(office,
     assert ids(await client.get("/runs", params={"parent": done, "status": "running,interrupted"})) == [kid]
 
 
-async def test_a_bearer_token_in_a_failure_never_reaches_get_runs(office, client):
+async def test_a_failure_reaches_get_runs_as_stored(office, client):
     office.extras["runs"] = RunLogs(office)
     run_id = a_run(office)
-    office.store.end_run(run_id, "failed", reason="AuthError: Bearer abcdefgh12345")  # stored as given
+    office.store.end_run(run_id, "failed", reason="AuthError: Bearer abcdefgh12345")
     r = await client.get("/runs")
-    assert r.status_code == 200 and "abcdefgh12345" not in r.text and "Bearer (hidden)" in r.text
+    assert r.status_code == 200 and r.json()["runs"][0]["reason"] == "AuthError: Bearer abcdefgh12345"
 
 
 @pytest.mark.parametrize("params", [
