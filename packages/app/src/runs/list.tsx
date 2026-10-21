@@ -64,11 +64,14 @@ export function CopyId(props: { id: string; label?: string }) {
   )
 }
 
-/** One run's row; `toggle` is the fold button of a top-level run with runs under it, `count` of them. */
+/**
+ * One run's row; `toggle` is the fold button of a top-level run with runs under it, `count` of them, and whether the
+ * fold is reading its first page.
+ */
 function Row(props: {
   run: RunSummary
   level: 1 | 2
-  toggle?: { open: boolean; count: number; controls: string; onToggle: () => void }
+  toggle?: { open: boolean; count: number; controls: string; onToggle: () => void; reading: boolean }
 }) {
   const r = () => props.run
   return (
@@ -95,6 +98,14 @@ function Row(props: {
                 {t().count} {t().count === 1 ? "run" : "runs"}
                 <span class="sr-only"> under {shortId(r().run_id)}</span>
               </button>
+            )}
+          </Show>
+          {/* Mounted with the toggle and only its text changed, so a screen reader announces the read starting. */}
+          <Show when={props.toggle}>
+            {(t) => (
+              <span role="status" data-testid="fold-reading" class={`text-xs ${MUTED}`}>
+                {t().reading ? "reading…" : ""}
+              </span>
             )}
           </Show>
         </span>
@@ -213,7 +224,10 @@ function TopRun(props: {
     queue(
       async () => {
         if (disposed) return
+        // A read that waited while its row left the page, or a first page whose fold was closed since, isn't sent.
+        const gone = () => disposed || (how === "first" && !open())
         try {
+          if (gone()) return
           const opts = only() ? props.filters : {}
           // As many as are shown, from the start, for a re-read; past the last one shown for Load more.
           const want = how === "again" ? (fold.kids?.length ?? 0) : 0
@@ -221,9 +235,8 @@ function TopRun(props: {
           let before = how === "more" ? (fold.next ?? undefined) : undefined
           let next: string | null
           do {
-            // A read that waited for a slot while its row left the page isn't sent.
             const page = await props.limit(async () =>
-              disposed ? null : office.client.runs.children(id(), { ...opts, before, limit: PAGE }),
+              gone() ? null : office.client.runs.children(id(), { ...opts, before, limit: PAGE }),
             )
             if (!page) return
             kids = [...kids, ...page.runs]
@@ -240,7 +253,8 @@ function TopRun(props: {
           if (!disposed && byReader) setFold({ loading: false })
         }
       },
-      how === "again" ? "again" : undefined,
+      // Only live re-reads share a key: a Retry dropped for a waiting one would leave `loading` set.
+      how === "again" && !byReader ? "again" : undefined,
     )
   }
   // An open fold with nothing read yet reads its first page (once: a failure waits for Retry).
@@ -266,7 +280,13 @@ function TopRun(props: {
           level={1}
           toggle={
             total() > 0
-              ? { open: open(), count: total(), controls: under, onToggle: () => setFold({ open: !open() }) }
+              ? {
+                  open: open(),
+                  count: total(),
+                  controls: under,
+                  onToggle: () => setFold({ open: !open() }),
+                  reading: !!fold.loading && !fold.kids,
+                }
               : undefined
           }
         />
@@ -274,13 +294,6 @@ function TopRun(props: {
       <tbody id={under}>
         <Show when={open()}>
           <For each={fold.kids ?? []}>{(kid) => <Row run={kid} level={2} />}</For>
-          <Show when={fold.loading && !fold.kids}>
-            <tr class="max-md:block">
-              <td colSpan={7} class={`py-1 pl-9 text-xs max-md:block ${MUTED}`}>
-                <span role="status">reading…</span>
-              </td>
-            </tr>
-          </Show>
           <Show
             when={fold.failed}
             fallback={

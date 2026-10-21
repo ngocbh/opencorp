@@ -382,14 +382,15 @@ test("copying where the clipboard can't be used says so", async ({ page }) => {
   await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { value: undefined }))
   await page.goto("/runs")
   await row(page, 5).getByRole("button", { name: "Copy run id" }).click()
-  await expect(row(page, 5).getByRole("status")).toHaveText("Couldn't copy")
+  // The copy button's status, not the fold's beside it.
+  await expect(row(page, 5).getByRole("status").filter({ hasText: /cop/i })).toHaveText("Couldn't copy")
 })
 
 test("a copied id is announced", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"])
   await page.goto("/runs")
   await row(page, 5).getByRole("button", { name: "Copy run id" }).click()
-  await expect(row(page, 5).getByRole("status")).toHaveText("Copied")
+  await expect(row(page, 5).getByRole("status").filter({ hasText: /cop/i })).toHaveText("Copied")
 })
 
 test("session.updated refetches the list", async ({ page, request }) => {
