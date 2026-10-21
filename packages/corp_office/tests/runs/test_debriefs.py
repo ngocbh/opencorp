@@ -69,3 +69,4 @@ def test_a_debriefs_outcome_commits_with_the_debrief_and_the_sessions_end(harnes
     settled(learning)
     assert (status(harness, sid), rows(harness, sid)[-1].outcome, harness.store.get_debrief(sid).state) == (
         "debriefing", None, "pending")
+    assert not learning._finished(sid, rows(harness, sid)[-1].run_id)  # no feedback on a debrief that wasn't stored

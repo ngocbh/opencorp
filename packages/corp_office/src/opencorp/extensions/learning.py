@@ -315,8 +315,6 @@ class Learning:
         else:
             why = self._failure(outcome)
             log.warning("the debrief of session %s failed: %s", session_id, why)
-        if debrief is not None:
-            self._mark_finished(session_id, run_id)
         end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
         with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
             if debrief is not None:
@@ -326,6 +324,8 @@ class Learning:
             self.store.end_run(run_id, end.outcome, reason=end.reason)
             if session.status == "debriefing":
                 self.store.update_session(session_id, status="ended")
+        if debrief is not None:
+            self._mark_finished(session_id, run_id)  # once the debrief is stored: feedback needs its run
         self._drain(session_id)
 
     def _drain(self, session_id: str) -> None:
