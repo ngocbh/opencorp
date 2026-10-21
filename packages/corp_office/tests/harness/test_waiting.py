@@ -70,3 +70,16 @@ def test_a_session_waiting_only_on_turnless_cards_restores_idle_without_the_mark
     h = restarted(make_codex, old)
     assert state(h, sid) == ("idle", [])
     assert not any(t.endswith("[interrupted]") for t in texts(h, sid))
+
+
+def test_a_session_waiting_on_a_turnless_card_mid_turn_restores_idle_with_the_marker(make_codex, fake_codex,
+                                                                                    workspace):
+    fake_codex.script([[fc.url_elicitation(8, "gh", "Sign in", "https://e.com/l", wait=False), {"sleep": 30}]])
+    old = make_codex()
+    sid = start(old, workspace)
+    old.prompt(sid, "sign in")
+    wait_for(lambda: status(old, sid) == "waiting" and old.codex._live[sid].turn_id is not None,
+             what="waiting inside the turn")
+    h = restarted(make_codex, old)
+    assert state(h, sid) == ("idle", []) and texts(h, sid) == ["[interrupted]"]
+    assert [q.status for q in h.store.list_questions(session_id=sid)] == ["stale"]
