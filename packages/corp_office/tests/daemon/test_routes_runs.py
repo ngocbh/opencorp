@@ -78,3 +78,18 @@ async def test_get_runs_refuses_a_bad_status_limit_or_time(office, client, param
 
 async def test_get_runs_without_run_logs_is_not_implemented(client):
     assert (await client.get("/runs")).status_code == 501
+
+
+async def test_a_parent_with_more_children_than_sqlite_binds_at_once_lists(office, client):
+    office.extras["runs"] = RunLogs(office)
+    top = a_run(office)
+    side = office.store.create_session(session(kind="side", status="ended"))
+    with office.store.transaction() as tx:
+        for _ in range(33_000):
+            tx.execute("INSERT INTO runs (run_id, session_id, flow, flow_path, driver, parent_run_id, launched_at) "
+                       "VALUES (?, ?, 'side_chat', 'shared/flows/side_chat.yaml', 'lan', ?, ?)",
+                       (new_id(), side.id, top, T))
+    r = await client.get("/runs", params={"person": "lan", "since": "2026-10-13T10:00:00.000Z"})
+    assert r.status_code == 200 and ids(r) == [top] and r.json()["runs"][0]["children_total"] == 33_000
+    r = await client.get("/runs", params={"parent": top, "status": "interrupted", "limit": "200"})
+    assert r.status_code == 200 and len(r.json()["runs"]) == 200

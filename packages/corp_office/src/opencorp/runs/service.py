@@ -17,6 +17,8 @@ BATCH = 100
 SCAN_CAP = 1_000
 """The most runs one list request looks at to fill a filtered page; ``next`` resumes after them."""
 REASON_HIDDEN = "hidden: couldn't load the secrets to remove"
+OPEN_STATUSES = frozenset({"running", "waiting", "idle"})
+"""The statuses of a run with no outcome only (an interrupted one may have either)."""
 
 
 def _cleaned(run: RunSummary, clean: Callable[[str], str]) -> RunSummary:
@@ -27,8 +29,12 @@ def _cleaned(run: RunSummary, clean: Callable[[str], str]) -> RunSummary:
 
 @dataclass(frozen=True)
 class RunFilter:
-    """The list's filters: a run matches all that are set (any one of ``statuses``). ``since`` and ``until`` bound
-    its launch time; the store applies them to the rows it pages, so only the other filters need summaries."""
+    """The list's filters: a run matches all that are set (any one of ``statuses``); ``since`` and ``until`` bound its
+    launch time. A top-level run shows when it or a run it started matches.
+
+    The store applies the launch range to the rows it pages: top-level rows launched in it or with a child launched in
+    it, exactly the ones the range alone shows. So only the other filters need summaries.
+    """
 
     flow: str | None = None
     person: str | None = None
@@ -41,6 +47,11 @@ class RunFilter:
     def summaries_needed(self) -> bool:
         """Whether matching a run needs more than its row's launch time."""
         return bool(self.flow or self.person or self.statuses or self.q)
+
+    @property
+    def open_only(self) -> bool:
+        """Whether only runs with no outcome yet can match: every wanted status is one of an open run."""
+        return bool(self.statuses) and self.statuses <= OPEN_STATUSES
 
     def matches(self, run: RunSummary) -> bool:
         return ((not self.flow or run.flow == self.flow)
@@ -134,7 +145,9 @@ class RunLogs:
             for row in rows:
                 scanned, cursor = scanned + 1, row.run_id
                 run = built.get(row.run_id)
-                if run is not None and (wanted.matches(run) or row.run_id in kids):
+                # Without filters past the range, every row the store gave shows (a top-level one launched before the
+                # range is there for a child launched in it).
+                if run is not None and (not wanted.summaries_needed or wanted.matches(run) or row.run_id in kids):
                     out.append(run)
                     if len(out) == limit:
                         break
@@ -146,9 +159,11 @@ class RunLogs:
         return RunPage(runs=out, next=cursor if more else None)
 
     def _matching_children(self, rows: list[RunRow], wanted: RunFilter, summaries: Summaries) -> set[str]:
-        """The ids of those of ``rows`` with a child that matches ``wanted`` (none to check without filters)."""
+        """The ids of those of ``rows`` with a child that matches ``wanted`` (none to check without filters). The store
+        leaves out the children the launch range or an open-only status filter can't match."""
         if not rows or not wanted.summaries_needed:
             return set()
-        kids = self.store.run_children([r.run_id for r in rows])
+        kids = self.store.run_children([r.run_id for r in rows], since=wanted.since, until=wanted.until,
+                                       open_only=wanted.open_only)
         built = summaries.build(kids)
         return {k.parent_run_id for k in kids if k.run_id in built and wanted.matches(built[k.run_id])}

@@ -125,15 +125,23 @@ async def test_a_launch_range_combines_with_filters_and_paging(store):  # noqa: 
     assert old_lan not in ids(await runs.page(person="lan", status=["failed"], since=wanted["since"]))
 
 
-async def test_a_child_outside_the_range_doesnt_show_its_parent(store):  # noqa: F811
+async def test_a_parent_launched_before_the_range_shows_when_a_child_in_it_matches(store):  # noqa: F811
     top = chat_with(store, kids=1, at="2026-10-13T10:00:00.000Z", kid_at="2026-10-15T10:00:00.000Z")
     runs = runs_for(store)
+    since = "2026-10-14T00:00:00.000Z"
+    assert ids(await runs.page(since=since)) == [top]
+    assert ids(await runs.page(since=since, flow="side_chat")) == [top]
+    assert ids(await runs.page(since=since, person="lan", status=["finished"])) == [top]
+    assert ids(await runs.page(since=since, flow="chat")) == []  # the parent matches, but outside the range
+    assert ids(await runs.page(since=since, status=["failed"])) == []  # the child is in range but doesn't match
+    # A child outside the range doesn't show its parent.
     assert ids(await runs.page(flow="side_chat", until="2026-10-14T10:00:00.000Z")) == []
     assert ids(await runs.page(flow="side_chat", since="2026-10-13T00:00:00.000Z")) == [top]
 
 
 async def test_a_seven_day_query_over_many_old_runs_scans_only_the_rows_in_range(store, monkeypatch):  # noqa: F811
     old = [chat_with(store, at="2026-09-01T10:00:00.000Z") for _ in range(30)]
+    old_parent = chat_with(store, outcome="failed", kids=1, at="2026-09-01T10:00:00.000Z", kid_at=T)  # recent child
     recent = [chat_with(store, outcome="failed") for _ in range(3)]
     newer_old = [chat_with(store, at="2026-09-02T10:00:00.000Z") for _ in range(30)]  # ids after the recent runs
     scanned = []
@@ -145,9 +153,9 @@ async def test_a_seven_day_query_over_many_old_runs_scans_only_the_rows_in_range
         return rows
 
     monkeypatch.setattr(store, "run_page", counted)
-    page = await runs_for(store).page(status=["running", "waiting", "idle", "failed"], since="2026-10-13T10:00:00.000Z")
-    assert ids(page) == recent[::-1] and page.next is None
-    assert {r.run_id for r in scanned} == set(recent) and old and newer_old  # no old row reached Python
+    page = await runs_for(store).page(status=["running", "waiting", "idle", "finished"], since="2026-10-13T10:00:00.000Z")
+    assert ids(page) == [old_parent] and page.next is None  # its child finished in range
+    assert {r.run_id for r in scanned} == {*recent, old_parent} and old and newer_old  # no other old row reached Python
 
 
 async def test_a_filtered_page_stops_after_the_scan_cap_and_resumes(store, monkeypatch):  # noqa: F811
@@ -307,3 +315,23 @@ async def test_a_run_that_starts_while_listed_shows_running_not_interrupted(stor
     monkeypatch.setattr(store, "run_page", run_page)
     page = await RunLogs(SimpleNamespace(store=store, extras={"harness": harness})).page()
     assert [r.status for r in page.runs] == ["running"]
+
+
+async def test_children_are_read_only_when_they_can_match(store, monkeypatch):  # noqa: F811
+    top = chat_with(store, kids=1)
+    side = store.create_session(session(kind="side", status="ended"))
+    open_kid = store.add_run(RunRow(new_id(), side.id, "side_chat", "shared/flows/side_chat.yaml", "kai", top, T))
+    asked = []
+    real = store.run_children
+
+    def run_children(ids, **kw):
+        asked.append(kw)
+        return real(ids, **kw)
+
+    monkeypatch.setattr(store, "run_children", run_children)
+    runs = runs_for(store)
+    assert ids(await runs.page(status=["running", "idle"], person="kai")) == []  # its run has no outcome: interrupted
+    assert ids(await runs.page(status=["interrupted"], person="kai", since="2026-10-13T00:00:00.000Z")) == [top]
+    assert asked == [{"since": None, "until": None, "open_only": True},
+                     {"since": "2026-10-13T00:00:00.000Z", "until": None, "open_only": False}]
+    assert open_kid.parent_run_id == top
