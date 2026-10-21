@@ -37,17 +37,35 @@ test("an unplaced person opens their panel too", async ({ page }) => {
 })
 
 const live = (page: import("@playwright/test").Page, name: string) =>
-  panel(page, name).getByRole("list", { name: "Live sessions" }).getByRole("listitem")
+  panel(page, name).getByRole("list", { name: "Active sessions" }).getByRole("listitem")
 
-test("live sessions show status, cost and office; a harness session is unpriced", async ({ page }) => {
+test("active sessions show status, cost and office; a harness session is unpriced", async ({ page }) => {
   await page.getByRole("treeitem", { name: /Lead/ }).click()
-  await expect(live(page, "Lead")).toHaveText(["idle · $0.00 · mac"])
+  await expect(live(page, "Lead")).toHaveText(["waiting on @ngocbh · $0.00 · mac"])
   await page.getByRole("treeitem", { name: /Kai/ }).click()
-  await expect(live(page, "Kai")).toHaveText(["idle · $0.42 · mac"])
+  await expect(live(page, "Kai")).toHaveText(["waiting on @ngocbh · $0.42 · mac"])
   await page.getByRole("treeitem", { name: /Minh/ }).click()
   await expect(live(page, "Minh").first()).toContainText("busy · unpriced · mac")
   await page.getByRole("treeitem", { name: /Ann/ }).click()
-  await expect(panel(page, "Ann").getByRole("group", { name: "Live sessions" })).toContainText("None")
+  await expect(panel(page, "Ann").getByRole("group", { name: "Active sessions" })).toContainText("None")
+})
+
+test("a session held at its cost cap says so", async ({ page, request }) => {
+  const sessions = acme().sessions.map((x) => (x.id === "S-kai" ? { ...x, capped: true } : x))
+  await request.post("/__fixture/set", { data: { sessions } })
+  await page.reload()
+  await page.getByRole("radio", { name: "List" }).click()
+  await page.getByRole("treeitem", { name: /Kai/ }).click()
+  await expect(live(page, "Kai")).toHaveText(["cost cap reached, waiting on @ngocbh · $0.42 · mac"])
+})
+
+test("a person with only an idle session has no active session and is away", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { sessions: [...acme().sessions, session("S-ann", "ann", "idle")] } })
+  await page.reload()
+  await page.getByRole("radio", { name: "List" }).click()
+  await expect(page.getByRole("treeitem", { name: /Ann/ }).getByTestId("status")).toHaveAttribute("data-status", "away")
+  await page.getByRole("treeitem", { name: /Ann/ }).click()
+  await expect(panel(page, "Ann").getByRole("group", { name: "Active sessions" })).toContainText("None")
 })
 
 test("only the person's own main and side sessions are live work", async ({ page, request }) => {

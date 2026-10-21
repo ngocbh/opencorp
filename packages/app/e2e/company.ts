@@ -40,7 +40,7 @@ export const item = (id: string, title: string, over: Partial<WorkItem> = {}): W
 /**
  * Acme: the CEO @ngocbh (human); @lead (agent, head of ENG) with @minh (also in OPS) and @kai under them; @ann
  * (human); @zoe, whose manager doesn't exist (unplaced); a file that doesn't parse. @minh is busy in Codex, @kai is
- * idle with a card for the CEO, @lead is idle with an ask_manager card whose work item W1 the CEO is assigned.
+ * waiting on a card for the CEO, @lead is waiting on an ask_manager card whose work item W1 the CEO is assigned.
  */
 export function acme(): Data {
   const people = [
@@ -61,8 +61,8 @@ export function acme(): Data {
     },
     sessions: [
       session("S-minh", "minh", "busy", { harness: "codex", work_item_id: "W-minh" }),
-      session("S-kai", "kai", "idle", { opened_by: "ngocbh", cost: 0.42 }),
-      session("S-lead", "lead", "idle", { cost: 0 }),
+      session("S-kai", "kai", "waiting", { opened_by: "ngocbh", cost: 0.42, waiting_on: ["ngocbh"] }),
+      session("S-lead", "lead", "waiting", { cost: 0, waiting_on: ["ngocbh"] }),
     ],
     questions: [card("Q-kai", "S-kai", "kai"), card("Q-lead", "S-lead", "lead", { source: "ask_manager", work_item_id: "W1" })],
     costs: { minh: { usd: 0, unpriced_sessions: 1 }, kai: { usd: 0.42, unpriced_sessions: 0 } },

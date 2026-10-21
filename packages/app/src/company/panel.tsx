@@ -1,4 +1,5 @@
 import type { Group, Person, RunSummary } from "@opencorp/protocol"
+import { statusLabel } from "@opencorp/client"
 import { A } from "@solidjs/router"
 import {
   createEffect,
@@ -13,7 +14,7 @@ import {
   type ParentProps,
 } from "solid-js"
 import { useOffice } from "../data/office"
-import { LIVE } from "../data/snapshot"
+import { ACTIVE } from "../data/snapshot"
 import { DEFAULT_QUERY, hrefOf } from "../runs/query"
 import { flowText, shortId } from "../runs/format"
 import { sourceHref } from "./address"
@@ -38,7 +39,7 @@ function Section(props: ParentProps<{ title: string }>) {
 const RECENT = 5
 
 /**
- * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, live sessions with
+ * A person's side panel, read-only: their fields from person.yaml, manager and reports, groups, active sessions with
  * what each is doing, and their recent runs. Beside the list it's a complementary region; on a phone it's a full-width modal sheet over it.
  */
 export function Panel(props: {
@@ -54,10 +55,10 @@ export function Panel(props: {
   returnTo: () => HTMLElement | undefined
 }) {
   const office = useOffice()
-  /** The person's own live work: main and side sessions in a live status (profile_manager work is the office's). */
+  /** The person's current work: main and side sessions in an active status (profile_manager work is the office's). */
   const sessions = createMemo(() =>
     office.state.sessions.filter(
-      (x) => x.person === props.person.handle && (x.kind === "main" || x.kind === "side") && LIVE.includes(x.status),
+      (x) => x.person === props.person.handle && (x.kind === "main" || x.kind === "side") && ACTIVE.includes(x.status),
     ),
   )
   /** Their work item ids, as one string: unchanged by updates that don't change the set. */
@@ -189,14 +190,14 @@ export function Panel(props: {
           </For>
         </p>
       </Section>
-      <Section title="Live sessions">
+      <Section title="Active sessions">
         <Show when={sessions().length} fallback={<p class="text-sm">None</p>}>
-          <ul aria-label="Live sessions" class="space-y-1 text-sm">
+          <ul aria-label="Active sessions" class="space-y-1 text-sm">
             <For each={sessions()}>
               {(x) => (
                 <li>
                   {/* The office prices composer tokens only; a harness session's spend isn't known here. */}
-                  {x.status} · {x.harness === "composer" ? costText(x.cost ?? 0, 0) : "unpriced"} · {x.office}
+                  {statusLabel(x)} · {x.harness === "composer" ? costText(x.cost ?? 0, 0) : "unpriced"} · {x.office}
                   <Show when={x.work_item_id ? office.state.workItems[x.work_item_id] : undefined}>
                     {(w) => <> · now doing: {w().title}</>}
                   </Show>
