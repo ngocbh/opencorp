@@ -53,7 +53,22 @@ test("node detail opens at half the content width, with a splitter that names wh
   await expect(s).toHaveAttribute("aria-controls", (await detail(page).getAttribute("id"))!)
   await expect(s).toHaveAttribute("aria-valuemin", "320")
   expect(Math.abs((await valueNow(s)) - half)).toBeLessThanOrEqual(1)
+  await expect(s).toHaveAttribute("aria-valuetext", `${await valueNow(s)} pixels`)
   await expect(s).toHaveCSS("cursor", "col-resize")
+})
+
+test("the splitter is a 12px target with a 1px line, as tall as the row however short node detail is", async ({ page }) => {
+  await open(page)
+  const s = splitter(page)
+  expect(await width(s)).toBe(12)
+  await expect(s.locator("span")).toHaveCSS("width", "1px")
+  // chat#3/ask is open: its detail is a few lines, shorter than the Timeline beside it.
+  const sizes = await s.evaluate((el) => ({
+    splitter: el.getBoundingClientRect().height,
+    row: el.parentElement!.parentElement!.getBoundingClientRect().height,
+  }))
+  expect((await box(detail(page))).height).toBeLessThan(sizes.row)
+  expect(sizes.splitter).toBe(sizes.row)
 })
 
 test("dragging the splitter resizes node detail, down to its min and up to the Timeline's min", async ({ page }) => {

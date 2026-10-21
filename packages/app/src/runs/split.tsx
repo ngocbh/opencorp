@@ -6,8 +6,8 @@ import { forget, readStored, store } from "../data/storage"
 export const DETAIL_MIN = 320
 /** The Timeline's narrowest width beside node detail, in pixels. */
 export const TIMELINE_MIN = 280
-/** The splitter's width, in pixels: its `w-2`. */
-export const SPLITTER_PX = 8
+/** The splitter's width, in pixels: its `w-3`, a target wider than the line it draws. */
+export const SPLITTER_PX = 12
 /** How far one arrow key moves the splitter, in pixels. */
 const STEP = 16
 const KEY = "hq.runs.detailWidth"
@@ -87,6 +87,7 @@ export function Splitter(props: {
       aria-label="Resize node detail"
       aria-controls={props.controls}
       aria-valuenow={props.value}
+      aria-valuetext={`${props.value} pixels`}
       aria-valuemin={props.min}
       aria-valuemax={props.max}
       tabindex={0}
@@ -97,7 +98,7 @@ export function Splitter(props: {
       onLostPointerCapture={up}
       onDblClick={() => props.onReset()}
       onKeyDown={onKey}
-      class="group flex w-2 shrink-0 cursor-col-resize touch-none justify-center outline-none select-none"
+      class="group flex w-3 shrink-0 cursor-col-resize touch-none justify-center outline-none select-none"
     >
       {/* The border: wider and darker while hovered, focused or dragged. */}
       <span

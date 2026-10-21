@@ -111,7 +111,8 @@ export function RunPage(props: { id: string }) {
   const bounds = () => detailBounds(room())
   const width = () => detailWidth(chosen(), room())
   const [expandedSignal, setExpanded] = createSignal(false)
-  const expanded = () => desktop() && expandedSignal()
+  // Only while a node's detail shows: one that leaves (gone from a refetch) doesn't keep the Timeline hidden.
+  const expanded = () => desktop() && expandedSignal() && !!selectedNode()
   const detailId = createUniqueId()
   /** Keeps the row holding the Timeline and node detail measured, and gives it node detail's width. */
   function measure(row: HTMLDivElement) {
@@ -375,11 +376,9 @@ export function RunPage(props: { id: string }) {
             </div>
             <Show when={selectedNode()}>
               {(node) => (
-                // On a desktop the splitter and node detail stay in view as the page scrolls; on a phone node detail
-                // is a fixed sheet and this holds nothing in the flow.
-                <div
-                  class={`md:sticky md:top-0 md:flex md:max-h-screen md:self-start ${expanded() ? "md:min-w-0 md:flex-1" : "md:shrink-0"}`}
-                >
+                // On a desktop as tall as the row, so the splitter runs its whole height while node detail stays in
+                // view as the page scrolls; on a phone node detail is a fixed sheet and this holds nothing in the flow.
+                <div class={`md:flex md:self-stretch ${expanded() ? "md:min-w-0 md:flex-1" : "md:shrink-0"}`}>
                   <Show when={desktop() && !expanded()}>
                     <Splitter
                       controls={detailId}

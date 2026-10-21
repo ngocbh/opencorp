@@ -150,7 +150,7 @@ export function NodeDetail(props: {
       aria-labelledby={headingId}
       id={props.id}
       // Its desktop width is --detail-w, which the run page sets through the CSSOM (the CSP forbids style attributes).
-      class={`fixed inset-0 z-10 space-y-3 overflow-y-auto bg-white p-4 text-sm md:static md:max-h-screen md:min-w-0 dark:bg-neutral-950 ${
+      class={`fixed inset-0 z-10 space-y-3 overflow-y-auto bg-white p-4 text-sm md:sticky md:top-0 md:max-h-screen md:self-start md:min-w-0 dark:bg-neutral-950 ${
         props.expanded ? "md:flex-1" : "md:w-[var(--detail-w,50%)]"
       }`}
     >
