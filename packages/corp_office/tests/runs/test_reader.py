@@ -386,3 +386,40 @@ def test_progress_and_size_never_say_less_than_was_read(tmp_path, monkeypatch):
     index = refresh(path, None, progress=progress)
     assert index.last_seq == 16 and all(0 <= done <= total for done, total in seen)
     assert index.size >= index.offset == path.stat().st_size
+
+
+def test_a_record_written_as_utf8_reads_back_on_pages_and_by_seq(tmp_path):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + started(1, "世界🚀") + succeeded(2, "世界🚀", {"output": "é" * 10}))
+    assert "世界🚀".encode() in path.read_bytes()  # as Yian writes it, not \u escapes
+    index = refresh(path, None)
+    page = read_events(path, index, after=0, limit=10, scrub=nothing)
+    assert [e.node_id for e in page.events] == ["世界🚀", "世界🚀"] and list(index.open) == []
+    assert read_event(path, index, 2, nothing).payload["value"] == {"output": "é" * 10}
+
+
+def test_an_oversized_line_whose_kind_isnt_first_is_an_unknown_stub(tmp_path):
+    path = tmp_path / "r.jsonl"
+    huge = line(1, "node_succeeded", {"node_id": "big", "value": {"output": "y" * (BIG_LINE + 10)}}, aaa_first=1)
+    path.write_bytes(run_started(0) + huge)
+    stub = read_events(path, refresh(path, None), after=0, limit=10, scrub=nothing).events[0]
+    assert (stub.seq, stub.kind, stub.size, stub.payload) == (1, "unknown", len(huge), None)
+
+
+def test_each_node_page_has_only_the_dividers_among_its_attempts(tmp_path):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(b"".join([run_started(0), started(1, "a"), resumed(2, ["a"]), started(3, "a"), succeeded(4, "a"),
+                               started(5, "b"), resumed(6, ["b"]), started(7, "b")]))
+    index = refresh(path, None)
+    newest = node_page(index, before=None, limit=2)
+    assert ([a.seq for a in newest.nodes], newest.dividers, newest.next_before) == ([7, 5], [(6, ["b"])], 5)
+    older = node_page(index, before=newest.next_before, limit=2)
+    assert ([a.seq for a in older.nodes], older.dividers, older.next_before) == ([3, 1], [(2, ["a"])], None)
+
+
+async def test_the_lru_keeps_at_most_128_logs(tmp_path):
+    paths = [chat_log(tmp_path / f"{n}.jsonl", turns=0) for n in range(reader_mod.LRU_LOGS + 1)]
+    reader = RunLogReader()
+    for path in paths:
+        await reader.index(path)
+    assert reader_mod.LRU_LOGS == 128 and list(reader._lru) == paths[1:]

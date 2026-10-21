@@ -9,9 +9,9 @@ FP = "f" * 64
 
 
 def line(seq: int, kind: str, payload: dict, *, schema: int = 9, **extra) -> bytes:
-    """One record as Yian writes it (sorted keys, no spaces), with any extra envelope fields."""
+    """One record as Yian writes it (sorted keys, no spaces, UTF-8), with any extra envelope fields."""
     record = {"schema": schema, "run_id": RUN, "seq": seq, "kind": kind, "payload": payload, **extra}
-    return json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    return json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + b"\n"
 
 
 def run_started(seq: int = 0, *, learnable: bool = True) -> bytes:
