@@ -24,8 +24,11 @@ const CELL = "px-3 py-2 max-md:p-0 max-md:min-w-0 max-md:leading-6"
 const at = (t: string, time = false) =>
   new Date(t).toLocaleString(undefined, time ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" })
 
-/** Copies a run's full id, and says whether it could: the clipboard needs a secure page (not plain http). */
-function CopyId(props: { id: string }) {
+/**
+ * Copies a full id (a run's, unless `label` names another), and says whether it could: the clipboard needs a secure
+ * page (not plain http).
+ */
+export function CopyId(props: { id: string; label?: string }) {
   const [state, setState] = createSignal<"idle" | "copied" | "failed">("idle")
   let timer: ReturnType<typeof setTimeout> | undefined
   onCleanup(() => clearTimeout(timer))
@@ -43,7 +46,7 @@ function CopyId(props: { id: string }) {
     <>
       <button
         type="button"
-        aria-label="Copy run id"
+        aria-label={props.label ?? "Copy run id"}
         title={props.id}
         onClick={() => void copy()}
         class={`grid size-6 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 ${MUTED} ${RING}`}
