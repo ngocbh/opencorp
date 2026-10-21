@@ -1,5 +1,5 @@
 """A run's reason is shown as stored, cut only for length: to the 200 shown, after any cut before it was stored
-(``_why`` at 500, the store at 2,000)."""
+(``_why`` at 500, the store at 256)."""
 
 from types import SimpleNamespace
 
@@ -27,7 +27,7 @@ async def shown(store):  # noqa: F811
     return row.reason
 
 
-@pytest.mark.parametrize("length", [199, 200, 201, 2000, 3000])
+@pytest.mark.parametrize("length", [199, 200, 201, 256, 3000])
 async def test_a_reason_is_cut_to_the_200_shown(store, length):  # noqa: F811
     reason = "".join(chr(ord("a") + i % 26) for i in range(length))
     one(store, reason)

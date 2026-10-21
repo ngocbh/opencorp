@@ -4,7 +4,8 @@ import pytest
 
 from opencorp.runs.service import RunLogs
 from opencorp.store import RunRow, new_id
-from tests.runs.logs import chat_log, failed, line, run_started, started
+from opencorp.runs import reader as reader_mod
+from tests.runs.logs import chat_log, failed, line, run_started, started, succeeded
 from tests.store.conftest import session
 
 T = "2026-10-20T10:00:00.000Z"
@@ -193,6 +194,16 @@ async def test_one_runs_routes_while_its_log_is_first_read(office, client):
     assert (await client.get(f"/runs/{run_id}/events")).json()["indexing"] is True
     r = await client.get(f"/runs/{run_id}/events/3")
     assert (r.status_code, r.json()["error"]) == (503, "indexing")
+
+
+async def test_one_huge_record_is_a_size_stub(office, client, monkeypatch):
+    big = succeeded(2, "a", {"output": "b" * 5000})
+    run_id = with_log(office, log=run_started(0) + started(1, "a") + big)
+    monkeypatch.setattr(reader_mod, "HUGE_LINE", 4096)
+    r = await client.get(f"/runs/{run_id}/events/2")
+    assert r.status_code == 200
+    got = r.json()
+    assert (got["kind"], got.get("payload"), got["size"]) == ("node_succeeded", None, len(big))
 
 
 async def test_a_node_error_is_shown_as_stored_cut_to_200(office, client):

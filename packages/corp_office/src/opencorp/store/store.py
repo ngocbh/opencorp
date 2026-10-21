@@ -216,7 +216,7 @@ _HQ_COLUMNS = tuple(f.name for f in fields(HqSessionRecord))
 
 REASON_CHARS = 200
 """The longest reason a run's outcome shows."""
-REASON_KEPT = 2_000
+REASON_KEPT = 256
 """The longest reason a run's outcome keeps."""
 
 

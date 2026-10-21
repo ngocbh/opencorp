@@ -35,11 +35,14 @@ BIG_LINE = 2 << 20
 FIELD_CHARS = 4 << 10
 PAGE_BYTES = 256 << 10
 EVENT_BYTES = 2 << 20
+HUGE_LINE = 16 << 20
+"""The longest record one opened record parses; a longer one is a stub with its size, read without holding its line
+(parsing a record takes several times its size in memory). The download has it whole."""
 LRU_BYTES = 128 << 20
 LRU_LOGS = 128
 ERROR_CHARS = 200
 """How much of a node's error is shown."""
-ERROR_KEPT = 1 << 10
+ERROR_KEPT = 256
 """How much of a node's error the index keeps, to bound a log with many failed nodes; a longer error is cut with
 "…"."""
 # Yian writes sorted-key JSON (log.py:2786-2796), so a record starts with "kind" ("at" first from schema 10): an
@@ -301,6 +304,30 @@ def _window(index: Index, first: int) -> tuple[int, int, int]:
         return seq, start, index.offset
 
 
+def _line_at(f: BinaryIO, start: int, stop: int, skip: int) -> tuple[bytes, int] | None:
+    """The complete line ``skip`` lines after byte ``start``, before byte ``stop``: its bytes and size, or only its
+    first 256 bytes when it is longer than HUGE_LINE; None if there is none. Lines are scanned a chunk at a time, so
+    only the line returned is ever held."""
+    f.seek(start)
+    pos, at, head = start, None, b""
+    while pos < stop and (chunk := f.read(min(CHUNK, stop - pos))):
+        s = 0
+        while skip and (nl := chunk.find(b"\n", s)) >= 0:
+            skip, s = skip - 1, nl + 1
+        if not skip:
+            at = pos + s if at is None else at
+            if len(head) < 256:
+                head += chunk[s:s + 256 - len(head)]
+            if (nl := chunk.find(b"\n", s)) >= 0:
+                size = pos + nl + 1 - at
+                if size > HUGE_LINE:
+                    return head, size
+                f.seek(at)
+                return f.read(size), size
+        pos += len(chunk)
+    return None
+
+
 def _lines(f: BinaryIO, start: int, stop: int) -> Iterator[bytes]:
     """The complete lines between byte ``start`` and byte ``stop``, one at a time."""
     f.seek(start)
@@ -347,12 +374,17 @@ def _size(payload: dict[str, Any]) -> int:
     return len(json.dumps(payload, ensure_ascii=False).encode())
 
 
+def _stub(head: bytes, seq: int, size: int) -> RunEvent:
+    """Record ``seq``, ``size`` bytes long, as its size and the kind its first bytes ``head`` name: it isn't parsed."""
+    found = _HEAD.match(head[:256])
+    return RunEvent(seq=seq, kind=found[1].decode() if found else "unknown", size=size)
+
+
 def _event(line: bytes, seq: int, *, whole: bool) -> RunEvent | None:
     """Line ``seq`` as a page shows it (``whole``: as one opened record shows it, evidence included); None when it no
     longer parses as record ``seq`` (the file changed since it was indexed)."""
     if len(line) > BIG_LINE and not whole:
-        head = _HEAD.match(line[:256])
-        return RunEvent(seq=seq, kind=head[1].decode() if head else "unknown", size=len(line))
+        return _stub(line, seq, len(line))
     try:
         record = json.loads(line)
     except ValueError:
@@ -401,13 +433,17 @@ def read_events(path: Path, index: Index, *, after: int | None, limit: int) -> R
 
 def read_event(path: Path, index: Index, seq: int) -> RunEvent | None:
     """The record with ``seq``, evidence included; its strings cut only when its payload is over EVENT_BYTES, and a
-    stub with its size when it is still over after that. None if there is none."""
+    stub with its size when it is still over after that, or when its line is over HUGE_LINE (not parsed). None if
+    there is none."""
     base, start, stop = _window(index, seq)
+    if seq < base:
+        return None
     with open(path, "rb") as f:
-        for at, line in enumerate(_lines(f, start, stop), base):
-            if at == seq:
-                return _event(line, seq, whole=True)
-    return None
+        found = _line_at(f, start, stop, seq - base)
+    if found is None:
+        return None
+    line, size = found
+    return _stub(line, seq, size) if size > HUGE_LINE else _event(line, seq, whole=True)
 
 
 def log_lines(path: Path) -> Iterator[bytes]:
