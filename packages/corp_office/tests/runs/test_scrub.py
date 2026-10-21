@@ -111,6 +111,80 @@ def test_ordinary_text_is_kept(text):
     assert out["payload"]["failure"]["message"] == text
 
 
+UNK = "zq9vX2mPkL7rT4wYbN8c"  # no secret shape and not known: only a plain-text rule can hide it
+
+
+@pytest.mark.parametrize("text", [
+    f"Cookie: session={UNK}; theme=dark",
+    f"cookie:sid={UNK}",
+    f"Set-Cookie: sid={UNK}; Path=/; HttpOnly",
+    f"header: Set-Cookie: sid=x; Domain=h\n {UNK}",
+    json.dumps(f"Cookie: a=1; sid={UNK}\r\nHost: h"),
+    f"OPENAI_API_KEY={UNK}",
+    f"export FOO_TOKEN={UNK}",
+    f"AWS_SECRET_ACCESS_KEY = {UNK}",
+    f"env: SECRET_KEY={UNK} DEBUG=1",
+    f"apikey: {UNK}",
+    f"password={UNK}",
+    f"password: {UNK}",
+    f"password: correct horse {UNK} staple",
+    f"clientSecret: {UNK}\nnext: 1",
+    f"api.key: {UNK}",
+    f"passphrase: {UNK}",
+    f"--password={UNK}",
+    f"https://h/login?user=bob&password={UNK}",
+    f"Config(password='{UNK}', user='bob')",
+    f'password="{UNK}"',
+    f"password: '{UNK}",
+    f"{{'password': b'{UNK}'}}",
+    f"{{'password': B\"{UNK}\"}}",
+    json.dumps(f"export DB_PASSWORD={UNK}\nls"),
+    json.dumps(json.dumps(f"token: {UNK}\nnext")),
+    f"accesstoken={UNK}",
+    f"ACCESSTOKEN: {UNK}",
+    f"secretAccessKey: {UNK}",
+])
+def test_plain_text_secrets_are_removed(text):
+    out = Scrubber([]).record(record({"failure": {"message": f"provider said: {text}"}}))
+    assert UNK not in json.dumps(out) and "withheld" not in out and HIDDEN in out["payload"]["failure"]["message"]
+
+
+@pytest.mark.parametrize("text, kept", [
+    (f"Config(password='{UNK}', user='bob')", "user='bob'"),
+    (f"{{'password': b'{UNK}', 'user': 'bob'}}", "'user': 'bob'"),
+    (f"OPENAI_API_KEY={UNK}\nHOME=/home/bob", "HOME=/home/bob"),
+    (f"Cookie: sid={UNK}\nHost: example.com", "Host: example.com"),
+])
+def test_a_hidden_plain_text_value_keeps_what_follows_it(text, kept):
+    out = Scrubber([]).text(text)
+    assert UNK not in out and kept in out
+
+
+@pytest.mark.parametrize("text", [
+    "the password field is required", "passwordless_login: true", "max_tokens: 100", "tokens_used=5",
+    "maxTokens=7", "secretary: Ánh Nguyễn", "keyboard: us", "monkey=1", "secret_name: prod-db", "Password:",
+    "Enter your password: ", "password: (hidden)", "token=(hidden)", "password: true", "token: null",
+    "the cookie: chocolate chip", "cookies: none", "if password == expected:", "key=value", "Cookie:",
+    json.dumps({"prompt": "Enter password:", "next": "x"}), "my_password_file=/etc/pw", "PASSWORD_MIN_LENGTH=8",
+])
+def test_ordinary_plain_text_is_kept(text):
+    out = Scrubber([]).record(record({"failure": {"message": text}, "prompt": "Password:", "n": "token:"}))
+    assert out["payload"] == {"failure": {"message": text}, "prompt": "Password:", "n": "token:"}
+
+
+@pytest.mark.parametrize("text", [
+    json.dumps({"api\u212aey": UNK}, ensure_ascii=False),  # a Kelvin sign
+    str({"api\u212aey": UNK}),
+    json.dumps({"\uff41ccess\uff34oken": UNK}, ensure_ascii=False),  # fullwidth letters
+    json.dumps(json.dumps({"pass\uff57ord": UNK}, ensure_ascii=False), ensure_ascii=False),
+    f"\uff30ASSWORD={UNK}",
+    json.dumps({"\U0001d42d\U0001d428\U0001d424\U0001d41e\U0001d427": UNK}, ensure_ascii=False),  # math bold
+])
+def test_lookalike_secret_keys_hide_their_values_in_strings(text):
+    out = Scrubber([]).record(record({"m": f"Ánh said \xa0 {text}"}))
+    assert UNK not in json.dumps(out, ensure_ascii=False) and "withheld" not in out
+
+
 SLOW_PROVIDER_KEY = re.compile(r"(?:(?<![A-Za-z0-9])|(?=sk-[A-Za-z0-9_-]{0,64}?(?=[A-Za-z0-9]{16})[A-Za-z0-9]{0,15}"
                                r"[A-Z]))sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
 """PROVIDER_KEY's rule written the plain way: a lookahead at every position, so no literal to search for first."""
@@ -186,7 +260,27 @@ def test_many_urls_with_ports_in_one_string_scrub_in_linear_time():
     "".join("\\" * i + '"k' + "\\" * i + '": ' + "\\" * i + '"' for i in range(1000)),  # a pair never closed per depth
     "xsk-" + "a-" * 300_000,
     "Authorization: Digest \\" * 40_000,
-], ids=["backslashes", "pairs", "depths", "glued sk", "digest"])
+    "Cookie: " * 120_000,
+    "Cookie: a" * 110_000,
+    "Set-Cookie: " + "a" * 1_000_000,
+    "password=" * 110_000,
+    "password: \"" * 90_000,
+    "password: '" * 90_000,
+    "password: b'" * 80_000,
+    "password=(hidden) " * 55_000,
+    "a_" * 500_000 + "token=x",
+    "token" * 200_000,
+    "key" * 330_000,
+    "-" * 1_000_000 + "password=x",
+    "password: true " * 65_000,
+    "x_secret_key \t= " * 60_000,
+    "\uff4bey" * 250_000 + "\xa0",
+    "\u212a\"" * 500_000,
+    '"\uff4bey": "' * 80_000,
+    "Ánh password: \"x\\" * 50_000,
+], ids=["backslashes", "pairs", "depths", "glued sk", "digest", "cookie", "cookie a", "set-cookie run", "password=",
+        "password dq", "password sq", "password b", "hidden", "key run", "token run", "key words", "dashes", "true",
+        "spaced", "fullwidth key", "kelvin quotes", "fullwidth pairs", "unclosed escapes"])
 def test_hostile_strings_scrub_in_linear_time(blob):
     start = time.perf_counter()
     Scrubber([KEY]).record(record({"result": blob}))

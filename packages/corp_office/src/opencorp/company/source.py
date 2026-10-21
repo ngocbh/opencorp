@@ -41,7 +41,7 @@ SECRET_KEY = "holds a secret-named key"
 NOT_REMOVED = "a secret couldn't be removed"
 
 _PERSON = re.compile(r"people/[^/]+/person\.yaml")
-_QUOTED_KEY = re.compile(r"""["']([A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})["']\s*:""")
+_QUOTED_KEY = re.compile(r"""["'](\w[\w .-]{0,63})["']\s*:""")  # \w: a lookalike key too
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 

@@ -5,6 +5,7 @@ import functools
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -35,16 +36,37 @@ and of each line folded onto it."""
 API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)({_QUOTE}\s*[:=]\s*{_QUOTE}){_NOT_HIDDEN}{_VALUE}", re.IGNORECASE)
 """An ``api-key: …`` header value, which provider errors echo, as text, JSON (escaped too) or a Python repr."""
 QUOTED_PAIR = re.compile(r"""(?<!\\)(?P<bs>\\{0,15})(?P<q>["'])"""  # a quote and its escapes, the same around both
-                         r"""(?P<key>[A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
-                         r"""(?=(?P=bs)(?P<vq>["'])(?P<value>.*?(?<!\\)(?:(?P=bs)\\(?P=bs)\\)*)(?P=bs)(?P=vq)"""
+                         r"""(?P<key>\w[\w .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
+                         r"""(?=(?P=bs)[bB]?(?P<vq>["'])(?P<value>.*?(?<!\\)(?:(?P=bs)\\(?P=bs)\\)*)(?P=bs)(?P=vq)"""
                          r"""|(?P<bare>-?[0-9][\w.+-]*))""", re.DOTALL)
-"""A ``"key": value`` pair of JSON (escaped too) or a Python repr inside a string; ``secret_key`` decides whether its
-value is hidden. The value ends at the quote whose backslashes are the quote's own escapes after whole escaped
-backslashes, which end the value. It is read ahead, not consumed, so a pair inside another pair's value is found too.
-Quotes escaped up to 4 times count, so each search stays linear."""
-_KEY_WORDS = ("passw", "token", "secret", "key", "devices", "authorization", "cookie")
-"""A word every secret key holds, lowercased (``key_name`` only adds ``_`` and lowercases): ``QUOTED_PAIR`` is tried
-only at the quote before one, so ordinary text and pairs cost a few substring searches."""
+"""A ``"key": value`` pair of JSON (escaped too) or a Python repr (a ``b'…'`` value too) inside a string; ``secret_key``
+decides whether its value is hidden. The value ends at the quote whose backslashes are the quote's own escapes after
+whole escaped backslashes, which end the value. It is read ahead, not consumed, so a pair inside another pair's value is
+found too. Quotes escaped up to 4 times count, so each search stays linear."""
+_KEY_WORDS = ("passw", "token", "secret", "key", "phrase", "devices", "authorization", "cookie")
+"""A word every secret key holds, as ``_folded`` reads it (``key_name`` only adds ``_``, NFKC-normalizes and
+lowercases): ``QUOTED_PAIR`` and ``BARE_PAIR`` are tried only at a key holding one, so ordinary text costs a few
+substring searches. The first five are the words of ``is_secret_key``'s keys."""
+_ENDS = r"(?:[\s,;:}\])]|$)"  # after a quote that closes the string around a pair rather than opens its value
+BARE_PAIR = re.compile(rf"(?P<key>\w[\w.-]{{0,63}})[ \t]*+[:=](?!=)[ \t]*+"
+                       r"(?!\(hidden\)|\[redacted\]|(?i:true|false|null|none)\b)"
+                       rf"(?:[bBrRuU]{{0,2}}(?P<q>[\"'])(?!{_ENDS})(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)"
+                       rf"|(?P<line>(?:(?!\\{{0,15}}[\"']{_ENDS})(?:[^\r\n\\]|\\(?![rn])))+))")
+"""A ``key: value`` or ``KEY=value`` pair in plain text (an env line, YAML, a log line, a keyword argument), whose key
+is unquoted; ``is_secret_key`` decides whether its value is hidden.
+
+A quoted value ends at its closing quote. Any other value runs to the end of its line (a plain or escaped line break),
+since an unquoted YAML or ``.env`` value may hold spaces, or to a quote, escaped or not, that closes a string around
+the pair (``{"m": "token: x", …}``); so does an unclosed quoted value. ``true``, ``false``, ``null`` and ``none`` stay,
+and so does a string ending in ``password:``."""
+_KEY_WORD = re.compile("|".join(_KEY_WORDS))
+_BARE_WORD = re.compile(rf"(?:{'|'.join(_KEY_WORDS[:5])})[\w.-]{{0,64}}+[ \t]*+[:=](?!=)")
+"""A word of ``is_secret_key``'s keys, the rest of its key and a separator, in folded text: where ``BARE_PAIR`` may
+match, bounded like a key."""
+COOKIE_HEADER = re.compile(r"\b((?:set-)?cookie[ \t]*:[ \t]*)(?=[\w!#$%&*+.^`|~-]{1,256}=)"
+                           r"(?:[^\r\n\\]|\\(?![rn])|(?:\r?\n|(?:\\r)?\\n)(?=[ \t]|\\t))+", re.IGNORECASE)
+"""A ``Cookie:`` or ``Set-Cookie:`` header written as text, its value (``name=…``) up to the end of its line and of each
+line folded onto it; a quoted value is a quoted pair's."""
 WITHHELD = "a secret couldn't be removed"
 _KIND = re.compile(r"[a-z_]{1,64}")
 
@@ -56,11 +78,41 @@ def secret_key(key: object) -> bool:
     return is_secret_key(key) or (isinstance(key, str) and key_name(key) in HEADER_KEYS)
 
 
-def _secret_values(text: str) -> list[tuple[int, int]]:
-    """Where the values of secret-named quoted pairs in ``text`` are that aren't ``(hidden)`` yet, outermost first; a
-    pair inside one of them is left out, since it goes with it."""
+@functools.lru_cache(maxsize=4096)
+def _bare_secret_key(key: str) -> bool:
+    """Whether an unquoted key in text names a secret: credential headers have their own shapes, and ``devices`` is a
+    secret only as a person file's key."""
+    return is_secret_key(key) and key_name(key) != "devices"
+
+
+@functools.cache
+def _compat() -> tuple[frozenset[str], dict[int, str]]:
+    """The characters NFKC turns into one ASCII letter (a Kelvin sign, fullwidth and mathematical letters), and ``İ``,
+    whose lowercase is two characters: the set of them and a ``str.translate`` table to those letters."""
+    table = {"\u0130": "i"}
+    for point in range(0x80, 0x20000):
+        char = chr(point)
+        norm = unicodedata.normalize("NFKC", char)
+        if len(norm) == 1 and norm.isascii() and norm.isalpha():
+            table[char] = norm
+    return frozenset(table), str.maketrans(table)
+
+
+def _folded(text: str) -> str:
+    """``text`` lowercased as ``key_name`` reads a key, for finding ``_KEY_WORDS``: a character NFKC turns into an
+    ASCII letter is read as that letter first, so a lookalike key is found, and positions stay those of ``text``."""
+    if not text.isascii() and (not unicodedata.is_normalized("NFKC", text) or "\u0130" in text):
+        chars, table = _compat()
+        if not chars.isdisjoint(set(text)):
+            text = text.translate(table)
+    return text.lower()
+
+
+def _secret_values(text: str, low: str) -> list[tuple[int, int]]:
+    """Where the values of secret-named quoted pairs in ``text`` (``low``: it ``_folded``) are that aren't
+    ``(hidden)`` yet, outermost first; a pair inside one of them is left out, since it goes with it."""
     found: list[tuple[int, int]] = []
-    for m in _pairs(text):
+    for m in _pairs(text, low):
         group = "value" if m["vq"] is not None else "bare"
         if (found and m.start() < found[-1][1]) or not secret_key(m["key"]) or m[group] == HIDDEN:
             continue
@@ -68,12 +120,9 @@ def _secret_values(text: str) -> list[tuple[int, int]]:
     return found
 
 
-def _pairs(text: str) -> list[re.Match[str]]:
+def _pairs(text: str, low: str) -> list[re.Match[str]]:
     """The quoted pairs in ``text`` whose key holds one of ``_KEY_WORDS``, in order: ``QUOTED_PAIR`` tried at the
     nearest quote before each such word (a key holds no quote), and at the start of that quote's backslashes."""
-    low = text.lower()
-    if len(low) != len(text):  # a character lower() lengthens: positions would drift, so try everywhere
-        return list(QUOTED_PAIR.finditer(text))
     starts = set()
     for word in _KEY_WORDS:
         at = low.find(word)
@@ -88,9 +137,39 @@ def _pairs(text: str) -> list[re.Match[str]]:
     return [m for start in sorted(starts) if (m := QUOTED_PAIR.match(text, start))]
 
 
-def _hide_pairs(text: str) -> str:
+def _bare_values(text: str, low: str) -> list[tuple[int, int]]:
+    """Where the values of secret-named ``BARE_PAIR`` pairs in ``text`` (``low``: it ``_folded``) are that aren't
+    ``(hidden)`` yet, in order.
+
+    ``BARE_PAIR`` is tried where the key holding each of ``_KEY_WORDS`` starts: up to 64 key characters before the
+    word, after any leading ``-`` or ``.`` (``--password=…``). A word inside a key or value already read is skipped,
+    so each search stays linear."""
+    found: list[tuple[int, int]] = []
+    done = 0
+    for word in _BARE_WORD.finditer(low):
+        at = word.start()
+        if at < done:
+            continue
+        start = at
+        while start > max(at - 64, done) and (text[start - 1].isalnum() or text[start - 1] in "_.-"):
+            start -= 1
+        while start < at and text[start] in ".-":
+            start += 1
+        m = BARE_PAIR.match(text, start)
+        if m is None or m.end("key") <= at or not _bare_secret_key(m["key"]):
+            done = at + 1
+            continue
+        group = "quoted" if m["q"] is not None else "line"
+        if m[group] and m[group] != HIDDEN:
+            found.append(m.span(group))
+        done = m.end()
+    return found
+
+
+def _splice(text: str, spans: list[tuple[int, int]]) -> str:
+    """``text`` with each of ``spans``, in order and apart, replaced by ``(hidden)``."""
     out, at = [], 0
-    for start, end in _secret_values(text):
+    for start, end in spans:
         out += [text[at:start], HIDDEN]
         at = end
     return "".join(out) + text[at:]
@@ -101,8 +180,11 @@ _SHAPES: tuple[tuple[re.Pattern[str], Callable[[re.Match[str]], str], tuple[str,
     (AUTH_HEADER, lambda m: f"{m[1]} {HIDDEN}", ("authorization",)),
     (AUTH_DIGEST, lambda m: f"{m[1]} {HIDDEN}", ("authorization",)),
     (API_KEY_HEADER, lambda m: f"{m[1]}{m[2]}{HIDDEN}", ("api-key", "api_key")),
+    (COOKIE_HEADER, lambda m: f"{m[1]}{HIDDEN}", ("cookie",)),
 )
 """The header shapes, each with how it's hidden and the words, lowercased, one of which it can't match without."""
+_SHAPE_WORD = re.compile("|".join(re.escape(word) for _, _, words in _SHAPES for word in words))
+"""Any shape's word: one search of a short string, rather than a substring search per word."""
 
 
 def _lowered(text: str) -> str | None:
@@ -111,31 +193,43 @@ def _lowered(text: str) -> str | None:
     return None if "\u0130" in text or "\u0131" in text else text.lower()
 
 
-def _may_hold(low: str | None, words: tuple[str, ...]) -> bool:
-    return low is None or any(word in low for word in words)
+def _shapes(low: str | None) -> list[tuple[re.Pattern[str], Callable[[re.Match[str]], str], tuple[str, ...]]]:
+    """The shapes ``low`` (``_lowered``) may hold, in order."""
+    if low is None:
+        return list(_SHAPES)
+    if len(low) < 4096 and not _SHAPE_WORD.search(low):  # most strings: no word at all
+        return []
+    return [shape for shape in _SHAPES if any(word in low for word in shape[2])]
 
 
 def scrub_string(text: str) -> str:
     """``text`` with every secret of a known shape replaced by ``(hidden)``: #247's patterns and URL passwords,
-    provider keys, bearer tokens, Authorization and api-key header values, and the values of secret-named pairs of
-    JSON or a repr inside it. No I/O: safe anywhere, run reasons included."""
+    provider keys, bearer tokens, Authorization, api-key and Cookie header values, the values of secret-named pairs of
+    JSON or a repr inside it, and those of secret-named ``key: value`` and ``KEY=value`` pairs of plain text. The
+    whole of ``text`` when a plain-text pair is still found after (a bug). No I/O: safe anywhere, run reasons
+    included."""
     text = PROVIDER_KEY.sub(HIDDEN, scrub_text(text))
-    low = _lowered(text)
-    for pattern, hide, words in _SHAPES:
-        if _may_hold(low, words):
-            new = pattern.sub(hide, text)
-            if new != text:
-                text, low = new, _lowered(new)
-    return _hide_pairs(text)
+    for pattern, hide, _ in _shapes(_lowered(text)):
+        text = pattern.sub(hide, text)  # it adds no word, so the test on the text before still holds
+    low = _folded(text)
+    if not _KEY_WORD.search(low):
+        return text
+    if spans := _secret_values(text, low):
+        text, low = _splice(text, spans), _splice(low, spans)  # low stays text folded: (hidden) is lowercase
+    if spans := _bare_values(text, low):
+        text, low = _splice(text, spans), _splice(low, spans)
+        # Checked here, not in the record's JSON, where a string ending in "password:" would read as a pair.
+        if _bare_values(text, low):
+            return HIDDEN
+    return text
 
 
 def _has_shape(text: str) -> bool:
     """Whether ``text`` still holds a secret shape ``scrub_string`` removes."""
     if PROVIDER_KEY.search(text):
         return True
-    low = _lowered(text)
-    return (any(_may_hold(low, words) and pattern.search(text) for pattern, _, words in _SHAPES)
-            or bool(_secret_values(text)))
+    return (any(pattern.search(text) for pattern, _, _ in _shapes(_lowered(text)))
+            or bool(_secret_values(text, _folded(text))))
 
 
 class Scrubber:

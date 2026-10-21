@@ -68,7 +68,10 @@ def is_secret_key(key: object) -> bool:
     separators or without (``accesstoken``)."""
     if not isinstance(key, str):
         return False
-    joined = key_name(key).replace("_", "")
+    norm = key_name(key)
+    if norm in SECRET_KEYS or norm.endswith(SECRET_SUFFIXES):
+        return True
+    joined = norm.replace("_", "")
     return joined in _JOINED_KEYS or joined.endswith(_JOINED_SUFFIXES)
 
 

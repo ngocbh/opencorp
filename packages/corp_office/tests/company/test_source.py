@@ -462,17 +462,26 @@ async def test_a_json_file_neither_parser_reads_falls_back_to_the_scrub(src, com
     '{\n\t"password": "abcdefghij",\n}\n',  # a trailing comma
     '{\n\t// the database\n\t"db.password": "abcdefghij"\n}\n',
     "{\n\t// single quotes\n\t'apiKey': 'abcdefghij'\n}\n",
-], ids=["long int", "NaN", "trailing comma", "comment", "single quotes"])
+    '{\n\t// a lookalike key\n\t"api\u212aey": "abcdefghij"\n}\n',
+], ids=["long int", "NaN", "trailing comma", "comment", "single quotes", "kelvin sign"])
 async def test_a_secret_key_in_json_no_parser_reads_hides_the_file(src, company, text):
     got = await show(src, company, {"notes/x.json": text})
     assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
 
 
 @pytest.mark.parametrize("text", ["auth:\n  accessToken: abcdefghij\n", "api.key: abcdefghij\n",
-                                  "spring.datasource.password: abcdefghij\n"])
+                                  "spring.datasource.password: abcdefghij\n", "AWS_SECRET_ACCESS_KEY: abcdefghij\n",
+                                  "secret_key: abcdefghij\n", "passphrase: abcdefghij\n", "accesstoken: abcdefghij\n",
+                                  "\uff41pi_key: abcdefghij\n"])
 async def test_a_camel_case_or_dotted_secret_key_hides_the_file(src, company, text):
     got = await show(src, company, {"assets/x.yaml": text})
     assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
+
+
+async def test_ordinary_keys_holding_secret_words_are_shown(src, company):
+    text = "max_tokens: 100\ntokens_used: 5\nsecretary: Ann\nkeyboard: us\npasswordless_login: true\n"
+    got = await show(src, company, {"assets/x.yaml": text})
+    assert (got.content, got.text) == ("text", text)
 
 
 async def test_a_binary_scalar_holding_a_hash_hides_the_file(src, company):
