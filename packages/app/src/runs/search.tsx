@@ -1,8 +1,10 @@
 // The Run Logs search box: one text box for qualifiers and run id text, with autocomplete (an ARIA combobox) and a
 // subtle highlight on the qualifiers it recognises.
-import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js"
 import { accept, parse, suggest, type Option, type Sources, type Token } from "./query"
 
+/** How long typing must pause before the hints show what was typed. */
+const HINT_PAUSE_MS = 800
 // The box and its highlight layer share these, so the highlights sit exactly under the text. 16px on a phone, so iOS
 // doesn't zoom in on focus.
 const TEXT = "px-2 py-1 text-base md:text-sm whitespace-pre"
@@ -26,9 +28,28 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
   const [active, setActive] = createSignal(-1)
   const [scroll, setScroll] = createSignal(0)
   let input!: HTMLInputElement
-  createEffect(on(() => props.query, (q) => setText(q), { defer: true }))
-
   const parsed = createMemo(() => parse(text()))
+  /**
+   * The hints shown (and announced): those of the text once typing pauses, or at once on Enter or leaving the box, so
+   * a half-typed date isn't hinted at each key.
+   */
+  const [hints, setHints] = createSignal(parsed().hints.join(" · "))
+  let pause: ReturnType<typeof setTimeout> | undefined
+  const settle = () => {
+    clearTimeout(pause)
+    setHints(parsed().hints.join(" · "))
+  }
+  onCleanup(() => clearTimeout(pause))
+  createEffect(
+    on(
+      () => props.query,
+      (q) => {
+        setText(q)
+        settle()
+      },
+      { defer: true },
+    ),
+  )
   const suggestions = createMemo(() => (open() ? suggest(text(), caret(), props.sources) : undefined))
   const options = () => suggestions()?.options ?? []
   const expanded = () => options().length > 0
@@ -66,12 +87,16 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
     const n = options().length
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault()
-      if (!open() || !n) return show()
+      if (!open() || !n) {
+        track()
+        return show()
+      }
       setActive((i) => (e.key === "ArrowDown" ? (i + 1) % n : i <= 0 ? n - 1 : i - 1))
     } else if (e.key === "Enter" && expanded() && active() >= 0) {
       e.preventDefault()
       choose(options()[active()]!)
-    } else if (e.key === "Tab" && !e.shiftKey && expanded()) {
+    } else if (e.key === "Tab" && !e.shiftKey && expanded() && (active() >= 0 || suggestions()!.start < caret())) {
+      // Completes a word being typed, or the option highlighted; with neither, Tab moves on as it always does.
       e.preventDefault()
       choose(options()[Math.max(active(), 0)]!)
     } else if (e.key === "Escape" && expanded()) {
@@ -83,6 +108,7 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
   function submit(e: SubmitEvent) {
     e.preventDefault()
     close()
+    settle()
     props.onSearch(text())
   }
 
@@ -128,11 +154,13 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
             track()
             setActive(-1)
             show()
+            clearTimeout(pause)
+            pause = setTimeout(settle, HINT_PAUSE_MS)
           }}
           onKeyDown={onKeyDown}
           onKeyUp={(e) => e.key.startsWith("Arrow") || e.key === "Home" || e.key === "End" ? track() : undefined}
           onClick={() => (track(), show())}
-          onBlur={close}
+          onBlur={() => (close(), settle())}
           onScroll={(e) => setScroll(e.currentTarget.scrollLeft)}
           class={`relative w-full bg-transparent outline-none ${TEXT}`}
         />
@@ -164,8 +192,8 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
           )}
         </For>
       </ul>
-      <p id={`${id}-help`} role="status" class="mt-1 text-xs text-amber-700 dark:text-amber-400">
-        {parsed().hints.join(" · ")}
+      <p id={`${id}-help`} role="status" class="mt-1 min-h-4 text-xs text-amber-700 dark:text-amber-400">
+        {hints()}
       </p>
     </form>
   )

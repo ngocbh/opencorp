@@ -60,7 +60,8 @@ export function parse(text: string): { query: RunQuery; tokens: Token[]; hints: 
       continue
     }
     const key = q.key as Key
-    const value = key === "person" ? q.value.replace(/^@/, "") : key === "is" ? q.value.toLowerCase() : q.value
+    const value =
+      key === "person" ? q.value.replace(/^@/, "") : key === "is" || key === "started" ? q.value.toLowerCase() : q.value
     if (!value) {
       token.kind = "pending"
       continue
@@ -110,7 +111,10 @@ export function startedRange(value: string, now: Date): { since?: string; until?
   const ago = /^(\d+)([hd])$/.exec(value)
   if (ago) {
     const n = Number(ago[1])
-    return n > 0 ? { since: new Date(now.getTime() - n * (ago[2] === "h" ? 3_600_000 : 86_400_000)).toISOString() } : undefined
+    const since = new Date(now.getTime() - n * (ago[2] === "h" ? 3_600_000 : 86_400_000))
+    // A window too long for a Date, or reaching before year 1, which an ISO timestamp (and the office) can't hold.
+    if (n <= 0 || Number.isNaN(since.getTime()) || since.getUTCFullYear() < 1) return undefined
+    return { since: since.toISOString() }
   }
   const range = /^([^.]+)\.\.([^.]+)$/.exec(value)
   if (range) {
@@ -137,13 +141,6 @@ export function paramsOf(query: RunQuery, now: Date): RunParams {
     q: query.text,
   }
   return Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) as RunParams
-}
-
-/** The query as text, qualifiers in one order, then the run id text. */
-export function serialize(q: RunQuery): string {
-  return [q.flow && `flow:${q.flow}`, q.person && `@${q.person}`, q.is && `is:${q.is}`, q.started && `started:${q.started}`, q.text]
-    .filter(Boolean)
-    .join(" ")
 }
 
 type Param = string | string[] | undefined
@@ -235,7 +232,7 @@ export function suggest(text: string, caret: number, sources: Sources): Suggesti
       // Prefix matches only: "is:f" means finished or failed, not every state with an "f" in it.
       options = options.filter((o) => o.label.startsWith(q.value.toLowerCase()))
     } else if (q.key === "started")
-      options = STARTED_OPTIONS.filter(([v]) => v.startsWith(q.value)).map(([v, d]) => value(v, v, d))
+      options = STARTED_OPTIONS.filter(([v]) => v.startsWith(q.value.toLowerCase())).map(([v, d]) => value(v, v, d))
   }
   options = options.slice(0, MAX_OPTIONS)
   return options.length ? { start, end, options } : undefined

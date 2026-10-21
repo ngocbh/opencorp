@@ -187,6 +187,35 @@ test("recognised qualifiers are highlighted; unknown ones and a second value are
   expect(Object.fromEntries((await reads(request)).at(-1)!)).toEqual({ flow: "chat", limit: "50" })
 })
 
+test("Tab with nothing highlighted and no word typed leaves the box, its text as it was", async ({ page }) => {
+  await page.goto("/runs")
+  await expect(row(page, 5)).toBeVisible()
+  await box(page).fill("is:open ")
+  await expect(suggestions(page)).toBeVisible() // the qualifiers, offered for the next word
+  await box(page).press("Tab")
+  await expect(box(page)).toHaveValue("is:open ")
+  await expect(box(page)).not.toBeFocused()
+})
+
+test("a hint waits until typing pauses, so a half-typed date isn't announced at each key", async ({ page }) => {
+  await page.goto("/runs")
+  await expect(row(page, 5)).toBeVisible()
+  const help = page.locator(`#${await box(page).getAttribute("aria-describedby")}`)
+  // Its line is kept while empty, so a hint appearing doesn't move the list down.
+  expect((await help.boundingBox())!.height).toBeGreaterThanOrEqual(16)
+  await box(page).fill("")
+  await box(page).pressSequentially("started:2026-1", { delay: 30 })
+  await expect(help).toHaveText("") // not yet: "started:2026-1" is still being typed
+  await box(page).pressSequentially("0-13", { delay: 30 })
+  await page.waitForTimeout(1_200)
+  await expect(help).toHaveText("")
+  await box(page).pressSequentially("..x")
+  await expect(help).toHaveText("started: takes 24h, 7d, >2026-10-13 or 2026-10-01..2026-10-15")
+  await box(page).fill("foo:x")
+  await box(page).press("Enter") // at once on Enter
+  await expect(help).toHaveText("unknown filter foo:", { timeout: 300 })
+})
+
 test("an old ?flow=&person=&status= address becomes the query", async ({ page }) => {
   await page.goto("/runs?person=lead&status=waiting")
   await expect(page).toHaveURL("/runs?q=@lead+is:waiting")

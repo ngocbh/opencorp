@@ -10,7 +10,6 @@ import {
   paramsOf,
   parse,
   queryOfAddress,
-  serialize,
   startedRange,
   suggest,
 } from "../src/runs/query"
@@ -84,8 +83,31 @@ test("started: is a window ending now or local days", () => {
 })
 
 test("started: refuses what isn't a window or a real day", () => {
-  for (const bad of ["0d", "7w", "d", "2026-13-01", "2026-02-30", "2026-10-15..2026-10-01", "2026-10-1", ">", "1.5h"])
+  for (const bad of ["0d", "7w", "d", "2026-13-01", "2026-02-30", "2026-10-15..2026-10-01", "2026-10-1", ">", "1.5h",
+                     "99999999999d", "100000000d"])
     expect(startedRange(bad, NOW)).toBeUndefined()
+  // A window too far back for a Date is hinted, not thrown.
+  expect(parse("started:99999999999d")).toMatchObject({ query: {}, hints: [
+    "started: takes 24h, 7d, >2026-10-13 or 2026-10-01..2026-10-15"] })
+})
+
+test("started: values are read in any case", () => {
+  expect(parse("started:7D").query).toEqual({ started: "7d" })
+  expect(parse("Started:24H").query).toEqual({ started: "24h" })
+})
+
+test("local days follow daylight saving: a 23-hour day and a 25-hour day", () => {
+  const tz = process.env.TZ
+  // Not this machine's zone, so the test shows the zone is followed rather than happening to match.
+  process.env.TZ = "Europe/Berlin"
+  try {
+    expect(startedRange("2026-03-29", NOW)).toEqual({ since: "2026-03-28T23:00:00.000Z", until: "2026-03-29T22:00:00.000Z" })
+    expect(startedRange("2026-10-25", NOW)).toEqual({ since: "2026-10-24T22:00:00.000Z", until: "2026-10-25T23:00:00.000Z" })
+    expect(startedRange("2026-03-28..2026-03-29", NOW)).toEqual({
+      since: "2026-03-27T23:00:00.000Z", until: "2026-03-29T22:00:00.000Z" })
+  } finally {
+    process.env.TZ = tz
+  }
 })
 
 test("a query maps onto GET /runs's parameters", () => {
@@ -100,12 +122,12 @@ test("a query maps onto GET /runs's parameters", () => {
   expect(paramsOf({}, NOW)).toEqual({})
 })
 
-test("a query serializes back to text that parses to the same query", () => {
-  for (const text of [DEFAULT_QUERY, "flow:chat @minh is:failed started:2026-10-01..2026-10-15 a1b2", "", "@kai"]) {
-    const q = parse(text).query
-    expect(parse(serialize(q)).query).toEqual(q)
+test("a query goes into the address and comes back as the same text", () => {
+  for (const text of [DEFAULT_QUERY, "flow:chat @minh is:failed started:2026-10-01..2026-10-15 a1b2", "", "@kai",
+                      "started:>=2026-10-13 a+b&c#d"]) {
+    const q = new URL(hrefOf(text), "http://x").searchParams.get("q") ?? undefined
+    expect(queryOfAddress({ q }).text).toBe(text)
   }
-  expect(serialize(parse("a1b2  person:@minh flow:chat").query)).toBe("flow:chat @minh a1b2")
 })
 
 test("an address's query: q as typed, old filter params turned into the query, the default when there's none", () => {
@@ -169,6 +191,7 @@ test("autocomplete offers qualifiers, then each one's values, filtered as you ty
                                  "is:failed", "is:interrupted"])
   expect(labels("is:f")).toEqual(["is:finished", "is:failed"])
   expect(labels("started:")).toEqual(["started:24h", "started:7d", "started:30d"])
+  expect(labels("started:7D")).toEqual(["started:7d"])
   expect(labels("foo:")).toBeUndefined()
   // The token under the caret, not the last one.
   expect(labels("is:open flow:", 3)).toEqual(labels("is:"))
