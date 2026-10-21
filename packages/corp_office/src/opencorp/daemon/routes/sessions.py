@@ -30,15 +30,16 @@ def _limit(raw: str | None) -> int:
 
 
 async def list_sessions(request: Request) -> JSONResponse:
-    """Sessions, most recently updated first, optionally for one person and in the given statuses.
+    """Sessions, most recently updated first, optionally for one person, kind and folder, and in the given statuses.
 
-    ``status`` may repeat or be comma-separated (``?status=busy,idle``), as on ``/questions``.
+    ``status`` may repeat or be comma-separated (``?status=busy,idle``), as on ``/questions``. ``cwd`` is a folder's
+    resolved path, as sessions store it.
     """
     q = request.query_params
     statuses = [s.strip() for raw in q.getlist("status") for s in raw.split(",") if s.strip()]
     store = get_office(request).store
-    return ok(await call(store.list_sessions, person=q.get("person"), status=statuses or None,
-                         limit=_limit(q.get("limit"))))
+    return ok(await call(store.list_sessions, person=q.get("person"), status=statuses or None, kind=q.get("kind"),
+                         cwd=q.get("cwd"), limit=_limit(q.get("limit"))))
 
 
 async def _session(request: Request) -> Session:

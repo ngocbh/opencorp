@@ -780,13 +780,14 @@ class Store:
         person: str | None = None,
         status: str | Iterable[str] | None = None,
         kind: str | None = None,
+        cwd: str | None = None,
         limit: int | None = None,
     ) -> list[Session]:
-        """Sessions, most recently updated first, optionally filtered."""
+        """Sessions, most recently updated first, optionally filtered (``cwd`` is the folder's resolved path)."""
         status = status if status is None or isinstance(status, str) else tuple(status)
         with self._read() as conn:
             clauses, params = [], []
-            for name, value in {"person": person, "status": status, "kind": kind}.items():
+            for name, value in {"person": person, "status": status, "kind": kind, "cwd": cwd}.items():
                 if value is None:
                     continue
                 if isinstance(value, tuple):
