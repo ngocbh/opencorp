@@ -299,3 +299,15 @@ async def test_an_unreadable_log_isnt_read_again_until_it_changes(tmp_path, monk
     assert calls == [1]
     chat_log(path)  # replaced: read again
     assert (await reader.index(path)).last_seq == 15 and calls == [1, 1]
+
+
+def test_one_record_is_capped_in_bytes_and_a_payload_still_too_large_is_a_size_stub(tmp_path):
+    path = tmp_path / "r.jsonl"
+    wide = succeeded(1, "wide", {"output": "ü" * (1 << 20)})  # 1 Mi characters, 2 MiB of UTF-8
+    many = succeeded(2, "many", {f"k{i}": "s" * 3000 for i in range(1500)})  # every string under FIELD_CHARS
+    path.write_bytes(run_started(0) + wide + many)
+    index = refresh(path, None)
+    assert read_event(path, index, 1, nothing).cut == ["/value/output"]
+    stub = read_event(path, index, 2, nothing)
+    assert (stub.kind, stub.node_id, stub.payload, stub.size) == ("node_succeeded", "many", None, len(many))
+    assert len(stub.model_dump_json().encode()) <= reader_mod.EVENT_BYTES

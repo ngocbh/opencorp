@@ -311,6 +311,11 @@ def _node_of(payload: dict[str, Any] | None) -> str | None:
     return found if isinstance(found, str) else None
 
 
+def _size(payload: dict[str, Any]) -> int:
+    """``payload``'s size in bytes as UTF-8 JSON."""
+    return len(json.dumps(payload, ensure_ascii=False).encode())
+
+
 def _event(line: bytes, seq: int, scrub: Callable[[dict[str, Any]], dict[str, Any]], *,
            whole: bool) -> RunEvent | None:
     """Line ``seq`` as a page shows it (``whole``: as one opened record shows it, evidence included); None when it no
@@ -335,8 +340,10 @@ def _event(line: bytes, seq: int, scrub: Callable[[dict[str, Any]], dict[str, An
         return RunEvent(seq=seq, kind=kind, node_id=clean.get("node_id"), withheld=clean["withheld"])
     payload = clean.get("payload") if isinstance(clean.get("payload"), dict) else None
     cut: list[str] = []
-    if payload is not None and (not whole or len(json.dumps(payload, ensure_ascii=False)) > EVENT_BYTES):
+    if payload is not None and (not whole or _size(payload) > EVENT_BYTES):
         payload = _cut(payload, "", cut)
+        if whole and _size(payload) > EVENT_BYTES:  # many short strings: cutting each can't bring it under
+            return RunEvent(seq=seq, kind=kind, node_id=_node_of(payload), size=len(line))
     return RunEvent(seq=seq, kind=kind, node_id=_node_of(payload), payload=payload, cut=cut,
                     evidence_left_out=left_out)
 
@@ -368,7 +375,8 @@ def read_events(path: Path, index: Index, *, after: int | None, limit: int,
 
 def read_event(path: Path, index: Index, seq: int,
                scrub: Callable[[dict[str, Any]], dict[str, Any]]) -> RunEvent | None:
-    """The record with ``seq``, scrubbed, evidence included and cut only past EVENT_BYTES; None if there is none."""
+    """The record with ``seq``, scrubbed, evidence included; its strings cut only when its payload is over EVENT_BYTES,
+    and a stub with its size when it is still over after that. None if there is none."""
     base, start, stop = _window(index, seq)
     with open(path, "rb") as f:
         for at, line in enumerate(_lines(f, start, stop), base):
