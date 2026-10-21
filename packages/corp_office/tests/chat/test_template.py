@@ -32,3 +32,12 @@ def test_chat_templates_say_who_the_person_is_talking_with(path):
     assert flow["nodes"]["chat"]["input"]["talking_to"] == "${input.talking_to}"
     assert reply["system_prompt"].splitlines()[0].endswith("${person.reports_to} ${talking_to}")
     assert load_confined(ROOT, path).name == flow["name"]
+
+
+def test_the_template_ends_no_session_by_time_and_its_chats_have_no_loop_cap():
+    from importlib.resources import files
+
+    root = files("opencorp.company_template")
+    assert "idle_end" not in (root / "company.yaml").read_text()
+    for name in ("chat.yaml", "side_chat.yaml", "profile_manager.yaml"):
+        assert "max:" not in (root / "shared" / "flows" / name).read_text(), name

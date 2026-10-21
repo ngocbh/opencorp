@@ -324,33 +324,6 @@ def test_ending_a_busy_session_interrupts_its_turn_first(harness, fake_codex, wo
     assert fake_codex.calls("turn/interrupt")
 
 
-def test_an_idle_codex_session_ends_after_idle_end(make_codex, workspace):
-    h = make_codex(defaults={"idle_end": "1s"})
-    sid = start(h, workspace)
-    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end")
-
-
-def test_a_refused_message_restarts_the_idle_timer(make_codex, fake_codex, workspace, monkeypatch):
-    h = make_codex(defaults={"idle_end": "1s"})
-    sid = start(h, workspace)
-
-    def gone(*args, **kwargs):
-        raise RpcClosed("the app-server is gone")
-    monkeypatch.setattr(h.codex._live[sid].process.rpc, "request", gone)
-    with pytest.raises(HarnessError):
-        h.prompt(sid, "hi")
-    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end after the refusal")
-
-
-def test_going_idle_twice_leaves_one_timer(harness, workspace):
-    sid = start(harness, workspace)
-    live = harness.codex._live[sid]
-    first = wait_for(lambda: live.timer, what="the idle timer")
-    with live._lock:
-        live._idle()
-    assert live.timer is not first and first.finished.is_set()  # the first was cancelled
-
-
 def test_model_and_cost_cap_are_refused_on_a_codex_session(harness, workspace):
     sid = start(harness, workspace)
     for call in (lambda: harness.set_model(sid, "office", "gpt-4o"), lambda: harness.set_cost_cap(sid, 50)):
@@ -388,24 +361,6 @@ def test_ending_on_a_codex_that_never_answers_the_interrupt_returns_and_ends_aft
     assert harness.store.list_workers() == []
 
 
-def test_an_idle_timer_that_fired_as_a_message_came_ends_nothing(harness, fake_codex, workspace):
-    fake_codex.script([fc.agent_message("m1", "Hi")])
-    sid = start(harness, workspace)
-    live = harness.codex._live[sid]
-    fired = wait_for(lambda: live.timer, what="the idle timer")
-    began, release = threading.Event(), threading.Event()
-
-    def hold():  # keeps turn/started waiting, as a busy session thread would
-        began.set()
-        release.wait(5)
-    live._post(hold)
-    assert began.wait(5)
-    harness.prompt(sid, "hi")
-    live._idle_end(fired)  # the timer's job, run after the message stopped that timer
-    release.set()
-    wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
-
-
 def test_a_session_whose_load_failed_takes_no_message_or_end_before_it_is_dropped(harness, fake_codex, workspace,
                                                                                   monkeypatch):
     fake_codex.script(initialize_error={"code": -32600, "message": "nope"})
@@ -440,20 +395,6 @@ def test_a_queued_message_failing_because_the_office_stopped_stores_no_refusal(h
     assert errors(harness, sid) == []
 
 
-def test_idle_end_is_read_once_and_never_under_the_session_lock(harness, fake_codex, workspace, monkeypatch):
-    real, held = harness.codex.idle_seconds, []
-
-    def idle_seconds(session_id):
-        held.append(any(live._lock._is_owned() for live in harness.codex._live.values()))
-        return real(session_id)
-    monkeypatch.setattr(harness.codex, "idle_seconds", idle_seconds)
-    fake_codex.script([fc.agent_message("m1", "Hi")])
-    sid = start(harness, workspace)
-    harness.prompt(sid, "hi")
-    wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
-    assert held == [False]  # it reads the company (git, the company lock): never while the lock is held
-
-
 def test_a_turn_starting_after_the_end_leaves_the_end_timer_running(harness, fake_codex, workspace, monkeypatch):
     fake_codex.script([[{"sleep": 30}]], interrupt_hangs=True)
     monkeypatch.setattr(session_module, "END_WAIT", 1.0)
@@ -469,3 +410,17 @@ def test_a_turn_starting_after_the_end_leaves_the_end_timer_running(harness, fak
     wait_for(lambda: status(harness, sid) == "ended", timeout=5, what="the end after END_WAIT")
     ender.join(5)
     assert not ender.is_alive()
+
+
+def test_an_idle_codex_session_arms_no_timer(harness, fake_codex, workspace):
+    from opencorp.harness.session import CodexSession
+    from opencorp.harness.sessions import CodexSessions
+
+    fake_codex.script([fc.agent_message("m1", "Hi")])
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    wait_for(lambda: texts(harness, sid) == ["Hi"] and status(harness, sid) == "idle", what="the reply")
+    live = harness.codex._live[sid]
+    assert live.timer is None and not hasattr(live, "_idle_after")
+    assert not hasattr(CodexSessions, "idle_seconds")
+    assert not hasattr(CodexSession, "_idle_end") and not hasattr(CodexSession, "_idle_end_after_restore")

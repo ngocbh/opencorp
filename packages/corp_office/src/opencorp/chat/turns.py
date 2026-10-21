@@ -1,11 +1,9 @@
-"""Which node of a conversation flow is the turn, and small helpers for chat timing."""
+"""Which node of a conversation flow is the turn."""
 
 import re
 from dataclasses import dataclass
 
 _OCCURRENCE = re.compile(r"#\d+$")
-_DURATION = re.compile(r"^([0-9]+)([smhd])$")
-_UNIT = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
 def turn_path(node_id: str) -> str:
@@ -42,10 +40,3 @@ class ChatFlow:
 MAIN_CHAT = ChatFlow()
 """The shape of ``shared/flows/chat.yaml``; a person's own main flow must keep these node names."""
 
-
-def seconds(duration: str) -> int:
-    """``"90s"``, ``"15m"``, ``"2h"``, or ``"1d"`` in seconds (``CompanyDefaults.idle_end``)."""
-    match = _DURATION.fullmatch(duration)
-    if match is None:
-        raise ValueError(f"not a duration: {duration!r}")
-    return int(match[1]) * _UNIT[match[2]]

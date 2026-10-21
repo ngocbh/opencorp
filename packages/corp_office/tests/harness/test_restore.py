@@ -1,7 +1,5 @@
 """After an office restart: idle stays idle, busy becomes idle and interrupted, starting fails, cards go stale."""
 
-import threading
-
 import pytest
 
 from opencorp.protocol import now
@@ -11,13 +9,10 @@ from opencorp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
 
 
-def restarted(make_codex, old, **patches):
-    """A new harness over the same office, as a restarted office builds it, after ``old`` stopped; ``patches`` replace
-    attributes of its Codex sessions before the restore."""
+def restarted(make_codex, old):
+    """A new harness over the same office, as a restarted office builds it, after ``old`` stopped."""
     old.close_all()
     h = make_codex()
-    for name, value in patches.items():
-        setattr(h.codex, name, value)
     h.restore()
     return h
 
@@ -35,14 +30,6 @@ def test_an_idle_session_stays_idle_and_reloads_on_its_next_message(make_codex, 
     wait_for(lambda: "Resumed" in texts(h, sid), what="the reloaded reply")
     assert fake_codex.calls("thread/resume")[0]["threadId"] == "thr_1"
     assert [r.session_id for r in h.store.list_workers()] == [f"harness:{sid}"]
-
-
-def test_a_restored_idle_session_ends_after_idle_end(make_codex, fake_codex, workspace):
-    old = make_codex()
-    sid = start(old, workspace)
-    h = restarted(make_codex, old, idle_seconds=lambda session_id: 1)
-    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end")
-    assert fake_codex.calls("thread/resume") == []  # ending it needed no app-server
 
 
 def test_a_busy_session_becomes_idle_with_a_marker_and_its_cards_go_stale(make_codex, fake_codex, workspace):
@@ -143,20 +130,14 @@ def test_a_busy_session_whose_newest_message_is_only_the_marker_keeps_one(make_c
     assert texts(h, sid) == ["[interrupted]"] and status(h, sid) == "idle"
 
 
-def test_a_restored_session_whose_first_reload_fails_still_ends_after_idle_end(make_codex, fake_codex, workspace):
+def test_a_restored_session_whose_first_reload_fails_says_why_and_stays_idle(make_codex, fake_codex, workspace):
     old = make_codex()
     sid = start(old, workspace)
     fake_codex.script(resume_error={"code": -32600, "message": "no rollout found"})
-    asked = threading.Event()
-
-    def idle_seconds(session_id):
-        asked.wait(5)  # the restore's own read waits until the message's reload is under way
-        return 1
-    h = restarted(make_codex, old, idle_seconds=idle_seconds)
+    h = restarted(make_codex, old)
     assert h.prompt(sid, "hello") == "queued"
-    asked.set()
     wait_for(lambda: errors(h, sid), what="the refused reload")
-    wait_for(lambda: status(h, sid) == "ended", timeout=10, what="idle_end")
+    assert status(h, sid) == "idle" and h.codex._live[sid].timer is None
 
 
 @pytest.mark.parametrize("left", ["starting", "ending", "idle"])
@@ -191,5 +172,4 @@ def test_restoring_an_idle_session_leaves_its_row_alone(make_codex, fake_codex, 
     before = old.store.get_session(sid)
     h = make_codex()
     h.restore()
-    wait_for(lambda: h.codex._live[sid].timer, what="the idle timer")
     assert h.store.get_session(sid) == before  # its updated_at too: a restart doesn't re-sort the sessions
