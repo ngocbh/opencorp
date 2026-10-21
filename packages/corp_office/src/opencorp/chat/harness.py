@@ -725,6 +725,15 @@ class Harness:
         why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
         return HarnessError(503, "cant_wake", f"session {session_id} can't wake{why}")
 
+    def _asleep(self, question: Question) -> bool:
+        """Whether ``question`` is a ``human_input`` on the current run of a sleeping (or waking) composer session."""
+        if not question.session_id or question.source != "human_input":
+            return False
+        session = self.store.get_session(question.session_id)
+        return (session is not None and session.harness == "composer" and session.status in LIVE
+                and session.status != "starting" and bool(session.run_ids)
+                and question.run_id == session.run_ids[-1])
+
     # --- the person's keys -------------------------------------------------------------
 
     def prompt(self, session_id: str, text: str, *, by: str | None = None) -> str:
@@ -843,6 +852,23 @@ class Harness:
         if question.session_id and self._codex_session(question.session_id):
             return self.codex.answer(question_id, answer, kind, by=by)
         live = self._live.get(question.session_id)
+        if live is None and self._asleep(question):
+            if MAIN_CHAT.is_turn(question.node_id):  # every chat the office runs keeps the main chat's turn node
+                if not isinstance(answer, str) or not answer:
+                    raise HarnessError(422, "invalid_answer", "a chat turn takes text")
+                self.prompt(question.session_id, answer, by=by)  # the wake re-shows the turn, which takes it
+                return self.store.get_question(question_id)
+            try:  # stored first: the woken run asks the node again and finds it (Answers.ask)
+                stored = self.store.answer_question(question_id, answer, kind,
+                                                    answered_by=by or self._owner(question, None))
+            except InvalidTransition as exc:
+                raise HarnessError(409, "not_open", str(exc)) from exc
+            try:
+                self._awake(question.session_id)
+            except HarnessError as exc:
+                # The answer stands: the next wake reads it, or the next start resumes the run to read it.
+                log.warning("session %s can't wake for answer %s: %s", question.session_id, question_id, exc.message)
+            return stored
         if live is not None and live.run_id == question.run_id and live.spec.chat is not None \
                 and live.spec.chat.is_turn(question.node_id):
             if not isinstance(answer, str) or not answer:

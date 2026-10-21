@@ -511,6 +511,41 @@ def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, wor
         stop(second)
 
 
+def asleep_at_the_gate(make_harness, workspace):  # noqa: F811
+    """A gate session an office stopped at its card, and a new office (not restored) where it sleeps."""
+    first = gate_office(make_harness)
+    q = gate_card(first, workspace)
+    stop(first)
+    first.extras["harness"].close_all()
+    first.extras["harness"].store.update_session(q.session_id, status="idle")
+    return gate_office(make_harness), q
+
+
+def test_an_answer_to_a_sleeping_sessions_question_node_is_stored_then_wakes_it(make_harness, fake_llm,  # noqa: F811
+                                                                                workspace):
+    office, q = asleep_at_the_gate(make_harness, workspace)
+    h = office.extras["harness"]
+    try:
+        assert q.session_id not in h._live
+        got = office.extras["cards"].answer(q.id, {"db": "Postgres", "features": ["auth"]}, "option")
+        assert got.status == "answered"
+        wait_for(lambda: status(h, q.session_id) == "ended", what="the gate flow's end")
+    finally:
+        stop(office)
+
+
+def test_an_answer_whose_wake_fails_still_stands(make_harness, fake_llm, workspace):  # noqa: F811
+    office, q = asleep_at_the_gate(make_harness, workspace)
+    h = office.extras["harness"]
+    os.chmod(h.office.paths.office / "provider.json", 0o644)  # not private: the office's connection can't be read
+    try:
+        got = office.extras["cards"].answer(q.id, {"db": "Postgres", "features": ["auth"]}, "option")
+        assert got.status == "answered"  # the next wake reads it, or the next start resumes the run to read it
+        assert status(h, q.session_id) == "idle" and q.session_id not in h._live
+    finally:
+        stop(office)
+
+
 def test_a_side_chat_uses_its_askers_model(make_harness, fake_llm, workspace):  # noqa: F811
     office = wire(make_harness(files={SIDE_CHAT_FLOW: SIDE_FLOW}, connections={"second": "stub-2"}))
     try:

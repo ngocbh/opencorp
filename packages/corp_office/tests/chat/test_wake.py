@@ -6,6 +6,7 @@ import time
 import pytest
 
 from opencorp.chat.harness import HarnessError
+from opencorp.chat.turns import MAIN_CHAT
 from tests.chat.conftest import say, spawned, status, texts, wait_for
 
 
@@ -200,3 +201,12 @@ def test_interrupt_on_a_sleeping_session_spawns_nothing(make_harness, fake_llm, 
     jobs = spawned(h)
     assert h.interrupt(sid) is None
     assert jobs == [] and sid not in h._live and status(h, sid) == "idle"
+
+
+def test_a_turn_answer_to_a_sleeping_session_is_its_next_message(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "hi back"})
+    h, sid = asleep(make_harness, workspace)
+    turn = next(q for q in h.store.list_questions(session_id=sid, status="open") if MAIN_CHAT.is_turn(q.node_id))
+    assert h.answer(turn.id, "hello", "text", by="ngocbh").id == turn.id
+    wait_for(lambda: texts(h, sid) == ["hi back"], what="the reply")
+    assert texts(h, sid, role="user") == ["hello"]
