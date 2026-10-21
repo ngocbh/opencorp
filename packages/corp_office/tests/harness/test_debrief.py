@@ -41,6 +41,9 @@ def test_a_codex_session_is_debriefed_as_an_apprentice_and_its_feedback_is_learn
     assert "codex: $ touch a (exit 0)" in sent and "edited a.md (added, +1/-0)" in sent  # relative to the cwd
     assert h.store.get_debrief(sid).state == "ready"
     run_id = h.store.get_debrief_record(sid).run_id
+    (row,) = h.store.runs_of_session(sid)  # listed at the top level: a Codex session has no run of its own
+    assert (row.run_id, row.flow, row.driver, row.parent_run_id, row.outcome) == (
+        run_id, "debrief", "office", None, "finished")
     assert read_run_record(h.office.paths.run_dir(sid) / "runs" / f"{run_id}.model.json").connection == "office"
     fake_llm.script(review_reply(), learner_reply(PROFILE + "\n- Ask before touching files.\n"))
     fb = learning.add_feedback(FeedbackRequest(session_id=sid, text="Ask before touching files."))

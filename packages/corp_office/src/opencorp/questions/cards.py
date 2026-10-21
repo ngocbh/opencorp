@@ -18,6 +18,7 @@ from opencorp.questions.format import INTERRUPTED
 from opencorp.questions.seed import build_seed, first_message
 from opencorp.questions.side import (BACK_HINT, EXIT_WORDS, SIDE_CHAT, discussion, is_live, read_seed, side_spec,
                                       write_seed)
+from opencorp.runs.outcomes import CARD_CLOSED
 from opencorp.store import InvalidTransition, new_id
 
 log = logging.getLogger(__name__)
@@ -241,7 +242,11 @@ class Cards:
                 if exc.code == "stopping" or not is_live(self.store.get_session(side_id)):
                     return
                 log.warning("side session %s has no live run to end", side_id)
-                self.ended(self.store.update_session(side_id, **not_waiting("ended")))
+                with self.store.transaction():  # the side run's outcome commits with the session's end
+                    side = self.store.update_session(side_id, **not_waiting("ended"))
+                    if side.run_ids:
+                        self.store.end_run(side.run_ids[-1], "interrupted", reason=CARD_CLOSED)
+                self.ended(side)
 
     # --- helpers -------------------------------------------------------------------------
 
