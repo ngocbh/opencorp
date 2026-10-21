@@ -126,3 +126,22 @@ def test_a_debrief_is_claimed_while_its_outcome_is_written(harness, fake_llm, wo
     debriefs = {r: c for r, c in seen.items() if r != chat_run}
     assert debriefs and all(debriefs.values())
     assert learning.debriefing() == {} and learning._open == {}
+
+
+def test_a_harness_run_is_claimed_from_its_row_until_its_live_run_is_registered(harness, workspace):
+    session = harness._open("minh", str(workspace), "composer", opened_by=None, connection=None, model=None)
+    seen = {}
+
+    def on_row(event):  # delivered after the row commits, on start_run's thread, before its live run is in _live
+        if event.type == "run.updated" and event.data["session_id"] == session.id:
+            runs, busy = harness.live_runs()
+            seen.setdefault(event.data["run_id"], session.id in busy and session.id not in runs)
+
+    unlisten = harness.store.add_listener(on_row)
+    try:
+        run_id = harness.start_run(session, harness.main_spec(session))
+    finally:
+        unlisten()
+    assert seen == {run_id: True}
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
+    assert harness.live_runs() == ({session.id: run_id}, frozenset())

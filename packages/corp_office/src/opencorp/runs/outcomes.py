@@ -19,7 +19,6 @@ OFFICE_STOPPED = "the office stopped"
 OFFICE_REPLACED = "the office stopped; a fresh run replaced it"
 WORKER_REPLACED = "its worker stopped; a fresh run replaced it"
 NEW_MODEL = "replaced by a fresh run on the new model"
-ANOTHER_START = "another start of this session won"
 CARD_CLOSED = "its card closed while it wasn't running"
 BAD_OUTPUT = "bad output"
 

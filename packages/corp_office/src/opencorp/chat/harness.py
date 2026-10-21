@@ -33,9 +33,9 @@ from opencorp.protocol import now
 from opencorp.protocol.models import CompanyDefaults, Event, Question, Session, WorkItem
 from opencorp.questions.ask import Answers, OnQuestion, make_ask_user
 from opencorp.questions.format import INTERRUPTED
-from opencorp.runs.outcomes import (ANOTHER_START, COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, NEW_MODEL,
-                                    OFFICE as OFFICE_DRIVER, OFFICE_REPLACED, OFFICE_STOPPED, WORKER_REPLACED, WORKER_STOPPED,
-                                    RunEnd, flow_label)
+from opencorp.runs.outcomes import (COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, NEW_MODEL, OFFICE as OFFICE_DRIVER,
+                                    OFFICE_REPLACED, OFFICE_STOPPED, WORKER_REPLACED, WORKER_STOPPED, RunEnd,
+                                    flow_label)
 from opencorp.runs.nodes import OpenNodes
 from opencorp.runs.notify import RunNotifier, run_updated
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
@@ -241,6 +241,7 @@ class Harness:
         self._continuing = threading.Lock()
         self._live: dict[str, _Live] = {}
         self._waking: dict[str, _Wake] = {}  # session id -> its wake in progress
+        self._starting: set[str] = set()  # sessions inside start_run whose live run isn't registered yet
         self._finishing: set[str] = set()  # sessions whose _finish dropped the live run and hasn't stored the end
         self._pins: dict[tuple[str, str], _Pins] = {}  # (repo_commit, person) -> its pinned facts
         self._stopping = False  # set when close_all starts: no new worker spawns
@@ -498,31 +499,34 @@ class Harness:
         run and its row in ``runs`` are stored in one transaction: the flow's label and path, the driver (the session's
         opener, else the pinned CEO) and ``parent_run_id``, the run it was started from. If the run can't start, the
         session is ``failed`` and has no live run.
+
+        The session is claimed (``_starting``) from the first check until its live run is registered, so a second start
+        or a wake is refused with ``409`` before it writes anything.
         """
         with self._lock:
-            if session.id in self._live or session.id in self._waking:
+            if session.id in self._live or session.id in self._waking or session.id in self._starting:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
+            self._starting.add(session.id)
         try:
-            run_id = new_id()
-            live = self._new_live(session, run_id, spec)
-            with self.store.transaction():
-                self.store.add_session_run(session.id, run_id)
-                row = self.store.add_run(RunRow(
-                    run_id=run_id, session_id=session.id, flow=flow_label(session.kind),
-                    flow_path=posixpath.normpath(spec.flow), driver=live.owner or OFFICE_DRIVER,
-                    parent_run_id=parent_run_id, launched_at=now()))
-            live.parent_run_id = row.parent_run_id
-        except Exception:
-            log.exception("can't start a run for session %s", session.id)
-            self._fail(session.id)
-            raise
-        with self._lock:
-            lost = session.id in self._live or session.id in self._waking
-            if not lost:
+            try:
+                run_id = new_id()
+                live = self._new_live(session, run_id, spec)
+                with self.store.transaction():
+                    self.store.add_session_run(session.id, run_id)
+                    row = self.store.add_run(RunRow(
+                        run_id=run_id, session_id=session.id, flow=flow_label(session.kind),
+                        flow_path=posixpath.normpath(spec.flow), driver=live.owner or OFFICE_DRIVER,
+                        parent_run_id=parent_run_id, launched_at=now()))
+                live.parent_run_id = row.parent_run_id
+            except Exception:
+                log.exception("can't start a run for session %s", session.id)
+                self._fail(session.id)
+                raise
+            with self._lock:
                 self._live[session.id] = live
-        if lost:  # the store write needs no harness lock
-            self.store.end_run(run_id, "interrupted", reason=ANOTHER_START)
-            raise HarnessError(409, "live", f"session {session.id} already has a live run")
+        finally:
+            with self._lock:
+                self._starting.discard(session.id)
         self._spawn(live, "chat")  # on failure, it fails the session and drops the live entry
         return run_id
 
@@ -712,9 +716,9 @@ class Harness:
                     if session is None:
                         raise HarnessError(404, "not_found", f"no session {session_id}")
                     # _finish drops the live run before it stores the end, so the store still says LIVE until then;
-                    # a starting session with no live run is inside start_run. Neither is asleep.
-                    if session_id in self._finishing or session.status not in LIVE or session.status == "starting" \
-                            or not session.run_ids or session.harness != "composer":
+                    # a session in _starting, or starting with no live run, is inside start_run. Neither is asleep.
+                    if session_id in self._finishing or session_id in self._starting or session.status not in LIVE \
+                            or session.status == "starting" or not session.run_ids or session.harness != "composer":
                         raise HarnessError(409, "not_live", f"session {session_id} has no live run")
                     if self._stopping:
                         raise HarnessError(503, "stopping", "the office is stopping")
@@ -1115,11 +1119,12 @@ class Harness:
             self._closed = True
 
     def live_runs(self) -> tuple[dict[str, str], frozenset[str]]:
-        """Each session's live run id, and the sessions being woken or finishing (a snapshot). A finishing session's
-        run is still writing its outcome after ``_finish`` dropped it, so it isn't taken for one that stopped."""
+        """Each session's live run id, and the sessions being started, woken or finishing (a snapshot). A starting
+        session's run may be stored before its live run is registered, and a finishing session's run is still writing
+        its outcome after ``_finish`` dropped it, so neither is taken for one that stopped."""
         with self._lock:
             live = {sid: live.run_id for sid, live in self._live.items()}
-            return live, frozenset(self._waking) | frozenset(self._finishing)
+            return live, frozenset(self._starting) | frozenset(self._waking) | frozenset(self._finishing)
 
     def open_nodes(self, run_id: str) -> list[str]:
         """The nodes the live run ``run_id`` is executing now, deepest only; empty if it isn't live."""
