@@ -23,6 +23,21 @@ test("the header says what ran, who drove it, when, and where the session is", a
   await expect(page.getByRole("navigation", { name: "HQ" }).getByRole("link", { name: "Run Logs" })).toHaveClass(/active/)
 })
 
+test("the status doesn't repeat its word, or how long a finished run took", async ({ page, request }) => {
+  const status = () => header(page).getByRole("definition").first()
+  await request.post("/__fixture/run", { data: { id: rid(3), detail: { run: { status: "finished", ended_at:
+    "2026-10-20T10:09:00.000Z" } } } })
+  await page.goto(`/runs/${rid(3)}`)
+  await expect(status()).toHaveText("finished")
+  await expect(header(page)).toContainText("took 6m 0s")
+  await request.post("/__fixture/run", { data: { id: rid(4), detail: { run: { failed_node: null, reason: null } } } })
+  await page.goto(`/runs/${rid(4)}`)
+  await expect(status()).toHaveText("failed")
+  await request.post("/__fixture/run", { data: { id: rid(1), detail: { run: { reason: null } } } })
+  await page.goto(`/runs/${rid(1)}`)
+  await expect(status()).toHaveText("interrupted")
+})
+
 test("a debrief says its usage isn't recorded", async ({ page }) => {
   await page.goto(`/runs/${rid(2)}`)
   await expect(header(page)).toContainText("usage not recorded")
