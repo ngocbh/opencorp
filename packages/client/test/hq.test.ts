@@ -170,7 +170,7 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
   const c = createOfficeClient({ baseUrl: base })
   await c.runs.list({ flow: "chat", person: "minh", status: "idle", q: "a1b2", before: RUN, limit: 50 })
   await c.runs.list()
-  await c.runs.children(RUN)
+  await c.runs.children(RUN, { limit: 50 })
   await c.runs.get(RUN)
   await c.runs.nodes(RUN)
   await c.runs.nodes(RUN, 80)
@@ -179,7 +179,7 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
   expect(seen.map((s) => `${s.method} ${s.path}${s.query}`)).toEqual([
     `GET /api/runs?flow=chat&person=minh&status=idle&q=a1b2&before=${RUN}&limit=50`,
     "GET /api/runs",
-    `GET /api/runs?parent=${RUN}`,
+    `GET /api/runs?parent=${RUN}&limit=50`,
     `GET /api/runs/${RUN}`,
     `GET /api/runs/${RUN}/nodes`,
     `GET /api/runs/${RUN}/nodes?before=80`,
@@ -205,12 +205,24 @@ test("runs.list sends since, until, and a status list comma-joined", async () =>
   ])
 })
 
+test("runs.children pages one run's children with the list's filters", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  await c.runs.children(RUN, { person: "ann", status: ["idle", "failed"], q: "a1", before: RUN, limit: 50 })
+  await c.runs.children(RUN, { limit: 50 })
+  expect(seen.map((s) => Object.fromEntries(new URLSearchParams(s.query)))).toEqual([
+    { parent: RUN, person: "ann", status: "idle,failed", q: "a1", before: RUN, limit: "50" },
+    { parent: RUN, limit: "50" },
+  ])
+})
+
 test("a run page read returns the office's body as sent", async () => {
   const page: RunPage = { runs: [], next: null }
   const detail = { run: { run_id: RUN }, repo_commit: "a".repeat(40), log_state: "ok" } as RunDetail
   const { base } = serve({ answer: (req) => Response.json(new URL(req.url).pathname.endsWith("/runs") ? page : detail) })
   const c = createOfficeClient({ baseUrl: base })
   expect(await c.runs.list()).toEqual(page)
+  expect(await c.runs.children(RUN, { limit: 50 })).toEqual(page)
   expect(await c.runs.get(RUN)).toEqual(detail)
 })
 

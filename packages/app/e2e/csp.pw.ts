@@ -190,7 +190,7 @@ test("Run Logs: the list, a fold, search with its suggestions and highlights, an
   await request.post("/__fixture/set", { data: { signedIn: true } })
   const violations = await watchCsp(page)
   await page.goto("/runs")
-  await page.getByRole("table", { name: "Runs" }).getByRole("button", { name: /Runs under/ }).first().click()
+  await page.getByRole("table", { name: "Runs" }).getByRole("button", { name: /runs? under/ }).first().click()
   const box = page.getByRole("combobox", { name: "Search runs" })
   await box.fill("is:failed foo:x flow:")
   await expect(page.getByRole("listbox", { name: "Suggestions" })).toBeVisible()

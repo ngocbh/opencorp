@@ -32,6 +32,8 @@ const POLL_MS = 1_000
 const REFETCH_MS = 1_000
 /** A failed node's error is cut to this many characters in the Timeline. */
 const ERROR_CHARS = 200
+/** Children per read of "Show all". */
+const KIDS_PAGE = 50
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
@@ -178,10 +180,17 @@ export function RunPage(props: { id: string }) {
     })
   }
 
-  /** Reads every run started from this one: "Show all", past the newest 200 the header holds. */
+  /** Reads every run started from this one: "Show all", the pages past the newest 200 the header holds. */
   async function readKids() {
     try {
-      const kids = await office.client.runs.children(props.id)
+      const shown = unwrap(detail.value?.run.children ?? [])
+      let kids = [...shown]
+      let before = shown.at(-1)?.run_id
+      do {
+        const page = await office.client.runs.children(props.id, { before, limit: KIDS_PAGE })
+        kids = [...kids, ...page.runs]
+        before = page.next ?? undefined
+      } while (before)
       if (disposed) return
       setDetail("kids", reconcile(kids, { key: "run_id" }))
       setKidsError(undefined)

@@ -1,5 +1,5 @@
-// Run Logs data for the fixture HQ: top-level runs as GET /api/runs answers them, newest first, children attached;
-// and each run's page (its header, node and record pages) as GET /api/runs/{id} and its routes answer them.
+// Run Logs data for the fixture HQ: top-level runs, newest first, and the runs started from each, as GET /api/runs and
+// GET /api/runs?parent= answer them; and each run's page (its header, node and record pages) as GET /api/runs/{id} and its routes answer them.
 import type { RunDetail, RunDivider, RunEvent, RunNode, RunSummary } from "@opencorp/protocol"
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
@@ -15,7 +15,15 @@ export const run = (n: number, over: Partial<RunSummary> = {}): RunSummary => ({
   replaces: null, replaced_by: null, children: [], children_total: 0, ...over,
 })
 
+/** The top-level runs (their `children` left empty, as a list page leaves them) and each one's children, newest first. */
 export type Runs = { runs: RunSummary[]; children: Record<string, RunSummary[]> }
+
+/** Run `id`'s summary as its page's header has it: the newest 200 runs started from it, and how many there are. */
+export function summaryOf(data: Runs, id: string): RunSummary | undefined {
+  const found = [...data.runs, ...Object.values(data.children).flat()].find((r) => r.run_id === id)
+  const kids = data.children[id] ?? []
+  return found && { ...found, children: kids.slice(0, 200), children_total: kids.length }
+}
 
 /**
  * Five top-level runs: @kai's chat (idle, a fresh run that replaces run 4, with Ann's side chat under it), the failed
@@ -27,7 +35,7 @@ export function runLogs(): Runs {
                         participants: ["kai"], parent_run_id: rid(5) })
   const runs = [
     run(5, { status: "idle", ended_at: null, current_nodes: ["chat#3/ask"], participants: ["kai", "ann"],
-             replaces: rid(4), children: [side], children_total: 1 }),
+             replaces: rid(4), children_total: 1 }),
     run(4, { status: "failed", failed_node: "chat#2/reply", reason: "AuthError: 401 from the provider",
              replaced_by: rid(5) }),
     run(3, { person: "lead", participants: ["lead"], status: "waiting", ended_at: null, asking: true,
@@ -40,21 +48,23 @@ export function runLogs(): Runs {
   return { runs, children: { [rid(5)]: [side] } }
 }
 
-/** `n` plain top-level runs, newest first, each with one side chat under it: for paging. */
-export function many(n: number): Runs {
+/** `n` plain top-level runs, newest first, each with `kids` side chats under it: for paging. */
+export function many(n: number, kids = 1): Runs {
+  const children: Record<string, RunSummary[]> = {}
   const runs = Array.from({ length: n }, (_, i) => {
-    const k = 1000 + 2 * (n - i)
-    const kid = run(k + 1, { flow: "side_chat", parent_run_id: rid(k), driver: "ann" })
-    return run(k, { children: [kid], children_total: 1 })
+    const k = 1000 + (kids + 1) * (n - i)
+    children[rid(k)] = Array.from({ length: kids }, (_, j) =>
+      run(k + kids - j, { flow: "side_chat", parent_run_id: rid(k), driver: "ann" }))
+    return run(k, { children_total: kids })
   })
-  return { runs, children: Object.fromEntries(runs.map((r) => [r.run_id, r.children ?? []])) }
+  return { runs, children }
 }
 
-/** One run with `total` side chats under it, of which the list holds the newest 200. */
+/** One run with `total` side chats under it, of which its page's header holds the newest 200. */
 export function crowded(total: number): Runs {
   const kids = Array.from({ length: total }, (_, i) =>
     run(5000 + total - i, { flow: "side_chat", parent_run_id: rid(4000), driver: "ann" }))
-  return { runs: [run(4000, { children: kids.slice(0, 200), children_total: total })], children: { [rid(4000)]: kids } }
+  return { runs: [run(4000, { children_total: total })], children: { [rid(4000)]: kids } }
 }
 
 /** One run's page as the fixture serves it; `indexing` makes its node and record pages answer "indexing", and
@@ -69,10 +79,9 @@ export const node = (seq: number, node_id: string, over: Partial<RunNode> = {}):
 
 /** Run 5's page: three turns of @kai's chat, the second resumed once, the third waiting at its turn; and simple pages
  * for the others (run 6, a side chat that keeps no evidence; run 1, a log this office can't read; run 4, no log). */
-export function runPages(runs: RunSummary[]): RunPages {
-  const byId = Object.fromEntries(runs.flatMap((r) => [r, ...(r.children ?? [])]).map((r) => [r.run_id, r]))
+export function runPages(data: Runs): RunPages {
   const detail = (id: string, over: Partial<RunDetail> = {}): RunDetail => ({
-    run: byId[id]!, parent: null, repo_commit: "a".repeat(40), flow_fingerprint: "b".repeat(64), learnable: true,
+    run: summaryOf(data, id)!, parent: null, repo_commit: "a".repeat(40), flow_fingerprint: "b".repeat(64), learnable: true,
     models: { "chat/reply": "gpt-5" }, usage: { input_tokens: 1200, output_tokens: 300, usd: 0.0123 },
     log_state: "ok", log_message: null, bytes_done: null, bytes_total: null, ...over })
   const turn = (k: number, base: number): RunNode[] => [

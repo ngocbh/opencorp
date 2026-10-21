@@ -4,10 +4,11 @@ import { A } from "@solidjs/router"
 import Check from "lucide-solid/icons/check"
 import Copy from "lucide-solid/icons/copy"
 import { createEffect, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js"
-import { createStore, reconcile } from "solid-js/store"
+import { createStore, reconcile, unwrap } from "solid-js/store"
 import { useOffice } from "../data/office"
 import { matches, type RunParams } from "./query"
 import { flowText, shortId, STATUS_DOT, where } from "./format"
+import { readQueue } from "./queue"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
@@ -63,32 +64,17 @@ export function CopyId(props: { id: string; label?: string }) {
   )
 }
 
-/** One run's row; `toggle` is the fold button of a top-level run with runs under it. */
+/** One run's row; `toggle` is the fold button of a top-level run with runs under it, `count` of them. */
 function Row(props: {
   run: RunSummary
   level: 1 | 2
-  toggle?: { open: boolean; controls: string; onToggle: () => void }
+  toggle?: { open: boolean; count: number; controls: string; onToggle: () => void }
 }) {
   const r = () => props.run
   return (
     <tr aria-level={props.level} class={`${ROW} ${GRID[props.level]}`}>
       <td class={CELL} classList={{ "md:pl-7": props.level === 2 }}>
         <span class="inline-flex flex-wrap items-center gap-1 whitespace-nowrap">
-          {/* Every row keeps the toggle's slot, so the ids line up. */}
-          <Show when={props.toggle} fallback={<span aria-hidden="true" class="size-6 shrink-0" />}>
-            {(t) => (
-              <button
-                type="button"
-                aria-expanded={t().open}
-                aria-controls={t().controls}
-                aria-label={`Runs under ${shortId(r().run_id)}`}
-                onClick={() => t().onToggle()}
-                class={`grid size-6 shrink-0 place-items-center rounded text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${RING}`}
-              >
-                <span aria-hidden="true">{t().open ? "▾" : "▸"}</span>
-              </button>
-            )}
-          </Show>
           <A href={`/runs/${r().run_id}`} class={`font-mono ${LINK}`}>
             {shortId(r().run_id)}
           </A>
@@ -96,6 +82,21 @@ function Row(props: {
             {(parent) => <span class="sr-only">under …{parent().slice(-4)}</span>}
           </Show>
           <CopyId id={r().run_id} />
+          <Show when={props.toggle}>
+            {(t) => (
+              <button
+                type="button"
+                aria-expanded={t().open}
+                aria-controls={t().controls}
+                onClick={() => t().onToggle()}
+                class={`rounded px-1 text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${MUTED} ${RING}`}
+              >
+                <span aria-hidden="true">{t().open ? "▾" : "▸"} </span>
+                {t().count} {t().count === 1 ? "run" : "runs"}
+                <span class="sr-only"> under {shortId(r().run_id)}</span>
+              </button>
+            )}
+          </Show>
         </span>
       </td>
       <td class={`${CELL} whitespace-nowrap`}>
@@ -134,7 +135,7 @@ function Row(props: {
   )
 }
 
-/** A row under the children with one button: "Show the rest" or "Show all N", and why it failed, if it did. */
+/** A row under the children with one button ("Load more", "Retry", "Show the rest"), and why a read failed. */
 function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean; error?: string }) {
   return (
     <tr class="max-md:block">
@@ -154,43 +155,138 @@ function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean
   )
 }
 
-/** What the table remembers of a top-level run across refetches: its fold, and its children once all are read. */
-type Fold = { open?: boolean; rest?: boolean; all?: RunSummary[]; loading?: boolean; error?: string }
+/** Children per read of a fold. */
+const PAGE = 50
+
+/** A top-level run's fold: whether it's open, the children read so far, and the cursor of the page after them. */
+type Fold = {
+  open?: boolean
+  /** "Show the rest" was pressed: the fold reads every child, not only those matching the filters. */
+  rest?: boolean
+  kids?: RunSummary[]
+  next?: string | null
+  /** A read the reader asked for (the first page, or Load more) is queued or running. */
+  loading?: boolean
+  error?: string
+  /** The read Retry repeats. */
+  failed?: Read
+}
+/** The first page of children, the page after those shown, or as many as are shown, read again. */
+type Read = "first" | "more" | "again"
 
 /**
- * The runs table. A run's children start folded, except when the run is listed only because a child matches the
- * filters: then it starts open with only the matching children, until "Show the rest". Past the newest 200 children,
- * "Show all" reads them, and reads them again each time the list is refetched (`refreshed` changes).
+ * A top-level run's row and, once its fold is opened, the runs started from it, a page at a time. The fold starts
+ * closed, except when the run is listed only because a child matches the filters: then it opens with the matching
+ * children read, until "Show the rest". Each time the list is refetched (`refreshed` changes), an open fold reads its
+ * children again and a closed one forgets them.
  */
-export function RunTable(props: { runs: RunSummary[]; filters: RunParams; refreshed: number }) {
+function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number }) {
   const office = useOffice()
-  const [folds, setFolds] = createStore<Record<string, Fold>>({})
-  const filtered = () => Object.keys(props.filters).length > 0
+  const under = createUniqueId()
+  // The run's row is reconciled by run_id, so this outlives a refetch that keeps the run.
+  const [fold, setFold] = createStore<Fold>({})
+  const queue = readQueue()
+  let disposed = false
+  onCleanup(() => (disposed = true))
+  const id = () => props.run.run_id
+  // A run that doesn't match is listed for its matching children: they say why it's here.
+  const forKids = () => Object.keys(props.filters).length > 0 && !matches(props.run, props.filters)
+  const only = () => forKids() && !fold.rest
+  const open = () => fold.open ?? forKids()
+  const total = () => Math.max(props.run.children_total ?? 0, fold.kids?.length ?? 0)
 
-  async function showAll(id: string) {
-    setFolds(id, { loading: true })
-    try {
-      const all = await office.client.runs.children(id)
-      // Reconciled by run_id, as the list is: a re-read updates the rows in place, so focus stays where it was.
-      setFolds(id, "all", reconcile(all, { key: "run_id" }))
-      setFolds(id, { error: undefined })
-    } catch (error) {
-      const why = error instanceof Error ? error.message : String(error)
-      setFolds(id, { error: `Couldn't read the runs under …${id.slice(-4)}: ${why}.` })
-    } finally {
-      setFolds(id, { loading: false })
-    }
+  /** Queues `how`; its answer replaces the children (reconciled by run_id, so focus stays) or adds to them. */
+  function read(how: Read) {
+    if (how !== "again") setFold({ loading: true })
+    queue(
+      async () => {
+        try {
+          const opts = only() ? props.filters : {}
+          // As many as are shown, from the start, for a re-read; past the last one shown for Load more.
+          const want = how === "again" ? (fold.kids?.length ?? 0) : 0
+          let kids = how === "more" ? [...unwrap(fold.kids ?? [])] : []
+          let before = how === "more" ? (fold.next ?? undefined) : undefined
+          let next: string | null
+          do {
+            const page = await office.client.runs.children(id(), { ...opts, before, limit: PAGE })
+            kids = [...kids, ...page.runs]
+            next = page.next ?? null
+            before = next ?? undefined
+          } while (next && kids.length < want)
+          if (disposed) return
+          setFold("kids", reconcile(kids, { key: "run_id" }))
+          setFold({ next, error: undefined, failed: undefined })
+        } catch (error) {
+          const why = error instanceof Error ? error.message : String(error)
+          if (!disposed) setFold({ error: `Couldn't read the runs under …${id().slice(-4)}: ${why}.`, failed: how })
+        } finally {
+          if (!disposed && how !== "again") setFold({ loading: false })
+        }
+      },
+      how === "again" ? "again" : undefined,
+    )
   }
+  // An open fold with nothing read yet reads its first page (once: a failure waits for Retry).
+  createEffect(() => {
+    if (open() && !fold.kids && !fold.loading && !fold.error) read("first")
+  })
   createEffect(
     on(
       () => props.refreshed,
       () => {
-        for (const [id, fold] of Object.entries(folds)) if (fold.all) void showAll(id)
+        if (!open()) setFold({ kids: undefined, next: undefined, error: undefined, failed: undefined })
+        else if (fold.kids) read("again")
       },
       { defer: true },
     ),
   )
 
+  return (
+    <>
+      <tbody>
+        <Row
+          run={props.run}
+          level={1}
+          toggle={
+            total() > 0
+              ? { open: open(), count: total(), controls: under, onToggle: () => setFold({ open: !open() }) }
+              : undefined
+          }
+        />
+      </tbody>
+      <tbody id={under}>
+        <Show when={open()}>
+          <For each={fold.kids ?? []}>{(kid) => <Row run={kid} level={2} />}</For>
+          <Show
+            when={fold.failed}
+            fallback={
+              <Show when={fold.next}>
+                <MoreRow label="Load more" disabled={fold.loading} onClick={() => read("more")} />
+              </Show>
+            }
+          >
+            {(failed) => (
+              <MoreRow label="Retry" disabled={fold.loading} error={fold.error} onClick={() => read(failed())} />
+            )}
+          </Show>
+          <Show when={only() && fold.kids && fold.kids.length < total()}>
+            <MoreRow
+              label="Show the rest"
+              disabled={fold.loading}
+              onClick={() => {
+                setFold({ rest: true })
+                read("first")
+              }}
+            />
+          </Show>
+        </Show>
+      </tbody>
+    </>
+  )
+}
+
+/** The runs table: one row per top-level run, the runs started from it folded under it. */
+export function RunTable(props: { runs: RunSummary[]; filters: RunParams; refreshed: number }) {
   return (
     <table aria-label="Runs" class="w-full text-sm">
       <thead class="max-md:sr-only">
@@ -201,52 +297,7 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunParams; refres
         </tr>
       </thead>
       <For each={props.runs}>
-        {(run) => {
-          const under = createUniqueId()
-          const fold = () => folds[run.run_id] ?? {}
-          const kids = () => {
-            const all = fold().all
-            return all && all.length > (run.children ?? []).length ? all : (run.children ?? [])
-          }
-          // A run that doesn't match is listed for its matching children: they say why it's here.
-          const matching = () =>
-            filtered() && !matches(run, props.filters) ? kids().filter((k) => matches(k, props.filters)) : []
-          const open = () => fold().open ?? matching().length > 0
-          // Only the matching children, while some match and "Show the rest" hasn't been pressed.
-          const shown = () => (matching().length && !fold().rest ? matching() : kids())
-          const total = () => Math.max(run.children_total ?? 0, kids().length)
-          return (
-            <>
-              <tbody>
-                <Row
-                  run={run}
-                  level={1}
-                  toggle={
-                    total() > 0
-                      ? { open: open(), controls: under, onToggle: () => setFolds(run.run_id, { open: !open() }) }
-                      : undefined
-                  }
-                />
-              </tbody>
-              <tbody id={under}>
-                <Show when={open()}>
-                  <For each={shown()}>{(kid) => <Row run={kid} level={2} />}</For>
-                  <Show when={shown().length < kids().length}>
-                    <MoreRow label="Show the rest" onClick={() => setFolds(run.run_id, { rest: true })} />
-                  </Show>
-                  <Show when={shown().length === kids().length && total() > kids().length}>
-                    <MoreRow
-                      label={`Show all ${total()}`}
-                      disabled={fold().loading}
-                      error={fold().error}
-                      onClick={() => void showAll(run.run_id)}
-                    />
-                  </Show>
-                </Show>
-              </tbody>
-            </>
-          )
-        }}
+        {(run) => <TopRun run={run} filters={props.filters} refreshed={props.refreshed} />}
       </For>
     </table>
   )

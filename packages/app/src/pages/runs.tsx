@@ -40,7 +40,7 @@ export default function Runs() {
   const [loading, setLoading] = createSignal(true)
   /** Whether a Load more is queued or reading: only that disables the button, not a live re-read it can queue after. */
   const [more, setMore] = createSignal(false)
-  /** Counts finished refetches, so the table reads its "Show all" children again. */
+  /** Counts finished refetches, so the table reads its open folds again. */
   const [refreshed, setRefreshed] = createSignal(0)
   /** Flows named by the company repo's files, read once the search box is first used. */
   const [repoFlows, setRepoFlows] = createSignal<string[]>([])
@@ -158,7 +158,7 @@ export default function Runs() {
     )
   }
   const sources = createMemo(() => ({
-    flows: [...runs.flatMap((r) => [r.flow, ...(r.children ?? []).map((k) => k.flow)]), ...repoFlows()],
+    flows: [...runs.map((r) => r.flow), ...repoFlows()],
     people: office.state.people.map((p) => ({ handle: p.handle, name: p.name })),
   }))
 

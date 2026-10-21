@@ -13,6 +13,12 @@ const DAY = 86_400_000
 const table = (page: Page) => page.getByRole("table", { name: "Runs" })
 const row = (page: Page, n: number) => table(page).getByRole("row").filter({ hasText: rid(n).slice(-8) })
 const tops = (page: Page) => table(page).locator("tr[aria-level='1']")
+const kids = (page: Page) => table(page).locator("tr[aria-level='2']")
+const toggle = (page: Page, n: number) => row(page, n).getByRole("button", { name: /runs? under/ })
+/** The rows under run `n`'s toggle: its children and the fold's own buttons. */
+async function fold(page: Page, n: number) {
+  return page.locator(`#${await toggle(page, n).getAttribute("aria-controls")}`)
+}
 const box = (page: Page) => page.getByRole("combobox", { name: "Search runs" })
 const suggestions = (page: Page) => page.getByRole("listbox", { name: "Suggestions" })
 const options = (page: Page) => suggestions(page).getByRole("option")
@@ -23,11 +29,16 @@ async function search(page: Page, text: string) {
   await box(page).press("Enter")
 }
 
-/** The query of every list read the app made (`?parent=` reads aside), oldest first. */
-async function reads(request: APIRequestContext): Promise<URLSearchParams[]> {
+/** The query of every read of /api/runs the app made, oldest first. */
+async function allReads(request: APIRequestContext): Promise<URLSearchParams[]> {
   const log = await (await request.get("/__fixture/log")).json()
-  return (log.runs as string[]).map((s) => new URLSearchParams(s)).filter((p) => !p.has("parent"))
+  return (log.runs as string[]).map((s) => new URLSearchParams(s))
 }
+/** The query of every list read the app made (`?parent=` reads aside), oldest first. */
+const reads = async (request: APIRequestContext) => (await allReads(request)).filter((p) => !p.has("parent"))
+/** The query of every read of run `n`'s children, oldest first. */
+const childReads = async (request: APIRequestContext, n: number) =>
+  (await allReads(request)).filter((p) => p.get("parent") === rid(n)).map((p) => Object.fromEntries(p))
 
 test("one row per top-level run, newest first, with every column", async ({ page }) => {
   await page.goto(ALL)
@@ -47,7 +58,10 @@ test("a run's children fold under it, and the copy button copies the full id", a
   await context.grantPermissions(["clipboard-read", "clipboard-write"])
   await page.goto("/runs")
   await expect(row(page, 6)).toHaveCount(0)
-  await row(page, 5).getByRole("button", { name: /Runs under/ }).click()
+  await expect(toggle(page, 5)).toContainText("▸ 1 run")
+  await expect(toggle(page, 5)).toHaveAccessibleName(`1 run under ${rid(5).slice(-8)}`)
+  await toggle(page, 5).click()
+  await expect(toggle(page, 5)).toContainText("▾ 1 run")
   await expect(row(page, 6)).toContainText("side_chat")
   await expect(row(page, 6)).toContainText("ann")
   await row(page, 5).getByRole("button", { name: "Copy run id" }).click()
@@ -93,12 +107,12 @@ test("every list read carries limit; a cleared box still pages 50 at a time", as
   await expect(tops(page)).toHaveCount(100)
   await search(page, "flow:chat")
   await expect(tops(page)).toHaveCount(50)
-  // Every read of /api/runs, ?parent= ones included: unfolding uses the children each page brings.
-  await tops(page).first().getByRole("button", { name: /Runs under/ }).click()
-  await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(1)
-  const log = await (await request.get("/__fixture/log")).json()
-  const all = (log.runs as string[]).map((s) => new URLSearchParams(s))
-  expect(all.length).toBeGreaterThanOrEqual(4)
+  // Every read of /api/runs, ?parent= ones included.
+  await tops(page).first().getByRole("button", { name: /runs? under/ }).click()
+  await expect(kids(page)).toHaveCount(1)
+  const all = await allReads(request)
+  expect(all.length).toBeGreaterThanOrEqual(5)
+  expect(all.some((p) => p.has("parent"))).toBe(true)
   for (const p of all) expect(p.get("limit")).toBe("50")
 })
 
@@ -131,7 +145,8 @@ test("qualifiers typed in the box filter the list, live in the address, and map 
 
 test("autocomplete by keyboard: qualifiers, then their values, with arrows, Tab, Enter and Esc", async ({ page, request }) => {
   const src = source()
-  src.tree.entries.push({ path: "shared/flows/review.yaml", type: "file", size: 10 })
+  src.tree.entries.push({ path: "shared/flows/review.yaml", type: "file", size: 10 },
+                        { path: "shared/flows/side_chat.yaml", type: "file", size: 10 })
   await request.post("/__fixture/set", { data: { source: { tree: src.tree } } })
   await page.goto("/runs")
   await expect(row(page, 5)).toBeVisible()
@@ -142,7 +157,7 @@ test("autocomplete by keyboard: qualifiers, then their values, with arrows, Tab,
   await expect(options(page)).toHaveText([/^flow:/])
   await box(page).press("Tab")
   await expect(box(page)).toHaveValue("is:open started:7d flow:")
-  // The flows of the runs read so far, and the company's flow files.
+  // The flows of the top-level runs read so far (a list page has no children), and the company's flow files.
   await expect(options(page)).toHaveText([/^chat/, /^review/, /^side_chat/])
   await expect(box(page)).toHaveAttribute("aria-expanded", "true")
   await box(page).press("ArrowDown")
@@ -258,7 +273,7 @@ test("on a phone the box and its suggestions fit, and a tap chooses", async ({ p
   await expect(tops(page)).toHaveCount(1)
 })
 
-test("pages hold 50 top-level runs, each with its children; Load more brings the next", async ({ page, request }) => {
+test("pages hold 50 top-level runs; Load more brings the next", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { runs: many(120) } })
   await page.goto(ALL)
   const tops = table(page).locator("tr[aria-level='1']")
@@ -270,13 +285,41 @@ test("pages hold 50 top-level runs, each with its children; Load more brings the
   await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0)
 })
 
-test("a run with more than 200 children shows the newest 200 and Show all", async ({ page, request }) => {
-  await request.post("/__fixture/set", { data: { runs: crowded(201) } })
+test("a page of 50 runs that each have many children holds 50 rows, each with its count", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: many(60, 40) } })
+  const answer = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/runs")
   await page.goto(ALL)
-  await table(page).getByRole("button", { name: /Runs under/ }).click()
-  await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(200)
-  await page.getByRole("button", { name: "Show all 201" }).click()
-  await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(201)
+  const body = await (await answer).json()
+  expect(body.runs).toHaveLength(50)
+  expect(body.runs.every((r: { children: unknown[] }) => r.children.length === 0)).toBe(true)
+  await expect(tops(page)).toHaveCount(50)
+  await expect(kids(page)).toHaveCount(0)
+  await expect(tops(page).getByRole("button", { name: /40 runs under/ })).toHaveCount(50)
+  expect((await allReads(request)).filter((p) => p.has("parent"))).toEqual([]) // nothing read until a fold opens
+})
+
+test("opening a fold reads its first 50 children; Load more inside the fold reads the next", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(120) } })
+  await page.goto(ALL)
+  await expect(toggle(page, 4000)).toContainText("120 runs")
+  await page.waitForTimeout(1500) // past the list's read once the office is first online, which re-reads open folds
+  await toggle(page, 4000).click()
+  await expect(kids(page)).toHaveCount(50)
+  expect(await childReads(request, 4000)).toEqual([{ parent: rid(4000), limit: "50" }])
+  await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(1) // the fold's: the list has one page
+  const more = (await fold(page, 4000)).getByRole("button", { name: "Load more" })
+  await more.click()
+  await expect(kids(page)).toHaveCount(100)
+  expect((await childReads(request, 4000)).at(-1)).toEqual({ parent: rid(4000), before: rid(5071), limit: "50" })
+  await more.click()
+  await expect(kids(page)).toHaveCount(120)
+  await expect(more).toHaveCount(0)
+  // Folding and unfolding again shows what was read, without reading again.
+  await toggle(page, 4000).click()
+  await expect(kids(page)).toHaveCount(0)
+  await toggle(page, 4000).click()
+  await expect(kids(page)).toHaveCount(120)
+  expect(await childReads(request, 4000)).toHaveLength(3)
 })
 
 test("run.updated refetches the list", async ({ page, request }) => {
@@ -303,7 +346,7 @@ test("on a phone each row stacks into two lines", async ({ page }) => {
   const status = async (n: number) => (await row(page, n).getByText(/^(idle|failed|waiting)$/).boundingBox())!.x
   expect(await status(4)).toBe(await status(5))
   expect(await status(3)).toBe(await status(5))
-  await row(page, 5).getByRole("button", { name: /Runs under/ }).click()
+  await row(page, 5).getByRole("button", { name: /runs? under/ }).click()
   const kid = (await row(page, 6).getByRole("link", { name: rid(6).slice(-8) }).boundingBox())!
   const top = (await row(page, 4).getByRole("link", { name: rid(4).slice(-8) }).boundingBox())!
   expect(kid.x).toBeGreaterThan(top.x)
@@ -312,7 +355,7 @@ test("on a phone each row stacks into two lines", async ({ page }) => {
 
 test("a live refetch keeps focus where it was", async ({ page, request }) => {
   await page.goto(ALL)
-  const toggle = row(page, 5).getByRole("button", { name: /Runs under/ })
+  const toggle = row(page, 5).getByRole("button", { name: /runs? under/ })
   await toggle.focus()
   const data = runLogs()
   data.runs[2] = { ...data.runs[2]!, status: "finished", asking: false, current_nodes: [] }
@@ -325,7 +368,7 @@ test("a live refetch keeps focus where it was", async ({ page, request }) => {
 
 test("a child row says which run it's under, and the toggle names the rows it shows", async ({ page }) => {
   await page.goto("/runs")
-  const toggle = row(page, 5).getByRole("button", { name: /Runs under/ })
+  const toggle = row(page, 5).getByRole("button", { name: /runs? under/ })
   await expect(toggle).toHaveAttribute("aria-expanded", "false")
   await toggle.click()
   await expect(toggle).toHaveAttribute("aria-expanded", "true")
@@ -392,49 +435,90 @@ test("a failed read says why, and Retry reads again", async ({ page, request }) 
   await expect(page.getByRole("alert")).toHaveCount(0)
 })
 
-test("a filtered fold shows the matching children until Show the rest", async ({ page, request }) => {
+test("a run listed for its matching children opens with them read, until Show the rest", async ({ page, request }) => {
   const kids = [
     run(9, { flow: "side_chat", driver: "ann", parent_run_id: rid(7) }),
     run(8, { flow: "side_chat", driver: "lead", participants: ["kai"], parent_run_id: rid(7) }),
   ]
   await request.post("/__fixture/set", {
-    data: { runs: { runs: [run(7, { children: kids, children_total: 2 })], children: { [rid(7)]: kids } } },
+    data: { runs: { runs: [run(7, { children_total: 2 })], children: { [rid(7)]: kids } } },
   })
   await page.goto("/runs?person=ann")
   await expect(row(page, 9)).toBeVisible()
   await expect(row(page, 8)).toHaveCount(0)
+  await expect(toggle(page, 7)).toHaveAttribute("aria-expanded", "true")
+  // Read with the list's filters (again, once the office is first online and the list is re-read).
+  for (const read of await childReads(request, 7)) expect(read).toEqual({ parent: rid(7), person: "ann", limit: "50" })
   await page.getByRole("button", { name: "Show the rest" }).click()
   await expect(row(page, 8)).toBeVisible()
+  await expect(row(page, 9)).toBeVisible()
   await expect(page.getByRole("button", { name: "Show the rest" })).toHaveCount(0)
+  expect((await childReads(request, 7)).at(-1)).toEqual({ parent: rid(7), limit: "50" })
 })
 
-test("Show all's children are read again on a refetch, and a failed read says so", async ({ page, request }) => {
-  await request.post("/__fixture/set", { data: { runs: crowded(201) } })
+test("a refetch reads only the open folds' children again, as many as were shown", async ({ page, request }) => {
+  const data = many(3, 60) // runs 1183 (children 1184..1243), 1122 and 1061
+  await request.post("/__fixture/set", { data: { runs: data } })
   await page.goto(ALL)
-  await table(page).getByRole("button", { name: /Runs under/ }).click()
-  await request.post("/__fixture/set", { data: { fail: { "/api/runs": 500 } } })
-  await page.getByRole("button", { name: "Show all 201" }).click()
-  await expect(table(page).getByRole("alert")).toContainText("Couldn't read the runs under")
-  await request.post("/__fixture/set", { data: { fail: {} } })
-  await page.getByRole("button", { name: "Show all 201" }).click()
-  await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(201)
-  await expect(table(page).getByRole("alert")).toHaveCount(0)
-  await request.post("/__fixture/set", { data: { runs: crowded(202) } })
+  await expect(toggle(page, 1183)).toBeVisible()
+  await page.waitForTimeout(1500) // past the list's read once the office is first online
+  await toggle(page, 1183).click()
+  await (await fold(page, 1183)).getByRole("button", { name: "Load more" }).click()
+  await expect(kids(page)).toHaveCount(60)
+  await toggle(page, 1122).click() // opened, then closed: not read again until it's opened
+  await expect(kids(page)).toHaveCount(110)
+  await toggle(page, 1122).click()
+  await expect(kids(page)).toHaveCount(60)
+  const [open, closed] = [(await childReads(request, 1183)).length, (await childReads(request, 1122)).length]
+  data.children[rid(1183)]!.unshift(run(1244, { flow: "side_chat", parent_run_id: rid(1183), driver: "ann" }))
+  await request.post("/__fixture/set", { data: { runs: data } })
   await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
-    run_id: rid(4000), session_id: "S4000", status: "finished", current_nodes: [] } } } })
-  await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(202)
+    run_id: rid(1244), session_id: "S1244", parent_run_id: rid(1183), status: "finished", current_nodes: [] } } } })
+  await expect(kids(page)).toHaveCount(61)
+  await expect(row(page, 1244)).toBeVisible()
+  const again = (await childReads(request, 1183)).slice(open)
+  expect(again).toEqual([{ parent: rid(1183), limit: "50" }, { parent: rid(1183), before: rid(1195), limit: "50" }])
+  expect(await childReads(request, 1122)).toHaveLength(closed)
+  expect(await childReads(request, 1061)).toHaveLength(0)
+  await toggle(page, 1122).click()
+  await expect(kids(page)).toHaveCount(111)
+  expect(await childReads(request, 1122)).toHaveLength(closed + 1)
 })
 
-test("a live refetch keeps focus on a child Show all brought", async ({ page, request }) => {
-  await request.post("/__fixture/set", { data: { runs: crowded(201) } })
+test("a fold whose read fails says so, and Retry reads again", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(60) } })
   await page.goto(ALL)
-  await table(page).getByRole("button", { name: /Runs under/ }).click()
-  await page.getByRole("button", { name: "Show all 201" }).click()
-  const link = row(page, 5001).getByRole("link", { name: rid(5001).slice(-8) }) // only in Show all's read
+  await expect(toggle(page, 4000)).toBeVisible()
+  await request.post("/__fixture/set", { data: { fail: { "/api/runs": 500 } } })
+  await toggle(page, 4000).click()
+  const under = await fold(page, 4000)
+  await expect(under.getByRole("alert")).toContainText(`Couldn't read the runs under …${rid(4000).slice(-4)}`)
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await under.getByRole("button", { name: "Retry" }).click()
+  await expect(kids(page)).toHaveCount(50)
+  await expect(under.getByRole("alert")).toHaveCount(0)
+  await request.post("/__fixture/set", { data: { fail: { "/api/runs": 500 } } })
+  await under.getByRole("button", { name: "Load more" }).click()
+  await expect(under.getByRole("alert")).toContainText("Couldn't read the runs under")
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await under.getByRole("button", { name: "Retry" }).click()
+  await expect(kids(page)).toHaveCount(60)
+  await expect(under.getByRole("alert")).toHaveCount(0)
+})
+
+test("a live refetch keeps focus on a child Load more brought", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(120) } })
+  await page.goto(ALL)
+  await toggle(page, 4000).click()
+  const more = (await fold(page, 4000)).getByRole("button", { name: "Load more" })
+  await more.click()
+  await expect(kids(page)).toHaveCount(100)
+  await more.click()
+  const link = row(page, 5001).getByRole("link", { name: rid(5001).slice(-8) }) // in the fold's third page
   await link.focus()
-  const data = crowded(201)
-  const kids = data.children[rid(4000)]!
-  kids[200] = { ...kids[200]!, status: "failed" }
+  const data = crowded(120)
+  const under = data.children[rid(4000)]!
+  under[119] = { ...under[119]!, status: "failed" }
   await request.post("/__fixture/set", { data: { runs: data } })
   await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
     run_id: rid(5001), session_id: "S5001", parent_run_id: rid(4000), status: "failed", current_nodes: [] } } } })
