@@ -237,6 +237,10 @@ class RunRow:
 
 
 _RUN_COLUMNS = tuple(f.name for f in fields(RunRow))
+# '~' sorts after every ULID character, so with no cursor the bound still lets the index seek.
+RUN_PAGE_SQL = ("SELECT * FROM runs WHERE parent_run_id IS NULL AND run_id < COALESCE(?, '~') "
+                "ORDER BY run_id DESC LIMIT ?")
+"""A page of top-level runs, newest first: (before, limit)."""
 
 
 @dataclass(frozen=True)
@@ -914,10 +918,7 @@ class Store:
 
     def run_page(self, *, before: str | None, limit: int) -> list[RunRow]:
         """Top-level rows (no parent), newest first, launched before run ``before`` when given."""
-        rows = self._conn().execute(
-            "SELECT * FROM runs WHERE parent_run_id IS NULL AND (? IS NULL OR run_id < ?) ORDER BY run_id DESC LIMIT ?",
-            (before, before, limit))
-        return [self._run(r) for r in rows]
+        return [self._run(r) for r in self._conn().execute(RUN_PAGE_SQL, (before, limit))]
 
     def run_children(self, parent_ids: Iterable[str]) -> list[RunRow]:
         """The rows whose parent is one of ``parent_ids``, newest first."""
