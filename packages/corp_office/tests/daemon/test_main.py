@@ -428,6 +428,7 @@ async def test_a_bad_provider_file_fails_sessions_resumed_at_start_but_the_offic
         await office.start()
         assert office.store.get_session(made["busy"].id).status == "failed"  # it had to resume now
         assert office.store.get_session(made["idle"].id).status == "idle"  # asleep: its next message wakes it
+        assert made["idle"].id not in office.extras["harness"]._live
         await office.stop()
     finally:
         office.store.close()

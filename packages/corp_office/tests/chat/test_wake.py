@@ -11,6 +11,7 @@ import pytest
 from opencorp.chat.harness import HarnessError
 from opencorp.chat.turns import MAIN_CHAT
 from opencorp.testing.fake_llm import LLM_CONFIG
+from opencorp.worker import WorkerExists
 from tests.chat.conftest import say, spawned, status, texts, wait_for
 
 
@@ -344,3 +345,105 @@ def test_a_codex_session_is_never_woken_as_a_composer_one(make_harness, fake_llm
     with pytest.raises(HarnessError) as err:
         h.prompt(codex.id, "hi")
     assert (err.value.status, err.value.code) == (409, "not_live") and jobs == []
+
+
+def watch(harness):
+    """Record each spawned job's kind, each spawn refused as WorkerExists, and each session_ended status."""
+    seen, spawn = {"spawns": [], "exists": 0, "ended": []}, harness.registry.spawn
+
+    def spy(job, *args):
+        seen["spawns"].append(job.kind)
+        try:
+            return spawn(job, *args)
+        except WorkerExists:
+            seen["exists"] += 1
+            raise
+
+    harness.registry.spawn = spy
+    harness.hooks.session_ended.append(lambda session: seen["ended"].append(session.status))
+    return seen
+
+
+def all_at_once(calls):
+    """Start each ``(name, fn)`` on its own thread behind a barrier; join them all, then return
+    ``[(name, result, or (status, code) for a HarnessError, or the exception)]``."""
+    barrier, out, lock = threading.Barrier(len(calls)), [], threading.Lock()
+
+    def go(name, fn):
+        barrier.wait()
+        try:
+            got = fn()
+        except HarnessError as exc:
+            got = (exc.status, exc.code)
+        except Exception as exc:  # noqa: BLE001 -- the test reports it
+            got = exc
+        with lock:
+            out.append((name, got))
+
+    threads = [threading.Thread(target=go, args=call) for call in calls]
+    for thread in threads:
+        thread.start()
+    return threads, out
+
+
+def joined(threads):
+    for thread in threads:
+        thread.join(30)
+        assert not thread.is_alive(), "a caller never returned"
+
+
+@pytest.mark.parametrize("held", [True, False])
+def test_many_callers_on_a_sleeping_session_spawn_one_worker_and_every_message_arrives(make_harness, fake_llm,
+                                                                                       workspace, held):
+    fake_llm.script(*[{"content": f"r{i}"} for i in range(30)])
+    h, sid = asleep(make_harness, workspace)
+    seen = watch(h)
+    turn = next(q for q in h.store.list_questions(session_id=sid, status="open") if MAIN_CHAT.is_turn(q.node_id))
+    calls = [(f"prompt-{i}", lambda i=i: h.prompt(sid, f"prompt-{i}")) for i in range(6)]
+    calls += [(f"steer-{i}", lambda i=i: h.steer(sid, f"steer-{i}")) for i in range(3)]
+    calls += [(f"answer-{i}", lambda i=i: h.answer(turn.id, f"answer-{i}", "text", by="ngocbh"))
+              for i in range(2)]
+    calls += [("interrupt", lambda: h.interrupt(sid))]
+    if held:
+        entered, release = hold_builds(h)
+    threads, out = all_at_once(calls)
+    if held:
+        assert entered.wait(10)
+        time.sleep(0.3)
+        release.set()
+    joined(threads)
+    assert not [(name, got) for name, got in out if isinstance(got, Exception)], out
+    assert seen["spawns"] == ["resume"] and seen["exists"] == 0 and not h._waking and not h._finishing
+    accepted = [name for name, got in out if name != "interrupt" and not isinstance(got, tuple)]
+    sent = [got for name, got in out if name.startswith(("prompt", "steer"))]
+    assert all(got in ("turn", "queued", "steer", "answer") for got in sent), out
+    wait_for(lambda: all(t in str(fake_llm.requests()) for t in accepted) and status(h, sid) == "idle",
+             what="every accepted message")
+    user = " ".join(texts(h, sid, role="user"))
+    assert all(t in user for t in accepted) and seen["ended"] == []
+
+
+def test_wakes_racing_close_all_leave_the_session_to_wake_again(make_harness, fake_llm, workspace):
+    import random
+
+    fake_llm.script(*[{"content": f"r{i}"} for i in range(30)])
+    first = make_harness()
+    sid = start(first, workspace)
+    first.close_all()
+    for i in range(5):
+        h = make_harness()
+        seen = watch(h)
+        delay = random.random() * 0.3
+        calls = [(f"m{i}-{j}", lambda j=j: h.prompt(sid, f"m{i}-{j}")) for j in range(3)]
+        calls.append(("close", lambda: (time.sleep(delay), h.close_all())[1]))
+        threads, out = all_at_once(calls)
+        joined(threads)
+        for name, got in out:
+            if name != "close":
+                assert got in ("turn", "queued", "steer", (503, "stopping")), (name, got, delay)
+        assert not h._waking and not h._finishing and h.registry.get(sid) is None
+        assert status(h, sid) in ("idle", "busy") and seen["exists"] == 0 and seen["ended"] == []
+    h = make_harness()
+    h.restore()
+    assert say(h, sid, "last") and status(h, sid) == "idle"  # it still wakes
+    assert "last" in str(fake_llm.requests()[-1]["messages"])
