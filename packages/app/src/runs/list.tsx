@@ -3,72 +3,95 @@ import type { RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
 import Check from "lucide-solid/icons/check"
 import Copy from "lucide-solid/icons/copy"
-import { createSignal, For, onCleanup, Show } from "solid-js"
+import { createEffect, createSignal, createUniqueId, For, on, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useOffice } from "../data/office"
 import { matches, type RunFilters } from "./filters"
 import { flowText, shortId, STATUS_DOT, where } from "./format"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
-// On a phone a row is a two-line grid: ID, status and flow, then driver, where/took and started.
+const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
+const LINK = `rounded underline ${RING}`
+// On a phone a row is a grid with fixed columns, so they line up from row to row: ID, status and flow; then driver,
+// participants and where/took; then the start time. A child row is indented by 1rem and its ID column is 1rem
+// narrower, so its other columns still line up.
 const ROW =
-  "border-b border-neutral-100 align-top dark:border-neutral-900 max-md:grid max-md:grid-cols-[auto_auto_minmax(0,1fr)] max-md:items-baseline max-md:gap-x-3 max-md:py-2"
-const CELL = "px-3 py-2 max-md:p-0 max-md:min-w-0"
-const BUTTON = "rounded underline outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
+  "border-b border-neutral-100 align-top dark:border-neutral-900 max-md:grid max-md:items-start max-md:gap-x-2 max-md:py-2"
+const GRID = { 1: "max-md:grid-cols-[9rem_6rem_minmax(0,1fr)]", 2: "max-md:grid-cols-[8rem_6rem_minmax(0,1fr)] max-md:pl-4" }
+const CELL = "px-3 py-2 max-md:p-0 max-md:min-w-0 max-md:leading-6"
 
 /** A launch time to the minute, in the browser's locale. */
 const at = (t: string, time = false) =>
   new Date(t).toLocaleString(undefined, time ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" })
 
-/** Copies a run's full id; shows a check for 2 s after. */
+/** Copies a run's full id, and says whether it could: the clipboard needs a secure page (not plain http). */
 function CopyId(props: { id: string }) {
-  const [done, setDone] = createSignal(false)
+  const [state, setState] = createSignal<"idle" | "copied" | "failed">("idle")
   let timer: ReturnType<typeof setTimeout> | undefined
   onCleanup(() => clearTimeout(timer))
-  const copy = async () => {
-    await navigator.clipboard.writeText(props.id)
-    setDone(true)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(props.id)
+      setState("copied")
+    } catch {
+      setState("failed")
+    }
     clearTimeout(timer)
-    timer = setTimeout(() => setDone(false), 2000)
+    timer = setTimeout(() => setState("idle"), 2_000)
   }
   return (
-    <button
-      type="button"
-      aria-label="Copy run id"
-      title={props.id}
-      onClick={() => void copy()}
-      class={`rounded p-0.5 outline-none hover:bg-neutral-100 focus-visible:ring-2 dark:hover:bg-neutral-800 ${MUTED}`}
-    >
-      <Show when={done()} fallback={<Copy size={12} class="h-3 w-3" />}>
-        <Check size={12} class="h-3 w-3" />
-      </Show>
-    </button>
+    <>
+      <button
+        type="button"
+        aria-label="Copy run id"
+        title={props.id}
+        onClick={() => void copy()}
+        class={`grid size-6 place-items-center rounded hover:bg-neutral-100 dark:hover:bg-neutral-800 ${MUTED} ${RING}`}
+      >
+        <Show when={state() === "copied"} fallback={<Copy size={12} class="h-3 w-3" />}>
+          <Check size={12} class="h-3 w-3" />
+        </Show>
+      </button>
+      {/* Announced as it changes; shown only when copying failed. */}
+      <span role="status" class={state() === "failed" ? "text-xs text-red-700 dark:text-red-400" : "sr-only"}>
+        {state() === "copied" ? "Copied" : state() === "failed" ? "Couldn't copy" : ""}
+      </span>
+    </>
   )
 }
 
 /** One run's row; `toggle` is the fold button of a top-level run with runs under it. */
-function Row(props: { run: RunSummary; level: 1 | 2; toggle?: { open: boolean; onToggle: () => void } }) {
+function Row(props: {
+  run: RunSummary
+  level: 1 | 2
+  toggle?: { open: boolean; controls: string; onToggle: () => void }
+}) {
   const r = () => props.run
   return (
-    <tr aria-level={props.level} class={ROW}>
-      <td class={`${CELL} whitespace-nowrap`} classList={{ "pl-6 max-md:pl-6": props.level === 2 }}>
-        <span class="inline-flex items-center gap-1">
-          <Show when={props.toggle}>
+    <tr aria-level={props.level} class={`${ROW} ${GRID[props.level]}`}>
+      <td class={CELL} classList={{ "md:pl-7": props.level === 2 }}>
+        <span class="inline-flex flex-wrap items-center gap-1 whitespace-nowrap">
+          {/* Every row keeps the toggle's slot, so the ids line up. */}
+          <Show when={props.toggle} fallback={<span aria-hidden="true" class="size-6 shrink-0" />}>
             {(t) => (
               <button
                 type="button"
                 aria-expanded={t().open}
+                aria-controls={t().controls}
                 aria-label={`Runs under ${shortId(r().run_id)}`}
                 onClick={() => t().onToggle()}
-                class="w-4 rounded text-xs outline-none focus-visible:ring-2"
+                class={`grid size-6 shrink-0 place-items-center rounded text-xs hover:bg-neutral-100 dark:hover:bg-neutral-800 ${RING}`}
               >
                 <span aria-hidden="true">{t().open ? "▾" : "▸"}</span>
               </button>
             )}
           </Show>
-          <A href={`/runs/${r().run_id}`} class={`font-mono ${BUTTON}`}>
+          <A href={`/runs/${r().run_id}`} class={`font-mono ${LINK}`}>
             {shortId(r().run_id)}
           </A>
+          <Show when={props.level === 2 && r().parent_run_id}>
+            {(parent) => <span class="sr-only">under …{parent().slice(-4)}</span>}
+          </Show>
           <CopyId id={r().run_id} />
         </span>
       </td>
@@ -79,28 +102,28 @@ function Row(props: { run: RunSummary; level: 1 | 2; toggle?: { open: boolean; o
         </span>
       </td>
       <td class={CELL}>
-        <span class="block truncate">{flowText(r())}</span>
+        <span class="block md:truncate">{flowText(r())}</span>
         <Show when={r().replaces}>
           {(id) => (
-            <A href={`/runs/${id()}`} class={`block text-xs ${MUTED} ${BUTTON}`}>
+            <A href={`/runs/${id()}`} class={`block text-xs ${MUTED} ${LINK}`}>
               replaces …{id().slice(-4)}
             </A>
           )}
         </Show>
         <Show when={r().replaced_by}>
           {(id) => (
-            <A href={`/runs/${id()}`} class={`block text-xs ${MUTED} ${BUTTON}`}>
+            <A href={`/runs/${id()}`} class={`block text-xs ${MUTED} ${LINK}`}>
               replaced by …{id().slice(-4)}
             </A>
           )}
         </Show>
       </td>
-      <td data-testid="run-second-line" class={`${CELL} whitespace-nowrap max-md:col-start-1`}>
+      <td data-testid="run-second-line" class={`${CELL} whitespace-nowrap max-md:col-start-1 max-md:truncate`}>
         {r().driver === "office" ? "office" : `@${r().driver}`}
       </td>
-      <td class={`${CELL} max-md:hidden`}>{(r().participants ?? []).join(", ")}</td>
-      <td class={`${CELL} break-all`}>{where(r())}</td>
-      <td class={`${CELL} whitespace-nowrap ${MUTED} max-md:truncate`}>
+      <td class={`${CELL} max-md:truncate`}>{(r().participants ?? []).join(", ")}</td>
+      <td class={`${CELL} wrap-anywhere`}>{where(r())}</td>
+      <td class={`${CELL} whitespace-nowrap ${MUTED} max-md:col-span-2 max-md:col-start-2 max-md:text-xs`}>
         {at(r().launched_at)}
         <Show when={r().ended_at}>{(end) => <> → {at(end(), true)}</>}</Show>
       </td>
@@ -108,27 +131,35 @@ function Row(props: { run: RunSummary; level: 1 | 2; toggle?: { open: boolean; o
   )
 }
 
-/** A row under the children with one button: "Show the rest" or "Show all N". */
-function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean }) {
+/** A row under the children with one button: "Show the rest" or "Show all N", and why it failed, if it did. */
+function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean; error?: string }) {
   return (
     <tr class="max-md:block">
       <td colSpan={7} class="py-1 pl-9 text-xs max-md:block">
-        <button type="button" disabled={props.disabled} onClick={() => props.onClick()} class={BUTTON}>
+        <button type="button" disabled={props.disabled} onClick={() => props.onClick()} class={LINK}>
           {props.label}
         </button>
+        <Show when={props.error}>
+          {(message) => (
+            <span role="alert" class="ml-2 text-red-700 dark:text-red-400">
+              {message()}
+            </span>
+          )}
+        </Show>
       </td>
     </tr>
   )
 }
 
 /** What the table remembers of a top-level run across refetches: its fold, and its children once all are read. */
-type Fold = { open?: boolean; rest?: boolean; all?: RunSummary[]; loading?: boolean }
+type Fold = { open?: boolean; rest?: boolean; all?: RunSummary[]; loading?: boolean; error?: string }
 
 /**
  * The runs table. A run's children start folded, except when the filters are set and a child matches: then it starts
- * open with only the matching children, until "Show the rest". Past the newest 200 children, "Show all" reads them.
+ * open with only the matching children, until "Show the rest". Past the newest 200 children, "Show all" reads them,
+ * and reads them again each time the list is refetched (`refreshed` changes).
  */
-export function RunTable(props: { runs: RunSummary[]; filters: RunFilters }) {
+export function RunTable(props: { runs: RunSummary[]; filters: RunFilters; refreshed: number }) {
   const office = useOffice()
   const [folds, setFolds] = createStore<Record<string, Fold>>({})
   const filtered = () => Object.keys(props.filters).length > 0
@@ -136,13 +167,23 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunFilters }) {
   async function showAll(id: string) {
     setFolds(id, { loading: true })
     try {
-      setFolds(id, { all: await office.client.runs.children(id) })
+      setFolds(id, { all: await office.client.runs.children(id), error: undefined })
     } catch (error) {
-      console.error("Failed to read a run's children", { id, error })
+      const why = error instanceof Error ? error.message : String(error)
+      setFolds(id, { error: `Couldn't read the runs under …${id.slice(-4)}: ${why}.` })
     } finally {
       setFolds(id, { loading: false })
     }
   }
+  createEffect(
+    on(
+      () => props.refreshed,
+      () => {
+        for (const [id, fold] of Object.entries(folds)) if (fold.all) void showAll(id)
+      },
+      { defer: true },
+    ),
+  )
 
   return (
     <table aria-label="Runs" class="w-full text-sm">
@@ -155,6 +196,7 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunFilters }) {
       </thead>
       <For each={props.runs}>
         {(run) => {
+          const under = createUniqueId()
           const fold = () => folds[run.run_id] ?? {}
           const kids = () => {
             const all = fold().all
@@ -166,26 +208,35 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunFilters }) {
           const shown = () => (matching().length && !fold().rest ? matching() : kids())
           const total = () => Math.max(run.children_total ?? 0, kids().length)
           return (
-            <tbody>
-              <Row
-                run={run}
-                level={1}
-                toggle={total() > 0 ? { open: open(), onToggle: () => setFolds(run.run_id, { open: !open() }) } : undefined}
-              />
-              <Show when={open()}>
-                <For each={shown()}>{(kid) => <Row run={kid} level={2} />}</For>
-                <Show when={shown().length < kids().length}>
-                  <MoreRow label="Show the rest" onClick={() => setFolds(run.run_id, { rest: true })} />
+            <>
+              <tbody>
+                <Row
+                  run={run}
+                  level={1}
+                  toggle={
+                    total() > 0
+                      ? { open: open(), controls: under, onToggle: () => setFolds(run.run_id, { open: !open() }) }
+                      : undefined
+                  }
+                />
+              </tbody>
+              <tbody id={under}>
+                <Show when={open()}>
+                  <For each={shown()}>{(kid) => <Row run={kid} level={2} />}</For>
+                  <Show when={shown().length < kids().length}>
+                    <MoreRow label="Show the rest" onClick={() => setFolds(run.run_id, { rest: true })} />
+                  </Show>
+                  <Show when={shown().length === kids().length && total() > kids().length}>
+                    <MoreRow
+                      label={`Show all ${total()}`}
+                      disabled={fold().loading}
+                      error={fold().error}
+                      onClick={() => void showAll(run.run_id)}
+                    />
+                  </Show>
                 </Show>
-                <Show when={shown().length === kids().length && total() > kids().length}>
-                  <MoreRow
-                    label={`Show all ${total()}`}
-                    disabled={fold().loading}
-                    onClick={() => void showAll(run.run_id)}
-                  />
-                </Show>
-              </Show>
-            </tbody>
+              </tbody>
+            </>
           )
         }}
       </For>

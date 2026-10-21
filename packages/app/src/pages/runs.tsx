@@ -1,6 +1,7 @@
 import type { RunSummary } from "@opencorp/protocol"
 import { useNavigate, useSearchParams } from "@solidjs/router"
 import { createEffect, createMemo, createSignal, For, on, onCleanup, onMount, Show } from "solid-js"
+import { createStore, reconcile, unwrap } from "solid-js/store"
 import { throttle } from "../data/costs"
 import { useOffice } from "../data/office"
 import { filtersOf, isRunId, type RunFilters } from "../runs/filters"
@@ -13,7 +14,8 @@ const REFETCH_MS = 1_000
 
 const FLOWS = ["chat", "side_chat", "profile_manager", "debrief"]
 const STATUSES: RunSummary["status"][] = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
-const CONTROL = "rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700 dark:bg-neutral-900"
+const CONTROL =
+  "rounded border border-neutral-300 px-2 py-1 outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:border-neutral-700 dark:bg-neutral-900 dark:focus-visible:ring-neutral-100"
 const BUTTON = "rounded underline outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
 
 /** Work › Run Logs: every run the office launched, filtered by the address, newest first, kept current. */
@@ -24,44 +26,57 @@ export default function Runs() {
   const filters = createMemo(() => filtersOf(params), undefined, {
     equals: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   })
-  const [runs, setRuns] = createSignal<RunSummary[]>([])
+  // A store reconciled by run_id: a refetch updates the rows in place, so focus and folds stay where they were.
+  const [runs, setRuns] = createStore<RunSummary[]>([])
   const [next, setNext] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string>()
   const [loading, setLoading] = createSignal(true)
+  /** Counts finished refetches, so the table reads its "Show all" children again. */
+  const [refreshed, setRefreshed] = createSignal(0)
   const [text, setText] = createSignal(filters().q ?? "")
   createEffect(on(() => filters().q, (q) => setText(q ?? ""), { defer: true }))
 
-  // Each reset or refetch starts a new generation; an answer from an older one is dropped.
+  // Reads run one at a time, so a refetch never drops the page a Load more brings. A filter change starts a new
+  // generation, and a read queued or answered in an older one is dropped.
   let generation = 0
+  let queue: Promise<void> = Promise.resolve()
   let disposed = false
   onCleanup(() => (disposed = true))
+  const current = (gen: number) => gen === generation && !disposed
+
+  /** Queues `read` after the reads before it; its failure shows as the page's error. */
+  function enqueue(read: (gen: number) => Promise<void>) {
+    const gen = generation
+    queue = queue.then(async () => {
+      if (!current(gen)) return
+      setLoading(true)
+      try {
+        await read(gen)
+      } catch (e) {
+        if (current(gen)) setError(e instanceof Error ? e.message : String(e))
+      } finally {
+        if (current(gen)) setLoading(false)
+      }
+    })
+  }
 
   const read = (f: RunFilters, before?: string) => office.client.runs.list({ ...f, before, limit: PAGE })
-  const failed = (e: unknown) => setError(e instanceof Error ? e.message : String(e))
 
   /** Reads the page after `before` (the first without it) and appends it. */
-  async function load(before?: string) {
-    const gen = generation
-    setLoading(true)
-    try {
+  function load(before?: string) {
+    enqueue(async (gen) => {
       const page = await read(filters(), before)
-      if (gen !== generation || disposed) return
-      setRuns((rs) => (before ? [...rs, ...page.runs] : page.runs))
+      if (!current(gen)) return
+      setRuns(reconcile(before ? [...unwrap(runs), ...page.runs] : page.runs, { key: "run_id" }))
       setNext(page.next ?? null)
       setError(undefined)
-    } catch (e) {
-      if (gen === generation) failed(e)
-    } finally {
-      if (gen === generation) setLoading(false)
-    }
+    })
   }
 
   /** Re-reads the pages already shown, from the start, as one answer. */
-  async function reread() {
-    if (disposed) return
-    const gen = ++generation
-    const want = Math.max(runs().length, 1)
-    try {
+  function reread() {
+    enqueue(async (gen) => {
+      const want = Math.max(runs.length, 1)
       let all: RunSummary[] = []
       let before: string | undefined
       let more: string | null = null
@@ -71,25 +86,22 @@ export default function Runs() {
         more = page.next ?? null
         before = more ?? undefined
       } while (more && all.length < want)
-      if (gen !== generation || disposed) return
-      setRuns(all)
+      if (!current(gen)) return
+      setRuns(reconcile(all, { key: "run_id" }))
       setNext(more)
       setError(undefined)
-    } catch (e) {
-      if (gen === generation) failed(e)
-    } finally {
-      if (gen === generation) setLoading(false)
-    }
+      setRefreshed((n) => n + 1)
+    })
   }
-  const refetch = throttle(() => void reread(), REFETCH_MS)
+  const refetch = throttle(() => void (disposed || reread()), REFETCH_MS)
 
   createEffect(
     on(filters, () => {
       generation++
-      setRuns([])
+      setRuns(reconcile([]))
       setNext(null)
       setError(undefined)
-      void load()
+      load()
     }),
   )
   onMount(() => {
@@ -165,20 +177,20 @@ export default function Runs() {
         {(message) => (
           <div class="flex items-center gap-2 px-3 pt-3 text-sm">
             <p role="alert">Couldn't read the runs: {message()}.</p>
-            <button type="button" class={BUTTON} onClick={() => void reread()}>
+            <button type="button" class={BUTTON} onClick={() => reread()}>
               Retry
             </button>
           </div>
         )}
       </Show>
       <div class="p-3 max-md:px-2">
-        <RunTable runs={runs()} filters={filters()} />
-        <Show when={!loading() && !error() && runs().length === 0}>
+        <RunTable runs={runs} filters={filters()} refreshed={refreshed()} />
+        <Show when={!loading() && !error() && runs.length === 0}>
           <p class="px-3 py-4 text-sm text-neutral-500 dark:text-neutral-400">No runs.</p>
         </Show>
         <Show when={next()}>
           {(before) => (
-            <button type="button" disabled={loading()} onClick={() => void load(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
+            <button type="button" disabled={loading()} onClick={() => load(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
               Load more
             </button>
           )}
