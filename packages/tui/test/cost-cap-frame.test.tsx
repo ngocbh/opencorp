@@ -46,3 +46,50 @@ test("the cost cap command raises the open session's cap and shows the office's 
     office.stop()
   }
 })
+
+test("/cost-cap 20 typed in the prompt raises the cap and sends nothing to the model", async () => {
+  const { office, s } = capped()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("cost cap reached"))
+    await app.input.typeText("/cost-cap 20")
+    await app.until((f) => f.includes("/cost-cap 20"))
+    app.input.pressEnter()
+    await app.until(() => raised(office, s.id, 20))
+    await app.until((f) => f.includes("Cost cap raised to $20") && !f.includes("/cost-cap 20"))
+    expect(office.requests.some((r) => r.path === `/sessions/${s.id}/prompt`)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("/cost-cap with an amount that isn't one opens the dialog with it, and sends nothing", async () => {
+  const { office, s } = capped()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("cost cap reached"))
+    await app.input.typeText("/cost-cap lots")
+    await app.until((f) => f.includes("/cost-cap lots"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Raise the cost cap") && f.includes("lots"))
+    expect(office.requests.some((r) => r.path === `/sessions/${s.id}/prompt`)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("a message to a capped session says it waits for the cap", async () => {
+  const { office, s } = capped()
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("cost cap reached"))
+    await app.input.typeText("please go on")
+    app.input.pressEnter()
+    await app.until((f) => f.includes("waits until the cost cap is raised"))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
