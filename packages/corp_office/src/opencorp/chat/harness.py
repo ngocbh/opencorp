@@ -540,7 +540,8 @@ class Harness:
             try:
                 self._resume(live)
             except Exception:
-                pass  # it logged why and failed the session
+                continue  # it logged why and failed the session
+            self._settle(session.id)
         if self.codex is not None:
             self.codex.restore()
 
@@ -701,13 +702,13 @@ class Harness:
                 raise HarnessError(503, "stopping", "the office is stopping")
             self._live[sid] = live  # before its worker exists, as restore does, so its first frames find it current
             if not ending:
-                # Before the worker: once it runs, its re-shown turn writes idle, which must win.
-                guarded_update(self.store, sid, ("idle",), status="busy")
+                # Before the worker: once it runs, its re-shown turn settles the session, which must win.
+                self._settle(sid)
         try:
             self._resume(live)  # a failure drops the entry (live.waking) and raises
         except Exception as exc:
             if not ending:
-                guarded_update(self.store, sid, ("busy",), status="idle")
+                self._settle(sid)
             raise self._wake_failed(sid, live, ending, exc) from exc
         # Only a spawn clears waking, so it is still set when close_all began before the spawn. live.worker can't
         # tell: a woken worker that already exited has none either, while _exited respawns it.
@@ -716,7 +717,7 @@ class Harness:
                 if self._current(live):
                     del self._live[sid]
             if not ending:
-                guarded_update(self.store, sid, ("busy",), status="idle")
+                self._settle(sid)
             raise HarnessError(503, "stopping", "the office is stopping")
         if ending:
             guarded_update(self.store, sid, ("idle", "busy"), **not_waiting("ending"))
@@ -1077,17 +1078,22 @@ class Harness:
         live = self._live.get(question.session_id)
         if live is None or live.run_id != question.run_id or live.spec.chat is None \
                 or not live.spec.chat.is_turn(question.node_id):
+            # A card, a question node or a model question, on a live or a sleeping session (Codex ones are skipped
+            # by _settle: they settle themselves).
+            if question.session_id:
+                self._settle(question.session_id)
             return
         if question.status == "open":
             self._turn_opened(live, question.id)
         elif question.status == "answered":
             with self._lock:
-                if self._current(live):
-                    exiting = live.ending or question.answer == live.spec.chat.exit
-                    if exiting:
-                        self.store.update_session(live.session_id, **not_waiting("ending"))
-                    else:
-                        self.store.update_session(live.session_id, status="busy")
+                if not self._current(live):
+                    return
+                exiting = live.ending or question.answer == live.spec.chat.exit
+                if exiting:
+                    self.store.update_session(live.session_id, **not_waiting("ending"))
+            if not exiting:
+                self._settle(live.session_id)
 
     def _turn_opened(self, live: _Live, question_id: str) -> None:
         with self._lock:
@@ -1103,7 +1109,7 @@ class Harness:
             if live.ending:
                 self.store.update_session(live.session_id, **not_waiting("ending"))
             else:
-                self.store.update_session(live.session_id, status="idle")
+                self._settle(live.session_id)  # its pins are cached by _new_live: no repo load under the lock
             if live.ending or self._turns(live) >= live.defaults.max_turns:
                 live.ending = True
                 self._answer_turn(live, question_id, chat.exit, typed=False)
@@ -1248,6 +1254,7 @@ class Harness:
             else:
                 live.exits += 1
                 self._resume(live)
+                self._settle(live.session_id)
             return
         live.exits = 0
         failure = outcome.get("failure") or {}
@@ -1318,7 +1325,7 @@ class Harness:
         live.turn_q, live.turn_node = None, None
         live.pending.append(text)
         live.pending_by = by
-        self.store.update_session(live.session_id, status="busy")
+        self._settle(live.session_id)
         self._post(self._replace, live, worker)
 
     def _replace(self, live: _Live, worker: Worker | None) -> None:
