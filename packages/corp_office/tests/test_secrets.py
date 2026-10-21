@@ -237,6 +237,28 @@ def test_names_lists_what_could_be_a_secret_sorted(tmp_path):
     assert store.names() == ["a.key", "b_token"]
 
 
+def test_read_private_refuses_a_fifo_without_waiting_for_a_writer(tmp_path):
+    os.mkfifo(tmp_path / "fifo", 0o600)
+    got = []
+    reader = threading.Thread(target=lambda: got.append(_raises(lambda: secrets_module.read_private(tmp_path / "fifo"))),
+                              daemon=True)
+    reader.start()
+    reader.join(2)
+    blocked = reader.is_alive()
+    if blocked:  # free the blocked open so the test run can end
+        with open(tmp_path / "fifo", "wb"):
+            pass
+    assert not blocked and got == [PermissionError]
+
+
+def _raises(call):
+    try:
+        call()
+    except Exception as exc:
+        return type(exc)
+    return None
+
+
 def test_names_refuses_a_loose_root(tmp_path):
     store = SecretStore(tmp_path / "secrets")
     store.set("token", "value-1234")

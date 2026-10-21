@@ -156,6 +156,14 @@ def test_a_store_a_connections_env_names_counts(tmp_path, company_git, var, path
     assert OTHER in known.values()
 
 
+@pytest.mark.parametrize("var", ["XDG_CONFIG_HOME", "HOME"])
+def test_a_relative_store_path_in_a_connections_env_fails_closed(tmp_path, company_git, var):
+    known = a_known(tmp_path, company_git)
+    known.connections.put("other", ConnectionFile(llm_config={"provider": "vllm", "model": "m"}, env={var: "rel/dir"}))
+    with pytest.raises(SecretsUnavailable):
+        known.values()
+
+
 def test_yians_default_store_that_cant_be_read_fails_closed(tmp_path, company_git):
     known = a_known(tmp_path, company_git)
     default = tmp_path / "home" / ".config" / "yian"

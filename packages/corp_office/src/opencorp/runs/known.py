@@ -62,7 +62,8 @@ def yian_auth_stores() -> list[Path]:
 
 def env_auth_stores(env: Mapping[str, str]) -> list[Path]:
     """The Yian stores a connection's ``env`` can point a worker at: its ``YIAN_AUTH_FILE``, and the default store
-    under its ``XDG_CONFIG_HOME`` or ``HOME``. A relative path, which turns on the worker's folder, is left out."""
+    under its ``XDG_CONFIG_HOME`` or ``HOME``. ValueError for a relative path, which turns on the worker's folder, so
+    the office can't tell which store it names."""
     found = []
     if path := env.get(AUTH_FILE_ENV):
         found.append(Path(path).expanduser())
@@ -70,7 +71,9 @@ def env_auth_stores(env: Mapping[str, str]) -> list[Path]:
         found.append(Path(xdg).expanduser() / "yian" / "auth.json")
     if home := env.get("HOME"):
         found.append(Path(home).expanduser() / ".config" / "yian" / "auth.json")
-    return [p for p in found if p.is_absolute()]
+    if relative := [str(p) for p in found if not p.is_absolute()]:
+        raise ValueError(f"a connection's env names a Yian store by a relative path: {relative[0]}")
+    return found
 
 
 def office_values(connections: Connections, secrets: SecretStore) -> set[str]:

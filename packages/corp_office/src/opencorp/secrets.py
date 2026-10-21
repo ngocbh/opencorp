@@ -203,7 +203,8 @@ def read_private(path: Path) -> bytes:
             can't be opened.
     """
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # O_NONBLOCK so a FIFO planted in its place can't hang the open; fstat then refuses it.
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         raise
     except OSError as exc:
