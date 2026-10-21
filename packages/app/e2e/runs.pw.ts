@@ -173,9 +173,26 @@ test("the list is read again when the office is back", async ({ page, request })
   await expect(table(page).getByRole("row")).toHaveCount(1, { timeout: 15_000 })
 })
 
+test("the list opened while the office reconnects reads again once it's back", async ({ page, request }) => {
+  await page.goto(`/runs/${rid(5)}`)
+  await expect(page.getByRole("region", { name: "Run" })).toBeVisible()
+  // The reconnect's snapshot waits, so the list opens while the office is "connecting", and its first read fails.
+  await request.post("/__fixture/set", { data: { delay: { "/api/company": 3000 }, fail: { "/api/runs": 500 } } })
+  await request.post("/__fixture/drop", { data: { ms: 0 } })
+  await expect(page.getByText("Reconnecting to the office…")).toBeVisible()
+  await page.getByRole("navigation", { name: "HQ" }).getByRole("link", { name: "Run Logs" }).click()
+  await expect(page.getByRole("alert")).toContainText("Couldn't read the runs")
+  await request.post("/__fixture/set", { data: { fail: {} } })
+  await expect(row(page, 3)).toBeVisible({ timeout: 10_000 })
+})
+
 test("a failed read says why, and Retry reads again", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { fail: { "/api/runs": 500 } } })
   await page.goto("/runs")
+  await expect(page.getByRole("alert")).toContainText("Couldn't read the runs")
+  // The page also reads again once the office is first online (throttled to a second); let that read fail too.
+  await expect(page.getByRole("status", { name: "Connection" })).toHaveText("live")
+  await page.waitForTimeout(1500)
   await expect(page.getByRole("alert")).toContainText("Couldn't read the runs")
   await request.post("/__fixture/set", { data: { fail: {} } })
   await page.getByRole("button", { name: "Retry" }).click()

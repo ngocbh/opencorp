@@ -113,8 +113,9 @@ export default function Runs() {
     const offs = [office.on("run.updated", () => refetch.call()), office.on("session.updated", () => refetch.call())]
     onCleanup(() => offs.forEach((off) => off()))
   })
-  // Events missed while the office was away: read again once it's back.
-  createEffect(on(office.status, (now, before) => void (now === "online" && before && before !== "online" && refetch.call()), { defer: true }))
+  // Events missed while the office was away: read again once it's back. Not deferred, so a page opened while the
+  // office is away knows the status it opened with (`before` is undefined only on this first run).
+  createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
   function search(e: SubmitEvent) {
     e.preventDefault()
