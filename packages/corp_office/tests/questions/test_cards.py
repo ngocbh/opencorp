@@ -10,7 +10,7 @@ from importlib.resources import files
 
 import pytest
 
-from opencorp.chat.harness import HarnessError
+from opencorp.chat.harness import HarnessError, _Live
 from opencorp.extensions.questions import register
 from opencorp.protocol import now
 from opencorp.protocol.models import Question
@@ -19,6 +19,7 @@ from opencorp.questions.seed import FRAMING
 from opencorp.questions.side import BACK_HINT, SEED_FILE, SIDE_CHAT_FLOW
 from opencorp.store import new_id
 from tests.chat.conftest import fake_llm, make_harness, status, texts, wait_for, workspace  # noqa: F401
+from tests.chat.test_wake import calling
 from tests.company.conftest import _isolate_git, person  # noqa: F401
 from tests.store.conftest import session as make_session
 
@@ -474,6 +475,54 @@ def test_a_question_answered_while_its_side_chat_starts_ends_it(office, fake_llm
     side_id = h.store.get_question(q.id).side_session_id
     wait_for(lambda: status(h, side_id) == "ended", what="the side session to end")
     assert texts(h, side_id, "user") == []
+
+
+def test_a_card_answered_after_its_side_runs_row_commits_ends_the_side_chat_once(office, fake_llm, workspace,  # noqa: F811
+                                                                                monkeypatch):
+    fake_llm.script(ASK)
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    entered, release, ends = threading.Event(), threading.Event(), []
+
+    class Held(_Live):
+        """A live run whose start holds when start_run sets its parent: its row committed, it isn't registered."""
+
+        @property
+        def parent_run_id(self):
+            return self.__dict__["parent_run_id"]
+
+        @parent_run_id.setter
+        def parent_run_id(self, value):
+            self.__dict__["parent_run_id"] = value
+            entered.set()
+            assert release.wait(10)
+
+    new_live = h._new_live
+
+    def held(session, run_id, spec):
+        live = new_live(session, run_id, spec)
+        if session.kind == "side":
+            live.__class__ = Held
+        return live
+
+    monkeypatch.setattr(h, "_new_live", held)
+    ended = cards.ended  # the hook calls it; so does _close when it ends a side chat itself
+    monkeypatch.setattr(cards, "ended", lambda session: (ends.append(session.id), ended(session)))
+    h.hooks.session_ended.append(lambda session: ends.append(session.id))
+    opener, out = calling(cards.open_side, q.id, "why?")
+    try:
+        assert entered.wait(10)
+        side_id = h.store.get_question(q.id).side_session_id
+        h.store.answer_question(q.id, "Retry", "option")  # another client answered meanwhile
+        cards._pool.submit(lambda: None).result(10)  # _close has run
+    finally:
+        release.set()
+        opener.join(30)
+    assert out == [(409, "not_open")]
+    wait_for(lambda: status(h, side_id) == "ended" and h.registry.get(side_id) is None, what="the side chat's end")
+    (row,) = h.store.runs_of_session(side_id)
+    assert h.store.get_session(side_id).run_ids == [row.run_id] and row.outcome == "finished"
+    assert ends.count(side_id) == 1 and side_id not in h._live
 
 
 def gate_office(make_harness):  # noqa: F811

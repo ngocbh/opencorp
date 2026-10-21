@@ -8,6 +8,7 @@ import pytest
 
 from opencorp.chat.harness import HarnessError
 from tests.chat.conftest import spawned, status, wait_for
+from tests.chat.test_wake import calling
 
 
 def start(harness, workspace, **kw):
@@ -43,13 +44,6 @@ def test_a_start_whose_live_run_cant_be_built_records_no_run(harness, workspace,
         harness.start_session("minh", str(workspace))
     (session,) = harness.store.list_sessions()
     assert (session.status, session.run_ids, harness.store.runs_of_session(session.id)) == ("failed", [], [])
-
-
-def test_a_start_whose_live_run_cant_be_built_lets_go_of_the_session(harness, workspace, monkeypatch):
-    session = harness._open("minh", str(workspace), "composer", opened_by=None, connection=None, model=None)
-    monkeypatch.setattr(harness, "_new_live", lambda *a: (_ for _ in ()).throw(OSError("the pin is gone")))
-    with pytest.raises(OSError):
-        harness.start_run(session, harness.main_spec(session))
     assert not harness._starting
 
 
@@ -61,21 +55,6 @@ def test_a_start_whose_run_cant_be_stored_lets_go_of_the_session(harness, worksp
     stored = harness.store.get_session(session.id)
     assert (stored.status, stored.run_ids, harness.store.runs_of_session(session.id)) == ("failed", [], [])
     assert not harness._starting and session.id not in harness._live
-
-
-def calling(fn, *args):
-    """Run ``fn(*args)`` on a thread; returns the thread and a list that gets its result or HarnessError code."""
-    out = []
-
-    def run():
-        try:
-            out.append(fn(*args))
-        except HarnessError as exc:
-            out.append((exc.status, exc.code))
-
-    thread = threading.Thread(target=run)
-    thread.start()
-    return thread, out
 
 
 @pytest.mark.parametrize("held_in", ["build", "store"])
