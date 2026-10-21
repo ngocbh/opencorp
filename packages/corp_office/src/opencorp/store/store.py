@@ -264,8 +264,8 @@ _PAGE_IN_RANGE_SQL = (
     "UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched "
     f"WHERE parent_run_id IS NOT NULL AND {_IN_RANGE}"
     ") AND parent_run_id IS NULL AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
-# Open or recent: the open rows (runs_open, any age) and the rows launched since (runs_launched), each read by index
-# alone, so old closed runs are never visited.
+# Open or recent: the open rows (runs_open, any age) and the rows launched since (runs_launched), each found by a
+# search of its index (then read from the table), so old closed runs are never visited.
 _PAGE_OPEN_OR_RECENT_SQL = (
     "SELECT * FROM runs WHERE run_id IN ("
     "SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IS NULL AND outcome IS NULL "
@@ -1035,7 +1035,7 @@ class Store:
             marks = ", ".join("?" * len(ids))
             if recent is None:
                 sql, params = f"SELECT * FROM runs WHERE parent_run_id IN ({marks}){where}", [*ids]
-            else:  # each half read by index alone: the open children, and those launched since
+            else:  # each half found by a search of its index: the open children, and those launched since
                 sql = ("SELECT * FROM runs WHERE run_id IN ("
                        f"SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IN ({marks}) "
                        "AND outcome IS NULL UNION SELECT run_id FROM runs INDEXED BY runs_launched "

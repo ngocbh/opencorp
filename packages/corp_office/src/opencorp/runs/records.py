@@ -18,6 +18,9 @@ CHILDREN_SHOWN = 200
 """The most children a run's page shows with it (the newest)."""
 SIDE_CHAT = FLOWS["side"]
 _RUNNING = ("starting", "busy", "ending")
+_CUT_TAIL = re.compile(r"\S*…\Z")
+"""The word a cut before the reason was stored left in part, with the cut's ellipsis: a secret cut short there can't
+be matched by the scrub."""
 _HANDLE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 WARNED_CAP = 10_000
 _warned: set[str] = set()  # runs already warned about; cleared at WARNED_CAP so it stays small
@@ -77,6 +80,12 @@ def current_nodes(status: str, run_id: str, open_questions: list[Question], live
     return [], False, False
 
 
+def shown_reason(reason: str, scrub: Callable[[str], str] = lambda text: text) -> str:
+    """``reason`` as shown: the partial word before an earlier cut's "…" dropped, then ``scrub``, then the cut to
+    REASON_CHARS (after the scrub, so it never splits a secret the scrub would find)."""
+    return cut_reason(scrub(_CUT_TAIL.sub("…", reason)))
+
+
 def participants(driver: str, person: str, others: Iterable[str | None]) -> list[str]:
     """The employee, then everyone else in order, never the driver, each once."""
     out: list[str] = []
@@ -91,12 +100,12 @@ class Summaries:
 
     ``live`` is read before the store; ``fresh`` (when given) reads memory again after the store reads of each build,
     and the two are merged. A run that ends between the reads is live in the first and still open in the store; one
-    that starts between them is live in the second. ``clean`` makes a stored reason one to show (by default, only cut
-    to REASON_CHARS).
+    that starts between them is live in the second. ``clean`` makes a stored reason one to show (by default,
+    ``shown_reason`` with no scrub).
     """
 
     def __init__(self, store: Store, live: Live, *, fresh: Callable[[], Live] | None = None,
-                 clean: Callable[[str], str] = cut_reason) -> None:
+                 clean: Callable[[str], str] = shown_reason) -> None:
         self.store, self.live, self.fresh, self.clean = store, live, fresh, clean
 
     def build(self, rows: list[RunRow], *, children: Mapping[str, list[RunRow]] | None = None

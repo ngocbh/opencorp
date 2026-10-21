@@ -7,9 +7,9 @@ from typing import Any
 
 from opencorp.protocol.models import RunPage, RunSummary
 from opencorp.runs.known import KnownValues, SecretsUnavailable
-from opencorp.runs.records import Live, Summaries
+from opencorp.runs.records import Live, Summaries, shown_reason
 from opencorp.runs.scrub import Scrubber
-from opencorp.store import RunRow, cut_reason
+from opencorp.store import RunRow
 
 PAGE = 50
 BATCH = 100
@@ -72,14 +72,14 @@ class RunLogs:
         return Scrubber(()) if self.known is None else await self.known.scrubber()
 
     async def _reasons(self) -> Callable[[str], str]:
-        """How reasons are cleaned to be shown: the full scrub, then the cut to REASON_CHARS (after, so no secret is
-        cut in two before it's found); REASON_HIDDEN for each when the known values can't be read, so the list and a
-        run's header still answer."""
+        """How reasons are cleaned to be shown: ``shown_reason`` with the full scrub (an earlier cut's partial word
+        dropped, the scrub, then the cut to REASON_CHARS, so no secret shows in part); REASON_HIDDEN for each when the
+        known values can't be read, so the list and a run's header still answer."""
         try:
             scrubber = await self.scrubber()
         except SecretsUnavailable:
             return lambda text: REASON_HIDDEN
-        return lambda text: cut_reason(scrubber.text(text))
+        return lambda text: shown_reason(text, scrubber.text)
 
     def live(self) -> Live:
         """What the harness and learning hold now."""
