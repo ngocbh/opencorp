@@ -111,3 +111,10 @@ def test_a_choice_takes_no_typed_answer_unless_it_says_so():
 def test_company_defaults_no_longer_take_idle_end():
     with pytest.raises(pydantic.ValidationError):
         models.CompanyDefaults.model_validate({"idle_end": "2h"})
+
+
+def test_a_run_summary_counts_its_children():
+    page = models.RunPage.model_validate_json((FIXTURES / "RunPage.json").read_text())
+    assert (page.runs[0].child_count, page.runs[0].children) == (3, [])
+    run = models.RunSummary.model_validate_json((FIXTURES / "RunSummary.json").read_text())
+    assert (run.child_count, run.children[0].child_count) == (1, 0)

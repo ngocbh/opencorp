@@ -971,7 +971,7 @@ class RunSummary(BaseModel):
     children: Annotated[
         list[RunSummary],
         Field(
-            description="On a top-level row of a list page and on a run's page: the newest 200 runs started from it, newest first.",
+            description="On a run's page: the newest 200 runs started from it, newest first. List pages leave it empty; a row carries child_count instead.",
             validate_default=True,
         ),
     ] = []
@@ -979,11 +979,18 @@ class RunSummary(BaseModel):
         int,
         Field(description='How many runs were started from it, shown or not.', ge=0),
     ] = 0
+    child_count: Annotated[
+        int,
+        Field(
+            description='How many runs were started from this one; a list page carries the count and the children are fetched with ?parent=',
+            ge=0,
+        ),
+    ] = 0
 
 
 class RunPage(BaseModel):
     """
-    One page of GET /runs: top-level runs, newest first, each with its children.
+    One page of GET /runs: top-level runs, newest first, each with its child_count; with ?parent=, that run's children.
     """
 
     model_config = ConfigDict(

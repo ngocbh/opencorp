@@ -678,13 +678,14 @@
         "ended_at": { "anyOf": [{ "$ref": "#/$defs/Timestamp" }, { "type": "null" }], "default": null, "description": "When the office learned it ended. Null while open, and for a run an office stop interrupted." },
         "replaces": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The run of the same session this fresh run replaced." },
         "replaced_by": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The fresh run of the same session that replaced this one." },
-        "children": { "type": "array", "items": { "$ref": "#/$defs/RunSummary" }, "default": [], "description": "On a top-level row of a list page and on a run's page: the newest 200 runs started from it, newest first." },
-        "children_total": { "type": "integer", "minimum": 0, "default": 0, "description": "How many runs were started from it, shown or not." }
+        "children": { "type": "array", "items": { "$ref": "#/$defs/RunSummary" }, "default": [], "description": "On a run's page: the newest 200 runs started from it, newest first. List pages leave it empty; a row carries child_count instead." },
+        "children_total": { "type": "integer", "minimum": 0, "default": 0, "description": "How many runs were started from it, shown or not." },
+        "child_count": { "type": "integer", "minimum": 0, "default": 0, "description": "How many runs were started from this one; a list page carries the count and the children are fetched with ?parent=" }
       }
     },
     "RunPage": {
       "type": "object", "additionalProperties": false, "required": ["runs"],
-      "description": "One page of GET /runs: top-level runs, newest first, each with its children.",
+      "description": "One page of GET /runs: top-level runs, newest first, each with its child_count; with ?parent=, that run's children.",
       "properties": {
         "runs": { "type": "array", "items": { "$ref": "#/$defs/RunSummary" } },
         "next": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The `before` of the next page; null on the last." }

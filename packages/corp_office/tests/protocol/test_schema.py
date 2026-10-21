@@ -168,3 +168,11 @@ def test_node_and_record_pages_can_say_the_log_is_still_being_read():
 def test_a_node_kind_is_nullable_and_optional():
     kind = _schema()["$defs"]["RunNode"]["properties"]["kind"]
     assert kind["default"] is None and {"type": "null"} in kind["anyOf"]
+
+
+def test_a_list_row_counts_its_children():
+    props = _schema()["$defs"]["RunSummary"]["properties"]
+    count = props["child_count"]
+    assert (count["type"], count["minimum"], count["default"]) == ("integer", 0, 0)
+    assert "child_count" not in _schema()["$defs"]["RunSummary"]["required"]
+    assert "empty" in props["children"]["description"]

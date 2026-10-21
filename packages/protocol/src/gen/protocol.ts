@@ -841,16 +841,20 @@ export interface RunSummary {
    */
   replaced_by?: Ulid | null;
   /**
-   * On a top-level row of a list page and on a run's page: the newest 200 runs started from it, newest first.
+   * On a run's page: the newest 200 runs started from it, newest first. List pages leave it empty; a row carries child_count instead.
    */
   children?: RunSummary[];
   /**
    * How many runs were started from it, shown or not.
    */
   children_total?: number;
+  /**
+   * How many runs were started from this one; a list page carries the count and the children are fetched with ?parent=
+   */
+  child_count?: number;
 }
 /**
- * One page of GET /runs: top-level runs, newest first, each with its children.
+ * One page of GET /runs: top-level runs, newest first, each with its child_count; with ?parent=, that run's children.
  *
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "RunPage".
