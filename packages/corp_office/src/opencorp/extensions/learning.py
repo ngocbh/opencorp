@@ -26,7 +26,8 @@ from opencorp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_propos
 from opencorp.protocol import now
 from opencorp.protocol.models import (CompanyDefaults, Debrief, Feedback, FeedbackRequest, Profile, ProfileProposal,
                                         Session)
-from opencorp.store import new_id
+from opencorp.runs.outcomes import BAD_OUTPUT, COULDNT_START, DEBRIEF, OFFICE, RunEnd
+from opencorp.store import RunRow, new_id
 from opencorp.worker import Job, ProfileMemorySpec, Worker, group_specs
 
 log = logging.getLogger(__name__)
@@ -273,6 +274,10 @@ class Learning:
                 if session.status == "debriefing":
                     self.store.update_session(session.id, status="ended")
                 return False
+            # The row comes before anything that can fail, so a debrief that can't start still shows, failed.
+            self.store.add_run(RunRow(run_id=run_id, session_id=session.id, flow=DEBRIEF, flow_path=DEBRIEF_FLOW,
+                                      driver=OFFICE, parent_run_id=session.run_ids[-1] if session.run_ids else None,
+                                      launched_at=now()))
             if record is None:
                 self.store.save_debrief(pending_debrief(session))  # the session shows "debrief pending" meanwhile
             job, stores = self._debrief_job(session, run_id, kind="chat")
@@ -287,29 +292,40 @@ class Learning:
             if not spawned:
                 self._release(session.id)
         if failed:  # released first: what it drains next may reserve the session again
-            self._debriefed(session.id, run_id, None)
+            self._debriefed(session.id, run_id, None, started=False)
         return spawned or failed
 
-    def _debriefed(self, session_id: str, run_id: str, outcome: dict[str, Any] | None) -> None:
+    def _debriefed(self, session_id: str, run_id: str, outcome: dict[str, Any] | None, *,
+                   started: bool = True) -> None:
+        """Store a debrief attempt's result (``started`` False: it never spawned), with its run's outcome and the
+        session's end."""
         self._release(session_id)
         session = self.store.get_session(session_id)
         record = self.store.get_debrief_record(session_id)
         attempts = (record.attempts if record else 0) + 1
-        debrief = None
-        if outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
+        debrief, why = None, COULDNT_START
+        if not started:
+            log.warning("the debrief of session %s couldn't start", session_id)
+        elif outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
             try:
                 debrief = ready_debrief(session, outcome["output"])
             except (KeyError, TypeError, ValidationError) as exc:
                 self._log_exception(exc, "the debrief of session %s returned a bad output", session_id)
+                why = BAD_OUTPUT
         else:
-            log.warning("the debrief of session %s failed: %s", session_id, self._failure(outcome))
+            why = self._failure(outcome)
+            log.warning("the debrief of session %s failed: %s", session_id, why)
+        end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
+        with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
+            if debrief is not None:
+                self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
+            else:
+                self.store.save_debrief(pending_debrief(session), attempts=attempts)
+            self.store.end_run(run_id, end.outcome, reason=end.reason)
+            if session.status == "debriefing":
+                self.store.update_session(session_id, status="ended")
         if debrief is not None:
-            self._mark_finished(session_id, run_id)
-            self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
-        else:
-            self.store.save_debrief(pending_debrief(session), attempts=attempts)
-        if session.status == "debriefing":
-            self.store.update_session(session_id, status="ended")
+            self._mark_finished(session_id, run_id)  # once the debrief is stored: feedback needs its run
         self._drain(session_id)
 
     def _drain(self, session_id: str) -> None:

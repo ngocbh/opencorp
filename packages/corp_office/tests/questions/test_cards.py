@@ -636,3 +636,62 @@ def test_a_restored_or_woken_side_chat_keeps_the_cards_run_as_its_parent(make_ha
         assert h._live[side.id].parent_run_id == q.run_id
     finally:
         stop(third)
+
+
+def no_live_run(session_id):
+    raise HarnessError(409, "not_live", f"session {session_id} has no live run")  # stored live, with no run to end
+
+
+def test_a_card_that_closes_while_its_side_chat_isnt_running_interrupts_the_side_run(office, fake_llm, workspace,  # noqa: F811
+                                                                                     monkeypatch):
+    fake_llm.script(ASK, {"content": "Quota."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    monkeypatch.setattr(h, "end", no_live_run)
+    cards._close(side.id, h.store.get_question(q.id))
+    (row,) = h.store.runs_of_session(side.id)
+    assert (status(h, side.id), row.outcome, row.reason) == (
+        "ended", "interrupted", "its card closed while it wasn't running")
+
+
+def test_a_closed_cards_side_chat_and_its_runs_outcome_commit_together(office, fake_llm, workspace,  # noqa: F811
+                                                                       monkeypatch):
+    fake_llm.script(ASK, {"content": "Quota."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    monkeypatch.setattr(h, "end", no_live_run)
+    end_run = h.store.end_run
+
+    def written_then_fails(run_id, outcome, **kw):
+        end_run(run_id, outcome, **kw)
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(h.store, "end_run", written_then_fails)
+    with pytest.raises(RuntimeError):
+        cards._close(side.id, h.store.get_question(q.id))
+    (row,) = h.store.runs_of_session(side.id)
+    assert (status(h, side.id), row.outcome) == ("idle", None)
+
+
+def test_a_card_that_closes_while_its_side_chat_finishes_leaves_the_run_finished(office, fake_llm, workspace):  # noqa: F811
+    fake_llm.script(ASK, {"content": "Quota."})
+    h, cards = office.extras["harness"], office.extras["cards"]
+    _, q = ask(office, fake_llm, workspace)
+    side = chat(office, q, "why?", 1)
+    entered, release = threading.Event(), threading.Event()
+
+    def held(session):  # end_status runs inside _finish: after the live run is dropped, before the end is stored
+        if session.id == side.id:
+            entered.set()
+            assert release.wait(10)
+
+    h.hooks.end_status.append(held)
+    h.end(side.id)  # the exit: the side run finishes on its own
+    assert entered.wait(10)
+    cards._close(side.id, h.store.get_question(q.id))  # its end answers 409 not_live while the finish is in flight
+    release.set()
+    wait_for(lambda: status(h, side.id) == "ended", what="the side chat's end")
+    (row,) = h.store.runs_of_session(side.id)
+    assert (row.outcome, row.reason) == ("finished", None)

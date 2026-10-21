@@ -34,8 +34,8 @@ from opencorp.protocol.models import CompanyDefaults, Event, Question, Session, 
 from opencorp.questions.ask import Answers, OnQuestion, make_ask_user
 from opencorp.questions.format import INTERRUPTED
 from opencorp.runs.outcomes import (ANOTHER_START, COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, NEW_MODEL,
-                                    OFFICE as OFFICE_DRIVER, OFFICE_REPLACED, WORKER_REPLACED, WORKER_STOPPED, RunEnd,
-                                    flow_label)
+                                    OFFICE as OFFICE_DRIVER, OFFICE_REPLACED, OFFICE_STOPPED, WORKER_REPLACED, WORKER_STOPPED,
+                                    RunEnd, flow_label)
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from opencorp.store import InvalidTransition, RunRow, new_id
 from opencorp.tools import ToolContext, build
@@ -535,8 +535,9 @@ class Harness:
         Tool parts a dead office left running are marked interrupted first, for every live session. An idle session,
         or one waiting only on question-node cards or its cost hold, then sleeps (settled), with no worker, until a
         prompt, steer, end or answer wakes it (``_awake``), unless its current run has an answered question it hasn't
-        read: that one resumes now to read it.
+        read: that one resumes now to read it. Runs an earlier office left open are swept first.
         """
+        self._sweep_runs()
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
@@ -565,6 +566,14 @@ class Harness:
             self._try_settle(session.id, "at restore")
         if self.codex is not None:
             self.codex.restore()
+
+    def _sweep_runs(self) -> None:
+        """End each run an earlier office left open as ``interrupted``, with no end time (it ended when that office
+        stopped): debriefs it killed, runs it replaced without a row's end. Each live composer session's current run
+        stays open: restore resumes, replaces or fails it, or it sleeps."""
+        keep = {s.run_ids[-1] for s in self.store.list_sessions(status=LIVE, limit=None)
+                if s.harness == "composer" and s.run_ids}
+        self.store.sweep_runs(keep, reason=OFFICE_STOPPED)
 
     def _sleeps(self, session: Session) -> bool:
         """Whether restore leaves ``session`` asleep: idle, or waiting only on question-node cards or its cost hold;
