@@ -118,24 +118,16 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     costs: { since: (since: string) => get<CostReport>(`/costs${query({ since })}`) },
     runs: {
       /**
-       * Top-level runs, newest first, each with its children; `before` is the last page's `next`. `status` is one
-       * status or several (a run matches any of them); `since` (inclusive) and `until` (exclusive) are Timestamps
-       * bounding when a run was launched.
+       * Top-level runs, newest first, each with how many runs were started from it (`children_total`; `children` is
+       * left empty); `before` is the last page's `next`.
        */
-      list: (
-        opts: {
-          flow?: string
-          person?: string
-          status?: RunSummary["status"] | RunSummary["status"][]
-          since?: string
-          until?: string
-          q?: string
-          before?: string
-          limit?: number
-        } = {},
-      ) => get<RunPage>(`/runs${query({ ...opts, status: [opts.status ?? []].flat().join(",") || undefined })}`),
-      /** Every run started from run `id`: the list's "Show all". */
-      children: (id: string) => get<RunSummary[]>(`/runs${query({ parent: id })}`),
+      list: (opts: RunListOptions = {}) => get<RunPage>(`/runs${query(runParams(opts))}`),
+      /**
+       * One page of the runs started from run `id`, newest first, those matching `opts`'s filters as `list` matches
+       * them; `before` is the last page's `next`.
+       */
+      children: (id: string, opts: RunListOptions = {}) =>
+        get<RunPage>(`/runs${query({ parent: id, ...runParams(opts) })}`),
       /** One run's header: summary, parent, children, fingerprint, pinned commit, models, usage and log state. */
       get: (id: string) => get<RunDetail>(r(id)),
       /**
@@ -273,6 +265,24 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     },
   }
 }
+
+/**
+ * `GET /runs`'s filters and paging. `status` is one status or several (a run matches any of them); `since` (inclusive)
+ * and `until` (exclusive) are Timestamps bounding when a run was launched.
+ */
+export type RunListOptions = {
+  flow?: string
+  person?: string
+  status?: RunSummary["status"] | RunSummary["status"][]
+  since?: string
+  until?: string
+  q?: string
+  before?: string
+  limit?: number
+}
+
+/** `opts` as query params, the statuses comma-joined. */
+const runParams = (opts: RunListOptions) => ({ ...opts, status: [opts.status ?? []].flat().join(",") || undefined })
 
 function query(params: Record<string, string | number | undefined>) {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined) as [string, string | number][]
