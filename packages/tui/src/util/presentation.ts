@@ -29,6 +29,7 @@ export function sessionEpilogue(input: { title: string; sessionID?: string }) {
     ...wordmark("  "),
     "",
     `  ${weak("Session")}${bold}${input.title}${reset}`,
+    `  ${weak("")}Saved. ${bold}/sessions${reset} in this folder brings it back.`,
     `  ${weak("Continue")}${bold}opencorp -s ${input.sessionID}${reset}`,
     "",
   ].join("\n")

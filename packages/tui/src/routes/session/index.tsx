@@ -32,6 +32,7 @@ import { costLabel, Sidebar } from "./sidebar"
 import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
 import { Toast, useToast } from "../../ui/toast"
+import { useCostCap } from "../../component/cost-cap"
 import { useKV } from "../../context/kv.tsx"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
@@ -47,7 +48,7 @@ import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { OPENCORP_BASE_MODE, useBindings, useOpenCorpKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { useOffice } from "../../context/office"
-import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented } from "@opencorp/client"
+import { modelLabel, OfficeError, OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { answerShown } from "../chat/answer"
 import { QuestionCard } from "../chat/card"
 import { HarnessCard } from "../chat/harness-card"
@@ -205,6 +206,7 @@ export function Session() {
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
+  const costCap = useCostCap()
   const keymap = useOpenCorpKeymap()
 
   createEffect(
@@ -300,6 +302,13 @@ export function Session() {
               : toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }),
           )
       },
+    },
+    {
+      title: "Raise the cost cap",
+      value: "session.cost_cap",
+      category: "Session",
+      slash: { name: "cost-cap" },
+      run: () => costCap.ask(route.sessionID),
     },
     {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
@@ -542,9 +551,11 @@ export function Session() {
                 <box flexShrink={0} paddingTop={1} visible={!sideOf()}>
                   <text fg={theme.text} wrapMode="none">
                     <b>{person()}</b>
-                    <span style={{ fg: current().status === "busy" ? theme.warning : theme.textMuted }}>
+                    <span
+                      style={{ fg: ["busy", "waiting"].includes(current().status) ? theme.warning : theme.textMuted }}
+                    >
                       {" "}
-                      · {current().status}
+                      · {statusLabel(current())}
                     </span>
                     <Show when={costLabel(current(), office.connections())}>
                       {(cost) => <span style={{ fg: theme.textMuted }}> · {cost()}</span>}

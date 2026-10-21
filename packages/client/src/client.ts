@@ -180,11 +180,21 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
     },
     sessions: {
       /** Sessions, newest updated first; several statuses are sent comma-separated. */
-      list: (opts: { person?: string; limit?: number; status?: Session["status"] | Session["status"][] } = {}) =>
+      list: (
+        opts: {
+          person?: string
+          limit?: number
+          status?: Session["status"] | Session["status"][]
+          kind?: Session["kind"]
+          cwd?: string
+        } = {},
+      ) =>
         get<Session[]>(
           `/sessions${query({
             person: opts.person,
             limit: opts.limit,
+            kind: opts.kind,
+            cwd: opts.cwd,
             status: [opts.status ?? []].flat().join(",") || undefined,
           })}`,
         ),

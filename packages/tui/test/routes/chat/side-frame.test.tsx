@@ -352,6 +352,55 @@ test("Esc interrupts a starting side session; /Back returns in any case", async 
   }
 })
 
+test("a waiting side session still has its run: a message goes to it, and Esc interrupts it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "waiting" as const, waiting_on: ["ngocbh"] }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · waiting on @ngocbh"))
+    app.input.typeText("go on")
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/prompt`))
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/interrupt`))
+    expect(office.requests.some((r) => r.path.endsWith("/side"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("/cost-cap 20 in a side chat raises the side session's cap and sends nothing to the model", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  const side = { ...s, id: office.nextId(), kind: "side" as const, status: "waiting" as const, waiting_on: ["ngocbh"],
+    capped: true, cost: 1 }
+  office.state.sessions.push(side)
+  office.state.messages[side.id] = []
+  office.addQuestion({ session_id: s.id, question: "Deploy now?", options: ["yes", "no"], side_session_id: side.id })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("Deploy now?"))
+    app.input.pressKey("o", { ctrl: true })
+    await app.until((f) => f.includes("Side chat with @minh · cost cap reached, waiting on @ngocbh"))
+    app.input.typeText("/cost-cap 20")
+    await app.until((f) => f.includes("/cost-cap 20"))
+    app.input.pressEnter()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${side.id}/cost-cap`))
+    await app.until((f) => f.includes("Cost cap raised to $20.00") && !f.includes("/cost-cap 20"))
+    expect(office.requests.some((r) => r.path.endsWith("/prompt") || r.path.endsWith("/side"))).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
 test("the typed box lets go of the keys while the side chat shows and keeps its text after /back", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]

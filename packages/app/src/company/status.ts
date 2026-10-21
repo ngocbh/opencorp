@@ -21,7 +21,10 @@ export const inOffice = (sessions: Session[], office: OfficeFilter) =>
 /** Open questions shown as cards: an idle chat keeps one open at its turn node, which is its input box, not a card. */
 export const cards = (questions: Iterable<Question>) => [...questions].filter((q) => q.status === "open" && !isTurn(q))
 
-/** Each person's status by their main and side sessions; a person not in the map is away. */
+/**
+ * Each person's status by their active main and side sessions and their cards; idle sessions don't count, so a person
+ * with only idle sessions is away. A person not in the map is away.
+ */
 export function statusByPerson(sessions: Session[], questions: Iterable<Question>): Map<string, Status> {
   const out = new Map<string, Status>()
   const bump = (handle: string, st: Status) => out.set(handle, urgent(st, out.get(handle) ?? "away"))
@@ -29,7 +32,7 @@ export function statusByPerson(sessions: Session[], questions: Iterable<Question
   for (const x of sessions) {
     if (!COUNTED.has(x.kind)) continue
     if (BUSY.has(x.status)) bump(x.person, "busy")
-    else if (x.status === "idle") bump(x.person, "idle")
+    else if (x.status === "waiting") bump(x.person, "waiting")
   }
   for (const q of cards(questions)) {
     const x = byId.get(q.session_id)

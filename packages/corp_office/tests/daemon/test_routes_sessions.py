@@ -109,6 +109,14 @@ async def test_list_sessions_filters_by_status_repeated_or_comma_separated(clien
     assert r.status_code == 200 and {s["id"] for s in r.json()} == {busy.id, idle.id}
 
 
+async def test_list_sessions_filters_by_kind_and_folder(client, office):
+    here = office.store.create_session(session(cwd="/w/app"))
+    office.store.create_session(session(cwd="/w/app", kind="side"))
+    office.store.create_session(session(cwd="/w/other"))
+    r = await client.get("/sessions", params={"kind": "main", "cwd": "/w/app", "limit": 500})
+    assert r.status_code == 200 and [s["id"] for s in r.json()] == [here.id]
+
+
 async def test_list_sessions_defaults_to_fifty(client, office):
     for _ in range(51):
         office.store.create_session(session())

@@ -506,14 +506,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         title: "Leave the app",
         hidden: true,
         run: () => {
-          // A chat keeps running after the view closes, so leaving it takes a second press.
+          // Leaving a chat only detaches; it takes a second press so a stray Ctrl+C doesn't.
           if (route.data.type !== "session" || leave()) return exit()
           const sessionID = route.data.sessionID
           const status = office.state.sessions.find((s) => s.id === sessionID)?.status
           // An interrupted session has no live run either, until something resumes it.
           const over = status === "ended" || status === "failed" || status === "interrupted"
           toast.show({
-            message: over ? "Press again to leave." : "Press again to leave; the session keeps running.",
+            message: over ? "Press again to leave." : "Press again to leave; the session is saved.",
             variant: "info",
           })
         },

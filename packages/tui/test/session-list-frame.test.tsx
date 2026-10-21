@@ -82,8 +82,53 @@ test("turning the directory filter off lists sessions in every folder", async ()
   }
 })
 
+test("the session list shows this folder's session behind more than 50 newer ones elsewhere", async () => {
+  const fake = office(["proj"])
+  for (let i = 0; i < 60; i++)
+    fake.state.sessions.unshift({ ...fake.state.sessions.at(-1)!, id: fake.nextId(), cwd: "/tmp/other", updated_at: ago(1000) })
+  const app = await bootFrame(createStub(fake))
+  try {
+    await app.until((f) => f.includes("Ask anything"))
+    await runCommand(app, "Switch session")
+    await app.until((f) => f.includes("@minh · /tmp/proj · 5m ago"))
+    expect(
+      fake.requests.some((r) => r.path.startsWith("/sessions?") && r.path.includes("kind=main") && r.path.includes("cwd=")),
+    ).toBe(true)
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("the session list says who a waiting session waits on", async () => {
+  const fake = office(["proj"])
+  fake.state.sessions[0] = { ...fake.state.sessions[0], status: "waiting", waiting_on: ["ngocbh"] }
+  const app = await bootFrame(createStub(fake))
+  try {
+    await app.until((f) => f.includes("Ask anything"))
+    await runCommand(app, "Switch session")
+    await app.until((f) => f.includes("@minh · /tmp/proj · 5m ago · waiting on @ngocbh"))
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
 test("--continue opens the newest main session in the folder", async () => {
   const fake = office()
+  const app = await bootFrame(createStub(fake), { continue: true })
+  try {
+    await app.until((f) => f.includes("fix the flaky test"))
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
+test("--continue finds this folder's session behind more than 50 newer ones elsewhere", async () => {
+  const fake = office(["proj"])
+  for (let i = 0; i < 60; i++)
+    fake.state.sessions.unshift({ ...fake.state.sessions.at(-1)!, id: fake.nextId(), cwd: "/tmp/other", updated_at: ago(1000) })
   const app = await bootFrame(createStub(fake), { continue: true })
   try {
     await app.until((f) => f.includes("fix the flaky test"))

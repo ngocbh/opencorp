@@ -37,6 +37,13 @@ def test_a_run_belongs_to_one_session(store):
         store.add_session_run("01K6A0000000000000000000ZZ", "run-9")
 
 
+def test_sessions_filter_by_folder_and_kind(store):
+    here = store.create_session(session(cwd="/w/app"))
+    store.create_session(session(cwd="/w/app", kind="side"))
+    store.create_session(session(cwd="/w/other"))
+    assert [s.id for s in store.list_sessions(kind="main", cwd="/w/app")] == [here.id]
+
+
 def test_update_session(store):
     s = store.create_session(session())
     got = store.update_session(s.id, status="busy", cost=0.25)

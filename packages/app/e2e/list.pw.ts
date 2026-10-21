@@ -68,17 +68,22 @@ test("a branch that opened for a card stays open once the card is answered", asy
   await request.post("/__fixture/set", {
     data: {
       view: { people: [...data.view.people, person("eve", "Eve", "agent", "Intern", "kai")] },
-      sessions: [...data.sessions, session("S-eve", "eve", "idle", { opened_by: "ngocbh" })],
+      sessions: [...data.sessions, session("S-eve", "eve", "waiting", { opened_by: "ngocbh", waiting_on: ["ngocbh"] })],
       questions: [...data.questions, card("Q-eve", "S-eve", "eve")],
     },
   })
   await page.reload()
   await page.getByRole("radio", { name: "List" }).click()
   await expect(row(page, /Kai/)).toHaveAttribute("aria-expanded", "true")
+  const answered = "2026-10-19T12:00:00.000Z"
   await request.post("/__fixture/emit", {
-    data: { event: { type: "question.updated", data: card("Q-eve", "S-eve", "eve", { status: "answered", updated_at: "2026-10-19T12:00:00.000Z" }) } },
+    data: { event: { type: "question.updated", data: card("Q-eve", "S-eve", "eve", { status: "answered", updated_at: answered }) } },
   })
-  await expect(row(page, /Eve/).getByTestId("status")).toHaveAttribute("data-status", "idle")
+  // The office settles the session once its card is answered: nobody is waited on, so it is idle.
+  await request.post("/__fixture/emit", {
+    data: { event: { type: "session.updated", data: session("S-eve", "eve", "idle", { opened_by: "ngocbh", updated_at: answered }) } },
+  })
+  await expect(row(page, /Eve/).getByTestId("status")).toHaveAttribute("data-status", "away")
   await expect(row(page, /Kai/)).toHaveAttribute("aria-expanded", "true")
 })
 

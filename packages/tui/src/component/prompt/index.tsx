@@ -31,9 +31,11 @@ import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
+import { costCapArgument, dollars, useCostCap } from "../cost-cap"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { errorMessage } from "../../util/error"
+import { interruptible, working } from "../../util/status"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
@@ -110,9 +112,10 @@ export function Prompt(props: PromptProps) {
   const tuiConfig = useTuiConfig()
   const dialog = useDialog()
   const toast = useToast()
+  const costCap = useCostCap()
   const session = createMemo(() => office.state.sessions.find((s) => s.id === props.sessionID))
-  // A session is interruptible while its run is starting or working.
-  const working = createMemo(() => ["starting", "busy"].includes(session()?.status ?? ""))
+  const canInterrupt = createMemo(() => interruptible(session()?.status))
+  const busy = createMemo(() => working(session()?.status))
   /** An ended Codex session, which a message continues in a new session on the same thread. */
   const continues = createMemo(() => {
     const s = session()
@@ -212,7 +215,7 @@ export function Prompt(props: PromptProps) {
         name: "session.interrupt",
         category: "Session",
         hidden: true,
-        enabled: working(),
+        enabled: canInterrupt(),
         run: () => {
           if (auto()?.visible) return
           if (!input.focused) return
@@ -687,6 +690,19 @@ export function Prompt(props: PromptProps) {
       void exit()
       return true
     }
+    // A command, not a message, even with an amount after it: it must never reach the model.
+    const cap = costCapArgument(store.prompt.input)
+    if (cap !== undefined) {
+      if (!props.sessionID) {
+        toast.show({ message: "Open a session to raise its cost cap", variant: "warning" })
+        return false
+      }
+      const usd = dollars(cap)
+      if (usd === undefined) costCap.ask(props.sessionID, cap)
+      else costCap.raise(props.sessionID, usd)
+      clearSent(trimmed)
+      return true
+    }
     const person = local.person.current()
     if (!props.sessionID && !person) return false
     const text = promptText()
@@ -716,6 +732,9 @@ export function Prompt(props: PromptProps) {
       }
       undo = props.onSend?.()
       await office.client.sessions.prompt(sessionID, { text })
+      // A capped session holds the message until someone raises the cap.
+      if (office.state.sessions.find((s) => s.id === sessionID)?.capped)
+        toast.show({ message: "This message waits until the cost cap is raised (/cost-cap)", variant: "warning" })
     } catch (error) {
       undo?.()
       const title = continuing
@@ -729,15 +748,8 @@ export function Prompt(props: PromptProps) {
       return true
     }
 
-    history.append(text)
-    input.extmarks.clear()
-    setStore("prompt", {
-      input: "",
-      parts: [],
-    })
-    setStore("extmarkToPartIndex", new Map())
+    clearSent(text)
     props.onSubmit?.()
-    input.clear()
     if (sessionID !== props.sessionID) route.navigate({ type: "session", sessionID })
     return true
   }
@@ -804,6 +816,18 @@ export function Prompt(props: PromptProps) {
       input.getLayoutNode().markDirty()
       renderer.requestRender()
     }, 0)
+  }
+
+  /** Empties the prompt once `text`, its content, has gone out, keeping `text` in the history. */
+  function clearSent(text: string) {
+    history.append(text)
+    input.extmarks.clear()
+    setStore("prompt", {
+      input: "",
+      parts: [],
+    })
+    setStore("extmarkToPartIndex", new Map())
+    input.clear()
   }
 
   function clearPrompt() {
@@ -1019,7 +1043,7 @@ export function Prompt(props: PromptProps) {
         </box>
         <box width="100%" flexDirection="row" justifyContent="space-between">
           <Show
-            when={working()}
+            when={canInterrupt()}
             fallback={
               props.hint ?? (
                 <Show when={props.sessionID} fallback={<text />}>
@@ -1031,12 +1055,15 @@ export function Prompt(props: PromptProps) {
             }
           >
             <box flexDirection="row" gap={1} flexGrow={1}>
-              <box marginLeft={1}>
-                <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                  <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
-                </Show>
-              </box>
-              <text fg={theme.text}>
+              {/* A waiting session can be interrupted but isn't working, so it has no spinner. */}
+              <Show when={busy()}>
+                <box marginLeft={1}>
+                  <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
+                    <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
+                  </Show>
+                </box>
+              </Show>
+              <text fg={theme.text} marginLeft={busy() ? 0 : 1}>
                 esc <span style={{ fg: theme.textMuted }}>interrupt</span>
               </text>
             </box>

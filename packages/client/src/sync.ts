@@ -24,6 +24,8 @@ export type OfficeSync = ReturnType<typeof createOfficeSync>
 export type Snapshot = (client: OfficeClient) => Promise<(s: OfficeState) => void>
 
 const SESSION_LIMIT = 50
+/** The office's largest page: this folder's main sessions, however many newer ones elsewhere. */
+const FOLDER_LIMIT = 500
 /** The events held back while a snapshot loads, per bootstrap and per session load. */
 const MAX_BUFFERED = 10_000
 
@@ -153,17 +155,19 @@ export function createOfficeSync(opts: {
     }
   }
 
-  /** The TUI's snapshot: everyone, who worked in `cwd`, and the latest sessions. */
+  /** The TUI's snapshot: everyone, who worked in `cwd`, the latest sessions, and `cwd`'s main sessions. */
   const defaultSnapshot: Snapshot = async () => {
-    const [people, folderPeople, sessions] = await Promise.all([
+    const [people, folderPeople, sessions, here] = await Promise.all([
       client.people.list(),
       readFolderPeople(),
       client.sessions.list({ limit: SESSION_LIMIT }),
+      // This folder's main sessions, so /sessions and --continue find older ones too.
+      opts.cwd ? client.sessions.list({ kind: "main", cwd: opts.cwd, limit: FOLDER_LIMIT }) : Promise.resolve([]),
     ])
     return (s) => {
       s.people = people
       if (folderPeople) s.folderPeople = folderPeople
-      for (const session of sessions) upsertSession(s, session)
+      for (const session of [...sessions, ...here]) upsertSession(s, session)
     }
   }
   const snapshot = opts.snapshot ?? defaultSnapshot

@@ -2,14 +2,14 @@ import { expect, test } from "bun:test"
 import { createFakeOffice, createStub } from "../../../script/stub"
 import { bootFrame } from "../../fixture/frame"
 
-test("in a chat, one Ctrl+C shows a hint and a second leaves; the session keeps running", async () => {
+test("in a chat, one Ctrl+C says the session is saved and a second leaves", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     await app.until((f) => f.includes("@minh · idle"))
     app.input.pressKey("c", { ctrl: true })
-    await app.until((f) => f.includes("Press again to leave"))
+    await app.until((f) => f.includes("Press again to leave; the session is saved."))
     expect(app.setup.renderer.isDestroyed).toBe(false)
     app.input.pressKey("c", { ctrl: true })
     await app.until(() => app.setup.renderer.isDestroyed)
@@ -45,7 +45,7 @@ test("in a chat, Ctrl+C with text clears the prompt and doesn't count toward lea
 })
 
 for (const status of ["ended", "failed", "interrupted"] as const) {
-  test(`in a session that is ${status}, the Ctrl+C hint doesn't say the session keeps running`, async () => {
+  test(`in a session that is ${status}, the Ctrl+C hint doesn't say the session is saved`, async () => {
     const office = createFakeOffice()
     const s = office.state.sessions[0]
     office.state.sessions[0] = { ...s, status }
@@ -54,7 +54,7 @@ for (const status of ["ended", "failed", "interrupted"] as const) {
       await app.until((f) => f.includes(`@minh · ${status}`))
       app.input.pressKey("c", { ctrl: true })
       const f = await app.until((f) => f.includes("Press again to leave"))
-      expect(f).not.toContain("keeps running")
+      expect(f).not.toContain("the session is saved")
       app.input.pressKey("c", { ctrl: true })
       await app.until(() => app.setup.renderer.isDestroyed)
     } finally {

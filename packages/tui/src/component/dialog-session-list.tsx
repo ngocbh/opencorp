@@ -1,4 +1,5 @@
 import type { Person, Session } from "@opencorp/protocol"
+import { statusLabel } from "@opencorp/client"
 import os from "node:os"
 import { createMemo, onMount } from "solid-js"
 import { useDialog } from "../ui/dialog"
@@ -20,13 +21,14 @@ export function listedSessions(sessions: readonly Session[], cwd?: string) {
     .toSorted((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id))
 }
 
-/** A session's list row: `@handle · folder · age`, with the home folder shown as `~`. */
+/** A session's list row: `@handle · folder · age`, with the home folder shown as `~`, then who a waiting one waits on. */
 export function sessionRow(session: Session, people: readonly Person[], opts: { now?: number; home?: string } = {}) {
   const home = opts.home ?? os.homedir()
   const cwd =
     session.cwd === home || session.cwd.startsWith(home + "/") ? "~" + session.cwd.slice(home.length) : session.cwd
   const age = Locale.relative(Date.parse(session.updated_at), opts.now)
-  return `${personLabel(people, session.person)} · ${cwd} · ${age}`
+  const row = `${personLabel(people, session.person)} · ${cwd} · ${age}`
+  return session.status === "waiting" ? `${row} · ${statusLabel(session)}` : row
 }
 
 /** The group a session is listed under: "Today", or the date it was last updated. */
@@ -71,7 +73,9 @@ export function DialogSessionList() {
           ? () => <Spinner />
           : slot !== undefined
             ? () => <text fg={theme.accent}>{slot}</text>
-            : undefined,
+            : s.status === "waiting"
+              ? () => <text fg={theme.warning}>•</text>
+              : undefined,
       }
     }
     return [

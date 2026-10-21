@@ -305,3 +305,20 @@ test("while busy, Esc closes an open @ menu and keeps the draft; the next Esc cl
     office.stop()
   }
 })
+
+test("Esc on a waiting session interrupts it", async () => {
+  const office = createFakeOffice()
+  const s = office.state.sessions[0]
+  office.updateSession(s.id, { status: "waiting", waiting_on: ["ngocbh"] })
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    const f = await app.until((f) => f.includes("@minh · waiting") && f.includes("esc interrupt"))
+    // No spinner before the hint: a waiting session isn't working.
+    expect(f.split("\n").find((l) => l.includes("esc interrupt"))).toMatch(/^\s*esc interrupt/)
+    app.input.pressEscape()
+    await app.until(() => office.requests.some((r) => r.path === `/sessions/${s.id}/interrupt`))
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})

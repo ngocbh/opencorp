@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
-import type { Question } from "@opencorp/protocol"
-import { isTurn, turnPath } from "../src/turn"
+import type { Question, Session } from "@opencorp/protocol"
+import { isTurn, statusLabel, turnPath } from "../src/turn"
 
 test("turnPath drops a trailing #N from every segment", () => {
   expect(turnPath("chat#3/ask")).toBe("chat/ask")
@@ -30,4 +30,15 @@ test("a human_input at chat/ask is the chat's turn; anything else is a card", ()
   expect(isTurn(q({ node_id: "ask" }))).toBe(false)
   expect(isTurn(q({ node_id: "chat#1/ask", source: "ask_user" }))).toBe(false)
   expect(isTurn(q({ node_id: null, source: "ask_user" }))).toBe(false)
+})
+
+const sess = (over: Partial<Session>) => ({ id: "S", status: "waiting", waiting_on: ["ann"], ...over }) as Session
+
+test("statusLabel names who a waiting session waits on, and says when its cost cap holds it", () => {
+  expect(statusLabel(sess({ status: "idle", waiting_on: [] }))).toBe("idle")
+  expect(statusLabel(sess({ waiting_on: ["ann", "lead"] }))).toBe("waiting on @ann, @lead")
+  expect(statusLabel(sess({ waiting_on: ["lead"], capped: true }))).toBe("cost cap reached, waiting on @lead")
+  expect(statusLabel(sess({ waiting_on: ["ann", "lead"], capped: true }))).toBe("cost cap reached, waiting on @ann, @lead")
+  expect(statusLabel(sess({ waiting_on: [] }))).toBe("waiting")
+  expect(statusLabel(sess({ status: "busy", capped: true }))).toBe("busy")
 })

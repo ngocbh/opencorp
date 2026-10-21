@@ -6,7 +6,7 @@ import type { Session } from "@opencorp/protocol"
 import { type OfficeClient, OfficeUnavailable } from "@opencorp/client"
 
 // An ending session is already on its way out, and a debriefing or later one is not live.
-const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy"])
+const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy", "waiting"])
 
 /**
  * Ends session `id`, or else the most recently updated live main session in `cwd`; resolves to
@@ -15,8 +15,9 @@ const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy"])
 export async function endSession(opts: { client: OfficeClient; cwd: string; id?: string }): Promise<Session> {
   const { client, cwd } = opts
   const newest = async () =>
-    // The office's largest page: newer sessions in other folders must not push this one out.
-    (await client.sessions.list({ limit: 500 }))
+    // This folder's main sessions, up to the office's largest page. The filter stays here too: an office from
+    // before the kind and cwd parameters ignores them and lists every folder's sessions.
+    (await client.sessions.list({ kind: "main", cwd, limit: 500 }))
       .filter((s) => s.kind === "main" && s.cwd === cwd && ENDABLE.has(s.status))
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]
   const session = opts.id ? await client.sessions.get(opts.id) : await newest()

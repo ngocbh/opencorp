@@ -23,7 +23,7 @@ export function withoutConflict(text: string) {
 }
 
 /** The session statuses a manager chat can still take messages in. */
-export const LIVE = new Set<Session["status"]>(["starting", "idle", "busy"])
+export const LIVE = new Set<Session["status"]>(["starting", "idle", "busy", "waiting"])
 
 /** The person's newest profile manager session that can still take a message. */
 export function managerSession(sessions: readonly Session[], person: string) {

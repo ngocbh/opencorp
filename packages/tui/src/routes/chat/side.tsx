@@ -7,8 +7,10 @@ import { useTheme } from "../../context/theme"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
-import { OfficeUnavailable, isNotImplemented } from "@opencorp/client"
+import { OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { errorMessage } from "../../util/error"
+import { interruptible } from "../../util/status"
+import { costCapArgument, dollars, useCostCap } from "../../component/cost-cap"
 import { personLabel } from "../../util/transcript"
 import { leaveBindings } from "./leave"
 
@@ -18,7 +20,7 @@ const SIDE_MODE = "side"
 const SIDE_EXIT = new Set(["/end", "/exit", "/quit"])
 
 /** The statuses a session takes prompts in; any other goes back through the side route, which restarts it. */
-const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
+const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending"]
 
 /** The side chat's header: who explains which question, and, for a gate, whose side they are on. */
 export function SideHeader(props: { question: Question; session: Session | undefined }) {
@@ -31,9 +33,9 @@ export function SideHeader(props: { question: Question; session: Session | undef
         <b>Side chat with {asker()}</b>
         <Show when={props.session}>
           {(s) => (
-            <span style={{ fg: s().status === "busy" ? theme.warning : theme.textMuted }}>
+            <span style={{ fg: ["busy", "waiting"].includes(s().status) ? theme.warning : theme.textMuted }}>
               {" "}
-              · {s().status}
+              · {statusLabel(s())}
             </span>
           )}
         </Show>
@@ -61,6 +63,7 @@ export function SideChat(props: {
 }) {
   const office = useOffice()
   const toast = useToast()
+  const costCap = useCostCap()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpenCorpModeStack()
@@ -99,6 +102,16 @@ export function SideChat(props: {
       textarea?.setText("")
       return toast.show({ message: "use /back to return to the question", variant: "warning" })
     }
+    // A command, not a message, even with an amount after it: it must never reach the model.
+    const cap = costCapArgument(text)
+    if (cap !== undefined) {
+      textarea?.setText("")
+      const s = props.session
+      if (!s || !LIVE.includes(s.status))
+        return toast.show({ message: "Start the side chat to raise its cost cap", variant: "warning" })
+      const usd = dollars(cap)
+      return usd === undefined ? costCap.ask(s.id, cap) : costCap.raise(s.id, usd)
+    }
     if (sending) return
     sending = true
     const s = props.session
@@ -126,7 +139,7 @@ export function SideChat(props: {
 
   function interrupt() {
     const s = props.session
-    if (s?.status !== "busy" && s?.status !== "starting") return
+    if (!s || !interruptible(s.status)) return
     props.onInterrupt()
     office.client.sessions.interrupt(s.id).catch(fail)
   }
