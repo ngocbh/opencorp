@@ -18,8 +18,12 @@ _NOT_HIDDEN = r"(?!\(hidden\))"
 PROVIDER_KEY = re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}")
 """A provider key's shape (OpenAI's ``sk-…``, Anthropic's ``sk-ant-…``), configured here or not."""
 BEARER = re.compile(rf"\b(Bearer)\s+{_NOT_HIDDEN}\S{{8,}}", re.IGNORECASE)
-API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)(\"?\s*[:=]\s*\"?){_NOT_HIDDEN}[^\s\",}}]+", re.IGNORECASE)
-"""An ``api-key: …`` header value, which provider errors echo."""
+AUTH_HEADER = re.compile(rf"\b(authorization[\"']?\s*[:=]\s*[\"']?(?:Bearer|Basic|Token))\s+{_NOT_HIDDEN}[^\s\"',}}]+",
+                         re.IGNORECASE)
+"""An ``Authorization: Basic …`` or ``Token …`` header value (Proxy-Authorization too), as text."""
+API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)([\"']?\s*[:=]\s*[\"']?){_NOT_HIDDEN}[^\s\"',}}]+",
+                            re.IGNORECASE)
+"""An ``api-key: …`` header value, which provider errors echo, as text, JSON or a Python repr."""
 WITHHELD = "a secret couldn't be removed"
 _KIND = re.compile(r"[a-z_]{1,64}")
 
@@ -32,9 +36,11 @@ def secret_key(key: object) -> bool:
 
 def scrub_string(text: str) -> str:
     """``text`` with every secret of a known shape replaced by ``(hidden)``: #247's patterns and URL passwords,
-    provider keys, bearer tokens and api-key header values. No I/O: safe anywhere, run reasons included."""
+    provider keys, bearer tokens, Authorization and api-key header values. No I/O: safe anywhere, run reasons
+    included."""
     text = PROVIDER_KEY.sub(HIDDEN, scrub_text(text))
     text = BEARER.sub(lambda m: f"{m[1]} {HIDDEN}", text)
+    text = AUTH_HEADER.sub(lambda m: f"{m[1]} {HIDDEN}", text)
     return API_KEY_HEADER.sub(lambda m: f"{m[1]}{m[2]}{HIDDEN}", text)
 
 
@@ -50,8 +56,15 @@ class Scrubber:
         if isinstance(value, str):
             return scrub_string(value)
         if isinstance(value, dict):
-            return {(self.value(k) if isinstance(k, str) else k): HIDDEN if secret_key(k) else self.value(v)
-                    for k, v in value.items()}
+            scrubbed: dict[Any, Any] = {}
+            for k, v in value.items():
+                key = new = self.value(k) if isinstance(k, str) else k
+                n = 1
+                while new in scrubbed:  # two keys scrubbed to the same text: keep both values, as redact does
+                    n += 1
+                    new = f"{key}#{n}"
+                scrubbed[new] = HIDDEN if secret_key(k) else self.value(v)
+            return scrubbed
         if isinstance(value, list):
             return [self.value(v) for v in value]
         return value
@@ -59,13 +72,16 @@ class Scrubber:
     def clean(self, text: str) -> bool:
         """Whether ``text`` holds no secret shape and no known value, plain or escaped."""
         return (check_clean(text, self.known) and not PROVIDER_KEY.search(text) and not BEARER.search(text)
-                and not API_KEY_HEADER.search(text) and self._redact(text) == text)
+                and not AUTH_HEADER.search(text) and not API_KEY_HEADER.search(text) and self._redact(text) == text)
 
     def record(self, record: dict[str, Any]) -> dict[str, Any]:
-        """``record`` scrubbed (keys, shapes, then known values in plain, JSON, repr and URL forms) and checked; a
-        withheld stub (seq, kind, node id) when the scrub raises or the check fails."""
+        """``record`` scrubbed (known values in plain, JSON, repr and URL forms, then keys and shapes) and checked; a
+        withheld stub (seq, kind, node id) when the scrub raises or the check fails.
+
+        Known values go first, so a shape that matches part of one (a DSN's password, a ``$…$`` tail) can't split it
+        and leave the rest of it shown."""
         try:
-            out = self._redact(self.value(record))
+            out = self.value(self._redact(record))
             if self.clean(json.dumps(out, ensure_ascii=False)):
                 return out
         except Exception:

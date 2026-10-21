@@ -27,9 +27,10 @@ SECRET_PATTERNS = (
 )
 """Secrets with a known format, each replaced whole by ``scrub_text``."""
 
-URL_CREDENTIALS = re.compile(r"(://[^\s/@:]*:)(?!\(hidden\)@)\S+@(?=[^\s/@?#'\"]*(?:[\s/?#'\"]|$))")
+URL_CREDENTIALS = re.compile(r"(://[^\s/@:]*:)(?!\(hidden\)@)\S{1,1024}@(?=[^\s/@?#'\"]*(?:[\s/?#'\"]|$))")
 """The password in ``scheme://user:password@host``, up to the last ``@`` before the host, so one holding ``/`` or
-``@`` is hidden whole; one already scrubbed doesn't match again."""
+``@`` is hidden whole; one already scrubbed doesn't match again. Bounded at 1024 characters, so a long run of text
+with no whitespace and many ``://h:port`` can't make the search quadratic."""
 
 MIN_KNOWN = 8
 """Known secret values shorter than this are ignored by ``check_clean``, so they don't match everywhere."""
