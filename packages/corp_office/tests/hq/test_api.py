@@ -96,3 +96,31 @@ async def test_routes_off_the_allowlist_are_a_json_404(signed_in, path):
 async def test_writes_off_the_allowlist_are_a_json_404(signed_in):
     for path in ("/api/sessions", "/api/people", "/api/questions/X/answer"):
         assert (await signed_in.post(path, json={})).status_code == 404
+
+
+async def test_runs_are_on_the_allowlist(signed_in, office):
+    from opencorp.runs.service import RunLogs
+    from opencorp.store import RunRow, new_id
+
+    office.extras["runs"] = RunLogs(office)
+    s = office.store.create_session(session(status="ended"))
+    run_id, kid = new_id(), new_id()
+    office.store.add_run(RunRow(run_id, s.id, "chat", "shared/flows/chat.yaml", "ngocbh", None,
+                                "2026-10-20T10:00:00.000Z"))
+    office.store.add_run(RunRow(kid, s.id, "side_chat", "shared/flows/side_chat.yaml", "lan", run_id,
+                                "2026-10-20T10:00:00.000Z"))
+    r = await signed_in.get("/api/runs", params={"status": "interrupted,failed", "since": "2026-10-13T10:00:00.000Z",
+                                                 "limit": "50"})
+    assert r.status_code == 200 and [x["run_id"] for x in r.json()["runs"]] == [run_id]
+    assert r.json()["runs"][0]["children_total"] == 1
+    r = await signed_in.get("/api/runs", params={"parent": run_id})
+    assert [x["run_id"] for x in r.json()["runs"]] == [kid]
+    assert (await signed_in.get("/api/runs", params={"status": "busy"})).status_code == 422
+    r = await signed_in.get("/api/runs", params={"recent": "2026-10-13T10:00:00.000Z", "limit": "50"})
+    assert [x["run_id"] for x in r.json()["runs"]] == [run_id]
+    both = {"recent": "2026-10-13T10:00:00.000Z", "since": "2026-10-13T10:00:00Z"}
+    assert (await signed_in.get("/api/runs", params=both)).status_code == 422
+
+
+async def test_runs_need_a_session(web):
+    assert (await web.get("/api/runs")).status_code == 401

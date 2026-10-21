@@ -22,6 +22,7 @@ from opencorp.daemon.routes.costs import costs
 from opencorp.daemon.routes.devices import whoami
 from opencorp.daemon.routes.events import PING_S, RESET, frame
 from opencorp.daemon.routes.questions import list_questions
+from opencorp.daemon.routes.runs import list_runs
 from opencorp.daemon.routes.sessions import list_sessions
 from opencorp.daemon.routes.work_items import get_work_item
 from opencorp.hq.auth import BrowserAuth, cookie_name, cookie_value
@@ -39,8 +40,10 @@ log = logging.getLogger(__name__)
 ANY = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 HQ_EVENT_TYPES = frozenset({"session.created", "session.updated", "question.created", "question.updated",
-                            "work_item.created", "work_item.updated", "company.updated"})
-"""What HQ's stream carries: no live transcript events, profiles, feedback, debriefs, proposals or comments."""
+                            "work_item.created", "work_item.updated", "run.updated", "company.updated"})
+"""What HQ's stream carries: sessions, questions, work items, runs and the company. No live transcript events,
+profiles, feedback, debriefs, proposals or comments; run logs, which hold some of those, are read through /api/runs
+(every signed-in human can read every one)."""
 
 MAX_AGE = 30 * 24 * 3600
 """The cookie's lifetime in seconds: the session's."""
@@ -233,6 +236,7 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
         Route("/company/file", company_file, methods=["GET"]),
         Route("/sessions", list_sessions, methods=["GET"]),
         Route("/questions", list_questions, methods=["GET"]),
+        Route("/runs", list_runs, methods=["GET"]),
         Route("/work-items/{id}", get_work_item, methods=["GET"]),
         Route("/costs", costs, methods=["GET"]),
         Route("/events", events, methods=["GET"]),

@@ -215,7 +215,15 @@ class HqSessionRecord:
 _HQ_COLUMNS = tuple(f.name for f in fields(HqSessionRecord))
 
 REASON_CHARS = 200
-"""The longest reason a run's outcome keeps."""
+"""The longest reason a run's outcome shows."""
+REASON_KEPT = 2_000
+"""The longest reason a run's outcome keeps. Well past REASON_CHARS: a reason is cut to be shown only after its secrets
+are removed, and a secret the cut would split is still whole when that runs."""
+
+
+def cut_reason(reason: str, limit: int = REASON_CHARS) -> str:
+    """``reason`` cut to ``limit`` characters, ending in "…" when cut."""
+    return reason if len(reason) <= limit else reason[:limit - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -237,10 +245,74 @@ class RunRow:
 
 
 _RUN_COLUMNS = tuple(f.name for f in fields(RunRow))
-# '~' sorts after every ULID character, so with no cursor the bound still lets the index seek.
+
+
+# '~' sorts after every ULID character and every Timestamp, '' before them: an open bound still lets an index seek.
+_IN_RANGE = "launched_at >= COALESCE(?, '') AND launched_at < COALESCE(?, '~')"
 RUN_PAGE_SQL = ("SELECT * FROM runs WHERE parent_run_id IS NULL AND run_id < COALESCE(?, '~') "
                 "ORDER BY run_id DESC LIMIT ?")
 """A page of top-level runs, newest first: (before, limit)."""
+# Left to choose, SQLite walks runs_parent by run_id and checks each row's launch time, so a 7-day query would read
+# every older run too. runs_launched and runs_child_launched read only the rows in range, which are then sorted.
+_CHILD_PAGE_IN_RANGE_SQL = (f"SELECT * FROM runs INDEXED BY runs_launched WHERE parent_run_id = ? AND {_IN_RANGE} "
+                            "AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
+_CHILD_PAGE_SQL = ("SELECT * FROM runs WHERE parent_run_id = ? AND run_id < COALESCE(?, '~') "
+                   "ORDER BY run_id DESC LIMIT ?")
+_PAGE_IN_RANGE_SQL = (
+    "SELECT * FROM runs WHERE run_id IN ("
+    f"SELECT run_id FROM runs INDEXED BY runs_launched WHERE parent_run_id IS NULL AND {_IN_RANGE} "
+    "UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched "
+    f"WHERE parent_run_id IS NOT NULL AND {_IN_RANGE}"
+    ") AND parent_run_id IS NULL AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
+# Open or recent: the open rows (runs_open, any age) and the rows launched since (runs_launched), each found by a
+# search of its index (then read from the table), so old closed runs are never visited.
+_PAGE_OPEN_OR_RECENT_SQL = (
+    "SELECT * FROM runs WHERE run_id IN ("
+    "SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IS NULL AND outcome IS NULL "
+    "UNION SELECT run_id FROM runs INDEXED BY runs_launched WHERE parent_run_id IS NULL AND launched_at >= ? "
+    "UNION SELECT parent_run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IS NOT NULL AND outcome IS NULL "
+    "UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched "
+    "WHERE parent_run_id IS NOT NULL AND launched_at >= ?"
+    ") AND parent_run_id IS NULL AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
+_CHILD_PAGE_OPEN_OR_RECENT_SQL = (
+    "SELECT * FROM runs WHERE run_id IN ("
+    "SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id = ? AND outcome IS NULL "
+    "UNION SELECT run_id FROM runs INDEXED BY runs_launched WHERE parent_run_id = ? AND launched_at >= ?"
+    ") AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
+
+
+def run_page_query(*, parent: str | None, before: str | None, limit: int, since: str | None = None,
+                   until: str | None = None, recent: str | None = None) -> tuple[str, tuple[Any, ...]]:
+    """The SQL and parameters of a page of runs, newest first, after run ``before``: top-level ones, or ``parent``'s
+    children. With a launch range (``since``, ``until``), those launched in it; with ``recent``, those with no outcome
+    yet or launched at or after it. A top-level run is also on the page when a child of it is. ValueError when both a
+    range and ``recent`` are given."""
+    ranged = since is not None or until is not None
+    if ranged and recent is not None:
+        raise ValueError("a launch range and recent can't be combined")
+    if recent is not None:
+        if parent is None:
+            return _PAGE_OPEN_OR_RECENT_SQL, (recent, recent, before, limit)
+        return _CHILD_PAGE_OPEN_OR_RECENT_SQL, (parent, parent, recent, before, limit)
+    if not ranged:
+        return (RUN_PAGE_SQL, (before, limit)) if parent is None else (_CHILD_PAGE_SQL, (parent, before, limit))
+    if parent is None:
+        return _PAGE_IN_RANGE_SQL, (since, until, since, until, before, limit)
+    return _CHILD_PAGE_IN_RANGE_SQL, (parent, since, until, before, limit)
+
+
+IN_CHUNK = 500
+"""The most values one ``IN (...)`` list binds; longer lists are read in chunks, under SQLite's variable limit."""
+
+
+def _chunks(values: Iterable[str]) -> Iterator[list[str]]:
+    """``values`` without repeats, IN_CHUNK at a time."""
+    unique = list(dict.fromkeys(values))
+    for at in range(0, len(unique), IN_CHUNK):
+        yield unique[at:at + IN_CHUNK]
+CHILD_COUNTS_SQL = "SELECT parent_run_id, COUNT(*) FROM runs WHERE parent_run_id IN ({}) GROUP BY parent_run_id"
+"""How many runs each of some runs started, read from an index on parent_run_id alone; format with one ``?`` per
+parent."""
 
 
 @dataclass(frozen=True)
@@ -509,6 +581,13 @@ class Store:
             yield conn
         finally:
             conn.execute("COMMIT")
+
+    @contextmanager
+    def snapshot(self) -> Iterator[None]:
+        """Every read on this thread inside sees the store as of one moment (its first read); writes from other
+        connections land after it."""
+        with self._read():
+            yield
 
     # --- outbox -------------------------------------------------------------------------
 
@@ -875,10 +954,9 @@ class Store:
                 at: str | None = None) -> bool:
         """Write a run's outcome (ended now, or at ``at``) and emit ``run.updated``, unless it has one already.
 
-        Returns whether it wrote one. ``reason`` is cut to REASON_CHARS.
+        Returns whether it wrote one. ``reason`` is cut to REASON_KEPT.
         """
-        if reason is not None and len(reason) > REASON_CHARS:
-            reason = reason[:REASON_CHARS - 1] + "…"
+        reason = None if reason is None else cut_reason(reason, REASON_KEPT)
         with self.transaction() as tx:
             done = tx.execute("UPDATE runs SET outcome = ?, reason = ?, failed_node = ?, ended_at = ? "
                               "WHERE run_id = ? AND outcome IS NULL",
@@ -905,11 +983,11 @@ class Store:
 
     def get_runs(self, run_ids: Iterable[str]) -> dict[str, RunRow]:
         """The rows of those of ``run_ids`` that have one, by run id."""
-        ids = list(dict.fromkeys(run_ids))
-        if not ids:
-            return {}
-        rows = self._conn().execute(f"SELECT * FROM runs WHERE run_id IN ({', '.join('?' * len(ids))})", ids)
-        return {r["run_id"]: self._run(r) for r in rows}
+        out: dict[str, RunRow] = {}
+        for ids in _chunks(run_ids):
+            rows = self._conn().execute(f"SELECT * FROM runs WHERE run_id IN ({', '.join('?' * len(ids))})", ids)
+            out.update((r["run_id"], self._run(r)) for r in rows)
+        return out
 
     def runs_of_session(self, session_id: str) -> list[RunRow]:
         """A session's rows, oldest launch first (debriefs included)."""
@@ -917,18 +995,55 @@ class Store:
                                     (session_id,))
         return [self._run(r) for r in rows]
 
-    def run_page(self, *, before: str | None, limit: int) -> list[RunRow]:
-        """Top-level rows (no parent), newest first, launched before run ``before`` when given."""
-        return [self._run(r) for r in self._conn().execute(RUN_PAGE_SQL, (before, limit))]
+    def run_page(self, *, before: str | None, limit: int, parent: str | None = None, since: str | None = None,
+                 until: str | None = None, recent: str | None = None) -> list[RunRow]:
+        """Top-level rows (no parent), or run ``parent``'s children, newest first, after run ``before`` in that order
+        when given. With a launch range (``since`` inclusive, ``until`` exclusive, Timestamps), only rows launched in
+        it; with ``recent`` (a Timestamp), only rows with no outcome or launched at or after it. A top-level row is
+        also on the page when a child of it is. ValueError when both a range and ``recent`` are given."""
+        sql, params = run_page_query(parent=parent, before=before, limit=limit, since=since, until=until,
+                                     recent=recent)
+        return [self._run(r) for r in self._conn().execute(sql, params)]
 
-    def run_children(self, parent_ids: Iterable[str]) -> list[RunRow]:
-        """The rows whose parent is one of ``parent_ids``, newest first."""
-        ids = list(dict.fromkeys(parent_ids))
-        if not ids:
-            return []
-        rows = self._conn().execute(
-            f"SELECT * FROM runs WHERE parent_run_id IN ({', '.join('?' * len(ids))}) ORDER BY run_id DESC", ids)
-        return [self._run(r) for r in rows]
+    def run_child_counts(self, parent_ids: Iterable[str]) -> dict[str, int]:
+        """How many runs each of ``parent_ids`` started, by parent id; a parent with none is left out."""
+        out: dict[str, int] = {}
+        for ids in _chunks(parent_ids):
+            out.update(self._conn().execute(CHILD_COUNTS_SQL.format(", ".join("?" * len(ids))), ids).fetchall())
+        return out
+
+    def child_drivers(self, parent_ids: Iterable[str], flow: str) -> dict[str, list[str]]:
+        """Who drove each ``flow`` run started from each of ``parent_ids``, newest first, by parent id."""
+        out: dict[str, list[str]] = {}
+        for ids in _chunks(parent_ids):
+            rows = self._conn().execute(
+                f"SELECT parent_run_id, driver FROM runs WHERE parent_run_id IN ({', '.join('?' * len(ids))}) "
+                "AND flow = ? ORDER BY run_id DESC", [*ids, flow])
+            for parent, driver in rows:
+                out.setdefault(parent, []).append(driver)
+        return out
+
+    def run_children(self, parent_ids: Iterable[str], *, since: str | None = None, until: str | None = None,
+                     recent: str | None = None, open_only: bool = False) -> list[RunRow]:
+        """The rows whose parent is one of ``parent_ids``, newest first: only those launched at or after ``since``
+        and before ``until`` when given, those with no outcome or launched at or after ``recent`` when given, and
+        those with no outcome when ``open_only``."""
+        ranged = since is not None or until is not None
+        where = f"{' AND ' + _IN_RANGE if ranged else ''}{' AND outcome IS NULL' if open_only else ''}"
+        found: list[RunRow] = []
+        for ids in _chunks(parent_ids):
+            marks = ", ".join("?" * len(ids))
+            if recent is None:
+                sql, params = f"SELECT * FROM runs WHERE parent_run_id IN ({marks}){where}", [*ids]
+            else:  # each half found by a search of its index: the open children, and those launched since
+                sql = ("SELECT * FROM runs WHERE run_id IN ("
+                       f"SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IN ({marks}) "
+                       "AND outcome IS NULL UNION SELECT run_id FROM runs INDEXED BY runs_launched "
+                       f"WHERE parent_run_id IN ({marks}) AND launched_at >= ?){where}")
+                params = [*ids, *ids, recent]
+            rows = self._conn().execute(sql, [*params, *((since, until) if ranged else ())])
+            found.extend(self._run(r) for r in rows)
+        return sorted(found, key=lambda r: r.run_id, reverse=True)
 
     def run_usage(self, run_id: str) -> tuple[int, int, float]:
         """A run's summed (input tokens, output tokens, usd), as the harness recorded its model calls."""
@@ -975,14 +1090,20 @@ class Store:
         self,
         *,
         session_id: str | None = None,
-        run_id: str | None = None,
+        run_id: str | Iterable[str] | None = None,
         status: str | Iterable[str] | None = None,
         source: str | None = None,
     ) -> list[Question]:
-        """Questions, oldest first, optionally filtered."""
+        """Questions, oldest first, optionally filtered (by any of several run ids or statuses)."""
         status = status if status is None or isinstance(status, str) else tuple(status)
-        where = {"session_id": session_id, "run_id": run_id, "status": status, "source": source}
-        return self._list(QUESTIONS, Question, where, "created_at, rowid")
+        if run_id is None or isinstance(run_id, str):
+            where = {"session_id": session_id, "run_id": run_id, "status": status, "source": source}
+            return self._list(QUESTIONS, Question, where, "created_at, rowid")
+        found: list[Question] = []
+        for ids in _chunks(run_id):  # each run's questions come from one chunk, in order
+            where = {"session_id": session_id, "run_id": tuple(ids), "status": status, "source": source}
+            found.extend(self._list(QUESTIONS, Question, where, "created_at, rowid"))
+        return sorted(found, key=lambda q: q.created_at)  # stable: equal times keep their order
 
     def _write_question(self, tx: Tx, question: Question) -> Question:
         tx.update(QUESTIONS, self._question_columns(question))

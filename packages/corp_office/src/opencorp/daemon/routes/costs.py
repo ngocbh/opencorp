@@ -9,15 +9,16 @@ from starlette.routing import Route
 from opencorp.daemon.http import HTTPError, call, get_office, ok
 
 
-def utc_timestamp(raw: str | None) -> str:
-    """``raw``, an ISO-8601 time with an offset, as a protocol Timestamp; ``HTTPError(422)`` otherwise."""
+def utc_timestamp(raw: str | None, name: str = "since") -> str:
+    """``raw``, an ISO-8601 time with an offset, as a protocol Timestamp; ``HTTPError(422)`` naming query parameter
+    ``name`` otherwise."""
     try:
         at = datetime.fromisoformat(raw or "")
         utc = at.astimezone(UTC) if at.tzinfo is not None else None
     except (ValueError, OverflowError):  # OverflowError: a time near year 1 or 9999 shifted out of range
         utc = None
     if utc is None:
-        raise HTTPError(422, "invalid_body", "since must be an ISO-8601 time with an offset, "
+        raise HTTPError(422, "invalid_body", f"{name} must be an ISO-8601 time with an offset, "
                                              "such as 2026-10-19T00:00:00.000Z")
     # The store compares times as strings, which is time order only in this one fixed-width UTC form.
     return utc.isoformat(timespec="milliseconds").replace("+00:00", "Z")
