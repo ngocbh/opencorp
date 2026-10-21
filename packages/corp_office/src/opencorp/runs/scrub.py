@@ -18,8 +18,8 @@ HEADER_KEYS = frozenset({"authorization", "proxy_authorization", "cookie", "set_
 _NOT_HIDDEN = r"(?!\(hidden\))"
 _QUOTE = r"(?:\\{0,15}[\"'])?"  # a quote, escaped up to 4 times (JSON inside JSON), or none
 _VALUE = r"(?:[^\s\"',}\\]|\\(?![\\\"']))+"  # up to a quote, escaped or not
-PROVIDER_KEY = re.compile(r"sk-(?:(?<![A-Za-z0-9]sk-)|(?=[A-Za-z0-9_-]{0,64}?(?=[A-Za-z0-9]{16})[A-Za-z0-9]{0,15}[A-Z]))"
-                          r"(?:ant-)?[A-Za-z0-9_-]{16,}")
+PROVIDER_KEY = re.compile(r"sk-(?:(?<![A-Za-z0-9]sk-)|(?=[A-Za-z0-9_-]{0,64}?(?=[A-Za-z0-9]{16})[A-Za-z0-9]{0,15}"
+                          r"[A-Z]))(?:ant-)?[A-Za-z0-9_-]{16,}")
 """A provider key's shape (OpenAI's ``sk-…``, Anthropic's ``sk-ant-…``), configured here or not. Glued after a letter
 or digit, it needs a run of 16 letters and digits with a capital among them, so ``risk-assessment-…``,
 ``task-<hex>`` and ``kiosk-…`` stay. ``sk-`` comes first, so the search looks for that literal."""

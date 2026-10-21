@@ -240,8 +240,8 @@ def test_names_lists_what_could_be_a_secret_sorted(tmp_path):
 def test_read_private_refuses_a_fifo_without_waiting_for_a_writer(tmp_path):
     os.mkfifo(tmp_path / "fifo", 0o600)
     got = []
-    reader = threading.Thread(target=lambda: got.append(_raises(lambda: secrets_module.read_private(tmp_path / "fifo"))),
-                              daemon=True)
+    read = lambda: secrets_module.read_private(tmp_path / "fifo")  # noqa: E731
+    reader = threading.Thread(target=lambda: got.append(_raises(read)), daemon=True)
     reader.start()
     reader.join(2)
     blocked = reader.is_alive()
