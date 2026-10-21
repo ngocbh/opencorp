@@ -1,5 +1,5 @@
 // One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, and the
-// Timeline of its node attempts, kept current by run.updated.
+// Timeline of its node attempts with the detail of the one selected, kept current by run.updated.
 import { isSecretsUnavailable } from "@opencorp/client"
 import type { RunDetail, RunDivider, RunNode, RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
@@ -18,8 +18,10 @@ import {
 import { createStore, reconcile, unwrap } from "solid-js/store"
 import { throttle } from "../data/costs"
 import { useOffice } from "../data/office"
+import { useDesktop, useShell } from "../shell"
 import { flowText, shortId, STATUS_DOT, took, where } from "./format"
 import { CopyId } from "./list"
+import { NodeDetail } from "./node"
 import { readQueue } from "./queue"
 import { dividerText, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
 
@@ -62,6 +64,9 @@ type Failure = { message: string; secrets: boolean }
 /** What the Timeline can do for the page around it. */
 type TimelineApi = { focusNode: (seq: number) => void }
 
+/** The Timeline's current treeitem, where focus goes when nothing better is left. */
+const currentItem = () => document.querySelector<HTMLElement>('[role="tree"] [role="treeitem"][tabindex="0"]') ?? undefined
+
 /** `/runs/<id>`: one run's header, log state and Timeline, read from the office and kept current. */
 export function RunPage(props: { id: string }) {
   const office = useOffice()
@@ -81,6 +86,26 @@ export function RunPage(props: { id: string }) {
   const [kidsLoading, setKidsLoading] = createSignal(false)
   let olderButton: HTMLButtonElement | undefined
   let timelineApi: TimelineApi | undefined
+
+  // The node whose detail shows, by seq, so a refetch that updates it (open, then succeeded) shows the update.
+  const [selected, setSelected] = createSignal<number>()
+  const selectedNode = () => {
+    const seq = selected()
+    return seq === undefined ? undefined : log.nodes.find((n) => n.seq === seq)
+  }
+  /** The row that opened node detail, where focus goes back when it closes. */
+  let opener: HTMLElement | undefined
+  const returnTo = () => (opener?.isConnected ? opener : currentItem())
+  function select(node: RunNode, row: HTMLElement) {
+    opener = row
+    setSelected(node.seq)
+  }
+  // On a phone node detail is a sheet over the whole screen: nothing behind it can take focus.
+  const desktop = useDesktop()
+  const sheet = () => !desktop() && !!selectedNode()
+  const shell = useShell()
+  createEffect(() => shell?.setCovered(sheet()))
+  onCleanup(() => shell?.setCovered(false))
 
   // Reads run one at a time, so a refetch and an older page never interleave; a keyed read waiting to start isn't
   // queued again.
@@ -215,21 +240,21 @@ export function RunPage(props: { id: string }) {
 
   return (
     <div>
-      <Show when={failure()}>
-        {(f) => (
-          <div class="flex items-center gap-2 px-4 pt-3 text-sm">
-            <p role="alert">
-              {f().secrets ? "Couldn't load the secrets to remove; try again." : `Couldn't read the run: ${f().message}.`}
-            </p>
-            <button type="button" class={LINK} onClick={() => refresh()}>
-              Retry
-            </button>
-          </div>
-        )}
-      </Show>
-      <Show when={detail.value}>
-        {(d) => (
-          <>
+      <div inert={sheet()}>
+        <Show when={failure()}>
+          {(f) => (
+            <div class="flex items-center gap-2 px-4 pt-3 text-sm">
+              <p role="alert">
+                {f().secrets ? "Couldn't load the secrets to remove; try again." : `Couldn't read the run: ${f().message}.`}
+              </p>
+              <button type="button" class={LINK} onClick={() => refresh()}>
+                Retry
+              </button>
+            </div>
+          )}
+        </Show>
+        <Show when={detail.value}>
+          {(d) => (
             <Header
               detail={d()}
               kids={detail.kids}
@@ -237,7 +262,13 @@ export function RunPage(props: { id: string }) {
               kidsLoading={kidsLoading()}
               onShowAll={showAll}
             />
-            <div class="space-y-2 p-4 max-md:px-3">
+          )}
+        </Show>
+      </div>
+      <Show when={detail.value}>
+        {(d) => (
+          <div class="flex">
+            <div class="min-w-0 flex-1 space-y-2 p-4 max-md:px-3" inert={sheet()}>
               <h3 class="text-sm font-semibold">Timeline</h3>
               <Show when={logStatus()}>
                 {(s) => (
@@ -249,7 +280,13 @@ export function RunPage(props: { id: string }) {
               </Show>
               <Show when={d().log_state === "ok" && log.loaded}>
                 <Show when={log.nodes.length} fallback={<p class={`text-sm ${MUTED}`}>No node has started yet.</p>}>
-                  <Timeline nodes={log.nodes} dividers={log.dividers} api={(a) => (timelineApi = a)} />
+                  <Timeline
+                    nodes={log.nodes}
+                    dividers={log.dividers}
+                    api={(a) => (timelineApi = a)}
+                    selected={selected()}
+                    onSelect={select}
+                  />
                 </Show>
                 <Show when={log.next != null}>
                   <button ref={olderButton} type="button" onClick={older} class={`text-sm ${LINK}`}>
@@ -261,7 +298,19 @@ export function RunPage(props: { id: string }) {
                 </Show>
               </Show>
             </div>
-          </>
+            <Show when={selectedNode()}>
+              {(node) => (
+                <NodeDetail
+                  runId={props.id}
+                  node={node()}
+                  detail={d()}
+                  modal={!desktop()}
+                  onClose={() => setSelected(undefined)}
+                  returnTo={returnTo}
+                />
+              )}
+            </Show>
+          </div>
         )}
       </Show>
     </div>
@@ -425,7 +474,15 @@ const STATUS_TEXT: Partial<Record<RunNode["status"], string>> = {
  * folded), and the resume dividers, each describing the item after it. The WAI-ARIA tree pattern with nested groups
  * and a roving tabindex.
  */
-function Timeline(props: { nodes: RunNode[]; dividers: RunDivider[]; api?: (api: TimelineApi) => void }) {
+function Timeline(props: {
+  nodes: RunNode[]
+  dividers: RunDivider[]
+  api?: (api: TimelineApi) => void
+  /** The seq of the node whose detail shows. */
+  selected?: number
+  /** Opens a node's detail, from its row. */
+  onSelect: (node: RunNode, row: HTMLElement) => void
+}) {
   const uid = createUniqueId()
   const rows = createMemo(() => timeline(props.nodes, props.dividers))
   const byKey = createMemo(() => new Map(rows().map((r) => [rowKey(r), r])))
@@ -528,7 +585,11 @@ function Timeline(props: { nodes: RunNode[]; dividers: RunDivider[]; api?: (api:
       if (group && isOpen(key)) toggle(key)
       else to = list[i]!.parent
     } else if ((e.key === "Enter" || e.key === " ") && group) toggle(key)
-    else return
+    else if (e.key === "Enter" || e.key === " ") {
+      const node = props.nodes.find((n) => `n:${n.seq}` === key)
+      const row = elements.get(key)
+      if (node && row) props.onSelect(node, row)
+    } else return
     e.preventDefault()
     if (to) focus(to)
   }
@@ -542,12 +603,14 @@ function Timeline(props: { nodes: RunNode[]; dividers: RunDivider[]; api?: (api:
         role="treeitem"
         aria-label={`${p.node.node_id} ${nodeStatus(p.node)}`}
         aria-level={p.level}
+        aria-selected={props.selected === p.node.seq}
         aria-describedby={[p.describedBy, failed() && error].filter(Boolean).join(" ") || undefined}
         data-key={key}
         tabindex={current() === key ? 0 : -1}
         ref={keep(key)}
         onFocus={() => setFocused(key)}
-        class={`rounded px-2 py-1 ${RING}`}
+        onClick={(e) => props.onSelect(p.node, e.currentTarget)}
+        class={`cursor-pointer rounded px-2 py-1 hover:bg-neutral-100 aria-selected:bg-neutral-200/70 dark:hover:bg-neutral-900 dark:aria-selected:bg-neutral-800 ${RING}`}
       >
         <span class="font-mono wrap-anywhere">{p.node.node_id}</span>{" "}
         <span class={STATUS_TEXT[p.node.status] ?? MUTED}>{nodeStatus(p.node)}</span>
