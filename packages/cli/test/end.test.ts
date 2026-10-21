@@ -104,3 +104,18 @@ test("opencorp end on a side session promises no debrief", async () => {
     office.stop()
   }
 })
+
+test("the client asks the office for one folder's main sessions", async () => {
+  const office = createFakeOffice()
+  try {
+    const [first] = office.state.sessions
+    const client = createOfficeClient({ socket: office.socket })
+    const got = await client.sessions.list({ kind: "main", cwd: first.cwd, limit: 500 })
+    expect(got.every((s) => s.kind === "main" && s.cwd === first.cwd)).toBe(true)
+    const listed = office.requests.find((r) => r.method === "GET" && r.path.startsWith("/sessions?"))
+    expect(listed?.path).toContain("kind=main")
+    expect(listed?.path).toContain(`cwd=${encodeURIComponent(first.cwd)}`)
+  } finally {
+    office.stop()
+  }
+})

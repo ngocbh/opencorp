@@ -89,7 +89,7 @@ const OFFICE = "office"
 /** The providers composer has a default model for; any other needs one named. */
 const DEFAULT_MODELS = new Set(["openai", "anthropic"])
 /** Statuses with a live run, which take interrupt and end. */
-const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending"]
+const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending"]
 
 /** A git blob id for `text`, so fake profile versions look like the office's. */
 export function blobId(text: string) {
@@ -898,9 +898,11 @@ export function createFakeOffice(
       ({ query }) => {
         const limit = query.has("limit") ? Number(query.get("limit")) : 50
         check(Number.isInteger(limit) && limit >= 1 && limit <= 500, "limit must be an integer from 1 to 500")
-        const person = query.get("person")
+        const person = query.get("person"),
+          kind = query.get("kind"),
+          cwd = query.get("cwd")
         const list = state.sessions
-          .filter((s) => !person || s.person === person)
+          .filter((s) => (!person || s.person === person) && (!kind || s.kind === kind) && (!cwd || s.cwd === cwd))
           .toSorted((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id.localeCompare(a.id))
         return Response.json(list.slice(0, limit))
       },
