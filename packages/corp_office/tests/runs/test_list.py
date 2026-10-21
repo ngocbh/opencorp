@@ -399,3 +399,18 @@ async def test_the_default_first_request_scans_only_open_and_recent_runs(store, 
     page = await runs_for(store).page(recent="2026-10-13T10:00:00.000Z", limit=50)
     assert ids(page) == [*recent[::-1], old_open] and page.next is None
     assert {r.run_id for r in scanned} == {*recent, old_open} and old_closed and newer_closed
+
+
+async def test_recent_open_means_running_waiting_or_idle_not_merely_no_outcome(store):  # noqa: F811
+    def lost(at):
+        """A run with no outcome whose session ended: it reads as interrupted ("ended without a recorded outcome")."""
+        s = store.create_session(session(status="ended"))
+        run_id = new_id()
+        store.add_session_run(s.id, run_id)
+        store.add_run(RunRow(run_id, s.id, "chat", "shared/flows/chat.yaml", "ngocbh", None, at))
+        return run_id
+
+    old, in_range = lost("2026-09-01T10:00:00.000Z"), lost(T)
+    page = await runs_for(store).page(recent="2026-10-13T10:00:00.000Z")
+    assert ids(page) == [in_range] and old not in ids(page)
+    assert page.runs[0].status == "interrupted"
