@@ -2,6 +2,8 @@
 
 import base64
 import json
+import random
+import re
 import time
 from urllib.parse import quote_plus
 
@@ -94,12 +96,30 @@ def test_glued_digest_double_encoded_and_quoted_pair_secrets_are_removed(text, s
 
 @pytest.mark.parametrize("text", [
     "risk-assessment-pipeline-for-the-company", "task-runner-for-everyone-here", "desk-0123456789ab",
+    "task-0123456789abcdef0123456789abcdef", "flask-0123456789abcdef01234567", "kiosk-modeenabledforeverything123",
     json.dumps({"max_tokens": 100, "tokens_used": 5, "secretary": "Ánh Nguyễn", "maxTokens": 7, "token_type": "x"}),
     str({"totalTokens": 12, "promptTokens": 3}), "authorization required", "the api key is configured",
 ])
 def test_ordinary_text_is_kept(text):
     out = Scrubber([]).record(record({"failure": {"message": text}}))
     assert out["payload"]["failure"]["message"] == text
+
+
+SLOW_PROVIDER_KEY = re.compile(r"(?:(?<![A-Za-z0-9])|(?=sk-[A-Za-z0-9_-]{0,64}?(?=[A-Za-z0-9]{16})[A-Za-z0-9]{0,15}"
+                               r"[A-Z]))sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
+"""PROVIDER_KEY's rule written the plain way: a lookahead at every position, so no literal to search for first."""
+
+
+def test_provider_key_matches_as_its_plain_form_does():
+    rng = random.Random(11)
+    texts = ["".join(rng.choice("sk-a1_XA ") for _ in range(rng.randint(0, 48))) for _ in range(60_000)]
+    for n in range(55, 70):
+        for m in (15, 16, 17):
+            texts += ["x" + "sk-" + "-" * n + "A" * m, "sk-" + "-" * n + "a" * m, "a_sk-" + "b-" * n + "C" * m,
+                      "9sk-" + "a" * (m - 1) + "B" + "-" * n, "xsk-" + "a" * m * 2, "xsk-" + "a" * m + "B" * m]
+    for text in texts:
+        assert [m.span() for m in scrub_mod.PROVIDER_KEY.finditer(text)] == [
+            m.span() for m in SLOW_PROVIDER_KEY.finditer(text)], text
 
 
 def test_camel_case_secret_keys_and_credential_headers_hide_their_values():

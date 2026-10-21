@@ -163,6 +163,23 @@ def test_encoded_and_recased_forms_of_a_secret_are_scrubbed(text, gone):
     assert "[redacted]" in out and gone not in out
 
 
+@pytest.mark.parametrize("prefix", [0, 50, 56, 300])
+def test_a_secret_in_base64_wrapped_at_76_columns_is_scrubbed(prefix):
+    data = ("x" * prefix + CONN + "y" * 80).encode()
+    for wrapped in (base64.encodebytes(data).decode(), base64.encodebytes(data).decode().replace("\n", "\r\n"),
+                    json.dumps(base64.encodebytes(data).decode())):
+        out = redact(f"attachment:\n{wrapped}", (), [CONN])
+        assert "[redacted]" in out
+        lines = [line for line in out.replace("\\n", "\n").splitlines() if len(line) > 8]
+        joined = "".join(lines).replace("\r", "")
+        assert not any(core in joined for core in (b64("x" * prefix + CONN)[-28:-4],)), out
+
+
+def test_wrapped_base64_without_a_secret_is_kept():
+    text = base64.encodebytes(b"z" * 400).decode()
+    assert redact(text, (), [CONN]) == text
+
+
 def test_encoded_forms_dont_scrub_ordinary_text():
     text = "hello conn-key world, Y29ubi1rZXk= and https://h/?q=conn"
     assert redact(text, (), [CONN]) == text
