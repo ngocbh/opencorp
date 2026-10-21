@@ -284,3 +284,17 @@ def test_a_wake_whose_fresh_run_cant_spawn_stays_idle_and_the_next_wake_starts_f
     jobs = spawned(second, lambda job: job.kind)
     assert say(second, sid, "b") == "b's reply"
     assert jobs == ["chat"]  # the run that never started isn't resumed
+
+
+def test_an_answered_unread_turn_resumes_at_start(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "read it"})
+    first = make_harness()
+    sid = start(first, workspace)
+    turn = first._live[sid].turn_q
+    first.close_all()
+    first.store.answer_question(turn, "hello", "text", answered_by="ngocbh")  # stored just before the office died
+    second = make_harness()
+    second.restore()
+    assert sid in second._live
+    wait_for(lambda: texts(second, sid) == ["read it"], what="the reply to the stored answer")
+    assert "hello" in str(fake_llm.requests()[0]["messages"])

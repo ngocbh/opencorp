@@ -501,7 +501,7 @@ def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, wor
     try:
         h.restore()  # the harness's own on_start, then the extension's sweep
         second.extras["cards"].sweep()
-        wait_for(lambda: side.id in h._live and h._live[side.id].turn_q, what="the restored side turn")
+        assert side.id not in h._live and status(h, side.id) == "idle"  # asleep: the next message wakes it
         assert h.store.get_question(q.id).status == "open"
         chat(second, q, "and SQLite?", 2)
         assert last_user(fake_llm, 2) == "and SQLite?" and framings(fake_llm, 2) == 1

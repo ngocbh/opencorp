@@ -501,7 +501,12 @@ class Harness:
                      owner=session.opened_by or _ceo(repo))
 
     def restore(self) -> None:
-        """Resume every session that was live when the office stopped, under the same run id where it can."""
+        """At office start: resume each live session whose run can't wait, under the same run id where it can.
+
+        Tool parts a dead office left running are marked interrupted first, for every live session. An idle session
+        then sleeps, with no worker, until a prompt, steer, end or answer wakes it (``_awake``), unless its current run
+        has an answered question it hasn't read: that one resumes now to read it.
+        """
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
@@ -509,6 +514,8 @@ class Harness:
             live = None
             try:
                 self._interrupt_running_tools(session.id)
+                if self._sleeps(session):
+                    continue
                 if session.run_ids:  # else the office stopped before its first run was recorded
                     live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
             except Exception:
@@ -525,6 +532,11 @@ class Harness:
                 pass  # it logged why and failed the session
         if self.codex is not None:
             self.codex.restore()
+
+    def _sleeps(self, session: Session) -> bool:
+        """Whether restore leaves ``session`` asleep: idle, with no answered question its current run hasn't read."""
+        return session.status == "idle" and bool(session.run_ids) and not self.store.list_questions(
+            run_id=session.run_ids[-1], status="answered")
 
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
