@@ -10,9 +10,9 @@ from typing import Any
 import yaml
 from pydantic import BaseModel
 
-_CAMEL = (re.compile(r"([A-Z]+)([A-Z][a-z])"), re.compile(r"([a-z0-9])([A-Z])"))
+_CAMEL = (re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])"), re.compile(r"(?<=[a-z0-9])(?=[A-Z])"))
 """Word breaks in a camelCase or PascalCase key: an acronym before a word (``APIKey``), and a capital after a lowercase
-letter or digit (``accessToken``)."""
+letter or digit (``accessToken``). Lookarounds only, so a long run of capitals is read in linear time."""
 
 SECRET_KEYS = frozenset({"devices", "password", "passwd", "password_hash", "token", "token_sha256", "secret",
                          "client_secret", "api_key", "apikey", "access_token", "refresh_token", "private_key"})
@@ -46,10 +46,11 @@ YAML_BUDGET = 100_000
 
 
 def key_name(key: str) -> str:
-    """``key`` as the secret rules read it: camelCase words split by ``_``, lowercased, ``-`` and spaces as ``_``."""
+    """``key`` as the secret rules read it: camelCase words split by ``_``, lowercased, ``-``, ``.`` and spaces as
+    ``_`` (so ``spring.datasource.password`` ends in ``_password``)."""
     for pattern in _CAMEL:
-        key = pattern.sub(r"\1_\2", key)
-    return key.lower().replace("-", "_").replace(" ", "_")
+        key = pattern.sub("_", key)
+    return key.lower().replace("-", "_").replace(".", "_").replace(" ", "_")
 
 
 def is_secret_key(key: object) -> bool:

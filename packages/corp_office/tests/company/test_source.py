@@ -456,8 +456,10 @@ async def test_a_json_file_neither_parser_reads_falls_back_to_the_scrub(src, com
     assert (got.content, got.text) == ("text", text.replace(HASH, "(hidden)"))
 
 
-async def test_a_camel_case_secret_key_hides_the_file(src, company):
-    got = await show(src, company, {"assets/x.yaml": "auth:\n  accessToken: abcdefghij\n"})
+@pytest.mark.parametrize("text", ["auth:\n  accessToken: abcdefghij\n", "api.key: abcdefghij\n",
+                                  "spring.datasource.password: abcdefghij\n"])
+async def test_a_camel_case_or_dotted_secret_key_hides_the_file(src, company, text):
+    got = await show(src, company, {"assets/x.yaml": text})
     assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
 
 

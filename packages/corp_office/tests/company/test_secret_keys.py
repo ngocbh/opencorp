@@ -8,7 +8,7 @@ import yaml
 from pydantic import BaseModel
 
 from opencorp.company.secret_keys import (SECRET_KEYS, UnsafeYaml, blank_secrets, check_clean, find_json_secrets,
-                                          find_secrets, is_secret_key, scrub_text)
+                                          find_secrets, is_secret_key, key_name, scrub_text)
 from opencorp.protocol.models import Device, Person
 
 HASH = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
@@ -37,9 +37,20 @@ def test_secret_key_names(key):
 
 @pytest.mark.parametrize("key", ["accessToken", "clientSecret", "privateKey", "apiKey", "refreshToken", "APIKey",
                                  "XApiKey", "passwordHash", "tokenSha256", "dbPassword", "GitHubToken", "idToken",
-                                 "OPENAI_API_KEY", "ApiKey", "AccessToken", "client-Secret"])
-def test_camel_case_secret_key_names(key):
+                                 "OPENAI_API_KEY", "ApiKey", "AccessToken", "client-Secret", "api.key", "db.password",
+                                 "spring.datasource.password", "HTTPSProxyPassword"])
+def test_camel_case_and_dotted_secret_key_names(key):
     assert is_secret_key(key)
+
+
+def test_key_name_splits_words_and_is_linear():
+    assert key_name("HTTPSProxyPassword") == "https_proxy_password"
+    assert key_name("ABCDefGHi") == "abc_def_g_hi" and key_name("aB1Cd") == "a_b1_cd"
+    assert key_name("spring.datasource.password") == "spring_datasource_password"
+    start = time.perf_counter()
+    key_name("A" * 1_000_000)
+    key_name("Ab" * 500_000)
+    assert time.perf_counter() - start < 0.1
 
 
 @pytest.mark.parametrize("key", ["secrets", "max_tokens", "api_key_env", "name", "tokens", "password_hint", 3, None,

@@ -81,6 +81,8 @@ DIGEST = ('Digest username="bob", realm="api", nonce="dcd98b7102dd2f0e8b11d0f600
     (json.dumps(json.dumps({"auth": {"accessToken": "tok-unknown-123456789"}})), "tok-unknown-123456789"),
     (str({"refreshToken": "rt-unknown-123456789", "n": 1}), "rt-unknown-123456789"),
     (json.dumps({"password": 98765432109}), "98765432109"),
+    (json.dumps({"spring.datasource.password": "pw-unknown-123456789"}), "pw-unknown-123456789"),
+    (str({"api.key": "ak-unknown-123456789"}), "ak-unknown-123456789"),
     (json.dumps({"m": json.dumps({"token": "x-secret-123"})}), "x-secret-123"),  # inside another pair's value
     (str({"m": str({"token": "x-secret-123"})}), "x-secret-123"),
     (json.dumps({"set-cookie": "sid=abcdef123456"}), "abcdef123456"),
