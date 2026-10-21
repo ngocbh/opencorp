@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from opencorp.chat.harness import HarnessError
+from opencorp.chat.state import not_waiting
 from opencorp.chat.transcript import Transcript
 from opencorp.harness.codex import CodexProcess, CodexStartError, owner_load
 from opencorp.harness.rpc import RpcClosed, RpcError
@@ -161,7 +162,7 @@ class CodexSession:
             self.pending.clear()
             self._stop_timer()
             busy = self.turn_id is not None
-            self.store.update_session(self.session_id, status="ending")
+            self.store.update_session(self.session_id, **not_waiting("ending"))
             if busy:
                 # Armed first: an interrupt Codex never answers fails at once when this closes the app-server.
                 self.timer = threading.Timer(END_WAIT, self._post, (self._close,))

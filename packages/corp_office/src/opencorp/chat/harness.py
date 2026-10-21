@@ -22,7 +22,7 @@ from opencorp.chat.hooks import Hooks
 from opencorp.chat.identity import person_inputs, talking_to
 from opencorp.chat.models import DEADLINE, ListTimeout, ModelCache
 from opencorp.chat.provider import Price, Provider, ProviderError
-from opencorp.chat.state import guarded_update
+from opencorp.chat.state import guarded_update, not_waiting
 from opencorp.chat.transcript import Transcript
 from opencorp.chat.turns import MAIN_CHAT, ChatFlow
 from opencorp.company.loader import load_repo
@@ -47,7 +47,7 @@ log = logging.getLogger(__name__)
 
 INTERRUPTED_CALL = "interrupted; outcome unknown"
 """What an office tool call in flight returns on Esc: it runs on, so its side effect may still happen."""
-LIVE = ("starting", "idle", "busy", "ending")
+LIVE = ("starting", "idle", "busy", "waiting", "ending")
 """Session statuses that have (or should have) a live run."""
 _CAP_TITLE = "Raise the cost cap"
 _WHY_CHARS = 500
@@ -708,7 +708,7 @@ class Harness:
                 guarded_update(self.store, sid, ("busy",), status="idle")
             raise HarnessError(503, "stopping", "the office is stopping")
         if ending:
-            guarded_update(self.store, sid, ("idle", "busy"), status="ending")
+            guarded_update(self.store, sid, ("idle", "busy"), **not_waiting("ending"))
         return live
 
     def _check_provider(self, session: Session) -> None:
@@ -843,7 +843,7 @@ class Harness:
                 return  # already ending, or the wake ran its exit (and maybe finished)
             live.ending = True
             live.pending.clear()
-            self.store.update_session(session_id, status="ending")
+            self.store.update_session(session_id, **not_waiting("ending"))
             turn = live.turn_q
             if turn is not None and live.spec.chat is not None:
                 self._answer_turn(live, turn, live.spec.chat.exit, typed=False)
@@ -1021,7 +1021,10 @@ class Harness:
             with self._lock:
                 if self._current(live):
                     exiting = live.ending or question.answer == live.spec.chat.exit
-                    self.store.update_session(live.session_id, status="ending" if exiting else "busy")
+                    if exiting:
+                        self.store.update_session(live.session_id, **not_waiting("ending"))
+                    else:
+                        self.store.update_session(live.session_id, status="busy")
 
     def _turn_opened(self, live: _Live, question_id: str) -> None:
         with self._lock:
@@ -1034,7 +1037,10 @@ class Harness:
             if question_id != live.died_at:
                 live.exits = 0  # a new turn: the resumed worker got somewhere
             chat = live.spec.chat
-            self.store.update_session(live.session_id, status="ending" if live.ending else "idle")
+            if live.ending:
+                self.store.update_session(live.session_id, **not_waiting("ending"))
+            else:
+                self.store.update_session(live.session_id, status="idle")
             if live.ending or self._turns(live) >= live.defaults.max_turns:
                 live.ending = True
                 self._answer_turn(live, question_id, chat.exit, typed=False)
@@ -1285,7 +1291,7 @@ class Harness:
                 # Close the item first, so no client sees an ended session with its work still open.
                 if session.work_item_id:
                     self.store.update_work_item(session.work_item_id, status="done")
-            session = self.store.update_session(live.session_id, status=status)
+            session = self.store.update_session(live.session_id, **not_waiting(status))
             if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
                 self._run_finished(live, session, outcome)
             self.hooks.fire("session_ended", session)
@@ -1301,7 +1307,7 @@ class Harness:
 
     def _fail(self, session_id: str) -> None:
         """Fail a session that has no live run."""
-        self.hooks.fire("session_ended", self.store.update_session(session_id, status="failed"))
+        self.hooks.fire("session_ended", self.store.update_session(session_id, **not_waiting("failed")))
 
     # --- helpers ---------------------------------------------------------------------
 

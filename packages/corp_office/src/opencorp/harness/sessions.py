@@ -7,6 +7,7 @@ from typing import Any
 
 from opencorp.chat.harness import LIVE, HarnessError
 from opencorp.chat.hooks import Hooks
+from opencorp.chat.state import not_waiting
 from opencorp.chat.transcript import INTERRUPTED_TEXT
 from opencorp.company.loader import load_repo
 from opencorp.harness.codex import CLOSE_GRACE, CodexProcess, CodexStartError, codex_command
@@ -157,7 +158,7 @@ class CodexSessions:
             status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
             if session.work_item_id:  # first, so no client sees an ended session with its work still open
                 self.store.update_work_item(session.work_item_id, status="done")
-        self.hooks.fire("session_ended", self.store.update_session(live.session_id, status=status))
+        self.hooks.fire("session_ended", self.store.update_session(live.session_id, **not_waiting(status)))
 
     def policy(self, session_id: str) -> HarnessPolicy | None:
         """The session's person's harness policy at the session's pinned commit."""
