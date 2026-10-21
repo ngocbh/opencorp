@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
-import { rid } from "./runs"
+import { node, rid } from "./runs"
 
 test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/reset")
@@ -26,6 +26,24 @@ test("node detail: output, model, evidence, and an error with its traceback fold
   await expect(failed).toContainText("AuthError: 401 key (hidden)")
   await failed.getByText("Traceback", { exact: true }).click()
   await expect(failed.getByText(/…whole…/)).toBeVisible()
+})
+
+test("a case that took its else route says no case matched; __start__ and __end__ are dimmer", async ({ page, request }) => {
+  const rec = { cut: [], evidence_left_out: false, withheld: null, size: null }
+  await request.post("/__fixture/run", { data: { id: rid(2), add: [
+    node(64, "__end__"), node(62, "triage", { status: "routed", handle: "#else" }), node(60, "__start__"),
+  ], addEvents: [{ seq: 63, kind: "node_routed", node_id: "triage", payload: { handle: "#else" }, ...rec }] } })
+  await page.goto(`/runs/${rid(2)}`)
+  const routed = timeline(page).getByRole("treeitem", { name: "triage routed → else (no case matched)" })
+  await expect(routed).toContainText("routed → else (no case matched)")
+  await routed.click()
+  const detail = nodeDetail(page, "triage")
+  await expect(detail).toContainText("else (no case matched)")
+  await expect(detail).not.toContainText("#else")
+  const id = (name: RegExp) => timeline(page).getByRole("treeitem", { name }).locator(".font-mono")
+  await expect(id(/^__end__/)).toHaveClass(/text-neutral-500/)
+  await expect(id(/^__start__/)).toHaveClass(/text-neutral-500/)
+  await expect(id(/^triage/)).not.toHaveClass(/text-neutral-500/)
 })
 
 test("a node whose static path has no model shows none", async ({ page }) => {

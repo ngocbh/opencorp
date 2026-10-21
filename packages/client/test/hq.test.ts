@@ -205,6 +205,18 @@ test("runs.list sends since, until, and a status list comma-joined", async () =>
   ])
 })
 
+test("runs.list and runs.children send recent, open runs plus those launched since it", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  const recent = "2026-10-14T10:00:00.000Z"
+  await c.runs.list({ recent, status: "failed", limit: 50 })
+  await c.runs.children(RUN, { recent, limit: 50 })
+  expect(seen.map((s) => Object.fromEntries(new URLSearchParams(s.query)))).toEqual([
+    { recent, status: "failed", limit: "50" },
+    { parent: RUN, recent, limit: "50" },
+  ])
+})
+
 test("runs.children pages one run's children with the list's filters", async () => {
   const { seen, base } = serve()
   const c = createOfficeClient({ baseUrl: base })

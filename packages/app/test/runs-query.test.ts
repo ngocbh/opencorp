@@ -27,6 +27,8 @@ test("qualifiers and free text parse into a query", () => {
   })
   expect(parse("person:@minh").query).toEqual({ person: "minh" })
   expect(parse("person:minh IS:Open").query).toEqual({ person: "minh", is: "open" })
+  expect(parse("is:recent is:failed @kai").query).toEqual({ recent: true, is: "failed", person: "kai" })
+  expect(parse("IS:Recent is:open").query).toEqual({ recent: true, is: "open" })
   expect(parse("   ").query).toEqual({})
   expect(parse("  flow:chat  ").hints).toEqual([])
 })
@@ -61,13 +63,25 @@ test("unknown qualifiers, bad values and a second value are hinted and ignored",
   expect(twice.query).toEqual({ flow: "chat", person: "kai", is: "open" })
   expect(twice.hints).toEqual(["one flow: at a time", "one person: at a time", "one is: at a time"])
   expect(parse("a1b2 c3d4").hints).toEqual(["one run id at a time"])
-  expect(parse("is:busy").hints).toEqual(["unknown state busy: is: takes open, closed or a state"])
+  expect(parse("is:busy").hints).toEqual(["unknown state busy: is: takes recent, open, closed or a state"])
   expect(parse("started:soon").hints).toEqual([
     "started: takes 24h, 7d, >2026-10-13 or 2026-10-01..2026-10-15",
   ])
   expect(parse("started:soon").query).toEqual({})
   // A qualifier with no value yet is still being typed: no hint, no filter.
   expect(parse("flow: @ is:")).toMatchObject({ query: {}, hints: [] })
+})
+
+test("is:recent and started: don't go together: started: is hinted and ignored, in either order", () => {
+  for (const text of ["is:recent started:24h", "started:24h is:recent"]) {
+    const { query, tokens, hints } = parse(text)
+    expect(query).toEqual({ recent: true })
+    expect(hints).toEqual(["is:recent already covers started:"])
+    expect(tokens.find((t) => t.text === "started:24h")?.kind).toBe("ignored")
+    expect(tokens.find((t) => t.text === "is:recent")?.kind).toBe("qualifier")
+  }
+  // A second is:recent says nothing new.
+  expect(parse("is:recent is:recent")).toMatchObject({ query: { recent: true }, hints: [] })
 })
 
 test("started: is a window ending now or local days", () => {
@@ -113,7 +127,14 @@ test("local days follow daylight saving: a 23-hour day and a 25-hour day", () =>
 })
 
 test("a query maps onto GET /runs's parameters", () => {
+  expect(DEFAULT_QUERY).toBe("is:recent")
   expect(paramsOf(parse(DEFAULT_QUERY).query, NOW)).toEqual({
+    recent: new Date(NOW.getTime() - 7 * 86_400_000).toISOString(),
+  })
+  expect(paramsOf(parse("is:recent is:failed").query, NOW)).toEqual({
+    recent: new Date(NOW.getTime() - 7 * 86_400_000).toISOString(), status: ["failed"],
+  })
+  expect(paramsOf(parse("is:open started:7d").query, NOW)).toEqual({
     status: ["running", "waiting", "idle"],
     since: new Date(NOW.getTime() - 7 * 86_400_000).toISOString(),
   })
@@ -144,6 +165,7 @@ test("an address's query: q as typed, old filter params turned into the query, t
 })
 
 test("the list's address keeps the query readable", () => {
+  expect(hrefOf("@kai is:recent")).toBe("/runs?q=@kai+is:recent")
   expect(hrefOf("@kai is:open started:7d")).toBe("/runs?q=@kai+is:open+started:7d")
   expect(hrefOf("")).toBe("/runs?q=")
   expect(hrefOf("started:>2026-10-13 a+b")).toBe("/runs?q=started:%3E2026-10-13+a%2Bb")
@@ -161,6 +183,18 @@ test("a run matches every parameter set; the person is the driver or a participa
   expect(matches(run({}), { until: "2026-10-20T10:00:00.000Z" })).toBe(false)
   expect(matches(run({}), { since: "2026-10-20T10:00:00.001Z" })).toBe(false)
   expect(matches(run({}), {})).toBe(true)
+})
+
+test("recent matches an open run of any age, or a closed one launched at or after it", () => {
+  const recent = "2026-10-13T10:00:00.000Z"
+  const old = "2026-09-01T10:00:00.000Z"
+  for (const status of ["running", "waiting", "idle"] as const)
+    expect(matches(run({ status, launched_at: old }), { recent })).toBe(true)
+  for (const status of ["finished", "failed", "interrupted"] as const) {
+    expect(matches(run({ status, launched_at: old }), { recent })).toBe(false)
+    expect(matches(run({ status, launched_at: recent }), { recent })).toBe(true)
+  }
+  expect(matches(run({ status: "idle", launched_at: old }), { recent, status: ["failed"] })).toBe(false)
 })
 
 test("an exact run id is 26 Crockford characters, any case", () => {
@@ -189,8 +223,14 @@ test("autocomplete offers qualifiers, then each one's values, filtered as you ty
   expect(labels("@ng")).toEqual(["@ngocbh"])
   expect(labels("person:ka")).toEqual(["person:kai"])
   expect(labels("person:@ka")).toEqual(["person:@kai"])
-  expect(labels("is:")).toEqual(["is:open", "is:closed", "is:running", "is:waiting", "is:idle", "is:finished",
-                                 "is:failed", "is:interrupted"])
+  expect(labels("is:")).toEqual(["is:recent", "is:open", "is:closed", "is:running", "is:waiting", "is:idle", "is:finished",
+                                 "is:failed", "is:interrupted"]) // every state: the cap is for flows and people
+  expect(labels("is:r")).toEqual(["is:recent", "is:running"])
+  // Flows and people, which grow with the company, are cut to eight.
+  const flows = Array.from({ length: 10 }, (_, i) => `f${i}`)
+  const people = Array.from({ length: 10 }, (_, i) => ({ handle: `p${i}`, name: `P${i}` }))
+  expect(suggest("flow:", 5, { flows, people })?.options).toHaveLength(8)
+  expect(suggest("@", 1, { flows, people })?.options).toHaveLength(8)
   expect(labels("is:f")).toEqual(["is:finished", "is:failed"])
   expect(labels("started:")).toEqual(["started:24h", "started:7d", "started:30d"])
   expect(labels("started:7D")).toEqual(["started:7d"])

@@ -58,6 +58,15 @@ export function takeNewest(shown: Shown | undefined, page: RunNodePage): Shown {
 export const dividerText = (d: RunDivider) =>
   d.retried.length ? `resumed; retried ${d.retried.map((id) => id.split("/").pop()).join(", ")}` : "resumed"
 
+/** Yian's handle for a case's `else:` route, which it also takes when no `when:` matches. */
+const ELSE_HANDLE = "#else"
+
+/** A route's handle as a reader sees it: the else route says what it means; any other handle as it is. */
+export const handleText = (handle: string) => (handle === ELSE_HANDLE ? "else (no case matched)" : handle)
+
 /** A node's status as the Timeline shows it; a routed case names the handle it took. */
 export const nodeStatus = (node: RunNode) =>
-  node.status === "routed" && node.handle ? `routed → ${node.handle}` : node.status
+  node.status === "routed" && node.handle ? `routed → ${handleText(node.handle)}` : node.status
+
+/** Whether `nodeId` is a flow's `__start__` or `__end__` node, which the Timeline shows a little dimmer. */
+export const isBoundary = (nodeId: string) => /(^|\/)__(start|end)__$/.test(nodeId)

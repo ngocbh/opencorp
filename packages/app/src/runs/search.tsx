@@ -148,7 +148,7 @@ export function SearchBox(props: { query: string; sources: Sources; onSearch: (t
           autocomplete="off"
           autocapitalize="off"
           spellcheck={false}
-          placeholder="flow:chat @kai is:open started:7d, or a run id"
+          placeholder="flow:chat @kai is:recent, or a run id"
           value={text()}
           onInput={(e) => {
             setText(e.currentTarget.value)

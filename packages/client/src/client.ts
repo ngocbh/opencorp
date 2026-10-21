@@ -278,7 +278,8 @@ export function createOfficeClient(opts: Transport & { timeoutMs?: number; token
 
 /**
  * `GET /runs`'s filters and paging. `status` is one status or several (a run matches any of them); `since` (inclusive)
- * and `until` (exclusive) are Timestamps bounding when a run was launched.
+ * and `until` (exclusive) are Timestamps bounding when a run was launched. `recent`, a Timestamp, keeps open runs of
+ * any age and runs launched at or after it; the office refuses it alongside `since` or `until`.
  */
 export type RunListOptions = {
   flow?: string
@@ -286,6 +287,7 @@ export type RunListOptions = {
   status?: RunSummary["status"] | RunSummary["status"][]
   since?: string
   until?: string
+  recent?: string
   q?: string
   before?: string
   limit?: number

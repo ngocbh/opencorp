@@ -7,7 +7,7 @@ test.beforeEach(async ({ request }) => {
   await request.post("/__fixture/set", { data: { signedIn: true } })
 })
 
-/** The list with an empty query: every run, not only the default's open ones from the last 7 days. */
+/** The list with an empty query: every run, not only the default's open ones and those from the last 7 days. */
 const ALL = "/runs?q="
 const DAY = 86_400_000
 const table = (page: Page) => page.getByRole("table", { name: "Runs" })
@@ -76,30 +76,55 @@ test("a fresh run and the run it replaced link to each other", async ({ page }) 
     "href", `/runs/${rid(5)}`)
 })
 
-test("with no query the list opens on is:open started:7d, applied before the first read", async ({ page, request }) => {
+test("with no query the list opens on is:recent, applied before the first read", async ({ page, request }) => {
   const data = runLogs()
-  data.runs.push(run(99, { status: "running", ended_at: null, launched_at: new Date(Date.now() - 30 * DAY).toISOString() }))
+  const old = new Date(Date.now() - 30 * DAY).toISOString()
+  data.runs.push(run(99, { status: "running", ended_at: null, launched_at: old }),
+                 run(98, { status: "finished", launched_at: old }))
   await request.post("/__fixture/set", { data: { runs: data } })
   const opened = Date.now()
   await page.goto("/runs")
-  await expect(box(page)).toHaveValue("is:open started:7d")
-  await expect(row(page, 5)).toBeVisible()
-  await expect(row(page, 3)).toBeVisible()
-  await expect(tops(page)).toHaveCount(2) // not the closed runs, nor the open one from 30 days ago
+  await expect(box(page)).toHaveValue("is:recent")
+  await expect(row(page, 99)).toBeVisible() // open, though it started 30 days ago
+  for (const n of [5, 4, 3, 2, 1]) await expect(row(page, n)).toBeVisible() // started today, open or not
+  await expect(tops(page)).toHaveCount(6) // not the run that finished 30 days ago
   await expect(page).toHaveURL("/runs")
   const [first] = await reads(request)
-  expect([...first!.keys()].sort()).toEqual(["limit", "since", "status"])
-  expect(first!.get("status")).toBe("running,waiting,idle")
+  expect([...first!.keys()].sort()).toEqual(["limit", "recent"])
   expect(first!.get("limit")).toBe("50")
-  const since = Date.parse(first!.get("since")!)
-  expect(since).toBeGreaterThanOrEqual(opened - 7 * DAY - 5_000)
-  expect(since).toBeLessThanOrEqual(Date.now() - 7 * DAY)
+  const recent = Date.parse(first!.get("recent")!)
+  expect(recent).toBeGreaterThanOrEqual(opened - 7 * DAY - 5_000)
+  expect(recent).toBeLessThanOrEqual(Date.now() - 7 * DAY)
+})
+
+test("is:recent goes with is:, hints that it covers started:, and opens a fold for a recent child", async ({ page, request }) => {
+  const data = runLogs()
+  const old = new Date(Date.now() - 30 * DAY).toISOString()
+  data.runs.push(run(97, { status: "finished", launched_at: old, children_total: 1 }))
+  data.children[rid(97)] = [run(96, { flow: "side_chat", parent_run_id: rid(97), driver: "ann" })]
+  await request.post("/__fixture/set", { data: { runs: data } })
+  await page.goto("/runs")
+  // Run 97 finished 30 days ago, but its side chat started today: it's listed with the side chat shown.
+  await expect(row(page, 96)).toBeVisible()
+  await search(page, "is:recent is:failed")
+  await expect(row(page, 4)).toBeVisible()
+  await expect(tops(page)).toHaveCount(1)
+  expect(Object.fromEntries((await reads(request)).at(-1)!)).toMatchObject({ status: "failed", limit: "50" })
+  await box(page).fill("is:recent started:24h")
+  const help = page.locator(`#${await box(page).getAttribute("aria-describedby")}`)
+  await box(page).press("Enter")
+  await expect(help).toHaveText("is:recent already covers started:")
+  await expect(page.getByTestId("search-marks").locator("[data-kind=ignored]")).toHaveText(["started:24h"])
+  await expect(tops(page)).toHaveCount(6)
+  const last = await reads(request)
+  expect([...last.at(-1)!.keys()].sort()).toEqual(["limit", "recent"])
+  expect(await childReads(request, 97)).toContainEqual(expect.objectContaining({ recent: expect.any(String) }))
 })
 
 test("every list read carries limit; a cleared box still pages 50 at a time", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { runs: many(120) } })
   await page.goto("/runs")
-  await expect(page.getByText("No runs.")).toBeVisible() // all 120 are finished
+  await expect(tops(page)).toHaveCount(50) // all 120 started today
   await search(page, "")
   await expect(page).toHaveURL("/runs?q=")
   await expect(tops(page)).toHaveCount(50)
@@ -156,17 +181,16 @@ test("autocomplete by keyboard: qualifiers, then their values, with arrows, Tab,
   await box(page).pressSequentially(" fl")
   await expect(options(page)).toHaveText([/^flow:/])
   await box(page).press("Tab")
-  await expect(box(page)).toHaveValue("is:open started:7d flow:")
+  await expect(box(page)).toHaveValue("is:recent flow:")
   // The flows of the top-level runs read so far (a list page has no children), and the company's flow files.
-  await expect(options(page)).toHaveText([/^chat/, /^review/, /^side_chat/])
+  await expect(options(page)).toHaveText([/^chat/, /^debrief/, /^profile_manager/, /^review/, /^side_chat/])
   await expect(box(page)).toHaveAttribute("aria-expanded", "true")
-  await box(page).press("ArrowDown")
-  await box(page).press("ArrowDown")
+  for (let i = 0; i < 4; i++) await box(page).press("ArrowDown")
   const active = page.locator(`#${await box(page).getAttribute("aria-activedescendant")}`)
   await expect(active).toHaveText(/^review/)
   await expect(active).toHaveAttribute("aria-selected", "true")
   await box(page).press("Enter")
-  await expect(box(page)).toHaveValue("is:open started:7d flow:review ")
+  await expect(box(page)).toHaveValue("is:recent flow:review ")
   await expect(suggestions(page)).toBeHidden()
   await expect(page).toHaveURL("/runs") // choosing doesn't search yet
   await box(page).pressSequentially("@k")
@@ -174,10 +198,10 @@ test("autocomplete by keyboard: qualifiers, then their values, with arrows, Tab,
   await box(page).press("Escape")
   await expect(suggestions(page)).toBeHidden()
   await expect(box(page)).toHaveAttribute("aria-expanded", "false")
-  await expect(box(page)).toHaveValue("is:open started:7d flow:review @k")
+  await expect(box(page)).toHaveValue("is:recent flow:review @k")
   await box(page).fill("is:")
-  await expect(options(page)).toHaveText([/^open/, /^closed/, /^running/, /^waiting/, /^idle/, /^finished/, /^failed/,
-                                          /^interrupted/])
+  await expect(options(page)).toHaveText([/^recent/, /^open/, /^closed/, /^running/, /^waiting/, /^idle/, /^finished/,
+                                          /^failed/, /^interrupted/])
   await box(page).fill("started:")
   await expect(options(page)).toHaveText([/^24h/, /^7d/, /^30d/])
   await box(page).press("ArrowUp") // from none to the last
@@ -190,12 +214,12 @@ test("autocomplete by keyboard: qualifiers, then their values, with arrows, Tab,
 test("recognised qualifiers are highlighted; unknown ones and a second value are hinted and left out", async ({ page, request }) => {
   await page.goto("/runs")
   const marks = page.getByTestId("search-marks")
-  await expect(marks.locator("[data-kind=qualifier]")).toHaveText(["is:open", "started:7d"])
+  await expect(marks.locator("[data-kind=qualifier]")).toHaveText(["is:recent"])
   await box(page).fill("foo:bar flow:chat flow:debrief is:busy")
   await expect(marks.locator("[data-kind=qualifier]")).toHaveText(["flow:chat"])
   await expect(marks.locator("[data-kind=ignored]")).toHaveText(["foo:bar", "flow:debrief", "is:busy"])
   const help = page.locator(`#${await box(page).getAttribute("aria-describedby")}`)
-  await expect(help).toHaveText("unknown filter foo: · one flow: at a time · unknown state busy: is: takes open, closed or a state")
+  await expect(help).toHaveText("unknown filter foo: · one flow: at a time · unknown state busy: is: takes recent, open, closed or a state")
   await box(page).press("Enter")
   await expect(page).toHaveURL("/runs?q=foo:bar+flow:chat+flow:debrief+is:busy")
   await expect(row(page, 5)).toBeVisible()

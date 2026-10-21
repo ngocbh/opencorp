@@ -1,6 +1,6 @@
-// The Run Logs search box's query, as GitHub's issue search writes one: qualifiers (`flow:chat`, `@kai`, `is:open`,
-// `started:7d`) and free text for part of a run id. Pure, so it's tested without a browser; the whole query lives in
-// the address (`/runs?q=`), so a filtered list can be linked to (the Org panel's "All runs").
+// The Run Logs search box's query, as GitHub's issue search writes one: qualifiers (`flow:chat`, `@kai`, `is:recent`,
+// `is:open`, `started:7d`) and free text for part of a run id. Pure, so it's tested without a browser; the whole query
+// lives in the address (`/runs?q=`), so a filtered list can be linked to (the Org panel's "All runs").
 import type { CompanyTreeEntry, RunSummary } from "@opencorp/protocol"
 
 export type Status = RunSummary["status"]
@@ -9,17 +9,37 @@ export const STATUSES: Status[] = ["running", "waiting", "idle", "finished", "fa
 const OPEN: Status[] = ["running", "waiting", "idle"]
 const CLOSED: Status[] = ["finished", "failed", "interrupted"]
 
-/** The query the list opens with when the address has none: open runs from the last 7 days, so a read stays small. */
-export const DEFAULT_QUERY = "is:open started:7d"
+/** How far back `is:recent` reaches for closed runs. */
+const RECENT_MS = 7 * 86_400_000
+
+/**
+ * The query the list opens with when the address has none: open runs of any age and runs started in the last 7 days,
+ * so a read stays small and an old chat that's still open stays in view.
+ */
+export const DEFAULT_QUERY = "is:recent"
 
 const KEYS = ["flow", "person", "is", "started"] as const
 type Key = (typeof KEYS)[number]
 
-/** What the box asks for, each value as typed (checked, not yet resolved against the clock). */
-export type RunQuery = { flow?: string; person?: string; is?: string; started?: string; text?: string }
+/**
+ * What the box asks for, each value as typed (checked, not yet resolved against the clock). `recent` is `is:recent`,
+ * which goes with another `is:` but not with `started:`.
+ */
+export type RunQuery = { flow?: string; person?: string; is?: string; recent?: true; started?: string; text?: string }
 
-/** `GET /runs`'s filter parameters, with `started:` resolved to Timestamps. */
-export type RunParams = { flow?: string; person?: string; status?: Status[]; since?: string; until?: string; q?: string }
+/**
+ * `GET /runs`'s filter parameters, with `started:` and `is:recent` resolved to Timestamps: `recent` keeps open runs
+ * and those launched at or after it.
+ */
+export type RunParams = {
+  flow?: string
+  person?: string
+  status?: Status[]
+  since?: string
+  until?: string
+  recent?: string
+  q?: string
+}
 
 /**
  * One whitespace-separated piece of the box: a recognised qualifier, run id text, a qualifier with no value yet, or
@@ -28,6 +48,7 @@ export type RunParams = { flow?: string; person?: string; status?: Status[]; sin
 export type Token = { start: number; end: number; text: string; kind: "qualifier" | "text" | "pending" | "ignored" }
 
 const STARTED_HINT = "started: takes 24h, 7d, >2026-10-13 or 2026-10-01..2026-10-15"
+const RECENT_HINT = "is:recent already covers started:"
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/
 
 /** `key:value`, `@value` (a person), or null for free text. */
@@ -43,6 +64,7 @@ export function parse(text: string): { query: RunQuery; tokens: Token[]; hints: 
   const tokens: Token[] = []
   const hints: string[] = []
   const hint = (h: string) => hints.includes(h) || hints.push(h)
+  let started: Token | undefined
   for (const m of text.matchAll(/\S+/g)) {
     const token: Token = { start: m.index, end: m.index + m[0].length, text: m[0], kind: "ignored" }
     tokens.push(token)
@@ -66,12 +88,17 @@ export function parse(text: string): { query: RunQuery; tokens: Token[]; hints: 
       token.kind = "pending"
       continue
     }
+    if (key === "is" && value === "recent") {
+      query.recent = true
+      token.kind = "qualifier"
+      continue
+    }
     if (query[key] !== undefined) {
       hint(`one ${key}: at a time`)
       continue
     }
     if (key === "is" && !statusesOf(value)) {
-      hint(`unknown state ${value}: is: takes open, closed or a state`)
+      hint(`unknown state ${value}: is: takes recent, open, closed or a state`)
       continue
     }
     if (key === "started" && !startedRange(value, new Date())) {
@@ -80,6 +107,13 @@ export function parse(text: string): { query: RunQuery; tokens: Token[]; hints: 
     }
     query[key] = value
     token.kind = "qualifier"
+    if (key === "started") started = token
+  }
+  // The office refuses `recent` with a launch window, and is:recent already bounds when a run started.
+  if (query.recent && started) {
+    delete query.started
+    started.kind = "ignored"
+    hint(RECENT_HINT)
   }
   return { query, tokens, hints }
 }
@@ -138,6 +172,7 @@ export function paramsOf(query: RunQuery, now: Date): RunParams {
     person: query.person,
     status: query.is ? statusesOf(query.is) : undefined,
     ...(query.started && startedRange(query.started, now)),
+    recent: query.recent && new Date(now.getTime() - RECENT_MS).toISOString(),
     q: query.text,
   }
   return Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) as RunParams
@@ -169,6 +204,7 @@ export const matches = (run: RunSummary, p: RunParams) =>
   (!p.status || p.status.includes(run.status)) &&
   (!p.since || Date.parse(run.launched_at) >= Date.parse(p.since)) &&
   (!p.until || Date.parse(run.launched_at) < Date.parse(p.until)) &&
+  (!p.recent || OPEN.includes(run.status) || Date.parse(run.launched_at) >= Date.parse(p.recent)) &&
   (!p.q || run.run_id.includes(p.q.trim().toUpperCase()))
 
 /** Whether `q` is a whole run id (a ULID), which search opens instead of filtering by. */
@@ -187,11 +223,16 @@ export type Sources = { flows: string[]; people: { handle: string; name: string 
 const KEY_OPTIONS: Option[] = [
   { insert: "flow:", label: "flow:", detail: "flow name", complete: false },
   { insert: "person:", label: "person:", detail: "who drove it or took part; or type @", complete: false },
-  { insert: "is:", label: "is:", detail: "open, closed or a state", complete: false },
+  { insert: "is:", label: "is:", detail: "recent, open, closed or a state", complete: false },
   { insert: "started:", label: "started:", detail: "when it started", complete: false },
 ]
-const IS_DETAIL: Record<string, string> = { open: "running, waiting or idle", closed: "finished, failed or interrupted" }
+const IS_DETAIL: Record<string, string> = {
+  recent: "open, or started in the last 7 days",
+  open: "running, waiting or idle",
+  closed: "finished, failed or interrupted",
+}
 const STARTED_OPTIONS: [string, string][] = [["24h", "last 24 hours"], ["7d", "last 7 days"], ["30d", "last 30 days"]]
+/** The most flows or people offered at once: those grow with the company, unlike the fixed qualifiers and states. */
 const MAX_OPTIONS = 8
 
 /** `items` whose `keys` contain `typed`: those starting with it first, each group in the order given. */
@@ -220,21 +261,20 @@ export function suggest(text: string, caret: number, sources: Sources): Suggesti
     const value = (v: string, label = v, detail?: string): Option => ({ insert: prefix + v, label, detail, complete: true })
     if (q.key === "flow") {
       const flows = [...new Set(sources.flows)].sort()
-      options = filtered(flows, q.value, (f) => [f]).map((f) => value(f))
+      options = filtered(flows, q.value, (f) => [f]).slice(0, MAX_OPTIONS).map((f) => value(f))
     } else if (q.key === "person") {
       const typedAt = q.value.startsWith("@")
       const people = [...sources.people].sort((a, b) => a.name.localeCompare(b.name))
-      options = filtered(people, q.value.replace(/^@/, ""), (p) => [p.handle, p.name]).map((p) =>
-        value(typedAt ? `@${p.handle}` : p.handle, `@${p.handle}`, p.name),
-      )
+      options = filtered(people, q.value.replace(/^@/, ""), (p) => [p.handle, p.name])
+        .slice(0, MAX_OPTIONS)
+        .map((p) => value(typedAt ? `@${p.handle}` : p.handle, `@${p.handle}`, p.name))
     } else if (q.key === "is") {
-      options = filtered(["open", "closed", ...STATUSES], q.value, (s) => [s]).map((s) => value(s, s, IS_DETAIL[s]))
+      options = filtered(["recent", "open", "closed", ...STATUSES], q.value, (s) => [s]).map((s) => value(s, s, IS_DETAIL[s]))
       // Prefix matches only: "is:f" means finished or failed, not every state with an "f" in it.
       options = options.filter((o) => o.label.startsWith(q.value.toLowerCase()))
     } else if (q.key === "started")
       options = STARTED_OPTIONS.filter(([v]) => v.startsWith(q.value.toLowerCase())).map(([v, d]) => value(v, v, d))
   }
-  options = options.slice(0, MAX_OPTIONS)
   return options.length ? { start, end, options } : undefined
 }
 

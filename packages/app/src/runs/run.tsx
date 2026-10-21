@@ -24,7 +24,7 @@ import { CopyId, RunsUnavailable } from "./list"
 import { NodeDetail } from "./node"
 import { LogLine, Raw, reading, type LogStatus, type Progress, type RawApi } from "./raw"
 import { readQueue } from "./queue"
-import { dividerText, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
+import { dividerText, isBoundary, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
 
 /** How often a log being read for the first time is asked about again. */
 const POLL_MS = 1_000
@@ -711,7 +711,7 @@ function Timeline(props: {
         onClick={(e) => props.onSelect(p.node, e.currentTarget)}
         class={`cursor-pointer rounded px-2 py-1 hover:bg-neutral-100 aria-selected:bg-neutral-200/70 dark:hover:bg-neutral-900 dark:aria-selected:bg-neutral-800 ${RING}`}
       >
-        <span class="font-mono wrap-anywhere">{p.node.node_id}</span>{" "}
+        <span class={`font-mono wrap-anywhere ${isBoundary(p.node.node_id) ? MUTED : ""}`}>{p.node.node_id}</span>{" "}
         <span class={STATUS_TEXT[p.node.status] ?? MUTED}>{nodeStatus(p.node)}</span>
         <Show when={failed()}>
           {(text) => (
