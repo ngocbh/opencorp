@@ -787,7 +787,12 @@ class Harness:
         if self._codex_session(session_id):
             return self.codex.interrupt(session_id)
         with self._lock:
-            live = self._must(session_id)
+            live = self._live.get(session_id)
+            if live is None:
+                session = self.store.get_session(session_id)
+                if session is not None and session.status in LIVE:
+                    return  # asleep, waking or finishing: nothing runs to stop
+                live = self._must(session_id)  # 404, or 409 not_live
             for q in self.store.list_questions(run_id=live.run_id, status="open", source="ask_user"):
                 try:
                     self.store.answer_question(q.id, INTERRUPTED, "interrupted")

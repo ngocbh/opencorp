@@ -193,3 +193,10 @@ def test_an_end_racing_the_prompt_that_wakes_the_session_ends_it(make_harness, f
     sender.join(10), ender.join(10)
     wait_for(lambda: status(h, sid) == "ended", what="the end")
     assert got == [None] and jobs == ["resume"]
+
+
+def test_interrupt_on_a_sleeping_session_spawns_nothing(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    jobs = spawned(h)
+    assert h.interrupt(sid) is None
+    assert jobs == [] and sid not in h._live and status(h, sid) == "idle"
