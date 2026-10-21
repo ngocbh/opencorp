@@ -105,6 +105,37 @@ test("opencorp end on a side session promises no debrief", async () => {
   }
 })
 
+test("opencorp end ends a waiting session in the folder", async () => {
+  const office = createFakeOffice()
+  try {
+    const [live] = office.state.sessions
+    office.updateSession(live.id, { status: "waiting", waiting_on: ["ngocbh"] })
+    const client = createOfficeClient({ socket: office.socket })
+    expect((await endSession({ client, cwd: live.cwd })).id).toBe(live.id)
+  } finally {
+    office.stop()
+  }
+})
+
+test("opencorp end keeps to the folder on an office that ignores the kind and cwd filters", async () => {
+  const office = createFakeOffice()
+  try {
+    const [here] = office.state.sessions
+    office.state.sessions.unshift({
+      ...here,
+      id: office.nextId(),
+      cwd: "/tmp/elsewhere",
+      updated_at: new Date().toISOString(),
+    })
+    const real = createOfficeClient({ socket: office.socket })
+    // An office from before the filters lists every folder's sessions.
+    const client = { ...real, sessions: { ...real.sessions, list: () => real.sessions.list({ limit: 500 }) } }
+    expect((await endSession({ client, cwd: here.cwd })).id).toBe(here.id)
+  } finally {
+    office.stop()
+  }
+})
+
 test("the client asks the office for one folder's main sessions", async () => {
   const office = createFakeOffice()
   try {
