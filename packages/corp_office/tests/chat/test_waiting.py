@@ -151,3 +151,46 @@ def test_ending_a_waiting_session_clears_waiting_on(harness, fake_llm, workspace
     wait_for(lambda: status(harness, sid) == "waiting", what="waiting")
     harness.end(sid)
     wait_for(lambda: state(harness, sid) == ("ended", []), what="the end")
+
+
+def test_the_cost_hold_waits_on_the_cap_item_then_the_manager_and_raising_the_cap_frees_it(make_harness, fake_llm,
+                                                                                         workspace):
+    h = make_harness(prices={"stub": Price(input=1_000_000, output=0)}, files=LAN)
+    fake_llm.script(PRICEY)
+    sid = start(h, workspace)
+    h.prompt(sid, "hi")
+    # Held from the charge on, while the reply still runs: wait for the turn it opens.
+    wait_for(lambda: cap_item(h) and state(h, sid) == ("waiting", ["ngocbh"]) and h._live[sid].turn_q,
+             what="the hold at the next turn")
+    assert h.store.get_session(sid).capped
+    h.store.update_work_item(cap_item(h).id, assignee="lan")
+    h._settle(sid)
+    assert state(h, sid) == ("waiting", ["lan"])
+    h.store.update_work_item(cap_item(h).id, status="done")  # closed some other way: the cost is still over the cap
+    h._settle(sid)
+    assert state(h, sid) == ("waiting", ["ngocbh"])  # the manager at the pinned commit
+    h.set_cost_cap(sid, 20)
+    assert state(h, sid) == ("idle", []) and not h.store.get_session(sid).capped
+
+
+def test_raising_the_cap_of_a_sleeping_session_frees_it_without_a_worker(make_harness, fake_llm, workspace):
+    prices = {"stub": Price(input=1_000_000, output=0)}
+    first = make_harness(prices=prices)
+    fake_llm.script(PRICEY)
+    sid = start(first, workspace)
+    first.prompt(sid, "hi")
+    wait_for(lambda: status(first, sid) == "waiting", what="the hold")
+    first.close_all()
+    second = make_harness(prices=prices)  # not restored: the session sleeps
+    second.set_cost_cap(sid, 20)
+    assert state(second, sid) == ("idle", []) and sid not in second._live
+
+
+def test_a_cap_raise_whose_settle_fails_still_stands(harness, workspace, monkeypatch):
+    sid = start(harness, workspace)
+
+    def broken(session_id):
+        raise OSError("the pin can't be read")
+
+    monkeypatch.setattr(harness, "_settle", broken)
+    assert harness.set_cost_cap(sid, 20).cost_cap_usd == 20  # logged, not a route error

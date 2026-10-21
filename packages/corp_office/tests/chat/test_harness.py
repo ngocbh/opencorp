@@ -569,6 +569,14 @@ def cap_items(harness):
                   key=lambda w: (w.created_at, w.id))
 
 
+def at_the_hold(harness, sid, cost):
+    """Whether the session is held at ``cost`` with its next turn open: it waits from the charge on, while the reply
+    still runs, and only the open turn holds what is sent next."""
+    live = harness._live.get(sid)
+    return (status(harness, sid) == "waiting" and harness.store.get_session(sid).cost == cost
+            and live is not None and live.turn_q is not None)
+
+
 def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace):
     from opencorp.chat.provider import Price
 
@@ -577,8 +585,7 @@ def test_the_cost_cap_holds_turns_until_raised(make_harness, fake_llm, workspace
                     {"content": "after the raise"})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
-    wait_for(lambda: status(harness, sid) == "waiting" and harness.store.get_session(sid).cost == 6,
-             what="the charge")
+    wait_for(lambda: at_the_hold(harness, sid, 6), what="the charge")
     items = wait_for(lambda: cap_items(harness), what="the cap work item")
     assert items[0].assignee == "ngocbh"
     assert harness.prompt(sid, "held") == "queued"
@@ -605,8 +612,7 @@ def test_raising_the_cap_closes_its_work_item_and_going_over_again_opens_one(mak
             assert harness.prompt(sid, f"more {n}") == "queued"  # held at the cap
             harness.set_cost_cap(sid, cap)
             assert [w.status for w in cap_items(harness)] == ["done"] * n  # raising it closes the item
-        wait_for(lambda: harness.store.get_session(sid).cost == 6 * (n + 1) and status(harness, sid) == "waiting",
-                 what=f"charge {n}")
+        wait_for(lambda: at_the_hold(harness, sid, 6 * (n + 1)), what=f"charge {n}")
         settle(harness)
         if n < 2:  # over again: one open item, however often the cap check runs
             harness._post(harness._over_cap, harness._live[sid])
@@ -717,8 +723,7 @@ def test_a_held_session_keeps_a_queued_message_until_the_cap_is_raised(make_harn
                     {"content": "after the raise"})
     sid = start(harness, workspace)
     harness.prompt(sid, "hi")
-    wait_for(lambda: status(harness, sid) == "waiting" and harness.store.get_session(sid).cost == 6,
-             what="the charge")
+    wait_for(lambda: at_the_hold(harness, sid, 6), what="the charge")
     assert harness.prompt(sid, "please continue") == "queued"
     settle(harness)
     assert status(harness, sid) == "waiting"
@@ -738,8 +743,7 @@ def test_a_turn_that_opens_held_keeps_the_messages_queued_before_it(make_harness
     harness._live[sid].worker.steer = lambda node, text: False  # the reply can't take it: it waits for the next turn
     assert harness.prompt(sid, "more") == "queued"
     fake_llm.release()
-    wait_for(lambda: status(harness, sid) == "waiting" and harness.store.get_session(sid).cost == 6,
-             what="the charge")
+    wait_for(lambda: at_the_hold(harness, sid, 6), what="the charge")
     settle(harness)
     assert harness._live[sid].pending == ["more"]
     harness.set_cost_cap(sid, 20)

@@ -984,7 +984,11 @@ class Harness:
             if live is not None:
                 live.capped = False
                 self._deliver(live)
-        return session
+        try:
+            self._settle(session_id)
+        except Exception:  # the cap is raised and its item closed; a status that lags is fixed by the next settle
+            log.exception("session %s: no state after its cap was raised", session_id)
+        return self.store.get_session(session_id)
 
     def set_model(self, session_id: str, connection: str, model: str) -> Session:
         """Switch the session to ``connection``/``model``; its next turn runs on them in a fresh run.
@@ -1210,19 +1214,17 @@ class Harness:
             return
         self.interrupt(live.session_id)
         session = self.store.get_session(live.session_id)
-        if self._cap_item(session) is not None:
-            return  # the manager already has one to act on
-        repo = load_repo(self.git.pin(session.repo_commit))
-        person = repo.people.get(live.person)
-        manager = (person.manager if person else None) or (repo.company.ceo if repo.company else None)
-        cap = cost_cap(session, live.defaults)
-        t = now()
-        self.store.create_work_item(WorkItem(
-            id=new_id(), title=f"{_CAP_TITLE} of @{live.person}'s session",
-            kind="task", status="open", requester=live.person, assignee=manager, parent_id=session.work_item_id,
-            summary=f"Session {session.id} reached its ${cap:.2f} cap (cost ${session.cost:.4f}). "
-                    f"Its turns wait until the cap is raised.",
-            created_at=t, updated_at=t))
+        if self._cap_item(session) is None:  # else the manager already has one to act on
+            cap = cost_cap(session, live.defaults)
+            t = now()
+            self.store.create_work_item(WorkItem(
+                id=new_id(), title=f"{_CAP_TITLE} of @{live.person}'s session",
+                kind="task", status="open", requester=live.person, assignee=self._pinned(session).manager,
+                parent_id=session.work_item_id,
+                summary=f"Session {session.id} reached its ${cap:.2f} cap (cost ${session.cost:.4f}). "
+                        f"Its turns wait until the cap is raised.",
+                created_at=t, updated_at=t))
+        self._settle(live.session_id)
 
     def _cap_item(self, session: Session) -> WorkItem | None:
         """The session's open "raise the cost cap" work item, if any."""
