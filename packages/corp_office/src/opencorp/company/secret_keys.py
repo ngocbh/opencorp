@@ -69,7 +69,8 @@ def check_clean(text: str, known: set[str] | frozenset[str]) -> bool:
 
 
 class UnsafeYaml(Exception):
-    """A YAML text couldn't be read safely: it doesn't parse, holds several documents, recurses or is too big."""
+    """A YAML text couldn't be read safely: it doesn't parse, holds several documents, recurses, is too big or has a
+    key that isn't a scalar."""
 
 
 class NotYaml(UnsafeYaml):
@@ -81,40 +82,53 @@ class YamlSecrets:
     """A parsed YAML text and its secrets."""
 
     data: Any
+    """The document as SafeLoader builds it, or None when it's empty or has a tag SafeLoader doesn't know."""
     keys: list[tuple[Any, ...]] = field(default_factory=list)
     """The path to each secret key not inside another secret key's value, in document order."""
     values: set[str] = field(default_factory=set)
-    """Every string under a secret key, keys included; under ``devices``, only those under secret keys within."""
+    """Every scalar under a secret key, keys included; under ``devices``, only those under secret keys within."""
     plain: set[str] = field(default_factory=set)
-    """Every other string, keys included, decoded: an escaped or split secret is whole here."""
+    """Every other scalar, keys included, decoded: an escaped or split secret is whole here."""
 
 
 _PLAIN, _DEVICES, _SECRET = range(3)
 
+_MERGE = "tag:yaml.org,2002:merge"
+
 
 def find_secrets(text: str) -> YamlSecrets:
-    """Parse ``text`` with the pure-Python SafeLoader and collect its secret keys and values; ``UnsafeYaml`` on any
-    failure, so callers can fail closed."""
+    """Compose ``text`` with the pure-Python SafeLoader and collect its secret keys and values from the node graph,
+    so tags (Yian's ``!Person``, ``!str``) don't matter; ``UnsafeYaml`` on any failure, so callers can fail closed."""
     try:
-        data = yaml.load(text, Loader=yaml.SafeLoader)  # pure Python, never the C loader
+        loader = yaml.SafeLoader(text)  # pure Python, never the C loader; its reader refuses control characters
+        root = loader.get_single_node()
     except yaml.YAMLError as exc:
         raise NotYaml(type(exc).__name__) from None
     except Exception as exc:  # RecursionError on deep nesting, and anything else: not safe
         raise UnsafeYaml(type(exc).__name__) from None
-    found = YamlSecrets(data)
+    found = YamlSecrets(None)
     try:
-        _walk(found)
-    except Exception as exc:  # a cycle, the budget: not safe
+        _walk(found, root)
+    except Exception as exc:  # a cycle, the budget, a non-scalar key: not safe
         raise UnsafeYaml(type(exc).__name__) from None
+    if root is not None:
+        try:  # after the walk, which bounds the graph; it rewrites merges in place
+            found.data = loader.construct_document(root)
+        except Exception:  # an unknown tag: no data, so nothing is re-rendered from it
+            found.data = None
+    loader.dispose()
     return found
 
 
-def _walk(found: YamlSecrets) -> None:
-    """Fill ``found.keys``, ``found.values`` and ``found.plain``, walking aliases each time they are referenced.
+def _walk(found: YamlSecrets, root: yaml.Node | None) -> None:
+    """Fill ``found.keys``, ``found.values`` and ``found.plain`` from the node graph, walking aliases each time they
+    are referenced.
 
-    ``on_path`` holds the containers on the current path, so a recursive anchor raises instead of looping.
+    Keys count by their scalar value, whatever their tag. A merge key's mappings are walked as part of the mapping
+    holding it. ``on_path`` holds the containers on the current path, so a recursive anchor raises instead of
+    looping.
     """
-    stack: list[tuple[Any, tuple[Any, ...], int] | int] = [(found.data, (), _PLAIN)]
+    stack: list[tuple[yaml.Node, tuple[Any, ...], int] | int] = [] if root is None else [(root, (), _PLAIN)]
     on_path: set[int] = set()
     visits = 0
     while stack:
@@ -126,24 +140,25 @@ def _walk(found: YamlSecrets) -> None:
         visits += 1
         if visits > YAML_BUDGET:
             raise UnsafeYaml("too many values")
-        if isinstance(node, str):
-            (found.values if ctx == _SECRET else found.plain).add(node)
-            continue
-        if not isinstance(node, (dict, list)):
+        if isinstance(node, yaml.ScalarNode):
+            (found.values if ctx == _SECRET else found.plain).add(node.value)
             continue
         if id(node) in on_path:
             raise UnsafeYaml("recursive anchor")
         on_path.add(id(node))
-        children: list[tuple[Any, tuple[Any, ...], int]] = []
-        if isinstance(node, list):
-            children = [(v, (*path, i), ctx) for i, v in enumerate(node)]
+        children: list[tuple[yaml.Node, tuple[Any, ...], int]] = []
+        if isinstance(node, yaml.SequenceNode):
+            children = [(v, (*path, i), ctx) for i, v in enumerate(node.value)]
         else:
-            for key, value in node.items():
-                child = ctx
-                if ctx == _SECRET:
-                    children.append((key, (*path, key), _SECRET))
-                elif isinstance(key, str):
-                    found.plain.add(key)
+            for key_node, value in node.value:
+                if not isinstance(key_node, yaml.ScalarNode):
+                    raise UnsafeYaml("non-scalar key")
+                if key_node.tag == _MERGE:  # its mappings' pairs belong to this mapping
+                    merged = value.value if isinstance(value, yaml.SequenceNode) else [value]
+                    children.extend((m, path, ctx) for m in merged)
+                    continue
+                key, child = key_node.value, ctx
+                (found.values if ctx == _SECRET else found.plain).add(key)
                 if ctx != _SECRET and is_secret_key(key):
                     if ctx == _PLAIN:
                         found.keys.append((*path, key))
