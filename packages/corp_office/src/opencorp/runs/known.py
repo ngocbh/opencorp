@@ -1,29 +1,25 @@
-"""The secret values the office holds that a run log may echo: read within a time limit, failing closed, and cached
-until what they were read from changes."""
+"""The secret values the office holds that a run log may echo: read within a time limit, one read at a time, failing
+closed, and cached until a file they came from changes."""
 
 import asyncio
 import json
 import os
 import threading
-import time
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from opencorp.chat.connections import ConnectionGone, Connections
+from opencorp.chat.connections import AUTH_FILE_ENV, ConnectionGone, Connections
 from opencorp.company.git import CompanyGit
-from opencorp.company.loader import load_repo
 from opencorp.company.secret_keys import MIN_KNOWN
 from opencorp.company.source import person_secrets
 from opencorp.runs.scrub import Scrubber, secret_key
-from opencorp.secrets import SecretStore, read_private
+from opencorp.secrets import SecretStore, Stamp, read_private, stamp
 
 LIMIT_S = 5.0
 """How long a request waits for the known values before it fails."""
-TTL_S = 60.0
-"""The longest a cached part is used, even when nothing it was read from looks changed."""
 CACHED = 32
-"""The most cached parts and Scrubbers kept; past that the cache starts over."""
+"""The most Scrubbers kept; past that the cache starts over."""
 
 
 class SecretsUnavailable(Exception):
@@ -42,16 +38,16 @@ def secret_strings(value: Any, *, under: bool = False) -> set[str]:
     return set()
 
 
-def pin_values(secrets: SecretStore, git: CompanyGit, commit: str) -> set[str]:
-    """The values of the asset secrets the company names at ``commit``. A secret that isn't set, or a name the store
-    can't hold (so it can't have been echoed), is skipped."""
+def store_values(secrets: SecretStore) -> set[str]:
+    """Every secret in the office's store, whatever names it: one named only by an asset file that no longer loads,
+    or by none now, may still have been given to a tool. A secret removed meanwhile is skipped; one that can't be read
+    (not private, too short) raises, as it would for the monitor."""
     found: set[str] = set()
-    for asset in load_repo(git.pin(commit)).assets.values():
-        for name in asset.secrets:
-            try:
-                found.add(secrets.get(name))
-            except (KeyError, ValueError):
-                continue
+    for name in secrets.names():
+        try:
+            found.add(secrets.get(name))
+        except KeyError:
+            continue
     return found
 
 
@@ -64,60 +60,106 @@ def yian_auth_stores() -> list[Path]:
     return list(dict.fromkeys(found))
 
 
-def office_values(connections: Connections, secrets: SecretStore, git: CompanyGit, head: str) -> set[str]:
+def env_auth_stores(env: Mapping[str, str]) -> list[Path]:
+    """The Yian stores a connection's ``env`` can point a worker at: its ``YIAN_AUTH_FILE``, and the default store
+    under its ``XDG_CONFIG_HOME`` or ``HOME``. ValueError for a relative path, which turns on the worker's folder, so
+    the office can't tell which store it names."""
+    found = []
+    if path := env.get(AUTH_FILE_ENV):
+        found.append(Path(path).expanduser())
+    if xdg := env.get("XDG_CONFIG_HOME"):
+        found.append(Path(xdg).expanduser() / "yian" / "auth.json")
+    if home := env.get("HOME"):
+        found.append(Path(home).expanduser() / ".config" / "yian" / "auth.json")
+    if relative := [str(p) for p in found if not p.is_absolute()]:
+        raise ValueError(f"a connection's env names a Yian store by a relative path: {relative[0]}")
+    return found
+
+
+def connection_values(connections: Connections) -> tuple[set[str], list[Path]]:
     """Each connection's secrets (strings under secret-named keys of its llm_config: its key, an Azure token,
-    credential headers; env holds none, Provider refuses credential names there), the tokens and keys in each sign-in
-    file and in Yian's default stores, the asset secrets named at ``head``, and #247's secrets in the person files at
-    ``head``. A removed connection, or a default store that doesn't exist, is skipped."""
+    credential headers; env holds none, Provider refuses credential names there) and the tokens and keys in each
+    sign-in file; and the Yian stores the connections' env names. A removed connection is skipped."""
     found: set[str] = set()
+    stores: list[Path] = []
     for name in connections.names():
         try:
-            found |= secret_strings(connections.get(name).llm_config or {})
+            conn = connections.get(name)
         except ConnectionGone:
             continue
+        found |= secret_strings(conn.llm_config or {})
+        stores += env_auth_stores(conn.env)
     for auth in sorted(connections.dir.glob("*.auth.json")):
         found |= secret_strings(json.loads(read_private(auth)))
-    for store in yian_auth_stores():
+    return found, stores
+
+
+def yian_values(stores: Iterable[Path]) -> set[str]:
+    """The tokens and keys in each of the Yian ``stores`` that exists."""
+    found: set[str] = set()
+    for store in stores:
         try:
             found |= secret_strings(json.loads(read_private(store)))
         except FileNotFoundError:
             continue
-    return found | pin_values(secrets, git, head) | set(person_secrets(git, git.list_tree(head)))
+    return found
 
 
-def _stamp(path: Path) -> tuple[int, int, int] | None:
-    """What says ``path`` changed: a file written by rename gets a new inode; a folder's mtime moves when one does."""
+def office_values(connections: Connections, secrets: SecretStore) -> set[str]:
+    """The connections' secrets and sign-ins (``connection_values``), the logins in Yian's default stores and in any
+    store a connection's env names, and every secret in the office's store."""
+    found, stores = connection_values(connections)
+    return found | yian_values(dict.fromkeys(yian_auth_stores() + stores)) | store_values(secrets)
+
+
+def _stamp(path: Path) -> Stamp | None:
     try:
-        st = os.stat(path)
+        return stamp(os.stat(path, follow_symlinks=False))
     except FileNotFoundError:
         return None
-    return st.st_ino, st.st_mtime_ns, st.st_size
+
+
+def _folder_stamps(folder: Path) -> tuple[Stamp | None, tuple[tuple[str, Stamp | None], ...]]:
+    """``folder``'s stamp and each entry's, by name."""
+    try:
+        names = sorted(os.listdir(folder))
+    except FileNotFoundError:
+        return None, ()
+    return _stamp(folder), tuple((name, _stamp(folder / name)) for name in names)
 
 
 class KnownValues:
     """The office's known secret values, as Scrubbers.
 
-    Two kinds of part are cached:
-    - the office's part (connections, sign-ins, Yian's default stores, HEAD's asset secrets and person files), keyed by
-      HEAD and the stamps of provider.json, each connections/*.json file, each default store and the secrets folder;
-    - each pin's asset secrets, keyed by pin and the secrets folder's stamp.
+    The values come in parts, each cached by the stamps (device, inode, size, mtime, ctime, mode, owner) of every file
+    and folder it was read from, so a change counts at once, even a hand edit in place, which moves the ctime:
+    - the connections and sign-ins: provider.json, the connections folder and each file in it (``_removed.json``,
+      each connection and ``.auth.json``);
+    - the Yian stores: the default ones and those the connections' env names;
+    - the office's secret store: its folder and each secret file;
+    - #247's secrets in the person files, by HEAD.
+    A Scrubber, whose needles cost the most to build, is cached for each set of values.
 
-    Each part is used at most TTL_S. A build that misses the time limit still fills the cache when it ends.
+    One read runs at a time. A request uses a read that began after it came, waiting first for one already running,
+    so a read that hangs past the limit holds one thread, not one per request.
     """
 
-    def __init__(self, *, connections: Connections, secrets: SecretStore, git: CompanyGit, limit: float = LIMIT_S,
-                 ttl: float = TTL_S, clock: Callable[[], float] = time.monotonic) -> None:
-        self.connections, self.secrets, self.git = connections, secrets, git
-        self.limit, self.ttl, self.clock = limit, ttl, clock
-        self._parts: dict[Hashable, tuple[float, frozenset[str]]] = {}
+    def __init__(self, *, connections: Connections, secrets: SecretStore, git: CompanyGit,
+                 limit: float = LIMIT_S) -> None:
+        self.connections, self.secrets, self.git, self.limit = connections, secrets, git, limit
+        self._parts: dict[str, tuple[Hashable, Any]] = {}
         self._scrubbers: dict[frozenset[str], Scrubber] = {}
         self._lock = threading.Lock()
+        self._read: asyncio.Future[frozenset[str]] | None = None
+        self._read_no = 0
+        self._reads = 0
 
-    async def scrubber(self, pins: Iterable[str] = ()) -> Scrubber:
-        """A Scrubber with the known values of now, at HEAD and at each of ``pins``; SecretsUnavailable if they can't
-        be read within ``limit`` seconds."""
+    async def scrubber(self) -> Scrubber:
+        """A Scrubber with the known values of now; SecretsUnavailable if they can't be read within ``limit``
+        seconds."""
         try:
-            values = await asyncio.wait_for(asyncio.to_thread(self.values, list(pins)), self.limit)
+            async with asyncio.timeout(self.limit):
+                values = await self._fresh()
         except TimeoutError:
             raise SecretsUnavailable("couldn't load the secrets to remove in time") from None
         with self._lock:
@@ -128,31 +170,44 @@ class KnownValues:
                 found = self._scrubbers[values] = Scrubber(values)
         return found
 
-    def values(self, pins: list[str]) -> frozenset[str]:
+    async def _fresh(self) -> frozenset[str]:
+        """The values from a read that began after this call."""
+        came = self._reads
+        while True:
+            read = self._read
+            if read is not None and self._read_no > came:
+                return await asyncio.shield(read)  # one caller giving up mustn't cancel the others' read
+            if read is not None and not read.done():
+                await asyncio.wait([read])
+                continue
+            self._reads += 1
+            self._read_no = self._reads
+            self._read = asyncio.ensure_future(asyncio.to_thread(self.values))
+            # Marks its failure seen, for a read every caller gave up on.
+            self._read.add_done_callback(lambda f: f.cancelled() or f.exception())
+
+    def values(self) -> frozenset[str]:
         """The known values (blocking); SecretsUnavailable when any can't be read."""
         try:
             head = self.git.read_head()
-            vault = _stamp(self.secrets.root)
-            files = tuple((p.name, _stamp(p)) for p in sorted(self.connections.dir.glob("*.json")))
-            stores = tuple((str(p), _stamp(p)) for p in yian_auth_stores())
-            office_key = ("office", head, _stamp(self.connections.office / "provider.json"), files, stores, vault)
-            parts = [self._part(office_key, lambda: office_values(self.connections, self.secrets, self.git, head))]
-            for pin in dict.fromkeys(pins):
-                if pin != head:
-                    parts.append(self._part(("pin", pin, vault), lambda p=pin: pin_values(self.secrets, self.git, p)))
+            office = self.connections.office / "provider.json"
+            # Every stamp is taken before what it covers is read, so a change while reading shows next time.
+            found, stores = self._part("connections", (_stamp(office), _folder_stamps(self.connections.dir)),
+                                       lambda: connection_values(self.connections))
+            stores = list(dict.fromkeys(yian_auth_stores() + stores))
+            found = found | self._part("yian", tuple((p, _stamp(p)) for p in stores), lambda: yian_values(stores))
+            found |= self._part("store", self.secrets.stamps(), lambda: store_values(self.secrets))
+            found |= self._part("people", head, lambda: person_secrets(self.git, self.git.list_tree(head)))
         except Exception as exc:  # whatever stops them being read: fail closed, as a 503, never a 500
             raise SecretsUnavailable(f"couldn't read the secrets to remove ({type(exc).__name__})") from None
-        return frozenset(v for part in parts for v in part if len(v.strip()) >= MIN_KNOWN)
+        return frozenset(v for v in found if len(v.strip()) >= MIN_KNOWN)
 
-    def _part(self, key: Hashable, build: Callable[[], set[str]]) -> frozenset[str]:
-        at = self.clock()
+    def _part[T](self, name: str, key: Hashable, build: Callable[[], T]) -> T:
         with self._lock:
-            hit = self._parts.get(key)
-        if hit is not None and at - hit[0] < self.ttl:
+            hit = self._parts.get(name)
+        if hit is not None and hit[0] == key:
             return hit[1]
-        found = frozenset(build())
+        found = build()
         with self._lock:
-            if len(self._parts) >= CACHED:
-                self._parts.clear()
-            self._parts[key] = (at, found)
+            self._parts[name] = (key, found)
         return found

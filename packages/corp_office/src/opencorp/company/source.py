@@ -10,7 +10,8 @@ import yaml
 from pydantic import ValidationError
 
 from opencorp.company.git import CompanyGit, TreeEntry, is_commit_id
-from opencorp.company.secret_keys import HIDDEN, NotYaml, UnsafeYaml, check_clean, find_secrets, scrub_text
+from opencorp.company.secret_keys import (HIDDEN, NotYaml, UnsafeYaml, YamlSecrets, check_clean, find_json_secrets,
+                                          find_secrets, is_secret_key, scrub_text)
 from opencorp.protocol.models import CommitInfo, CompanyFile, CompanyTree, CompanyTreeEntry, Person
 
 RING = 8
@@ -40,6 +41,7 @@ SECRET_KEY = "holds a secret-named key"
 NOT_REMOVED = "a secret couldn't be removed"
 
 _PERSON = re.compile(r"people/[^/]+/person\.yaml")
+_QUOTED_KEY = re.compile(r"""["']([A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})["']\s*:""")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -127,16 +129,28 @@ def _credentials(path: str) -> bool:
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in CREDENTIAL_NAMES)
 
 
+def _secrets(path: str, text: str) -> YamlSecrets:
+    """``find_secrets``, or for a JSON file PyYAML can't read (tab indents), ``find_json_secrets``."""
+    try:
+        return find_secrets(text)
+    except NotYaml:
+        if not path.lower().endswith(".json"):
+            raise
+    return find_json_secrets(text)
+
+
 def _parsed(path: str, text: str, known: frozenset[str]) -> tuple[str | None, bool, set[str], str | None]:
     """Layer 1 for a YAML or JSON file: (text to show, rewritten, this file's secret values, hidden reason).
 
     Every other string is checked decoded too, so an escaped or split copy of a secret hides the file.
     """
     try:
-        found = find_secrets(text)
+        found = _secrets(path, text)
     except NotYaml:
-        if path.lower().endswith(".json"):  # JSON PyYAML can't read (tab indents) gets layers 2 and 3 only
-            return text, False, set(), None
+        if path.lower().endswith(".json"):  # not JSON either (comments, trailing commas): no parse to walk
+            if any(is_secret_key(m[1]) for m in _QUOTED_KEY.finditer(text)):
+                return None, False, set(), SECRET_KEY
+            return text, False, set(), None  # layers 2 and 3, as for any text file
         return None, False, set(), UNSAFE_YAML
     except UnsafeYaml:
         return None, False, set(), UNSAFE_YAML

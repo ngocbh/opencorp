@@ -1,6 +1,7 @@
 """The Source view's office side: the ring of served HEADs, the listing, reading and secret hiding."""
 
 import asyncio
+import base64
 import os
 import subprocess
 import time
@@ -431,10 +432,53 @@ async def test_plain_json_is_shown_as_written(src, company):
     assert (got.content, got.text) == ("text", text)
 
 
-async def test_json_yaml_cant_parse_falls_back_to_the_scrub(src, company):
-    text = '{\n\t"note": "' + HASH + '",\n\t"x": 1\n}\n'  # tab indents, which PyYAML refuses
+async def test_json_yaml_cant_parse_is_walked_as_json(src, company):
+    text = '{\n\t"note": "plain",\n\t"x": 1\n}\n'  # tab indents, which PyYAML refuses
     got = await show(src, company, {"notes/x.json": text})
+    assert (got.content, got.text) == ("text", text)
+
+
+@pytest.mark.parametrize("text, reason", [
+    ('{\n\t"auth": {"clientSecret": "abcdefghij"}\n}\n', "holds a secret-named key"),
+    ('{\n\t"note": "\\u0024scrypt\\u0024ln=15\\u0024s\\u0024h"\n}\n', "a secret couldn't be removed"),
+    ('{\n\t"note": "' + HASH + '"\n}\n', "a secret couldn't be removed"),
+    ('{"\u0090": 1, "token": "abcdefghij"}\n', "holds a secret-named key"),  # a character YAML refuses
+    ('{\n\t"x": ' + "[" * 100_000 + "]" * 100_000 + '\n}\n', "couldn't read this YAML safely"),
+], ids=["key", "escaped hash", "hash", "control character", "deep"])
+async def test_json_yaml_cant_parse_is_checked_as_json(src, company, text, reason):
+    got = await show(src, company, {"notes/x.json": text})
+    assert (got.content, got.reason) == ("hidden", reason)
+
+
+async def test_a_json_file_neither_parser_reads_falls_back_to_the_scrub(src, company):
+    text = '{\n\t// a comment\n\t"compilerOptions": {"strict": true,},\n\t"note": "' + HASH + '"\n}\n'
+    got = await show(src, company, {"notes/tsconfig.json": text})
     assert (got.content, got.text) == ("text", text.replace(HASH, "(hidden)"))
+
+
+@pytest.mark.parametrize("text", [
+    '{\n\t"clientSecret": "abcdefghij",\n\t"n": ' + "9" * 5000 + '\n}\n',  # an int too long for int()
+    '{\n\t"password": "abcdefghij",\n\t"n": NaN\n}\n',
+    '{\n\t"password": "abcdefghij",\n}\n',  # a trailing comma
+    '{\n\t// the database\n\t"db.password": "abcdefghij"\n}\n',
+    "{\n\t// single quotes\n\t'apiKey': 'abcdefghij'\n}\n",
+], ids=["long int", "NaN", "trailing comma", "comment", "single quotes"])
+async def test_a_secret_key_in_json_no_parser_reads_hides_the_file(src, company, text):
+    got = await show(src, company, {"notes/x.json": text})
+    assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
+
+
+@pytest.mark.parametrize("text", ["auth:\n  accessToken: abcdefghij\n", "api.key: abcdefghij\n",
+                                  "spring.datasource.password: abcdefghij\n"])
+async def test_a_camel_case_or_dotted_secret_key_hides_the_file(src, company, text):
+    got = await show(src, company, {"assets/x.yaml": text})
+    assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
+
+
+async def test_a_binary_scalar_holding_a_hash_hides_the_file(src, company):
+    encoded = base64.b64encode(HASH.encode()).decode()
+    got = await show(src, company, {"assets/x.yaml": f"note: !!binary {encoded}\n"})
+    assert (got.content, got.reason) == ("hidden", "a secret couldn't be removed")
 
 
 async def test_a_harmless_alias_is_shown_as_written(src, company):
