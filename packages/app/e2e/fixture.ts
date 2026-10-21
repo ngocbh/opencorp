@@ -5,7 +5,7 @@ import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
 import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
-import { runLogs, runPages, wholeEvents, type RunPages, type Runs } from "./runs"
+import { runLogs, runPages, summaryOf, wholeEvents, type RunPages, type Runs } from "./runs"
 
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -87,7 +87,7 @@ const fresh = (): Fixture => ({
   fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
   source: source(),
   runs: runLogs(),
-  runPages: runPages(runLogs().runs),
+  runPages: runPages(runLogs()),
   wholeEvents: wholeEvents(),
 })
 // `logins` keeps each sign-in's handle and label, never its password.
@@ -290,17 +290,13 @@ function companyFile(url: URL): Response {
 
 const RUN_STATUSES = ["running", "waiting", "idle", "finished", "failed", "interrupted"]
 
-/** GET /api/runs as the office answers it: top-level runs newest first, a parent shown when it or a child matches,
- * `limit` (50) at a time from `before`; `?parent=` lists one run's children. `status` is a comma-separated list (any
- * matches); `since` (inclusive) and `until` (exclusive) bound `launched_at`; a bad one of these is a 422. */
+/** GET /api/runs as the office answers it: top-level runs newest first, each with `children_total` and no children, a
+ * parent shown when it or a child matches, `limit` (50) at a time from `before`; `?parent=` pages one run's children
+ * that match, the same way. `status` is a comma-separated list (any matches); `since` (inclusive) and `until`
+ * (exclusive) bound `launched_at`; a bad one of these is a 422. */
 function listRuns(url: URL): Response {
   const p = url.searchParams
   log.runs.push(url.search)
-  const parent = p.get("parent")
-  if (parent) {
-    const kids = state.runs.children[parent]
-    return kids ? json(kids) : json({ error: "not_found", message: `no run ${parent}` }, 404)
-  }
   const [flow, person, q] = ["flow", "person", "q"].map((k) => p.get(k))
   const statuses = p.get("status")?.split(",") ?? []
   const unknown = statuses.find((s) => !RUN_STATUSES.includes(s))
@@ -312,7 +308,16 @@ function listRuns(url: URL): Response {
     (!flow || r.flow === flow) && (!person || r.driver === person || (r.participants ?? []).includes(person)) &&
     (!statuses.length || statuses.includes(r.status)) && (!q || r.run_id.includes(q.toUpperCase())) &&
     (since === null || Date.parse(r.launched_at) >= since) && (until === null || Date.parse(r.launched_at) < until)
-  const shown = state.runs.runs.filter((r) => match(r) || (r.children ?? []).some(match))
+  const kids = (id: string) => state.runs.children[id] ?? []
+  const parent = p.get("parent")
+  let shown: RunSummary[]
+  if (parent) {
+    if (!summaryOf(state.runs, parent)) return json({ error: "not_found", message: `no run ${parent}` }, 404)
+    shown = kids(parent).filter(match)
+  } else
+    shown = state.runs.runs
+      .filter((r) => match(r) || kids(r.run_id).some(match))
+      .map((r) => ({ ...r, children: [], children_total: kids(r.run_id).length }))
   const before = p.get("before")
   const from = before ? shown.findIndex((r) => r.run_id < before) : 0
   const limit = Number(p.get("limit") ?? 50)
@@ -396,7 +401,7 @@ async function control(req: Request, url: URL): Promise<Response> {
       // node attempts before its others; `addEvents` puts newer records after its others; `indexing` sets whether its
       // node and record pages answer "indexing"; `fail` is an error code its record reads answer with (null for
       // none). A run with no page gets one from its summary.
-      const summary = state.runs.runs.flatMap((r) => [r, ...(r.children ?? [])]).find((r) => r.run_id === body.id)!
+      const summary = summaryOf(state.runs, body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
       const { run, ...rest } = body.detail ?? {}
