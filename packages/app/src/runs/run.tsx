@@ -1,5 +1,5 @@
-// One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, and the
-// Timeline of its node attempts with the detail of the one selected, kept current by run.updated.
+// One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, the Timeline
+// of its node attempts with the detail of the one selected, Raw and the download, kept current by run.updated.
 import { isSecretsUnavailable } from "@opencorp/client"
 import type { RunDetail, RunDivider, RunNode, RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
@@ -22,6 +22,7 @@ import { useDesktop, useShell } from "../shell"
 import { flowText, shortId, STATUS_DOT, took, where } from "./format"
 import { CopyId } from "./list"
 import { NodeDetail } from "./node"
+import { LogLine, Raw, reading, type LogStatus, type Progress, type RawApi } from "./raw"
 import { readQueue } from "./queue"
 import { dividerText, nodeStatus, takeNewest, timeline, type Group, type Row } from "./timeline"
 
@@ -48,16 +49,6 @@ const LOG_STATE: Record<RunDetail["log_state"], string> = {
 /** A time to the minute, in the browser's locale. */
 const at = (t: string) => new Date(t).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })
 
-/** Bytes as whole MB (2^20), as the office's "reading the log" message counts them. */
-const mb = (bytes: number) => Math.floor(bytes / 2 ** 20)
-
-/** How far the first read of a large log has got. */
-type Progress = { done: number; total: number }
-
-/** What the log status says; `progress` follows `text` and isn't announced as it changes every second. */
-type LogStatus = { text: string; progress?: string }
-const reading = (p: Progress): LogStatus => ({ text: "reading the log: ", progress: `${mb(p.done)} of ${mb(p.total)} MB` })
-
 /** A read's failure: its message, and whether it was the office failing to load the secrets to remove. */
 type Failure = { message: string; secrets: boolean }
 
@@ -67,7 +58,7 @@ type TimelineApi = { focusNode: (seq: number) => void }
 /** The Timeline's current treeitem, where focus goes when nothing better is left. */
 const currentItem = () => document.querySelector<HTMLElement>('[role="tree"] [role="treeitem"][tabindex="0"]') ?? undefined
 
-/** `/runs/<id>`: one run's header, log state and Timeline, read from the office and kept current. */
+/** `/runs/<id>`: one run's header, log state, Timeline with node detail, and Raw, read from the office and kept current. */
 export function RunPage(props: { id: string }) {
   const office = useOffice()
   // Stores reconciled by key: a refetch updates the page in place, so focus and folds stay where they were.
@@ -211,7 +202,11 @@ export function RunPage(props: { id: string }) {
     }, "kids")
   }
 
-  const refetch = throttle(() => void (disposed || refresh()), REFETCH_MS)
+  const refetch = throttle(() => {
+    if (disposed) return
+    refresh()
+    rawApi?.refresh()
+  }, REFETCH_MS)
   onMount(() => {
     refetch.call()
     const off = office.on("run.updated", (e) =>
@@ -223,20 +218,26 @@ export function RunPage(props: { id: string }) {
   // office is away knows the status it opened with (`before` is undefined only on this first run).
   createEffect(on(office.status, (now, before) => void (now === "online" && before !== undefined && before !== "online" && refetch.call())))
 
-  /** What the log status says, or nothing while the Timeline can show. */
+  /** What the log status says while the log can't be read, or nothing once it can. */
   const logStatus = (): LogStatus | undefined => {
     const d = detail.value
-    if (!d) return undefined
-    if (d.log_state === "ok") {
-      const p = indexing()
-      return p && reading(p)
-    }
+    if (!d || d.log_state === "ok") return undefined
     if (d.log_state === "indexing" && d.bytes_done != null && d.bytes_total != null)
       return reading({ done: d.bytes_done, total: d.bytes_total })
     const run = d.run
     if (d.log_state === "not_started" && (run.status === "idle" || run.status === "waiting")) return { text: "idle, not started yet" }
     return { text: d.log_message || LOG_STATE[d.log_state] }
   }
+
+  // The Timeline and Raw tabs; Raw reads its first page when it's first shown, and both keep their place after.
+  const [tab, setTab] = createSignal<Tab>("timeline")
+  const [rawShown, setRawShown] = createSignal(false)
+  let rawApi: RawApi | undefined
+  function chooseTab(to: Tab) {
+    setTab(to)
+    if (to === "raw") setRawShown(true)
+  }
+  const tabsId = createUniqueId()
 
   return (
     <div>
@@ -269,32 +270,56 @@ export function RunPage(props: { id: string }) {
         {(d) => (
           <div class="flex">
             <div class="min-w-0 flex-1 space-y-2 p-4 max-md:px-3" inert={sheet()}>
-              <h3 class="text-sm font-semibold">Timeline</h3>
-              <Show when={logStatus()}>
-                {(s) => (
-                  <p role="status" aria-label="Log" class={`text-sm ${MUTED}`}>
-                    {s().text}
-                    <Show when={s().progress}>{(p) => <span aria-live="off">{p()}</span>}</Show>
-                  </p>
-                )}
-              </Show>
-              <Show when={d().log_state === "ok" && log.loaded}>
-                <Show when={log.nodes.length} fallback={<p class={`text-sm ${MUTED}`}>No node has started yet.</p>}>
-                  <Timeline
-                    nodes={log.nodes}
-                    dividers={log.dividers}
-                    api={(a) => (timelineApi = a)}
-                    selected={selected()}
-                    onSelect={select}
-                  />
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <Show when={d().log_state === "ok"} fallback={<h3 class="text-sm font-semibold">Timeline</h3>}>
+                  <Tabs id={tabsId} tab={tab()} onTab={chooseTab} />
                 </Show>
-                <Show when={log.next != null}>
-                  <button ref={olderButton} type="button" onClick={older} class={`text-sm ${LINK}`}>
-                    Older nodes
-                  </button>
+                {/* The scrubbed log downloads even when this office can't read it for the Timeline or Raw. */}
+                <Show when={d().log_state === "ok" || d().log_state === "unsupported_schema"}>
+                  <a download={`${props.id}.jsonl`} href={office.client.runs.logUrl(props.id)} class={`text-sm ${LINK}`}>
+                    Download
+                  </a>
                 </Show>
-                <Show when={log.dropped && log.next == null}>
-                  <p class={`text-sm ${MUTED}`}>older nodes: see Raw</p>
+              </div>
+              <Show when={logStatus()}>{(s) => <LogLine status={s()} />}</Show>
+              <Show when={d().log_state === "ok"}>
+                <div
+                  role="tabpanel"
+                  id={`${tabsId}-timeline-panel`}
+                  aria-labelledby={`${tabsId}-timeline`}
+                  hidden={tab() !== "timeline"}
+                  class="space-y-2"
+                >
+                  <Show when={indexing()}>{(p) => <LogLine status={reading(p())} />}</Show>
+                  <Show when={log.loaded}>
+                    <Show when={log.nodes.length} fallback={<p class={`text-sm ${MUTED}`}>No node has started yet.</p>}>
+                      <Timeline
+                        nodes={log.nodes}
+                        dividers={log.dividers}
+                        api={(a) => (timelineApi = a)}
+                        selected={selected()}
+                        onSelect={select}
+                      />
+                    </Show>
+                    <Show when={log.next != null}>
+                      <button ref={olderButton} type="button" onClick={older} class={`text-sm ${LINK}`}>
+                        Older nodes
+                      </button>
+                    </Show>
+                    <Show when={log.dropped && log.next == null}>
+                      <p class={`text-sm ${MUTED}`}>older nodes: see Raw</p>
+                    </Show>
+                  </Show>
+                </div>
+                <Show when={rawShown()}>
+                  <div
+                    role="tabpanel"
+                    id={`${tabsId}-raw-panel`}
+                    aria-labelledby={`${tabsId}-raw`}
+                    hidden={tab() !== "raw"}
+                  >
+                    <Raw runId={props.id} api={(a) => (rawApi = a)} />
+                  </div>
                 </Show>
               </Show>
             </div>
@@ -313,6 +338,56 @@ export function RunPage(props: { id: string }) {
           </div>
         )}
       </Show>
+    </div>
+  )
+}
+
+/** The run page's two views of its log. */
+type Tab = "timeline" | "raw"
+const TABS: [Tab, string][] = [
+  ["timeline", "Timeline"],
+  ["raw", "Raw"],
+]
+
+/** The Timeline and Raw tabs: the WAI-ARIA tabs pattern, the arrow keys moving between them. */
+function Tabs(props: { id: string; tab: Tab; onTab: (tab: Tab) => void }) {
+  const buttons = new Map<Tab, HTMLButtonElement>()
+  function onKey(e: KeyboardEvent) {
+    const i = TABS.findIndex(([t]) => t === props.tab)
+    let to: number | undefined
+    if (e.key === "ArrowRight") to = (i + 1) % TABS.length
+    else if (e.key === "ArrowLeft") to = (i + TABS.length - 1) % TABS.length
+    else if (e.key === "Home") to = 0
+    else if (e.key === "End") to = TABS.length - 1
+    else return
+    e.preventDefault()
+    const [tab] = TABS[to]!
+    props.onTab(tab)
+    buttons.get(tab)?.focus()
+  }
+  return (
+    <div role="tablist" aria-label="The log" onKeyDown={onKey} class="flex gap-1">
+      <For each={TABS}>
+        {([tab, label]) => (
+          <button
+            ref={(el) => buttons.set(tab, el)}
+            type="button"
+            role="tab"
+            id={`${props.id}-${tab}`}
+            aria-selected={props.tab === tab}
+            aria-controls={`${props.id}-${tab}-panel`}
+            tabindex={props.tab === tab ? 0 : -1}
+            onClick={() => props.onTab(tab)}
+            class={`rounded px-2 py-1 text-sm font-semibold ${RING} ${
+              props.tab === tab
+                ? "bg-neutral-200/70 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-50"
+                : `${MUTED} hover:bg-neutral-100 dark:hover:bg-neutral-900`
+            }`}
+          >
+            {label}
+          </button>
+        )}
+      </For>
     </div>
   )
 }

@@ -383,8 +383,9 @@ async function control(req: Request, url: URL): Promise<Response> {
       return json({ ok: true })
     case "/__fixture/run": {
       // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `add` puts newer
-      // node attempts before its others; `indexing` sets whether its node and record pages answer "indexing"; `fail`
-      // is an error code its record reads answer with (null for none). A run with no page gets one from its summary.
+      // node attempts before its others; `addEvents` puts newer records after its others; `indexing` sets whether its
+      // node and record pages answer "indexing"; `fail` is an error code its record reads answer with (null for
+      // none). A run with no page gets one from its summary.
       const summary = state.runs.runs.flatMap((r) => [r, ...(r.children ?? [])]).find((r) => r.run_id === body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
@@ -393,6 +394,7 @@ async function control(req: Request, url: URL): Promise<Response> {
       if (body.add) page.nodes = [...body.add, ...page.nodes]
       if ("indexing" in body) page.indexing = body.indexing
       if ("fail" in body) page.fail = body.fail
+      if (body.addEvents) page.events = [...page.events, ...body.addEvents]
       return json({ ok: true })
     }
   }

@@ -93,3 +93,73 @@ test("on a phone node detail is a sheet over everything, and Escape returns to t
   await expect(sheet).toHaveCount(0)
   await expect(row).toBeFocused()
 })
+
+test("Raw: records by page, a filter, a cut field opened, oversized and withheld stubs, and Download", async ({ page }) => {
+  await page.goto(`/runs/${rid(5)}`)
+  await page.getByRole("tab", { name: "Raw" }).click()
+  const raw = page.getByRole("list", { name: "Records" })
+  await expect(raw.getByRole("listitem")).toHaveCount(4)
+  await page.getByRole("button", { name: "Load more records" }).click()
+  await expect(raw.getByRole("listitem")).toHaveCount(6)
+  await expect(raw).toContainText("3.0 MB record: too large to preview; download the log")
+  await expect(raw).toContainText("a secret couldn't be removed")
+  await raw.getByRole("listitem").filter({ hasText: "node_failed" }).getByRole("button", { name: "Open the whole record" }).click()
+  await expect(raw).toContainText("…whole…")
+  await page.getByRole("combobox", { name: "Kind" }).selectOption("run_resumed")
+  await expect(raw.getByRole("listitem")).toHaveCount(1)
+  await page.getByRole("combobox", { name: "Kind" }).selectOption("")
+  await page.getByRole("searchbox", { name: "Node" }).fill("chat#2")
+  await expect(raw.getByRole("listitem")).toHaveCount(2)
+  const download = page.getByRole("link", { name: "Download" })
+  await expect(download).toHaveAttribute("href", `/api/runs/${rid(5)}/log`)
+  await expect(download).toHaveAttribute("download", `${rid(5)}.jsonl`)
+})
+
+test("Raw reads newer records on run.updated, and the Timeline is where it was behind it", async ({ page, request }) => {
+  await page.goto(`/runs/${rid(6)}`)
+  await page.getByRole("tab", { name: "Raw" }).click()
+  const raw = page.getByRole("list", { name: "Records" })
+  await expect(raw.getByRole("listitem")).toHaveCount(1)
+  await request.post("/__fixture/run", { data: { id: rid(6), addEvents: [{ seq: 5, kind: "node_started", node_id:
+    "chat#1/reply", payload: {}, cut: [], evidence_left_out: false, withheld: null, size: null }] } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(6), session_id: "S6", status: "running", current_nodes: ["chat#1/reply"] } } } })
+  await expect(raw.getByRole("listitem")).toHaveCount(2)
+  await expect(raw.getByRole("listitem").last()).toContainText("node_started")
+  await page.getByRole("tab", { name: "Timeline" }).click()
+  await expect(page.getByRole("tree", { name: "Timeline" }).getByRole("treeitem", { name: /chat#0\/reply/ })).toBeVisible()
+})
+
+test("Raw while the log is first read says so, then shows", async ({ page, request }) => {
+  await request.post("/__fixture/run", { data: { id: rid(5), indexing: true } })
+  await page.goto(`/runs/${rid(5)}`)
+  await page.getByRole("tab", { name: "Raw" }).click()
+  await expect(page.getByRole("status", { name: "Log" })).toHaveText("reading the log: 120 of 480 MB")
+  await request.post("/__fixture/run", { data: { id: rid(5), indexing: false } })
+  await expect(page.getByRole("list", { name: "Records" }).getByRole("listitem")).toHaveCount(4, { timeout: 5_000 })
+})
+
+test("a Raw read whose secrets can't be loaded says so and can retry", async ({ page, request }) => {
+  await request.post("/__fixture/run", { data: { id: rid(6), fail: "secrets_unavailable" } })
+  await page.goto(`/runs/${rid(6)}`)
+  await page.getByRole("tab", { name: "Raw" }).click()
+  await expect(page.getByRole("alert")).toHaveText(/Couldn't load the secrets to remove; try again\./)
+  await request.post("/__fixture/run", { data: { id: rid(6), fail: null } })
+  await page.getByRole("button", { name: "Retry" }).click()
+  await expect(page.getByRole("list", { name: "Records" })).toContainText("Quota.")
+})
+
+test("a log this office can't read still downloads; a run with no log doesn't", async ({ page }) => {
+  await page.goto(`/runs/${rid(1)}`)
+  await expect(page.getByRole("link", { name: "Download" })).toBeVisible()
+  await expect(page.getByRole("tab", { name: "Raw" })).toHaveCount(0)
+  await page.goto(`/runs/${rid(4)}`)
+  await expect(page.getByRole("link", { name: "Download" })).toHaveCount(0)
+})
+
+test("on a phone the tabs fit", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/runs/${rid(5)}`)
+  await expect(page.getByRole("tab", { name: "Raw" })).toBeVisible()
+  expect((await page.getByRole("tablist").boundingBox())!.width).toBeLessThanOrEqual(390)
+})
