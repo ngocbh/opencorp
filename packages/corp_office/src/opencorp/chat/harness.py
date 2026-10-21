@@ -36,6 +36,8 @@ from opencorp.questions.format import INTERRUPTED
 from opencorp.runs.outcomes import (ANOTHER_START, COULDNT_RESUME, COULDNT_START, LOOP_LIMIT, NEW_MODEL,
                                     OFFICE as OFFICE_DRIVER, OFFICE_REPLACED, OFFICE_STOPPED, WORKER_REPLACED, WORKER_STOPPED,
                                     RunEnd, flow_label)
+from opencorp.runs.nodes import OpenNodes
+from opencorp.runs.notify import RunNotifier, run_updated
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
 from opencorp.store import InvalidTransition, RunRow, new_id
 from opencorp.tools import ToolContext, build
@@ -161,6 +163,7 @@ class _Live:
     calls: set[_Call] = field(default_factory=set)
     announced: str | None = None  # the run whose run_finished has fired, so it never fires twice
     parent_run_id: str | None = None  # the run this one was started from, for run.updated
+    open_nodes: OpenNodes = field(default_factory=OpenNodes)  # what its worker runs now, for the list
 
 
 class _Handlers(BaseHandlers):
@@ -230,6 +233,7 @@ class Harness:
         self.codex = codex
         self.registry = WorkerRegistry(self.store)
         self.answers = Answers(self.store)
+        self.notifier = RunNotifier(office.bus.publish_meta)
         self.restorers: dict[str, Callable[[Session], RunSpec]] = {"main": self.main_spec}
         self._lock = threading.RLock()
         # One continuation at a time, held across _open (a git commit, a repo load, _choose), so continuations
@@ -668,6 +672,7 @@ class Harness:
             with self._lock:
                 if self._stopping:
                     return
+                live.open_nodes.clear()  # a resumed worker re-emits the starts of the nodes it re-runs
                 live.worker = self.registry.spawn(job, run_dir, _Handlers(self, live, ask, tools))
                 live.waking = False
         except Exception:
@@ -1100,6 +1105,7 @@ class Harness:
         self._thread.join(10)
         if self._thread.is_alive():
             log.warning("harness: the dispatcher is still busy at close")
+        self.notifier.close()  # before the caller closes the store: its events read the session
         self._unlisten()
         self.answers.close()
         # Request threads outlive their workers; let them leave the store before the office closes it.
@@ -1107,6 +1113,19 @@ class Harness:
             if not self._calls_idle.wait_for(lambda: self._calls == 0, timeout=10):
                 log.warning("harness: %d tool or ask_user calls still running at close", self._calls)
             self._closed = True
+
+    def live_runs(self) -> tuple[dict[str, str], frozenset[str]]:
+        """Each session's live run id, and the sessions being woken or finishing (a snapshot). A finishing session's
+        run is still writing its outcome after ``_finish`` dropped it, so it isn't taken for one that stopped."""
+        with self._lock:
+            live = {sid: live.run_id for sid, live in self._live.items()}
+            return live, frozenset(self._waking) | frozenset(self._finishing)
+
+    def open_nodes(self, run_id: str) -> list[str]:
+        """The nodes the live run ``run_id`` is executing now, deepest only; empty if it isn't live."""
+        with self._lock:
+            live = next((x for x in self._live.values() if x.run_id == run_id), None)
+        return live.open_nodes.current() if live is not None else []
 
     # --- turns ---------------------------------------------------------------------
 
@@ -1245,9 +1264,24 @@ class Harness:
                 live.reply_node, live.next_reply = node_id, None
             elif name in _ENDED and node_id is not None and node_id == live.reply_node:
                 live.reply_node = None
+        if live.open_nodes.apply(name, data):
+            run_id = live.run_id
+            self.notifier.changed(run_id, lambda: self._run_updated(live, run_id))
         live.transcript.event(name, data)
         if name == "ModelCallFinished" and data.get("usage"):
             self._charge(live, data)
+
+    def _run_updated(self, live: _Live, run_id: str) -> Event | None:
+        """``live``'s run.updated while it is still the session's live run on ``run_id``: its session's waiting or
+        idle, else running, and its open nodes. Nothing once ``_finish`` has dropped it, so a trailing event can't say
+        running after the outbox said the run ended."""
+        with self._lock:
+            current = self._current(live)
+        if not current or live.run_id != run_id:
+            return None
+        status = self.store.get_session(live.session_id).status
+        return run_updated(run_id, live.session_id, live.parent_run_id,
+                           status if status in ("waiting", "idle") else "running", live.open_nodes.current())
 
     def _charge(self, live: _Live, data: dict[str, Any]) -> None:
         usage = data["usage"]
@@ -1353,6 +1387,7 @@ class Harness:
                     driver=old.driver if old else (live.owner or OFFICE_DRIVER),
                     parent_run_id=old.parent_run_id if old else None, launched_at=at))
             old_run, live.run_id, live.parent_run_id = live.run_id, run_id, row.parent_run_id
+            live.open_nodes.clear()  # the new run has run nothing yet
             for q in self.store.list_questions(run_id=old_run, status="open"):
                 self.store.set_question_status(q.id, "stale")
         except Exception:

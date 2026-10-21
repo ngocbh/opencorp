@@ -24,8 +24,10 @@ from opencorp.profile.debrief import (DEBRIEF_FLOW, apprentice_header, confirm_f
 from opencorp.profile.feedback import FeedbackHandlers, find_committed, next_status, read_commit_log
 from opencorp.profile.manager import MANAGER_FLOW, ProposalNotOpen, apply_proposal, manager_spec
 from opencorp.protocol import now
-from opencorp.protocol.models import (CompanyDefaults, Debrief, Feedback, FeedbackRequest, Profile, ProfileProposal,
-                                        Session)
+from opencorp.protocol.models import (CompanyDefaults, Debrief, Event, Feedback, FeedbackRequest, Profile,
+                                        ProfileProposal, Session)
+from opencorp.runs.nodes import OpenNodes
+from opencorp.runs.notify import run_updated
 from opencorp.runs.outcomes import BAD_OUTPUT, COULDNT_START, DEBRIEF, OFFICE, RunEnd
 from opencorp.store import RunRow, new_id
 from opencorp.worker import Job, ProfileMemorySpec, Worker, group_specs
@@ -62,6 +64,8 @@ class Learning:
         self._active: dict[str, Worker | None] = {}  # session id -> its debrief or backward worker
         self._waiting: set[str] = set()  # feedback that failed and waits for the next tick
         self._keys: set[str] = set()  # model keys our jobs were given, scrubbed from what we log
+        self._debriefs: dict[str, tuple[str, str | None]] = {}  # session id -> (its debrief run in flight, its parent)
+        self._open: dict[str, OpenNodes] = {}  # debrief run id -> its open nodes
         self._jobs: queue.Queue[tuple[Callable[..., Any], tuple[Any, ...]] | None] = queue.Queue()
         self._thread = threading.Thread(target=self._run, name="learning", daemon=True)
         self._timer: threading.Timer | None = None
@@ -275,14 +279,18 @@ class Learning:
                     self.store.update_session(session.id, status="ended")
                 return False
             # The row comes before anything that can fail, so a debrief that can't start still shows, failed.
-            self.store.add_run(RunRow(run_id=run_id, session_id=session.id, flow=DEBRIEF, flow_path=DEBRIEF_FLOW,
-                                      driver=OFFICE, parent_run_id=session.run_ids[-1] if session.run_ids else None,
-                                      launched_at=now()))
+            row = self.store.add_run(RunRow(run_id=run_id, session_id=session.id, flow=DEBRIEF,
+                                            flow_path=DEBRIEF_FLOW, driver=OFFICE,
+                                            parent_run_id=session.run_ids[-1] if session.run_ids else None,
+                                            launched_at=now()))
+            with self._lock:
+                self._debriefs[session.id] = (run_id, row.parent_run_id)
             if record is None:
                 self.store.save_debrief(pending_debrief(session))  # the session shows "debrief pending" meanwhile
             job, stores = self._debrief_job(session, run_id, kind="chat")
             handlers = FeedbackHandlers(stores=stores,
-                                        exited=lambda outcome: self._post(self._debriefed, session.id, run_id, outcome))
+                                        exited=lambda outcome: self._post(self._debriefed, session.id, run_id, outcome),
+                                        on_event=lambda name, data: self._node_event(session.id, run_id, name, data))
             self._started(session.id, self.registry.spawn(job, self._run_dir(session.id), handlers))
             spawned = True
         except Exception as exc:
@@ -300,33 +308,72 @@ class Learning:
         """Store a debrief attempt's result (``started`` False: it never spawned), with its run's outcome and the
         session's end."""
         self._release(session_id)
-        session = self.store.get_session(session_id)
-        record = self.store.get_debrief_record(session_id)
-        attempts = (record.attempts if record else 0) + 1
-        debrief, why = None, COULDNT_START
-        if not started:
-            log.warning("the debrief of session %s couldn't start", session_id)
-        elif outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
-            try:
-                debrief = ready_debrief(session, outcome["output"])
-            except (KeyError, TypeError, ValidationError) as exc:
-                self._log_exception(exc, "the debrief of session %s returned a bad output", session_id)
-                why = BAD_OUTPUT
-        else:
-            why = self._failure(outcome)
-            log.warning("the debrief of session %s failed: %s", session_id, why)
-        end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
-        with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
-            if debrief is not None:
-                self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
+        with self._lock:
+            self._open.pop(run_id, None)  # its trailing run.updated sends nothing now
+        try:
+            session = self.store.get_session(session_id)
+            record = self.store.get_debrief_record(session_id)
+            attempts = (record.attempts if record else 0) + 1
+            debrief, why = None, COULDNT_START
+            if not started:
+                log.warning("the debrief of session %s couldn't start", session_id)
+            elif outcome is not None and outcome.get("type") == "result" and outcome.get("status") == "succeeded":
+                try:
+                    debrief = ready_debrief(session, outcome["output"])
+                except (KeyError, TypeError, ValidationError) as exc:
+                    self._log_exception(exc, "the debrief of session %s returned a bad output", session_id)
+                    why = BAD_OUTPUT
             else:
-                self.store.save_debrief(pending_debrief(session), attempts=attempts)
-            self.store.end_run(run_id, end.outcome, reason=end.reason)
-            if session.status == "debriefing":
-                self.store.update_session(session_id, status="ended")
-        if debrief is not None:
-            self._mark_finished(session_id, run_id)  # once the debrief is stored: feedback needs its run
+                why = self._failure(outcome)
+                log.warning("the debrief of session %s failed: %s", session_id, why)
+            end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
+            with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
+                if debrief is not None:
+                    self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
+                else:
+                    self.store.save_debrief(pending_debrief(session), attempts=attempts)
+                self.store.end_run(run_id, end.outcome, reason=end.reason)
+                if session.status == "debriefing":
+                    self.store.update_session(session_id, status="ended")
+            if debrief is not None:
+                self._mark_finished(session_id, run_id)  # once the debrief is stored: feedback needs its run
+        finally:  # claimed until its outcome is stored, so it never reads as one that stopped without one
+            with self._lock:
+                if self._debriefs.get(session_id, (None, None))[0] == run_id:
+                    del self._debriefs[session_id]
         self._drain(session_id)
+
+    def debriefing(self) -> dict[str, str]:
+        """Each session's debrief run in flight, by session id (a snapshot): the run shows running until it ends,
+        however long its worker hangs."""
+        with self._lock:
+            return {sid: run_id for sid, (run_id, _) in self._debriefs.items()}
+
+    def open_nodes(self, run_id: str) -> list[str]:
+        """The nodes the debrief run ``run_id`` is executing now; empty when none is in flight."""
+        with self._lock:
+            nodes = self._open.get(run_id)
+        return nodes.current() if nodes is not None else []
+
+    def _node_event(self, session_id: str, run_id: str, name: str, data: dict[str, Any]) -> None:
+        """A debrief worker's event frame (on its reader thread): keep its open nodes; send run.updated on a
+        change."""
+        with self._lock:
+            if self._debriefs.get(session_id, (None, None))[0] != run_id:
+                return
+            nodes = self._open.setdefault(run_id, OpenNodes())
+        if nodes.apply(name, data):
+            self.harness.notifier.changed(run_id, lambda: self._debrief_updated(session_id, run_id))
+
+    def _debrief_updated(self, session_id: str, run_id: str) -> Event | None:
+        """The debrief run ``run_id``'s run.updated while it is in flight; nothing once ``_debriefed`` took its end,
+        so a trailing event can't say running after the outbox said the run ended."""
+        with self._lock:
+            run_id_now, parent = self._debriefs.get(session_id, (None, None))
+            nodes = self._open.get(run_id)
+        if run_id_now != run_id or nodes is None:
+            return None
+        return run_updated(run_id, session_id, parent, "running", nodes.current())
 
     def _drain(self, session_id: str) -> None:
         """Start a backward job for the session's oldest queued feedback once nothing else of it runs."""
