@@ -9,7 +9,7 @@ from opencorp.protocol.models import RunPage, RunSummary
 from opencorp.runs.known import KnownValues, SecretsUnavailable
 from opencorp.runs.records import Live, Summaries
 from opencorp.runs.scrub import Scrubber
-from opencorp.store import REASON_CHARS, RunRow
+from opencorp.store import RunRow, cut_reason
 
 PAGE = 50
 BATCH = 100
@@ -80,7 +80,7 @@ class RunLogs:
             scrubber = await self.scrubber()
         except SecretsUnavailable:
             return lambda text: REASON_HIDDEN
-        return lambda text: scrubber.text(text)[:REASON_CHARS]
+        return lambda text: cut_reason(scrubber.text(text))
 
     def live(self) -> Live:
         """What the harness and learning hold now."""

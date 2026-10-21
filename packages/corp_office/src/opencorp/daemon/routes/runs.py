@@ -25,10 +25,8 @@ def int_param(raw: str | None, name: str, low: int, high: int, default: int) -> 
     """Query parameter ``name`` as an integer from ``low`` to ``high`` (``default`` when absent); ``422`` otherwise."""
     if raw is None:
         return default
-    try:
-        value = int(raw)
-    except ValueError:
-        value = low - 1
+    # ASCII digits only: int() also takes signs, spaces, underscores and other scripts' digits.
+    value = int(raw) if raw.isascii() and raw.isdigit() and len(raw) <= 9 else low - 1
     if not low <= value <= high:
         raise HTTPError(422, "invalid_body", f"{name} must be an integer from {low} to {high}")
     return value

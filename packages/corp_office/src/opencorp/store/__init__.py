@@ -17,6 +17,7 @@ from opencorp.store.store import (
     UsageRecord,
     WorkedFolder,
     WorkerRecord,
+    cut_reason,
     new_id,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "UsageRecord",
     "WorkedFolder",
     "WorkerRecord",
+    "cut_reason",
     "migrate",
     "new_id",
 ]

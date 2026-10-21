@@ -11,7 +11,7 @@ from opencorp.runs import service
 from opencorp.runs.known import SecretsUnavailable
 from opencorp.runs.scrub import Scrubber
 from opencorp.runs.service import REASON_HIDDEN, RunLogs
-from opencorp.store import RunRow, new_id
+from opencorp.store import REASON_CHARS, RunRow, new_id
 from tests.store.conftest import session, store  # noqa: F401
 
 T = "2026-10-20T10:00:00.000Z"
@@ -153,7 +153,8 @@ async def test_a_seven_day_query_over_many_old_runs_scans_only_the_rows_in_range
         return rows
 
     monkeypatch.setattr(store, "run_page", counted)
-    page = await runs_for(store).page(status=["running", "waiting", "idle", "finished"], since="2026-10-13T10:00:00.000Z")
+    wanted = {"status": ["running", "waiting", "idle", "finished"], "since": "2026-10-13T10:00:00.000Z"}
+    page = await runs_for(store).page(**wanted)
     assert ids(page) == [old_parent] and page.next is None  # its child finished in range
     assert {r.run_id for r in scanned} == {*recent, old_parent} and old and newer_old  # no other old row reached Python
 
@@ -335,3 +336,12 @@ async def test_children_are_read_only_when_they_can_match(store, monkeypatch):  
     assert asked == [{"since": None, "until": None, "open_only": True},
                      {"since": "2026-10-13T00:00:00.000Z", "until": None, "open_only": False}]
     assert open_kid.parent_run_id == top
+
+
+async def test_a_reason_the_scrub_lengthens_is_cut_as_the_store_cuts_it(store):  # noqa: F811
+    short = "k3y-v4l-9"  # 9 characters, hidden as "[redacted]" (10)
+    reason = "x" * 191 + short  # REASON_CHARS as stored, one more once scrubbed
+    top = chat_with(store, outcome="failed", reason=reason)
+    assert len(store.get_run(top).reason) == REASON_CHARS
+    (row,) = (await runs_for(store, Known([short])).page()).runs
+    assert len(row.reason) == REASON_CHARS and row.reason.endswith("…") and short not in row.reason

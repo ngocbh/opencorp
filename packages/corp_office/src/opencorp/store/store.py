@@ -218,6 +218,11 @@ REASON_CHARS = 200
 """The longest reason a run's outcome keeps."""
 
 
+def cut_reason(reason: str) -> str:
+    """``reason`` cut to REASON_CHARS, ending in "…" when cut."""
+    return reason if len(reason) <= REASON_CHARS else reason[:REASON_CHARS - 1] + "…"
+
+
 @dataclass(frozen=True)
 class RunRow:
     """A launched run as the runs table keeps it: written at launch, then once more when the office learns it ended
@@ -253,7 +258,8 @@ _CHILD_PAGE_SQL = ("SELECT * FROM runs WHERE parent_run_id = ? AND run_id < COAL
 _PAGE_IN_RANGE_SQL = (
     "SELECT * FROM runs WHERE run_id IN ("
     f"SELECT run_id FROM runs INDEXED BY runs_launched WHERE parent_run_id IS NULL AND {_IN_RANGE} "
-    f"UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched WHERE parent_run_id IS NOT NULL AND {_IN_RANGE}"
+    "UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched "
+    f"WHERE parent_run_id IS NOT NULL AND {_IN_RANGE}"
     ") AND parent_run_id IS NULL AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
 
 
@@ -924,8 +930,7 @@ class Store:
 
         Returns whether it wrote one. ``reason`` is cut to REASON_CHARS.
         """
-        if reason is not None and len(reason) > REASON_CHARS:
-            reason = reason[:REASON_CHARS - 1] + "…"
+        reason = None if reason is None else cut_reason(reason)
         with self.transaction() as tx:
             done = tx.execute("UPDATE runs SET outcome = ?, reason = ?, failed_node = ?, ended_at = ? "
                               "WHERE run_id = ? AND outcome IS NULL",

@@ -67,7 +67,8 @@ async def test_a_bearer_token_in_a_failure_never_reaches_get_runs(office, client
 
 @pytest.mark.parametrize("params", [
     {"status": "busy"}, {"status": "failed,"}, {"status": "failed,busy"}, {"limit": "0"}, {"limit": "201"},
-    {"limit": "x"}, {"since": "yesterday"}, {"until": "2026-10-20T10:00:00"}, {"since": "2026-13-01T00:00:00Z"},
+    {"limit": "x"}, {"limit": "+5"}, {"limit": " 5"}, {"limit": "1_0"}, {"limit": "9" * 5000}, {"since": "yesterday"},
+    {"until": "2026-10-20T10:00:00"}, {"since": "2026-13-01T00:00:00Z"},
     {"parent": "01K0000000000000000000000Z", "status": "busy"}, {"parent": "01K0000000000000000000000Z", "limit": "0"},
 ])
 async def test_get_runs_refuses_a_bad_status_limit_or_time(office, client, params):
