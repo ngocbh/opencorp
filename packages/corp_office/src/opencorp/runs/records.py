@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from opencorp.chat.turns import MAIN_CHAT
 from opencorp.protocol.models import Question, RunSummary, Session
 from opencorp.runs.outcomes import DEBRIEF, FLOWS
-from opencorp.store import RunRow, Store
+from opencorp.store import RunRow, Store, cut_reason
 
 log = logging.getLogger(__name__)
 
@@ -91,11 +91,13 @@ class Summaries:
 
     ``live`` is read before the store; ``fresh`` (when given) reads memory again after the store reads of each build,
     and the two are merged. A run that ends between the reads is live in the first and still open in the store; one
-    that starts between them is live in the second.
+    that starts between them is live in the second. ``clean`` makes a stored reason one to show (by default, only cut
+    to REASON_CHARS).
     """
 
-    def __init__(self, store: Store, live: Live, *, fresh: Callable[[], Live] | None = None) -> None:
-        self.store, self.live, self.fresh = store, live, fresh
+    def __init__(self, store: Store, live: Live, *, fresh: Callable[[], Live] | None = None,
+                 clean: Callable[[str], str] = cut_reason) -> None:
+        self.store, self.live, self.fresh, self.clean = store, live, fresh, clean
 
     def build(self, rows: list[RunRow], *, children: Mapping[str, list[RunRow]] | None = None
               ) -> dict[str, RunSummary]:
@@ -133,7 +135,8 @@ class Summaries:
             run_id=row.run_id, session_id=row.session_id, flow=row.flow, flow_path=row.flow_path,
             person=session.person, driver=row.driver,
             participants=participants(row.driver, session.person, [*answerers, *openers]),
-            parent_run_id=row.parent_run_id, status=status, reason=reason, failed_node=row.failed_node,
+            parent_run_id=row.parent_run_id, status=status, reason=self.clean(reason) if reason else None,
+            failed_node=row.failed_node,
             current_nodes=nodes, asking=asking, held=held, codex=row.flow == DEBRIEF and session.harness == "codex",
             launched_at=row.launched_at, ended_at=row.ended_at, replaces=neighbours[0], replaced_by=neighbours[1],
             children_total=children_total)

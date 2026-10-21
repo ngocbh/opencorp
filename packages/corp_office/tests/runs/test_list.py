@@ -345,3 +345,10 @@ async def test_a_reason_the_scrub_lengthens_is_cut_as_the_store_cuts_it(store): 
     assert len(store.get_run(top).reason) == REASON_CHARS
     (row,) = (await runs_for(store, Known([short])).page()).runs
     assert len(row.reason) == REASON_CHARS and row.reason.endswith("…") and short not in row.reason
+
+
+async def test_a_known_value_across_the_shown_length_is_removed_whole(store):  # noqa: F811
+    top = chat_with(store, outcome="failed", reason="z" * 186 + KEY)  # the key runs from 186 to 211
+    (row,) = (await runs_for(store, Known([KEY])).page()).runs
+    assert row.reason == "z" * 186 + "[redacted]"
+    assert not any(KEY[i:] in row.reason for i in range(len(KEY) - 3)) and row.run_id == top

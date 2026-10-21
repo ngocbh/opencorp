@@ -143,3 +143,14 @@ def test_a_build_reads_memory_again_after_the_store(store):  # noqa: F811
 
     built = Summaries(store, Live(), fresh=fresh).build([store.get_run(run_id)])
     assert built[run_id].status == "running" and reads == ["fresh"]
+
+
+def test_a_long_stored_reason_is_cut_to_be_shown(store):  # noqa: F811
+    s = store.create_session(session(status="ended"))
+    run_id = new_id()
+    store.add_run(row(s, run_id))
+    store.end_run(run_id, "failed", reason="x" * 1500)
+    (built,) = Summaries(store, Live()).build([store.get_run(run_id)]).values()
+    assert len(built.reason) == 200 and built.reason.endswith("…")
+    cleaned = Summaries(store, Live(), clean=lambda text: text[:3]).build([store.get_run(run_id)])
+    assert cleaned[run_id].reason == "xxx"

@@ -3,6 +3,7 @@
 from opencorp.store.migrate import MigrationError, migrate
 from opencorp.store.store import (
     REASON_CHARS,
+    REASON_KEPT,
     AuditEntry,
     DebriefRecord,
     DuplicateKey,
@@ -23,6 +24,7 @@ from opencorp.store.store import (
 
 __all__ = [
     "REASON_CHARS",
+    "REASON_KEPT",
     "AuditEntry",
     "DebriefRecord",
     "DuplicateKey",

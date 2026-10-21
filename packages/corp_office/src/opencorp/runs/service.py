@@ -21,12 +21,6 @@ OPEN_STATUSES = frozenset({"running", "waiting", "idle"})
 """The statuses of a run with no outcome only (an interrupted one may have either)."""
 
 
-def _cleaned(run: RunSummary, clean: Callable[[str], str]) -> RunSummary:
-    """``run`` and its children with each reason through ``clean``."""
-    return run.model_copy(update={"reason": clean(run.reason) if run.reason else None,
-                                  "children": [_cleaned(c, clean) for c in run.children]})
-
-
 @dataclass(frozen=True)
 class RunFilter:
     """The list's filters: a run matches all that are set (any one of ``statuses``); ``since`` and ``until`` bound its
@@ -74,8 +68,9 @@ class RunLogs:
         return Scrubber(()) if self.known is None else await self.known.scrubber()
 
     async def _reasons(self) -> Callable[[str], str]:
-        """How reasons are cleaned to be shown: the full scrub; REASON_HIDDEN for each when the known values can't be
-        read, so the list and a run's header still answer."""
+        """How reasons are cleaned to be shown: the full scrub, then the cut to REASON_CHARS (after, so no secret is
+        cut in two before it's found); REASON_HIDDEN for each when the known values can't be read, so the list and a
+        run's header still answer."""
         try:
             scrubber = await self.scrubber()
         except SecretsUnavailable:
@@ -102,7 +97,7 @@ class RunLogs:
         when it or a run it started matches. Each carries how many runs it started, not the runs; reasons are
         scrubbed with the known values of now."""
         wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until)
-        return await self._served(asyncio.to_thread(self._page, wanted, None, before, limit))
+        return await asyncio.to_thread(self._page, wanted, None, before, limit, await self._reasons())
 
     async def children(self, parent: str, *, flow: str | None = None, person: str | None = None,
                        status: Iterable[str] = (), q: str | None = None, since: str | None = None,
@@ -110,14 +105,10 @@ class RunLogs:
         """The runs started from run ``parent`` that match the filters, paged as ``page`` is; LookupError if
         ``parent`` has no row."""
         wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until)
-        return await self._served(asyncio.to_thread(self._page, wanted, parent, before, limit))
+        return await asyncio.to_thread(self._page, wanted, parent, before, limit, await self._reasons())
 
-    async def _served(self, read: Any) -> RunPage:
-        page = await read
-        clean = await self._reasons()
-        return page.model_copy(update={"runs": [_cleaned(r, clean) for r in page.runs]})
-
-    def _page(self, wanted: RunFilter, parent: str | None, before: str | None, limit: int) -> RunPage:
+    def _page(self, wanted: RunFilter, parent: str | None, before: str | None, limit: int,
+              clean: Callable[[str], str]) -> RunPage:
         """A page of top-level runs, or of ``parent``'s children, from the store and memory (blocking).
 
         The store pages rows in the launch range. Other filters are applied to summaries built a batch of rows at a
@@ -126,7 +117,7 @@ class RunLogs:
         Memory is read first, then every store read is one snapshot, then memory again per batch (``Summaries``): a
         run that ends or starts while the page is built never reads as interrupted.
         """
-        summaries = Summaries(self.store, self.live(), fresh=self.live)
+        summaries = Summaries(self.store, self.live(), fresh=self.live, clean=clean)
         with self.store.snapshot():
             if parent is not None and self.store.get_run(parent) is None:
                 raise LookupError(parent)

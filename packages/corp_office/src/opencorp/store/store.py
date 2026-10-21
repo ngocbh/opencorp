@@ -215,12 +215,15 @@ class HqSessionRecord:
 _HQ_COLUMNS = tuple(f.name for f in fields(HqSessionRecord))
 
 REASON_CHARS = 200
-"""The longest reason a run's outcome keeps."""
+"""The longest reason a run's outcome shows."""
+REASON_KEPT = 2_000
+"""The longest reason a run's outcome keeps. Well past REASON_CHARS: a reason is cut to be shown only after its secrets
+are removed, and a secret the cut would split is still whole when that runs."""
 
 
-def cut_reason(reason: str) -> str:
-    """``reason`` cut to REASON_CHARS, ending in "…" when cut."""
-    return reason if len(reason) <= REASON_CHARS else reason[:REASON_CHARS - 1] + "…"
+def cut_reason(reason: str, limit: int = REASON_CHARS) -> str:
+    """``reason`` cut to ``limit`` characters, ending in "…" when cut."""
+    return reason if len(reason) <= limit else reason[:limit - 1] + "…"
 
 
 @dataclass(frozen=True)
@@ -928,9 +931,9 @@ class Store:
                 at: str | None = None) -> bool:
         """Write a run's outcome (ended now, or at ``at``) and emit ``run.updated``, unless it has one already.
 
-        Returns whether it wrote one. ``reason`` is cut to REASON_CHARS.
+        Returns whether it wrote one. ``reason`` is cut to REASON_KEPT.
         """
-        reason = None if reason is None else cut_reason(reason)
+        reason = None if reason is None else cut_reason(reason, REASON_KEPT)
         with self.transaction() as tx:
             done = tx.execute("UPDATE runs SET outcome = ?, reason = ?, failed_node = ?, ended_at = ? "
                               "WHERE run_id = ? AND outcome IS NULL",

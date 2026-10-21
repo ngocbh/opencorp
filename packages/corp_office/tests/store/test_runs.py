@@ -38,10 +38,15 @@ def test_a_parent_with_no_row_is_not_kept(store):  # noqa: F811
 def test_an_outcome_is_written_once_and_its_reason_capped(store):  # noqa: F811
     s = store.create_session(session())
     row = store.add_run(launch(s))
-    assert store.end_run(row.run_id, "failed", reason="x" * 300, failed_node="chat#0/reply", at=T)
+    assert store.end_run(row.run_id, "failed", reason="x" * 3000, failed_node="chat#0/reply", at=T)
     assert not store.end_run(row.run_id, "finished", at=T)
     got = store.get_run(row.run_id)
-    assert (got.outcome, len(got.reason), got.failed_node, got.ended_at) == ("failed", 200, "chat#0/reply", T)
+    assert (got.outcome, len(got.reason), got.failed_node, got.ended_at) == ("failed", 2000, "chat#0/reply", T)
+    assert got.reason.endswith("…")
+    # Kept whole well past what's shown: a secret across the shown length is still whole when the reason is scrubbed.
+    other = store.add_run(launch(s))
+    store.end_run(other.run_id, "failed", reason="x" * 300)
+    assert store.get_run(other.run_id).reason == "x" * 300
 
 
 def test_a_second_outcome_or_an_unknown_run_sends_no_event(store):  # noqa: F811
