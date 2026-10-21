@@ -124,3 +124,11 @@ async def test_runs_are_on_the_allowlist(signed_in, office):
 
 async def test_runs_need_a_session(web):
     assert (await web.get("/api/runs")).status_code == 401
+
+
+async def test_one_runs_routes_are_on_the_allowlist(signed_in, office):
+    from tests.daemon.test_routes_runs import with_log
+
+    run_id = with_log(office)
+    for path in ("", "/nodes", "/events", "/events/0", "/log"):
+        assert (await signed_in.get(f"/api/runs/{run_id}{path}")).status_code == 200, path

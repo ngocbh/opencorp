@@ -22,7 +22,7 @@ from opencorp.daemon.routes.costs import costs
 from opencorp.daemon.routes.devices import whoami
 from opencorp.daemon.routes.events import PING_S, RESET, frame
 from opencorp.daemon.routes.questions import list_questions
-from opencorp.daemon.routes.runs import list_runs
+from opencorp.daemon.routes.runs import get_run, list_runs, run_event, run_events, run_log, run_nodes
 from opencorp.daemon.routes.sessions import list_sessions
 from opencorp.daemon.routes.work_items import get_work_item
 from opencorp.hq.auth import BrowserAuth, cookie_name, cookie_value
@@ -237,6 +237,11 @@ def create_hq_app(office: Office, hq: Hq, *, port: int | None) -> ASGIApp:
         Route("/sessions", list_sessions, methods=["GET"]),
         Route("/questions", list_questions, methods=["GET"]),
         Route("/runs", list_runs, methods=["GET"]),
+        Route("/runs/{id}", get_run, methods=["GET"]),
+        Route("/runs/{id}/nodes", run_nodes, methods=["GET"]),
+        Route("/runs/{id}/events", run_events, methods=["GET"]),
+        Route("/runs/{id}/events/{seq}", run_event, methods=["GET"]),
+        Route("/runs/{id}/log", run_log, methods=["GET"]),
         Route("/work-items/{id}", get_work_item, methods=["GET"]),
         Route("/costs", costs, methods=["GET"]),
         Route("/events", events, methods=["GET"]),
