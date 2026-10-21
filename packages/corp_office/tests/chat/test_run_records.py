@@ -477,3 +477,36 @@ def test_a_removed_connection_stops_serving_turns_even_when_the_default_cant_be_
     session = harness.store.get_session(sid)
     assert session.model_note == "Connection 'second' was removed; this chat now uses office."
     assert errors(harness, sid) and sid not in harness._live
+
+
+def test_a_run_with_no_log_starts_fresh_without_a_note(make_harness, fake_llm, workspace):
+    first = make_harness()
+    sid = start(first, workspace)
+    first.close_all()
+    run_id = first.store.get_session(sid).run_ids[-1]
+    (first.office.paths.run_dir(sid) / "runs" / f"{run_id}.jsonl").unlink()  # its worker never started
+    first.store.update_session(sid, status="busy")  # so restore resumes it now
+
+    second = make_harness()
+    jobs = spawned(second, lambda job: job.kind)
+    second.restore()
+    wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the fresh turn")
+    session = second.store.get_session(sid)
+    assert jobs == ["chat"] and len(session.run_ids) == 2 and session.model_note is None
+
+
+def test_a_fresh_run_that_cant_be_recorded_leaves_the_old_runs_questions_open(make_harness, fake_llm, workspace,
+                                                                             monkeypatch):
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(harness, workspace)
+    old = harness.store.get_session(sid).run_ids
+    rewrite_office(harness, api_key="sk-another-key")
+
+    def unrecorded(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(harness.store, "add_session_run", unrecorded)
+    harness.prompt(sid, "a")  # the key changed, so a fresh run would take it
+    wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
+    # Nothing was staled before the recording failed (in an office, Cards.ended expires them with the session).
+    assert [q.status for q in harness.store.list_questions(run_id=old[-1])] == ["open"]

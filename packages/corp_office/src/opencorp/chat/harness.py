@@ -529,7 +529,10 @@ class Harness:
         try:
             stored = self.store.get_session(live.session_id)
             session = self._choice(stored)
+            never_ran = not self._log_path(live).exists()  # a fresh run whose worker couldn't spawn
             try:
+                if never_ran:
+                    raise RunMoved("the run never started")
                 record = read_run_record(self._record_path(live))
                 ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
                 if ran_on != (session.connection or OFFICE, session.model):
@@ -539,8 +542,10 @@ class Harness:
                 # Resuming would replay the run's own endpoint and config with whatever key it is given.
                 log.info("session %s starts a fresh run: %s", live.session_id, exc)
                 provider = None
-                if session is stored:  # a chat _choice moved has its removal note, which says more
-                    self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
+                # A chat _choice moved has its removal note, which says more; a run that never started needs none.
+                if session is stored and not never_ran:
+                    self.store.update_session(live.session_id,
+                                              model_note=_WOKEN_NOTE if live.waking else _FRESH_NOTE)
         except Exception:
             self._cant_start(live)
             raise
@@ -1045,10 +1050,10 @@ class Harness:
         If it can't start, the session fails and the error is raised.
         """
         try:
-            for q in self.store.list_questions(run_id=live.run_id, status="open"):
-                self.store.set_question_status(q.id, "stale")
             run_id = new_id()
             self.store.add_session_run(live.session_id, run_id)
+            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                self.store.set_question_status(q.id, "stale")
             live.run_id = run_id
         except Exception:
             self._cant_start(live)
