@@ -309,7 +309,8 @@ const RUN_STATUSES = ["running", "waiting", "idle", "finished", "failed", "inter
 /** GET /api/runs as the office answers it: top-level runs newest first, each with `children_total` and no children, a
  * parent shown when it or a child matches, `limit` (50) at a time from `before`; `?parent=` pages one run's children
  * that match, the same way. `status` is a comma-separated list (any matches); `since` (inclusive) and `until`
- * (exclusive) bound `launched_at`; a bad one of these is a 422. */
+ * (exclusive) bound `launched_at`; `recent` keeps open runs (running, waiting, idle) and those launched at or after it,
+ * and can't go with `since` or `until`; a bad one of these is a 422. */
 function listRuns(url: URL): Response {
   const p = url.searchParams
   log.runs.push(url.search)
@@ -317,13 +318,17 @@ function listRuns(url: URL): Response {
   const statuses = p.get("status")?.split(",") ?? []
   const unknown = statuses.find((s) => !RUN_STATUSES.includes(s))
   if (unknown !== undefined) return json({ error: "invalid_body", message: `unknown status ${unknown}` }, 422)
-  const [since, until] = ["since", "until"].map((k) => (p.has(k) ? Date.parse(p.get(k)!) : null))
-  if (Number.isNaN(since) || Number.isNaN(until))
-    return json({ error: "invalid_body", message: "since and until are ISO timestamps" }, 422)
+  const [since, until, recent] = ["since", "until", "recent"].map((k) => (p.has(k) ? Date.parse(p.get(k)!) : null))
+  if (Number.isNaN(since) || Number.isNaN(until) || Number.isNaN(recent))
+    return json({ error: "invalid_body", message: "since, until and recent are ISO timestamps" }, 422)
+  if (recent !== null && (since !== null || until !== null))
+    return json({ error: "invalid_body", message: "recent can't be combined with since or until" }, 422)
+  const open = (r: RunSummary) => ["running", "waiting", "idle"].includes(r.status)
   const match = (r: RunSummary) =>
     (!flow || r.flow === flow) && (!person || r.driver === person || (r.participants ?? []).includes(person)) &&
     (!statuses.length || statuses.includes(r.status)) && (!q || r.run_id.includes(q.toUpperCase())) &&
-    (since === null || Date.parse(r.launched_at) >= since) && (until === null || Date.parse(r.launched_at) < until)
+    (since === null || Date.parse(r.launched_at) >= since) && (until === null || Date.parse(r.launched_at) < until) &&
+    (recent === null || open(r) || Date.parse(r.launched_at) >= recent)
   const kids = (id: string) => state.runs.children[id] ?? []
   const parent = p.get("parent")
   let shown: RunSummary[]

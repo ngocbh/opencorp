@@ -19,8 +19,8 @@ const BUTTON = "rounded underline outline-none focus-visible:ring-2 focus-visibl
 const same = <T,>(a: T, b: T) => JSON.stringify(a) === JSON.stringify(b)
 
 /**
- * Work › Run Logs: every run the office launched, filtered by the query in the address (open runs from the last 7
- * days when it has none), newest first, kept current.
+ * Work › Run Logs: every run the office launched, filtered by the query in the address (`is:recent` when it has none:
+ * open runs and those started in the last 7 days), newest first, kept current.
  */
 export default function Runs() {
   const office = useOffice()

@@ -71,3 +71,19 @@ test("Acme: six people, two groups, a broken file, three live sessions, two card
   expect((await (await request.get("/api/questions")).json()).map((q: { id: string }) => q.id)).toEqual(["Q-kai", "Q-lead"])
   expect((await (await request.get("/api/costs?since=x")).json()).people.minh).toEqual({ usd: 0, unpriced_sessions: 1 })
 })
+
+test("the fixture's /api/runs?recent=: open runs of any age or launched since, never with since or until", async ({ request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true } })
+  const recent = new Date(Date.now() - 7 * 86_400_000).toISOString()
+  const now = new Date().toISOString()
+  const parent = "01JA1H00000000000000000005"
+  const ids = async (query: string) =>
+    ((await (await request.get(`/api/runs?${query}`)).json()).runs as { run_id: string }[]).map((r) => r.run_id.slice(-1))
+  expect(await ids(`recent=${recent}`)).toEqual(["5", "4", "3", "2", "1"])
+  expect(await ids(`recent=${now}`)).toEqual(["5", "3"]) // every run started earlier: only the open ones
+  expect(await ids(`parent=${parent}&recent=${recent}`)).toEqual(["6"])
+  expect(await ids(`parent=${parent}&recent=${now}`)).toEqual([])
+  for (const query of [`recent=${recent}&since=${recent}`, `recent=${recent}&until=${now}`, "recent=x",
+                       `parent=${parent}&recent=${recent}&until=${now}`])
+    expect((await request.get(`/api/runs?${query}`)).status()).toBe(422)
+})
