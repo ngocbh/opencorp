@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from opencorp.protocol.models import RunEvent, RunEventPage
+from opencorp.store import cut_reason
 
 SCHEMAS = frozenset({9})
 """The run-log schemas this office reads: Yian's SCHEMA_VERSION at the submodule pin. The bump to yian#940 adds 10."""
@@ -39,8 +40,9 @@ LRU_LOGS = 128
 ERROR_CHARS = 200
 """How much of a node's error is shown, cut after the scrub."""
 ERROR_KEPT = 1 << 10
-"""How much of a node's error the index keeps: enough that a key crossing the ERROR_CHARS cut is whole for the scrub
-(keys are well under 800 characters), and little enough to bound a log with many failed nodes."""
+"""How much of a node's error the index keeps, to bound a log with many failed nodes. A longer error is cut with "…",
+and the word the cut splits is dropped before the scrub (``shown_reason``), so a secret longer than this (a
+subscription token can be 2,000 characters) never shows in part."""
 # Yian writes sorted-key JSON (log.py:2786-2796), so a record starts with "kind" ("at" first from schema 10): an
 # oversized line's kind can be read without parsing it. Its seq is its line number (log.py:2843-2866), so no line's
 # seq is ever read from its text.
@@ -263,8 +265,9 @@ def _ended(index: Index, seq: int, kind: str, payload: dict[str, Any]) -> None:
     if kind == "node_routed" and isinstance(payload.get("handle"), str):
         attempt.handle = payload["handle"]
     if failure is not None:
-        # Kept long and cut to ERROR_CHARS only once scrubbed, so a known value cut in two can't show its head.
-        attempt.error = str(failure.get("message") or failure.get("code") or "")[:ERROR_KEPT] or None
+        # Kept long, its cut marked, and cut to ERROR_CHARS only once scrubbed, so a known value cut in two can't show
+        # its head.
+        attempt.error = cut_reason(str(failure.get("message") or failure.get("code") or ""), ERROR_KEPT) or None
         index.held += len(attempt.error or "")
 
 

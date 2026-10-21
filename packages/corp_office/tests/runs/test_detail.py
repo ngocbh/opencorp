@@ -1,6 +1,8 @@
 """One run's page from its real Yian log: the header, log states, nodes, records and the download, all scrubbed."""
 
+import base64
 import builtins
+import json
 import threading
 
 import pytest
@@ -14,7 +16,7 @@ from opencorp.runs.service import Indexing, NoLog, RunLogs
 from opencorp.store import RunRow, new_id
 from opencorp.testing.fake_llm import LLM_CONFIG
 from tests.chat.conftest import status, texts, wait_for
-from tests.runs.logs import line
+from tests.runs.logs import failed, line, run_started, started
 
 KEY = "conn-key-5f3a9c1e7b2d4a60"  # no provider shape: only the known-values step can catch it
 
@@ -226,3 +228,26 @@ async def test_a_header_then_its_timeline_read_the_log_whole_once(harness, fake_
     assert (await runs.nodes(run_id, before=None, limit=1000)).nodes
     assert (await runs.events(run_id, after=None, limit=10)).events
     assert starts.count(0) == 1
+
+
+def jwt(pad=1500):
+    """A JWT-sized token, longer than ERROR_KEPT, as a subscription sign-in holds."""
+    head = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).decode().rstrip("=")
+    body = base64.urlsafe_b64encode(json.dumps({"sub": "user-123", "pad": "p" * pad}).encode()).decode().rstrip("=")
+    return f"{head}.{body}.SIGNATUREsignatureSIGNATURE0123456789abcdef"
+
+
+async def test_a_known_token_longer_than_the_kept_error_never_shows(make_harness, workspace):
+    token = jwt()
+    assert len(token) > reader_mod.ERROR_KEPT
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": token})
+    runs = run_logs(harness)
+    row = a_row(harness, harness.start_session("minh", str(workspace)).id)
+    harness.store.end_run(row.run_id, "failed", reason=f"401 for token {token}", failed_node="chat")
+    path = runs.log_path(row)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(run_started(0) + started(1, "chat") + failed(2, "chat", f"401 for token {token}"))
+    (node,) = (await runs.nodes(row.run_id, before=None, limit=10)).nodes
+    assert token[:12] not in node.error and node.error.startswith("401 for token ")
+    assert token[:12] not in (await runs.detail(row.run_id)).run.reason
+    assert token[:12] not in (await runs.event(row.run_id, 2)).model_dump_json()

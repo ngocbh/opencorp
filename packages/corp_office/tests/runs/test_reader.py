@@ -78,10 +78,11 @@ def test_the_node_table_has_every_attempt_with_its_outcome(tmp_path):
     assert index.nodes[2].error == "boom " * 100 and list(index.open) == ["m#1/a"]
 
 
-def test_a_node_error_is_kept_up_to_error_kept(tmp_path):
+def test_a_node_error_is_kept_up_to_error_kept_its_cut_marked(tmp_path):
     path = tmp_path / "r.jsonl"
     path.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x" * 5000))
-    assert reader_mod.ERROR_KEPT == 1 << 10 and len(refresh(path, None).nodes[0].error) == reader_mod.ERROR_KEPT
+    error = refresh(path, None).nodes[0].error
+    assert reader_mod.ERROR_KEPT == 1 << 10 and len(error) == reader_mod.ERROR_KEPT and error.endswith("x…")
 
 
 def test_a_resume_restarts_the_open_starts_and_only_the_latest_start_is_open(tmp_path):

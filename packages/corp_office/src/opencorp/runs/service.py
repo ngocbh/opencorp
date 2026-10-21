@@ -192,7 +192,8 @@ class RunLogs:
         page = node_page(index, before=before, limit=limit)
         return RunNodePage(
             nodes=[RunNode(seq=a.seq, end_seq=a.end_seq, node_id=a.node_id, status=a.status, handle=a.handle,
-                           error=scrubber.text(a.error)[:ERROR_CHARS] if a.error else None) for a in page.nodes],
+                           error=shown_reason(a.error, scrubber.text, ERROR_CHARS) if a.error else None)
+                   for a in page.nodes],
             dividers=[RunDivider(seq=seq, retried=retried) for seq, retried in page.dividers],
             next_before=page.next_before, dropped=page.dropped)
 
