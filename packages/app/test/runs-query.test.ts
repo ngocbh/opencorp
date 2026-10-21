@@ -224,8 +224,13 @@ test("autocomplete offers qualifiers, then each one's values, filtered as you ty
   expect(labels("person:ka")).toEqual(["person:kai"])
   expect(labels("person:@ka")).toEqual(["person:@kai"])
   expect(labels("is:")).toEqual(["is:recent", "is:open", "is:closed", "is:running", "is:waiting", "is:idle", "is:finished",
-                                 "is:failed"]) // eight at most
+                                 "is:failed", "is:interrupted"]) // every state: the cap is for flows and people
   expect(labels("is:r")).toEqual(["is:recent", "is:running"])
+  // Flows and people, which grow with the company, are cut to eight.
+  const flows = Array.from({ length: 10 }, (_, i) => `f${i}`)
+  const people = Array.from({ length: 10 }, (_, i) => ({ handle: `p${i}`, name: `P${i}` }))
+  expect(suggest("flow:", 5, { flows, people })?.options).toHaveLength(8)
+  expect(suggest("@", 1, { flows, people })?.options).toHaveLength(8)
   expect(labels("is:f")).toEqual(["is:finished", "is:failed"])
   expect(labels("started:")).toEqual(["started:24h", "started:7d", "started:30d"])
   expect(labels("started:7D")).toEqual(["started:7d"])

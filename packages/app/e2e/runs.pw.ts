@@ -201,7 +201,7 @@ test("autocomplete by keyboard: qualifiers, then their values, with arrows, Tab,
   await expect(box(page)).toHaveValue("is:recent flow:review @k")
   await box(page).fill("is:")
   await expect(options(page)).toHaveText([/^recent/, /^open/, /^closed/, /^running/, /^waiting/, /^idle/, /^finished/,
-                                          /^failed/])
+                                          /^failed/, /^interrupted/])
   await box(page).fill("started:")
   await expect(options(page)).toHaveText([/^24h/, /^7d/, /^30d/])
   await box(page).press("ArrowUp") // from none to the last

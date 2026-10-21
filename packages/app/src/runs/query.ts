@@ -232,6 +232,7 @@ const IS_DETAIL: Record<string, string> = {
   closed: "finished, failed or interrupted",
 }
 const STARTED_OPTIONS: [string, string][] = [["24h", "last 24 hours"], ["7d", "last 7 days"], ["30d", "last 30 days"]]
+/** The most flows or people offered at once: those grow with the company, unlike the fixed qualifiers and states. */
 const MAX_OPTIONS = 8
 
 /** `items` whose `keys` contain `typed`: those starting with it first, each group in the order given. */
@@ -260,13 +261,13 @@ export function suggest(text: string, caret: number, sources: Sources): Suggesti
     const value = (v: string, label = v, detail?: string): Option => ({ insert: prefix + v, label, detail, complete: true })
     if (q.key === "flow") {
       const flows = [...new Set(sources.flows)].sort()
-      options = filtered(flows, q.value, (f) => [f]).map((f) => value(f))
+      options = filtered(flows, q.value, (f) => [f]).slice(0, MAX_OPTIONS).map((f) => value(f))
     } else if (q.key === "person") {
       const typedAt = q.value.startsWith("@")
       const people = [...sources.people].sort((a, b) => a.name.localeCompare(b.name))
-      options = filtered(people, q.value.replace(/^@/, ""), (p) => [p.handle, p.name]).map((p) =>
-        value(typedAt ? `@${p.handle}` : p.handle, `@${p.handle}`, p.name),
-      )
+      options = filtered(people, q.value.replace(/^@/, ""), (p) => [p.handle, p.name])
+        .slice(0, MAX_OPTIONS)
+        .map((p) => value(typedAt ? `@${p.handle}` : p.handle, `@${p.handle}`, p.name))
     } else if (q.key === "is") {
       options = filtered(["recent", "open", "closed", ...STATUSES], q.value, (s) => [s]).map((s) => value(s, s, IS_DETAIL[s]))
       // Prefix matches only: "is:f" means finished or failed, not every state with an "f" in it.
@@ -274,7 +275,6 @@ export function suggest(text: string, caret: number, sources: Sources): Suggesti
     } else if (q.key === "started")
       options = STARTED_OPTIONS.filter(([v]) => v.startsWith(q.value.toLowerCase())).map(([v, d]) => value(v, v, d))
   }
-  options = options.slice(0, MAX_OPTIONS)
   return options.length ? { start, end, options } : undefined
 }
 
