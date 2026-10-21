@@ -657,7 +657,7 @@ class Harness:
                     # _finish drops the live run before it stores the end, so the store still says LIVE until then;
                     # a starting session with no live run is inside start_run. Neither is asleep.
                     if session_id in self._finishing or session.status not in LIVE or session.status == "starting" \
-                            or not session.run_ids:
+                            or not session.run_ids or session.harness != "composer":
                         raise HarnessError(409, "not_live", f"session {session_id} has no live run")
                     if self._stopping:
                         raise HarnessError(503, "stopping", "the office is stopping")
@@ -698,7 +698,9 @@ class Harness:
             if not ending:
                 guarded_update(self.store, sid, ("busy",), status="idle")
             raise self._wake_failed(sid, live, ending, exc) from exc
-        if live.worker is None:  # close_all began before the spawn
+        # Only a spawn clears waking, so it is still set when close_all began before the spawn. live.worker can't
+        # tell: a woken worker that already exited has none either, while _exited respawns it.
+        if live.waking:
             with self._lock:
                 if self._current(live):
                     del self._live[sid]
@@ -868,7 +870,9 @@ class Harness:
             if MAIN_CHAT.is_turn(question.node_id):  # every chat the office runs keeps the main chat's turn node
                 if not isinstance(answer, str) or not answer:
                     raise HarnessError(422, "invalid_answer", "a chat turn takes text")
-                self.prompt(question.session_id, answer, by=by)  # the wake re-shows the turn, which takes it
+                # The wake re-shows the turn, which takes it. Two answers racing to the same sleeping turn are both
+                # taken, as two messages (the second waits for the next turn), as two prompts would be.
+                self.prompt(question.session_id, answer, by=by)
                 return self.store.get_question(question_id)
             try:  # stored first: the woken run asks the node again and finds it (Answers.ask)
                 stored = self.store.answer_question(question_id, answer, kind,

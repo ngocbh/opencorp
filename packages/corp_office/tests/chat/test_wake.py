@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import signal
 import threading
 import time
 
@@ -298,3 +299,48 @@ def test_an_answered_unread_turn_resumes_at_start(make_harness, fake_llm, worksp
     assert sid in second._live
     wait_for(lambda: texts(second, sid) == ["read it"], what="the reply to the stored answer")
     assert "hello" in str(fake_llm.requests()[0]["messages"])
+
+
+def test_worker_exit_right_after_wake_spawn_is_misread_as_stopping(make_harness, fake_llm, workspace):
+    """A woken worker that exits before the wake returns isn't taken for a stopping office: the wake stands, and
+    the worker its exit respawns stays the session's."""
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    h, sid = asleep(make_harness, workspace)
+    spawn, second_spawn, go, n = h.registry.spawn, threading.Event(), threading.Event(), []
+
+    def spy(*args):
+        n.append(1)
+        if len(n) == 2:  # the respawn after the exit, under the harness lock
+            second_spawn.set()
+            assert go.wait(10)
+        return spawn(*args)
+
+    h.registry.spawn = spy
+    resume, first = h._resume, []
+
+    def killing(live):
+        resume(live)
+        if not first:
+            first.append(1)
+            os.killpg(live.worker.pgid, signal.SIGKILL)
+            assert second_spawn.wait(10)  # _exited cleared live.worker and is respawning
+            threading.Timer(0.3, go.set).start()
+
+    h._resume = killing
+    assert h.prompt(sid, "hi") in ("queued", "turn")
+    wait_for(lambda: texts(h, sid) == ["one"] and status(h, sid) == "idle", what="the reply")
+    assert not h._stopping and sid in h._live
+    assert say(h, sid, "again") == "two"
+
+
+def test_a_codex_session_is_never_woken_as_a_composer_one(make_harness, fake_llm, workspace):
+    from opencorp.store import new_id
+
+    h, sid = asleep(make_harness, workspace)  # this harness has no Codex sessions to hand it to
+    codex = h.store.create_session(h.store.get_session(sid).model_copy(
+        update={"id": new_id(), "harness": "codex", "run_ids": []}))
+    h.store.add_session_run(codex.id, new_id())
+    jobs = spawned(h)
+    with pytest.raises(HarnessError) as err:
+        h.prompt(codex.id, "hi")
+    assert (err.value.status, err.value.code) == (409, "not_live") and jobs == []
