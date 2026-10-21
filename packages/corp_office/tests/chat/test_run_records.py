@@ -18,6 +18,13 @@ KEY = "sk-record-test-0e7c"
 FRESH = ("This chat continues on a fresh run because its model or connection changed. "
          "If your last message got no reply, send it again.")
 REMOVED = "Connection 'second' was removed; this chat now uses office/stub."
+WOKEN = "This chat continues on a fresh run because its model or connection changed."
+
+
+def wake(harness, fake_llm, sid):
+    """Wake a sleeping session with a message; wait for its reply and next turn."""
+    fake_llm.script({"content": "woken"})
+    return say(harness, sid, "wake up")
 
 
 def start(harness, workspace):
@@ -37,12 +44,6 @@ def rewrite_office(harness, **llm):
     path = harness.office.paths.office / "provider.json"
     provider = json.loads(path.read_text())
     write_private(path, json.dumps({**provider, "llm_config": {**provider["llm_config"], **llm}}).encode())
-
-
-def resumed(harness, sid):
-    """Wait until the session's live run has a worker at an open turn."""
-    wait_for(lambda: sid in harness._live and harness._live[sid].worker and harness._live[sid].turn_q,
-             what="the live turn")
 
 
 def kill(harness, sid):
@@ -102,7 +103,7 @@ def test_restore_resumes_a_run_whose_record_matches(make_harness, fake_llm, work
     second = make_harness()
     jobs = spawned(second)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
     assert say(second, sid, "b") == "two"
     assert [j.kind for j in jobs] == ["resume"]
     session = second.store.get_session(sid)
@@ -119,11 +120,12 @@ def test_restore_after_the_key_changed_starts_a_fresh_run_with_a_note(make_harne
     seen = []
     second.store.add_listener(lambda e: seen.append(e.data.get("model_note")) if e.type == "session.updated" else None)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
+    wake(second, fake_llm, sid)
     assert [(j.kind, j.llm_config["api_key"]) for j in jobs] == [("chat", "sk-another-key")]
     session = second.store.get_session(sid)
-    assert (len(session.run_ids), session.model_note) == (2, FRESH)
-    assert FRESH in seen  # clients hear of it
+    assert (len(session.run_ids), session.model_note) == (2, WOKEN)
+    assert WOKEN in seen  # clients hear of it
     assert record_of(second, sid).config == config_hash(second.connections.resolve(OFFICE, None))
 
 
@@ -135,7 +137,8 @@ def test_restore_after_the_endpoint_changed_starts_a_fresh_run(make_harness, fak
     second = make_harness(llm_config=on_base_url(fake_llm))
     jobs = spawned(second)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
+    wake(second, fake_llm, sid)
     assert [j.kind for j in jobs] == ["chat"]
     assert len(second.store.get_session(sid).run_ids) == 2
 
@@ -152,7 +155,7 @@ def test_restore_of_a_run_without_a_record_resumes_on_the_same_base_url(make_har
     second = make_harness()
     jobs = spawned(second)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
     assert say(second, sid, "b") == "two"
     assert [j.kind for j in jobs] == ["resume"]
     assert second.store.get_session(sid).run_ids == [run_id]
@@ -168,9 +171,10 @@ def test_restore_of_a_run_without_a_record_on_another_base_url_starts_fresh(make
     second = make_harness(llm_config=on_base_url(fake_llm))
     jobs = spawned(second)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
+    wake(second, fake_llm, sid)
     assert [j.kind for j in jobs] == ["chat"]
-    assert second.store.get_session(sid).model_note == FRESH
+    assert second.store.get_session(sid).model_note == WOKEN
 
 
 def test_a_crash_resume_checks_the_record_too(make_harness, fake_llm, workspace):
@@ -251,9 +255,9 @@ def test_a_crash_resume_after_removal_moves_to_the_default(make_harness, fake_ll
     assert errors(harness, sid) == []
 
 
-def test_a_restore_after_removal_keeps_the_removal_note(make_harness, fake_llm, workspace):
+def test_a_wake_after_removal_keeps_the_removal_note(make_harness, fake_llm, workspace):
     first = make_harness(connections={"second": "stub-2"})
-    fake_llm.script({"content": "from two"})
+    fake_llm.script({"content": "from two"}, {"content": "on office"})
     sid = start(first, workspace)
     on(first, sid, "second")
     say(first, sid, "a")
@@ -262,10 +266,10 @@ def test_a_restore_after_removal_keeps_the_removal_note(make_harness, fake_llm, 
 
     second = make_harness()
     jobs = spawned(second)
-    second.restore()
-    resumed(second, sid)
+    assert say(second, sid, "b") == "on office"  # the wake moves it to the default
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub")]
     session = second.store.get_session(sid)
+    # The wake's preflight is read-only, so _resume does the move: its note stays, not the fresh-run one.
     assert (session.connection, session.model_note) == (OFFICE, REMOVED)
 
 
@@ -304,9 +308,10 @@ def test_restore_of_a_run_without_a_record_on_another_connection_starts_fresh_on
     second = make_harness()
     jobs = spawned(second)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
+    wake(second, fake_llm, sid)
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub-2")]
-    assert second.store.get_session(sid).model_note == FRESH
+    assert second.store.get_session(sid).model_note == WOKEN
 
 
 def test_a_crash_resume_of_a_run_without_a_record_on_another_connection_starts_fresh_on_it(make_harness, fake_llm,
@@ -329,9 +334,10 @@ def test_restore_after_a_model_change_starts_a_fresh_run_on_it(make_harness, fak
     second = make_harness()
     jobs = spawned(second)
     second.restore()
-    resumed(second, sid)
+    assert sid not in second._live
+    wake(second, fake_llm, sid)
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub-3")]
-    assert second.store.get_session(sid).model_note == FRESH
+    assert second.store.get_session(sid).model_note == WOKEN
 
 
 def test_a_crash_resume_after_a_model_change_starts_a_fresh_run_on_it(make_harness, fake_llm, workspace):
@@ -389,8 +395,8 @@ def test_a_crash_resume_that_cant_read_where_the_chat_goes_fails_without_a_new_r
     assert sid not in harness._live
 
 
-def test_a_fresh_run_that_cant_be_recorded_fails_the_session_at_restore(make_harness, fake_llm, workspace,
-                                                                       monkeypatch):
+def test_a_wake_whose_fresh_run_cant_be_recorded_answers_503_and_leaves_the_session_idle(make_harness, fake_llm,
+                                                                                        workspace, monkeypatch):
     first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
     sid = start(first, workspace)
     first.close_all()
@@ -400,9 +406,14 @@ def test_a_fresh_run_that_cant_be_recorded_fails_the_session_at_restore(make_har
     def unrecorded(*args):
         raise OSError("disk full")
 
-    monkeypatch.setattr(second.store, "add_session_run", unrecorded)
     second.restore()
-    assert status(second, sid) == "failed" and sid not in second._live
+    monkeypatch.setattr(second.store, "add_session_run", unrecorded)
+    with pytest.raises(HarnessError) as err:
+        second.prompt(sid, "a")
+    assert (err.value.status, err.value.code) == (503, "cant_wake")
+    assert status(second, sid) == "idle" and sid not in second._live
+    assert second.store.get_session(sid).run_ids == first.store.get_session(sid).run_ids
+    assert [q.status for q in second.store.list_questions(session_id=sid)] == ["open"]  # its turn is still open
 
 
 def test_a_fresh_run_that_cant_be_recorded_fails_the_session_after_a_crash(make_harness, fake_llm, workspace,
@@ -441,8 +452,9 @@ def test_a_restart_that_cant_record_its_run_announces_the_old_run_once(make_harn
     assert harness.store.get_session(sid).run_ids == old
 
 
-def test_a_fresh_run_whose_note_cant_be_written_fails_the_session_at_restore(make_harness, fake_llm, workspace,
-                                                                            monkeypatch):
+def test_a_wake_whose_fresh_run_note_cant_be_written_answers_503_and_leaves_the_session_idle(make_harness,
+                                                                                            fake_llm, workspace,
+                                                                                            monkeypatch):
     first = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
     sid = start(first, workspace)
     first.close_all()
@@ -455,9 +467,12 @@ def test_a_fresh_run_whose_note_cant_be_written_fails_the_session_at_restore(mak
             raise OSError("disk full")
         return update(session_id, **fields)
 
-    monkeypatch.setattr(second.store, "update_session", no_notes)
     second.restore()
-    assert status(second, sid) == "failed" and sid not in second._live
+    monkeypatch.setattr(second.store, "update_session", no_notes)
+    with pytest.raises(HarnessError) as err:
+        second.prompt(sid, "a")
+    assert (err.value.status, err.value.code) == (503, "cant_wake")
+    assert status(second, sid) == "idle" and sid not in second._live
     assert second.store.get_session(sid).run_ids == first.store.get_session(sid).run_ids
 
 
@@ -477,3 +492,36 @@ def test_a_removed_connection_stops_serving_turns_even_when_the_default_cant_be_
     session = harness.store.get_session(sid)
     assert session.model_note == "Connection 'second' was removed; this chat now uses office."
     assert errors(harness, sid) and sid not in harness._live
+
+
+def test_a_run_with_no_log_starts_fresh_without_a_note(make_harness, fake_llm, workspace):
+    first = make_harness()
+    sid = start(first, workspace)
+    first.close_all()
+    run_id = first.store.get_session(sid).run_ids[-1]
+    (first.office.paths.run_dir(sid) / "runs" / f"{run_id}.jsonl").unlink()  # its worker never started
+    first.store.update_session(sid, status="busy")  # so restore resumes it now
+
+    second = make_harness()
+    jobs = spawned(second, lambda job: job.kind)
+    second.restore()
+    wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the fresh turn")
+    session = second.store.get_session(sid)
+    assert jobs == ["chat"] and len(session.run_ids) == 2 and session.model_note is None
+
+
+def test_a_fresh_run_that_cant_be_recorded_leaves_the_old_runs_questions_open(make_harness, fake_llm, workspace,
+                                                                             monkeypatch):
+    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
+    sid = start(harness, workspace)
+    old = harness.store.get_session(sid).run_ids
+    rewrite_office(harness, api_key="sk-another-key")
+
+    def unrecorded(*args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(harness.store, "add_session_run", unrecorded)
+    harness.prompt(sid, "a")  # the key changed, so a fresh run would take it
+    wait_for(lambda: status(harness, sid) == "failed", what="the failed session")
+    # Nothing was staled before the recording failed (in an office, Cards.ended expires them with the session).
+    assert [q.status for q in harness.store.list_questions(run_id=old[-1])] == ["open"]

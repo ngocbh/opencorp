@@ -404,7 +404,7 @@ def test_the_office_runs_codex_sessions_on_the_harness_hooks(home):
         office.store.close()
 
 
-async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts(home):
+async def test_a_bad_provider_file_fails_sessions_resumed_at_start_but_the_office_starts(home):
     from opencorp.daemon.main import build_office
     from opencorp.protocol import now
     from opencorp.protocol.models import Session
@@ -419,12 +419,16 @@ async def test_a_bad_provider_file_fails_restored_sessions_but_the_office_starts
     office = build_office(paths)
     try:
         t = now()
-        session = office.store.create_session(Session(
-            id=new_id(), person="minh", harness="composer", office="here", cwd=str(workspace),
-            repo_commit=office.git.head(), status="idle", kind="main", created_at=t, updated_at=t))
-        office.store.add_session_run(session.id, new_id())
+        made = {}
+        for left in ("busy", "idle"):
+            made[left] = office.store.create_session(Session(
+                id=new_id(), person="minh", harness="composer", office="here", cwd=str(workspace),
+                repo_commit=office.git.head(), status=left, kind="main", created_at=t, updated_at=t))
+            office.store.add_session_run(made[left].id, new_id())
         await office.start()
-        assert office.store.get_session(session.id).status == "failed"
+        assert office.store.get_session(made["busy"].id).status == "failed"  # it had to resume now
+        assert office.store.get_session(made["idle"].id).status == "idle"  # asleep: its next message wakes it
+        assert made["idle"].id not in office.extras["harness"]._live
         await office.stop()
     finally:
         office.store.close()

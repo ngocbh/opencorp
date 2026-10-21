@@ -37,7 +37,7 @@ def test_a_second_kill_in_a_row_fails_the_session(harness, fake_llm, workspace):
     assert harness.store.get_work_item(work_item).status == "in_progress"  # left open for the manager
 
 
-def test_a_new_office_resumes_live_sessions(make_harness, fake_llm, workspace):
+def test_a_new_office_leaves_an_idle_session_asleep_until_its_next_message(make_harness, fake_llm, workspace):
     fake_llm.script({"content": "one"}, {"content": "two"})
     first = make_harness()
     sid = start(first, workspace)
@@ -48,11 +48,11 @@ def test_a_new_office_resumes_live_sessions(make_harness, fake_llm, workspace):
 
     second = make_harness()
     second.restore()
-    wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the restored turn")
-    second.prompt(sid, "b")
+    assert sid not in second._live and second.registry.get(sid) is None  # no worker for an idle session
+    assert status(second, sid) == "idle"
+    second.prompt(sid, "b")  # wakes it
     wait_for(lambda: texts(second, sid) == ["one", "two"], what="turn two")
     assert len(second.store.get_session(sid).run_ids) == 1
-    assert "one" in str(fake_llm.requests()[1]["messages"])  # the resumed run kept the conversation
 
 
 def test_max_turns_counts_turns_from_before_a_worker_restart(make_harness, fake_llm, workspace):
@@ -87,12 +87,18 @@ def test_an_office_that_dies_mid_turn_is_reaped_and_its_run_resumed(make_harness
     assert "a" in str(fake_llm.requests()[-1]["messages"])
 
 
-def test_a_worker_that_cant_start_at_restore_fails_only_its_session(make_harness, fake_llm, workspace):
+def test_a_worker_that_cant_start_at_a_wake_fails_only_that_wake(make_harness, fake_llm, workspace):
+    import pytest
+
+    from opencorp.chat.harness import HarnessError
+
+    fake_llm.script({"content": "for b"}, {"content": "for a"})
     first = make_harness()
-    sids = {start(first, workspace), start(first, workspace)}
+    sids = [start(first, workspace), start(first, workspace)]
     first.close_all()
 
     second = make_harness()
+    second.restore()
     spawn, calls = second.registry.spawn, []
 
     def once_bad(*args):
@@ -102,11 +108,14 @@ def test_a_worker_that_cant_start_at_restore_fails_only_its_session(make_harness
         return spawn(*args)
 
     second.registry.spawn = once_bad
-    second.restore()  # doesn't raise
-    (restored,) = wait_for(lambda: [sid for sid in sids if sid in second._live and second._live[sid].turn_q],
-                           what="the other session's turn")
-    (failed,) = sids - {restored}
-    assert status(second, failed) == "failed" and status(second, restored) == "idle"
+    with pytest.raises(HarnessError) as err:
+        second.prompt(sids[0], "a")
+    assert (err.value.status, err.value.code) == (503, "cant_wake")
+    assert status(second, sids[0]) == "idle" and sids[0] not in second._live
+    second.prompt(sids[1], "b")
+    wait_for(lambda: texts(second, sids[1]) == ["for b"], what="the other wake")
+    second.prompt(sids[0], "a")  # the failed one wakes once it can
+    wait_for(lambda: texts(second, sids[0]) == ["for a"], what="the retried wake")
 
 
 def test_a_session_whose_tool_parts_cant_be_swept_at_restore_fails_alone(make_harness, fake_llm, workspace):
@@ -125,7 +134,7 @@ def test_a_session_whose_tool_parts_cant_be_swept_at_restore_fails_alone(make_ha
     second._interrupt_running_tools = once_broken
     second.restore()  # doesn't raise
     assert status(second, sids[0]) == "failed" and sids[0] not in second._live
-    wait_for(lambda: sids[1] in second._live and second._live[sids[1]].turn_q, what="the other session's turn")
+    assert sids[1] not in second._live and status(second, sids[1]) == "idle"
 
 
 def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_llm, workspace):
@@ -143,7 +152,7 @@ def test_restore_fails_a_live_session_that_never_got_a_run(make_harness, fake_ll
     second.restore()
     assert status(second, orphan.id) == "failed" and orphan.id not in second._live
     assert ended == [(orphan.id, "failed")]
-    wait_for(lambda: sid in second._live and second._live[sid].turn_q, what="the restored turn")
+    assert sid not in second._live and status(second, sid) == "idle"
 
 
 def test_a_worker_that_dies_again_after_good_turns_resumes_again(harness, fake_llm, workspace):
@@ -222,3 +231,4 @@ def test_restore_interrupts_tool_parts_a_dead_office_left_running(make_harness, 
     second.restore()
     # The text part keeps what was stored at its first chunk: a text part has no state to mark.
     assert assistant_parts(second, sid) == [("text", "half"), ("tool", "interrupted")]
+    assert sid not in second._live

@@ -5,6 +5,7 @@ import os
 import signal
 import stat
 import threading
+import time
 from importlib.resources import files
 
 import pytest
@@ -501,7 +502,7 @@ def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, wor
     try:
         h.restore()  # the harness's own on_start, then the extension's sweep
         second.extras["cards"].sweep()
-        wait_for(lambda: side.id in h._live and h._live[side.id].turn_q, what="the restored side turn")
+        assert side.id not in h._live and status(h, side.id) == "idle"  # asleep: the next message wakes it
         assert h.store.get_question(q.id).status == "open"
         chat(second, q, "and SQLite?", 2)
         assert last_user(fake_llm, 2) == "and SQLite?" and framings(fake_llm, 2) == 1
@@ -509,6 +510,41 @@ def test_a_side_chat_resumes_after_an_office_restart(make_harness, fake_llm, wor
             "why Postgres?", "Postgres scales.", "and SQLite?", "SQLite is simpler."]
     finally:
         stop(second)
+
+
+def asleep_at_the_gate(make_harness, workspace):  # noqa: F811
+    """A gate session an office stopped at its card, and a new office (not restored) where it sleeps."""
+    first = gate_office(make_harness)
+    q = gate_card(first, workspace)
+    stop(first)
+    first.extras["harness"].close_all()
+    first.extras["harness"].store.update_session(q.session_id, status="idle")
+    return gate_office(make_harness), q
+
+
+def test_an_answer_to_a_sleeping_sessions_question_node_is_stored_then_wakes_it(make_harness, fake_llm,  # noqa: F811
+                                                                                workspace):
+    office, q = asleep_at_the_gate(make_harness, workspace)
+    h = office.extras["harness"]
+    try:
+        assert q.session_id not in h._live
+        got = office.extras["cards"].answer(q.id, {"db": "Postgres", "features": ["auth"]}, "option")
+        assert got.status == "answered"
+        wait_for(lambda: status(h, q.session_id) == "ended", what="the gate flow's end")
+    finally:
+        stop(office)
+
+
+def test_an_answer_whose_wake_fails_still_stands(make_harness, fake_llm, workspace):  # noqa: F811
+    office, q = asleep_at_the_gate(make_harness, workspace)
+    h = office.extras["harness"]
+    os.chmod(h.office.paths.office / "provider.json", 0o644)  # not private: the office's connection can't be read
+    try:
+        got = office.extras["cards"].answer(q.id, {"db": "Postgres", "features": ["auth"]}, "option")
+        assert got.status == "answered"  # the next wake reads it, or the next start resumes the run to read it
+        assert status(h, q.session_id) == "idle" and q.session_id not in h._live
+    finally:
+        stop(office)
 
 
 def test_a_side_chat_uses_its_askers_model(make_harness, fake_llm, workspace):  # noqa: F811
@@ -540,3 +576,22 @@ def test_a_harness_card_takes_only_an_answer(office, workspace):  # noqa: F811
             act()
         assert (e.value.status, e.value.code) == (422, "harness_card")
     assert office.store.get_question(q.id).status == "open"
+
+
+def test_a_side_session_whose_wake_for_its_end_fails_stays_failed(make_harness, fake_llm, workspace):  # noqa: F811
+    fake_llm.script({"content": "Postgres scales."})
+    first = gate_office(make_harness)
+    q = gate_card(first, workspace)
+    side = chat(first, q, "why Postgres?", 1)
+    stop(first)
+    first.extras["harness"].close_all()
+    second = gate_office(make_harness)  # not restored: the side session sleeps
+    h = second.extras["harness"]
+    os.chmod(h.office.paths.office / "provider.json", 0o644)  # its wake can't resolve the connection
+    try:
+        second.extras["cards"].answer(q.id, {"db": "Postgres", "features": ["auth"]}, "option")
+        wait_for(lambda: status(h, side.id) == "failed", what="the failed end")
+        time.sleep(0.3)
+        assert status(h, side.id) == "failed"  # not relabelled ended
+    finally:
+        stop(second)

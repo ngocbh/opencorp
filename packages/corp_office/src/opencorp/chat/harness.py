@@ -22,6 +22,7 @@ from opencorp.chat.hooks import Hooks
 from opencorp.chat.identity import person_inputs, talking_to
 from opencorp.chat.models import DEADLINE, ListTimeout, ModelCache
 from opencorp.chat.provider import Price, Provider, ProviderError
+from opencorp.chat.state import guarded_update
 from opencorp.chat.transcript import Transcript
 from opencorp.chat.turns import MAIN_CHAT, ChatFlow
 from opencorp.company.loader import load_repo
@@ -56,6 +57,8 @@ _AUTH_CAUSES = ("AuthenticationError", "PermissionDeniedError", "AuthError")
 """Cause types (bare or provider-prefixed) of a failure where the model refused the connection's key."""
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
+_WOKEN_NOTE = "This chat continues on a fresh run because its model or connection changed."
+"""A wake's fresh-run note: the message that woke the session is still delivered, so it needn't be sent again."""
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
 """``(session, run_id, on_question) -> {group: {tool name: tool}}``: the office tools of one run."""
@@ -67,6 +70,10 @@ class HarnessError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+
+
+class _Refused(RuntimeError):
+    """A worker request, or a wake, that came after ``close_all`` closed the workers' channels."""
 
 
 @dataclass
@@ -104,6 +111,13 @@ class _Call:
 
 
 @dataclass(eq=False)
+class _Wake:
+    """A wake in progress. Callers that find it wait on ``done``, then look again."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(eq=False)
 class _Live:
     """A session with a live run, as the harness tracks it."""
 
@@ -125,6 +139,7 @@ class _Live:
     pending_by: str | None = None  # who sent the latest queued message; the owner when None
     steered_by: str | None = None  # who sent the latest steer the reply took, if it ends without reading it
     ending: bool = False
+    waking: bool = False  # while a wake builds and spawns it: a failure drops it without failing the session
     capped: bool = False
     exits: int = 0
     died_at: str | None = None
@@ -181,6 +196,9 @@ class Harness:
     dispatcher thread, in order. ``connections`` are read at each spawn. ``models`` tells which connections
     offer a person's model when a chat starts, within ``choose_deadline`` seconds. ``hooks`` are shared with
     ``codex``, the Codex sessions, which take every call on a session whose harness is ``codex``.
+
+    A session in ``LIVE`` with no live run sleeps (restore leaves idle sessions so); ``prompt``, ``steer``, ``end``
+    and ``answer`` wake it first (``_awake``).
     """
 
     def __init__(self, office: Any, monitor: Monitor, *, connections: Connections, models: ModelCache | None = None,
@@ -203,6 +221,8 @@ class Harness:
         # wait on each other office-wide; they are rare enough for that.
         self._continuing = threading.Lock()
         self._live: dict[str, _Live] = {}
+        self._waking: dict[str, _Wake] = {}  # session id -> its wake in progress
+        self._finishing: set[str] = set()  # sessions whose _finish dropped the live run and hasn't stored the end
         self._stopping = False  # set when close_all starts: no new worker spawns
         self._refusing = False  # set once the channels are closed: no new worker request is admitted
         self._closed = False  # set when close_all returns: the caller may close the store
@@ -457,7 +477,7 @@ class Harness:
         If the run can't start, the session is ``failed`` and has no live run.
         """
         with self._lock:
-            if session.id in self._live:
+            if session.id in self._live or session.id in self._waking:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
         try:
             run_id = new_id()
@@ -468,7 +488,7 @@ class Harness:
             self._fail(session.id)
             raise
         with self._lock:
-            if session.id in self._live:
+            if session.id in self._live or session.id in self._waking:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
             self._live[session.id] = live
         self._spawn(live, "chat")  # on failure, it fails the session and drops the live entry
@@ -481,7 +501,12 @@ class Harness:
                      owner=session.opened_by or _ceo(repo))
 
     def restore(self) -> None:
-        """Resume every session that was live when the office stopped, under the same run id where it can."""
+        """At office start: resume each live session whose run can't wait, under the same run id where it can.
+
+        Tool parts a dead office left running are marked interrupted first, for every live session. An idle session
+        then sleeps, with no worker, until a prompt, steer, end or answer wakes it (``_awake``), unless its current run
+        has an answered question it hasn't read: that one resumes now to read it.
+        """
         for session in self.store.list_sessions(status=LIVE, limit=None):
             if session.harness != "composer" or session.id in self._live:
                 continue
@@ -489,6 +514,8 @@ class Harness:
             live = None
             try:
                 self._interrupt_running_tools(session.id)
+                if self._sleeps(session):
+                    continue
                 if session.run_ids:  # else the office stopped before its first run was recorded
                     live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
             except Exception:
@@ -506,13 +533,21 @@ class Harness:
         if self.codex is not None:
             self.codex.restore()
 
+    def _sleeps(self, session: Session) -> bool:
+        """Whether restore leaves ``session`` asleep: idle, with no answered question its current run hasn't read."""
+        return session.status == "idle" and bool(session.run_ids) and not self.store.list_questions(
+            run_id=session.run_ids[-1], status="answered")
+
     def _resume(self, live: _Live) -> None:
         """Resume ``live``'s run if its record still gives what it ran on; else start a fresh run, with a note."""
         provider: Provider | None
         try:
             stored = self.store.get_session(live.session_id)
             session = self._choice(stored)
+            never_ran = not self._log_path(live).exists()  # a fresh run whose worker couldn't spawn
             try:
+                if never_ran:
+                    raise RunMoved("the run never started")
                 record = read_run_record(self._record_path(live))
                 ran_on = (record.connection, record.model) if record is not None else (OFFICE, None)  # before records
                 if ran_on != (session.connection or OFFICE, session.model):
@@ -522,8 +557,10 @@ class Harness:
                 # Resuming would replay the run's own endpoint and config with whatever key it is given.
                 log.info("session %s starts a fresh run: %s", live.session_id, exc)
                 provider = None
-                if session is stored:  # a chat _choice moved has its removal note, which says more
-                    self.store.update_session(live.session_id, model_note=_FRESH_NOTE)
+                # A chat _choice moved has its removal note, which says more; a run that never started needs none.
+                if session is stored and not never_ran:
+                    self.store.update_session(live.session_id,
+                                              model_note=_WOKEN_NOTE if live.waking else _FRESH_NOTE)
         except Exception:
             self._cant_start(live)
             raise
@@ -580,15 +617,136 @@ class Harness:
                 if self._stopping:
                     return
                 live.worker = self.registry.spawn(job, run_dir, _Handlers(self, live, ask, tools))
+                live.waking = False
         except Exception:
             self._cant_start(live)
             raise
         self._post(self.hooks.fire, "run_started", session, live.run_id)
 
     def _cant_start(self, live: _Live) -> None:
-        """Log why ``live``'s worker can't start, and fail its session."""
+        """Log why ``live``'s worker can't start, and fail its session; a wake's is only dropped, for the wake to
+        answer."""
         log.exception("can't start a worker for session %s", live.session_id)
+        if live.waking:
+            with self._lock:
+                if self._current(live):
+                    del self._live[live.session_id]
+            return
         self._finish(live, "failed", None)
+
+    # --- waking ----------------------------------------------------------------------
+
+    def _awake(self, session_id: str, *, ending: bool = False) -> _Live:
+        """The composer session's live run, woken first if it sleeps (in ``LIVE`` with no live run).
+
+        One caller wakes it; any other waits for that wake to settle, then looks again, so no caller acts on a run
+        that has no worker yet. ``ending`` wakes it for ``end``: its re-shown turn takes the exit, and a wake that
+        fails fails the session. Any other failed wake leaves the session as it was and raises: ``422`` from building
+        its run (its folder gone), ``503 cant_wake``, or ``503 stopping`` while the office stops.
+        """
+        while True:
+            with self._lock:
+                wake = self._waking.get(session_id)
+                if wake is None:
+                    live = self._live.get(session_id)
+                    if live is not None:
+                        return live
+                    session = self.store.get_session(session_id)
+                    if session is None:
+                        raise HarnessError(404, "not_found", f"no session {session_id}")
+                    # _finish drops the live run before it stores the end, so the store still says LIVE until then;
+                    # a starting session with no live run is inside start_run. Neither is asleep.
+                    if session_id in self._finishing or session.status not in LIVE or session.status == "starting" \
+                            or not session.run_ids or session.harness != "composer":
+                        raise HarnessError(409, "not_live", f"session {session_id} has no live run")
+                    if self._stopping:
+                        raise HarnessError(503, "stopping", "the office is stopping")
+                    wake = self._waking[session_id] = _Wake()
+                    break
+            wake.done.wait()  # then look again: it is live, or that wake failed and this caller tries its own
+        try:
+            try:
+                with self._in_call():  # close_all waits for the wake to leave the store
+                    return self._wake(session, ending)
+            except _Refused:
+                raise HarnessError(503, "stopping", "the office is stopping") from None
+        finally:
+            with self._lock:
+                del self._waking[session_id]
+            wake.done.set()
+
+    def _wake(self, session: Session, ending: bool) -> _Live:
+        """Build, insert and resume ``session``'s sleeping run; ``_awake`` holds the claim."""
+        sid, live = session.id, None
+        try:
+            # The slow part, outside the lock: a pin (maybe a worktree), two repo loads, the sandbox policy.
+            live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
+            live.waking, live.ending = True, ending
+            self._check_provider(session)  # before anything is written, so a wake that can't run changes nothing
+        except Exception as exc:
+            raise self._wake_failed(sid, live, ending, exc) from exc
+        with self._lock:
+            if self._stopping:
+                raise HarnessError(503, "stopping", "the office is stopping")
+            self._live[sid] = live  # before its worker exists, as restore does, so its first frames find it current
+            if not ending:
+                # Before the worker: once it runs, its re-shown turn writes idle, which must win.
+                guarded_update(self.store, sid, ("idle",), status="busy")
+        try:
+            self._resume(live)  # a failure drops the entry (live.waking) and raises
+        except Exception as exc:
+            if not ending:
+                guarded_update(self.store, sid, ("busy",), status="idle")
+            raise self._wake_failed(sid, live, ending, exc) from exc
+        # Only a spawn clears waking, so it is still set when close_all began before the spawn. live.worker can't
+        # tell: a woken worker that already exited has none either, while _exited respawns it.
+        if live.waking:
+            with self._lock:
+                if self._current(live):
+                    del self._live[sid]
+            if not ending:
+                guarded_update(self.store, sid, ("busy",), status="idle")
+            raise HarnessError(503, "stopping", "the office is stopping")
+        if ending:
+            guarded_update(self.store, sid, ("idle", "busy"), status="ending")
+        return live
+
+    def _check_provider(self, session: Session) -> None:
+        """Raise if the connection and model the session's next run would use can't be resolved now.
+
+        Read-only: a session whose connection was removed is moved, with its note, by ``_resume`` and ``_spawn``.
+        Moving it here would make ``_resume`` see an unmoved session and write its fresh-run note over that note.
+        """
+        name, model, _ = self.connections.choice(session.connection, session.model)
+        self.connections.resolve(name, model)
+
+    def _wake_failed(self, session_id: str, live: _Live | None, ending: bool, exc: Exception) -> HarnessError:
+        """The error a failed wake answers.
+
+        A wake for ``end`` fails the session: it can't run its exit, and left open it could never be ended. Any other
+        leaves the session for the caller to fix (``/model``, the connection, the folder) and send again; failing it
+        would throw away a session nobody could bring back.
+        """
+        if ending:
+            if live is not None:
+                self._finish(live, "failed", None)
+            else:
+                self._fail(session_id)
+        if isinstance(exc, HarnessError):
+            return exc
+        log.warning("session %s can't wake: %s", session_id, exc)
+        # A provider error never echoes the file; anything else may hold anything, so it stays in the log.
+        why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
+        return HarnessError(503, "cant_wake", f"session {session_id} can't wake{why}")
+
+    def _asleep(self, question: Question) -> bool:
+        """Whether ``question`` is a ``human_input`` on the current run of a sleeping (or waking) composer session."""
+        if not question.session_id or question.source != "human_input":
+            return False
+        session = self.store.get_session(question.session_id)
+        return (session is not None and session.harness == "composer" and session.status in LIVE
+                and session.status != "starting" and bool(session.run_ids)
+                and question.run_id == session.run_ids[-1])
 
     # --- the person's keys -------------------------------------------------------------
 
@@ -601,6 +759,7 @@ class Harness:
         """
         if self._codex_session(session_id):
             return self.codex.prompt(session_id, text, by=by)
+        self._awake(session_id)
         with self._lock:
             live = self._must(session_id)
             if live.ending:
@@ -632,6 +791,7 @@ class Harness:
         """Steer the running reply as ``by``; a message with no reply running is a ``prompt``."""
         if self._codex_session(session_id):
             return self.codex.prompt(session_id, text, by=by)  # Codex steers a running turn by itself
+        self._awake(session_id)
         with self._lock:
             live = self._must(session_id)
             if live.reply_node is not None and live.worker is not None and not live.ending:
@@ -650,7 +810,12 @@ class Harness:
         if self._codex_session(session_id):
             return self.codex.interrupt(session_id)
         with self._lock:
-            live = self._must(session_id)
+            live = self._live.get(session_id)
+            if live is None:
+                session = self.store.get_session(session_id)
+                if session is not None and session.status in LIVE:
+                    return  # asleep, waking or finishing: nothing runs to stop
+                live = self._must(session_id)  # 404, or 409 not_live
             for q in self.store.list_questions(run_id=live.run_id, status="open", source="ask_user"):
                 try:
                     self.store.answer_question(q.id, INTERRUPTED, "interrupted")
@@ -665,13 +830,17 @@ class Harness:
             worker.interrupt(node)
 
     def end(self, session_id: str) -> None:
-        """End the session through the flow's exit, interrupting a busy reply first."""
+        """End the session through the flow's exit, interrupting a busy reply first; a sleeping one is woken for it.
+
+        A session parked at a question node stays ``ending``, with the card open, until someone answers the card: the
+        exit is the next turn's answer, and the node comes first. It resumes at every start until then.
+        """
         if self._codex_session(session_id):
             return self.codex.end(session_id)
+        live = self._awake(session_id, ending=True)
         with self._lock:
-            live = self._must(session_id)
-            if live.ending:
-                return
+            if live.ending or not self._current(live):
+                return  # already ending, or the wake ran its exit (and maybe finished)
             live.ending = True
             live.pending.clear()
             self.store.update_session(session_id, status="ending")
@@ -697,6 +866,25 @@ class Harness:
         if question.session_id and self._codex_session(question.session_id):
             return self.codex.answer(question_id, answer, kind, by=by)
         live = self._live.get(question.session_id)
+        if live is None and self._asleep(question):
+            if MAIN_CHAT.is_turn(question.node_id):  # every chat the office runs keeps the main chat's turn node
+                if not isinstance(answer, str) or not answer:
+                    raise HarnessError(422, "invalid_answer", "a chat turn takes text")
+                # The wake re-shows the turn, which takes it. Two answers racing to the same sleeping turn are both
+                # taken, as two messages (the second waits for the next turn), as two prompts would be.
+                self.prompt(question.session_id, answer, by=by)
+                return self.store.get_question(question_id)
+            try:  # stored first: the woken run asks the node again and finds it (Answers.ask)
+                stored = self.store.answer_question(question_id, answer, kind,
+                                                    answered_by=by or self._owner(question, None))
+            except InvalidTransition as exc:
+                raise HarnessError(409, "not_open", str(exc)) from exc
+            try:
+                self._awake(question.session_id)
+            except HarnessError as exc:
+                # The answer stands: the next wake reads it, or the next start resumes the run to read it.
+                log.warning("session %s can't wake for answer %s: %s", question.session_id, question_id, exc.message)
+            return stored
         if live is not None and live.run_id == question.run_id and live.spec.chat is not None \
                 and live.spec.chat.is_turn(question.node_id):
             if not isinstance(answer, str) or not answer:
@@ -1021,10 +1209,10 @@ class Harness:
         If it can't start, the session fails and the error is raised.
         """
         try:
-            for q in self.store.list_questions(run_id=live.run_id, status="open"):
-                self.store.set_question_status(q.id, "stale")
             run_id = new_id()
             self.store.add_session_run(live.session_id, run_id)
+            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                self.store.set_question_status(q.id, "stale")
             live.run_id = run_id
         except Exception:
             self._cant_start(live)
@@ -1082,20 +1270,29 @@ class Harness:
 
     def _finish(self, live: _Live, status: str, outcome: dict[str, Any] | None) -> None:
         with self._lock:
-            if self._live.get(live.session_id) is live:
+            dropped = self._live.get(live.session_id) is live
+            if dropped:
                 del self._live[live.session_id]
-        if status == "failed":
-            live.transcript.error(f"The session failed ({_why(outcome, live.provider)}). Start a new chat.")
-        if status == "ended":
-            session = self.store.get_session(live.session_id)
-            status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
-            # Close the item first, so no client sees an ended session with its work still open.
-            if session.work_item_id:
-                self.store.update_work_item(session.work_item_id, status="done")
-        session = self.store.update_session(live.session_id, status=status)
-        if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
-            self._run_finished(live, session, outcome)
-        self.hooks.fire("session_ended", session)
+                # The end is stored below, after hooks and writes; until then the store still says LIVE, and a wake
+                # must not take that for sleep (_awake checks this set under the same lock).
+                self._finishing.add(live.session_id)
+        try:
+            if status == "failed":
+                live.transcript.error(f"The session failed ({_why(outcome, live.provider)}). Start a new chat.")
+            if status == "ended":
+                session = self.store.get_session(live.session_id)
+                status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
+                # Close the item first, so no client sees an ended session with its work still open.
+                if session.work_item_id:
+                    self.store.update_work_item(session.work_item_id, status="done")
+            session = self.store.update_session(live.session_id, status=status)
+            if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
+                self._run_finished(live, session, outcome)
+            self.hooks.fire("session_ended", session)
+        finally:
+            if dropped:
+                with self._lock:
+                    self._finishing.discard(live.session_id)
 
     def _run_finished(self, live: _Live, session: Session, outcome: dict[str, Any] | None) -> None:
         """Fire ``run_finished`` for ``live``'s current run."""
@@ -1152,7 +1349,7 @@ class Harness:
         """Count a worker request running in the office, for ``close_all`` to wait on; refuse one once the channels are closed."""
         with self._calls_idle:
             if self._refusing:
-                raise RuntimeError("the office is stopping")
+                raise _Refused("the office is stopping")
             self._calls += 1
         try:
             yield

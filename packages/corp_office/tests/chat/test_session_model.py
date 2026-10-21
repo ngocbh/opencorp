@@ -207,6 +207,7 @@ def test_a_new_chat_on_a_second_connection_records_it(make_harness, workspace):
 
 FRESH = ("This chat continues on a fresh run because its model or connection changed. "
          "If your last message got no reply, send it again.")
+WOKEN = "This chat continues on a fresh run because its model or connection changed."
 
 
 def user_texts(request):
@@ -338,13 +339,12 @@ def test_restore_after_a_switch_starts_a_fresh_run(make_harness, workspace, fake
 
     second = make_harness()
     second.restore()
-    wait_for(lambda: s.id in second._live and second._live[s.id].worker and second._live[s.id].turn_q,
-             what="the restored turn")
+    assert s.id not in second._live  # asleep: its next message wakes it on the new model
+    assert say(second, s.id, "b") == "on two"
     session = second.store.get_session(s.id)
     assert len(session.run_ids) == 2 and session.run_ids[-1] not in old
     assert record_of(second, s.id).connection == "second"
-    assert session.model_note == FRESH
-    assert say(second, s.id, "b") == "on two"
+    assert session.model_note == WOKEN
     assert fake_llm.requests()[-1]["model"] == "stub-2"
 
 

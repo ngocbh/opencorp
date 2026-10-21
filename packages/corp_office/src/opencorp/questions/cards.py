@@ -235,7 +235,10 @@ class Cards:
         if is_live(side):
             try:
                 self.harness.end(side_id)
-            except HarnessError:
+            except HarnessError as exc:
+                # A failed wake for the end has already failed it, and a stopping office leaves it to the next start.
+                if exc.code == "stopping" or not is_live(self.store.get_session(side_id)):
+                    return
                 log.warning("side session %s has no live run to end", side_id)
                 self.ended(self.store.update_session(side_id, status="ended"))
 
