@@ -85,6 +85,12 @@ DIGEST = ('Digest username="bob", realm="api", nonce="dcd98b7102dd2f0e8b11d0f600
     (json.dumps({"password": 98765432109}), "98765432109"),
     (json.dumps({"spring.datasource.password": "pw-unknown-123456789"}), "pw-unknown-123456789"),
     (str({"api.key": "ak-unknown-123456789"}), "ak-unknown-123456789"),
+    (json.dumps({"password": "pw-unknown-123456789\\"}), "pw-unknown-123456789"),  # ends in an escaped backslash
+    (json.dumps(json.dumps({"password": "pw-unknown-123456789\\"})), "pw-unknown-123456789"),
+    (repr({"password": "pw-unknown-123456789\\"}), "pw-unknown-123456789"),
+    (f'Authorization: Digest username="u",\r\n\tresponse="{AZ}"', AZ),  # a folded header's next line
+    (f'Authorization: Digest username="u",\n  nonce="n",\n  response="{AZ}"\nnext: 1', AZ),
+    (json.dumps(f'Authorization: Digest username="u",\r\n\tresponse="{AZ}"'), AZ),
     (json.dumps({"m": json.dumps({"token": "x-secret-123"})}), "x-secret-123"),  # inside another pair's value
     (str({"m": str({"token": "x-secret-123"})}), "x-secret-123"),
     (json.dumps({"set-cookie": "sid=abcdef123456"}), "abcdef123456"),
@@ -120,6 +126,13 @@ def test_provider_key_matches_as_its_plain_form_does():
     for text in texts:
         assert [m.span() for m in scrub_mod.PROVIDER_KEY.finditer(text)] == [
             m.span() for m in SLOW_PROVIDER_KEY.finditer(text)], text
+
+
+def test_a_hidden_value_ending_in_a_backslash_keeps_the_pairs_after_it():
+    out = Scrubber([]).text(json.dumps({"password": "pw-unknown-123456789\\", "a": "b"}))
+    assert out == '{"password": "(hidden)", "a": "b"}'
+    out = Scrubber([]).text('Authorization: Digest username="u",\n\tresponse="r"\nHost: example.com')
+    assert out == "Authorization: Digest (hidden)\nHost: example.com"
 
 
 def test_camel_case_secret_keys_and_credential_headers_hide_their_values():

@@ -27,18 +27,21 @@ BEARER = re.compile(rf"\b(Bearer)\s+{_NOT_HIDDEN}\S{{8,}}", re.IGNORECASE)
 AUTH_HEADER = re.compile(rf"\b(authorization{_QUOTE}\s*[:=]\s*{_QUOTE}(?:Bearer|Basic|Token))\s+{_NOT_HIDDEN}{_VALUE}",
                          re.IGNORECASE)
 """An ``Authorization: Basic …`` or ``Token …`` header value (Proxy-Authorization too), as text."""
-AUTH_DIGEST = re.compile(rf"\b(authorization{_QUOTE}\s*[:=]\s*{_QUOTE}Digest)\s+{_NOT_HIDDEN}(?:[^\r\n\\]|\\(?![rn]))+",
-                         re.IGNORECASE)
-"""An ``Authorization: Digest …`` header value, whose parameters hold spaces and quotes: up to the end of its line."""
+_FOLDED = r"(?:\r?\n|(?:\\r)?\\n)(?=[ \t]|\\t)"  # a line break, plain or escaped, that a folded header goes on after
+AUTH_DIGEST = re.compile(rf"\b(authorization{_QUOTE}\s*[:=]\s*{_QUOTE}Digest)\s+{_NOT_HIDDEN}"
+                         rf"(?:[^\r\n\\]|\\(?![rn])|{_FOLDED})+", re.IGNORECASE)
+"""An ``Authorization: Digest …`` header value, whose parameters hold spaces and quotes: up to the end of its line,
+and of each line folded onto it."""
 API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)({_QUOTE}\s*[:=]\s*{_QUOTE}){_NOT_HIDDEN}{_VALUE}", re.IGNORECASE)
 """An ``api-key: …`` header value, which provider errors echo, as text, JSON (escaped too) or a Python repr."""
 QUOTED_PAIR = re.compile(r"""(?<!\\)(?P<bs>\\{0,15})(?P<q>["'])"""  # a quote and its escapes, the same around both
                          r"""(?P<key>[A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
-                         r"""(?=(?P=bs)(?P<vq>["'])(?P<value>.*?)(?<!\\)(?P=bs)(?P=vq)|(?P<bare>-?[0-9][\w.+-]*))""",
-                         re.DOTALL)
+                         r"""(?=(?P=bs)(?P<vq>["'])(?P<value>.*?(?<!\\)(?:(?P=bs)\\(?P=bs)\\)*)(?P=bs)(?P=vq)"""
+                         r"""|(?P<bare>-?[0-9][\w.+-]*))""", re.DOTALL)
 """A ``"key": value`` pair of JSON (escaped too) or a Python repr inside a string; ``secret_key`` decides whether its
-value is hidden. The value is read ahead, not consumed, so a pair inside another pair's value is found too. Quotes
-escaped up to 4 times count, so each search stays linear."""
+value is hidden. The value ends at the quote whose backslashes are the quote's own escapes after whole escaped
+backslashes, which end the value. It is read ahead, not consumed, so a pair inside another pair's value is found too.
+Quotes escaped up to 4 times count, so each search stays linear."""
 _KEY_WORDS = ("passw", "token", "secret", "key", "devices", "authorization", "cookie")
 """A word every secret key holds, lowercased (``key_name`` only adds ``_`` and lowercases): ``QUOTED_PAIR`` is tried
 only at the quote before one, so ordinary text and pairs cost a few substring searches."""
