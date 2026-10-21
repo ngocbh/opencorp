@@ -58,7 +58,7 @@ class UnsupportedSchema(UnreadableLog):
 
     def __init__(self, schema: object) -> None:
         self.schema = schema
-        if type(schema) is not int:  # anything else could be any text, a secret included: never echoed
+        if type(schema) is not int:  # anything else could be any text: never echoed
             super().__init__("This log uses a run-log schema this office can't read")
             return
         why = "which is older than this office supports" if schema in RETIRED else "which this office can't read"

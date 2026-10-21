@@ -326,7 +326,7 @@ class Learning:
             else:
                 why = self._failure(outcome)
                 log.warning("the debrief of session %s failed: %s", session_id, why)
-            end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)  # why may echo a secret
+            end = RunEnd("finished") if debrief is not None else RunEnd("failed", why)
             with self.store.transaction():  # the run's outcome commits with the debrief and the session's end
                 if debrief is not None:
                     self.store.save_debrief(debrief, run_id=run_id, attempts=attempts)
