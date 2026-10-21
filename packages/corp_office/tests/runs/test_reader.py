@@ -69,15 +69,15 @@ def test_the_node_table_has_every_attempt_with_its_outcome(tmp_path):
     assert [(a.node_id, a.status, a.handle, a.end_seq) for a in index.nodes] == [
         ("chat", "expanded", None, 2), ("chat#0/route", "routed", "reply", 4), ("chat#0/reply", "failed", None, 6),
         ("m#0/a", "succeeded", None, 9), ("m#1/a", "open", None, None)]
-    # The whole error (up to ERROR_KEPT) is kept; it is cut to ERROR_CHARS only when shown.
-    assert index.nodes[2].error == "boom " * 100 and list(index.open) == ["m#1/a"]
+    # The error is kept up to ERROR_KEPT; it is cut to ERROR_CHARS only when shown.
+    assert index.nodes[2].error == ("boom " * 100)[:reader_mod.ERROR_KEPT - 1] + "…" and list(index.open) == ["m#1/a"]
 
 
 def test_a_node_error_is_kept_up_to_error_kept_its_cut_marked(tmp_path):
     path = tmp_path / "r.jsonl"
     path.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x" * 5000))
     error = refresh(path, None).nodes[0].error
-    assert reader_mod.ERROR_KEPT == 1 << 10 and len(error) == reader_mod.ERROR_KEPT and error.endswith("x…")
+    assert reader_mod.ERROR_KEPT == 256 and len(error) == reader_mod.ERROR_KEPT and error.endswith("x…")
 
 
 def test_a_resume_restarts_the_open_starts_and_only_the_latest_start_is_open(tmp_path):
@@ -310,6 +310,36 @@ def test_one_record_is_capped_in_bytes_and_a_payload_still_too_large_is_a_size_s
     stub = read_event(path, index, 2)
     assert (stub.kind, stub.node_id, stub.payload, stub.size) == ("node_succeeded", "many", None, len(many))
     assert len(stub.model_dump_json().encode()) <= reader_mod.EVENT_BYTES
+
+
+def test_one_record_over_huge_line_is_a_size_stub_never_parsed(tmp_path, monkeypatch):
+    path = tmp_path / "r.jsonl"
+    big = succeeded(1, "big", {"output": "b" * 5000})
+    path.write_bytes(run_started(0) + big + started(2, "next"))
+    index = refresh(path, None)
+    monkeypatch.setattr(reader_mod, "HUGE_LINE", len(big))
+    assert read_event(path, index, 1).payload["value"] == {"output": "b" * 5000}  # at the size: still read whole
+    monkeypatch.setattr(reader_mod, "HUGE_LINE", len(big) - 1)
+    monkeypatch.setattr(reader_mod, "_event", lambda *a, **k: pytest.fail("a huge record was parsed"))
+    stub = read_event(path, index, 1)
+    assert (stub.seq, stub.kind, stub.node_id, stub.payload, stub.size) == (1, "node_succeeded", None, None, len(big))
+    assert read_event(path, index, 3) is None
+
+
+def test_one_huge_record_is_read_without_holding_its_line(tmp_path):
+    path = tmp_path / "r.jsonl"
+    huge = succeeded(1, "huge", {"output": "h" * (reader_mod.HUGE_LINE + (4 << 20))})
+    path.write_bytes(run_started(0) + huge + started(2, "next"))
+    index = refresh(path, None)
+    tracemalloc.start()
+    try:
+        stub, after = read_event(path, index, 1), read_event(path, index, 2)  # the second skips the huge line
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert (stub.kind, stub.payload, stub.size) == ("node_succeeded", None, len(huge))
+    assert after.node_id == "next"
+    assert peak < 4 * reader_mod.CHUNK
 
 
 def test_a_log_rewritten_during_a_read_is_read_again_from_the_start(tmp_path, monkeypatch):

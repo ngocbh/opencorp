@@ -41,12 +41,12 @@ def test_an_outcome_is_written_once_and_its_reason_capped(store):  # noqa: F811
     assert store.end_run(row.run_id, "failed", reason="x" * 3000, failed_node="chat#0/reply", at=T)
     assert not store.end_run(row.run_id, "finished", at=T)
     got = store.get_run(row.run_id)
-    assert (got.outcome, len(got.reason), got.failed_node, got.ended_at) == ("failed", 2000, "chat#0/reply", T)
+    assert (got.outcome, len(got.reason), got.failed_node, got.ended_at) == ("failed", 256, "chat#0/reply", T)
     assert got.reason.endswith("…")
-    # Kept well past what's shown.
+    # Kept a little past what's shown.
     other = store.add_run(launch(s))
-    store.end_run(other.run_id, "failed", reason="x" * 300)
-    assert store.get_run(other.run_id).reason == "x" * 300
+    store.end_run(other.run_id, "failed", reason="x" * 256)
+    assert store.get_run(other.run_id).reason == "x" * 256
 
 
 def test_a_second_outcome_or_an_unknown_run_sends_no_event(store):  # noqa: F811
