@@ -189,6 +189,22 @@ test("the Run Logs reads hit /api/runs with their query params", async () => {
   expect(c.runs.logUrl(RUN)).toBe(`${base}/runs/${RUN}/log`)
 })
 
+test("runs.list sends since, until, and a status list comma-joined", async () => {
+  const { seen, base } = serve()
+  const c = createOfficeClient({ baseUrl: base })
+  const since = "2026-10-13T10:00:00.000Z"
+  const until = "2026-10-20T00:00:00.000Z"
+  await c.runs.list({ status: ["running", "waiting", "idle"], since, until, limit: 50 })
+  await c.runs.list({ status: "failed", limit: 50 })
+  await c.runs.list({ status: [], limit: 50 })
+  const params = seen.map((s) => Object.fromEntries(new URLSearchParams(s.query)))
+  expect(params).toEqual([
+    { status: "running,waiting,idle", since, until, limit: "50" },
+    { status: "failed", limit: "50" },
+    { limit: "50" },
+  ])
+})
+
 test("a run page read returns the office's body as sent", async () => {
   const page: RunPage = { runs: [], next: null }
   const detail = { run: { run_id: RUN }, repo_commit: "a".repeat(40), log_state: "ok" } as RunDetail
