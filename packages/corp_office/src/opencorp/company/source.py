@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from opencorp.company.git import CompanyGit, TreeEntry, is_commit_id
 from opencorp.company.secret_keys import (HIDDEN, NotYaml, UnsafeYaml, YamlSecrets, check_clean, find_json_secrets,
-                                          find_secrets, scrub_text)
+                                          find_secrets, is_secret_key, scrub_text)
 from opencorp.protocol.models import CommitInfo, CompanyFile, CompanyTree, CompanyTreeEntry, Person
 
 RING = 8
@@ -41,6 +41,7 @@ SECRET_KEY = "holds a secret-named key"
 NOT_REMOVED = "a secret couldn't be removed"
 
 _PERSON = re.compile(r"people/[^/]+/person\.yaml")
+_QUOTED_KEY = re.compile(r"""["']([A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})["']\s*:""")
 _CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
 
@@ -146,8 +147,10 @@ def _parsed(path: str, text: str, known: frozenset[str]) -> tuple[str | None, bo
     try:
         found = _secrets(path, text)
     except NotYaml:
-        if path.lower().endswith(".json"):  # not JSON either (comments): layers 2 and 3 only, as for any text file
-            return text, False, set(), None
+        if path.lower().endswith(".json"):  # not JSON either (comments, trailing commas): no parse to walk
+            if any(is_secret_key(m[1]) for m in _QUOTED_KEY.finditer(text)):
+                return None, False, set(), SECRET_KEY
+            return text, False, set(), None  # layers 2 and 3, as for any text file
         return None, False, set(), UNSAFE_YAML
     except UnsafeYaml:
         return None, False, set(), UNSAFE_YAML

@@ -451,9 +451,21 @@ async def test_json_yaml_cant_parse_is_checked_as_json(src, company, text, reaso
 
 
 async def test_a_json_file_neither_parser_reads_falls_back_to_the_scrub(src, company):
-    text = '{\n\t// a comment\n\t"note": "' + HASH + '"\n}\n'
-    got = await show(src, company, {"notes/x.json": text})
+    text = '{\n\t// a comment\n\t"compilerOptions": {"strict": true,},\n\t"note": "' + HASH + '"\n}\n'
+    got = await show(src, company, {"notes/tsconfig.json": text})
     assert (got.content, got.text) == ("text", text.replace(HASH, "(hidden)"))
+
+
+@pytest.mark.parametrize("text", [
+    '{\n\t"clientSecret": "abcdefghij",\n\t"n": ' + "9" * 5000 + '\n}\n',  # an int too long for int()
+    '{\n\t"password": "abcdefghij",\n\t"n": NaN\n}\n',
+    '{\n\t"password": "abcdefghij",\n}\n',  # a trailing comma
+    '{\n\t// the database\n\t"db.password": "abcdefghij"\n}\n',
+    "{\n\t// single quotes\n\t'apiKey': 'abcdefghij'\n}\n",
+], ids=["long int", "NaN", "trailing comma", "comment", "single quotes"])
+async def test_a_secret_key_in_json_no_parser_reads_hides_the_file(src, company, text):
+    got = await show(src, company, {"notes/x.json": text})
+    assert (got.content, got.reason) == ("hidden", "holds a secret-named key")
 
 
 @pytest.mark.parametrize("text", ["auth:\n  accessToken: abcdefghij\n", "api.key: abcdefghij\n",

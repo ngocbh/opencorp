@@ -282,6 +282,12 @@ def test_find_json_secrets_walks_json_under_the_same_key_rule():
     assert {"name", "x", "auth", "a$scrypt$b"} <= found.plain and found.data is None
 
 
+def test_find_json_secrets_reads_numbers_as_written():
+    found = find_json_secrets('{"pin": ' + "9" * 5000 + ', "x": 1.50, "y": -Infinity, "password": 0012}'.replace(
+        "0012", "12"))
+    assert {"9" * 5000, "1.50", "-Infinity"} <= found.plain and found.values == {"12"}
+
+
 def test_find_json_secrets_keeps_every_duplicate_key():
     found = find_json_secrets('{"note": "first-copy-123456", "note": "second", "token": "t1-123456789", "token": 1}')
     assert "first-copy-123456" in found.plain and found.values == {"t1-123456789", "1"}

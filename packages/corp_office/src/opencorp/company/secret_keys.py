@@ -145,7 +145,8 @@ def find_json_secrets(text: str) -> YamlSecrets:
     same key rule and contexts; ``data`` is None. ``NotYaml`` when it doesn't parse, ``UnsafeYaml`` on any other
     failure."""
     try:
-        data = json.loads(text, object_pairs_hook=_Pairs)
+        # Numbers as written: int() refuses a very long one, which would turn the walk into the fallback.
+        data = json.loads(text, object_pairs_hook=_Pairs, parse_int=str, parse_float=str, parse_constant=str)
     except ValueError as exc:
         raise NotYaml(type(exc).__name__) from None
     except Exception as exc:  # RecursionError on deep nesting: not safe
