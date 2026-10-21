@@ -71,17 +71,11 @@ export function sizeText(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
-/**
- * A piece of a line: the file's text, a highlight.js span, or a `(hidden)` marker the office put in for a secret. A
- * literal `(hidden)` in a file gets the marker too, since the two can't be told apart. A `(hidden)` that highlight.js
- * cuts across two tokens (a Markdown link's `(hidden)`, or `x((hidden))` in JavaScript) stays plain text.
- */
-export type Token = string | { class: string; children: Token[] } | { hidden: true }
+/** A piece of a line: the file's text, or a highlight.js span. */
+export type Token = string | { class: string; children: Token[] }
 
 /** highlight.js's token tree: text, or a node with an optional scope. */
 type Node = string | { scope?: string; children: Node[] }
-
-const MARKER = "(hidden)"
 
 /** highlight.js's CSS class for a scope: `title.function` is `hljs-title function_`; a sub-language is `language-x`. */
 function classOf(scope: string) {
@@ -129,11 +123,9 @@ function toLines(root: Node): Token[][] {
       open.push(span.children)
     }
   }
-  const addText = (s: string) =>
-    s.split(MARKER).forEach((piece, i) => {
-      if (i > 0) open.at(-1)!.push({ hidden: true })
-      if (piece) open.at(-1)!.push(piece)
-    })
+  const addText = (s: string) => {
+    if (s) open.at(-1)!.push(s)
+  }
   const walk = (node: Node) => {
     if (typeof node === "string") return node.split("\n").forEach((piece, i) => (i > 0 && newLine(), addText(piece)))
     if (!node || !Array.isArray(node.children)) throw new Error("not a highlight.js token tree")

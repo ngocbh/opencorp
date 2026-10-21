@@ -85,27 +85,23 @@ export type Source = { tree: CompanyTree; files: Record<string, SourceFile>; ser
 export const LONG_LINE = `${"word ".repeat(80)}end`
 
 /**
- * Acme's repo at SHA, committed two hours ago: text, a re-rendered human's person.yaml, and one file of every other
- * content state (binary, too large, hidden twice, a symlink and a submodule).
+ * Acme's repo at SHA, committed two hours ago: text, and one file of every other content state (binary, too large, a
+ * symlink and a submodule).
  */
 export function source(): Source {
   const text = (text: string): SourceFile => ({ content: "text", text })
   const files: Record<string, SourceFile> = {
     "README.md": text(`# Acme\n\nThe company repo.\n${LONG_LINE}\n`),
     "company.yaml": text("name: Acme\nceo: ngocbh\n"),
-    "people/ngocbh/person.yaml": {
-      content: "text",
-      text: "handle: ngocbh\nname: Ngoc\nkind: human\ntitle: CEO\nmanager: null\n",
-      rewritten: true,
-    },
+    "people/ngocbh/person.yaml": text("handle: ngocbh\nname: Ngoc\nkind: human\ntitle: CEO\nmanager: null\n"),
     "people/ngocbh/profile.md": text("# Ngoc\n\nRuns Acme.\n"),
     "people/kai/person.yaml": text("# Kai writes the code.\nhandle: kai\nname: Kai\nkind: agent\ntitle: Engineer\nmanager: lead\n"),
     "people/kai/profile.md": text("# Kai\n\nTests first.\n"),
     "people/lead/person.yaml": text("handle: lead\nname: Lead\nkind: agent\ntitle: Tech lead\nmanager: ngocbh\n"),
     "assets/logo.png": { content: "binary" },
     "assets/big.csv": { content: "too_large" },
-    "assets/.env": { content: "hidden", reason: "may hold credentials" },
-    "assets/keys.yaml": { content: "hidden", reason: "holds a secret-named key" },
+    "assets/.env": text("API_KEY=sk-test-key\n"),
+    "assets/keys.yaml": text("api_key: sk-test-key\n"),
     "latest.md": { content: "symlink", target: "README.md" },
     "vendor/yian": { content: "submodule" },
   }
@@ -154,7 +150,6 @@ export const EXTRA_FILES: Record<string, SourceFile> = {
   "flows/office.json": { content: "text", text: '{\n  "tcp": false,\n  "port": 49380,\n  "name": "HQ",\n  "dev_origins": null\n}\n' },
   "flows/hostile.md": { content: "text", text: HOSTILE },
   "flows/hostile.txt": { content: "text", text: HOSTILE },
-  "flows/scrubbed.yaml": { content: "text", text: "url: https://kai:(hidden)@example.com\ntoken: (hidden)\n" },
   "flows/big.yaml": { content: "text", text: `big: ${"x".repeat(512 * 1024)}\n` },
   // highlight.js's YAML grammar is quadratic on a long line of unquoted words: this one would take about a minute.
   "flows/words.yaml": { content: "text", text: `name: words\nnotes: ${"word ".repeat(100_000)}\nend: true\n` },

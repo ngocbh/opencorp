@@ -168,14 +168,14 @@ test("Source: the tree, every content state, Copy, a gone file and the phone pan
   await expect(page.getByRole("button", { name: "Copied" })).toBeVisible()
   await tree.getByRole("treeitem", { name: "assets" }).focus()
   await page.keyboard.press("ArrowRight")
-  for (const name of [".env", "big.csv", "keys.yaml", "logo.png"]) {
+  for (const name of ["big.csv", "logo.png"]) {
     await tree.getByRole("treeitem", { name }).click()
     await expect(page.getByTestId("source-pane").getByRole("note")).toBeVisible()
   }
   await tree.getByRole("treeitem", { name: "latest.md" }).click()
   await expect(page.getByText("Symlink to README.md.")).toBeVisible()
-  await page.goto("/org?view=source&path=people/ngocbh/person.yaml")
-  await expect(page.getByRole("note")).toContainText("Shown without devices")
+  await tree.getByRole("treeitem", { name: "keys.yaml" }).click()
+  await expect(page.getByTestId("source-pane").getByTestId("line-text").first()).toHaveText("api_key: sk-test-key")
   await page.goto("/org?view=source&path=people/nobody/person.yaml")
   await expect(page.getByTestId("gone")).toBeVisible()
   await violations()
@@ -224,7 +224,7 @@ test("Source's syntax colors: YAML, JSON, Markdown, a big file, hostile text and
   await request.post("/__fixture/set", { data: { signedIn: true, source: withFiles(source(), EXTRA_FILES) } })
   const violations = await watchCsp(page)
   const pane = page.getByTestId("source-pane")
-  for (const path of ["flows/hire.yaml", "flows/office.json", "README.md", "flows/scrubbed.yaml", "flows/big.yaml", "flows/hostile.md", "flows/hostile.txt"]) {
+  for (const path of ["flows/hire.yaml", "flows/office.json", "README.md", "flows/big.yaml", "flows/hostile.md", "flows/hostile.txt"]) {
     await page.goto(`/org?view=source&path=${path}`)
     await expect(pane.getByTestId("line-text").first()).toBeVisible()
     await violations()

@@ -1,4 +1,4 @@
-// A run's Raw tab: its log's records as the office scrubbed them, a page at a time, filtered by kind or node, each
+// A run's Raw tab: its log's records as stored, a page at a time, filtered by kind or node, each
 // cut record one click from whole; and the status line it shares with the run page while a log is first read.
 import type { RunEvent } from "@opencorp/protocol"
 import { createMemo, createSignal, For, onCleanup, onMount, Show } from "solid-js"
@@ -147,7 +147,6 @@ export function Raw(props: { runId: string; api?: (api: RawApi) => void }) {
                 <span class="font-mono">{e.kind}</span>
                 <Show when={e.node_id}>{(id) => <span class="font-mono wrap-anywhere">{id()}</span>}</Show>
               </div>
-              <Show when={e.withheld}>{(text) => <p class={MUTED}>{text()}</p>}</Show>
               <Show when={e.size}>{(size) => <p class={MUTED}>{tooLarge(size())}</p>}</Show>
               <Show when={e.payload != null}>
                 <pre class="overflow-x-auto rounded bg-neutral-100 p-2 font-mono text-xs whitespace-pre-wrap wrap-anywhere dark:bg-neutral-900">

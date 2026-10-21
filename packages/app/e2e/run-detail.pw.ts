@@ -23,7 +23,7 @@ test("node detail: output, model, evidence, and an error with its traceback fold
   await timeline(page).getByRole("treeitem", { name: /^iteration chat#1/ }).click()
   await timeline(page).getByRole("treeitem", { name: /chat#1\/reply.*failed/ }).click()
   const failed = nodeDetail(page, "chat#1/reply")
-  await expect(failed).toContainText("AuthError: 401 key (hidden)")
+  await expect(failed).toContainText("AuthError: 401 invalid key")
   await failed.getByText("Traceback", { exact: true }).click()
   await expect(failed.getByText(/…whole…/)).toBeVisible()
 })
@@ -82,12 +82,12 @@ test("Enter opens the focused node, and Escape closes it with focus on the row",
   await expect(row).toBeFocused()
 })
 
-test("a node read whose secrets can't be loaded says so and can retry", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(6), fail: "secrets_unavailable" } })
+test("a node read while the log is first read says so and can retry", async ({ page, request }) => {
+  await request.post("/__fixture/run", { data: { id: rid(6), fail: "indexing" } })
   await page.goto(`/runs/${rid(6)}`)
   await timeline(page).getByRole("treeitem", { name: /chat#0\/reply/ }).click()
   await expect(nodeDetail(page, "chat#0/reply").getByRole("alert")).toHaveText(
-    /Couldn't load the secrets to remove; try again\./)
+    /The log is still being read; try again\./)
   await request.post("/__fixture/run", { data: { id: rid(6), fail: null } })
   await nodeDetail(page, "chat#0/reply").getByRole("button", { name: "Retry" }).click()
   await expect(nodeDetail(page, "chat#0/reply")).toContainText("Quota.")
@@ -112,7 +112,7 @@ test("on a phone node detail is a sheet over everything, and Escape returns to t
   await expect(row).toBeFocused()
 })
 
-test("Raw: records by page, a filter, a cut field opened, oversized and withheld stubs, and Download", async ({ page }) => {
+test("Raw: records by page, a filter, a cut field opened, an oversized stub, and Download", async ({ page }) => {
   await page.goto(`/runs/${rid(5)}`)
   await page.getByRole("tab", { name: "Raw" }).click()
   const raw = page.getByRole("list", { name: "Records" })
@@ -120,7 +120,6 @@ test("Raw: records by page, a filter, a cut field opened, oversized and withheld
   await page.getByRole("button", { name: "Load more records" }).click()
   await expect(raw.getByRole("listitem")).toHaveCount(6)
   await expect(raw).toContainText("3.0 MB record: too large to preview; download the log")
-  await expect(raw).toContainText("a secret couldn't be removed")
   await raw.getByRole("listitem").filter({ hasText: "node_failed" }).getByRole("button", { name: "Open the whole record" }).click()
   await expect(raw).toContainText("…whole…")
   await page.getByRole("combobox", { name: "Kind" }).selectOption("run_resumed")
@@ -157,11 +156,11 @@ test("Raw while the log is first read says so, then shows", async ({ page, reque
   await expect(page.getByRole("list", { name: "Records" }).getByRole("listitem")).toHaveCount(4, { timeout: 5_000 })
 })
 
-test("a Raw read whose secrets can't be loaded says so and can retry", async ({ page, request }) => {
-  await request.post("/__fixture/run", { data: { id: rid(6), fail: "secrets_unavailable" } })
+test("a failed Raw read says why and can retry", async ({ page, request }) => {
+  await request.post("/__fixture/run", { data: { id: rid(6), fail: "internal" } })
   await page.goto(`/runs/${rid(6)}`)
   await page.getByRole("tab", { name: "Raw" }).click()
-  await expect(page.getByRole("alert")).toHaveText(/Couldn't load the secrets to remove; try again\./)
+  await expect(page.getByRole("alert")).toHaveText(/internal here/)
   await request.post("/__fixture/run", { data: { id: rid(6), fail: null } })
   await page.getByRole("button", { name: "Retry" }).click()
   await expect(page.getByRole("list", { name: "Records" })).toContainText("Quota.")
