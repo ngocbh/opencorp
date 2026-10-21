@@ -252,3 +252,17 @@ def test_restore_settles_a_sleeping_session_held_at_its_cap(make_harness, worksp
     second.restore()
     assert sid not in second._live
     assert state(second, sid) == ("waiting", ["ngocbh"]) and second.store.get_session(sid).capped
+
+
+def test_esc_answers_an_ask_manager_card_interrupted_and_closes_its_item(harness, fake_llm, workspace):
+    fake_llm.script(ASK_MANAGER)
+    sid = start(harness, workspace)
+    harness.prompt(sid, "hi")
+    q = card(harness, sid, "ask_manager")
+    wait_for(lambda: state(harness, sid) == ("waiting", ["ngocbh"]), what="waiting on the manager")
+    harness.interrupt(sid)
+    got = wait_for(lambda: (x := harness.store.get_question(q.id)).status != "open" and x, what="the answer")
+    assert got.status in ("answered", "consumed") and (got.answer, got.answer_kind) == (INTERRUPTED, "interrupted")
+    # Answered, not stale, so Cards.stored carries none of its discussion into a later card.
+    wait_for(lambda: harness.store.get_work_item(q.work_item_id).status == "done", what="the item closed")
+    wait_for(lambda: status(harness, sid) != "waiting", what="no longer waiting")

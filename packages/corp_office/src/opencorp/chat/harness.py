@@ -884,7 +884,8 @@ class Harness:
         return self.prompt(session_id, text, by=by)
 
     def interrupt(self, session_id: str) -> None:
-        """Esc: answer the model's open questions, kill workspace calls, answer office calls, stop the reply."""
+        """Esc: answer the model's open questions (``ask_user`` and ``ask_manager``) interrupted, kill workspace calls,
+        answer office calls, stop the reply."""
         if self._codex_session(session_id):
             return self.codex.interrupt(session_id)
         with self._lock:
@@ -894,7 +895,10 @@ class Harness:
                 if session is not None and session.status in LIVE:
                     return  # asleep, waking or finishing: nothing runs to stop
                 live = self._must(session_id)  # 404, or 409 not_live
-            for q in self.store.list_questions(run_id=live.run_id, status="open", source="ask_user"):
+            # The model's questions: ask_user, and ask_manager, whose reply stops too (as card Stop does).
+            for q in self.store.list_questions(run_id=live.run_id, status="open"):
+                if q.source not in ("ask_user", "ask_manager"):
+                    continue
                 try:
                     self.store.answer_question(q.id, INTERRUPTED, "interrupted")
                 except InvalidTransition:
