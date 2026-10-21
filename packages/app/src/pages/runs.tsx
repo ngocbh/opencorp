@@ -32,6 +32,8 @@ export default function Runs() {
   const [next, setNext] = createSignal<string | null>(null)
   const [error, setError] = createSignal<string>()
   const [loading, setLoading] = createSignal(true)
+  /** Whether a Load more is queued or reading: only that disables the button, not a live re-read it can queue after. */
+  const [more, setMore] = createSignal(false)
   /** Counts finished refetches, so the table reads its "Show all" children again. */
   const [refreshed, setRefreshed] = createSignal(0)
   const [text, setText] = createSignal(filters().q ?? "")
@@ -70,12 +72,23 @@ export default function Runs() {
   /** Reads the page after `before` (the first without it) and appends it. */
   function load(before?: string) {
     enqueue(async (gen) => {
-      const page = await read(filters(), before)
-      if (!current(gen)) return
-      setRuns(reconcile(before ? [...unwrap(runs), ...page.runs] : page.runs, { key: "run_id" }))
-      setNext(page.next ?? null)
-      setError(undefined)
+      try {
+        const page = await read(filters(), before)
+        if (!current(gen)) return
+        setRuns(reconcile(before ? [...unwrap(runs), ...page.runs] : page.runs, { key: "run_id" }))
+        setNext(page.next ?? null)
+        setError(undefined)
+      } finally {
+        if (before) setMore(false)
+      }
     })
+  }
+
+  /** Load more: one page at a time, however often it's pressed. */
+  function loadMore(before: string) {
+    if (more()) return
+    setMore(true)
+    load(before)
   }
 
   /** Re-reads the pages already shown, from the start, as one answer; not queued again while one waits to start. */
@@ -105,6 +118,7 @@ export default function Runs() {
       generation++
       setRuns(reconcile([]))
       setNext(null)
+      setMore(false) // a Load more queued in the old generation is dropped before it reads
       setError(undefined)
       load()
     }),
@@ -196,7 +210,7 @@ export default function Runs() {
         </Show>
         <Show when={next()}>
           {(before) => (
-            <button type="button" disabled={loading()} onClick={() => load(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
+            <button type="button" disabled={more()} onClick={() => loadMore(before())} class={`mt-3 px-3 text-sm ${BUTTON}`}>
               Load more
             </button>
           )}

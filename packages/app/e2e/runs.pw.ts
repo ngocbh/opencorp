@@ -250,6 +250,26 @@ test("a live refetch keeps focus on a child Show all brought", async ({ page, re
   await expect(link).toBeFocused()
 })
 
+test("Load more can be pressed while a live re-read runs", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: many(120) } })
+  await page.goto("/runs")
+  const tops = table(page).locator("tr[aria-level='1']")
+  await expect(tops).toHaveCount(50)
+  await page.waitForTimeout(1500) // past the read once the office is first online
+  // `api` logs a request as it arrives, before its delay.
+  const reads = async () =>
+    ((await (await request.get("/__fixture/log")).json()).api as string[]).filter((p) => p === "/api/runs").length
+  const before = await reads()
+  await request.post("/__fixture/set", { data: { delay: { "/api/runs": 1500 } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(1240), session_id: "S1240", status: "finished", current_nodes: [] } } } })
+  await expect.poll(reads).toBeGreaterThan(before) // the re-read is on its way
+  // Within the re-read's 1.5 s, not once it's done.
+  await expect(page.getByRole("button", { name: "Load more" })).toBeEnabled({ timeout: 500 })
+  await page.getByRole("button", { name: "Load more" }).click()
+  await expect(tops).toHaveCount(100, { timeout: 10_000 })
+})
+
 test("a refetch during Load more keeps the page it brings", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { runs: many(120) } })
   await page.goto("/runs")
