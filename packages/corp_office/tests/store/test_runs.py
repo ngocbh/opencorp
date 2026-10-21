@@ -257,3 +257,63 @@ def test_long_id_lists_are_read_in_chunks(store, monkeypatch):  # noqa: F811
     assert store.child_drivers(tops, "side_chat") == {t: ["lan"] for t in tops}
     assert [r.run_id for r in store.run_children(tops)] == kids[::-1]
     assert [q.run_id for q in store.list_questions(run_id=kids)] == kids
+
+
+OLD = "2026-09-01T10:00:00.000Z"
+RECENT = "2026-10-13T10:00:00.000Z"
+
+
+def test_open_or_recent_is_every_open_run_and_every_run_launched_since(store):  # noqa: F811
+    s = store.create_session(session())
+
+    def closed(**over):
+        run_id = store.add_run(launch(s, **over)).run_id
+        store.end_run(run_id, "finished")
+        return run_id
+
+    old_open = store.add_run(launch(s, launched_at=OLD)).run_id
+    old_closed = closed(launched_at=OLD)
+    open_kid_parent = closed(launched_at=OLD)
+    store.add_run(launch(s, parent_run_id=open_kid_parent, launched_at=OLD))
+    recent_kid_parent = closed(launched_at=OLD)
+    recent_kid = closed(parent_run_id=recent_kid_parent)
+    old_kid = closed(parent_run_id=recent_kid_parent, launched_at=OLD)
+    recent = closed()
+    page = [r.run_id for r in store.run_page(before=None, limit=10, recent=RECENT)]
+    assert page == [recent, recent_kid_parent, open_kid_parent, old_open] and old_closed not in page
+    assert [r.run_id for r in store.run_page(before=open_kid_parent, limit=10, recent=RECENT)] == [old_open]
+    assert [r.run_id for r in store.run_page(parent=recent_kid_parent, before=None, limit=10, recent=RECENT)] \
+        == [recent_kid]
+    assert [r.run_id for r in store.run_children([recent_kid_parent, open_kid_parent], recent=RECENT)] \
+        == [recent_kid, *[r.run_id for r in store.run_children([open_kid_parent])]]
+    assert old_kid not in [r.run_id for r in store.run_children([recent_kid_parent], recent=RECENT)]
+    with pytest.raises(ValueError):
+        store.run_page(before=None, limit=10, recent=RECENT, since=RECENT)
+
+
+@pytest.mark.parametrize("child", [False, True])
+def test_the_default_open_or_recent_query_stays_flat_as_old_closed_runs_are_added(store, child):  # noqa: F811
+    s = store.create_session(session())
+    top = store.add_run(launch(s, launched_at=OLD)).run_id if child else None
+    old_open = store.add_run(launch(s, parent_run_id=top, launched_at=OLD)).run_id
+    recent = store.add_run(launch(s, parent_run_id=top)).run_id
+    store.end_run(recent, "finished")
+    query = {"before": None, "limit": 50, "recent": RECENT, "parent": top}
+    rows, few = _steps(store, **query)
+    assert [r.run_id for r in rows] == [recent, old_open]
+    with store.transaction() as tx:  # old closed runs, and old closed children of an old open run
+        for parent in [top] * 3_000 + [top or old_open] * 3_000:
+            tx.execute("INSERT INTO runs (run_id, session_id, flow, flow_path, driver, parent_run_id, launched_at, "
+                       "outcome, ended_at) VALUES (?, ?, 'chat', 'x', 'ngocbh', ?, ?, 'finished', ?)",
+                       (new_id(), s.id, parent, OLD, OLD))
+    rows, many = _steps(store, **query)
+    assert [r.run_id for r in rows] == [recent, old_open]
+    assert many - few < 100, (few, many)  # 6,000 more old closed rows, and the query visits none of them
+
+
+@pytest.mark.parametrize("parent", [None, "01K0000000000000000000000Z"])
+def test_open_or_recent_reads_the_open_index(store, parent):  # noqa: F811
+    sql, params = run_page_query(parent=parent, before=None, limit=50, recent=T)
+    plan = [r["detail"] for r in store._conn().execute(f"EXPLAIN QUERY PLAN {sql}", params)]
+    assert any("INDEX runs_open" in d for d in plan) and any("INDEX runs_launched" in d for d in plan), plan
+    assert not any(d.startswith("SCAN runs") for d in plan), plan

@@ -24,10 +24,12 @@ OPEN_STATUSES = frozenset({"running", "waiting", "idle"})
 @dataclass(frozen=True)
 class RunFilter:
     """The list's filters: a run matches all that are set (any one of ``statuses``); ``since`` and ``until`` bound its
-    launch time. A top-level run shows when it or a run it started matches.
+    launch time; with ``recent``, a run matches when it's open (running, waiting or idle) or launched at or after it.
+    A top-level run shows when it or a run it started matches.
 
     The store applies the launch range to the rows it pages: top-level rows launched in it or with a child launched in
-    it, exactly the ones the range alone shows. So only the other filters need summaries.
+    it, exactly the ones the range alone shows. So only the other filters need summaries. For ``recent`` it pages the
+    rows with no outcome or launched since, and a summary says which of those with no outcome are open.
     """
 
     flow: str | None = None
@@ -36,11 +38,12 @@ class RunFilter:
     q: str | None = None
     since: str | None = None
     until: str | None = None
+    recent: str | None = None
 
     @property
     def summaries_needed(self) -> bool:
         """Whether matching a run needs more than its row's launch time."""
-        return bool(self.flow or self.person or self.statuses or self.q)
+        return bool(self.flow or self.person or self.statuses or self.q or self.recent)
 
     @property
     def open_only(self) -> bool:
@@ -53,7 +56,8 @@ class RunFilter:
                 and (not self.statuses or run.status in self.statuses)
                 and (not self.q or self.q.upper() in run.run_id)
                 and (not self.since or run.launched_at >= self.since)
-                and (not self.until or run.launched_at < self.until))
+                and (not self.until or run.launched_at < self.until)
+                and (not self.recent or run.status in OPEN_STATUSES or run.launched_at >= self.recent))
 
 
 class RunLogs:
@@ -92,19 +96,20 @@ class RunLogs:
 
     async def page(self, *, flow: str | None = None, person: str | None = None, status: Iterable[str] = (),
                    q: str | None = None, since: str | None = None, until: str | None = None,
-                   before: str | None = None, limit: int = PAGE) -> RunPage:
+                   recent: str | None = None, before: str | None = None, limit: int = PAGE) -> RunPage:
         """Top-level runs after run ``before`` (newest first) that the filters show, at most ``limit``: a run shows
         when it or a run it started matches. Each carries how many runs it started, not the runs; reasons are
         scrubbed with the known values of now."""
-        wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until)
+        wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until, recent)
         return await asyncio.to_thread(self._page, wanted, None, before, limit, await self._reasons())
 
     async def children(self, parent: str, *, flow: str | None = None, person: str | None = None,
                        status: Iterable[str] = (), q: str | None = None, since: str | None = None,
-                       until: str | None = None, before: str | None = None, limit: int = PAGE) -> RunPage:
+                       until: str | None = None, recent: str | None = None, before: str | None = None,
+                       limit: int = PAGE) -> RunPage:
         """The runs started from run ``parent`` that match the filters, paged as ``page`` is; LookupError if
         ``parent`` has no row."""
-        wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until)
+        wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until, recent)
         return await asyncio.to_thread(self._page, wanted, parent, before, limit, await self._reasons())
 
     def _page(self, wanted: RunFilter, parent: str | None, before: str | None, limit: int,
@@ -130,7 +135,7 @@ class RunLogs:
         while len(out) < limit and scanned < SCAN_CAP:
             ask = min(BATCH, SCAN_CAP - scanned) if wanted.summaries_needed else limit - len(out)
             rows = self.store.run_page(before=cursor, limit=ask, parent=parent, since=wanted.since,
-                                       until=wanted.until)
+                                       until=wanted.until, recent=wanted.recent)
             built = summaries.build(rows)
             kids = self._matching_children(rows, wanted, summaries) if parent is None else set()
             for row in rows:
@@ -146,15 +151,16 @@ class RunLogs:
                 exhausted = not rows or cursor == rows[-1].run_id
                 break
         more = not exhausted and cursor is not None and bool(
-            self.store.run_page(before=cursor, limit=1, parent=parent, since=wanted.since, until=wanted.until))
+            self.store.run_page(before=cursor, limit=1, parent=parent, since=wanted.since, until=wanted.until,
+                                recent=wanted.recent))
         return RunPage(runs=out, next=cursor if more else None)
 
     def _matching_children(self, rows: list[RunRow], wanted: RunFilter, summaries: Summaries) -> set[str]:
         """The ids of those of ``rows`` with a child that matches ``wanted`` (none to check without filters). The store
-        leaves out the children the launch range or an open-only status filter can't match."""
+        leaves out the children the launch range, ``recent`` or an open-only status filter can't match."""
         if not rows or not wanted.summaries_needed:
             return set()
         kids = self.store.run_children([r.run_id for r in rows], since=wanted.since, until=wanted.until,
-                                       open_only=wanted.open_only)
+                                       recent=wanted.recent, open_only=wanted.open_only)
         built = summaries.build(kids)
         return {k.parent_run_id for k in kids if k.run_id in built and wanted.matches(built[k.run_id])}

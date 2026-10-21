@@ -94,3 +94,35 @@ async def test_a_parent_with_more_children_than_sqlite_binds_at_once_lists(offic
     assert r.status_code == 200 and ids(r) == [top] and r.json()["runs"][0]["children_total"] == 33_000
     r = await client.get("/runs", params={"parent": top, "status": "interrupted", "limit": "200"})
     assert r.status_code == 200 and len(r.json()["runs"]) == 200
+
+
+async def test_get_runs_recent_is_open_runs_of_any_age_and_runs_started_since(office, client):
+    office.extras["runs"] = RunLogs(office)
+    s = office.store.create_session(session(status="idle"))
+    old_open = new_id()
+    office.store.add_session_run(s.id, old_open)
+    office.store.add_run(RunRow(old_open, s.id, "chat", "shared/flows/chat.yaml", "ngocbh", None,
+                                "2026-09-01T10:00:00.000Z"))
+    old_closed = a_run(office, launched_at="2026-09-01T10:00:00.000Z")
+    office.store.end_run(old_closed, "finished")
+    recent = a_run(office)
+    office.store.end_run(recent, "failed", reason="worker stopped")
+    r = await client.get("/runs", params={"recent": "2026-10-13T10:00:00Z", "limit": "50"})
+    assert r.status_code == 200 and ids(r) == [recent, old_open]
+    r = await client.get("/runs", params={"recent": "2026-10-13T10:00:00Z", "status": "failed"})
+    assert ids(r) == [recent]
+    kid = a_run(office, flow="side_chat", parent_run_id=old_closed, launched_at="2026-10-15T10:00:00.000Z")
+    r = await client.get("/runs", params={"parent": old_closed, "recent": "2026-10-13T10:00:00Z"})
+    assert ids(r) == [kid]
+
+
+@pytest.mark.parametrize("params", [
+    {"recent": "2026-10-13T10:00:00Z", "since": "2026-10-13T10:00:00Z"},
+    {"recent": "2026-10-13T10:00:00Z", "until": "2026-10-13T10:00:00Z"},
+    {"recent": "last week"}, {"recent": "2026-10-13T10:00:00"},
+    {"parent": "01K0000000000000000000000Z", "recent": "2026-10-13T10:00:00Z", "since": "2026-10-13T10:00:00Z"},
+])
+async def test_get_runs_refuses_a_bad_recent_or_recent_with_a_range(office, client, params):
+    office.extras["runs"] = RunLogs(office)
+    r = await client.get("/runs", params=params)
+    assert (r.status_code, r.json()["error"]) == (422, "invalid_body")

@@ -51,12 +51,16 @@ def time_param(raw: str | None, name: str) -> str | None:
 async def list_runs(request: Request) -> JSONResponse:
     """Top-level runs, newest first, each with how many runs it started; ``?parent=<run_id>`` lists that run's
     children instead. Both filter by ``flow``, ``person``, ``status`` (any of a comma-separated list), ``q`` (any part
-    of a run id) and launch time (``since`` inclusive, ``until`` exclusive), ``limit`` at a time after ``before``."""
+    of a run id) and launch time (``since`` inclusive, ``until`` exclusive), or ``recent`` (open runs of any age and
+    runs launched since then, the list's default), ``limit`` at a time after ``before``."""
     runs, q = run_logs(request), request.query_params
     filters = {"flow": q.get("flow") or None, "person": q.get("person") or None, "status": statuses(q.get("status")),
                "q": q.get("q") or None, "since": time_param(q.get("since"), "since"),
-               "until": time_param(q.get("until"), "until"), "before": q.get("before") or None,
+               "until": time_param(q.get("until"), "until"), "recent": time_param(q.get("recent"), "recent"),
+               "before": q.get("before") or None,
                "limit": int_param(q.get("limit"), "limit", 1, MAX_LIMIT, PAGE)}
+    if filters["recent"] and (filters["since"] or filters["until"]):
+        raise HTTPError(422, "invalid_body", "recent can't be combined with since or until")
     if parent := q.get("parent"):
         try:
             return ok(await runs.children(parent, **filters))

@@ -333,8 +333,8 @@ async def test_children_are_read_only_when_they_can_match(store, monkeypatch):  
     runs = runs_for(store)
     assert ids(await runs.page(status=["running", "idle"], person="kai")) == []  # its run has no outcome: interrupted
     assert ids(await runs.page(status=["interrupted"], person="kai", since="2026-10-13T00:00:00.000Z")) == [top]
-    assert asked == [{"since": None, "until": None, "open_only": True},
-                     {"since": "2026-10-13T00:00:00.000Z", "until": None, "open_only": False}]
+    assert asked == [{"since": None, "until": None, "recent": None, "open_only": True},
+                     {"since": "2026-10-13T00:00:00.000Z", "until": None, "recent": None, "open_only": False}]
     assert open_kid.parent_run_id == top
 
 
@@ -352,3 +352,50 @@ async def test_a_known_value_across_the_shown_length_is_removed_whole(store):  #
     (row,) = (await runs_for(store, Known([KEY])).page()).runs
     assert row.reason == "z" * 186 + "[redacted]"
     assert not any(KEY[i:] in row.reason for i in range(len(KEY) - 3)) and row.run_id == top
+
+
+async def test_open_or_recent_lists_open_runs_of_any_age_and_runs_launched_since(store):  # noqa: F811
+    old_open_session = store.create_session(session(status="idle"))
+    old_open = new_id()
+    store.add_session_run(old_open_session.id, old_open)
+    store.add_run(RunRow(old_open, old_open_session.id, "chat", "shared/flows/chat.yaml", "ngocbh", None,
+                         "2026-09-01T10:00:00.000Z"))
+    lost = store.create_session(session(status="ended"))  # no outcome, but nothing runs it: interrupted, not open
+    store.add_run(RunRow(new_id(), lost.id, "chat", "shared/flows/chat.yaml", "ngocbh", None,
+                         "2026-09-01T10:00:00.000Z"))
+    chat_with(store, at="2026-09-01T10:00:00.000Z")  # old and closed
+    old_parent = chat_with(store, kids=1, at="2026-09-01T10:00:00.000Z", kid_at=T)
+    recent = chat_with(store, outcome="failed")
+    runs, since = runs_for(store), "2026-10-13T10:00:00.000Z"
+    assert ids(await runs.page(recent=since)) == [recent, old_parent, old_open]
+    assert ids(await runs.page(recent=since, status=["idle"])) == [old_open]
+    assert ids(await runs.page(recent=since, person="lan")) == [old_parent]
+    assert ids(await runs.page(recent=since, flow="chat", status=["finished"])) == []  # old_parent: out of recent
+    one = await runs.page(recent=since, limit=2)
+    assert ids(one) == [recent, old_parent] and one.next == old_parent
+    assert ids(await runs.page(recent=since, before=one.next)) == [old_open]
+    (kid,) = store.run_children([old_parent])
+    assert ids(await runs.children(old_parent, recent=since)) == [kid.run_id]
+    assert ids(await runs.children(old_parent, recent="2026-10-21T00:00:00.000Z")) == []
+
+
+async def test_the_default_first_request_scans_only_open_and_recent_runs(store, monkeypatch):  # noqa: F811
+    old_closed = [chat_with(store, at="2026-09-01T10:00:00.000Z") for _ in range(30)]
+    s = store.create_session(session(status="waiting"))
+    old_open = new_id()
+    store.add_session_run(s.id, old_open)
+    store.add_run(RunRow(old_open, s.id, "chat", "shared/flows/chat.yaml", "ngocbh", None, "2026-09-01T10:00:00.000Z"))
+    recent = [chat_with(store, outcome="failed") for _ in range(3)]
+    newer_closed = [chat_with(store, at="2026-09-02T10:00:00.000Z") for _ in range(30)]  # ids after the recent runs
+    scanned = []
+    page_of = store.run_page
+
+    def counted(**kw):
+        rows = page_of(**kw)
+        scanned.extend(rows)
+        return rows
+
+    monkeypatch.setattr(store, "run_page", counted)
+    page = await runs_for(store).page(recent="2026-10-13T10:00:00.000Z", limit=50)
+    assert ids(page) == [*recent[::-1], old_open] and page.next is None
+    assert {r.run_id for r in scanned} == {*recent, old_open} and old_closed and newer_closed

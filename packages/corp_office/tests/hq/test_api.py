@@ -116,6 +116,10 @@ async def test_runs_are_on_the_allowlist(signed_in, office):
     r = await signed_in.get("/api/runs", params={"parent": run_id})
     assert [x["run_id"] for x in r.json()["runs"]] == [kid]
     assert (await signed_in.get("/api/runs", params={"status": "busy"})).status_code == 422
+    r = await signed_in.get("/api/runs", params={"recent": "2026-10-13T10:00:00.000Z", "limit": "50"})
+    assert [x["run_id"] for x in r.json()["runs"]] == [run_id]
+    both = {"recent": "2026-10-13T10:00:00.000Z", "since": "2026-10-13T10:00:00Z"}
+    assert (await signed_in.get("/api/runs", params=both)).status_code == 422
 
 
 async def test_runs_need_a_session(web):

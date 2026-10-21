@@ -264,14 +264,37 @@ _PAGE_IN_RANGE_SQL = (
     "UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched "
     f"WHERE parent_run_id IS NOT NULL AND {_IN_RANGE}"
     ") AND parent_run_id IS NULL AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
+# Open or recent: the open rows (runs_open, any age) and the rows launched since (runs_launched), each read by index
+# alone, so old closed runs are never visited.
+_PAGE_OPEN_OR_RECENT_SQL = (
+    "SELECT * FROM runs WHERE run_id IN ("
+    "SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IS NULL AND outcome IS NULL "
+    "UNION SELECT run_id FROM runs INDEXED BY runs_launched WHERE parent_run_id IS NULL AND launched_at >= ? "
+    "UNION SELECT parent_run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IS NOT NULL AND outcome IS NULL "
+    "UNION SELECT parent_run_id FROM runs INDEXED BY runs_child_launched "
+    "WHERE parent_run_id IS NOT NULL AND launched_at >= ?"
+    ") AND parent_run_id IS NULL AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
+_CHILD_PAGE_OPEN_OR_RECENT_SQL = (
+    "SELECT * FROM runs WHERE run_id IN ("
+    "SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id = ? AND outcome IS NULL "
+    "UNION SELECT run_id FROM runs INDEXED BY runs_launched WHERE parent_run_id = ? AND launched_at >= ?"
+    ") AND run_id < COALESCE(?, '~') ORDER BY run_id DESC LIMIT ?")
 
 
 def run_page_query(*, parent: str | None, before: str | None, limit: int, since: str | None = None,
-                   until: str | None = None) -> tuple[str, tuple[Any, ...]]:
-    """The SQL and parameters of a page of runs, newest first, after run ``before``: top-level ones launched in the
-    range or with a child launched in it, or ``parent``'s children launched in it (no range when neither bound is
-    given)."""
-    if since is None and until is None:
+                   until: str | None = None, recent: str | None = None) -> tuple[str, tuple[Any, ...]]:
+    """The SQL and parameters of a page of runs, newest first, after run ``before``: top-level ones, or ``parent``'s
+    children. With a launch range (``since``, ``until``), those launched in it; with ``recent``, those with no outcome
+    yet or launched at or after it. A top-level run is also on the page when a child of it is. ValueError when both a
+    range and ``recent`` are given."""
+    ranged = since is not None or until is not None
+    if ranged and recent is not None:
+        raise ValueError("a launch range and recent can't be combined")
+    if recent is not None:
+        if parent is None:
+            return _PAGE_OPEN_OR_RECENT_SQL, (recent, recent, before, limit)
+        return _CHILD_PAGE_OPEN_OR_RECENT_SQL, (parent, parent, recent, before, limit)
+    if not ranged:
         return (RUN_PAGE_SQL, (before, limit)) if parent is None else (_CHILD_PAGE_SQL, (parent, before, limit))
     if parent is None:
         return _PAGE_IN_RANGE_SQL, (since, until, since, until, before, limit)
@@ -973,11 +996,13 @@ class Store:
         return [self._run(r) for r in rows]
 
     def run_page(self, *, before: str | None, limit: int, parent: str | None = None, since: str | None = None,
-                 until: str | None = None) -> list[RunRow]:
+                 until: str | None = None, recent: str | None = None) -> list[RunRow]:
         """Top-level rows (no parent), or run ``parent``'s children, newest first, after run ``before`` in that order
-        when given. With a launch range (``since`` inclusive, ``until`` exclusive, Timestamps): ``parent``'s children
-        launched in it, or top-level rows launched in it or with a child launched in it."""
-        sql, params = run_page_query(parent=parent, before=before, limit=limit, since=since, until=until)
+        when given. With a launch range (``since`` inclusive, ``until`` exclusive, Timestamps), only rows launched in
+        it; with ``recent`` (a Timestamp), only rows with no outcome or launched at or after it. A top-level row is
+        also on the page when a child of it is. ValueError when both a range and ``recent`` are given."""
+        sql, params = run_page_query(parent=parent, before=before, limit=limit, since=since, until=until,
+                                     recent=recent)
         return [self._run(r) for r in self._conn().execute(sql, params)]
 
     def run_child_counts(self, parent_ids: Iterable[str]) -> dict[str, int]:
@@ -999,16 +1024,24 @@ class Store:
         return out
 
     def run_children(self, parent_ids: Iterable[str], *, since: str | None = None, until: str | None = None,
-                     open_only: bool = False) -> list[RunRow]:
+                     recent: str | None = None, open_only: bool = False) -> list[RunRow]:
         """The rows whose parent is one of ``parent_ids``, newest first: only those launched at or after ``since``
-        and before ``until`` when given, and only those with no outcome yet when ``open_only``."""
+        and before ``until`` when given, those with no outcome or launched at or after ``recent`` when given, and
+        those with no outcome when ``open_only``."""
         ranged = since is not None or until is not None
         where = f"{' AND ' + _IN_RANGE if ranged else ''}{' AND outcome IS NULL' if open_only else ''}"
         found: list[RunRow] = []
         for ids in _chunks(parent_ids):
-            rows = self._conn().execute(
-                f"SELECT * FROM runs WHERE parent_run_id IN ({', '.join('?' * len(ids))}){where}",
-                [*ids, *((since, until) if ranged else ())])
+            marks = ", ".join("?" * len(ids))
+            if recent is None:
+                sql, params = f"SELECT * FROM runs WHERE parent_run_id IN ({marks}){where}", [*ids]
+            else:  # each half read by index alone: the open children, and those launched since
+                sql = ("SELECT * FROM runs WHERE run_id IN ("
+                       f"SELECT run_id FROM runs INDEXED BY runs_open WHERE parent_run_id IN ({marks}) "
+                       "AND outcome IS NULL UNION SELECT run_id FROM runs INDEXED BY runs_launched "
+                       f"WHERE parent_run_id IN ({marks}) AND launched_at >= ?){where}")
+                params = [*ids, *ids, recent]
+            rows = self._conn().execute(sql, [*params, *((since, until) if ranged else ())])
             found.extend(self._run(r) for r in rows)
         return sorted(found, key=lambda r: r.run_id, reverse=True)
 
