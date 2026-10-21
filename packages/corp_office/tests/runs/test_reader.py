@@ -35,7 +35,9 @@ def test_unknown_envelope_fields_before_or_after_seq_and_at_are_ignored(tmp_path
 
 @pytest.mark.parametrize("schema, message", [
     (11, "This log uses run-log schema 11, which this office can't read"),
-    (8, "This log uses run-log schema 8, which is older than this office supports")])
+    (8, "This log uses run-log schema 8, which is older than this office supports"),
+    ("sk-" + "a" * 40, "This log uses a run-log schema this office can't read"),  # never echoed: it may be anything
+    (True, "This log uses a run-log schema this office can't read")])
 def test_an_unknown_or_retired_schema_stops_that_log_with_a_message(tmp_path, schema, message):
     path = tmp_path / "r.jsonl"
     path.write_bytes(run_started(0) + line(1, "node_started", {"node_id": "a"}, schema=schema))
@@ -72,7 +74,15 @@ def test_the_node_table_has_every_attempt_with_its_outcome(tmp_path):
     assert [(a.node_id, a.status, a.handle, a.end_seq) for a in index.nodes] == [
         ("chat", "expanded", None, 2), ("chat#0/route", "routed", "reply", 4), ("chat#0/reply", "failed", None, 6),
         ("m#0/a", "succeeded", None, 9), ("m#1/a", "open", None, None)]
-    assert len(index.nodes[2].error) == 200 and list(index.open) == ["m#1/a"]
+    # The whole error (up to ERROR_KEPT) is kept: cut before the scrub, a known value's tail would show.
+    assert index.nodes[2].error == "boom " * 100 and list(index.open) == ["m#1/a"]
+
+
+def test_a_node_error_is_kept_up_to_error_kept_its_cut_marked(tmp_path):
+    path = tmp_path / "r.jsonl"
+    path.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x" * 5000))
+    error = refresh(path, None).nodes[0].error
+    assert reader_mod.ERROR_KEPT == 1 << 10 and len(error) == reader_mod.ERROR_KEPT and error.endswith("x…")
 
 
 def test_a_resume_restarts_the_open_starts_and_only_the_latest_start_is_open(tmp_path):
@@ -230,8 +240,12 @@ def test_the_download_is_every_complete_line_through_the_scrub(tmp_path):
     path = chat_log(tmp_path / "r.jsonl", turns=1)
     with path.open("ab") as f:
         f.write(b'{"torn')
-    lines = list(scrubbed_lines(path, lambda raw: raw.upper()))
+    lines = scrubbed_lines(path, lambda raw: raw.upper())
+    path.unlink()  # opened when called, so a log removed before it streams still streams whole
+    lines = list(lines)
     assert len(lines) == 10 and lines[0].startswith(b'{"KIND"')
+    with pytest.raises(FileNotFoundError):
+        scrubbed_lines(path, lambda raw: raw)
 
 
 async def test_two_first_requests_build_once(tmp_path, monkeypatch):
@@ -353,9 +367,9 @@ def test_a_log_unreadable_twice_in_a_row_says_so(tmp_path, monkeypatch):
 def test_the_cost_counts_the_ids_errors_and_retried_ids_it_holds(tmp_path, monkeypatch):
     short, long = tmp_path / "s.jsonl", tmp_path / "l.jsonl"
     short.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x") + resumed(3, ["b"]))
-    long.write_bytes(run_started(0) + started(1, "a" * 5000) + failed(2, "a" * 5000, "x" * 500)
+    long.write_bytes(run_started(0) + started(1, "a" * 5000) + failed(2, "a" * 5000, "x" * 5000)
                      + resumed(3, ["b" * 3000]))
-    assert refresh(long, None).cost() - refresh(short, None).cost() == 4999 + 199 + 2999
+    assert refresh(long, None).cost() - refresh(short, None).cost() == 4999 + reader_mod.ERROR_KEPT - 1 + 2999
     monkeypatch.setattr(reader_mod, "NODE_CAP", 5)
     many = tmp_path / "m.jsonl"
     many.write_bytes(run_started(0) + b"".join(started(n, f"{n:04d}" + "n" * 996) for n in range(1, 101)))

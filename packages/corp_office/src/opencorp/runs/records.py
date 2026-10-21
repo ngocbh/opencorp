@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from opencorp.chat.turns import MAIN_CHAT
 from opencorp.protocol.models import Question, RunSummary, Session
 from opencorp.runs.outcomes import DEBRIEF, FLOWS
-from opencorp.store import RunRow, Store, cut_reason
+from opencorp.store import REASON_CHARS, RunRow, Store, cut_reason
 
 log = logging.getLogger(__name__)
 
@@ -80,10 +80,10 @@ def current_nodes(status: str, run_id: str, open_questions: list[Question], live
     return [], False, False
 
 
-def shown_reason(reason: str, scrub: Callable[[str], str] = lambda text: text) -> str:
-    """``reason`` as shown: the partial word before an earlier cut's "…" dropped, then ``scrub``, then the cut to
-    REASON_CHARS (after the scrub, so it never splits a secret the scrub would find)."""
-    return cut_reason(scrub(_CUT_TAIL.sub("…", reason)))
+def shown_reason(reason: str, scrub: Callable[[str], str] = lambda text: text, limit: int = REASON_CHARS) -> str:
+    """``reason`` (or a node's error) as shown: the partial word before an earlier cut's "…" dropped, then ``scrub``,
+    then the cut to ``limit`` (after the scrub, so it never splits a secret the scrub would find)."""
+    return cut_reason(scrub(_CUT_TAIL.sub("…", reason)), limit)
 
 
 def participants(driver: str, person: str, others: Iterable[str | None]) -> list[str]:
