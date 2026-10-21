@@ -22,7 +22,7 @@ from opencorp.chat.hooks import Hooks
 from opencorp.chat.identity import person_inputs, talking_to
 from opencorp.chat.models import DEADLINE, ListTimeout, ModelCache
 from opencorp.chat.provider import Price, Provider, ProviderError
-from opencorp.chat.state import guarded_update, not_waiting
+from opencorp.chat.state import SETTLED, guarded_update, not_waiting, run_state, write_state
 from opencorp.chat.transcript import Transcript
 from opencorp.chat.turns import MAIN_CHAT, ChatFlow
 from opencorp.company.loader import load_repo
@@ -115,6 +115,16 @@ class _Wake:
     """A wake in progress. Callers that find it wait on ``done``, then look again."""
 
     done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(frozen=True)
+class _Pins:
+    """What a pinned commit says about a person, which never changes: the company defaults, its CEO, and who
+    raises the person's cost cap (their manager, else the CEO)."""
+
+    defaults: CompanyDefaults
+    ceo: str | None
+    manager: str | None
 
 
 @dataclass(eq=False)
@@ -223,6 +233,7 @@ class Harness:
         self._live: dict[str, _Live] = {}
         self._waking: dict[str, _Wake] = {}  # session id -> its wake in progress
         self._finishing: set[str] = set()  # sessions whose _finish dropped the live run and hasn't stored the end
+        self._pins: dict[tuple[str, str], _Pins] = {}  # (repo_commit, person) -> its pinned facts
         self._stopping = False  # set when close_all starts: no new worker spawns
         self._refusing = False  # set once the channels are closed: no new worker request is admitted
         self._closed = False  # set when close_all returns: the caller may close the store
@@ -495,10 +506,10 @@ class Harness:
         return run_id
 
     def _new_live(self, session: Session, run_id: str, spec: RunSpec) -> _Live:
-        repo = load_repo(self.git.pin(session.repo_commit))
-        return _Live(session.id, session.person, run_id, spec, _defaults(repo),
+        pins = self._pinned(session)
+        return _Live(session.id, session.person, run_id, spec, pins.defaults,
                      Transcript(self.store, session.id, self.office.bus.publish_live),
-                     owner=session.opened_by or _ceo(repo))
+                     owner=session.opened_by or pins.ceo)
 
     def restore(self) -> None:
         """At office start: resume each live session whose run can't wait, under the same run id where it can.
@@ -747,6 +758,58 @@ class Harness:
         return (session is not None and session.harness == "composer" and session.status in LIVE
                 and session.status != "starting" and bool(session.run_ids)
                 and question.run_id == session.run_ids[-1])
+
+    # --- the run state -----------------------------------------------------------------
+
+    def _pinned(self, session: Session) -> _Pins:
+        """``session``'s pinned facts, read from its pinned company once per office life (pins never change)."""
+        key = (session.repo_commit, session.person)
+        found = self._pins.get(key)
+        if found is None:
+            repo = load_repo(self.git.pin(session.repo_commit))
+            person = repo.people.get(session.person)
+            found = self._pins[key] = _Pins(_defaults(repo), _ceo(repo),
+                                            (person.manager if person else None) or _ceo(repo))
+        return found
+
+    def _settle(self, session_id: str) -> None:
+        """Write the composer session's run state, ``waiting_on`` and ``capped`` from what its run waits in.
+
+        Waiting: an open question on its current run other than the chat's turn (the opener, else the pinned CEO,
+        for ``ask_user`` and question nodes; the work item's assignee for ``ask_manager``), or its cost at or over
+        its cap (the open cap item's assignee, else the pinned manager, else the CEO). Else busy while it has a
+        live run whose turn isn't open, even with no worker yet. Else idle. ``write_state`` leaves starting,
+        ending, debriefing and finished sessions alone, and so does a session whose ``_finish`` is in flight.
+        """
+        session = self.store.get_session(session_id)
+        if session is None or session.harness != "composer" or session.status not in SETTLED:
+            return
+        pins = self._pinned(session)  # cached by _new_live for a live session; a sleeping one's may load its pin
+        with self._lock:
+            live = self._live.get(session_id)
+            if live is None and session_id in self._finishing:
+                return  # _finish stores the end
+            running = live is not None and live.turn_q is None
+            run_id = live.run_id if live is not None else (session.run_ids[-1] if session.run_ids else None)
+            with self.store.transaction():
+                current = self.store.get_session(session_id)
+                owner = current.opened_by or pins.ceo
+                # Every chat the office runs keeps the main chat's turn node.
+                asks = [] if run_id is None else [
+                    q for q in self.store.list_questions(run_id=run_id, status="open")
+                    if not (q.source == "human_input" and MAIN_CHAT.is_turn(q.node_id))]
+                who = [self._asked(q) if q.source == "ask_manager" else owner for q in asks]
+                held = current.cost >= cost_cap(current, pins.defaults)
+                if held:
+                    item = self._cap_item(current)
+                    who.append(item.assignee if item is not None else pins.manager)
+                write_state(self.store, session_id, run_state(waiting=bool(asks) or held, running=running), who,
+                            capped=held)
+
+    def _asked(self, question: Question) -> str | None:
+        """Who an ``ask_manager`` question waits on: its work item's assignee."""
+        item = self.store.get_work_item(question.work_item_id) if question.work_item_id else None
+        return item.assignee if item is not None else None
 
     # --- the person's keys -------------------------------------------------------------
 

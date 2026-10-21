@@ -55,3 +55,42 @@ def test_a_failed_waiting_session_waits_on_no_one(harness):
     harness._fail(s.id)
     got = harness.store.get_session(s.id)
     assert (got.status, got.waiting_on, got.capped) == ("failed", [], False)
+
+
+def test_settle_gives_idle_at_the_turn_and_busy_while_a_live_run_has_no_turn(harness, workspace):
+    sid = start(harness, workspace)
+    harness._settle(sid)
+    assert state(harness, sid) == ("idle", [])
+    with harness._lock:
+        harness._live[sid].turn_q = None  # as _restart, a crash resume and a wake leave it until the turn shows
+    harness._settle(sid)
+    assert state(harness, sid) == ("busy", [])
+
+
+def test_settle_waits_on_the_ceo_for_a_question_beside_the_turn(harness, workspace):
+    sid = start(harness, workspace)
+    run, t = harness.store.get_session(sid).run_ids[-1], now()
+    harness.store.add_question(Question(id=new_id(), session_id=sid, run_id=run, node_id="gate", source="human_input",
+                                        asker="minh", question="Which db?", status="open", created_at=t, updated_at=t))
+    harness._settle(sid)
+    assert state(harness, sid) == ("waiting", ["ngocbh"])  # no opener: the pinned CEO
+
+
+def test_settle_holds_a_session_over_its_cap_on_its_manager(harness, workspace):
+    sid = start(harness, workspace)
+    harness.store.update_session(sid, cost=6)  # over the company's $5
+    harness._settle(sid)
+    assert state(harness, sid) == ("waiting", ["ngocbh"]) and harness.store.get_session(sid).capped
+
+
+def test_settle_leaves_a_session_whose_finish_is_in_flight(harness, workspace):
+    sid = start(harness, workspace)
+    with harness._lock:
+        live = harness._live.pop(sid)
+        harness._finishing.add(sid)
+    harness.store.update_session(sid, status="busy")
+    harness._settle(sid)
+    assert status(harness, sid) == "busy"  # not idle: _finish stores the end
+    with harness._lock:
+        harness._finishing.discard(sid)
+        harness._live[sid] = live
