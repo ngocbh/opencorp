@@ -1,3 +1,5 @@
+import base64
+import json
 import time
 from importlib.resources import files
 
@@ -5,8 +7,8 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
-from opencorp.company.secret_keys import (SECRET_KEYS, UnsafeYaml, blank_secrets, check_clean, find_secrets,
-                                          is_secret_key, scrub_text)
+from opencorp.company.secret_keys import (SECRET_KEYS, UnsafeYaml, blank_secrets, check_clean, find_json_secrets,
+                                          find_secrets, is_secret_key, scrub_text)
 from opencorp.protocol.models import Device, Person
 
 HASH = "$scrypt$ln=15,r=8,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNoaGFzaA"
@@ -33,7 +35,17 @@ def test_secret_key_names(key):
     assert is_secret_key(key)
 
 
-@pytest.mark.parametrize("key", ["secrets", "max_tokens", "api_key_env", "name", "tokens", "password_hint", 3, None])
+@pytest.mark.parametrize("key", ["accessToken", "clientSecret", "privateKey", "apiKey", "refreshToken", "APIKey",
+                                 "XApiKey", "passwordHash", "tokenSha256", "dbPassword", "GitHubToken", "idToken",
+                                 "OPENAI_API_KEY", "ApiKey", "AccessToken", "client-Secret"])
+def test_camel_case_secret_key_names(key):
+    assert is_secret_key(key)
+
+
+@pytest.mark.parametrize("key", ["secrets", "max_tokens", "api_key_env", "name", "tokens", "password_hint", 3, None,
+                                 "tokens_used", "secretary", "maxTokens", "totalTokens", "promptTokens", "tokenType",
+                                 "TokenCount", "apiKeyEnv", "passwordHint", "Secretary", "keyboard", "monkey",
+                                 "MAX_TOKENS"])
 def test_names_that_are_not_secret_keys(key):
     assert not is_secret_key(key)
 
@@ -220,3 +232,58 @@ def test_data_is_none_when_safeloader_cant_build_it():
     assert _found("person: !Person {name: x}\n").data is None
     assert _found("a: 1\n").data == {"a": 1}
     assert _found("").data is None
+
+
+def b64(text):
+    return base64.b64encode(text.encode()).decode()
+
+
+def test_a_binary_scalar_is_checked_decoded():
+    found = _found(f"note: !!binary {b64(HASH)}\n")
+    assert HASH in found.plain and not all(check_clean(s, set()) for s in found.plain)
+    found = _found(f"note: !!binary |\n  {b64('plainsecret_0123456789')}\n")
+    assert not all(check_clean(s, {"plainsecret_0123456789"}) for s in found.plain)
+
+
+def test_a_binary_value_under_a_secret_key_is_a_secret_value_decoded():
+    found = _found(f"token: !!binary {b64('plainsecret_0123456789')}\n")
+    assert found.keys == [("token",)] and "plainsecret_0123456789" in found.values
+
+
+def test_a_binary_key_naming_a_secret_is_a_secret_key():
+    found = _found(f"!!binary {b64('password')}: plainsecret_0123456789\n")
+    assert found.keys == [(b64("password"),)] and found.values == {"plainsecret_0123456789"}
+    assert {"password", b64("password")} <= found.plain
+
+
+def test_a_binary_scalar_that_isnt_base64_raises():
+    with pytest.raises(UnsafeYaml):
+        _found("note: !!binary not*base64\n")
+
+
+def test_find_json_secrets_walks_json_under_the_same_key_rule():
+    text = ('{\n\t"name": "x",\n\t"auth": {"clientSecret": "plainsecret_0123456789", "n": 3},\n'
+            '\t"note": "a\\u0024scrypt\\u0024b"\n}')
+    with pytest.raises(UnsafeYaml):
+        _found(text)  # PyYAML can't read tab indents
+    found = find_json_secrets(text)
+    assert found.keys == [("auth", "clientSecret")] and found.values == {"plainsecret_0123456789"}
+    assert {"name", "x", "auth", "a$scrypt$b"} <= found.plain and found.data is None
+
+
+def test_find_json_secrets_keeps_every_duplicate_key():
+    found = find_json_secrets('{"note": "first-copy-123456", "note": "second", "token": "t1-123456789", "token": 1}')
+    assert "first-copy-123456" in found.plain and found.values == {"t1-123456789", "1"}
+
+
+def test_find_json_secrets_reads_devices_and_scalars_as_yaml_does():
+    found = find_json_secrets(json.dumps({"devices": [{"name": "mac", "token_sha256": SHA}], "n": 12345678901,
+                                          "password": 98765432109}))
+    assert found.keys == [("devices",), ("password",)] and found.values == {SHA, "98765432109"}
+    assert {"mac", "12345678901"} <= found.plain
+
+
+@pytest.mark.parametrize("text", ["{", "[" * 100_000 + "]" * 100_000, json.dumps([[0] * 400] * 400)])
+def test_hostile_json_raises(text):
+    with pytest.raises(UnsafeYaml):
+        find_json_secrets(text)
