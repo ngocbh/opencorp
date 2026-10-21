@@ -17,7 +17,7 @@ import weakref
 from collections import deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import astuple, dataclass, field, fields
+from dataclasses import astuple, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +38,7 @@ from opencorp.protocol.models import (
     PersonCost,
     ProfileProposal,
     Question,
+    RunUpdated,
     Session,
     TextPart,
     ToolPart,
@@ -212,6 +213,30 @@ class HqSessionRecord:
 
 
 _HQ_COLUMNS = tuple(f.name for f in fields(HqSessionRecord))
+
+REASON_CHARS = 200
+"""The longest reason a run's outcome keeps."""
+
+
+@dataclass(frozen=True)
+class RunRow:
+    """A launched run as the runs table keeps it: written at launch, then once more when the office learns it ended
+    (``outcome`` finished, failed or interrupted)."""
+
+    run_id: str
+    session_id: str
+    flow: str
+    flow_path: str
+    driver: str
+    parent_run_id: str | None
+    launched_at: str
+    outcome: str | None = None
+    reason: str | None = None
+    failed_node: str | None = None
+    ended_at: str | None = None
+
+
+_RUN_COLUMNS = tuple(f.name for f in fields(RunRow))
 
 
 @dataclass(frozen=True)
@@ -819,6 +844,95 @@ class Store:
             (person, limit),
         ).fetchall()
         return [WorkedFolder(r["cwd"], r["last_at"]) for r in rows]
+
+    # --- runs ---------------------------------------------------------------------------
+
+    @staticmethod
+    def _run(row: sqlite3.Row) -> RunRow:
+        return RunRow(*(row[c] for c in _RUN_COLUMNS))
+
+    def _run_event(self, tx: Tx, row: RunRow) -> None:
+        tx.emit("run.updated", row.run_id, RunUpdated(run_id=row.run_id, session_id=row.session_id,
+                                                      parent_run_id=row.parent_run_id, status=row.outcome or "running"))
+
+    def add_run(self, row: RunRow) -> RunRow:
+        """Insert a launched run and emit ``run.updated``. A parent with no row (launched before rows were written)
+        isn't kept, so the run still lists."""
+        with self.transaction() as tx:
+            if row.parent_run_id is not None and self.get_run(row.parent_run_id) is None:
+                row = replace(row, parent_run_id=None)
+            tx.execute(f"INSERT INTO runs ({', '.join(_RUN_COLUMNS)}) VALUES ({', '.join('?' * len(_RUN_COLUMNS))})",
+                       astuple(row))
+            self._run_event(tx, row)
+        return row
+
+    def end_run(self, run_id: str, outcome: str, *, reason: str | None = None, failed_node: str | None = None,
+                at: str | None = None) -> bool:
+        """Write a run's outcome (ended now, or at ``at``) and emit ``run.updated``, unless it has one already.
+
+        Returns whether it wrote one. ``reason`` is cut to REASON_CHARS.
+        """
+        if reason is not None and len(reason) > REASON_CHARS:
+            reason = reason[:REASON_CHARS - 1] + "…"
+        with self.transaction() as tx:
+            done = tx.execute("UPDATE runs SET outcome = ?, reason = ?, failed_node = ?, ended_at = ? "
+                              "WHERE run_id = ? AND outcome IS NULL",
+                              (outcome, reason, failed_node, at or now(), run_id)).rowcount
+            if done:
+                self._run_event(tx, self.get_run(run_id))
+        return bool(done)
+
+    def sweep_runs(self, keep: set[str], *, reason: str) -> list[str]:
+        """End every run with no outcome but those in ``keep`` as ``interrupted`` with ``reason`` and no end time;
+        returns their ids, oldest first."""
+        with self.transaction() as tx:
+            rows = [self._run(r) for r in tx.execute("SELECT * FROM runs WHERE outcome IS NULL ORDER BY run_id")]
+            rows = [r for r in rows if r.run_id not in keep]
+            for row in rows:
+                tx.execute("UPDATE runs SET outcome = 'interrupted', reason = ? WHERE run_id = ?", (reason, row.run_id))
+                self._run_event(tx, replace(row, outcome="interrupted", reason=reason))
+        return [r.run_id for r in rows]
+
+    def get_run(self, run_id: str) -> RunRow | None:
+        """The run's row, or ``None``."""
+        row = self._conn().execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        return None if row is None else self._run(row)
+
+    def get_runs(self, run_ids: Iterable[str]) -> dict[str, RunRow]:
+        """The rows of those of ``run_ids`` that have one, by run id."""
+        ids = list(dict.fromkeys(run_ids))
+        if not ids:
+            return {}
+        rows = self._conn().execute(f"SELECT * FROM runs WHERE run_id IN ({', '.join('?' * len(ids))})", ids)
+        return {r["run_id"]: self._run(r) for r in rows}
+
+    def runs_of_session(self, session_id: str) -> list[RunRow]:
+        """A session's rows, oldest launch first (debriefs included)."""
+        rows = self._conn().execute("SELECT * FROM runs WHERE session_id = ? ORDER BY launched_at, run_id",
+                                    (session_id,))
+        return [self._run(r) for r in rows]
+
+    def run_page(self, *, before: str | None, limit: int) -> list[RunRow]:
+        """Top-level rows (no parent), newest first, launched before run ``before`` when given."""
+        rows = self._conn().execute(
+            "SELECT * FROM runs WHERE parent_run_id IS NULL AND (? IS NULL OR run_id < ?) ORDER BY run_id DESC LIMIT ?",
+            (before, before, limit))
+        return [self._run(r) for r in rows]
+
+    def run_children(self, parent_ids: Iterable[str]) -> list[RunRow]:
+        """The rows whose parent is one of ``parent_ids``, newest first."""
+        ids = list(dict.fromkeys(parent_ids))
+        if not ids:
+            return []
+        rows = self._conn().execute(
+            f"SELECT * FROM runs WHERE parent_run_id IN ({', '.join('?' * len(ids))}) ORDER BY run_id DESC", ids)
+        return [self._run(r) for r in rows]
+
+    def run_usage(self, run_id: str) -> tuple[int, int, float]:
+        """A run's summed (input tokens, output tokens, usd), as the harness recorded its model calls."""
+        row = self._conn().execute("SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), "
+                                   "COALESCE(SUM(usd), 0) FROM usage WHERE run_id = ?", (run_id,)).fetchone()
+        return int(row[0]), int(row[1]), float(row[2])
 
     # --- questions ----------------------------------------------------------------------
 
