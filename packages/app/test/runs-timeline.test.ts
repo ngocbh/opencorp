@@ -1,6 +1,16 @@
 import { expect, test } from "bun:test"
 import type { RunDivider, RunNode, RunNodePage } from "@opencorp/protocol"
-import { dividerText, iterationOf, nodeStatus, staticPath, takeNewest, timeline, type Shown } from "../src/runs/timeline"
+import {
+  dividerText,
+  handleText,
+  isBoundary,
+  iterationOf,
+  nodeStatus,
+  staticPath,
+  takeNewest,
+  timeline,
+  type Shown,
+} from "../src/runs/timeline"
 
 const n = (seq: number, node_id: string, over: Partial<RunNode> = {}) => ({ seq, node_id, status: "succeeded", ...over }) as RunNode
 
@@ -22,8 +32,16 @@ test("consecutive nodes of one iteration group, newest first, with dividers wher
 test("statuses and dividers read as the Timeline shows them", () => {
   expect(nodeStatus(n(1, "r", { status: "routed", handle: "reply" }))).toBe("routed → reply")
   expect(nodeStatus(n(1, "r", { status: "restarted" }))).toBe("restarted")
+  // Yian's handle for a case's else route, taken too when no when: matches.
+  expect(nodeStatus(n(1, "r", { status: "routed", handle: "#else" }))).toBe("routed → else (no case matched)")
+  expect([handleText("#else"), handleText("reply"), handleText("else")]).toEqual(["else (no case matched)", "reply", "else"])
   expect(dividerText({ seq: 1, retried: ["chat#2/reply"] })).toBe("resumed; retried reply")
   expect(dividerText({ seq: 1, retried: [] })).toBe("resumed")
+})
+
+test("a flow's __start__ and __end__ nodes are boundaries, at any depth", () => {
+  expect(["__start__", "__end__", "chat#2/__end__", "m#0/a/__start__"].map(isBoundary)).toEqual([true, true, true, true])
+  expect(["chat", "__start__x", "chat/__end__/reply", "start"].map(isBoundary)).toEqual([false, false, false, false])
 })
 
 const page = (nodes: RunNode[], over: Partial<RunNodePage> = {}): RunNodePage =>

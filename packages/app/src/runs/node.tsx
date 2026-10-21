@@ -4,7 +4,7 @@ import { isIndexing, isSecretsUnavailable } from "@opencorp/client"
 import type { RunDetail, RunEvent, RunNode } from "@opencorp/protocol"
 import { createEffect, createSignal, createUniqueId, For, on, onCleanup, onMount, Show, type JSX } from "solid-js"
 import { useOffice } from "../data/office"
-import { staticPath } from "./timeline"
+import { handleText, staticPath } from "./timeline"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
@@ -192,7 +192,7 @@ export function NodeDetail(props: {
               <Show when={handle()}>
                 {(h) => (
                   <Part title="Route">
-                    <p class="font-mono">{h()}</p>
+                    <p class="font-mono">{handleText(h())}</p>
                   </Part>
                 )}
               </Show>
