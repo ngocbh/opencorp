@@ -1,8 +1,10 @@
 import { applyCompany, upsertSession, type OfficeState, type Snapshot } from "@opencorp/client"
 import type { Session } from "@opencorp/protocol"
 
-/** The statuses of a session someone is in: what the company view shows. */
-export const LIVE: Session["status"][] = ["starting", "idle", "busy", "ending", "debriefing"]
+/** The statuses HQ fetches: a session with a run, or one debriefing. */
+export const LIVE: Session["status"][] = ["starting", "idle", "busy", "waiting", "ending", "debriefing"]
+/** Current work, which HQ counts and lists. An idle session is history, reopened with /sessions in the TUI. */
+export const ACTIVE: Session["status"][] = ["starting", "busy", "waiting", "ending", "debriefing"]
 
 /**
  * HQ's snapshot on every (re)connect: the company at HEAD, live sessions, open questions, and costs since `from()`.
