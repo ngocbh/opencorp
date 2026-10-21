@@ -4,7 +4,9 @@ import type { RunDetail, RunDivider, RunEvent, RunNode, RunSummary } from "@open
 
 /** A run id: "01JA1H" and `n`, 26 characters. */
 export const rid = (n: number) => `01JA1H${String(n).padStart(20, "0")}`
-const at = (minute: number) => new Date(Date.UTC(2026, 9, 20, 10, minute)).toISOString()
+// Two hours before the hour the fixture started in: recent, so the list's default query (the last 7 days) holds them.
+const BASE = Math.floor(Date.now() / 3_600_000) * 3_600_000 - 2 * 3_600_000
+const at = (minute: number) => new Date(BASE + minute * 60_000).toISOString()
 
 export const run = (n: number, over: Partial<RunSummary> = {}): RunSummary => ({
   run_id: rid(n), session_id: `S${n}`, flow: "chat", flow_path: "shared/flows/chat.yaml", person: "kai",
