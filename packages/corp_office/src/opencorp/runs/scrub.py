@@ -36,11 +36,12 @@ and of each line folded onto it."""
 API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)({_QUOTE}\s*[:=]\s*{_QUOTE}){_NOT_HIDDEN}{_VALUE}", re.IGNORECASE)
 """An ``api-key: …`` header value, which provider errors echo, as text, JSON (escaped too) or a Python repr."""
 QUOTED_PAIR = re.compile(r"""(?<!\\)(?P<bs>\\{0,15})(?P<q>["'])"""  # a quote and its escapes, the same around both
-                         r"""(?P<key>\w[\w .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
-                         r"""(?=(?P=bs)[bB]?(?P<vq>["'])(?P<value>.*?(?<!\\)(?:(?P=bs)\\(?P=bs)\\)*)(?P=bs)(?P=vq)"""
-                         r"""|(?P<bare>-?[0-9][\w.+-]*))""", re.DOTALL)
-"""A ``"key": value`` pair of JSON (escaped too) or a Python repr (a ``b'…'`` value too) inside a string; ``secret_key``
-decides whether its value is hidden. The value ends at the quote whose backslashes are the quote's own escapes after
+                         r"""(?P<key>\w[\w .-]{0,63})(?P=bs)(?P=q)\s*:\s*(?=(?P=bs)[bBrR]{0,2}(?P<vq>["'])"""
+                         r"""(?P<value>.*?(?<!\\)(?:(?P=bs)\\(?P=bs)\\)*)(?P=bs)(?P=vq)|(?P<bare>-?[0-9][\w.+-]*))""",
+                         re.DOTALL)
+"""A ``"key": value`` pair of JSON (escaped too) or a Python repr (a ``b'…'`` or ``rb'…'`` value too) inside a string,
+searched for in ``_folded`` text, so a lookalike ``:`` or ``_`` counts; ``secret_key`` decides from the key as written
+whether its value is hidden. The value ends at the quote whose backslashes are the quote's own escapes after
 whole escaped backslashes, which end the value. It is read ahead, not consumed, so a pair inside another pair's value is
 found too. Quotes escaped up to 4 times count, so each search stays linear."""
 _KEY_WORDS = ("passw", "token", "secret", "key", "phrase", "devices", "authorization", "cookie")
@@ -48,8 +49,8 @@ _KEY_WORDS = ("passw", "token", "secret", "key", "phrase", "devices", "authoriza
 lowercases): ``QUOTED_PAIR`` and ``BARE_PAIR`` are tried only at a key holding one, so ordinary text costs a few
 substring searches. The first five are the words of ``is_secret_key``'s keys."""
 _ENDS = r"(?:[\s,;:}\])]|$)"  # after a quote that closes the string around a pair rather than opens its value
-BARE_PAIR = re.compile(rf"(?P<key>\w[\w.-]{{0,63}})[ \t]*+[:=](?!=)[ \t]*+"
-                       r"(?!\(hidden\)|\[redacted\]|(?i:true|false|null|none)\b)"
+BARE_PAIR = re.compile(rf"(?P<key>\w[\w.-]{{0,135}})[ \t]*+[:=](?!=)[ \t]*+"
+                       r"(?!(?:\(hidden\)|\[redacted\]|(?i:true|false|null|none))(?=[ \t]*+(?:[,;}\])\r\n\"']|\\|$)))"
                        rf"(?:[bBrRuU]{{0,2}}(?P<q>[\"'])(?!{_ENDS})(?P<quoted>(?:(?!(?P=q))[^\\\r\n]|\\.)*)(?P=q)"
                        rf"|(?P<line>(?:(?!\\{{0,15}}[\"']{_ENDS})(?:[^\r\n\\]|\\(?![rn])))+))")
 """A ``key: value`` or ``KEY=value`` pair in plain text (an env line, YAML, a log line, a keyword argument), whose key
@@ -57,12 +58,13 @@ is unquoted; ``is_secret_key`` decides whether its value is hidden.
 
 A quoted value ends at its closing quote. Any other value runs to the end of its line (a plain or escaped line break),
 since an unquoted YAML or ``.env`` value may hold spaces, or to a quote, escaped or not, that closes a string around
-the pair (``{"m": "token: x", …}``); so does an unclosed quoted value. ``true``, ``false``, ``null`` and ``none`` stay,
-and so does a string ending in ``password:``."""
+the pair (``{"m": "token: x", …}``); so does an unclosed quoted value. A whole value of ``true``, ``false``, ``null``
+or ``none`` stays (``true-love-1985`` doesn't), and so does a string ending in ``password:``. Searched for in
+``_folded`` text, so a lookalike ``=`` or ``_`` counts."""
 _KEY_WORD = re.compile("|".join(_KEY_WORDS))
-_BARE_WORD = re.compile(rf"(?:{'|'.join(_KEY_WORDS[:5])})[\w.-]{{0,64}}+[ \t]*+[:=](?!=)")
+_BARE_WORD = re.compile(rf"(?:{'|'.join(_KEY_WORDS[:5])})[\w.-]{{0,64}}+(?P<sep>[ \t]*+[:=](?!=))")
 """A word of ``is_secret_key``'s keys, the rest of its key and a separator, in folded text: where ``BARE_PAIR`` may
-match, bounded like a key."""
+match, bounded."""
 COOKIE_HEADER = re.compile(r"\b((?:set-)?cookie[ \t]*:[ \t]*)(?=[\w!#$%&*+.^`|~-]{1,256}=)"
                            r"(?:[^\r\n\\]|\\(?![rn])|(?:\r?\n|(?:\\r)?\\n)(?=[ \t]|\\t))+", re.IGNORECASE)
 """A ``Cookie:`` or ``Set-Cookie:`` header written as text, its value (``name=…``) up to the end of its line and of each
@@ -87,20 +89,21 @@ def _bare_secret_key(key: str) -> bool:
 
 @functools.cache
 def _compat() -> tuple[frozenset[str], dict[int, str]]:
-    """The characters NFKC turns into one ASCII letter (a Kelvin sign, fullwidth and mathematical letters), and ``İ``,
-    whose lowercase is two characters: the set of them and a ``str.translate`` table to those letters."""
+    """The characters NFKC turns into one ASCII letter, digit or one of ``_.-:=`` (a Kelvin sign, fullwidth and
+    mathematical letters, a fullwidth ``＿`` or ``＝``), and ``İ``, whose lowercase is two characters: the set of them
+    and a ``str.translate`` table to those characters."""
     table = {"\u0130": "i"}
     for point in range(0x80, 0x20000):
         char = chr(point)
         norm = unicodedata.normalize("NFKC", char)
-        if len(norm) == 1 and norm.isascii() and norm.isalpha():
+        if len(norm) == 1 and norm.isascii() and (norm.isalnum() or norm in "_.-:="):
             table[char] = norm
     return frozenset(table), str.maketrans(table)
 
 
 def _folded(text: str) -> str:
-    """``text`` lowercased as ``key_name`` reads a key, for finding ``_KEY_WORDS``: a character NFKC turns into an
-    ASCII letter is read as that letter first, so a lookalike key is found, and positions stay those of ``text``."""
+    """``text`` lowercased as ``key_name`` reads a key, for finding pairs: a character ``_compat`` holds is read as
+    its ASCII character first, so a lookalike key or separator is found, and positions stay those of ``text``."""
     if not text.isascii() and (not unicodedata.is_normalized("NFKC", text) or "\u0130" in text):
         chars, table = _compat()
         if not chars.isdisjoint(set(text)):
@@ -114,7 +117,8 @@ def _secret_values(text: str, low: str) -> list[tuple[int, int]]:
     found: list[tuple[int, int]] = []
     for m in _pairs(text, low):
         group = "value" if m["vq"] is not None else "bare"
-        if (found and m.start() < found[-1][1]) or not secret_key(m["key"]) or m[group] == HIDDEN:
+        key = text[m.start("key"):m.end("key")]  # as written, so camelCase splits
+        if (found and m.start() < found[-1][1]) or not secret_key(key) or m[group] == HIDDEN:
             continue
         found.append(m.span(group))
     return found
@@ -134,16 +138,17 @@ def _pairs(text: str, low: str) -> list[re.Match[str]]:
                     start -= 1
                 starts.add(start)
             at = low.find(word, at + 1)
-    return [m for start in sorted(starts) if (m := QUOTED_PAIR.match(text, start))]
+    return [m for start in sorted(starts) if (m := QUOTED_PAIR.match(low, start))]
 
 
 def _bare_values(text: str, low: str) -> list[tuple[int, int]]:
     """Where the values of secret-named ``BARE_PAIR`` pairs in ``text`` (``low``: it ``_folded``) are that aren't
     ``(hidden)`` yet, in order.
 
-    ``BARE_PAIR`` is tried where the key holding each of ``_KEY_WORDS`` starts: up to 64 key characters before the
-    word, after any leading ``-`` or ``.`` (``--password=…``). A word inside a key or value already read is skipped,
-    so each search stays linear."""
+    ``BARE_PAIR`` is tried where the key holding each of ``_KEY_WORDS`` starts (up to 64 key characters before the
+    word, after any leading ``-`` or ``.``: ``--password=…``), once the key as written passes ``_bare_secret_key``,
+    since its value may run to the end of the line. A word inside a key or value already read is skipped, so each
+    search stays linear."""
     found: list[tuple[int, int]] = []
     done = 0
     for word in _BARE_WORD.finditer(low):
@@ -151,12 +156,14 @@ def _bare_values(text: str, low: str) -> list[tuple[int, int]]:
         if at < done:
             continue
         start = at
-        while start > max(at - 64, done) and (text[start - 1].isalnum() or text[start - 1] in "_.-"):
+        while start > max(at - 64, done) and (low[start - 1].isalnum() or low[start - 1] in "_.-"):
             start -= 1
-        while start < at and text[start] in ".-":
+        while start < at and low[start] in ".-":
             start += 1
-        m = BARE_PAIR.match(text, start)
-        if m is None or m.end("key") <= at or not _bare_secret_key(m["key"]):
+        if not _bare_secret_key(text[start:word.start("sep")]):
+            continue  # before BARE_PAIR, which reads the value to the end of its line
+        m = BARE_PAIR.match(low, start)
+        if m is None:
             continue
         group = "quoted" if m["q"] is not None else "line"
         if m[group] and m[group] != HIDDEN:

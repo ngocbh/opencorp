@@ -463,7 +463,8 @@ async def test_a_json_file_neither_parser_reads_falls_back_to_the_scrub(src, com
     '{\n\t// the database\n\t"db.password": "abcdefghij"\n}\n',
     "{\n\t// single quotes\n\t'apiKey': 'abcdefghij'\n}\n",
     '{\n\t// a lookalike key\n\t"api\u212aey": "abcdefghij"\n}\n',
-], ids=["long int", "NaN", "trailing comma", "comment", "single quotes", "kelvin sign"])
+    '{\n\t// a fullwidth underscore\n\t"api\uff3fkey": "abcdefghij"\n}\n',
+], ids=["long int", "NaN", "trailing comma", "comment", "single quotes", "kelvin sign", "fullwidth underscore"])
 async def test_a_secret_key_in_json_no_parser_reads_hides_the_file(src, company, text):
     got = await show(src, company, {"notes/x.json": text})
     assert (got.content, got.reason) == ("hidden", "holds a secret-named key")

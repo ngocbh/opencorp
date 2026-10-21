@@ -143,6 +143,20 @@ UNK = "zq9vX2mPkL7rT4wYbN8c"  # no secret shape and not known: only a plain-text
     f"accesstoken={UNK}",
     f"ACCESSTOKEN: {UNK}",
     f"secretAccessKey: {UNK}",
+    "A" * 60 + f"_PASSWORD={UNK}",  # a long key
+    "X" * 40 + "_KEY_" + "Y" * 20 + f"_TOKEN={UNK}",
+    f"password\uff1d{UNK}",  # fullwidth = and :
+    f"password\uff1a {UNK}",
+    f"api\uff3fkey: {UNK}",  # fullwidth _, - and .
+    f"x\uff0dapi\uff0dkey={UNK}",
+    f"db\uff0epassword={UNK}",
+    f"password: true-{UNK}",  # a value starting with a word that alone stays
+    f"password: null-{UNK}",
+    f"password: true {UNK}",
+    f"password: (hidden){UNK}",
+    f"password: [redacted]{UNK}",
+    json.dumps({"api\uff3fkey": UNK}, ensure_ascii=False),
+    f"{{'password': rb'{UNK}'}}",
 ])
 def test_plain_text_secrets_are_removed(text):
     out = Scrubber([]).record(record({"failure": {"message": f"provider said: {text}"}}))
@@ -206,7 +220,7 @@ FUZZ_KEYS = ["password", "PassWord", "db.password", "api.key", "apiKey", "OPENAI
              "clientSecret", "devices", "token", "max_tokens", "tokenType", "secretary", "monkey", "passphrase",
              "api\u212aey", "\uff41ccess\uff34oken", "pass\uff57ord", "AUTH\u0130_TOKEN", "--password", "a.b-secret"]
 FUZZ_WORDS = [":", "=", ": ", " = ", "==", " ", "\n", "\\n", "\t", "\"", "'", "\\\"", "\\", "{", "}", ",", "b'",
-              "(hidden)", "true", "x", "Zq9v", "\u212a", "\xa0", "\u0130", "-", ".", "_"]
+              "(hidden)", "true", "x", "Zq9v", "\u212a", "\xa0", "\u0130", "-", ".", "_", "\uff3f", "\uff1d", "\uff1a"]
 
 
 def fuzz_text(rng):
@@ -223,10 +237,11 @@ def fuzz_text(rng):
 
 def slow_secret_values(text):
     """_secret_values without its word lookup: QUOTED_PAIR at every position."""
-    found = []
-    for m in scrub_mod.QUOTED_PAIR.finditer(text):
+    found, low = [], scrub_mod._folded(text)
+    for m in scrub_mod.QUOTED_PAIR.finditer(low):
         group = "value" if m["vq"] is not None else "bare"
-        if (found and m.start() < found[-1][1]) or not scrub_mod.secret_key(m["key"]) or m[group] == HIDDEN:
+        key = text[m.start("key"):m.end("key")]
+        if (found and m.start() < found[-1][1]) or not scrub_mod.secret_key(key) or m[group] == HIDDEN:
             continue
         found.append(m.span(group))
     return found
@@ -234,13 +249,13 @@ def slow_secret_values(text):
 
 def slow_bare_values(text):
     """_bare_values without its word lookup: BARE_PAIR at every start of a key, after any leading - or ."""
-    found, done = [], 0
-    for run in re.finditer(r"[\w.-]+", text):
+    found, done, low = [], 0, scrub_mod._folded(text)
+    for run in re.finditer(r"[\w.-]+", low):
         at = run.start() + len(run[0]) - len(run[0].lstrip(".-"))
         if at < done or at == run.end():
             continue
-        m = scrub_mod.BARE_PAIR.match(text, at)
-        if m is None or not scrub_mod._bare_secret_key(m["key"]):
+        m = scrub_mod.BARE_PAIR.match(low, at)
+        if m is None or not scrub_mod._bare_secret_key(text[m.start("key"):m.end("key")]):
             continue
         group = "quoted" if m["q"] is not None else "line"
         if m[group] and m[group] != HIDDEN:
@@ -253,7 +268,7 @@ def test_the_pair_lookups_find_what_a_search_at_every_position_finds():
     rng = random.Random(3)
     for _ in range(20_000):
         text = fuzz_text(rng)
-        if any(len(run) > 60 for run in re.findall(r"[\w.-]+", text)):
+        if any(len(run) > 130 for run in re.findall(r"[\w.-]+", text)):
             continue  # a key run longer than a key: read from 64 characters before its word, not from its start
         low = scrub_mod._folded(text)
         assert len(low) == len(text)
@@ -337,9 +352,12 @@ def test_many_urls_with_ports_in_one_string_scrub_in_linear_time():
     "\u212a\"" * 500_000,
     '"\uff4bey": "' * 80_000,
     "Ánh password: \"x\\" * 50_000,
+    "max_tokens=1 " * 77_000,  # a long line of ordinary pairs
+    "return r.createElement(o,{key:e,ref:t,onKeyDown:a,tokenizer:n,children:i})," * 13_000,  # minified JS
 ], ids=["backslashes", "pairs", "depths", "glued sk", "digest", "cookie", "cookie a", "set-cookie run", "password=",
         "password dq", "password sq", "password b", "hidden", "key run", "token run", "key words", "dashes", "true",
-        "spaced", "fullwidth key", "kelvin quotes", "fullwidth pairs", "unclosed escapes"])
+        "spaced", "fullwidth key", "kelvin quotes", "fullwidth pairs", "unclosed escapes", "ordinary pairs",
+        "minified js"])
 def test_hostile_strings_scrub_in_linear_time(blob):
     start = time.perf_counter()
     Scrubber([KEY]).record(record({"result": blob}))

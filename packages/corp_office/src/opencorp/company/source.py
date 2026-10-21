@@ -3,6 +3,7 @@
 import asyncio
 import fnmatch
 import re
+import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
 
@@ -148,7 +149,8 @@ def _parsed(path: str, text: str, known: frozenset[str]) -> tuple[str | None, bo
         found = _secrets(path, text)
     except NotYaml:
         if path.lower().endswith(".json"):  # not JSON either (comments, trailing commas): no parse to walk
-            if any(is_secret_key(m[1]) for m in _QUOTED_KEY.finditer(text)):
+            # NFKC first, so a lookalike _, -, . or : (fullwidth, say) in a key is read as ASCII.
+            if any(is_secret_key(m[1]) for m in _QUOTED_KEY.finditer(unicodedata.normalize("NFKC", text))):
                 return None, False, set(), SECRET_KEY
             return text, False, set(), None  # layers 2 and 3, as for any text file
         return None, False, set(), UNSAFE_YAML
