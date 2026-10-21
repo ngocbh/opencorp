@@ -237,10 +237,25 @@ class RunRow:
 
 
 _RUN_COLUMNS = tuple(f.name for f in fields(RunRow))
-# '~' sorts after every ULID character, so with no cursor the bound still lets the index seek.
-RUN_PAGE_SQL = ("SELECT * FROM runs WHERE parent_run_id IS NULL AND run_id < COALESCE(?, '~') "
-                "ORDER BY run_id DESC LIMIT ?")
+
+
+def run_page_sql(*, parent: bool = False, since: bool = False, until: bool = False) -> str:
+    """The SQL for a page of runs, newest first: top-level ones, or one parent's when ``parent``, launched at or after
+    a time when ``since`` and before one when ``until``. Its parameters: (parent,) before, (since,) (until,) limit."""
+    where = ["parent_run_id = ?" if parent else "parent_run_id IS NULL",
+             # '~' sorts after every ULID character, so with no cursor the bound still lets the index seek.
+             "run_id < COALESCE(?, '~')",
+             *(["launched_at >= ?"] if since else []), *(["launched_at < ?"] if until else [])]
+    # Left to choose, SQLite walks runs_parent by run_id and checks each row's launch time, so a 7-day query reads
+    # every older run of the parent too. runs_launched reads only the rows in range, then sorts them.
+    index = " INDEXED BY runs_launched" if since or until else ""
+    return f"SELECT * FROM runs{index} WHERE {' AND '.join(where)} ORDER BY run_id DESC LIMIT ?"
+
+
+RUN_PAGE_SQL = run_page_sql()
 """A page of top-level runs, newest first: (before, limit)."""
+CHILD_COUNTS_SQL = "SELECT parent_run_id, COUNT(*) FROM runs WHERE parent_run_id IN ({}) GROUP BY parent_run_id"
+"""How many runs each of some runs started, read from an index on parent_run_id alone; format with one ``?`` per parent."""
 
 
 @dataclass(frozen=True)
@@ -917,9 +932,33 @@ class Store:
                                     (session_id,))
         return [self._run(r) for r in rows]
 
-    def run_page(self, *, before: str | None, limit: int) -> list[RunRow]:
-        """Top-level rows (no parent), newest first, launched before run ``before`` when given."""
-        return [self._run(r) for r in self._conn().execute(RUN_PAGE_SQL, (before, limit))]
+    def run_page(self, *, before: str | None, limit: int, parent: str | None = None, since: str | None = None,
+                 until: str | None = None) -> list[RunRow]:
+        """Top-level rows (no parent), or run ``parent``'s children, newest first: those after run ``before`` in that
+        order when given, launched at or after ``since`` and before ``until`` (Timestamps) when given."""
+        sql = run_page_sql(parent=parent is not None, since=since is not None, until=until is not None)
+        params = [p for p in (parent,) if p is not None] + [before] + [t for t in (since, until) if t is not None]
+        return [self._run(r) for r in self._conn().execute(sql, (*params, limit))]
+
+    def run_child_counts(self, parent_ids: Iterable[str]) -> dict[str, int]:
+        """How many runs each of ``parent_ids`` started, by parent id; a parent with none is left out."""
+        ids = list(dict.fromkeys(parent_ids))
+        if not ids:
+            return {}
+        return dict(self._conn().execute(CHILD_COUNTS_SQL.format(", ".join("?" * len(ids))), ids).fetchall())
+
+    def child_drivers(self, parent_ids: Iterable[str], flow: str) -> dict[str, list[str]]:
+        """Who drove each ``flow`` run started from each of ``parent_ids``, newest first, by parent id."""
+        ids = list(dict.fromkeys(parent_ids))
+        if not ids:
+            return {}
+        out: dict[str, list[str]] = {}
+        rows = self._conn().execute(
+            f"SELECT parent_run_id, driver FROM runs WHERE parent_run_id IN ({', '.join('?' * len(ids))}) "
+            "AND flow = ? ORDER BY run_id DESC", [*ids, flow])
+        for parent, driver in rows:
+            out.setdefault(parent, []).append(driver)
+        return out
 
     def run_children(self, parent_ids: Iterable[str]) -> list[RunRow]:
         """The rows whose parent is one of ``parent_ids``, newest first."""
@@ -975,11 +1014,12 @@ class Store:
         self,
         *,
         session_id: str | None = None,
-        run_id: str | None = None,
+        run_id: str | Iterable[str] | None = None,
         status: str | Iterable[str] | None = None,
         source: str | None = None,
     ) -> list[Question]:
-        """Questions, oldest first, optionally filtered."""
+        """Questions, oldest first, optionally filtered (by any of several run ids or statuses)."""
+        run_id = run_id if run_id is None or isinstance(run_id, str) else tuple(run_id)
         status = status if status is None or isinstance(status, str) else tuple(status)
         where = {"session_id": session_id, "run_id": run_id, "status": status, "source": source}
         return self._list(QUESTIONS, Question, where, "created_at, rowid")

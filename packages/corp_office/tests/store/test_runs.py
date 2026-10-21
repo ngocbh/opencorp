@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from opencorp.store import RunRow, new_id
-from opencorp.store.store import RUN_PAGE_SQL
+from opencorp.store.store import CHILD_COUNTS_SQL, RUN_PAGE_SQL, run_page_sql
 from tests.store.conftest import session, store  # noqa: F401
 
 T = "2026-10-20T10:00:00.000Z"
@@ -101,6 +101,88 @@ def test_rows_by_session_page_and_parent(store):  # noqa: F811
     assert [r.run_id for r in store.run_children([top.run_id])] == [kids[1].run_id, kids[0].run_id]
     assert store.get_runs([top.run_id, "nope"]) == {top.run_id: top}
     assert [r.run_id for r in store.run_page(before=top.run_id, limit=10)] == []
+
+
+def test_a_page_of_one_parents_children_newest_first_from_a_cursor(store):  # noqa: F811
+    s = store.create_session(session())
+    top = store.add_run(launch(s))
+    kids = [store.add_run(launch(s, parent_run_id=top.run_id)).run_id for _ in range(3)]
+    assert [r.run_id for r in store.run_page(parent=top.run_id, before=None, limit=2)] == kids[:0:-1]
+    assert [r.run_id for r in store.run_page(parent=top.run_id, before=kids[1], limit=2)] == [kids[0]]
+    assert store.run_page(parent=new_id(), before=None, limit=2) == []
+
+
+def test_a_launch_range_is_since_inclusive_and_until_exclusive(store):  # noqa: F811
+    s = store.create_session(session())
+    at = [f"2026-10-{d:02}T10:00:00.000Z" for d in (10, 11, 12, 13)]
+    ids = [store.add_run(launch(s, launched_at=t)).run_id for t in at]
+    page = store.run_page(before=None, limit=10, since=at[1], until=at[3])
+    assert [r.run_id for r in page] == [ids[2], ids[1]]
+    assert [r.run_id for r in store.run_page(before=None, limit=10, since=at[2])] == [ids[3], ids[2]]
+    assert [r.run_id for r in store.run_page(before=None, limit=10, until=at[1])] == [ids[0]]
+    assert [r.run_id for r in store.run_page(before=ids[2], limit=10, since=at[1])] == [ids[1]]
+    kid = store.add_run(launch(s, parent_run_id=ids[0], launched_at=at[3])).run_id
+    assert [r.run_id for r in store.run_page(parent=ids[0], before=None, limit=10, since=at[3])] == [kid]
+    assert store.run_page(parent=ids[0], before=None, limit=10, until=at[3]) == []
+
+
+def _old_runs(store, s, n, parent=None):  # noqa: F811
+    """``n`` runs launched a month before T (under ``parent``, if given), written in one transaction."""
+    with store.transaction() as tx:
+        for _ in range(n):
+            tx.execute("INSERT INTO runs (run_id, session_id, flow, flow_path, driver, parent_run_id, launched_at) "
+                       "VALUES (?, ?, 'chat', 'shared/flows/chat.yaml', 'ngocbh', ?, '2026-09-20T10:00:00.000Z')",
+                       (new_id(), s.id, parent))
+
+
+def _steps(store, **query):  # noqa: F811
+    """``run_page(**query)`` and how many SQLite VM steps it took: they grow with every row the query visits."""
+    conn, count = store._conn(), [0]
+
+    def tick():
+        count[0] += 1
+
+    conn.set_progress_handler(tick, 1)
+    try:
+        rows = store.run_page(**query)
+    finally:
+        conn.set_progress_handler(None, 1)
+    return rows, count[0]
+
+
+@pytest.mark.parametrize("child", [False, True])
+def test_a_seven_day_query_over_many_old_runs_visits_only_the_rows_in_range(store, child):  # noqa: F811
+    s = store.create_session(session())
+    top = store.add_run(launch(s, launched_at="2026-09-01T10:00:00.000Z")).run_id if child else None
+    recent = [store.add_run(launch(s, parent_run_id=top)).run_id for _ in range(3)]
+    query = {"before": None, "limit": 50, "since": "2026-10-13T10:00:00.000Z", "parent": top}
+    rows, few = _steps(store, **query)
+    assert [r.run_id for r in rows] == recent[::-1]
+    _old_runs(store, s, 3_000, parent=top)  # ids newer than the recent runs': a run_id walk would meet them first
+    rows, many = _steps(store, **query)
+    assert [r.run_id for r in rows] == recent[::-1]
+    assert many - few < 100, (few, many)  # 3,000 more rows out of range, and the query visits none of them
+
+
+@pytest.mark.parametrize("parent", [None, "01K0000000000000000000000Z"])
+def test_a_launch_range_reads_the_launch_index(store, parent):  # noqa: F811
+    sql = run_page_sql(parent=parent is not None, since=True, until=True)
+    params = (*([parent] if parent else []), None, T, T, 50)
+    plan = [r["detail"] for r in store._conn().execute(f"EXPLAIN QUERY PLAN {sql}", params)]
+    assert any("USING INDEX runs_launched" in d for d in plan), plan
+
+
+def test_children_are_counted_and_their_drivers_listed_by_parent(store):  # noqa: F811
+    s = store.create_session(session())
+    a, b = store.add_run(launch(s)).run_id, store.add_run(launch(s)).run_id
+    store.add_run(launch(s, parent_run_id=a, flow="side_chat", driver="lan"))
+    store.add_run(launch(s, parent_run_id=a, flow="debrief", driver="office"))
+    store.add_run(launch(s, parent_run_id=a, flow="side_chat", driver="kai"))
+    assert store.run_child_counts([a, b, "nope"]) == {a: 3} and store.run_child_counts([]) == {}
+    assert store.child_drivers([a, b], "side_chat") == {a: ["kai", "lan"]}
+    sql = CHILD_COUNTS_SQL.format("?, ?")
+    plan = [r["detail"] for r in store._conn().execute(f"EXPLAIN QUERY PLAN {sql}", (a, b))]
+    assert any(d.startswith("SEARCH runs USING COVERING INDEX") for d in plan), plan  # an index alone, no rows
 
 
 @pytest.mark.parametrize("before", [None, "01K0000000000000000000000Z"])
