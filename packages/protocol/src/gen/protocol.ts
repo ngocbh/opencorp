@@ -732,7 +732,7 @@ export interface CompanyTree {
    */
   truncated: boolean;
   /**
-   * Paths left out because they aren't valid UTF-8, have a `.` or `..` segment, or would reveal a secret; they can't be read.
+   * Paths left out because they aren't valid UTF-8 or have a `.` or `..` segment; they can't be read.
    */
   skipped: number;
 }
@@ -749,11 +749,11 @@ export interface CompanyFile {
   path: string;
   commit: GitId;
   /**
-   * What the response holds: text in `text`, a symlink's target in `target`, a hidden file's reason in `reason`; nothing for the others.
+   * What the response holds: text in `text`, a symlink's target in `target`; nothing for the others. The office no longer sends `hidden` (kept for compatibility; clients ignore it).
    */
   content: "text" | "binary" | "too_large" | "hidden" | "symlink" | "submodule";
   /**
-   * The file's text, secrets removed, when content is text; else null.
+   * The file's text as stored, when content is text; else null.
    */
   text?: string | null;
   /**
@@ -761,11 +761,11 @@ export interface CompanyFile {
    */
   target?: string | null;
   /**
-   * Why the file is hidden, a fixed message that never quotes the file, when content is hidden; else null.
+   * Always null: the office no longer hides files. Kept for compatibility; clients ignore it.
    */
   reason?: string | null;
   /**
-   * True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept.
+   * Always false: the office no longer rewrites files. Kept for compatibility; clients ignore it.
    */
   rewritten?: boolean;
 }
@@ -804,7 +804,7 @@ export interface RunSummary {
   parent_run_id?: Ulid | null;
   status: "running" | "waiting" | "idle" | "finished" | "failed" | "interrupted";
   /**
-   * Why it failed or was interrupted, secrets removed.
+   * Why it failed or was interrupted.
    */
   reason?: string | null;
   /**
@@ -941,7 +941,7 @@ export interface RunNode {
    */
   handle?: string | null;
   /**
-   * For a failed node: its error, secrets removed.
+   * For a failed node: its error.
    */
   error?: string | null;
 }
@@ -986,7 +986,7 @@ export interface RunNodePage {
   bytes_total?: number | null;
 }
 /**
- * One run-log record as written, secrets removed.
+ * One run-log record as written.
  *
  * This interface was referenced by `OpenCorpProtocol`'s JSON-Schema
  * via the `definition` "RunEvent".
@@ -996,7 +996,7 @@ export interface RunEvent {
   kind: string;
   node_id?: string | null;
   /**
-   * The record's payload, scrubbed; null when withheld or too large to preview.
+   * The record's payload; null when too large to preview.
    */
   payload?: {
     [k: string]: unknown;
@@ -1010,7 +1010,7 @@ export interface RunEvent {
    */
   evidence_left_out?: boolean;
   /**
-   * Why the payload isn't shown: a secret couldn't be removed.
+   * Always null: the office no longer withholds payloads. Kept for compatibility; clients ignore it.
    */
   withheld?: string | null;
   /**

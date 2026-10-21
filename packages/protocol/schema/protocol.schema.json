@@ -616,7 +616,7 @@
         "truncated": { "type": "boolean", "description": "True when entries past the cap were left out." },
         "skipped": {
           "type": "integer", "minimum": 0,
-          "description": "Paths left out because they aren't valid UTF-8, have a `.` or `..` segment, or would reveal a secret; they can't be read."
+          "description": "Paths left out because they aren't valid UTF-8 or have a `.` or `..` segment; they can't be read."
         }
       }
     },
@@ -631,11 +631,11 @@
         "commit": { "$ref": "#/$defs/GitId" },
         "content": {
           "enum": ["text", "binary", "too_large", "hidden", "symlink", "submodule"],
-          "description": "What the response holds: text in `text`, a symlink's target in `target`, a hidden file's reason in `reason`; nothing for the others."
+          "description": "What the response holds: text in `text`, a symlink's target in `target`; nothing for the others. The office no longer sends `hidden` (kept for compatibility; clients ignore it)."
         },
         "text": {
           "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
-          "description": "The file's text, secrets removed, when content is text; else null."
+          "description": "The file's text as stored, when content is text; else null."
         },
         "target": {
           "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
@@ -643,11 +643,11 @@
         },
         "reason": {
           "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null,
-          "description": "Why the file is hidden, a fixed message that never quotes the file, when content is hidden; else null."
+          "description": "Always null: the office no longer hides files. Kept for compatibility; clients ignore it."
         },
         "rewritten": {
           "type": "boolean", "default": false,
-          "description": "True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept."
+          "description": "Always false: the office no longer rewrites files. Kept for compatibility; clients ignore it."
         }
       }
     },
@@ -668,7 +668,7 @@
         },
         "parent_run_id": { "anyOf": [{ "$ref": "#/$defs/Ulid" }, { "type": "null" }], "default": null, "description": "The run it was started from: a side chat's card's run, a debrief's session's last run. Null for a top-level run." },
         "status": { "enum": ["running", "waiting", "idle", "finished", "failed", "interrupted"] },
-        "reason": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }], "default": null, "description": "Why it failed or was interrupted, secrets removed." },
+        "reason": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }], "default": null, "description": "Why it failed or was interrupted." },
         "failed_node": { "anyOf": [{ "type": "string", "minLength": 1 }, { "type": "null" }], "default": null, "description": "The node it failed at, when it failed at one." },
         "current_nodes": { "type": "array", "items": { "type": "string" }, "default": [], "description": "While running, waiting or idle: the node ids it is at now, deepest only. Empty while running means it is starting." },
         "asking": { "type": "boolean", "default": false, "description": "While waiting: a model question (one with no node) is open." },
@@ -726,7 +726,7 @@
         "kind": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "agent, case, loop, map, call, …: the node's kind by static path. Always null until Yian lists a flow's nodes publicly (yian#943); clients show nothing for null." },
         "status": { "enum": ["open", "succeeded", "routed", "expanded", "failed", "restarted"] },
         "handle": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "For a routed case: the handle it took." },
-        "error": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }], "default": null, "description": "For a failed node: its error, secrets removed." }
+        "error": { "anyOf": [{ "type": "string", "maxLength": 200 }, { "type": "null" }], "default": null, "description": "For a failed node: its error." }
       }
     },
     "RunDivider": {
@@ -752,15 +752,15 @@
     },
     "RunEvent": {
       "type": "object", "additionalProperties": false, "required": ["seq", "kind"],
-      "description": "One run-log record as written, secrets removed.",
+      "description": "One run-log record as written.",
       "properties": {
         "seq": { "type": "integer", "minimum": 0 },
         "kind": { "type": "string", "minLength": 1 },
         "node_id": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null },
-        "payload": { "anyOf": [{ "type": "object" }, { "type": "null" }], "default": null, "description": "The record's payload, scrubbed; null when withheld or too large to preview." },
+        "payload": { "anyOf": [{ "type": "object" }, { "type": "null" }], "default": null, "description": "The record's payload; null when too large to preview." },
         "cut": { "type": "array", "items": { "type": "string" }, "default": [], "description": "JSON pointers (into payload) of strings cut at 4 KiB; fetch the event by seq for the whole." },
         "evidence_left_out": { "type": "boolean", "default": false, "description": "True when evidence was left out of a page; fetch the event by seq for it." },
-        "withheld": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "Why the payload isn't shown: a secret couldn't be removed." },
+        "withheld": { "anyOf": [{ "type": "string" }, { "type": "null" }], "default": null, "description": "Always null: the office no longer withholds payloads. Kept for compatibility; clients ignore it." },
         "size": { "anyOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }], "default": null, "description": "The record's size in bytes, when it was too large to preview." }
       }
     },
