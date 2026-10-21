@@ -3,9 +3,9 @@
 // CSP must equal opencorp.hq.guard.CSP; packages/corp_office/tests/hq/test_app_fixture.py checks it.
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
-import type { BrowserSession, RunSummary } from "@opencorp/protocol"
+import type { BrowserSession, RunDetail, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
-import { runLogs, type Runs } from "./runs"
+import { runLogs, runPages, type RunPages, type Runs } from "./runs"
 
 const CSP =
   "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
@@ -77,16 +77,19 @@ type Fixture = Data & {
   source: Source
   /** Run Logs: the top-level runs and each run's children. */
   runs: Runs
+  /** Each run's page (header, nodes), by run id. */
+  runPages: RunPages
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
   fail: {}, passwords: { ngocbh: "correct horse", ann: "ann's password" }, login: { retryAfter: null, busy: false },
   source: source(),
   runs: runLogs(),
+  runPages: runPages(runLogs().runs),
 })
 // `logins` keeps each sign-in's handle and label, never its password.
 const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[],
-  files: [] as { at: string; path: string }[], runs: [] as string[] })
+  files: [] as { at: string; path: string }[], runs: [] as string[], runReads: [] as string[] })
 let state = fresh()
 let log = emptyLog()
 let downUntil = 0
@@ -225,6 +228,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     const found = state.workItems[workItem]
     return found ? json(found) : json({ error: "not_found", message: `no work item ${workItem}` }, 404)
   }
+  const runPath = /^\/api\/runs\/([^/]+)(\/nodes|\/events|\/events\/(\d+)|\/log)?$/.exec(p)
+  if (runPath) return runRoute(url, runPath[1]!, runPath[2] ?? "", runPath[3])
   switch (p) {
     case "/api/whoami":
       return json(state.whoami)
@@ -301,6 +306,30 @@ function listRuns(url: URL): Response {
   return json({ runs: page, next: more ? page[page.length - 1]!.run_id : null })
 }
 
+/** One run's routes as the office answers them, from `state.runPages`. */
+function runRoute(url: URL, id: string, rest: string, seq: string | undefined): Response {
+  log.runReads.push(`${id}${rest}${url.search}`)
+  const page = state.runPages[id]
+  if (!page) return json({ error: "not_found", message: `no run ${id}` }, 404)
+  const { log_state, log_message, bytes_done, bytes_total } = page.detail
+  if (rest === "") return json(page.detail)
+  if (log_state === "not_started" || log_state === "missing") return json({ error: "no_log", message: "this run has no log" }, 404)
+  if (log_state === "unsupported_schema") return json({ error: "unsupported_schema", message: log_message }, 409)
+  const indexing = log_state === "indexing" || page.indexing
+  const progress = { bytes_done: bytes_done ?? 120 << 20, bytes_total: bytes_total ?? 480 << 20 }
+  if (rest === "/nodes") {
+    if (indexing) return json({ nodes: [], dividers: [], indexing: true, ...progress })
+    const before = url.searchParams.get("before")
+    const older = page.nodes.filter((n) => before === null || n.seq < Number(before))
+    const shown = older.slice(0, 8) // the office's page is 1,000; 8 here, so unfolding older pages is tested
+    const low = shown.length ? shown[shown.length - 1]!.seq : 0
+    return json({ nodes: shown, dividers: page.dividers.filter((d) => d.seq >= low && (before === null || d.seq < Number(before))),
+                  next_before: older.length > shown.length ? low : null, dropped: false, indexing: false })
+  }
+  // Records (`/events`, `/events/{seq}`, `/log`) come with node detail and Raw.
+  return json({ error: "not_found", message: `no fixture route ${url.pathname} yet` }, 404)
+}
+
 /** /__fixture/*: how tests set the office up and read what the app asked for. */
 async function control(req: Request, url: URL): Promise<Response> {
   const body = req.method === "POST" ? await req.json().catch(() => ({})) : {}
@@ -331,6 +360,17 @@ async function control(req: Request, url: URL): Promise<Response> {
       downUntil = Date.now() + (body.ms ?? 0)
       closeAll()
       return json({ ok: true })
+    case "/__fixture/run": {
+      // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `indexing` sets
+      // whether its node pages answer "indexing". A run with no page gets one from its summary.
+      const summary = state.runs.runs.flatMap((r) => [r, ...(r.children ?? [])]).find((r) => r.run_id === body.id)!
+      const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
+        parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
+      const { run, ...rest } = body.detail ?? {}
+      page.detail = { ...page.detail, ...rest, run: { ...page.detail.run, ...run } }
+      if ("indexing" in body) page.indexing = body.indexing
+      return json({ ok: true })
+    }
   }
   return json({ error: "no_route" }, 404)
 }
