@@ -450,6 +450,17 @@ test("a file over 512 KB isn't colored, and its header says so", async ({ page, 
   await expect(header(page).getByTestId("file-size")).toHaveText("512.0 KB")
 })
 
+test("a file with a line over 5,000 characters isn't colored, opens quickly, and its header says so", async ({ page, request }) => {
+  await addFlows(request)
+  await page.goto("/org?view=source&path=flows/words.yaml")
+  await expect(header(page).getByTestId("file-language")).toHaveText("YAML, not colored (a line over 5,000 characters)", {
+    timeout: 3_000,
+  })
+  await expect(lines(page)).toHaveCount(3)
+  await expect(lines(page).first()).toHaveText("name: words")
+  await expect(pane(page).getByTestId("code").locator("[class*=hljs-]")).toHaveCount(0)
+})
+
 test("(hidden) markers keep their own styling inside colored text", async ({ page, request }) => {
   await addFlows(request)
   await page.goto("/org?view=source&path=flows/scrubbed.yaml")

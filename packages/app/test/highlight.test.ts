@@ -1,6 +1,17 @@
 import { expect, test } from "bun:test"
 import { lines } from "../src/company/files"
-import { byteLength, colorWith, languageOf, MAX_COLORED, sizeText, tokenLines, type Token } from "../src/company/highlight"
+import hljs from "highlight.js/lib/core"
+import {
+  byteLength,
+  colorWith,
+  languageOf,
+  MAX_COLORED,
+  MAX_LINE,
+  plainReason,
+  sizeText,
+  tokenLines,
+  type Token,
+} from "../src/company/highlight"
 
 /** A line's text, as the page shows it. */
 const textOf = (tokens: Token[]): string =>
@@ -44,10 +55,47 @@ test("the language comes from the extension, any case; anything else is plain", 
 
 test("a file over 512 KB isn't colored; one at the limit is", () => {
   expect(MAX_COLORED).toBe(512 * 1024)
-  expect(colorWith("a.yaml", MAX_COLORED)).toBe("yaml")
-  expect(colorWith("a.yaml", MAX_COLORED + 1)).toBeUndefined()
-  expect(colorWith("a.txt", 10)).toBeUndefined()
+  const full = `${"x".repeat(1023)}\n`.repeat(512)
+  expect(byteLength(full)).toBe(MAX_COLORED)
+  expect(colorWith("a.yaml", full)).toBe("yaml")
+  expect(plainReason(full)).toBeUndefined()
+  expect(colorWith("a.yaml", `${full}x`)).toBeUndefined()
+  expect(plainReason(`${full}x`)).toBe("over 512 KB")
+  expect(colorWith("a.txt", "a: 1")).toBeUndefined()
+  expect(colorWith("a.yaml", "a: 1")).toBe("yaml")
   expect(byteLength("é")).toBe(2)
+})
+
+test("a file with a line over 5,000 characters isn't colored; highlight.js is slow on such lines", () => {
+  expect(MAX_LINE).toBe(5000)
+  const at = `a: ${"word ".repeat(1000)}`.slice(0, MAX_LINE)
+  expect(at.length).toBe(MAX_LINE)
+  expect(colorWith("a.yaml", `x: 1\n${at}\ny: 2\n`)).toBe("yaml")
+  expect(colorWith("a.yaml", `x: 1\r\n${at}\r\ny: 2\r\n`)).toBe("yaml")
+  expect(colorWith("a.yaml", `x: 1\n${at}w\ny: 2\n`)).toBeUndefined()
+  expect(plainReason(`x: 1\n${at}w\n`)).toBe("a line over 5,000 characters")
+  // Size comes first when both apply.
+  expect(plainReason(`a: ${"x".repeat(MAX_COLORED)}`)).toBe("over 512 KB")
+})
+
+test("a long YAML line of words stays fast: it isn't colored at all", () => {
+  const text = `a: ${"word ".repeat(100_000)}\n`
+  const start = performance.now()
+  const got = tokenLines(text, colorWith("a.yaml", text))
+  expect(performance.now() - start).toBeLessThan(1000)
+  expect(got).toEqual([[text.slice(0, -1)]])
+})
+
+test("if highlight.js's token tree isn't there, the file shows plain", () => {
+  const highlight = hljs.highlight
+  try {
+    for (const emitter of [{}, { root: {} }, { root: { children: [{ scope: "attr" }] } }, { root: null }]) {
+      hljs.highlight = ((code: string, opts: { language: string }) => ({ ...highlight(code, opts), _emitter: emitter })) as typeof hljs.highlight
+      expect(tokenLines("a: 1\nb: 2\n", "yaml")).toEqual([["a: 1"], ["b: 2"]])
+    }
+  } finally {
+    hljs.highlight = highlight
+  }
 })
 
 test("a size reads in bytes, KB or MB", () => {
@@ -101,6 +149,22 @@ test("a token over several lines is cut into one span per line, with no empty sp
     [["hljs-string", "  two"]],
     [["hljs-attr", "b:"], ["hljs-number", "1"]],
   ])
+  // A span that opens right before a line end has nothing on that line.
+  expect(tokenLines("function f(\n  a,\n  b\n) {}\n", "typescript").map(spans)).toEqual([
+    [["hljs-keyword", "function"], ["hljs-title function_", "f"]],
+    [["hljs-params", "  a,"]],
+    [["hljs-params", "  b"]],
+    [],
+  ])
+  const empty = (tokens: Token[]): boolean =>
+    tokens.some((t) => typeof t !== "string" && !("hidden" in t) && (t.children.length === 0 || empty(t.children)))
+  for (const [text, id] of [
+    ["function f(\n  a\n) {}\n", "typescript"],
+    ['x = (\n  "a"\n)\ns = """\nline\n"""\n', "python"],
+    ["a: |\n  one\n\nb: >\n  two\n", "yaml"],
+    ["```\ncode\n```\n", "markdown"],
+  ])
+    expect([text, tokenLines(text, id).some(empty)]).toEqual([text, false])
 })
 
 test("a tiered scope gets highlight.js's classes", () => {

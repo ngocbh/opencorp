@@ -156,6 +156,8 @@ export const EXTRA_FILES: Record<string, SourceFile> = {
   "flows/hostile.txt": { content: "text", text: HOSTILE },
   "flows/scrubbed.yaml": { content: "text", text: "url: https://kai:(hidden)@example.com\ntoken: (hidden)\n" },
   "flows/big.yaml": { content: "text", text: `big: ${"x".repeat(512 * 1024)}\n` },
+  // highlight.js's YAML grammar is quadratic on a long line of unquoted words: this one would take about a minute.
+  "flows/words.yaml": { content: "text", text: `name: words\nnotes: ${"word ".repeat(100_000)}\nend: true\n` },
 }
 
 /** `s` with `files` added to its files and its listing, and their folders listed. */

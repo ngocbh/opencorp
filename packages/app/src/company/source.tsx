@@ -27,7 +27,7 @@ import { useOffice } from "../data/office"
 import { sourceHref } from "./address"
 import { ancestors, buildFiles, crumbs, nameOf, nearestFolder, noteOf, typeOf, type Entry, type EntryType } from "./files"
 import { ago } from "./format"
-import { byteLength, colorWith, languageOf, MAX_COLORED, sizeText, tokenLines, type Token } from "./highlight"
+import { byteLength, colorWith, languageOf, plainReason, sizeText, tokenLines, type Token } from "./highlight"
 import { moveFocus, visibleRows } from "./rows"
 import "./source.css"
 
@@ -214,11 +214,12 @@ function Tokens(props: { tokens: Token[] }) {
 function Code(props: { path: string; text: string }) {
   const bytes = createMemo(() => byteLength(props.text))
   const language = createMemo(() => languageOf(props.path))
-  const all = createMemo(() => tokenLines(props.text, colorWith(props.path, bytes())))
+  const plain = createMemo(() => plainReason(props.text, bytes()))
+  const all = createMemo(() => tokenLines(props.text, colorWith(props.path, props.text, bytes())))
   const languageText = () => {
     const l = language()
     if (!l) return "Text"
-    return bytes() > MAX_COLORED ? `${l.name}, not colored (over ${MAX_COLORED / 1024} KB)` : l.name
+    return plain() ? `${l.name}, not colored (${plain()})` : l.name
   }
   return (
     <div class="overflow-hidden rounded border border-neutral-200 dark:border-neutral-800">
@@ -252,7 +253,7 @@ function Code(props: { path: string; text: string }) {
               <span
                 data-testid="line-number"
                 aria-hidden="true"
-                class="w-12 shrink-0 pr-3 text-right text-neutral-400 select-none dark:text-neutral-600"
+                class="w-12 shrink-0 pr-3 text-right text-neutral-500 select-none"
               >
                 {i + 1}
               </span>
