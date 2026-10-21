@@ -129,7 +129,7 @@ def _credentials(path: str) -> bool:
 
 
 def _secrets(path: str, text: str) -> YamlSecrets:
-    """``find_secrets``, or for a JSON file PyYAML can't read (tab indents), ``find_json_secrets`` under the same rule."""
+    """``find_secrets``, or for a JSON file PyYAML can't read (tab indents), ``find_json_secrets``."""
     try:
         return find_secrets(text)
     except NotYaml:

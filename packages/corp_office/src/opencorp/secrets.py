@@ -75,6 +75,20 @@ class SecretStore:
             raise PermissionError(f"secret {name!r} is shorter than {MIN_VALUE_CHARS} characters")
         return value
 
+    def names(self) -> list[str]:
+        """The names in the root that could name a secret, sorted; none when there is no root.
+
+        Raises:
+            PermissionError: the root is not a private directory of this user.
+        """
+        root = self._open_root(create=False)
+        if root is None:
+            return []
+        try:
+            return sorted(name for name in os.listdir(root) if NAME.fullmatch(name))
+        finally:
+            os.close(root)
+
     def set(self, name: str, value: str) -> None:
         """Set the secret ``name`` to ``value``, replacing any old value atomically.
 

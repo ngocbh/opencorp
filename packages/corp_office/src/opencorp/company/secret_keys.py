@@ -162,7 +162,8 @@ def find_json_secrets(text: str) -> YamlSecrets:
         elif isinstance(value, list):
             children = [(v, (*path, i), ctx) for i, v in enumerate(value)]
         else:
-            (found.values if ctx == _SECRET else found.plain).add(value if isinstance(value, str) else json.dumps(value))
+            text = value if isinstance(value, str) else json.dumps(value)
+            (found.values if ctx == _SECRET else found.plain).add(text)
             continue
         stack.extend(reversed(children))
     return found

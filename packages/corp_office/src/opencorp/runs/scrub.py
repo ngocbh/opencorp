@@ -17,7 +17,8 @@ HEADER_KEYS = frozenset({"authorization", "proxy_authorization", "cookie", "set_
 _NOT_HIDDEN = r"(?!\(hidden\))"
 _QUOTE = r"(?:\\{0,15}[\"'])?"  # a quote, escaped up to 4 times (JSON inside JSON), or none
 _VALUE = r"(?:[^\s\"',}\\]|\\(?![\\\"']))+"  # up to a quote, escaped or not
-PROVIDER_KEY = re.compile(r"(?:(?<![A-Za-z0-9])|(?=sk-[A-Za-z0-9_-]{0,64}?[A-Za-z0-9]{16}))sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
+PROVIDER_KEY = re.compile(r"(?:(?<![A-Za-z0-9])|(?=sk-[A-Za-z0-9_-]{0,64}?[A-Za-z0-9]{16}))"
+                          r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
 """A provider key's shape (OpenAI's ``sk-…``, Anthropic's ``sk-ant-…``), configured here or not. Glued after a letter
 or digit, it needs a run of 16 letters and digits, so words like ``risk-assessment-…`` stay."""
 BEARER = re.compile(rf"\b(Bearer)\s+{_NOT_HIDDEN}\S{{8,}}", re.IGNORECASE)
@@ -29,8 +30,10 @@ AUTH_DIGEST = re.compile(rf"\b(authorization{_QUOTE}\s*[:=]\s*{_QUOTE}Digest)\s+
 """An ``Authorization: Digest …`` header value, whose parameters hold spaces and quotes: up to the end of its line."""
 API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)({_QUOTE}\s*[:=]\s*{_QUOTE}){_NOT_HIDDEN}{_VALUE}", re.IGNORECASE)
 """An ``api-key: …`` header value, which provider errors echo, as text, JSON (escaped too) or a Python repr."""
-QUOTED_PAIR = re.compile(r"""(?<!\\)(?P<bs>\\{0,15})(?P<q>["'])(?P<key>[A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
-                         r"""(?=(?P=bs)(?P<vq>["'])(?P<value>.*?)(?<!\\)(?P=bs)(?P=vq)|(?P<bare>-?[0-9][\w.+-]*))""", re.DOTALL)
+QUOTED_PAIR = re.compile(r"""(?<!\\)(?P<bs>\\{0,15})(?P<q>["'])"""  # a quote and its escapes, the same around both
+                         r"""(?P<key>[A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
+                         r"""(?=(?P=bs)(?P<vq>["'])(?P<value>.*?)(?<!\\)(?P=bs)(?P=vq)|(?P<bare>-?[0-9][\w.+-]*))""",
+                         re.DOTALL)
 """A ``"key": value`` pair of JSON (escaped too) or a Python repr inside a string; ``secret_key`` decides whether its
 value is hidden. The value is read ahead, not consumed, so a pair inside another pair's value is found too. Quotes
 escaped up to 4 times count, so the search stays linear: each depth's last opening quote is the only one read to the
