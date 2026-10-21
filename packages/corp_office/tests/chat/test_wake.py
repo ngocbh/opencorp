@@ -131,3 +131,26 @@ def test_a_steer_to_a_sleeping_session_wakes_it_and_is_its_next_message(make_har
     h.steer(sid, "look here")
     wait_for(lambda: texts(h, sid) == ["steered"], what="the reply")
     assert texts(h, sid, role="user") == ["look here"]
+
+
+def test_a_wake_never_resumes_a_session_whose_finish_is_in_flight(make_harness, fake_llm, workspace):
+    h = make_harness()
+    sid = start(h, workspace)
+    entered, release, ended = threading.Event(), threading.Event(), []
+
+    def held(session):  # end_status runs inside _finish: after the live run is dropped, before the end is stored
+        entered.set()
+        assert release.wait(10)
+
+    h.hooks.end_status.append(held)
+    h.hooks.session_ended.append(lambda session: ended.append(session.status))
+    h.end(sid)  # the exit: the worker finishes, and _finish runs on the dispatcher
+    assert entered.wait(10)
+    assert sid not in h._live and status(h, sid) == "ending"
+    jobs = spawned(h)
+    with pytest.raises(HarnessError) as err:
+        h.prompt(sid, "late")
+    assert (err.value.status, err.value.code) == (409, "not_live")
+    release.set()
+    wait_for(lambda: status(h, sid) == "ended", what="the end")
+    assert jobs == [] and ended == ["ended"] and not h._finishing

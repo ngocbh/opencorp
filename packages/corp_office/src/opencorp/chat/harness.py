@@ -1219,20 +1219,29 @@ class Harness:
 
     def _finish(self, live: _Live, status: str, outcome: dict[str, Any] | None) -> None:
         with self._lock:
-            if self._live.get(live.session_id) is live:
+            dropped = self._live.get(live.session_id) is live
+            if dropped:
                 del self._live[live.session_id]
-        if status == "failed":
-            live.transcript.error(f"The session failed ({_why(outcome, live.provider)}). Start a new chat.")
-        if status == "ended":
-            session = self.store.get_session(live.session_id)
-            status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
-            # Close the item first, so no client sees an ended session with its work still open.
-            if session.work_item_id:
-                self.store.update_work_item(session.work_item_id, status="done")
-        session = self.store.update_session(live.session_id, status=status)
-        if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
-            self._run_finished(live, session, outcome)
-        self.hooks.fire("session_ended", session)
+                # The end is stored below, after hooks and writes; until then the store still says LIVE, and a wake
+                # must not take that for sleep (_awake checks this set under the same lock).
+                self._finishing.add(live.session_id)
+        try:
+            if status == "failed":
+                live.transcript.error(f"The session failed ({_why(outcome, live.provider)}). Start a new chat.")
+            if status == "ended":
+                session = self.store.get_session(live.session_id)
+                status = next((s for s in self.hooks.fire("end_status", session) if s), "ended")
+                # Close the item first, so no client sees an ended session with its work still open.
+                if session.work_item_id:
+                    self.store.update_work_item(session.work_item_id, status="done")
+            session = self.store.update_session(live.session_id, status=status)
+            if live.announced != live.run_id:  # a fresh run that couldn't be recorded leaves the announced one current
+                self._run_finished(live, session, outcome)
+            self.hooks.fire("session_ended", session)
+        finally:
+            if dropped:
+                with self._lock:
+                    self._finishing.discard(live.session_id)
 
     def _run_finished(self, live: _Live, session: Session, outcome: dict[str, Any] | None) -> None:
         """Fire ``run_finished`` for ``live``'s current run."""
