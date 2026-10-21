@@ -65,9 +65,9 @@ type Fixture = Data & {
   /** Overrides for /api/health: another office key, another build, or no build at all. */
   health: { officeApi?: string; build?: string; app?: null }
   whoami: { person: string; device: string | null }
-  /** Milliseconds to hold a route's answer, by path. */
+  /** Milliseconds to hold a route's answer, by path ("/api/runs?parent" for reads of one run's children only). */
   delay: Record<string, number>
-  /** A status to fail a route with (an `internal` error), or the whole error to answer, by path. */
+  /** A status to fail a route with (an `internal` error), or the whole error to answer, by path (as `delay`). */
   fail: Record<string, number | { status: number; error: string; message: string }>
   /** Each human's password, by handle; an agent never has one. */
   passwords: Record<string, string>
@@ -92,9 +92,12 @@ const fresh = (): Fixture => ({
 })
 // `logins` keeps each sign-in's handle and label, never its password.
 const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[],
-  files: [] as { at: string; path: string }[], runs: [] as string[], runReads: [] as string[] })
+  files: [] as { at: string; path: string }[], runs: [] as string[], runReads: [] as string[],
+  /** The most reads of one run's children (`GET /api/runs?parent=`) in flight at once. */
+  parentPeak: 0 })
 let state = fresh()
 let log = emptyLog()
+let parentsInFlight = 0
 let downUntil = 0
 
 // Open event streams, written to by /__fixture/emit and ended by /__fixture/drop and /__fixture/reset.
@@ -209,8 +212,16 @@ async function api(req: Request, url: URL): Promise<Response> {
   const p = url.pathname
   log.api.push(p)
   if (Date.now() < downUntil) return json({ error: "office_unavailable", message: "the office is restarting" }, 503)
-  if (state.delay[p]) await Bun.sleep(state.delay[p])
-  const fail = state.fail[p]
+  // A read of one run's children also answers to the key "/api/runs?parent", so a test can hold or fail only those.
+  const parentRead = p === "/api/runs" && url.searchParams.has("parent")
+  const delay = (parentRead && state.delay["/api/runs?parent"]) || state.delay[p]
+  if (parentRead) log.parentPeak = Math.max(log.parentPeak, ++parentsInFlight)
+  try {
+    if (delay) await Bun.sleep(delay)
+  } finally {
+    if (parentRead) parentsInFlight--
+  }
+  const fail = (parentRead && state.fail["/api/runs?parent"]) || state.fail[p]
   if (typeof fail === "number" && fail) return json({ error: "internal", message: `${p} failed` }, fail)
   if (typeof fail === "object") return json({ error: fail.error, message: fail.message }, fail.status)
   if (p === "/api/health") return log.health++, json(health())

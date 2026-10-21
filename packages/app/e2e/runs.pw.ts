@@ -559,3 +559,64 @@ test("a refetch during Load more keeps the page it brings", async ({ page, reque
   await page.waitForTimeout(3000) // the refetch's answer, after Load more's
   await expect(tops).toHaveCount(100)
 })
+
+/** What the fixture logged: every /api/runs read's query, and the most `?parent=` reads in flight at once. */
+const fixtureLog = async (request: APIRequestContext) =>
+  (await (await request.get("/__fixture/log")).json()) as { runs: string[]; parentPeak: number }
+
+test("folds a filter opens all at once read at most 4 pages at a time", async ({ page, request }) => {
+  // Ten runs each listed for its two side chats, so all ten folds open with the page.
+  await request.post("/__fixture/set", { data: { runs: many(10, 2), delay: { "/api/runs?parent": 400 } } })
+  await page.goto("/runs?q=flow:side_chat")
+  await expect(tops(page)).toHaveCount(10)
+  await expect(kids(page)).toHaveCount(20, { timeout: 15_000 })
+  expect((await fixtureLog(request)).parentPeak).toBe(4)
+})
+
+test("a fold read still waiting when its row leaves the page isn't sent", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: many(10, 2), delay: { "/api/runs?parent": 1500 } } })
+  await page.goto("/runs?q=flow:side_chat")
+  await expect.poll(async () => (await fixtureLog(request)).parentPeak).toBe(4) // four sent, six waiting
+  await search(page, "flow:chat") // every run matches itself now: its fold starts closed
+  await expect(tops(page)).toHaveCount(10)
+  await page.waitForTimeout(2500) // past the four in flight
+  expect((await fixtureLog(request)).runs.filter((s) => new URLSearchParams(s).has("parent"))).toHaveLength(4)
+  await expect(kids(page)).toHaveCount(0)
+})
+
+test("a fold says it's reading its first page, and its buttons name the run", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(60), delay: { "/api/runs?parent": 1000 } } })
+  await page.goto(ALL)
+  await toggle(page, 4000).click()
+  const under = await fold(page, 4000)
+  const reading = under.getByRole("status").filter({ hasText: "reading…" })
+  await expect(reading).toBeVisible()
+  await expect(kids(page)).toHaveCount(50)
+  await expect(reading).toHaveCount(0)
+  const end = rid(4000).slice(-4)
+  await expect(under.getByRole("button", { name: /^Load more/ })).toHaveAccessibleName(`Load more runs under …${end}`)
+  await request.post("/__fixture/set", { data: { delay: {}, fail: { "/api/runs?parent": 500 } } })
+  await under.getByRole("button", { name: /^Load more/ }).click()
+  await expect(under.getByRole("button", { name: /^Retry/ })).toHaveAccessibleName(`Retry runs under …${end}`)
+})
+
+test("Retry after a failed live re-read is disabled while its re-read runs", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(60) } })
+  await page.goto(ALL)
+  await expect(toggle(page, 4000)).toBeVisible()
+  await page.waitForTimeout(1500) // past the list's read once the office is first online
+  await toggle(page, 4000).click()
+  await expect(kids(page)).toHaveCount(50)
+  const under = await fold(page, 4000)
+  await request.post("/__fixture/set", { data: { fail: { "/api/runs?parent": 500 } } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(4000), session_id: "S4000", status: "finished", current_nodes: [] } } } })
+  const retry = under.getByRole("button", { name: /^Retry/ })
+  await expect(retry).toBeEnabled()
+  await expect(under.getByRole("alert")).toContainText("Couldn't read the runs under")
+  await request.post("/__fixture/set", { data: { fail: {}, delay: { "/api/runs?parent": 1500 } } })
+  await retry.click()
+  await expect(retry).toBeDisabled()
+  await expect(under.getByRole("button", { name: /^Load more/ })).toBeVisible({ timeout: 10_000 })
+  await expect(retry).toHaveCount(0)
+})
