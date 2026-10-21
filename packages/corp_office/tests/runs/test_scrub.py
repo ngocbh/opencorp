@@ -25,6 +25,15 @@ def test_a_secret_key_hides_its_value_at_any_depth_and_in_tool_arguments():
                     "Proxy-Authorization": HIDDEN, "Cookie": HIDDEN}
 
 
+def test_the_key_rule_reads_keys_as_written_even_when_a_known_value_is_a_key_name():
+    out = Scrubber(["password"]).record({"kind": "x", "seq": 1, "payload": {"args": {
+        "password": "other-real-pw-123", "db_password": "another-pw-456"}}})
+    assert "other-real-pw-123" not in json.dumps(out) and "another-pw-456" not in json.dumps(out)
+    assert sorted(out["payload"]["args"].values()) == [HIDDEN, HIDDEN]
+    out = Scrubber(["Authorization"]).record(record({"headers": {"Authorization": "Basic dXNlcjpwYXNzd29yZA"}}))
+    assert "dXNlcjpwYXNzd29yZA" not in json.dumps(out) and list(out["payload"]["headers"].values()) == [HIDDEN]
+
+
 def test_keys_that_scrub_to_the_same_text_keep_every_value():
     out = Scrubber([KEY]).record(record({"sk-aaaaaaaaaaaaaaaaaaaaaa": 1, "sk-bbbbbbbbbbbbbbbbbbbbbb": 2,
                                          f"k-{KEY}": 3, "k-[redacted]": 4}))

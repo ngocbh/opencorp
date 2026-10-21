@@ -51,6 +51,14 @@ class Scrubber:
         self.known = frozenset(v for v in known if isinstance(v, str) and len(v.strip()) >= MIN_KNOWN)
         self._redact = redactor(self.known)
 
+    def _hide(self, value: Any) -> Any:
+        """``value`` with every secret-named key's value hidden at any depth, keys read as written."""
+        if isinstance(value, dict):
+            return {k: HIDDEN if secret_key(k) else self._hide(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [self._hide(v) for v in value]
+        return value
+
     def value(self, value: Any) -> Any:
         """``value`` with secret-named keys' values hidden at any depth and every string (keys too) scrubbed."""
         if isinstance(value, str):
@@ -75,13 +83,14 @@ class Scrubber:
                 and not AUTH_HEADER.search(text) and not API_KEY_HEADER.search(text) and self._redact(text) == text)
 
     def record(self, record: dict[str, Any]) -> dict[str, Any]:
-        """``record`` scrubbed (known values in plain, JSON, repr and URL forms, then keys and shapes) and checked; a
-        withheld stub (seq, kind, node id) when the scrub raises or the check fails.
+        """``record`` scrubbed (secret-named keys, then known values in plain, JSON, repr and URL forms, then shapes)
+        and checked; a withheld stub (seq, kind, node id) when the scrub raises or the check fails.
 
-        Known values go first, so a shape that matches part of one (a DSN's password, a ``$…$`` tail) can't split it
-        and leave the rest of it shown."""
+        The key rule reads keys as written, before a known value equal to part of a key name rewrites it. Known values
+        go before shapes, so a shape that matches part of one (a DSN's password, a ``$…$`` tail) can't split it and
+        leave the rest of it shown."""
         try:
-            out = self.value(self._redact(record))
+            out = self.value(self._redact(self._hide(record)))
             if self.clean(json.dumps(out, ensure_ascii=False)):
                 return out
         except Exception:
