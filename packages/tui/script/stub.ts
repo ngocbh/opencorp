@@ -1006,6 +1006,9 @@ export function createFakeOffice(
       ({ params, body }) => {
         const s = session(params.id)
         check(typeof body?.cost_cap_usd === "number", "cost_cap_usd must be a number")
+        // As the office: Codex prices nothing here, so its sessions have no cap to raise.
+        if (s.harness === "codex")
+          throw fail(422, "not_supported", "a Codex session runs on Codex's own model and login")
         if (body.cost_cap_usd <= (s.cost ?? 0)) {
           throw fail(422, "cap_too_low", `the cap must be above the session's cost of $${s.cost ?? 0}`)
         }

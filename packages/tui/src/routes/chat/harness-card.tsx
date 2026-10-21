@@ -35,7 +35,7 @@ export function HarnessCard(props: {
   const title = () => props.question.title ?? props.question.question
   const focusKey = useCommandShortcut("session.card.focus")
   // Esc interrupts while a turn is starting, running or waiting, as in the prompt.
-  const working = createMemo(() =>
+  const canInterrupt = createMemo(() =>
     interruptible(office.state.sessions.find((s) => s.id === props.question.session_id)?.status),
   )
   // One answer call at a time: a second pick while one is in flight would race it.
@@ -95,11 +95,11 @@ export function HarnessCard(props: {
         // A dialog over the card has the keys: its secret box reads the whole app's keyboard, not a focused box.
         enabled={dialog.stack.length === 0}
         bindings={[
-          ...(working() ? [{ key: "escape", desc: "Interrupt Codex", group: "Question", cmd: () => interrupt() }] : []),
+          ...(canInterrupt() ? [{ key: "escape", desc: "Interrupt Codex", group: "Question", cmd: () => interrupt() }] : []),
           // Ctrl+C on an empty box, or off the box, leaves the view as it does in the chat.
           ...leaveBindings(tuiConfig.keybinds.get("app.exit")),
         ]}
-        hints={[...(working() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: "prompt" }]}
+        hints={[...(canInterrupt() ? [{ key: "esc", label: "interrupt Codex" }] : []), { key: focusKey(), label: "prompt" }]}
         onSubmit={(answers) => {
           const m = model()
           const req = m && buildAnswer(m, answers)

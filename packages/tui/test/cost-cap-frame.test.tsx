@@ -40,7 +40,7 @@ test("the cost cap command raises the open session's cap and shows the office's 
     app.input.typeText("20")
     app.input.pressEnter()
     await app.until(() => raised(office, s.id, 20))
-    await app.until((f) => f.includes("Cost cap raised to $20"))
+    await app.until((f) => f.includes("Cost cap raised to $20.00"))
   } finally {
     await app.stop()
     office.stop()
@@ -56,7 +56,7 @@ test("/cost-cap 20 typed in the prompt raises the cap and sends nothing to the m
     await app.until((f) => f.includes("/cost-cap 20"))
     app.input.pressEnter()
     await app.until(() => raised(office, s.id, 20))
-    await app.until((f) => f.includes("Cost cap raised to $20") && !f.includes("/cost-cap 20"))
+    await app.until((f) => f.includes("Cost cap raised to $20.00") && !f.includes("/cost-cap 20"))
     expect(office.requests.some((r) => r.path === `/sessions/${s.id}/prompt`)).toBe(false)
   } finally {
     await app.stop()
@@ -73,6 +73,41 @@ test("/cost-cap with an amount that isn't one opens the dialog with it, and send
     await app.until((f) => f.includes("/cost-cap lots"))
     app.input.pressEnter()
     await app.until((f) => f.includes("Raise the cost cap") && f.includes("lots"))
+    expect(office.requests.some((r) => r.path === `/sessions/${s.id}/prompt`)).toBe(false)
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("/cost-cap on the home screen asks for a session and sends nothing", async () => {
+  const office = createFakeOffice()
+  const app = await bootFrame(createStub(office))
+  try {
+    await app.until((f) => f.includes("Ask anything"))
+    await app.input.typeText("/cost-cap 20")
+    await app.until((f) => f.includes("/cost-cap 20"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("Open a session to raise its cost cap"))
+    expect(office.requests.filter((r) => r.method === "POST")).toEqual([])
+  } finally {
+    await app.stop()
+    office.stop()
+  }
+})
+
+test("/cost-cap on a Codex session shows the office's refusal and sends nothing to Codex", async () => {
+  const office = createFakeOffice()
+  const s = office.newSession({ person: "minh", cwd: "/tmp/proj", harness: "codex" })
+  office.state.messages[s.id] = []
+  const app = await bootFrame(createStub(office), { sessionID: s.id })
+  try {
+    await app.until((f) => f.includes("@minh ·"))
+    await app.input.typeText("/COST-CAP 20")
+    await app.until((f) => f.includes("/COST-CAP 20"))
+    app.input.pressEnter()
+    await app.until((f) => f.includes("a Codex session runs on Codex's own model and login"))
+    expect(office.requests.some((r) => r.path === `/sessions/${s.id}/cost-cap`)).toBe(true)
     expect(office.requests.some((r) => r.path === `/sessions/${s.id}/prompt`)).toBe(false)
   } finally {
     await app.stop()

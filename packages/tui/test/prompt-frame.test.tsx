@@ -312,7 +312,9 @@ test("Esc on a waiting session interrupts it", async () => {
   office.updateSession(s.id, { status: "waiting", waiting_on: ["ngocbh"] })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
-    await app.until((f) => f.includes("@minh · waiting") && f.includes("esc interrupt"))
+    const f = await app.until((f) => f.includes("@minh · waiting") && f.includes("esc interrupt"))
+    // No spinner before the hint: a waiting session isn't working.
+    expect(f.split("\n").find((l) => l.includes("esc interrupt"))).toMatch(/^\s*esc interrupt/)
     app.input.pressEscape()
     await app.until(() => office.requests.some((r) => r.path === `/sessions/${s.id}/interrupt`))
   } finally {
