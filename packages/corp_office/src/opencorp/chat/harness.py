@@ -196,6 +196,9 @@ class Harness:
     dispatcher thread, in order. ``connections`` are read at each spawn. ``models`` tells which connections
     offer a person's model when a chat starts, within ``choose_deadline`` seconds. ``hooks`` are shared with
     ``codex``, the Codex sessions, which take every call on a session whose harness is ``codex``.
+
+    A session in ``LIVE`` with no live run sleeps (restore leaves idle sessions so); ``prompt``, ``steer``, ``end``
+    and ``answer`` wake it first (``_awake``).
     """
 
     def __init__(self, office: Any, monitor: Monitor, *, connections: Connections, models: ModelCache | None = None,
@@ -619,6 +622,109 @@ class Harness:
             return
         self._finish(live, "failed", None)
 
+    # --- waking ----------------------------------------------------------------------
+
+    def _awake(self, session_id: str, *, ending: bool = False) -> _Live:
+        """The composer session's live run, woken first if it sleeps (in ``LIVE`` with no live run).
+
+        One caller wakes it; any other waits for that wake to settle, then looks again, so no caller acts on a run
+        that has no worker yet. ``ending`` wakes it for ``end``: its re-shown turn takes the exit, and a wake that
+        fails fails the session. Any other failed wake leaves the session as it was and raises: ``422`` from building
+        its run (its folder gone), ``503 cant_wake``, or ``503 stopping`` while the office stops.
+        """
+        while True:
+            with self._lock:
+                wake = self._waking.get(session_id)
+                if wake is None:
+                    live = self._live.get(session_id)
+                    if live is not None:
+                        return live
+                    session = self.store.get_session(session_id)
+                    if session is None:
+                        raise HarnessError(404, "not_found", f"no session {session_id}")
+                    # _finish drops the live run before it stores the end, so the store still says LIVE until then;
+                    # a starting session with no live run is inside start_run. Neither is asleep.
+                    if session_id in self._finishing or session.status not in LIVE or session.status == "starting" \
+                            or not session.run_ids:
+                        raise HarnessError(409, "not_live", f"session {session_id} has no live run")
+                    if self._stopping:
+                        raise HarnessError(503, "stopping", "the office is stopping")
+                    wake = self._waking[session_id] = _Wake()
+                    break
+            wake.done.wait()  # then look again: it is live, or that wake failed and this caller tries its own
+        try:
+            try:
+                with self._in_call():  # close_all waits for the wake to leave the store
+                    return self._wake(session, ending)
+            except _Refused:
+                raise HarnessError(503, "stopping", "the office is stopping") from None
+        finally:
+            with self._lock:
+                del self._waking[session_id]
+            wake.done.set()
+
+    def _wake(self, session: Session, ending: bool) -> _Live:
+        """Build, insert and resume ``session``'s sleeping run; ``_awake`` holds the claim."""
+        sid, live = session.id, None
+        try:
+            # The slow part, outside the lock: a pin (maybe a worktree), two repo loads, the sandbox policy.
+            live = self._new_live(session, session.run_ids[-1], self.restorers[session.kind](session))
+            live.waking, live.ending = True, ending
+            self._check_provider(session)  # before anything is written, so a wake that can't run changes nothing
+        except Exception as exc:
+            raise self._wake_failed(sid, live, ending, exc) from exc
+        with self._lock:
+            if self._stopping:
+                raise HarnessError(503, "stopping", "the office is stopping")
+            self._live[sid] = live  # before its worker exists, as restore does, so its first frames find it current
+            if not ending:
+                # Before the worker: once it runs, its re-shown turn writes idle, which must win.
+                guarded_update(self.store, sid, ("idle",), status="busy")
+        try:
+            self._resume(live)  # a failure drops the entry (live.waking) and raises
+        except Exception as exc:
+            if not ending:
+                guarded_update(self.store, sid, ("busy",), status="idle")
+            raise self._wake_failed(sid, live, ending, exc) from exc
+        if live.worker is None:  # close_all began before the spawn
+            with self._lock:
+                if self._current(live):
+                    del self._live[sid]
+            if not ending:
+                guarded_update(self.store, sid, ("busy",), status="idle")
+            raise HarnessError(503, "stopping", "the office is stopping")
+        if ending:
+            guarded_update(self.store, sid, ("idle", "busy"), status="ending")
+        return live
+
+    def _check_provider(self, session: Session) -> None:
+        """Raise if the connection and model the session's next run would use can't be resolved now.
+
+        Read-only: a session whose connection was removed is moved, with its note, by ``_resume`` and ``_spawn``.
+        Moving it here would make ``_resume`` see an unmoved session and write its fresh-run note over that note.
+        """
+        name, model, _ = self.connections.choice(session.connection, session.model)
+        self.connections.resolve(name, model)
+
+    def _wake_failed(self, session_id: str, live: _Live | None, ending: bool, exc: Exception) -> HarnessError:
+        """The error a failed wake answers.
+
+        A wake for ``end`` fails the session: it can't run its exit, and left open it could never be ended. Any other
+        leaves the session for the caller to fix (``/model``, the connection, the folder) and send again; failing it
+        would throw away a session nobody could bring back.
+        """
+        if ending:
+            if live is not None:
+                self._finish(live, "failed", None)
+            else:
+                self._fail(session_id)
+        if isinstance(exc, HarnessError):
+            return exc
+        log.warning("session %s can't wake: %s", session_id, exc)
+        # A provider error never echoes the file; anything else may hold anything, so it stays in the log.
+        why = f": {exc}" if isinstance(exc, ProviderError) else "; see the office log"
+        return HarnessError(503, "cant_wake", f"session {session_id} can't wake{why}")
+
     # --- the person's keys -------------------------------------------------------------
 
     def prompt(self, session_id: str, text: str, *, by: str | None = None) -> str:
@@ -630,6 +736,7 @@ class Harness:
         """
         if self._codex_session(session_id):
             return self.codex.prompt(session_id, text, by=by)
+        self._awake(session_id)
         with self._lock:
             live = self._must(session_id)
             if live.ending:
@@ -661,6 +768,7 @@ class Harness:
         """Steer the running reply as ``by``; a message with no reply running is a ``prompt``."""
         if self._codex_session(session_id):
             return self.codex.prompt(session_id, text, by=by)  # Codex steers a running turn by itself
+        self._awake(session_id)
         with self._lock:
             live = self._must(session_id)
             if live.reply_node is not None and live.worker is not None and not live.ending:

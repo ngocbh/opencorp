@@ -71,3 +71,63 @@ def test_a_call_after_close_all_is_refused_as_the_office_stopping(harness):
     with pytest.raises(_Refused):
         with harness._in_call():
             pass
+
+
+def test_a_prompt_wakes_a_sleeping_session_on_its_own_run(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "one"}, {"content": "two"})
+    first = make_harness()
+    sid = start(first, workspace)
+    say(first, sid, "a")
+    first.close_all()
+    second = make_harness()
+    jobs = spawned(second, lambda job: job.kind)
+    assert sid not in second._live
+    assert say(second, sid, "b") == "two"
+    assert jobs == ["resume"] and len(second.store.get_session(sid).run_ids) == 1
+    assert "one" in str(fake_llm.requests()[-1]["messages"])  # the resumed run kept the conversation
+
+
+def test_two_prompts_to_a_sleeping_session_spawn_one_worker_and_both_arrive(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "r1"}, {"content": "r2"})
+    h, sid = asleep(make_harness, workspace)
+    jobs = spawned(h, lambda job: job.kind)
+    entered, release = hold_builds(h)
+    a, _ = calling(h.prompt, sid, "first")
+    assert entered.wait(10)
+    b, _ = calling(h.prompt, sid, "second")
+    time.sleep(0.2)
+    assert a.is_alive() and b.is_alive()  # no message is taken before the wake has a worker
+    release.set()
+    a.join(10), b.join(10)
+    wait_for(lambda: "first" in str(fake_llm.requests()) and "second" in str(fake_llm.requests()), what="both")
+    assert jobs == ["resume"] and len(h.store.get_session(sid).run_ids) == 1
+
+
+def test_a_prompt_while_the_wake_spawns_waits_for_it_and_is_delivered(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "r1"}, {"content": "r2"})
+    h, sid = asleep(make_harness, workspace)
+    spawn, entered, release = h.registry.spawn, threading.Event(), threading.Event()
+
+    def held(*args):
+        entered.set()
+        assert release.wait(10)
+        return spawn(*args)
+
+    h.registry.spawn = held
+    a, _ = calling(h.prompt, sid, "first")
+    assert entered.wait(10)
+    assert h._live[sid].worker is None and sid in h._waking
+    b, _ = calling(h.prompt, sid, "second")
+    time.sleep(0.2)
+    assert b.is_alive()  # it waits for the wake to settle, not on the worker-less entry
+    release.set()
+    a.join(10), b.join(10)
+    wait_for(lambda: "first" in str(fake_llm.requests()) and "second" in str(fake_llm.requests()), what="both")
+
+
+def test_a_steer_to_a_sleeping_session_wakes_it_and_is_its_next_message(make_harness, fake_llm, workspace):
+    fake_llm.script({"content": "steered"})
+    h, sid = asleep(make_harness, workspace)
+    h.steer(sid, "look here")
+    wait_for(lambda: texts(h, sid) == ["steered"], what="the reply")
+    assert texts(h, sid, role="user") == ["look here"]
