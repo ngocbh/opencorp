@@ -100,6 +100,20 @@ test("the session list shows this folder's session behind more than 50 newer one
   }
 })
 
+test("the session list says who a waiting session waits on", async () => {
+  const fake = office(["proj"])
+  fake.state.sessions[0] = { ...fake.state.sessions[0], status: "waiting", waiting_on: ["ngocbh"] }
+  const app = await bootFrame(createStub(fake))
+  try {
+    await app.until((f) => f.includes("Ask anything"))
+    await runCommand(app, "Switch session")
+    await app.until((f) => f.includes("@minh · /tmp/proj · 5m ago · waiting on @ngocbh"))
+  } finally {
+    await app.stop()
+    fake.stop()
+  }
+})
+
 test("--continue opens the newest main session in the folder", async () => {
   const fake = office()
   const app = await bootFrame(createStub(fake), { continue: true })
