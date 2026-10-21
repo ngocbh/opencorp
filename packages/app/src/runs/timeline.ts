@@ -1,6 +1,6 @@
 // The Timeline's rows: node attempts newest first, consecutive ones of one loop or map iteration grouped, and the
 // run_resumed dividers where their seq falls.
-import type { RunDivider, RunNode } from "@opencorp/protocol"
+import type { RunDivider, RunNode, RunNodePage } from "@opencorp/protocol"
 
 export type Group = { key: string; nodes: RunNode[] }
 export type Row = { type: "node"; node: RunNode } | { type: "group"; group: Group } | { type: "divider"; divider: RunDivider }
@@ -31,6 +31,27 @@ export function timeline(nodes: RunNode[], dividers: RunDivider[]): Row[] {
   }
   for (const divider of pending) rows.push({ type: "divider", divider })
   return rows
+}
+
+/** The node attempts the Timeline shows: the newest page and the older pages read, and the cursor of the next one. */
+export type Shown = { nodes: RunNode[]; dividers: RunDivider[]; next: number | null; dropped: boolean }
+
+/**
+ * What the Timeline shows once the newest node page is read again: the page replaces the nodes it covers, and the
+ * older nodes already read (below its lowest seq) stay, with their cursor. A page that holds every node, or the first
+ * one read (`shown` undefined), is taken whole.
+ */
+export function takeNewest(shown: Shown | undefined, page: RunNodePage): Shown {
+  const dividers = page.dividers ?? []
+  if (!shown || page.next_before == null)
+    return { nodes: page.nodes, dividers, next: page.next_before ?? null, dropped: !!page.dropped }
+  const low = Math.min(...page.nodes.map((n) => n.seq))
+  return {
+    nodes: [...page.nodes, ...shown.nodes.filter((n) => n.seq < low)],
+    dividers: [...dividers, ...shown.dividers.filter((d) => d.seq < low)],
+    next: shown.next,
+    dropped: shown.dropped,
+  }
 }
 
 /** A divider's text: "resumed; retried reply". */
