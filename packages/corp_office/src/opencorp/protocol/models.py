@@ -799,7 +799,7 @@ class CompanyTree(BaseModel):
     skipped: Annotated[
         int,
         Field(
-            description="Paths left out because they aren't valid UTF-8, have a `.` or `..` segment, or would reveal a secret; they can't be read.",
+            description="Paths left out because they aren't valid UTF-8 or have a `.` or `..` segment; they can't be read.",
             ge=0,
         ),
     ]
@@ -826,13 +826,13 @@ class CompanyFile(BaseModel):
     content: Annotated[
         Literal['text', 'binary', 'too_large', 'hidden', 'symlink', 'submodule'],
         Field(
-            description="What the response holds: text in `text`, a symlink's target in `target`, a hidden file's reason in `reason`; nothing for the others."
+            description="What the response holds: text in `text`, a symlink's target in `target`; nothing for the others. The office no longer sends `hidden` (kept for compatibility; clients ignore it)."
         ),
     ]
     text: Annotated[
         str | None,
         Field(
-            description="The file's text, secrets removed, when content is text; else null."
+            description="The file's text as stored, when content is text; else null."
         ),
     ] = None
     target: Annotated[
@@ -844,22 +844,19 @@ class CompanyFile(BaseModel):
     reason: Annotated[
         str | None,
         Field(
-            description='Why the file is hidden, a fixed message that never quotes the file, when content is hidden; else null.'
+            description='Always null: the office no longer hides files. Kept for compatibility; clients ignore it.'
         ),
     ] = None
     rewritten: Annotated[
         bool,
         Field(
-            description="True when text is the file re-rendered from parsed YAML without its secret keys, so comments and layout aren't kept."
+            description='Always false: the office no longer rewrites files. Kept for compatibility; clients ignore it.'
         ),
     ] = False
 
 
 type Reason = Annotated[
-    str,
-    Field(
-        description='Why it failed or was interrupted, secrets removed.', max_length=200
-    ),
+    str, Field(description='Why it failed or was interrupted.', max_length=200)
 ]
 
 
@@ -921,8 +918,7 @@ class RunSummary(BaseModel):
     ] = None
     status: Literal['running', 'waiting', 'idle', 'finished', 'failed', 'interrupted']
     reason: Annotated[
-        Reason | None,
-        Field(description='Why it failed or was interrupted, secrets removed.'),
+        Reason | None, Field(description='Why it failed or was interrupted.')
     ] = None
     failed_node: Annotated[
         FailedNode | None,
@@ -1077,8 +1073,7 @@ type EndSeq = Annotated[
 
 
 type Error = Annotated[
-    str,
-    Field(description='For a failed node: its error, secrets removed.', max_length=200),
+    str, Field(description='For a failed node: its error.', max_length=200)
 ]
 
 
@@ -1108,10 +1103,9 @@ class RunNode(BaseModel):
     handle: Annotated[
         str | None, Field(description='For a routed case: the handle it took.')
     ] = None
-    error: Annotated[
-        Error | None,
-        Field(description='For a failed node: its error, secrets removed.'),
-    ] = None
+    error: Annotated[Error | None, Field(description='For a failed node: its error.')] = (
+        None
+    )
 
 
 class RunDivider(BaseModel):
@@ -1180,7 +1174,7 @@ type Size1 = Annotated[
 
 class RunEvent(BaseModel):
     """
-    One run-log record as written, secrets removed.
+    One run-log record as written.
     """
 
     model_config = ConfigDict(
@@ -1191,9 +1185,7 @@ class RunEvent(BaseModel):
     node_id: str | None = None
     payload: Annotated[
         dict[str, Any] | None,
-        Field(
-            description="The record's payload, scrubbed; null when withheld or too large to preview."
-        ),
+        Field(description="The record's payload; null when too large to preview."),
     ] = None
     cut: Annotated[
         list[str],
@@ -1209,7 +1201,9 @@ class RunEvent(BaseModel):
     ] = False
     withheld: Annotated[
         str | None,
-        Field(description="Why the payload isn't shown: a secret couldn't be removed."),
+        Field(
+            description='Always null: the office no longer withholds payloads. Kept for compatibility; clients ignore it.'
+        ),
     ] = None
     size: Annotated[
         Size1 | None,
