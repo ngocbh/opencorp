@@ -37,6 +37,7 @@ EVENT_BYTES = 2 << 20
 LRU_BYTES = 128 << 20
 LRU_LOGS = 128
 ERROR_CHARS = 200
+"""How much of a node's error is shown, cut after the scrub; the index keeps up to FIELD_CHARS of it."""
 # Yian writes sorted-key JSON (log.py:2786-2796), so a record starts with "kind" ("at" first from schema 10): an
 # oversized line's kind can be read without parsing it. Its seq is its line number (log.py:2843-2866), so no line's
 # seq is ever read from its text.
@@ -53,6 +54,9 @@ class UnsupportedSchema(UnreadableLog):
 
     def __init__(self, schema: object) -> None:
         self.schema = schema
+        if type(schema) is not int:  # anything else could be any text, a secret included: never echoed
+            super().__init__("This log uses a run-log schema this office can't read")
+            return
         why = "which is older than this office supports" if schema in RETIRED else "which this office can't read"
         super().__init__(f"This log uses run-log schema {schema}, {why}")
 
@@ -256,7 +260,8 @@ def _ended(index: Index, seq: int, kind: str, payload: dict[str, Any]) -> None:
     if kind == "node_routed" and isinstance(payload.get("handle"), str):
         attempt.handle = payload["handle"]
     if failure is not None:
-        attempt.error = str(failure.get("message") or failure.get("code") or "")[:ERROR_CHARS] or None
+        # Kept long and cut to ERROR_CHARS only once scrubbed, so a known value cut in two can't show its head.
+        attempt.error = str(failure.get("message") or failure.get("code") or "")[:FIELD_CHARS] or None
         index.held += len(attempt.error or "")
 
 
@@ -409,10 +414,17 @@ def read_event(path: Path, index: Index, seq: int,
 
 
 def scrubbed_lines(path: Path, scrub_line: Callable[[bytes], bytes]) -> Iterator[bytes]:
-    """Every complete line of ``path`` as it is now, through ``scrub_line``: the download, one line in memory. It
-    needs no index, so a log this office can't read still downloads."""
-    with open(path, "rb") as f:
-        yield from (scrub_line(line) for line in _lines(f, 0, os.fstat(f.fileno()).st_size))
+    """Every complete line of ``path`` as it is when called, through ``scrub_line``: the download, one line in memory.
+    The file is opened at once (FileNotFoundError here, not mid-stream). It needs no index, so a log this office
+    can't read still downloads."""
+    f = open(path, "rb")  # noqa: SIM115 - the generator below closes it
+    size = os.fstat(f.fileno()).st_size
+
+    def stream() -> Iterator[bytes]:
+        with f:
+            yield from (scrub_line(line) for line in _lines(f, 0, size))
+
+    return stream()
 
 
 def _stamp(st: os.stat_result) -> tuple[int, int, int, int]:

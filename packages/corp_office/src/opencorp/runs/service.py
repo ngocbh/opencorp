@@ -220,9 +220,14 @@ class RunLogs:
 
     async def log_lines(self, run_id: str) -> Iterator[bytes]:
         """The whole log as it is now, each line scrubbed as it streams. It needs no index, and the scrub doesn't
-        depend on the schema, so a log this office can't read still downloads."""
+        depend on the schema, so a log this office can't read still downloads. The log is opened before this returns,
+        so one removed meanwhile is NoLog, not a cut-off download."""
         _, path = await self._log(run_id)
-        return scrubbed_lines(path, (await self.scrubber()).line)
+        scrubber = await self.scrubber()
+        try:
+            return scrubbed_lines(path, scrubber.line)
+        except FileNotFoundError:
+            raise NoLog(f"run {run_id} has no log") from None
 
     async def page(self, *, flow: str | None = None, person: str | None = None, status: Iterable[str] = (),
                    q: str | None = None, since: str | None = None, until: str | None = None,

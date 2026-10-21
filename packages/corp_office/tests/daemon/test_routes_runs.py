@@ -2,15 +2,16 @@
 
 import pytest
 
-from opencorp.chat.connections import Connections
+from opencorp.chat.connections import ConnectionFile, Connections
 from opencorp.runs.known import KnownValues, SecretsUnavailable
 from opencorp.runs.service import RunLogs
 from opencorp.secrets import SecretStore
 from opencorp.store import RunRow, new_id
-from tests.runs.logs import chat_log, line
+from tests.runs.logs import chat_log, failed, line, run_started, started
 from tests.store.conftest import session
 
 T = "2026-10-20T10:00:00.000Z"
+KEY = "conn-key-5f3a9c1e7b2d4a60"  # no provider shape: only the known-values step can catch it
 
 
 def a_run(office, **over):
@@ -133,8 +134,8 @@ async def test_get_runs_refuses_a_bad_recent_or_recent_with_a_range(office, clie
 
 
 def with_log(office, *, schema=9, log=True):
-    """Run Logs on the office (made once), and a run whose log is a synthetic chat log, one line in ``schema``, or
-    none."""
+    """Run Logs on the office (made once), and a run whose log is a synthetic chat log, one line in ``schema``, the
+    bytes ``log``, or none."""
     runs = office.extras.get("runs")
     if not isinstance(runs, RunLogs) or runs.known is None:
         office.extras["runs"] = runs = RunLogs(office, known=KnownValues(
@@ -145,7 +146,9 @@ def with_log(office, *, schema=9, log=True):
     if log:
         path = runs.log_path(row)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if schema == 9:
+        if isinstance(log, bytes):
+            path.write_bytes(log)
+        elif schema == 9:
             chat_log(path)
         else:
             path.write_bytes(line(0, "run_started", {}, schema=schema))
@@ -163,6 +166,7 @@ async def test_one_runs_routes(office, client):
     assert (await client.get(f"/runs/{run_id}/events/3")).json()["kind"] == "node_started"
     log = await client.get(f"/runs/{run_id}/log")
     assert log.headers["content-disposition"] == f'attachment; filename="{run_id}.jsonl"'
+    assert log.headers["cache-control"] == "no-store"
     assert len(log.content.splitlines()) == 16
 
 
@@ -199,3 +203,33 @@ async def test_one_runs_routes_while_its_log_is_first_read(office, client):
     assert (await client.get(f"/runs/{run_id}/events")).json()["indexing"] is True
     r = await client.get(f"/runs/{run_id}/events/3")
     assert (r.status_code, r.json()["error"]) == (503, "indexing")
+
+
+async def test_a_known_value_past_a_node_errors_cut_never_reaches_nodes(office, client):
+    run_id = with_log(office, log=run_started(0) + started(1, "a") + failed(2, "a", "x" * 186 + KEY))
+    Connections(office.paths.office).put("k", ConnectionFile(llm_config={"provider": "vllm", "model": "stub",
+                                                                         "api_key": KEY}))
+    r = await client.get(f"/runs/{run_id}/nodes")
+    assert KEY[:8] not in r.text and r.json()["nodes"][0]["error"] == "x" * 186 + "[redacted]"
+
+
+async def test_a_log_removed_before_it_streams_has_no_log(office, client):
+    run_id = with_log(office)
+    runs = office.extras["runs"]
+    real = runs.scrubber
+
+    async def removing():  # between the lookup and the read
+        runs.log_path(office.store.get_run(run_id)).unlink()
+        return await real()
+
+    runs.scrubber = removing
+    r = await client.get(f"/runs/{run_id}/log")
+    assert (r.status_code, r.json()["error"]) == (404, "no_log")
+
+
+async def test_a_schema_that_isnt_a_number_isnt_echoed(office, client):
+    run_id = with_log(office, log=b'{"kind":"run_started","payload":{},"schema":"' + KEY.encode() + b'","seq":0}\n')
+    head, nodes = await client.get(f"/runs/{run_id}"), await client.get(f"/runs/{run_id}/nodes")
+    assert (nodes.status_code, nodes.json()["error"]) == (409, "unsupported_schema")
+    assert KEY not in head.text + nodes.text
+    assert head.json()["log_message"] == "This log uses a run-log schema this office can't read"

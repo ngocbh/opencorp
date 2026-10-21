@@ -119,12 +119,13 @@ async def run_event(request: Request) -> JSONResponse:
 
 
 async def run_log(request: Request) -> StreamingResponse:
-    """A run's whole log, scrubbed record by record as it streams, as a JSONL attachment."""
+    """A run's whole log, scrubbed record by record as it streams, as a JSONL attachment no cache keeps."""
     run_id = request.path_params["id"]
     lines = await _run_call(run_logs(request).log_lines, run_id)
     # run_id is a stored run's id (the lookup above found it), so it is safe in the header.
     return StreamingResponse(lines, media_type="application/x-ndjson",
-                             headers={"content-disposition": f'attachment; filename="{run_id}.jsonl"'})
+                             headers={"content-disposition": f'attachment; filename="{run_id}.jsonl"',
+                                      "cache-control": "no-store"})
 
 
 ROUTES = [
