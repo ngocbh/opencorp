@@ -67,8 +67,8 @@ type Fixture = Data & {
   whoami: { person: string; device: string | null }
   /** Milliseconds to hold a route's answer, by path. */
   delay: Record<string, number>
-  /** A status to fail a route with, by path. */
-  fail: Record<string, number>
+  /** A status to fail a route with (an `internal` error), or the whole error to answer, by path. */
+  fail: Record<string, number | { status: number; error: string; message: string }>
   /** Each human's password, by handle; an agent never has one. */
   passwords: Record<string, string>
   /** /api/login's throttle: `retryAfter` (seconds) answers every sign-in 429, `busy` answers 503. */
@@ -207,7 +207,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   log.api.push(p)
   if (Date.now() < downUntil) return json({ error: "office_unavailable", message: "the office is restarting" }, 503)
   if (state.delay[p]) await Bun.sleep(state.delay[p])
-  if (state.fail[p]) return json({ error: "internal", message: `${p} failed` }, state.fail[p])
+  const fail = state.fail[p]
+  if (typeof fail === "number" && fail) return json({ error: "internal", message: `${p} failed` }, fail)
+  if (typeof fail === "object") return json({ error: fail.error, message: fail.message }, fail.status)
   if (p === "/api/health") return log.health++, json(health())
   if (p === "/api/pair" && req.method === "POST") {
     const body = await req.json().catch(() => ({}))
@@ -361,13 +363,15 @@ async function control(req: Request, url: URL): Promise<Response> {
       closeAll()
       return json({ ok: true })
     case "/__fixture/run": {
-      // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `indexing` sets
-      // whether its node pages answer "indexing". A run with no page gets one from its summary.
+      // Changes one run's page: `detail` merges into its header (`detail.run` into its summary); `add` puts newer
+      // node attempts before its others; `indexing` sets whether its node pages answer "indexing". A run with no page
+      // gets one from its summary.
       const summary = state.runs.runs.flatMap((r) => [r, ...(r.children ?? [])]).find((r) => r.run_id === body.id)!
       const page = (state.runPages[body.id] ??= { nodes: [], dividers: [], events: [], detail: { run: summary,
         parent: null, repo_commit: "a".repeat(40), usage: null, models: {}, log_state: "ok" } as RunDetail })
       const { run, ...rest } = body.detail ?? {}
       page.detail = { ...page.detail, ...rest, run: { ...page.detail.run, ...run } }
+      if (body.add) page.nodes = [...body.add, ...page.nodes]
       if ("indexing" in body) page.indexing = body.indexing
       return json({ ok: true })
     }

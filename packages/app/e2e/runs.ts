@@ -60,7 +60,8 @@ export type RunFixturePage = { detail: RunDetail; nodes: RunNode[]; dividers: Ru
                                indexing?: boolean }
 export type RunPages = Record<string, RunFixturePage>
 
-const node = (seq: number, node_id: string, over: Partial<RunNode> = {}): RunNode =>
+/** A node attempt as the office sends it: succeeded, ended at the next seq, no kind (until yian#943). */
+export const node = (seq: number, node_id: string, over: Partial<RunNode> = {}): RunNode =>
   ({ seq, end_seq: seq + 1, node_id, kind: null, status: "succeeded", handle: null, error: null, ...over })
 
 /** Run 5's page: three turns of @kai's chat, the second resumed once, the third waiting at its turn; and simple pages
