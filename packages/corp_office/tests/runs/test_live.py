@@ -69,7 +69,9 @@ def test_a_debrief_in_flight_is_known_with_its_open_nodes(harness, fake_llm, wor
     assert sent[0]["parent_run_id"] == harness.store.get_session(sid).run_ids[-1]
     fake_llm.release()
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
-    assert sid not in learning.debriefing() and learning.open_nodes(run_id) == []
+    # The claim outlives the commit that ends the session by a moment (it covers the outcome's write).
+    wait_for(lambda: sid not in learning.debriefing(), what="the debrief's claim to drop")
+    assert learning.open_nodes(run_id) == []
     assert learning._debrief_updated(sid, run_id) is None  # a trailing event can't say running after the end
 
 
@@ -122,10 +124,11 @@ def test_a_debrief_is_claimed_while_its_outcome_is_written(harness, fake_llm, wo
     seen = claims_while_ending(harness, monkeypatch, lambda run_id: run_id in learning.debriefing().values())
     sid = chat(harness, fake_llm, workspace)
     wait_for(lambda: status(harness, sid) == "ended", what="the end")
+    wait_for(lambda: learning.debriefing() == {}, what="the debrief's claim to drop")
     chat_run = harness.store.get_session(sid).run_ids[-1]
     debriefs = {r: c for r, c in seen.items() if r != chat_run}
     assert debriefs and all(debriefs.values())
-    assert learning.debriefing() == {} and learning._open == {}
+    assert learning._open == {}
 
 
 def test_a_harness_run_is_claimed_from_its_row_until_its_live_run_is_registered(harness, workspace):

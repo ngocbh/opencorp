@@ -157,7 +157,7 @@ async def test_the_check_adds_well_under_a_millisecond(client, company):
     token = new_token()
     give_device(company, "ngocbh", "mac", token)
     await client.get("/whoami", headers=bearer(token))  # load the roster
-    n = 300
+    rounds, n = 10, 50
 
     async def timed(path: str, headers=None) -> float:
         start = time.perf_counter()
@@ -165,9 +165,14 @@ async def test_the_check_adds_well_under_a_millisecond(client, company):
             await client.get(path, headers=headers)
         return (time.perf_counter() - start) / n
 
-    open_ = await timed("/health")  # skips the check; otherwise as small a route as /whoami
-    checked = await timed("/whoami", bearer(token))
-    assert checked - open_ < 0.5e-3
+    # Load on the machine only adds time, so each side's fastest round is its truest cost; alternating rounds puts
+    # both under the same conditions. A check that slows every request (one that reloads the roster each time) still
+    # fails.
+    open_, checked = [], []
+    for _ in range(rounds):
+        open_.append(await timed("/health"))  # skips the check; otherwise as small a route as /whoami
+        checked.append(await timed("/whoami", bearer(token)))
+    assert min(checked) - min(open_) < 0.5e-3
 
 
 # Device routes.
