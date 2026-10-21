@@ -8,7 +8,7 @@ import { createStore, reconcile, unwrap } from "solid-js/store"
 import { useOffice } from "../data/office"
 import { matches, type RunParams } from "./query"
 import { flowText, shortId, STATUS_DOT, where } from "./format"
-import { readQueue } from "./queue"
+import { readLimit, readQueue } from "./queue"
 
 const MUTED = "text-neutral-500 dark:text-neutral-400"
 const RING = "outline-none focus-visible:ring-2 focus-visible:ring-neutral-900 dark:focus-visible:ring-neutral-100"
@@ -136,12 +136,14 @@ function Row(props: {
 }
 
 /** A row under the children with one button ("Load more", "Retry", "Show the rest"), and why a read failed. */
-function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean; error?: string }) {
+function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean; error?: string; under?: string }) {
   return (
     <tr class="max-md:block">
       <td colSpan={7} class="py-1 pl-9 text-xs max-md:block">
         <button type="button" disabled={props.disabled} onClick={() => props.onClick()} class={LINK}>
           {props.label}
+          {/* Said with the run it reads under: several folds can be open, each with its own button. */}
+          <Show when={props.under}>{(run) => <span class="sr-only"> runs under …{run().slice(-4)}</span>}</Show>
         </button>
         <Show when={props.error}>
           {(message) => (
@@ -157,6 +159,8 @@ function MoreRow(props: { label: string; onClick: () => void; disabled?: boolean
 
 /** Children per read of a fold. */
 const PAGE = 50
+/** Reads of children in flight at once across the table, so a filter that opens every fold doesn't send 50 together. */
+const FOLD_READS = 4
 
 /** A top-level run's fold: whether it's open, the children read so far, and the cursor of the page after them. */
 type Fold = {
@@ -165,7 +169,7 @@ type Fold = {
   rest?: boolean
   kids?: RunSummary[]
   next?: string | null
-  /** A read the reader asked for (the first page, or Load more) is queued or running. */
+  /** A read the reader asked for (the first page, Load more, or Retry) is queued or running. */
   loading?: boolean
   error?: string
   /** The read Retry repeats. */
@@ -180,7 +184,12 @@ type Read = "first" | "more" | "again"
  * children read, until "Show the rest". Each time the list is refetched (`refreshed` changes), an open fold reads its
  * children again and a closed one forgets them.
  */
-function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number }) {
+function TopRun(props: {
+  run: RunSummary
+  filters: RunParams
+  refreshed: number
+  limit: ReturnType<typeof readLimit>
+}) {
   const office = useOffice()
   const under = createUniqueId()
   // The run's row is reconciled by run_id, so this outlives a refetch that keeps the run.
@@ -195,11 +204,15 @@ function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number 
   const open = () => fold.open ?? forKids()
   const total = () => Math.max(props.run.children_total ?? 0, fold.kids?.length ?? 0)
 
-  /** Queues `how`; its answer replaces the children (reconciled by run_id, so focus stays) or adds to them. */
-  function read(how: Read) {
-    if (how !== "again") setFold({ loading: true })
+  /**
+   * Queues `how`, `byReader` when the reader asked for it (a live re-read isn't, unless Retry repeats it); its answer
+   * replaces the children (reconciled by run_id, so focus stays) or adds to them.
+   */
+  function read(how: Read, byReader = how !== "again") {
+    if (byReader) setFold({ loading: true })
     queue(
       async () => {
+        if (disposed) return
         try {
           const opts = only() ? props.filters : {}
           // As many as are shown, from the start, for a re-read; past the last one shown for Load more.
@@ -208,7 +221,11 @@ function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number 
           let before = how === "more" ? (fold.next ?? undefined) : undefined
           let next: string | null
           do {
-            const page = await office.client.runs.children(id(), { ...opts, before, limit: PAGE })
+            // A read that waited for a slot while its row left the page isn't sent.
+            const page = await props.limit(async () =>
+              disposed ? null : office.client.runs.children(id(), { ...opts, before, limit: PAGE }),
+            )
+            if (!page) return
             kids = [...kids, ...page.runs]
             next = page.next ?? null
             before = next ?? undefined
@@ -220,7 +237,7 @@ function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number 
           const why = error instanceof Error ? error.message : String(error)
           if (!disposed) setFold({ error: `Couldn't read the runs under …${id().slice(-4)}: ${why}.`, failed: how })
         } finally {
-          if (!disposed && how !== "again") setFold({ loading: false })
+          if (!disposed && byReader) setFold({ loading: false })
         }
       },
       how === "again" ? "again" : undefined,
@@ -257,16 +274,29 @@ function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number 
       <tbody id={under}>
         <Show when={open()}>
           <For each={fold.kids ?? []}>{(kid) => <Row run={kid} level={2} />}</For>
+          <Show when={fold.loading && !fold.kids}>
+            <tr class="max-md:block">
+              <td colSpan={7} class={`py-1 pl-9 text-xs max-md:block ${MUTED}`}>
+                <span role="status">reading…</span>
+              </td>
+            </tr>
+          </Show>
           <Show
             when={fold.failed}
             fallback={
               <Show when={fold.next}>
-                <MoreRow label="Load more" disabled={fold.loading} onClick={() => read("more")} />
+                <MoreRow label="Load more" under={id()} disabled={fold.loading} onClick={() => read("more")} />
               </Show>
             }
           >
             {(failed) => (
-              <MoreRow label="Retry" disabled={fold.loading} error={fold.error} onClick={() => read(failed())} />
+              <MoreRow
+                label="Retry"
+                under={id()}
+                disabled={fold.loading}
+                error={fold.error}
+                onClick={() => read(failed(), true)}
+              />
             )}
           </Show>
           <Show when={only() && fold.kids && fold.kids.length < total()}>
@@ -287,6 +317,7 @@ function TopRun(props: { run: RunSummary; filters: RunParams; refreshed: number 
 
 /** The runs table: one row per top-level run, the runs started from it folded under it. */
 export function RunTable(props: { runs: RunSummary[]; filters: RunParams; refreshed: number }) {
+  const limit = readLimit(FOLD_READS)
   return (
     <table aria-label="Runs" class="w-full text-sm">
       <thead class="max-md:sr-only">
@@ -297,7 +328,7 @@ export function RunTable(props: { runs: RunSummary[]; filters: RunParams; refres
         </tr>
       </thead>
       <For each={props.runs}>
-        {(run) => <TopRun run={run} filters={props.filters} refreshed={props.refreshed} />}
+        {(run) => <TopRun run={run} filters={props.filters} refreshed={props.refreshed} limit={limit} />}
       </For>
     </table>
   )
