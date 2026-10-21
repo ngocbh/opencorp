@@ -1,7 +1,9 @@
 """The run-log scrub: secret keys, secret shapes, known values, and a final check that withholds."""
 
+import base64
 import json
 import time
+from urllib.parse import quote_plus
 
 import pytest
 
@@ -59,6 +61,61 @@ def test_secret_shapes_are_removed_from_every_string(text, secret):
     assert secret not in json.dumps(out) and HIDDEN in out["payload"]["failure"]["message"]
 
 
+AZ = "0123456789abcdef0123456789abcdef"
+DIGEST = ('Digest username="bob", realm="api", nonce="dcd98b7102dd2f0e8b11d0f600bfb0c093", uri="/x", '
+          'response="6629fae49393a05397450978507c4ef1"')
+
+
+@pytest.mark.parametrize("text, secret", [
+    ("OPENAI_KEY_sk-ABCDEFGHIJKLMNOPQRSTUV", "ABCDEFGHIJKLMNOPQRSTUV"),
+    ("key9sk-proj-ABCDEFGHIJKLMNOPQRST0123", "ABCDEFGHIJKLMNOPQRST0123"),
+    ("keysk-ant-api03-ABCDEFGHIJKLMNOPQRSTUV", "ABCDEFGHIJKLMNOPQRSTUV"),
+    (f"Authorization: {DIGEST}", "6629fae49393a05397450978507c4ef1"),
+    (f"proxy-authorization: {DIGEST}", "dcd98b7102dd2f0e8b11d0f600bfb0c093"),
+    (json.dumps({"headers": f"Authorization: {DIGEST}"}), "6629fae49393a05397450978507c4ef1"),
+    (json.dumps(json.dumps({"api-key": AZ})), AZ),
+    (json.dumps(json.dumps(json.dumps({"x-api-key": AZ}))), AZ),
+    (json.dumps(json.dumps({"Authorization": "Basic dXNlcjpzZWNyZXRwYXNzd29yZA=="})), "dXNlcjpzZWNyZXRwYXNzd29yZA"),
+    (json.dumps(json.dumps({"Authorization": "Token ghp-0123456789"})), "ghp-0123456789"),
+    (json.dumps({"clientSecret": "cs-unknown-123456789"}), "cs-unknown-123456789"),
+    (json.dumps(json.dumps({"auth": {"accessToken": "tok-unknown-123456789"}})), "tok-unknown-123456789"),
+    (str({"refreshToken": "rt-unknown-123456789", "n": 1}), "rt-unknown-123456789"),
+    (json.dumps({"password": 98765432109}), "98765432109"),
+    (json.dumps({"m": json.dumps({"token": "x-secret-123"})}), "x-secret-123"),  # inside another pair's value
+    (str({"m": str({"token": "x-secret-123"})}), "x-secret-123"),
+    (json.dumps({"set-cookie": "sid=abcdef123456"}), "abcdef123456"),
+])
+def test_glued_digest_double_encoded_and_quoted_pair_secrets_are_removed(text, secret):
+    out = Scrubber([]).record(record({"failure": {"message": f"provider said: {text}"}}))
+    assert secret not in json.dumps(out) and "withheld" not in out and HIDDEN in out["payload"]["failure"]["message"]
+
+
+@pytest.mark.parametrize("text", [
+    "risk-assessment-pipeline-for-the-company", "task-runner-for-everyone-here", "desk-0123456789ab",
+    json.dumps({"max_tokens": 100, "tokens_used": 5, "secretary": "Ánh Nguyễn", "maxTokens": 7, "token_type": "x"}),
+    str({"totalTokens": 12, "promptTokens": 3}), "authorization required", "the api key is configured",
+])
+def test_ordinary_text_is_kept(text):
+    out = Scrubber([]).record(record({"failure": {"message": text}}))
+    assert out["payload"]["failure"]["message"] == text
+
+
+def test_camel_case_secret_keys_and_credential_headers_hide_their_values():
+    out = Scrubber([]).record(record({"result": {"accessToken": "tok-unknown-123456789", "clientSecret": "cs-1",
+                                                 "setCookie": "sid=1", "proxyAuthorization": "Basic x",
+                                                 "maxTokens": 100, "tokens_used": 5, "secretary": "Ánh"}}))
+    assert out["payload"]["result"] == {"accessToken": HIDDEN, "clientSecret": HIDDEN, "setCookie": HIDDEN,
+                                        "proxyAuthorization": HIDDEN, "maxTokens": 100, "tokens_used": 5,
+                                        "secretary": "Ánh"}
+
+
+def test_known_values_are_removed_encoded_and_recased():
+    for text in (f"Basic {base64.b64encode(f'user:{KEY}'.encode()).decode()}", KEY.upper(),
+                 "https://h/?k=" + quote_plus(f"a b/{KEY}")):
+        out = json.dumps(Scrubber([KEY]).record(record({"a": f"x {text} y"})))
+        assert "[redacted]" in out and "withheld" not in out
+
+
 def test_a_scrubbed_value_is_not_scrubbed_again():
     once = Scrubber([]).record(record({"m": "Bearer abcdefgh12345"}))
     assert Scrubber([]).record(once) == once
@@ -83,6 +140,19 @@ def test_a_known_value_is_removed_whole_before_a_shape_splits_it(secret, parts):
 
 def test_many_urls_with_ports_in_one_string_scrub_in_linear_time():
     blob = ",".join(f'"http://h{i}:80{i % 10}/p"' for i in range(50_000))  # about 1 MB, no whitespace
+    start = time.perf_counter()
+    Scrubber([KEY]).record(record({"result": blob}))
+    assert time.perf_counter() - start < 1
+
+
+@pytest.mark.parametrize("blob", [
+    "\\" * 500_000,  # every start of an escaped quote
+    '"token": "x", \\"k\\": \\"' * 40_000,
+    "".join("\\" * i + '"k' + "\\" * i + '": ' + "\\" * i + '"' for i in range(1000)),  # a pair never closed per depth
+    "xsk-" + "a-" * 300_000,
+    "Authorization: Digest \\" * 40_000,
+], ids=["backslashes", "pairs", "depths", "glued sk", "digest"])
+def test_hostile_strings_scrub_in_linear_time(blob):
     start = time.perf_counter()
     Scrubber([KEY]).record(record({"result": blob}))
     assert time.perf_counter() - start < 1

@@ -7,41 +7,79 @@ import re
 from collections.abc import Iterable
 from typing import Any
 
-from opencorp.company.secret_keys import HIDDEN, MIN_KNOWN, check_clean, is_secret_key, scrub_text
+from opencorp.company.secret_keys import HIDDEN, MIN_KNOWN, check_clean, is_secret_key, key_name, scrub_text
 from opencorp.perm.monitor import redactor
 
 log = logging.getLogger(__name__)
 
 HEADER_KEYS = frozenset({"authorization", "proxy_authorization", "cookie", "set_cookie"})
-"""Credential headers, as ``is_secret_key`` normalizes keys: secret keys too."""
+"""Credential headers, as ``key_name`` reads keys: secret keys too."""
 _NOT_HIDDEN = r"(?!\(hidden\))"
-PROVIDER_KEY = re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}")
-"""A provider key's shape (OpenAI's ``sk-…``, Anthropic's ``sk-ant-…``), configured here or not."""
+_QUOTE = r"(?:\\{0,15}[\"'])?"  # a quote, escaped up to 4 times (JSON inside JSON), or none
+_VALUE = r"(?:[^\s\"',}\\]|\\(?![\\\"']))+"  # up to a quote, escaped or not
+PROVIDER_KEY = re.compile(r"(?:(?<![A-Za-z0-9])|(?=sk-[A-Za-z0-9_-]{0,64}?[A-Za-z0-9]{16}))sk-(?:ant-)?[A-Za-z0-9_-]{16,}")
+"""A provider key's shape (OpenAI's ``sk-…``, Anthropic's ``sk-ant-…``), configured here or not. Glued after a letter
+or digit, it needs a run of 16 letters and digits, so words like ``risk-assessment-…`` stay."""
 BEARER = re.compile(rf"\b(Bearer)\s+{_NOT_HIDDEN}\S{{8,}}", re.IGNORECASE)
-AUTH_HEADER = re.compile(rf"\b(authorization[\"']?\s*[:=]\s*[\"']?(?:Bearer|Basic|Token))\s+{_NOT_HIDDEN}[^\s\"',}}]+",
+AUTH_HEADER = re.compile(rf"\b(authorization{_QUOTE}\s*[:=]\s*{_QUOTE}(?:Bearer|Basic|Token))\s+{_NOT_HIDDEN}{_VALUE}",
                          re.IGNORECASE)
 """An ``Authorization: Basic …`` or ``Token …`` header value (Proxy-Authorization too), as text."""
-API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)([\"']?\s*[:=]\s*[\"']?){_NOT_HIDDEN}[^\s\"',}}]+",
-                            re.IGNORECASE)
-"""An ``api-key: …`` header value, which provider errors echo, as text, JSON or a Python repr."""
+AUTH_DIGEST = re.compile(rf"\b(authorization{_QUOTE}\s*[:=]\s*{_QUOTE}Digest)\s+{_NOT_HIDDEN}(?:[^\r\n\\]|\\(?![rn]))+",
+                         re.IGNORECASE)
+"""An ``Authorization: Digest …`` header value, whose parameters hold spaces and quotes: up to the end of its line."""
+API_KEY_HEADER = re.compile(rf"\b((?:x-)?api[-_]key)({_QUOTE}\s*[:=]\s*{_QUOTE}){_NOT_HIDDEN}{_VALUE}", re.IGNORECASE)
+"""An ``api-key: …`` header value, which provider errors echo, as text, JSON (escaped too) or a Python repr."""
+QUOTED_PAIR = re.compile(r"""(?<!\\)(?P<bs>\\{0,15})(?P<q>["'])(?P<key>[A-Za-z0-9_][A-Za-z0-9_ .-]{0,63})(?P=bs)(?P=q)\s*:\s*"""
+                         r"""(?=(?P=bs)(?P<vq>["'])(?P<value>.*?)(?<!\\)(?P=bs)(?P=vq)|(?P<bare>-?[0-9][\w.+-]*))""", re.DOTALL)
+"""A ``"key": value`` pair of JSON (escaped too) or a Python repr inside a string; ``secret_key`` decides whether its
+value is hidden. The value is read ahead, not consumed, so a pair inside another pair's value is found too. Quotes
+escaped up to 4 times count, so the search stays linear: each depth's last opening quote is the only one read to the
+end."""
 WITHHELD = "a secret couldn't be removed"
 _KIND = re.compile(r"[a-z_]{1,64}")
 
 
 def secret_key(key: object) -> bool:
     """Whether ``key`` names a secret: #247's rule, or a credential header such as Authorization or Cookie."""
-    return is_secret_key(key) or (isinstance(key, str)
-                                  and key.lower().replace("-", "_").replace(" ", "_") in HEADER_KEYS)
+    return is_secret_key(key) or (isinstance(key, str) and key_name(key) in HEADER_KEYS)
+
+
+def _secret_values(text: str) -> list[tuple[int, int]]:
+    """Where the values of secret-named quoted pairs in ``text`` are that aren't ``(hidden)`` yet, outermost first; a
+    pair inside one of them is left out, since it goes with it."""
+    found: list[tuple[int, int]] = []
+    for m in QUOTED_PAIR.finditer(text):
+        group = "value" if m["vq"] is not None else "bare"
+        if (found and m.start() < found[-1][1]) or not secret_key(m["key"]) or m[group] == HIDDEN:
+            continue
+        found.append(m.span(group))
+    return found
+
+
+def _hide_pairs(text: str) -> str:
+    out, at = [], 0
+    for start, end in _secret_values(text):
+        out += [text[at:start], HIDDEN]
+        at = end
+    return "".join(out) + text[at:]
 
 
 def scrub_string(text: str) -> str:
     """``text`` with every secret of a known shape replaced by ``(hidden)``: #247's patterns and URL passwords,
-    provider keys, bearer tokens, Authorization and api-key header values. No I/O: safe anywhere, run reasons
-    included."""
+    provider keys, bearer tokens, Authorization and api-key header values, and the values of secret-named pairs of
+    JSON or a repr inside it. No I/O: safe anywhere, run reasons included."""
     text = PROVIDER_KEY.sub(HIDDEN, scrub_text(text))
     text = BEARER.sub(lambda m: f"{m[1]} {HIDDEN}", text)
     text = AUTH_HEADER.sub(lambda m: f"{m[1]} {HIDDEN}", text)
-    return API_KEY_HEADER.sub(lambda m: f"{m[1]}{m[2]}{HIDDEN}", text)
+    text = AUTH_DIGEST.sub(lambda m: f"{m[1]} {HIDDEN}", text)
+    text = API_KEY_HEADER.sub(lambda m: f"{m[1]}{m[2]}{HIDDEN}", text)
+    return _hide_pairs(text)
+
+
+def _has_shape(text: str) -> bool:
+    """Whether ``text`` still holds a secret shape ``scrub_string`` removes."""
+    return (any(p.search(text) for p in (PROVIDER_KEY, BEARER, AUTH_HEADER, AUTH_DIGEST, API_KEY_HEADER))
+            or bool(_secret_values(text)))
 
 
 class Scrubber:
@@ -79,8 +117,7 @@ class Scrubber:
 
     def clean(self, text: str) -> bool:
         """Whether ``text`` holds no secret shape and no known value, plain or escaped."""
-        return (check_clean(text, self.known) and not PROVIDER_KEY.search(text) and not BEARER.search(text)
-                and not AUTH_HEADER.search(text) and not API_KEY_HEADER.search(text) and self._redact(text) == text)
+        return check_clean(text, self.known) and not _has_shape(text) and self._redact(text) == text
 
     def record(self, record: dict[str, Any]) -> dict[str, Any]:
         """``record`` scrubbed (secret-named keys, then known values in plain, JSON, repr and URL forms, then shapes)
