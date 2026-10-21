@@ -1,7 +1,7 @@
 """Run Logs on a real office: a chat and its debrief are listed and nested, the chat's page has its turn's nodes, and
-neither its records nor its download hold a configured connection key."""
+its records and download are shown as stored, a connection key the reply echoes included."""
 
-import json
+from pathlib import Path
 
 import pytest
 
@@ -11,7 +11,7 @@ from tests.profile.conftest import debrief_reply
 from .test_hq import URL, local, wait_listening, web, web_office  # noqa: F401
 
 pytestmark = pytest.mark.timeout(240)
-KEY = "conn-key-e2e-7c1d2b9a4f60"  # no provider shape: only the known-values step can remove it
+KEY = "conn-key-e2e-7c1d2b9a4f60"
 
 
 def test_a_chat_and_its_debrief_in_run_logs(web_office, workspace, tmp_path, local):  # noqa: F811
@@ -39,6 +39,7 @@ def test_a_chat_and_its_debrief_in_run_logs(web_office, workspace, tmp_path, loc
         assert any(n["node_id"].endswith("/reply") and n["status"] == "succeeded" for n in nodes)
         assert all(n["kind"] is None for n in nodes)  # until yian#943
         events = browser.get(f"/api/runs/{top['run_id']}/events").json()["events"]
-        assert KEY not in json.dumps(events)
+        assert any(f"noted {KEY}" in str(e["payload"]) for e in events)
         log = browser.get(f"/api/runs/{top['run_id']}/log")
-        assert log.status_code == 200 and KEY not in log.text and "[redacted]" in log.text
+        stored = Path(office.paths.run_dir(sid)) / "runs" / f"{top['run_id']}.jsonl"
+        assert log.status_code == 200 and log.content == stored.read_bytes()

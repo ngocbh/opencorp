@@ -165,13 +165,6 @@ def redact(value: Any, keys: Collection[str], values: Iterable[str]) -> Any:
     return _scrub(value, keys, _needles(values))
 
 
-def redactor(values: Iterable[str]) -> Callable[[Any], Any]:
-    """``redact(value, (), values)`` as a function with its needles built once, for scrubbing many values with one set
-    of secrets (every record of a run log)."""
-    needles = _needles(values)
-    return lambda value: _scrub(value, (), needles)
-
-
 _FOLD = str.maketrans("-_", "+/")
 """Folds the URL-safe base64 alphabet into the standard one, for the quick tests."""
 _WRAPPED = re.compile(r"(?<![A-Za-z0-9+/_-])(?:[A-Za-z0-9+/_-]{76}(?:\r?\n|(?:\\r)?\\n))+[A-Za-z0-9+/_=-]{0,76}")

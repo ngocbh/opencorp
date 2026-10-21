@@ -1,27 +1,23 @@
 """The Run Logs reads: the list of runs (the store and memory only) and, per run, its page."""
 
 import asyncio
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from opencorp.protocol.models import (RunDetail, RunDivider, RunEvent, RunEventPage, RunNode, RunNodePage, RunPage,
                                       RunSummary, RunUsage, Session)
-from opencorp.runs.known import KnownValues, SecretsUnavailable
 from opencorp.runs.outcomes import DEBRIEF
-from opencorp.runs.reader import (ERROR_CHARS, RunLogReader, UnreadableLog, node_page, read_event, read_events,
-                                  scrubbed_lines)
-from opencorp.runs.records import Live, Summaries, shown_reason
-from opencorp.runs.scrub import Scrubber, scrub_string
-from opencorp.store import RunRow
+from opencorp.runs.reader import ERROR_CHARS, RunLogReader, UnreadableLog, log_lines, node_page, read_event, read_events
+from opencorp.runs.records import Live, Summaries
+from opencorp.store import RunRow, cut_reason
 
 PAGE = 50
 BATCH = 100
 """How many rows a filtered list reads at a time."""
 SCAN_CAP = 1_000
 """The most runs one list request looks at to fill a filtered page; ``next`` resumes after them."""
-REASON_HIDDEN = "hidden: couldn't load the secrets to remove"
 OPEN_STATUSES = frozenset({"running", "waiting", "idle"})
 """The statuses of a run with no outcome only (an interrupted one may have either)."""
 INDEX_WAIT_S = 2.0
@@ -79,26 +75,11 @@ class RunFilter:
 
 
 class RunLogs:
-    """The Run Logs reads, on ``office.extras["runs"]``. ``known`` gives the known secret values every reason, node
-    error and record loses when served; without it (tests), only secret shapes are removed."""
+    """The Run Logs reads, on ``office.extras["runs"]``. Logs and reasons are shown as stored, cut only for length."""
 
-    def __init__(self, office: Any, *, known: KnownValues | None = None) -> None:
-        self.office, self.store, self.known = office, office.store, known
+    def __init__(self, office: Any) -> None:
+        self.office, self.store = office, office.store
         self.reader = RunLogReader()
-
-    async def scrubber(self) -> Scrubber:
-        """A scrub with the known values of now; SecretsUnavailable if they can't be read."""
-        return Scrubber(()) if self.known is None else await self.known.scrubber()
-
-    async def _reasons(self) -> Callable[[str], str]:
-        """How reasons are cleaned to be shown: ``shown_reason`` with the full scrub (an earlier cut's partial word
-        dropped, the scrub, then the cut to REASON_CHARS, so no secret shows in part); REASON_HIDDEN for each when the
-        known values can't be read, so the list and a run's header still answer."""
-        try:
-            scrubber = await self.scrubber()
-        except SecretsUnavailable:
-            return lambda text: REASON_HIDDEN
-        return lambda text: shown_reason(text, scrubber.text)
 
     def live(self) -> Live:
         """What the harness and learning hold now."""
@@ -124,10 +105,10 @@ class RunLogs:
             raise LookupError(f"no run {run_id}")
         return row, session
 
-    def _with_family(self, row: RunRow, clean: Callable[[str], str]) -> tuple[RunSummary, RunSummary | None]:
-        """The run's summary with its children (the newest CHILDREN_SHOWN), and its parent's, each reason through
-        ``clean``; read as ``_page`` reads (memory, one store snapshot, memory again)."""
-        summaries = Summaries(self.store, self.live(), fresh=self.live, clean=clean)
+    def _with_family(self, row: RunRow) -> tuple[RunSummary, RunSummary | None]:
+        """The run's summary with its children (the newest CHILDREN_SHOWN), and its parent's; read as ``_page`` reads
+        (memory, one store snapshot, memory again)."""
+        summaries = Summaries(self.store, self.live(), fresh=self.live)
         with self.store.snapshot():
             run = summaries.build([row], children={row.run_id: self.store.run_children([row.run_id])})[row.run_id]
             parent_row = self.store.get_run(row.parent_run_id) if row.parent_run_id else None
@@ -143,11 +124,11 @@ class RunLogs:
         return {"bytes_done": done, "bytes_total": total}
 
     async def detail(self, run_id: str) -> RunDetail:
-        """A run page's header: the run with its parent and children (reasons fully scrubbed), usage (harness runs
+        """A run page's header: the run with its parent and children, usage (harness runs
         only), what its log's first record says, and whether the log can be read; LookupError if there is no such
         run. Waits up to INDEX_WAIT_S for a first index build."""
         row, session = await asyncio.to_thread(self._one, run_id)
-        run, parent = await asyncio.to_thread(self._with_family, row, await self._reasons())
+        run, parent = await asyncio.to_thread(self._with_family, row)
         usage = None
         if row.flow != DEBRIEF:  # the office records usage only in the chat harness (_charge)
             tokens_in, tokens_out, usd = await asyncio.to_thread(self.store.run_usage, row.run_id)
@@ -172,7 +153,7 @@ class RunLogs:
             return {"log_state": "indexing", **progress, "log_message":
                     f"reading the log: {progress['bytes_done'] >> 20} of {progress['bytes_total'] >> 20} MB"}
         return {"log_state": "ok", "flow_fingerprint": index.fingerprint, "learnable": index.learnable,
-                "models": {static: scrub_string(model) for static, model in index.models.items()}}
+                "models": dict(index.models)}
 
     async def _log(self, run_id: str) -> tuple[RunRow, Path]:
         row, _ = await asyncio.to_thread(self._one, run_id)
@@ -182,51 +163,47 @@ class RunLogs:
         return row, path
 
     async def nodes(self, run_id: str, *, before: int | None, limit: int) -> RunNodePage:
-        """Node attempts that started before seq ``before``, newest first, with scrubbed errors; ``indexing`` while a
-        first index build runs past INDEX_WAIT_S. ``kind`` stays null until Yian lists a flow's nodes (yian#943)."""
+        """Node attempts that started before seq ``before``, newest first, errors cut to ERROR_CHARS; ``indexing``
+        while a first index build runs past INDEX_WAIT_S. ``kind`` stays null until Yian lists a flow's nodes
+        (yian#943)."""
         _, path = await self._log(run_id)
         index = await self.reader.ready(path, wait=INDEX_WAIT_S)
         if index is None:
             return RunNodePage(nodes=[], indexing=True, **self._progress(path))
-        scrubber = await self.scrubber()
         page = node_page(index, before=before, limit=limit)
         return RunNodePage(
             nodes=[RunNode(seq=a.seq, end_seq=a.end_seq, node_id=a.node_id, status=a.status, handle=a.handle,
-                           error=shown_reason(a.error, scrubber.text, ERROR_CHARS) if a.error else None)
+                           error=cut_reason(a.error, ERROR_CHARS) if a.error else None)
                    for a in page.nodes],
             dividers=[RunDivider(seq=seq, retried=retried) for seq, retried in page.dividers],
             next_before=page.next_before, dropped=page.dropped)
 
     async def events(self, run_id: str, *, after: int | None, limit: int) -> RunEventPage:
-        """Records after seq ``after``, scrubbed, evidence left out; ``indexing`` while a first build runs."""
+        """Records after seq ``after``, evidence left out; ``indexing`` while a first build runs."""
         _, path = await self._log(run_id)
         index = await self.reader.ready(path, wait=INDEX_WAIT_S)
         if index is None:
             return RunEventPage(events=[], indexing=True, **self._progress(path))
-        scrubber = await self.scrubber()
-        return await asyncio.to_thread(read_events, path, index, after=after, limit=limit, scrub=scrubber.record)
+        return await asyncio.to_thread(read_events, path, index, after=after, limit=limit)
 
     async def event(self, run_id: str, seq: int) -> RunEvent:
-        """The record with ``seq``, scrubbed, evidence included; LookupError if there is none, Indexing while a first
+        """The record with ``seq``, evidence included; LookupError if there is none, Indexing while a first
         build runs."""
         _, path = await self._log(run_id)
         index = await self.reader.ready(path, wait=INDEX_WAIT_S)
         if index is None:
             raise Indexing(f"run {run_id}'s log is still being read")
-        scrubber = await self.scrubber()
-        found = await asyncio.to_thread(read_event, path, index, seq, scrubber.record)
+        found = await asyncio.to_thread(read_event, path, index, seq)
         if found is None:
             raise LookupError(f"run {run_id} has no record {seq}")
         return found
 
     async def log_lines(self, run_id: str) -> Iterator[bytes]:
-        """The whole log as it is now, each line scrubbed as it streams. It needs no index, and the scrub doesn't
-        depend on the schema, so a log this office can't read still downloads. The log is opened before this returns,
-        so one removed meanwhile is NoLog, not a cut-off download."""
+        """The whole log as it is now, as stored. It needs no index, so a log this office can't read still downloads.
+        The log is opened before this returns, so one removed meanwhile is NoLog, not a cut-off download."""
         _, path = await self._log(run_id)
-        scrubber = await self.scrubber()
         try:
-            return scrubbed_lines(path, scrubber.line)
+            return log_lines(path)
         except FileNotFoundError:
             raise NoLog(f"run {run_id} has no log") from None
 
@@ -234,10 +211,9 @@ class RunLogs:
                    q: str | None = None, since: str | None = None, until: str | None = None,
                    recent: str | None = None, before: str | None = None, limit: int = PAGE) -> RunPage:
         """Top-level runs after run ``before`` (newest first) that the filters show, at most ``limit``: a run shows
-        when it or a run it started matches. Each carries how many runs it started, not the runs; reasons are
-        scrubbed with the known values of now."""
+        when it or a run it started matches. Each carries how many runs it started, not the runs."""
         wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until, recent)
-        return await asyncio.to_thread(self._page, wanted, None, before, limit, await self._reasons())
+        return await asyncio.to_thread(self._page, wanted, None, before, limit)
 
     async def children(self, parent: str, *, flow: str | None = None, person: str | None = None,
                        status: Iterable[str] = (), q: str | None = None, since: str | None = None,
@@ -246,10 +222,9 @@ class RunLogs:
         """The runs started from run ``parent`` that match the filters, paged as ``page`` is; LookupError if
         ``parent`` has no row."""
         wanted = RunFilter(flow, person, frozenset(status), q.strip() if q else None, since, until, recent)
-        return await asyncio.to_thread(self._page, wanted, parent, before, limit, await self._reasons())
+        return await asyncio.to_thread(self._page, wanted, parent, before, limit)
 
-    def _page(self, wanted: RunFilter, parent: str | None, before: str | None, limit: int,
-              clean: Callable[[str], str]) -> RunPage:
+    def _page(self, wanted: RunFilter, parent: str | None, before: str | None, limit: int) -> RunPage:
         """A page of top-level runs, or of ``parent``'s children, from the store and memory (blocking).
 
         The store pages rows in the launch range. Other filters are applied to summaries built a batch of rows at a
@@ -258,7 +233,7 @@ class RunLogs:
         Memory is read first, then every store read is one snapshot, then memory again per batch (``Summaries``): a
         run that ends or starts while the page is built never reads as interrupted.
         """
-        summaries = Summaries(self.store, self.live(), fresh=self.live, clean=clean)
+        summaries = Summaries(self.store, self.live(), fresh=self.live)
         with self.store.snapshot():
             if parent is not None and self.store.get_run(parent) is None:
                 raise LookupError(parent)

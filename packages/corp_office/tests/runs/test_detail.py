@@ -1,8 +1,6 @@
-"""One run's page from its real Yian log: the header, log states, nodes, records and the download, all scrubbed."""
+"""One run's page from its real Yian log: the header, log states, nodes, records and the download, as stored."""
 
-import base64
 import builtins
-import json
 import threading
 
 import pytest
@@ -10,22 +8,20 @@ import pytest
 from opencorp.protocol import now
 from opencorp.runs import reader as reader_mod
 from opencorp.runs import service as service_mod
-from opencorp.runs.known import KnownValues, SecretsUnavailable
 from opencorp.runs.reader import RunLogReader, UnreadableLog, UnsupportedSchema
 from opencorp.runs.service import Indexing, NoLog, RunLogs
 from opencorp.store import RunRow, new_id
 from opencorp.testing.fake_llm import LLM_CONFIG
 from tests.chat.conftest import status, texts, wait_for
-from tests.runs.logs import failed, line, run_started, started
+from tests.runs.logs import line
 
-KEY = "conn-key-5f3a9c1e7b2d4a60"  # no provider shape: only the known-values step can catch it
+KEY = "conn-key-5f3a9c1e7b2d4a60"
 
 
 def run_logs(harness):
     """Run Logs over the test harness's office, as build_office wires it."""
     harness.office.extras = {"harness": harness}
-    return RunLogs(harness.office, known=KnownValues(connections=harness.connections,
-                                                     secrets=harness.monitor.secrets, git=harness.git))
+    return RunLogs(harness.office)
 
 
 def chat(harness, fake_llm, workspace, reply="Hello."):
@@ -111,15 +107,15 @@ async def test_a_first_read_of_a_large_log_answers_indexing(harness, fake_llm, w
     assert (await runs.detail(run_id)).log_state == "ok"
 
 
-async def test_reasons_in_the_header_parent_and_children_lose_known_values(make_harness, fake_llm, workspace):
+async def test_reasons_in_the_header_parent_and_children_are_shown_as_stored(make_harness, fake_llm, workspace):
     harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
     sid, run_id = chat(harness, fake_llm, workspace)
     kid = a_row(harness, sid, parent_run_id=run_id)
     harness.store.end_run(kid.run_id, "failed", reason=f"401 for {KEY}")  # stored as given
     runs = run_logs(harness)
     head, child = await runs.detail(run_id), await runs.detail(kid.run_id)
-    assert head.run.children[0].reason == "401 for [redacted]"
-    assert child.run.reason == "401 for [redacted]" and child.parent.run_id == run_id
+    assert head.run.children[0].reason == f"401 for {KEY}"
+    assert child.run.reason == f"401 for {KEY}" and child.parent.run_id == run_id
 
 
 async def test_the_list_never_opens_a_log(harness, fake_llm, workspace, monkeypatch):
@@ -179,29 +175,15 @@ async def test_records_page_with_evidence_left_out_and_one_record_has_it(harness
         await runs.event(run_id, 10_000)
 
 
-async def test_a_connection_key_a_reply_echoes_is_removed_everywhere(make_harness, fake_llm, workspace):
+async def test_a_connection_key_a_reply_echoes_is_shown_as_stored(make_harness, fake_llm, workspace):
     harness = make_harness(llm_config={**LLM_CONFIG, "api_key": KEY})
     _, run_id = chat(harness, fake_llm, workspace, reply=f"the key is {KEY}")
     runs = run_logs(harness)
     page = await runs.events(run_id, after=None, limit=500)
-    text = "".join(e.model_dump_json() for e in page.events)
-    assert KEY not in text and "[redacted]" in text
     done = next(e for e in page.events if e.kind == "node_succeeded" and (e.node_id or "").endswith("/reply"))
-    assert KEY not in (await runs.event(run_id, done.seq)).model_dump_json()
-    assert KEY.encode() not in b"".join(await runs.log_lines(run_id))
-
-
-async def test_a_scrub_whose_secrets_cant_be_read_fails_the_request(harness, fake_llm, workspace):
-    _, run_id = chat(harness, fake_llm, workspace)
-    runs = run_logs(harness)
-
-    async def unavailable():
-        raise SecretsUnavailable("couldn't load the secrets to remove in time")
-
-    runs.known.scrubber = unavailable
-    with pytest.raises(SecretsUnavailable):
-        await runs.events(run_id, after=None, limit=10)
-    assert (await runs.detail(run_id)).log_state == "ok"  # the header hides reasons instead
+    assert done.payload["value"]["output"] == f"the key is {KEY}"
+    assert (await runs.event(run_id, done.seq)).payload["value"]["output"] == f"the key is {KEY}"
+    assert b"".join(await runs.log_lines(run_id)) == runs.log_path(harness.store.get_run(run_id)).read_bytes()
 
 
 async def test_nodes_and_records_answer_indexing_and_one_record_says_so(harness, fake_llm, workspace, monkeypatch):
@@ -228,26 +210,3 @@ async def test_a_header_then_its_timeline_read_the_log_whole_once(harness, fake_
     assert (await runs.nodes(run_id, before=None, limit=1000)).nodes
     assert (await runs.events(run_id, after=None, limit=10)).events
     assert starts.count(0) == 1
-
-
-def jwt(pad=1500):
-    """A JWT-sized token, longer than ERROR_KEPT, as a subscription sign-in holds."""
-    head = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).decode().rstrip("=")
-    body = base64.urlsafe_b64encode(json.dumps({"sub": "user-123", "pad": "p" * pad}).encode()).decode().rstrip("=")
-    return f"{head}.{body}.SIGNATUREsignatureSIGNATURE0123456789abcdef"
-
-
-async def test_a_known_token_longer_than_the_kept_error_never_shows(make_harness, workspace):
-    token = jwt()
-    assert len(token) > reader_mod.ERROR_KEPT
-    harness = make_harness(llm_config={**LLM_CONFIG, "api_key": token})
-    runs = run_logs(harness)
-    row = a_row(harness, harness.start_session("minh", str(workspace)).id)
-    harness.store.end_run(row.run_id, "failed", reason=f"401 for token {token}", failed_node="chat")
-    path = runs.log_path(row)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(run_started(0) + started(1, "chat") + failed(2, "chat", f"401 for token {token}"))
-    (node,) = (await runs.nodes(row.run_id, before=None, limit=10)).nodes
-    assert token[:12] not in node.error and node.error.startswith("401 for token ")
-    assert token[:12] not in (await runs.detail(row.run_id)).run.reason
-    assert token[:12] not in (await runs.event(row.run_id, 2)).model_dump_json()

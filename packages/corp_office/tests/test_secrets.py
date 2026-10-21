@@ -227,16 +227,6 @@ def test_get_from_a_missing_root_is_a_key_error(tmp_path):
         SecretStore(tmp_path / "missing").get("token")
 
 
-def test_names_lists_what_could_be_a_secret_sorted(tmp_path):
-    store = SecretStore(tmp_path / "secrets")
-    assert SecretStore(tmp_path / "missing").names() == []
-    store.set("b_token", "value-1234")
-    store.set("a.key", "value-5678")
-    (store.root / ".set-0123").write_text("a temporary file")
-    (store.root / "Bad Name!").write_text("not a secret name")
-    assert store.names() == ["a.key", "b_token"]
-
-
 def test_read_private_refuses_a_fifo_without_waiting_for_a_writer(tmp_path):
     os.mkfifo(tmp_path / "fifo", 0o600)
     got = []
@@ -258,10 +248,3 @@ def _raises(call):
         return type(exc)
     return None
 
-
-def test_names_refuses_a_loose_root(tmp_path):
-    store = SecretStore(tmp_path / "secrets")
-    store.set("token", "value-1234")
-    store.root.chmod(0o755)
-    with pytest.raises(PermissionError):
-        store.names()

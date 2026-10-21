@@ -18,9 +18,6 @@ CHILDREN_SHOWN = 200
 """The most children a run's page shows with it (the newest)."""
 SIDE_CHAT = FLOWS["side"]
 _RUNNING = ("starting", "busy", "ending")
-_CUT_TAIL = re.compile(r"\S*…\Z")
-"""The word a cut before the reason was stored left in part, with the cut's ellipsis: a secret cut short there can't
-be matched by the scrub."""
 _HANDLE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$")
 WARNED_CAP = 10_000
 _warned: set[str] = set()  # runs already warned about; cleared at WARNED_CAP so it stays small
@@ -80,12 +77,6 @@ def current_nodes(status: str, run_id: str, open_questions: list[Question], live
     return [], False, False
 
 
-def shown_reason(reason: str, scrub: Callable[[str], str] = lambda text: text, limit: int = REASON_CHARS) -> str:
-    """``reason`` (or a node's error) as shown: the partial word before an earlier cut's "…" dropped, then ``scrub``,
-    then the cut to ``limit`` (after the scrub, so it never splits a secret the scrub would find)."""
-    return cut_reason(scrub(_CUT_TAIL.sub("…", reason)), limit)
-
-
 def participants(driver: str, person: str, others: Iterable[str | None]) -> list[str]:
     """The employee, then everyone else in order, never the driver, each once."""
     out: list[str] = []
@@ -100,13 +91,11 @@ class Summaries:
 
     ``live`` is read before the store; ``fresh`` (when given) reads memory again after the store reads of each build,
     and the two are merged. A run that ends between the reads is live in the first and still open in the store; one
-    that starts between them is live in the second. ``clean`` makes a stored reason one to show (by default,
-    ``shown_reason`` with no scrub).
+    that starts between them is live in the second. A stored reason is shown cut to REASON_CHARS.
     """
 
-    def __init__(self, store: Store, live: Live, *, fresh: Callable[[], Live] | None = None,
-                 clean: Callable[[str], str] = shown_reason) -> None:
-        self.store, self.live, self.fresh, self.clean = store, live, fresh, clean
+    def __init__(self, store: Store, live: Live, *, fresh: Callable[[], Live] | None = None) -> None:
+        self.store, self.live, self.fresh = store, live, fresh
 
     def build(self, rows: list[RunRow], *, children: Mapping[str, list[RunRow]] | None = None
               ) -> dict[str, RunSummary]:
@@ -144,7 +133,7 @@ class Summaries:
             run_id=row.run_id, session_id=row.session_id, flow=row.flow, flow_path=row.flow_path,
             person=session.person, driver=row.driver,
             participants=participants(row.driver, session.person, [*answerers, *openers]),
-            parent_run_id=row.parent_run_id, status=status, reason=self.clean(reason) if reason else None,
+            parent_run_id=row.parent_run_id, status=status, reason=cut_reason(reason, REASON_CHARS) if reason else None,
             failed_node=row.failed_node,
             current_nodes=nodes, asking=asking, held=held, codex=row.flow == DEBRIEF and session.harness == "codex",
             launched_at=row.launched_at, ended_at=row.ended_at, replaces=neighbours[0], replaced_by=neighbours[1],

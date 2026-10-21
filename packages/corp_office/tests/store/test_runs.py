@@ -43,7 +43,7 @@ def test_an_outcome_is_written_once_and_its_reason_capped(store):  # noqa: F811
     got = store.get_run(row.run_id)
     assert (got.outcome, len(got.reason), got.failed_node, got.ended_at) == ("failed", 2000, "chat#0/reply", T)
     assert got.reason.endswith("…")
-    # Kept whole well past what's shown: a secret across the shown length is still whole when the reason is scrubbed.
+    # Kept well past what's shown.
     other = store.add_run(launch(s))
     store.end_run(other.run_id, "failed", reason="x" * 300)
     assert store.get_run(other.run_id).reason == "x" * 300

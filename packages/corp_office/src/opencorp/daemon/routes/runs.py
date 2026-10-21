@@ -1,5 +1,5 @@
 """Run Logs routes: the list of runs, one run's children, and one run's page (its header, node attempts, records, one
-record and its scrubbed log). Read-only, on the office socket and HQ's /api allowlist."""
+record and its log). Read-only, on the office socket and HQ's /api allowlist."""
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -10,7 +10,6 @@ from starlette.routing import Route
 
 from opencorp.daemon.http import HTTPError, get_office, ok
 from opencorp.daemon.routes.costs import utc_timestamp
-from opencorp.runs.known import SecretsUnavailable
 from opencorp.runs.reader import UnreadableLog
 from opencorp.runs.service import PAGE, Indexing, NoLog, RunLogs
 
@@ -85,8 +84,6 @@ async def _run_call(fn: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
         raise HTTPError(404, "not_found", str(exc).strip("'")) from None
     except UnreadableLog as exc:  # an unknown or retired schema, a line that isn't a record, seqs out of order
         raise HTTPError(409, "unsupported_schema", str(exc)) from None
-    except SecretsUnavailable:
-        raise HTTPError(503, "secrets_unavailable", "couldn't load the secrets to remove; try again") from None
     except Indexing:
         raise HTTPError(503, "indexing", "the log is still being read; try again") from None
 
@@ -105,7 +102,7 @@ async def run_nodes(request: Request) -> JSONResponse:
 
 
 async def run_events(request: Request) -> JSONResponse:
-    """A run's records after seq ``after``, scrubbed, evidence left out: at most ``limit`` (500) or 256 KiB."""
+    """A run's records after seq ``after``, evidence left out: at most ``limit`` (500) or 256 KiB."""
     q = request.query_params
     return ok(await _run_call(run_logs(request).events, request.path_params["id"],
                               after=int_param(q.get("after"), "after", 0, SEQ_MAX, None),
@@ -113,13 +110,13 @@ async def run_events(request: Request) -> JSONResponse:
 
 
 async def run_event(request: Request) -> JSONResponse:
-    """One record of a run by seq, scrubbed, evidence included."""
+    """One record of a run by seq, evidence included."""
     seq = int_param(request.path_params["seq"], "seq", 0, SEQ_MAX, 0)
     return ok(await _run_call(run_logs(request).event, request.path_params["id"], seq))
 
 
 async def run_log(request: Request) -> StreamingResponse:
-    """A run's whole log, scrubbed record by record as it streams, as a JSONL attachment no cache keeps."""
+    """A run's whole log as stored, as a JSONL attachment no cache keeps."""
     run_id = request.path_params["id"]
     lines = await _run_call(run_logs(request).log_lines, run_id)
     # run_id is a stored run's id (the lookup above found it), so it is safe in the header.
