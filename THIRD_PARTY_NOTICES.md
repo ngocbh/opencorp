@@ -74,8 +74,11 @@ we don't use them.
     `src/styles/github.css` and `src/styles/github-dark.css` (theme author github.com, maintainer @Hirse);
   - the scope-to-class rule (`title.function` is `hljs-title function_`), ported from `scopeToCSSClass` in
     `src/lib/html_renderer.js`.
-- **Upstream:** https://github.com/highlightjs/highlight.js, release `11.12.0` (the npm package's `styles/` and
-  `lib/core.js`).
+- **Upstream:** https://github.com/highlightjs/highlight.js, release `11.12.0`, commit `f7f7d38`
+  (`f7f7d3803bd898e37c017ffb881317f0cde04a70`); the npm package's `styles/` and `lib/core.js` are built from it.
+- **Origin of the colors:** the themes say their colors come from GitHub's CSS, on top of Primer's
+  https://github.com/primer/github-syntax-light and https://github.com/primer/github-syntax-dark (both MIT). We copied
+  highlight.js's theme files, not Primer's.
 - **Ours:** `packages/app/src/company/source.css`, `packages/app/src/company/highlight.ts`.
 - **License:**
 
