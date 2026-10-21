@@ -32,6 +32,7 @@ import { costLabel, Sidebar } from "./sidebar"
 import { filetype } from "../../util/filetype"
 import { errorMessage } from "../../util/error"
 import { Toast, useToast } from "../../ui/toast"
+import { useCostCap } from "../../component/cost-cap"
 import { useKV } from "../../context/kv.tsx"
 import stripAnsi from "strip-ansi"
 import { usePromptRef } from "../../context/prompt"
@@ -205,6 +206,7 @@ export function Session() {
 
   const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
   const toast = useToast()
+  const costCap = useCostCap()
   const keymap = useOpenCorpKeymap()
 
   createEffect(
@@ -300,6 +302,13 @@ export function Session() {
               : toast.show({ message: errorMessage(error), variant: "error", duration: 5000 }),
           )
       },
+    },
+    {
+      title: "Raise the cost cap",
+      value: "session.cost_cap",
+      category: "Session",
+      slash: { name: "cost-cap" },
+      run: () => costCap.ask(route.sessionID),
     },
     {
       title: sidebarVisible() ? "Hide sidebar" : "Show sidebar",
