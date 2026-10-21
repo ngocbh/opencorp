@@ -74,14 +74,14 @@ def test_the_node_table_has_every_attempt_with_its_outcome(tmp_path):
     assert [(a.node_id, a.status, a.handle, a.end_seq) for a in index.nodes] == [
         ("chat", "expanded", None, 2), ("chat#0/route", "routed", "reply", 4), ("chat#0/reply", "failed", None, 6),
         ("m#0/a", "succeeded", None, 9), ("m#1/a", "open", None, None)]
-    # The whole error (up to FIELD_CHARS) is kept: cut before the scrub, a known value's tail would show.
+    # The whole error (up to ERROR_KEPT) is kept: cut before the scrub, a known value's tail would show.
     assert index.nodes[2].error == "boom " * 100 and list(index.open) == ["m#1/a"]
 
 
-def test_a_node_error_is_kept_up_to_field_chars(tmp_path):
+def test_a_node_error_is_kept_up_to_error_kept(tmp_path):
     path = tmp_path / "r.jsonl"
-    path.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x" * (reader_mod.FIELD_CHARS + 50)))
-    assert len(refresh(path, None).nodes[0].error) == reader_mod.FIELD_CHARS
+    path.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x" * 5000))
+    assert reader_mod.ERROR_KEPT == 1 << 10 and len(refresh(path, None).nodes[0].error) == reader_mod.ERROR_KEPT
 
 
 def test_a_resume_restarts_the_open_starts_and_only_the_latest_start_is_open(tmp_path):
@@ -366,9 +366,9 @@ def test_a_log_unreadable_twice_in_a_row_says_so(tmp_path, monkeypatch):
 def test_the_cost_counts_the_ids_errors_and_retried_ids_it_holds(tmp_path, monkeypatch):
     short, long = tmp_path / "s.jsonl", tmp_path / "l.jsonl"
     short.write_bytes(run_started(0) + started(1, "a") + failed(2, "a", "x") + resumed(3, ["b"]))
-    long.write_bytes(run_started(0) + started(1, "a" * 5000) + failed(2, "a" * 5000, "x" * 500)
+    long.write_bytes(run_started(0) + started(1, "a" * 5000) + failed(2, "a" * 5000, "x" * 5000)
                      + resumed(3, ["b" * 3000]))
-    assert refresh(long, None).cost() - refresh(short, None).cost() == 4999 + 499 + 2999
+    assert refresh(long, None).cost() - refresh(short, None).cost() == 4999 + reader_mod.ERROR_KEPT - 1 + 2999
     monkeypatch.setattr(reader_mod, "NODE_CAP", 5)
     many = tmp_path / "m.jsonl"
     many.write_bytes(run_started(0) + b"".join(started(n, f"{n:04d}" + "n" * 996) for n in range(1, 101)))

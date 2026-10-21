@@ -37,7 +37,10 @@ EVENT_BYTES = 2 << 20
 LRU_BYTES = 128 << 20
 LRU_LOGS = 128
 ERROR_CHARS = 200
-"""How much of a node's error is shown, cut after the scrub; the index keeps up to FIELD_CHARS of it."""
+"""How much of a node's error is shown, cut after the scrub."""
+ERROR_KEPT = 1 << 10
+"""How much of a node's error the index keeps: enough that a key crossing the ERROR_CHARS cut is whole for the scrub
+(keys are well under 800 characters), and little enough to bound a log with many failed nodes."""
 # Yian writes sorted-key JSON (log.py:2786-2796), so a record starts with "kind" ("at" first from schema 10): an
 # oversized line's kind can be read without parsing it. Its seq is its line number (log.py:2843-2866), so no line's
 # seq is ever read from its text.
@@ -261,7 +264,7 @@ def _ended(index: Index, seq: int, kind: str, payload: dict[str, Any]) -> None:
         attempt.handle = payload["handle"]
     if failure is not None:
         # Kept long and cut to ERROR_CHARS only once scrubbed, so a known value cut in two can't show its head.
-        attempt.error = str(failure.get("message") or failure.get("code") or "")[:FIELD_CHARS] or None
+        attempt.error = str(failure.get("message") or failure.get("code") or "")[:ERROR_KEPT] or None
         index.held += len(attempt.error or "")
 
 
