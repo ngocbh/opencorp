@@ -82,7 +82,7 @@ def secret_key(key: object) -> bool:
 def _bare_secret_key(key: str) -> bool:
     """Whether an unquoted key in text names a secret: credential headers have their own shapes, and ``devices`` is a
     secret only as a person file's key."""
-    return is_secret_key(key) and key_name(key) != "devices"
+    return is_secret_key(key) and key_name(key).replace("_", "") != "devices"
 
 
 @functools.cache
@@ -157,7 +157,6 @@ def _bare_values(text: str, low: str) -> list[tuple[int, int]]:
             start += 1
         m = BARE_PAIR.match(text, start)
         if m is None or m.end("key") <= at or not _bare_secret_key(m["key"]):
-            done = at + 1
             continue
         group = "quoted" if m["q"] is not None else "line"
         if m[group] and m[group] != HIDDEN:

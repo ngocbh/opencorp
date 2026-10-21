@@ -202,6 +202,65 @@ def test_provider_key_matches_as_its_plain_form_does():
             m.span() for m in SLOW_PROVIDER_KEY.finditer(text)], text
 
 
+FUZZ_KEYS = ["password", "PassWord", "db.password", "api.key", "apiKey", "OPENAI_API_KEY", "x-Api-KEY", "setCookie",
+             "clientSecret", "devices", "token", "max_tokens", "tokenType", "secretary", "monkey", "passphrase",
+             "api\u212aey", "\uff41ccess\uff34oken", "pass\uff57ord", "AUTH\u0130_TOKEN", "--password", "a.b-secret"]
+FUZZ_WORDS = [":", "=", ": ", " = ", "==", " ", "\n", "\\n", "\t", "\"", "'", "\\\"", "\\", "{", "}", ",", "b'",
+              "(hidden)", "true", "x", "Zq9v", "\u212a", "\xa0", "\u0130", "-", ".", "_"]
+
+
+def fuzz_text(rng):
+    parts = []
+    for _ in range(rng.randint(1, 20)):
+        r = rng.random()
+        if r < 0.3:
+            quote = rng.choice(["", "", "\"", "'", "\\\""])
+            parts.append(f"{quote}{rng.choice(FUZZ_KEYS)}{quote}{rng.choice([':', ': ', ' : ', '=', ''])}")
+        else:
+            parts.append(rng.choice(FUZZ_WORDS))
+    return "".join(parts)
+
+
+def slow_secret_values(text):
+    """_secret_values without its word lookup: QUOTED_PAIR at every position."""
+    found = []
+    for m in scrub_mod.QUOTED_PAIR.finditer(text):
+        group = "value" if m["vq"] is not None else "bare"
+        if (found and m.start() < found[-1][1]) or not scrub_mod.secret_key(m["key"]) or m[group] == HIDDEN:
+            continue
+        found.append(m.span(group))
+    return found
+
+
+def slow_bare_values(text):
+    """_bare_values without its word lookup: BARE_PAIR at every start of a key, after any leading - or ."""
+    found, done = [], 0
+    for run in re.finditer(r"[\w.-]+", text):
+        at = run.start() + len(run[0]) - len(run[0].lstrip(".-"))
+        if at < done or at == run.end():
+            continue
+        m = scrub_mod.BARE_PAIR.match(text, at)
+        if m is None or not scrub_mod._bare_secret_key(m["key"]):
+            continue
+        group = "quoted" if m["q"] is not None else "line"
+        if m[group] and m[group] != HIDDEN:
+            found.append(m.span(group))
+        done = m.end()
+    return found
+
+
+def test_the_pair_lookups_find_what_a_search_at_every_position_finds():
+    rng = random.Random(3)
+    for _ in range(20_000):
+        text = fuzz_text(rng)
+        if any(len(run) > 60 for run in re.findall(r"[\w.-]+", text)):
+            continue  # a key run longer than a key: read from 64 characters before its word, not from its start
+        low = scrub_mod._folded(text)
+        assert len(low) == len(text)
+        assert scrub_mod._secret_values(text, low) == slow_secret_values(text), text
+        assert scrub_mod._bare_values(text, low) == slow_bare_values(text), text
+
+
 def test_a_hidden_value_ending_in_a_backslash_keeps_the_pairs_after_it():
     out = Scrubber([]).text(json.dumps({"password": "pw-unknown-123456789\\", "a": "b"}))
     assert out == '{"password": "(hidden)", "a": "b"}'
