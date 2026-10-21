@@ -2,12 +2,14 @@
 
 from opencorp.store.migrate import MigrationError, migrate
 from opencorp.store.store import (
+    REASON_CHARS,
     AuditEntry,
     DebriefRecord,
     DuplicateKey,
     HqSessionRecord,
     InvalidTransition,
     NotFound,
+    RunRow,
     StaleVersion,
     Store,
     StoreError,
@@ -19,6 +21,7 @@ from opencorp.store.store import (
 )
 
 __all__ = [
+    "REASON_CHARS",
     "AuditEntry",
     "DebriefRecord",
     "DuplicateKey",
@@ -26,6 +29,7 @@ __all__ = [
     "InvalidTransition",
     "MigrationError",
     "NotFound",
+    "RunRow",
     "StaleVersion",
     "Store",
     "StoreError",
