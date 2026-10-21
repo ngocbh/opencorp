@@ -216,6 +216,23 @@ test("Show all's children are read again on a refetch, and a failed read says so
   await expect(table(page).locator("tr[aria-level='2']")).toHaveCount(202)
 })
 
+test("a live refetch keeps focus on a child Show all brought", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { runs: crowded(201) } })
+  await page.goto("/runs")
+  await table(page).getByRole("button", { name: /Runs under/ }).click()
+  await page.getByRole("button", { name: "Show all 201" }).click()
+  const link = row(page, 5001).getByRole("link", { name: rid(5001).slice(-8) }) // only in Show all's read
+  await link.focus()
+  const data = crowded(201)
+  const kids = data.children[rid(4000)]!
+  kids[200] = { ...kids[200]!, status: "failed" }
+  await request.post("/__fixture/set", { data: { runs: data } })
+  await request.post("/__fixture/emit", { data: { event: { type: "run.updated", data: {
+    run_id: rid(5001), session_id: "S5001", parent_run_id: rid(4000), status: "failed", current_nodes: [] } } } })
+  await expect(row(page, 5001)).toContainText("failed")
+  await expect(link).toBeFocused()
+})
+
 test("a refetch during Load more keeps the page it brings", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { runs: many(120) } })
   await page.goto("/runs")
