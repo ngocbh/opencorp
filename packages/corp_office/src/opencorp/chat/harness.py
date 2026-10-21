@@ -859,10 +859,10 @@ class Harness:
         live.pending_by = by
         self._deliver(live)
 
-    def _deliver(self, live: _Live) -> bool:
-        """Answer the open turn with the queued messages, unless held; True if it did (or handed them to a new run)."""
+    def _deliver(self, live: _Live) -> None:
+        """Answer the open turn with the queued messages, unless held."""
         if live.turn_q is None or not live.pending or live.ending or self._held(live):
-            return False
+            return
         text, by = "\n\n".join(live.pending), live.pending_by
         live.pending.clear()
         live.pending_by = None
@@ -870,7 +870,6 @@ class Harness:
             self._restart(live, text, by=by)  # re-queues text for the new run's first turn
         else:
             self._answer_turn(live, live.turn_q, text, by=by)
-        return True
 
     def _answer_turn(self, live: _Live, question_id: str, text: str, *, by: str | None = None,
                      typed: bool = True) -> None:

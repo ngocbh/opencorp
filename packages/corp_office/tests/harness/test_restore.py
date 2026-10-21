@@ -9,13 +9,10 @@ from opencorp.testing import fake_codex as fc
 from tests.harness.conftest import errors, start, status, texts, wait_for
 
 
-def restarted(make_codex, old, **patches):
-    """A new harness over the same office, as a restarted office builds it, after ``old`` stopped; ``patches`` replace
-    attributes of its Codex sessions before the restore."""
+def restarted(make_codex, old):
+    """A new harness over the same office, as a restarted office builds it, after ``old`` stopped."""
     old.close_all()
     h = make_codex()
-    for name, value in patches.items():
-        setattr(h.codex, name, value)
     h.restore()
     return h
 
