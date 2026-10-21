@@ -203,6 +203,23 @@ test("Run Logs: the list, a fold, search with its suggestions and highlights, an
   expect(await violations()).toEqual([])
 })
 
+test("Run Logs on an office without its routes: the list, a run page and the panel, with no CSP violation", async ({ page, request }) => {
+  await request.post("/__fixture/set", { data: { signedIn: true, noRuns: true } })
+  const violations = await watchCsp(page)
+  const message = "Run Logs aren't available on this office yet. Update and restart the office to see its runs."
+  await page.goto("/runs")
+  await expect(page.getByText(message)).toBeVisible()
+  await violations()
+  await page.goto("/runs/01JA1H00000000000000000005")
+  await expect(page.getByText(message)).toBeVisible()
+  await violations()
+  await page.goto("/org")
+  await page.getByRole("radio", { name: "List" }).click()
+  await page.getByRole("treeitem", { name: /Kai/ }).click()
+  await expect(page.getByRole("complementary", { name: "Kai" })).toContainText("Not available on this office yet")
+  expect(await violations()).toEqual([])
+})
+
 test("Source's syntax colors: YAML, JSON, Markdown, a big file, hostile text and the dark theme, with no CSP violation", async ({ page, request }) => {
   await request.post("/__fixture/set", { data: { signedIn: true, source: withFiles(source(), EXTRA_FILES) } })
   const violations = await watchCsp(page)

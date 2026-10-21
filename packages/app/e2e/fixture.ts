@@ -81,6 +81,8 @@ type Fixture = Data & {
   runPages: RunPages
   /** The whole record GET /api/runs/{id}/events/{seq} answers, by run id and seq, where it differs from the page's. */
   wholeEvents: Record<string, Record<number, RunEvent>>
+  /** An office older than Run Logs: /api/runs and everything under it answer 404 no_route. */
+  noRuns: boolean
 }
 const fresh = (): Fixture => ({
   ...acme(), signedIn: false, codes: {}, health: {}, whoami: { person: "ngocbh", device: "web-abc123" }, delay: {},
@@ -89,6 +91,7 @@ const fresh = (): Fixture => ({
   runs: runLogs(),
   runPages: runPages(runLogs()),
   wholeEvents: wholeEvents(),
+  noRuns: false,
 })
 // `logins` keeps each sign-in's handle and label, never its password.
 const emptyLog = () => ({ pairs: [] as unknown[], logins: [] as unknown[], logouts: 0, health: 0, costs: [] as string[], workItems: [] as string[], api: [] as string[],
@@ -238,6 +241,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (p === "/api/logout" && req.method === "POST") return logout(req)
   if (!state.signedIn) return json({ error: "sign_in_required", message: SIGN_IN }, 401)
   if (req.method !== "GET") return json({ error: "no_route", message: `no route ${req.method} ${p}` }, 404)
+  if (state.noRuns && (p === "/api/runs" || p.startsWith("/api/runs/")))
+    return json({ error: "no_route", message: `no route GET ${p}` }, 404)
   const workItem = /^\/api\/work-items\/([^/]+)$/.exec(p)?.[1]
   if (workItem) {
     log.workItems.push(workItem)

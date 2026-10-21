@@ -21,6 +21,15 @@ const ROW =
 const GRID = { 1: "max-md:grid-cols-[9rem_6rem_minmax(0,1fr)]", 2: "max-md:grid-cols-[8rem_6rem_minmax(0,1fr)] max-md:pl-4" }
 const CELL = "px-3 py-2 max-md:p-0 max-md:min-w-0 max-md:leading-6"
 
+/** What Run Logs says on an office older than its routes (`/api/runs` answers 404 no_route). */
+export function RunsUnavailable() {
+  return (
+    <p class={`px-3 py-4 text-sm ${MUTED}`}>
+      Run Logs aren't available on this office yet. Update and restart the office to see its runs.
+    </p>
+  )
+}
+
 /** A launch time to the minute, in the browser's locale. */
 const at = (t: string, time = false) =>
   new Date(t).toLocaleString(undefined, time ? { timeStyle: "short" } : { dateStyle: "short", timeStyle: "short" })

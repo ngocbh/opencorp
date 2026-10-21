@@ -1,5 +1,5 @@
 import type { Group, Person, RunSummary } from "@opencorp/protocol"
-import { statusLabel } from "@opencorp/client"
+import { isMissingRoute, statusLabel } from "@opencorp/client"
 import { A } from "@solidjs/router"
 import {
   createEffect,
@@ -74,7 +74,8 @@ export function Panel(props: {
   )
   /** Their newest runs, driven or taken part in, read when the panel opens on them; undefined until read. */
   const [runs, setRuns] = createSignal<RunSummary[]>()
-  const [runsFailed, setRunsFailed] = createSignal(false)
+  /** Why they couldn't be read: a failure, or an office older than Run Logs (it has no runs route). */
+  const [runsFailed, setRunsFailed] = createSignal<"failed" | "unavailable">()
   createEffect(
     on(
       () => props.person.handle,
@@ -82,12 +83,12 @@ export function Panel(props: {
         let current = true
         onCleanup(() => (current = false))
         setRuns(undefined)
-        setRunsFailed(false)
+        setRunsFailed(undefined)
         office.client.runs.list({ person, limit: RECENT }).then(
           (page) => current && setRuns(page.runs.slice(0, RECENT)),
           (error) => {
-            if (current) setRunsFailed(true)
-            console.error("Failed to read a person's runs", { person, error })
+            if (current) setRunsFailed(isMissingRoute(error) ? "unavailable" : "failed")
+            if (!isMissingRoute(error)) console.error("Failed to read a person's runs", { person, error })
           },
         )
       },
@@ -208,7 +209,14 @@ export function Panel(props: {
         </Show>
       </Section>
       <Section title="Recent runs">
-        <Show when={!runsFailed()} fallback={<p class="text-sm">Couldn't read the runs.</p>}>
+        <Show
+          when={!runsFailed()}
+          fallback={
+            <p class={runsFailed() === "unavailable" ? `text-sm ${MUTED}` : "text-sm"}>
+              {runsFailed() === "unavailable" ? "Not available on this office yet." : "Couldn't read the runs."}
+            </p>
+          }
+        >
           <Show when={runs()} fallback={<p class={`text-sm ${MUTED}`}>Reading…</p>}>
             {(rs) => (
               <Show when={rs().length} fallback={<p class="text-sm">None</p>}>
@@ -228,12 +236,14 @@ export function Panel(props: {
             )}
           </Show>
         </Show>
-        <A
-          href={hrefOf(`@${props.person.handle} ${DEFAULT_QUERY}`)}
-          class="mt-1 inline-block rounded text-sm underline outline-none focus-visible:ring-2"
-        >
-          All runs
-        </A>
+        <Show when={runsFailed() !== "unavailable"}>
+          <A
+            href={hrefOf(`@${props.person.handle} ${DEFAULT_QUERY}`)}
+            class="mt-1 inline-block rounded text-sm underline outline-none focus-visible:ring-2"
+          >
+            All runs
+          </A>
+        </Show>
       </Section>
     </div>
   )
