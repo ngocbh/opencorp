@@ -1,5 +1,7 @@
 """Waking a sleeping session: one wake at a time, nothing lost, failures leave it as it was."""
 
+import os
+import shutil
 import threading
 import time
 
@@ -7,6 +9,7 @@ import pytest
 
 from opencorp.chat.harness import HarnessError
 from opencorp.chat.turns import MAIN_CHAT
+from opencorp.testing.fake_llm import LLM_CONFIG
 from tests.chat.conftest import say, spawned, status, texts, wait_for
 
 
@@ -210,3 +213,74 @@ def test_a_turn_answer_to_a_sleeping_session_is_its_next_message(make_harness, f
     assert h.answer(turn.id, "hello", "text", by="ngocbh").id == turn.id
     wait_for(lambda: texts(h, sid) == ["hi back"], what="the reply")
     assert texts(h, sid, role="user") == ["hello"]
+
+
+def test_a_wake_whose_provider_cant_resolve_answers_503_and_leaves_the_session_idle(make_harness, fake_llm,
+                                                                                   workspace):
+    fake_llm.script({"content": "back"})
+    h, sid = asleep(make_harness, workspace)
+    keys = h.office.paths.office / "provider.json"
+    os.chmod(keys, 0o644)  # not private: the office's connection can't be read
+    questions = [(q.id, q.status) for q in h.store.list_questions(session_id=sid)]
+    with pytest.raises(HarnessError) as err:
+        h.prompt(sid, "hi")
+    assert (err.value.status, err.value.code) == (503, "cant_wake")
+    assert status(h, sid) == "idle" and sid not in h._live and not h._waking
+    assert [(q.id, q.status) for q in h.store.list_questions(session_id=sid)] == questions  # its cards are as they were
+    assert len(h.store.get_session(sid).run_ids) == 1
+    os.chmod(keys, 0o600)  # fixed: the next message wakes it
+    assert say(h, sid, "hi") == "back"
+
+
+def test_an_end_whose_wake_cant_resolve_fails_the_session(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    os.chmod(h.office.paths.office / "provider.json", 0o644)
+    with pytest.raises(HarnessError) as err:
+        h.end(sid)
+    assert err.value.code == "cant_wake" and status(h, sid) == "failed"
+
+
+def test_a_wake_into_a_missing_folder_answers_422_and_leaves_the_session_idle(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    shutil.rmtree(workspace)
+    with pytest.raises(HarnessError) as err:
+        h.prompt(sid, "hi")
+    assert (err.value.status, err.value.code) == (422, "invalid_body")
+    assert status(h, sid) == "idle" and sid not in h._live
+
+
+def test_close_all_during_a_wake_answers_503_and_leaves_the_status(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    entered, release = hold_builds(h)
+    sender, got = calling(h.prompt, sid, "hi")
+    assert entered.wait(10)
+    closer = threading.Thread(target=h.close_all)
+    closer.start()
+    wait_for(lambda: h._stopping, what="close_all")
+    release.set()
+    sender.join(10), closer.join(15)
+    assert got == [(503, "stopping")] and status(h, sid) == "idle" and sid not in h._live
+
+
+def test_a_wake_whose_fresh_run_cant_spawn_stays_idle_and_the_next_wake_starts_fresh(make_harness, fake_llm,
+                                                                                     workspace):
+    fake_llm.script({"content": "b's reply"})
+    first = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-wake-one"})
+    sid = start(first, workspace)
+    first.close_all()
+    second = make_harness(llm_config={**LLM_CONFIG, "api_key": "sk-wake-two"})  # the key changed: a fresh run
+    spawn, calls = second.registry.spawn, []
+
+    def once_bad(*args):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("can't start the worker")
+        return spawn(*args)
+
+    second.registry.spawn = once_bad
+    with pytest.raises(HarnessError) as err:
+        second.prompt(sid, "a")
+    assert err.value.code == "cant_wake" and status(second, sid) == "idle" and sid not in second._live
+    jobs = spawned(second, lambda job: job.kind)
+    assert say(second, sid, "b") == "b's reply"
+    assert jobs == ["chat"]  # the run that never started isn't resumed

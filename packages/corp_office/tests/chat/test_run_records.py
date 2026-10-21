@@ -251,9 +251,9 @@ def test_a_crash_resume_after_removal_moves_to_the_default(make_harness, fake_ll
     assert errors(harness, sid) == []
 
 
-def test_a_restore_after_removal_keeps_the_removal_note(make_harness, fake_llm, workspace):
+def test_a_wake_after_removal_keeps_the_removal_note(make_harness, fake_llm, workspace):
     first = make_harness(connections={"second": "stub-2"})
-    fake_llm.script({"content": "from two"})
+    fake_llm.script({"content": "from two"}, {"content": "on office"})
     sid = start(first, workspace)
     on(first, sid, "second")
     say(first, sid, "a")
@@ -262,10 +262,10 @@ def test_a_restore_after_removal_keeps_the_removal_note(make_harness, fake_llm, 
 
     second = make_harness()
     jobs = spawned(second)
-    second.restore()
-    resumed(second, sid)
+    assert say(second, sid, "b") == "on office"  # the wake moves it to the default
     assert [(j.kind, j.llm_config["model"]) for j in jobs] == [("chat", "stub")]
     session = second.store.get_session(sid)
+    # The wake's preflight is read-only, so _resume does the move: its note stays, not the fresh-run one.
     assert (session.connection, session.model_note) == (OFFICE, REMOVED)
 
 
