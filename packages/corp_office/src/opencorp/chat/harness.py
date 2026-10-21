@@ -2,6 +2,7 @@
 
 import logging
 import os
+import posixpath
 import queue
 import re
 import socket
@@ -32,8 +33,9 @@ from opencorp.protocol import now
 from opencorp.protocol.models import CompanyDefaults, Event, Question, Session, WorkItem
 from opencorp.questions.ask import Answers, OnQuestion, make_ask_user
 from opencorp.questions.format import INTERRUPTED
+from opencorp.runs.outcomes import ANOTHER_START, OFFICE as OFFICE_DRIVER, flow_label
 from opencorp.sandbox.policy import SandboxPolicy, UnsafeWorkspace, check_workspace
-from opencorp.store import InvalidTransition, new_id
+from opencorp.store import InvalidTransition, RunRow, new_id
 from opencorp.tools import ToolContext, build
 from opencorp.tools.workspace import WorkspaceTools
 from opencorp.worker import (BaseHandlers, Job, ProfileMemorySpec, SessionMemorySpec, Worker, WorkerRegistry,
@@ -156,6 +158,7 @@ class _Live:
     outcome: dict[str, Any] | None = None
     calls: set[_Call] = field(default_factory=set)
     announced: str | None = None  # the run whose run_finished has fired, so it never fires twice
+    parent_run_id: str | None = None  # the run this one was started from, for run.updated
 
 
 class _Handlers(BaseHandlers):
@@ -482,34 +485,47 @@ class Harness:
             stores={"profile": GitProfileStore(self.git, person.handle)}, skills=list(person.skills),
             names=(person.handle, person.name), workspace=workspace)
 
-    def start_run(self, session: Session, spec: RunSpec) -> str:
+    def start_run(self, session: Session, spec: RunSpec, *, parent_run_id: str | None = None) -> str:
         """Start a new run of ``spec`` for ``session`` (a stored session with no live run); return its run id.
 
-        If the run can't start, the session is ``failed`` and has no live run.
+        Its live run is built first (the repo load at the pin, the driver), so a failure there records no run. Then the
+        run and its row in ``runs`` are stored in one transaction: the flow's label and path, the driver (the session's
+        opener, else the pinned CEO) and ``parent_run_id``, the run it was started from. If the run can't start, the
+        session is ``failed`` and has no live run.
         """
         with self._lock:
             if session.id in self._live or session.id in self._waking:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
         try:
             run_id = new_id()
-            self.store.add_session_run(session.id, run_id)
             live = self._new_live(session, run_id, spec)
+            with self.store.transaction():
+                self.store.add_session_run(session.id, run_id)
+                row = self.store.add_run(RunRow(
+                    run_id=run_id, session_id=session.id, flow=flow_label(session.kind),
+                    flow_path=posixpath.normpath(spec.flow), driver=live.owner or OFFICE_DRIVER,
+                    parent_run_id=parent_run_id, launched_at=now()))
+            live.parent_run_id = row.parent_run_id
         except Exception:
             log.exception("can't start a run for session %s", session.id)
             self._fail(session.id)
             raise
         with self._lock:
-            if session.id in self._live or session.id in self._waking:
-                raise HarnessError(409, "live", f"session {session.id} already has a live run")
-            self._live[session.id] = live
+            lost = session.id in self._live or session.id in self._waking
+            if not lost:
+                self._live[session.id] = live
+        if lost:  # the store write needs no harness lock
+            self.store.end_run(run_id, "interrupted", reason=ANOTHER_START)
+            raise HarnessError(409, "live", f"session {session.id} already has a live run")
         self._spawn(live, "chat")  # on failure, it fails the session and drops the live entry
         return run_id
 
     def _new_live(self, session: Session, run_id: str, spec: RunSpec) -> _Live:
         pins = self._pinned(session)
+        row = self.store.get_run(run_id)  # none yet in start_run, which sets it once the row exists
         return _Live(session.id, session.person, run_id, spec, pins.defaults,
                      Transcript(self.store, session.id, self.office.bus.publish_live),
-                     owner=session.opened_by or pins.ceo)
+                     owner=session.opened_by or pins.ceo, parent_run_id=row.parent_run_id if row else None)
 
     def restore(self) -> None:
         """At office start: resume each live session whose run can't wait, under the same run id where it can.
