@@ -22,6 +22,7 @@ from opencorp.chat.hooks import Hooks
 from opencorp.chat.identity import person_inputs, talking_to
 from opencorp.chat.models import DEADLINE, ListTimeout, ModelCache
 from opencorp.chat.provider import Price, Provider, ProviderError
+from opencorp.chat.state import guarded_update
 from opencorp.chat.transcript import Transcript
 from opencorp.chat.turns import MAIN_CHAT, ChatFlow
 from opencorp.company.loader import load_repo
@@ -56,6 +57,8 @@ _AUTH_CAUSES = ("AuthenticationError", "PermissionDeniedError", "AuthError")
 """Cause types (bare or provider-prefixed) of a failure where the model refused the connection's key."""
 _FRESH_NOTE = ("This chat continues on a fresh run because its model or connection changed. "
                "If your last message got no reply, send it again.")
+_WOKEN_NOTE = "This chat continues on a fresh run because its model or connection changed."
+"""A wake's fresh-run note: the message that woke the session is still delivered, so it needn't be sent again."""
 
 Groups = Callable[[Session, str, OnQuestion], Mapping[str, Mapping[str, Any]]]
 """``(session, run_id, on_question) -> {group: {tool name: tool}}``: the office tools of one run."""
@@ -67,6 +70,10 @@ class HarnessError(Exception):
     def __init__(self, status: int, code: str, message: str) -> None:
         super().__init__(message)
         self.status, self.code, self.message = status, code, message
+
+
+class _Refused(RuntimeError):
+    """A worker request, or a wake, that came after ``close_all`` closed the workers' channels."""
 
 
 @dataclass
@@ -104,6 +111,13 @@ class _Call:
 
 
 @dataclass(eq=False)
+class _Wake:
+    """A wake in progress. Callers that find it wait on ``done``, then look again."""
+
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(eq=False)
 class _Live:
     """A session with a live run, as the harness tracks it."""
 
@@ -125,6 +139,7 @@ class _Live:
     pending_by: str | None = None  # who sent the latest queued message; the owner when None
     steered_by: str | None = None  # who sent the latest steer the reply took, if it ends without reading it
     ending: bool = False
+    waking: bool = False  # while a wake builds and spawns it: a failure drops it without failing the session
     capped: bool = False
     exits: int = 0
     died_at: str | None = None
@@ -203,6 +218,8 @@ class Harness:
         # wait on each other office-wide; they are rare enough for that.
         self._continuing = threading.Lock()
         self._live: dict[str, _Live] = {}
+        self._waking: dict[str, _Wake] = {}  # session id -> its wake in progress
+        self._finishing: set[str] = set()  # sessions whose _finish dropped the live run and hasn't stored the end
         self._stopping = False  # set when close_all starts: no new worker spawns
         self._refusing = False  # set once the channels are closed: no new worker request is admitted
         self._closed = False  # set when close_all returns: the caller may close the store
@@ -457,7 +474,7 @@ class Harness:
         If the run can't start, the session is ``failed`` and has no live run.
         """
         with self._lock:
-            if session.id in self._live:
+            if session.id in self._live or session.id in self._waking:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
         try:
             run_id = new_id()
@@ -468,7 +485,7 @@ class Harness:
             self._fail(session.id)
             raise
         with self._lock:
-            if session.id in self._live:
+            if session.id in self._live or session.id in self._waking:
                 raise HarnessError(409, "live", f"session {session.id} already has a live run")
             self._live[session.id] = live
         self._spawn(live, "chat")  # on failure, it fails the session and drops the live entry
@@ -580,14 +597,21 @@ class Harness:
                 if self._stopping:
                     return
                 live.worker = self.registry.spawn(job, run_dir, _Handlers(self, live, ask, tools))
+                live.waking = False
         except Exception:
             self._cant_start(live)
             raise
         self._post(self.hooks.fire, "run_started", session, live.run_id)
 
     def _cant_start(self, live: _Live) -> None:
-        """Log why ``live``'s worker can't start, and fail its session."""
+        """Log why ``live``'s worker can't start, and fail its session; a wake's is only dropped, for the wake to
+        answer."""
         log.exception("can't start a worker for session %s", live.session_id)
+        if live.waking:
+            with self._lock:
+                if self._current(live):
+                    del self._live[live.session_id]
+            return
         self._finish(live, "failed", None)
 
     # --- the person's keys -------------------------------------------------------------
@@ -1152,7 +1176,7 @@ class Harness:
         """Count a worker request running in the office, for ``close_all`` to wait on; refuse one once the channels are closed."""
         with self._calls_idle:
             if self._refusing:
-                raise RuntimeError("the office is stopping")
+                raise _Refused("the office is stopping")
             self._calls += 1
         try:
             yield
