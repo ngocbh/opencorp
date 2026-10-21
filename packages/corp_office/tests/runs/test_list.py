@@ -2,6 +2,7 @@
 child matches, search by any part of an id, a launch range read in SQL, one run's children paged the same way, and
 reasons scrubbed when served."""
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -236,3 +237,73 @@ async def test_the_list_never_opens_a_log(store, monkeypatch):  # noqa: F811
     await runs.page(status=["finished"])
     await runs.children((await runs.page()).runs[0].run_id)
     assert opened == []
+
+
+class FakeHarness:
+    """The harness's two reads the list makes: live runs (and sessions waking or finishing), and open nodes."""
+
+    def __init__(self):
+        self.live, self.finishing = {}, set()
+
+    def live_runs(self):
+        return dict(self.live), frozenset(self.finishing)
+
+    def open_nodes(self, run_id):
+        return []
+
+
+def in_thread(fn):
+    """Run ``fn`` on another thread (another store connection) and wait for it."""
+    t = threading.Thread(target=fn)
+    t.start()
+    t.join()
+
+
+def live_top(store, status):  # noqa: F811
+    s = store.create_session(session(status=status))
+    run_id = new_id()
+    store.add_session_run(s.id, run_id)
+    store.add_run(RunRow(run_id, s.id, "chat", "shared/flows/chat.yaml", "ngocbh", None, T))
+    return s, run_id
+
+
+async def test_a_run_that_finishes_while_listed_shows_running_not_interrupted(store, monkeypatch):  # noqa: F811
+    harness = FakeHarness()
+    s, run_id = live_top(store, "busy")
+    harness.live[s.id] = run_id
+    real_page = store.run_page
+
+    def run_page(**kw):
+        rows = real_page(**kw)
+        if harness.live:  # _finish, after the rows were read: drop the live run (finishing), store the end, clear
+            harness.live.clear()
+            harness.finishing.add(s.id)
+
+            def end():
+                with store.transaction():
+                    store.update_session(s.id, status="ended")
+                    store.end_run(run_id, "finished")
+
+            in_thread(end)
+            harness.finishing.clear()
+        return rows
+
+    monkeypatch.setattr(store, "run_page", run_page)
+    page = await RunLogs(SimpleNamespace(store=store, extras={"harness": harness})).page()
+    assert [r.status for r in page.runs] == ["running"]
+
+
+async def test_a_run_that_starts_while_listed_shows_running_not_interrupted(store, monkeypatch):  # noqa: F811
+    harness = FakeHarness()
+    s, run_id = live_top(store, "starting")
+    real_page = store.run_page
+
+    def run_page(**kw):
+        if not harness.live:  # after Live was read, before the store reads: the harness takes the run, then busy
+            harness.live[s.id] = run_id
+            in_thread(lambda: store.update_session(s.id, status="busy"))
+        return real_page(**kw)
+
+    monkeypatch.setattr(store, "run_page", run_page)
+    page = await RunLogs(SimpleNamespace(store=store, extras={"harness": harness})).page()
+    assert [r.status for r in page.runs] == ["running"]

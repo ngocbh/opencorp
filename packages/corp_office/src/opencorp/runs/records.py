@@ -4,7 +4,7 @@ table, sessions, questions and memory. Nothing here opens a run log."""
 import logging
 import re
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from opencorp.chat.turns import MAIN_CHAT
 from opencorp.protocol.models import Question, RunSummary, Session
@@ -25,13 +25,19 @@ _warned: set[str] = set()  # runs already warned about; cleared at WARNED_CAP so
 
 @dataclass(frozen=True)
 class Live:
-    """What memory says about runs now (a snapshot): each session's live run, the sessions being woken, learning's
-    debriefs in flight (session id -> run id), and a run's open nodes."""
+    """What memory says about runs (one read, or several merged): the sessions' live runs and learning's debriefs in
+    flight, each as (session id, run id) pairs, the sessions being woken or finishing, and a run's open nodes."""
 
-    runs: Mapping[str, str] = field(default_factory=dict)
+    runs: frozenset[tuple[str, str]] = frozenset()
     waking: frozenset[str] = frozenset()
-    debriefs: Mapping[str, str] = field(default_factory=dict)
+    debriefs: frozenset[tuple[str, str]] = frozenset()
     nodes: Callable[[str], list[str]] = lambda run_id: []
+
+    def merged(self, later: "Live") -> "Live":
+        """Both reads at once: a run is live, waking or debriefing when either read says so; open nodes are
+        ``later``'s."""
+        return Live(runs=self.runs | later.runs, waking=self.waking | later.waking,
+                    debriefs=self.debriefs | later.debriefs, nodes=later.nodes)
 
 
 def status_of(row: RunRow, session: Session | None, live: Live) -> tuple[str, str | None]:
@@ -41,10 +47,10 @@ def status_of(row: RunRow, session: Session | None, live: Live) -> tuple[str, st
     current = session is not None and session.run_ids[-1:] == [row.run_id]
     if current and session.status in ("waiting", "idle"):
         return session.status, None
-    if current and session.status in _RUNNING and (live.runs.get(session.id) == row.run_id
+    if current and session.status in _RUNNING and ((session.id, row.run_id) in live.runs
                                                    or session.id in live.waking or session.status == "starting"):
         return "running", None
-    if session is not None and live.debriefs.get(session.id) == row.run_id:
+    if session is not None and (session.id, row.run_id) in live.debriefs:
         return "running", None
     if row.run_id not in _warned:  # a missing end path: say so once per run
         if len(_warned) >= WARNED_CAP:
@@ -81,10 +87,15 @@ def participants(driver: str, person: str, others: Iterable[str | None]) -> list
 
 
 class Summaries:
-    """RunSummary objects for a batch of rows, with one store read per kind of fact (and one per session)."""
+    """RunSummary objects for a batch of rows, with one store read per kind of fact (and one per session).
 
-    def __init__(self, store: Store, live: Live) -> None:
-        self.store, self.live = store, live
+    ``live`` is read before the store; ``fresh`` (when given) reads memory again after the store reads of each build,
+    and the two are merged. A run that ends between the reads is live in the first and still open in the store; one
+    that starts between them is live in the second.
+    """
+
+    def __init__(self, store: Store, live: Live, *, fresh: Callable[[], Live] | None = None) -> None:
+        self.store, self.live, self.fresh = store, live, fresh
 
     def build(self, rows: list[RunRow], *, children: Mapping[str, list[RunRow]] | None = None
               ) -> dict[str, RunSummary]:
@@ -103,8 +114,9 @@ class Summaries:
         counts = self.store.run_child_counts(ids)
         openers = self.store.child_drivers(ids, SIDE_CHAT)
         neighbours = self._neighbours(everyone, sessions)
+        live = self.live if self.fresh is None else self.live.merged(self.fresh())
         out = {r.run_id: self._one(r, sessions[r.session_id], questions.get(r.run_id, []), openers.get(r.run_id, []),
-                                   neighbours[r.run_id], counts.get(r.run_id, 0))
+                                   neighbours[r.run_id], counts.get(r.run_id, 0), live)
                for r in everyone if sessions.get(r.session_id) is not None}
         for pid, ks in children.items():
             if pid in out:
@@ -113,10 +125,9 @@ class Summaries:
         return out
 
     def _one(self, row: RunRow, session: Session, questions: list[Question], openers: list[str],
-             neighbours: tuple[str | None, str | None], children_total: int) -> RunSummary:
-        status, reason = status_of(row, session, self.live)
-        nodes, asking, held = current_nodes(status, row.run_id, [q for q in questions if q.status == "open"],
-                                            self.live)
+             neighbours: tuple[str | None, str | None], children_total: int, live: Live) -> RunSummary:
+        status, reason = status_of(row, session, live)
+        nodes, asking, held = current_nodes(status, row.run_id, [q for q in questions if q.status == "open"], live)
         answerers = [q.answered_by for q in questions if q.answered_by]
         return RunSummary(
             run_id=row.run_id, session_id=row.session_id, flow=row.flow, flow_path=row.flow_path,

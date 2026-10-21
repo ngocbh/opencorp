@@ -81,7 +81,8 @@ class RunLogs:
             return ((harness.open_nodes(run_id) if harness is not None else [])
                     or (learning.open_nodes(run_id) if learning is not None else []))
 
-        return Live(runs=runs, waking=waking, debriefs=debriefs, nodes=nodes)
+        return Live(runs=frozenset(runs.items()), waking=frozenset(waking), debriefs=frozenset(debriefs.items()),
+                    nodes=nodes)
 
     async def page(self, *, flow: str | None = None, person: str | None = None, status: Iterable[str] = (),
                    q: str | None = None, since: str | None = None, until: str | None = None,
@@ -110,11 +111,18 @@ class RunLogs:
 
         The store pages rows in the launch range. Other filters are applied to summaries built a batch of rows at a
         time, so a filtered page may stop after SCAN_CAP rows with fewer runs; ``next`` resumes.
+
+        Memory is read first, then every store read is one snapshot, then memory again per batch (``Summaries``): a
+        run that ends or starts while the page is built never reads as interrupted.
         """
-        if parent is not None and self.store.get_run(parent) is None:
-            raise LookupError(parent)
-        live = self.live()
-        summaries = Summaries(self.store, live)
+        summaries = Summaries(self.store, self.live(), fresh=self.live)
+        with self.store.snapshot():
+            if parent is not None and self.store.get_run(parent) is None:
+                raise LookupError(parent)
+            return self._rows(wanted, parent, before, limit, summaries)
+
+    def _rows(self, wanted: RunFilter, parent: str | None, before: str | None, limit: int,
+              summaries: Summaries) -> RunPage:
         out: list[RunSummary] = []
         cursor, scanned, exhausted = before, 0, False
         while len(out) < limit and scanned < SCAN_CAP:

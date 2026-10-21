@@ -1,6 +1,7 @@
 """The runs table: a row per launched run, a write-once outcome, and run.updated in the same transaction."""
 
 import sqlite3
+import threading
 
 import pytest
 
@@ -197,3 +198,15 @@ def test_a_runs_usage_is_summed_from_its_model_calls(store):  # noqa: F811
     for n in (1, 2):
         store.record_usage(session_id=s.id, run_id="run-a", model="m", input_tokens=10 * n, output_tokens=n, usd=0.5)
     assert store.run_usage("run-a") == (30, 3, 1.0) and store.run_usage("run-b") == (0, 0, 0.0)
+
+
+def test_a_snapshot_doesnt_see_writes_from_another_connection(store):  # noqa: F811
+    s = store.create_session(session())
+    run_id = store.add_run(launch(s)).run_id
+    with store.snapshot():
+        assert store.get_run(run_id).outcome is None
+        other = threading.Thread(target=lambda: store.end_run(run_id, "finished"))
+        other.start()
+        other.join()
+        assert store.get_run(run_id).outcome is None
+    assert store.get_run(run_id).outcome == "finished"

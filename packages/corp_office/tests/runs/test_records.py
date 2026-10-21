@@ -25,9 +25,9 @@ def test_a_waiting_or_idle_sessions_current_run_has_its_status_awake_or_asleep()
 
 def test_a_busy_sessions_current_run_runs_only_with_its_live_run_or_wake():
     s = session(status="busy", run_ids=["R"])
-    assert status_of(row(s, "R"), s, Live(runs={s.id: "R"})) == ("running", None)
+    assert status_of(row(s, "R"), s, Live(runs=frozenset({(s.id, "R")}))) == ("running", None)
     assert status_of(row(s, "R"), s, Live(waking=frozenset({s.id}))) == ("running", None)
-    assert status_of(row(s, "R"), s, Live(runs={s.id: "OTHER"})) == ("interrupted", NO_OUTCOME)
+    assert status_of(row(s, "R"), s, Live(runs=frozenset({(s.id, "OTHER")}))) == ("interrupted", NO_OUTCOME)
     assert status_of(row(s, "R"), s, Live()) == ("interrupted", NO_OUTCOME)
 
 
@@ -38,7 +38,7 @@ def test_a_starting_sessions_current_run_is_running():
 
 def test_a_debrief_in_flight_runs_and_a_backward_job_leaves_a_finished_run_finished():
     s = session(status="debriefing", run_ids=["C"])
-    live = Live(debriefs={s.id: "D"})
+    live = Live(debriefs=frozenset({(s.id, "D")}))
     assert status_of(row(s, "D", flow="debrief"), s, live) == ("running", None)
     assert status_of(row(s, "C", outcome="finished"), s, live) == ("finished", None)
 
@@ -120,3 +120,26 @@ def test_a_reopened_side_chat_doesnt_replace_its_earlier_run(store):  # noqa: F8
     store.end_run(a, "finished", at="2026-10-20T10:05:00.000Z")
     store.add_run(row(side, b, flow="side_chat", launched_at="2026-10-20T10:09:00.000Z"))
     assert Summaries(store, Live()).build(store.runs_of_session(side.id))[b].replaces is None
+
+
+def test_two_live_reads_merge_so_a_run_live_in_either_is_live():
+    first = Live(runs=frozenset({("A", "R1")}), waking=frozenset({"W"}), debriefs=frozenset({("D", "X")}))
+    later = Live(runs=frozenset({("B", "R2")}), waking=frozenset({"V"}), nodes=lambda run_id: ["n"])
+    both = first.merged(later)
+    assert (both.runs, both.waking, both.debriefs) == ({("A", "R1"), ("B", "R2")}, {"W", "V"}, {("D", "X")})
+    assert both.nodes("R2") == ["n"]
+
+
+def test_a_build_reads_memory_again_after_the_store(store):  # noqa: F811
+    s = store.create_session(session(status="busy"))
+    run_id = new_id()
+    store.add_session_run(s.id, run_id)
+    store.add_run(row(s, run_id))
+    reads = []
+
+    def fresh():
+        reads.append("fresh")
+        return Live(runs=frozenset({(s.id, run_id)}))
+
+    built = Summaries(store, Live(), fresh=fresh).build([store.get_run(run_id)])
+    assert built[run_id].status == "running" and reads == ["fresh"]

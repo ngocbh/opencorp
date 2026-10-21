@@ -526,6 +526,13 @@ class Store:
         finally:
             conn.execute("COMMIT")
 
+    @contextmanager
+    def snapshot(self) -> Iterator[None]:
+        """Every read on this thread inside sees the store as of one moment (its first read); writes from other
+        connections land after it."""
+        with self._read():
+            yield
+
     # --- outbox -------------------------------------------------------------------------
 
     def add_listener(self, listener: Listener) -> Callable[[], None]:
