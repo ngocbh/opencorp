@@ -105,14 +105,14 @@ def _ensure_flow(harness: Harness, pin: Path) -> None:
 def discussion(store: Store, side_session_id: str) -> list[DiscussionEntry]:
     """The discussion so far in a side session: each human message and each reply's final text, in order.
 
-    A reply still running (the session is busy and no turn is open) isn't final yet, so
+    A reply still running (the session is busy or waiting, and no turn is open) isn't final yet, so
     what follows the last human message is left out.
     """
     messages = store.list_messages(side_session_id)
     side = store.get_session(side_session_id)
     turn_open = any(SIDE_CHAT.is_turn(q.node_id)
                     for q in store.list_questions(session_id=side_session_id, status="open", source="human_input"))
-    if side is not None and side.status == "busy" and not turn_open:
+    if side is not None and side.status in ("busy", "waiting") and not turn_open:
         last_user = max((n for n, m in enumerate(messages) if m.role == "user"), default=-1)
         messages = messages[:last_user + 1]
     entries = []
