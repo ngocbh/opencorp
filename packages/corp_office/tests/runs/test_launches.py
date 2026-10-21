@@ -2,6 +2,7 @@
 
 import os
 import signal
+import threading
 
 import pytest
 
@@ -44,24 +45,74 @@ def test_a_start_whose_live_run_cant_be_built_records_no_run(harness, workspace,
     assert (session.status, session.run_ids, harness.store.runs_of_session(session.id)) == ("failed", [], [])
 
 
-def test_a_start_that_loses_to_another_start_is_interrupted(harness, workspace):
+def test_a_start_whose_live_run_cant_be_built_lets_go_of_the_session(harness, workspace, monkeypatch):
     session = harness._open("minh", str(workspace), "composer", opened_by=None, connection=None, model=None)
-    spec, add_run, other = harness.main_spec(session), harness.store.add_run, object()
+    monkeypatch.setattr(harness, "_new_live", lambda *a: (_ for _ in ()).throw(OSError("the pin is gone")))
+    with pytest.raises(OSError):
+        harness.start_run(session, harness.main_spec(session))
+    assert not harness._starting
 
-    def and_another_start_wins(row):
-        stored = add_run(row)
-        harness._live[session.id] = other  # the other start took the lock first
-        return stored
 
-    harness.store.add_run = and_another_start_wins
+def test_a_start_whose_run_cant_be_stored_lets_go_of_the_session(harness, workspace, monkeypatch):
+    session = harness._open("minh", str(workspace), "composer", opened_by=None, connection=None, model=None)
+    monkeypatch.setattr(harness.store, "add_run", lambda row: (_ for _ in ()).throw(OSError("the disk is full")))
+    with pytest.raises(OSError):
+        harness.start_run(session, harness.main_spec(session))
+    stored = harness.store.get_session(session.id)
+    assert (stored.status, stored.run_ids, harness.store.runs_of_session(session.id)) == ("failed", [], [])
+    assert not harness._starting and session.id not in harness._live
+
+
+def calling(fn, *args):
+    """Run ``fn(*args)`` on a thread; returns the thread and a list that gets its result or HarnessError code."""
+    out = []
+
+    def run():
+        try:
+            out.append(fn(*args))
+        except HarnessError as exc:
+            out.append((exc.status, exc.code))
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, out
+
+
+@pytest.mark.parametrize("held_in", ["build", "store"])
+def test_a_second_start_while_one_is_in_flight_gets_409_and_writes_nothing(harness, workspace, monkeypatch, held_in):
+    session = harness._open("minh", str(workspace), "composer", opened_by=None, connection=None, model=None)
+    spec, writes = harness.main_spec(session), []
+    for name in ("add_session_run", "add_run", "end_run"):
+        def write(*args, _real=getattr(harness.store, name), **kwargs):
+            writes.append(threading.current_thread().name)
+            return _real(*args, **kwargs)
+        monkeypatch.setattr(harness.store, name, write)
+    # The first start is held building its live run, or inside the transaction that stores its run.
+    target, name = (harness, "_new_live") if held_in == "build" else (harness.store, "add_run")
+    real, entered, release = getattr(target, name), threading.Event(), threading.Event()
+
+    def held(*args):
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return real(*args)
+
+    monkeypatch.setattr(target, name, held)
+    first, won = calling(harness.start_run, session, spec)
     try:
-        with pytest.raises(HarnessError) as err:
-            harness.start_run(session, spec)
+        assert entered.wait(10)
+        second, lost = calling(harness.start_run, session, spec)
+        second.join(5)  # at once: it never waits on the store
+        assert lost == [(409, "live")]
     finally:
-        harness._live.pop(session.id, None)
-    assert err.value.code == "live"
+        release.set()
+        first.join(30)
+    (run_id,) = won
+    wait_for(lambda: status(harness, session.id) == "idle", what="the first turn")
     (row,) = harness.store.runs_of_session(session.id)
-    assert (row.outcome, row.reason) == ("interrupted", "another start of this session won")
+    assert harness.store.get_session(session.id).run_ids == [run_id] == [harness._live[session.id].run_id]
+    assert (row.run_id, row.outcome) == (run_id, None)
+    assert set(writes) == {first.name} and not harness._starting
 
 
 def test_the_profile_manager_is_driven_by_who_opened_it(harness, fake_llm, learning):

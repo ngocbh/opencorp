@@ -162,6 +162,32 @@ def test_a_wake_never_resumes_a_session_whose_finish_is_in_flight(make_harness, 
     assert jobs == [] and ended == ["ended"] and not h._finishing
 
 
+def test_a_wake_never_resumes_a_session_whose_start_is_in_flight(make_harness, fake_llm, workspace):
+    h, sid = asleep(make_harness, workspace)
+    session, build, entered, release = h.store.get_session(sid), h._new_live, threading.Event(), threading.Event()
+
+    def held(*args):  # the start's build: before its run is stored or its live run registered
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return build(*args)
+
+    h._new_live = held
+    starting, out = calling(h.start_run, session, h.main_spec(session))
+    try:
+        assert entered.wait(10)
+        jobs = spawned(h)
+        with pytest.raises(HarnessError) as err:
+            h.prompt(sid, "early")
+        assert (err.value.status, err.value.code) == (409, "not_live")
+        assert jobs == [] and sid not in h._waking
+    finally:
+        release.set()
+        starting.join(30)
+    (run_id,) = out
+    assert h.store.get_session(sid).run_ids[-1] == h._live[sid].run_id == run_id and not h._starting
+
+
 def test_end_on_a_sleeping_session_runs_its_exit(make_harness, fake_llm, workspace):
     h, sid = asleep(make_harness, workspace)
     ended = []
