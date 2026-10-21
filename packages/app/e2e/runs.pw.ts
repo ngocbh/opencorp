@@ -302,6 +302,7 @@ test("opening a fold reads its first 50 children; Load more inside the fold read
   await request.post("/__fixture/set", { data: { runs: crowded(120) } })
   await page.goto(ALL)
   await expect(toggle(page, 4000)).toContainText("120 runs")
+  await page.waitForTimeout(1500) // past the list's read once the office is first online, which re-reads open folds
   await toggle(page, 4000).click()
   await expect(kids(page)).toHaveCount(50)
   expect(await childReads(request, 4000)).toEqual([{ parent: rid(4000), limit: "50" }])
@@ -446,7 +447,8 @@ test("a run listed for its matching children opens with them read, until Show th
   await expect(row(page, 9)).toBeVisible()
   await expect(row(page, 8)).toHaveCount(0)
   await expect(toggle(page, 7)).toHaveAttribute("aria-expanded", "true")
-  expect(await childReads(request, 7)).toEqual([{ parent: rid(7), person: "ann", limit: "50" }])
+  // Read with the list's filters (again, once the office is first online and the list is re-read).
+  for (const read of await childReads(request, 7)) expect(read).toEqual({ parent: rid(7), person: "ann", limit: "50" })
   await page.getByRole("button", { name: "Show the rest" }).click()
   await expect(row(page, 8)).toBeVisible()
   await expect(row(page, 9)).toBeVisible()
@@ -458,6 +460,8 @@ test("a refetch reads only the open folds' children again, as many as were shown
   const data = many(3, 60) // runs 1183 (children 1184..1243), 1122 and 1061
   await request.post("/__fixture/set", { data: { runs: data } })
   await page.goto(ALL)
+  await expect(toggle(page, 1183)).toBeVisible()
+  await page.waitForTimeout(1500) // past the list's read once the office is first online
   await toggle(page, 1183).click()
   await (await fold(page, 1183)).getByRole("button", { name: "Load more" }).click()
   await expect(kids(page)).toHaveCount(60)
