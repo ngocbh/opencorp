@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { readQueue } from "../src/runs/queue"
+import { readLimit, readQueue } from "../src/runs/queue"
 
 /** A read that waits until `release` is called, logging when it starts. */
 function gate(log: string[], name: string) {
@@ -58,4 +58,33 @@ test("a failed read doesn't stop the reads after it", async () => {
   await tick()
   await tick()
   expect(log).toEqual(["after"])
+})
+
+test("a limit runs at most n reads at once, the rest in the order they came", async () => {
+  const log: string[] = []
+  const limit = readLimit(2)
+  const reads = ["a", "b", "c", "d"].map((name) => gate(log, name))
+  const answers = reads.map((r, i) => limit(async () => (await r.read(), i)))
+  await tick()
+  expect(log).toEqual(["a", "b"])
+  reads[1]!.release()
+  await tick()
+  expect(log).toEqual(["a", "b", "c"])
+  reads[0]!.release()
+  reads[2]!.release()
+  reads[3]!.release()
+  expect(await Promise.all(answers)).toEqual([0, 1, 2, 3])
+  expect(log).toEqual(["a", "b", "c", "d"])
+})
+
+test("a limit frees a read's slot when it fails, and passes the failure on", async () => {
+  const log: string[] = []
+  const limit = readLimit(1)
+  const failed = limit(async () => {
+    throw new Error("boom")
+  })
+  const next = limit(async () => void log.push("next"))
+  await expect(failed).rejects.toThrow("boom")
+  await next
+  expect(log).toEqual(["next"])
 })
