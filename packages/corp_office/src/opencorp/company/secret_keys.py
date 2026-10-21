@@ -4,6 +4,7 @@ patterns of the secrets the office issues, a scrub and a final check."""
 import base64
 import json
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,11 +16,18 @@ _CAMEL = (re.compile(r"(?<=[A-Z])(?=[A-Z][a-z])"), re.compile(r"(?<=[a-z0-9])(?=
 letter or digit (``accessToken``). Lookarounds only, so a long run of capitals is read in linear time."""
 
 SECRET_KEYS = frozenset({"devices", "password", "passwd", "password_hash", "token", "token_sha256", "secret",
-                         "client_secret", "api_key", "apikey", "access_token", "refresh_token", "private_key"})
+                         "client_secret", "api_key", "apikey", "access_token", "refresh_token", "private_key",
+                         "secret_key", "secret_access_key", "passphrase"})
 """Keys whose values are secrets, as ``is_secret_key`` normalizes them."""
 
-SECRET_SUFFIXES = ("_password", "_token", "_secret", "_api_key", "_private_key")
+SECRET_SUFFIXES = ("_password", "_token", "_secret", "_api_key", "_private_key", "_secret_key", "_secret_access_key",
+                   "_passphrase")
 """Endings that make a normalized key a secret key too."""
+
+_JOINED_KEYS = frozenset(k.replace("_", "") for k in SECRET_KEYS)
+_JOINED_SUFFIXES = tuple(s.replace("_", "") for s in SECRET_SUFFIXES)
+"""``SECRET_KEYS`` and ``SECRET_SUFFIXES`` without ``_``, for a key written without separators (``accesstoken``,
+``ACCESSTOKEN``, ``clientsecret``); a separated key that matches the rules matches these too."""
 
 DEVICES = "devices"
 """Holds device names, which aren't secrets, beside each device's ``token_sha256``, which is."""
@@ -46,19 +54,22 @@ YAML_BUDGET = 100_000
 
 
 def key_name(key: str) -> str:
-    """``key`` as the secret rules read it: camelCase words split by ``_``, lowercased, ``-``, ``.`` and spaces as
-    ``_`` (so ``spring.datasource.password`` ends in ``_password``)."""
+    """``key`` as the secret rules read it: NFKC-normalized (so a Kelvin sign or a fullwidth letter is its ASCII
+    letter), camelCase words split by ``_``, lowercased, ``-``, ``.`` and spaces as ``_`` (so
+    ``spring.datasource.password`` ends in ``_password``)."""
+    key = unicodedata.normalize("NFKC", key)
     for pattern in _CAMEL:
         key = pattern.sub("_", key)
     return key.lower().replace("-", "_").replace(".", "_").replace(" ", "_")
 
 
 def is_secret_key(key: object) -> bool:
-    """Whether ``key``, read by ``key_name`` (so ``accessToken`` is ``access_token``), names a secret."""
+    """Whether ``key``, read by ``key_name`` (so ``accessToken`` is ``access_token``), names a secret, written with
+    separators or without (``accesstoken``)."""
     if not isinstance(key, str):
         return False
-    norm = key_name(key)
-    return norm in SECRET_KEYS or norm.endswith(SECRET_SUFFIXES)
+    joined = key_name(key).replace("_", "")
+    return joined in _JOINED_KEYS or joined.endswith(_JOINED_SUFFIXES)
 
 
 def blank_secrets[M: BaseModel](model: M) -> M:

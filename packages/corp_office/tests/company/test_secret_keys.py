@@ -43,6 +43,15 @@ def test_camel_case_and_dotted_secret_key_names(key):
     assert is_secret_key(key)
 
 
+@pytest.mark.parametrize("key", ["secret_key", "SECRET_KEY", "secretKey", "aws_secret_access_key",
+                                 "AWS_SECRET_ACCESS_KEY", "secretAccessKey", "awsSecretKey", "passphrase",
+                                 "ssh_passphrase", "keyPassphrase", "accesstoken", "ACCESSTOKEN", "apikey", "APIKEY",
+                                 "clientsecret", "privatekey", "refreshtoken", "githubtoken", "dbpassword",
+                                 "openaiapikey", "\u212aEY_PASSWORD", "api\u212aey", "\uff21ccess\uff34oken"])
+def test_more_secret_key_names_and_names_without_separators(key):
+    assert is_secret_key(key)
+
+
 def test_key_name_splits_words_and_is_linear():
     assert key_name("HTTPSProxyPassword") == "https_proxy_password"
     assert key_name("ABCDefGHi") == "abc_def_g_hi" and key_name("aB1Cd") == "a_b1_cd"
@@ -56,7 +65,8 @@ def test_key_name_splits_words_and_is_linear():
 @pytest.mark.parametrize("key", ["secrets", "max_tokens", "api_key_env", "name", "tokens", "password_hint", 3, None,
                                  "tokens_used", "secretary", "maxTokens", "totalTokens", "promptTokens", "tokenType",
                                  "TokenCount", "apiKeyEnv", "passwordHint", "Secretary", "keyboard", "monkey",
-                                 "MAX_TOKENS"])
+                                 "MAX_TOKENS", "passwordless_login", "maxtokens", "tokensused", "secret_name",
+                                 "keyName", "access_key_id", "secretariat", "passwordPolicy", "tokenizer"])
 def test_names_that_are_not_secret_keys(key):
     assert not is_secret_key(key)
 
