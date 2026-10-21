@@ -91,6 +91,20 @@ def test_yians_default_store_counts_and_a_change_to_it_is_seen(tmp_path, company
     assert OTHER in known.values([]) and DEFAULT_KEY not in known.values([])
 
 
+def test_the_store_under_home_counts_when_xdg_config_home_points_elsewhere(tmp_path, company_git, monkeypatch):
+    connections, secrets = sources(tmp_path, company_git)
+    default = tmp_path / "home" / ".config" / "yian"  # where a worker, which inherits only HOME, keeps its logins
+    default.mkdir(parents=True, mode=0o700)
+    write_private(default / "auth.json", yian_store({"api_key": DEFAULT_KEY}, method="api_key"))
+    (tmp_path / "xdg").mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    known = KnownValues(connections=connections, secrets=secrets, git=company_git)
+    assert DEFAULT_KEY in known.values([])
+    (tmp_path / "xdg" / "yian").mkdir(mode=0o700)
+    write_private(tmp_path / "xdg" / "yian" / "auth.json", yian_store({"api_key": OTHER}, method="api_key"))
+    assert {DEFAULT_KEY, OTHER} <= known.values([])  # the office's own store, under XDG_CONFIG_HOME, counts too
+
+
 def test_yians_default_store_that_cant_be_read_fails_closed(tmp_path, company_git):
     connections, secrets = sources(tmp_path, company_git)
     default = tmp_path / "home" / ".config" / "yian"

@@ -55,16 +55,20 @@ def pin_values(secrets: SecretStore, git: CompanyGit, commit: str) -> set[str]:
     return found
 
 
-def yian_auth_store() -> Path:
-    """Yian's default credential store, where its ``AuthStore`` keeps logins when no ``YIAN_AUTH_FILE`` is set."""
-    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "yian" / "auth.json"
+def yian_auth_stores() -> list[Path]:
+    """Where Yian's ``AuthStore`` keeps logins when no ``YIAN_AUTH_FILE`` is set: under ``~/.config``, as a worker
+    (which inherits HOME but not XDG_CONFIG_HOME) finds it, and under the office's ``XDG_CONFIG_HOME`` when set."""
+    found = [Path.home() / ".config" / "yian" / "auth.json"]
+    if xdg := os.environ.get("XDG_CONFIG_HOME"):
+        found.append(Path(xdg) / "yian" / "auth.json")
+    return list(dict.fromkeys(found))
 
 
 def office_values(connections: Connections, secrets: SecretStore, git: CompanyGit, head: str) -> set[str]:
     """Each connection's secrets (strings under secret-named keys of its llm_config: its key, an Azure token,
     credential headers; env holds none, Provider refuses credential names there), the tokens and keys in each sign-in
-    file and in Yian's default store, the asset secrets named at ``head``, and #247's secrets in the person files at
-    ``head``. A removed connection, or no default store, is skipped."""
+    file and in Yian's default stores, the asset secrets named at ``head``, and #247's secrets in the person files at
+    ``head``. A removed connection, or a default store that doesn't exist, is skipped."""
     found: set[str] = set()
     for name in connections.names():
         try:
@@ -73,10 +77,11 @@ def office_values(connections: Connections, secrets: SecretStore, git: CompanyGi
             continue
     for auth in sorted(connections.dir.glob("*.auth.json")):
         found |= secret_strings(json.loads(read_private(auth)))
-    try:
-        found |= secret_strings(json.loads(read_private(yian_auth_store())))
-    except FileNotFoundError:
-        pass
+    for store in yian_auth_stores():
+        try:
+            found |= secret_strings(json.loads(read_private(store)))
+        except FileNotFoundError:
+            continue
     return found | pin_values(secrets, git, head) | set(person_secrets(git, git.list_tree(head)))
 
 
@@ -93,8 +98,8 @@ class KnownValues:
     """The office's known secret values, as Scrubbers.
 
     Two kinds of part are cached:
-    - the office's part (connections, sign-ins, Yian's default store, HEAD's asset secrets and person files), keyed by
-      HEAD and the stamps of provider.json, each connections/*.json file, the default store and the secrets folder;
+    - the office's part (connections, sign-ins, Yian's default stores, HEAD's asset secrets and person files), keyed by
+      HEAD and the stamps of provider.json, each connections/*.json file, each default store and the secrets folder;
     - each pin's asset secrets, keyed by pin and the secrets folder's stamp.
 
     Each part is used at most TTL_S. A build that misses the time limit still fills the cache when it ends.
@@ -129,8 +134,8 @@ class KnownValues:
             head = self.git.read_head()
             vault = _stamp(self.secrets.root)
             files = tuple((p.name, _stamp(p)) for p in sorted(self.connections.dir.glob("*.json")))
-            office_key = ("office", head, _stamp(self.connections.office / "provider.json"), files,
-                          _stamp(yian_auth_store()), vault)
+            stores = tuple((str(p), _stamp(p)) for p in yian_auth_stores())
+            office_key = ("office", head, _stamp(self.connections.office / "provider.json"), files, stores, vault)
             parts = [self._part(office_key, lambda: office_values(self.connections, self.secrets, self.git, head))]
             for pin in dict.fromkeys(pins):
                 if pin != head:
