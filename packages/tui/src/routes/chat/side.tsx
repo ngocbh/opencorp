@@ -7,9 +7,10 @@ import { useTheme } from "../../context/theme"
 import { clearFirst, useBindings, useOpenCorpModeStack } from "../../keymap"
 import { EmptyBorder } from "../../ui/border"
 import { useToast } from "../../ui/toast"
-import { OfficeUnavailable, isNotImplemented } from "@opencorp/client"
+import { OfficeUnavailable, isNotImplemented, statusLabel } from "@opencorp/client"
 import { errorMessage } from "../../util/error"
 import { interruptible } from "../../util/status"
+import { costCapArgument, dollars, useCostCap } from "../../component/cost-cap"
 import { personLabel } from "../../util/transcript"
 import { leaveBindings } from "./leave"
 
@@ -32,9 +33,9 @@ export function SideHeader(props: { question: Question; session: Session | undef
         <b>Side chat with {asker()}</b>
         <Show when={props.session}>
           {(s) => (
-            <span style={{ fg: s().status === "busy" ? theme.warning : theme.textMuted }}>
+            <span style={{ fg: ["busy", "waiting"].includes(s().status) ? theme.warning : theme.textMuted }}>
               {" "}
-              · {s().status}
+              · {statusLabel(s())}
             </span>
           )}
         </Show>
@@ -62,6 +63,7 @@ export function SideChat(props: {
 }) {
   const office = useOffice()
   const toast = useToast()
+  const costCap = useCostCap()
   const { theme } = useTheme()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpenCorpModeStack()
@@ -99,6 +101,16 @@ export function SideChat(props: {
     if (SIDE_EXIT.has(text.toLowerCase())) {
       textarea?.setText("")
       return toast.show({ message: "use /back to return to the question", variant: "warning" })
+    }
+    // A command, not a message, even with an amount after it: it must never reach the model.
+    const cap = costCapArgument(text)
+    if (cap !== undefined) {
+      textarea?.setText("")
+      const s = props.session
+      if (!s || !LIVE.includes(s.status))
+        return toast.show({ message: "Start the side chat to raise its cost cap", variant: "warning" })
+      const usd = dollars(cap)
+      return usd === undefined ? costCap.ask(s.id, cap) : costCap.raise(s.id, usd)
     }
     if (sending) return
     sending = true
