@@ -3,7 +3,7 @@
 from starlette.routing import BaseRoute
 
 from opencorp.daemon.routes import (connections, costs, devices, events, learning, people, profiles, questions,
-                                      sessions, work_items)
+                                      runs, sessions, work_items)
 from opencorp.hq import socket_routes
 
 
@@ -11,4 +11,4 @@ def all_routes() -> list[BaseRoute]:
     """Every route the office serves."""
     return [*people.ROUTES, *sessions.ROUTES, *work_items.ROUTES, *questions.ROUTES,
             *profiles.ROUTES, *learning.ROUTES, *events.ROUTES, *devices.ROUTES,
-            *connections.ROUTES, *costs.ROUTES, *socket_routes.ROUTES]
+            *connections.ROUTES, *costs.ROUTES, *runs.ROUTES, *socket_routes.ROUTES]

@@ -46,7 +46,7 @@ async def test_only_hq_event_types_arrive(office, hq, short_dir):
             office.bus.publish_meta(meta(t))
         head = office.git.head()
         types = ["session.created", "session.updated", "question.created", "question.updated",
-                 "work_item.created", "work_item.updated"]
+                 "work_item.created", "work_item.updated", "run.updated"]
         sent = [meta(t) for t in types] + [meta("company.updated", head, sha=head)]
         for event in sent:
             office.bus.publish_meta(event)
