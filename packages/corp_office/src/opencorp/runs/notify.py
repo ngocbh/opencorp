@@ -15,6 +15,8 @@ from opencorp.store import new_id
 log = logging.getLogger(__name__)
 
 EVERY_S = 1.0
+PRUNE_EVERY = 256
+"""How many sends at once go between prunes of long-quiet runs, so runs that never coalesce are forgotten too."""
 
 
 def run_updated(run_id: str, session_id: str, parent_run_id: str | None, status: str,
@@ -27,7 +29,12 @@ def run_updated(run_id: str, session_id: str, parent_run_id: str | None, status:
 
 class RunNotifier:
     """Sends run changes through ``publish`` (the bus's ``publish_meta``), coalesced per run to one each ``every``
-    seconds. One thread sends the trailing events; ``close`` stops it."""
+    seconds. One thread sends the trailing events; ``close`` stops it.
+
+    A change that goes at once is built and published on the caller's thread, outside the lock, so it may publish
+    just after ``close`` returns. That is safe today: the callers are worker reader threads, and the harness's
+    ``close_all`` waits for every worker to exit (its reader done) before it closes the notifier, then the store; a
+    bus that has stopped drops what it is given."""
 
     def __init__(self, publish: Callable[[Event], None], *, every: float = EVERY_S,
                  clock: Callable[[], float] = time.monotonic) -> None:
@@ -37,6 +44,7 @@ class RunNotifier:
         self._cond = threading.Condition()
         self._thread: threading.Thread | None = None
         self._closed = False
+        self._at_once = 0  # sends at once since the last prune
 
     def changed(self, run_id: str, event: Callable[[], Event | None]) -> None:
         """Run ``run_id`` changed; ``event()`` builds its run.updated when it is sent (None: nothing to send).
@@ -49,6 +57,9 @@ class RunNotifier:
             at = self._clock()
             if run_id not in self._dirty and at - self._sent.get(run_id, -math.inf) >= self._every:
                 self._sent[run_id] = at
+                self._at_once += 1
+                if self._at_once >= PRUNE_EVERY:
+                    self._prune(at)
             else:
                 self._dirty[run_id] = event
                 if self._thread is None:
@@ -81,13 +92,18 @@ class RunNotifier:
                 if due:
                     for run_id in due:
                         self._sent[run_id] = at
-                    quiet = [r for r, t in self._sent.items() if at - t > 10 * self._every and r not in self._dirty]
-                    for run_id in quiet:
-                        del self._sent[run_id]  # long quiet: forgotten, so the map stays small
+                    self._prune(at)
                     return [self._dirty.pop(r) for r in due]
                 wait = min((self._sent.get(r, at) + self._every for r in self._dirty), default=None)
                 self._cond.wait(None if wait is None else max(0.0, wait - at))
             return None
+
+    def _prune(self, at: float) -> None:
+        """Forget runs long quiet, so the map stays small; called holding the lock."""
+        self._at_once = 0
+        quiet = [r for r, t in self._sent.items() if at - t > 10 * self._every and r not in self._dirty]
+        for run_id in quiet:
+            del self._sent[run_id]
 
     def _send(self, event: Callable[[], Event | None]) -> None:
         try:

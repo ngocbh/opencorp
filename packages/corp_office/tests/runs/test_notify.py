@@ -41,6 +41,18 @@ def test_close_stops_the_thread_and_drops_what_waits():
     assert sent == ["a"]
 
 
+def test_runs_long_quiet_are_forgotten_even_when_nothing_is_coalesced():
+    clock = [0.0]
+    n = RunNotifier(lambda e: None, every=0.01, clock=lambda: clock[0])
+    for r in range(1000):
+        n.changed(f"old{r}", lambda: None)
+    clock[0] = 1.0
+    for r in range(300):
+        n.changed(f"new{r}", lambda: None)
+    assert n._thread is None and not any(r.startswith("old") for r in n._sent)
+    n.close()
+
+
 def test_a_failing_build_is_logged_and_the_next_still_goes():
     sent = []
     n = RunNotifier(sent.append, every=0)
