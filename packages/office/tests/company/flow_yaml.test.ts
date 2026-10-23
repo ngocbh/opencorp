@@ -3,9 +3,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, test } from "bun:test"
-import { MAX_NESTING, MAX_NODES, readFlow, readYaml, YamlError } from "../../src/company/flow_yaml.ts"
+import { MAX_NESTING, readFlow, readYaml, YamlError } from "../../src/company/flow_yaml.ts"
 
-const SRC = fs.realpathSync(fileURLToPath(new URL("../../src", import.meta.url)))
+const SRC = fileURLToPath(new URL("../../src", import.meta.url))
 const INVALID = (line: number) => `isn't valid YAML (line ${line})`
 const TOO_DEEP = "is nested too deeply to read"
 const RECURSIVE = (line: number) => `has an alias inside the node it names (line ${line})`
@@ -85,10 +85,13 @@ describe("aliases, the node cap and nesting", () => {
   test("an alias bomb is refused", () => {
     const lines = ["a0: &a0 [x, x, x, x, x, x, x, x, x, x]"]
     for (let i = 1; i <= 10; i++) lines.push(`a${i}: &a${i} [${Array(10).fill(`*a${i - 1}`).join(", ")}]`)
-    const start = performance.now()
-    expect(refusal(() => readFlow(lines.join("\n")))).toBe(`expands to more than ${MAX_NODES} nodes`)
-    expect(refusal(() => readYaml(lines.join("\n")))).toBe("expands to more than 100000 nodes")
-    expect(performance.now() - start).toBeLessThan(1000)
+    const text = lines.join("\n")
+    let flow = ""
+    let company = ""
+    expect(fastest(() => (flow = refusal(() => readFlow(text))))).toBeLessThan(1000)
+    expect(fastest(() => (company = refusal(() => readYaml(text))))).toBeLessThan(1000)
+    expect(flow).toBe("expands to more than 100000 nodes")
+    expect(company).toBe("expands to more than 100000 nodes")
   })
 
   test("a recursive alias is refused", () => {
@@ -225,6 +228,7 @@ describe("safety", () => {
 
   test("only flow_yaml imports yaml", () => {
     const IMPORTS_YAML = /(?:from\s*|import\s*\(?\s*|require\s*\(\s*)["']yaml(?:\/[^"']*)?["']/
+    // Guards the regex: a pattern that matched nothing would let any importer through.
     for (const sample of ['import { parse } from "yaml"', "await import('yaml/util')", 'require("yaml")'])
       expect(sample).toMatch(IMPORTS_YAML)
     const files = fs.readdirSync(SRC, { recursive: true, encoding: "utf8" }).filter((name) => /\.[cm]?[jt]sx?$/.test(name))

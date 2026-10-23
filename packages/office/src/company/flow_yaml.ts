@@ -8,7 +8,10 @@
  */
 import { type Alias, isAlias, isMap, isScalar, isSeq, type Node, parseDocument, type Scalar, type YAMLMap } from "yaml"
 
-/** Why a YAML text can't be read: fixed text plus a line number, never the text itself (a company file can hold a password hash). */
+/**
+ * Why a YAML text can't be read: fixed text plus a line number, never the text itself (a company file
+ * can hold a password hash).
+ */
 export class YamlError extends Error {
   override name = "YamlError"
 }
@@ -23,13 +26,20 @@ const YAML_TAG = "tag:yaml.org,2002:"
 const MERGE_TAG = YAML_TAG + "merge"
 const CORE_TAGS = new Set(["str", "null", "bool", "int", "float", "map", "seq"].map((name) => YAML_TAG + name))
 const TOO_DEEP = "is nested too deeply to read"
+const BAD_MERGE = "has a merge key whose value isn't a mapping or a list of mappings"
 
-/** A company file's YAML as plain data (Python's yaml.safe_load, read as YAML 1.2); a tag outside the core schema is an error. */
+/**
+ * A company file's YAML as plain data (Python's yaml.safe_load, read as YAML 1.2); a tag outside the core
+ * schema is an error.
+ */
 export function readYaml(text: string): unknown {
   return read(text, false)
 }
 
-/** A flow's YAML as plain data, merge keys expanded and each type-tagged scalar value as its text ("!int 5"); for looking at a flow's shape, not checking it (yian loads and checks flows). */
+/**
+ * A flow's YAML as plain data, merge keys expanded and each type-tagged scalar value as its text
+ * ("!int 5"); for looking at a flow's shape, not checking it (yian loads and checks flows).
+ */
 export function readFlow(text: string): unknown {
   return read(text, true)
 }
@@ -53,6 +63,7 @@ function read(text: string, flowTags: boolean): unknown {
   // library's errors are not in source order.
   const error = first(document.errors)
   if (error !== undefined) {
+    // eemeli reports a stack overflow it caught while composing a deep collection under this code.
     throw new YamlError(error.code === "RESOURCE_EXHAUSTION" ? TOO_DEEP : invalid(text, error.pos[0]))
   }
   if (!flowTags) {
@@ -130,6 +141,7 @@ class Reader {
   /** The node `written` stands for: an alias's target, else itself. */
   private resolve(written: unknown): unknown {
     if (!isAlias(written)) return written
+    // `aliasTargets` mapped every alias or threw.
     const target = this.targets.get(written)!
     if (this.active.has(target)) {
       throw new YamlError(`has an alias inside the node it names (line ${lineOf(this.text, written.range![0])})`)
@@ -182,7 +194,8 @@ class Reader {
       }
       const at = (pair.key as Node | null)?.range?.[0] ?? node.range![0]
       if (!isScalar(key) || key.value === null) throw new YamlError(invalid(this.text, at))
-      // As yian, two written keys repeat when they read as one value; keys written as aliases never do.
+      // Two written keys repeat when they read as one value. Yian compares key text, a stricter rule (it
+      // also refuses `1` beside `"1"`); both are safe. Keys written as aliases never repeat.
       if (!isAlias(pair.key)) {
         if (seen.has(key.value)) throw new YamlError(invalid(this.text, at))
         seen.add(key.value)
@@ -202,7 +215,7 @@ class Reader {
   private merge(result: Record<string, unknown>, written: unknown, keyAt: number, level: number): void {
     const refuse = (at: unknown) => {
       const pos = (at as Node | null)?.range?.[0] ?? keyAt
-      return new YamlError(`has a merge key whose value isn't a mapping or a list of mappings (line ${lineOf(this.text, pos)})`)
+      return new YamlError(`${BAD_MERGE} (line ${lineOf(this.text, pos)})`)
     }
     // A merge value is read by its kind whatever its tag, as yian reads it.
     const value = this.resolve(written)
@@ -229,7 +242,7 @@ function scalarValue(node: Scalar): unknown {
   // `!` is the non-specific tag, not a type: its scalar is text.
   if (tag === undefined || tag === "!" || CORE_TAGS.has(tag)) return node.value
   if (tag.startsWith(YAML_TAG)) return node.source
-  return `${tag} ${node.source}`.trimEnd()
+  return node.source ? `${tag} ${node.source}` : tag
 }
 
 /** Sets `obj[key]` as an own property, so `__proto__` is a key, never the prototype. */
