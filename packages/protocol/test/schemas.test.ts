@@ -56,16 +56,21 @@ function required(object: z.ZodObject): string[] {
   return Object.entries(object.shape).filter(([, field]) => !(field instanceof z.ZodDefault)).map(([key]) => key)
 }
 
-/** The text of every `src/schemas/*.ts` file. */
-function sources(): string[] {
+/** Every `src/schemas/*.ts` file as a `[file, text]` pair. */
+function sources(): [string, string][] {
   return readdirSync(SOURCES).filter((f) => f.endsWith(".ts"))
-    .map((f) => readFileSync(new URL(f, SOURCES), "utf8"))
+    .map((f) => [f, readFileSync(new URL(f, SOURCES), "utf8")])
+}
+
+/** The value at `path` inside `data`. */
+function valueAt(data: unknown, path: (string | number)[]): unknown {
+  return path.reduce<unknown>((at, key) => (at as Record<string | number, unknown>)[key], data)
 }
 
 /** A copy of `data` with the value at `path` set to `value`. */
 function withValue(data: unknown, path: (string | number)[], value: unknown): unknown {
   const copy = structuredClone(data)
-  const parent = path.slice(0, -1).reduce((at: any, key) => at[key], copy)
+  const parent = valueAt(copy, path.slice(0, -1)) as Record<string | number, unknown>
   parent[path.at(-1)!] = value
   return copy
 }
@@ -93,18 +98,15 @@ test("every def has a zod schema of the same name", () => {
   expect(exported.sort()).toEqual([...NAMES].sort())
 })
 
-test("schema is valid", () => {
-  for (const name of NAMES) expect(() => z.toJSONSchema(schema(name))).not.toThrow()
+test.each(NAMES)("schema is valid [%s]", (name) => {
+  expect(() => z.toJSONSchema(schema(name))).not.toThrow()
 })
 
 test("objects are closed and have no format", () => {
   expect(objects().filter(([, object]) => !(object.def.catchall instanceof z.ZodNever)).map(([name]) => name))
     .toEqual([])
-  for (const name of NAMES) {
-    const json = JSON.stringify(z.toJSONSchema(schema(name)))
-    expect(json).not.toContain('"format"')
-    expect(json).not.toContain('"$id"')
-  }
+  expect(NAMES.filter((name) => /"format"|"\$id"/.test(JSON.stringify(z.toJSONSchema(schema(name))))))
+    .toEqual([])
 })
 
 const ENTITIES = [
@@ -143,7 +145,7 @@ test("optional fields default", () => {
     Object.entries(object.shape).filter(([, field]) => field instanceof z.ZodOptional)
       .map(([key]) => `${name}.${key}`))
   expect(optional).toEqual([])
-  for (const text of sources()) expect(text).not.toContain(".optional(")
+  expect(sources().filter(([, text]) => text.includes(".optional(")).map(([file]) => file)).toEqual([])
 })
 
 test("harness session fields exist", () => {
@@ -227,21 +229,23 @@ test("run updated is an event type", () => {
   expect(Schemas.Event.shape.type.options).toContain("run.updated")
 })
 
-test("a reason and a node error are capped at 200 characters", () => {
-  for (const [def, key] of [["RunSummary", "reason"], ["RunNode", "error"]] as const) {
+test.each([["RunSummary", "reason"], ["RunNode", "error"]] as const)(
+  "a reason and a node error are capped at 200 characters [%s]",
+  (def, key) => {
     const data = load(FIXTURES, def) as object
     expect(schema(def).safeParse({ ...data, [key]: "x".repeat(200) }).success).toBe(true)
     expect(schema(def).safeParse({ ...data, [key]: "x".repeat(201) }).success).toBe(false)
-  }
-})
+  },
+)
 
-test("node and record pages can say the log is still being read", () => {
-  for (const page of [Schemas.RunNodePage, Schemas.RunEventPage]) {
+test.each([["RunNodePage", Schemas.RunNodePage], ["RunEventPage", Schemas.RunEventPage]] as const)(
+  "node and record pages can say the log is still being read [%s]",
+  (_, page) => {
     expect(page.shape.indexing.parse(undefined)).toBe(false)
     expect(page.shape.indexing.safeParse("yes").success).toBe(false)
     expect(Object.keys(page.shape)).toEqual(expect.arrayContaining(["bytes_done", "bytes_total"]))
-  }
-})
+  },
+)
 
 test("a node kind is nullable and optional", () => {
   const { kind: _, ...data } = load(FIXTURES, "RunNode") as Record<string, unknown>
@@ -271,10 +275,13 @@ const PERSON_CHANGES: Record<string, unknown>[] = [
   { password_hash: "hunter22" }, { password_hash: "" },
 ]
 
-test.each(PERSON_CHANGES)("generated models keep constraints [%#]", (change) => {
-  const data = load(FIXTURES, "Person") as object
-  expect(Schemas.Person.safeParse({ ...data, ...change }).success).toBe(false)
-})
+test.each(PERSON_CHANGES.map((change) => [JSON.stringify(change), change] as const))(
+  "generated models keep constraints [%s]",
+  (_, change) => {
+    const data = load(FIXTURES, "Person") as object
+    expect(Schemas.Person.safeParse({ ...data, ...change }).success).toBe(false)
+  },
+)
 
 test("a person may carry a password hash as a phc string", () => {
   const data = load(FIXTURES, "Person") as object
@@ -317,14 +324,6 @@ test("a choice takes no typed answer unless it says so", () => {
 
 test("company defaults no longer take idle end", () => {
   expect(Schemas.CompanyDefaults.safeParse({ idle_end: "2h" }).success).toBe(false)
-})
-
-test("every pattern carries the u flag", () => {
-  const text = sources().join("\n")
-  const literals = [...text.matchAll(/\.regex\(\/((?:\\.|[^\/\\\n])+)\/([a-z]*)\)/g)]
-  expect(text.split(".regex(").length - 1).toBe(13)
-  expect(literals.length).toBe(13)
-  expect(literals.filter(([, , flags]) => !flags.includes("u")).map(([, pattern]) => pattern)).toEqual([])
 })
 
 /**
@@ -377,14 +376,23 @@ const PATTERNS: {
   },
 ]
 
+test("every pattern carries the u flag", () => {
+  const text = sources().map(([, source]) => source).join("\n")
+  const literals = [...text.matchAll(/\.regex\(\/((?:\\.|[^\/\\\n])+)\/([a-z]*)\)/g)]
+  expect(PATTERNS.length).toBe(13)
+  // Each `.regex(` site needs its own PATTERNS row.
+  expect(text.split(".regex(").length - 1).toBe(PATTERNS.length)
+  expect(literals.length).toBe(PATTERNS.length)
+  expect(literals.filter(([, , flags]) => !flags.includes("u")).map(([, pattern]) => pattern)).toEqual([])
+})
+
 test.each(PATTERNS)("each pattern is checked against the fixtures [$site]", ({ def, path, value, bad, invalid }) => {
   let data = load(FIXTURES, def)
   if (value !== undefined) data = withValue(data, path, value)
-  expect(typeof path.reduce((at: any, key) => at[key], data)).toBe("string")
+  expect(typeof valueAt(data, path)).toBe("string")
   expect(schema(def).safeParse(data).error).toBeUndefined()
   const issues = schema(def).safeParse(withValue(data, path, bad)).error?.issues ?? []
   expect(issues.map((issue) => [issue.code, issue.path])).toEqual([["invalid_format", path]])
-  for (const stem of invalid) {
-    expect(schema(stem.split(".", 1)[0]).safeParse(load(INVALID, stem)).success).toBe(false)
-  }
+  expect(invalid.filter((stem) => schema(stem.split(".", 1)[0]).safeParse(load(INVALID, stem)).success))
+    .toEqual([])
 })
