@@ -1,9 +1,11 @@
-import { afterAll, beforeAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test"
 import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+
+setDefaultTimeout(30_000)
 
 const CHECKOUT = fs.realpathSync(fileURLToPath(new URL("../../..", import.meta.url)))
 const WRAPPER = path.join(CHECKOUT, "packages/cli/bin/opencorp")
@@ -59,75 +61,57 @@ function run(command: string, args: string[], env: Record<string, string>) {
   fs.rmSync(marker, { force: true })
   fs.rmSync(seenFile, { force: true })
   const result = spawnSync(command, args, { cwd: proj, env: { HOME: tmp, ...env }, encoding: "utf8", timeout: 20_000 })
-  const seen = fs.existsSync(seenFile)
-    ? (JSON.parse(fs.readFileSync(seenFile, "utf8")) as { planted: string | null; argv: string[] })
-    : null
+  if (!fs.existsSync(seenFile))
+    throw new Error(`Bun never ran (status ${result.status}, ${result.error ?? "no spawn error"}):\n${result.stderr}`)
+  const seen = JSON.parse(fs.readFileSync(seenFile, "utf8")) as { planted: string | null; argv: string[] }
   return { result, seen, marker: fs.existsSync(marker) }
 }
 
-test(
-  "the wrapper is an executable sh script that execs Bun with the no-autoload flags on the entry",
-  () => {
-    expect(fs.statSync(WRAPPER).mode & 0o111).toBe(0o111)
-    const text = fs.readFileSync(WRAPPER, "utf8")
-    expect(text.split("\n")[0]).toBe("#!/bin/sh")
-    expect(text).toContain(
-      'exec "${OPENCORP_BUN:-bun}" --no-install --no-env-file --config=/dev/null "$checkout/packages/cli/src/main.ts" "$@"',
-    )
-    const pkg = JSON.parse(fs.readFileSync(path.join(CHECKOUT, "packages/cli/package.json"), "utf8"))
-    expect(pkg.bin.opencorp).toBe("bin/opencorp")
-  },
-  30_000,
-)
+test("the wrapper is an executable sh script that execs Bun with the no-autoload flags on the entry", () => {
+  expect(fs.statSync(WRAPPER).mode & 0o111).toBe(0o111)
+  const text = fs.readFileSync(WRAPPER, "utf8")
+  expect(text.split("\n")[0]).toBe("#!/bin/sh")
+  expect(text).toContain(
+    'exec "${OPENCORP_BUN:-bun}" --no-install --no-env-file --config=/dev/null "$checkout/packages/cli/src/main.ts" "$@"',
+  )
+  const pkg = JSON.parse(fs.readFileSync(path.join(CHECKOUT, "packages/cli/package.json"), "utf8")) as {
+    bin: { opencorp: string }
+  }
+  expect(pkg.bin.opencorp).toBe("bin/opencorp")
+})
 
-test(
-  "plain bun from a folder holding .env and a bunfig.toml preload loads both",
-  () => {
-    const { seen, marker } = run(path.join(tmp, "bin/bun"), [ENTRY, "--help"], { PATH: "/usr/bin:/bin" })
-    expect(seen?.planted).toBe("1")
-    expect(marker).toBe(true)
-  },
-  30_000,
-)
+test("plain bun from a folder holding .env and a bunfig.toml preload loads both", () => {
+  const { seen, marker } = run(path.join(tmp, "bin/bun"), [ENTRY, "--help"], { PATH: "/usr/bin:/bin" })
+  expect(seen.planted).toBe("1")
+  expect(marker).toBe(true)
+})
 
-test(
-  "opencorp --help from a folder holding .env and a bunfig.toml preload sees neither",
-  () => {
-    const { result, seen, marker } = run(WRAPPER, ["--help"], { PATH: `${path.join(tmp, "bin")}:/usr/bin:/bin` })
-    expect(result.status).toBe(0)
-    expect(result.stdout).toContain("Usage: opencorp [command] [options]")
-    expect(seen?.planted).toBeNull()
-    expect(marker).toBe(false)
-    expect(seen?.argv).toEqual([ENTRY, "--help"])
-  },
-  30_000,
-)
+test("opencorp --help from a folder holding .env and a bunfig.toml preload sees neither", () => {
+  const { result, seen, marker } = run(WRAPPER, ["--help"], { PATH: `${path.join(tmp, "bin")}:/usr/bin:/bin` })
+  expect(result.status).toBe(0)
+  expect(result.stdout).toContain("Usage: opencorp [command] [options]")
+  expect(seen.planted).toBeNull()
+  expect(marker).toBe(false)
+  expect(seen.argv).toEqual([ENTRY, "--help"])
+})
 
-test(
-  "opencorp through a bun link symlink chain with OPENCORP_BUN gets args with spaces intact",
-  () => {
-    const { result, seen, marker } = run(path.join(tmp, "links/opencorp"), ["--help", "x y", "", "$HOME *"], {
-      PATH: "/usr/bin:/bin",
-      OPENCORP_BUN: path.join(tmp, "bin/bun"),
-    })
-    expect(result.status).toBe(0)
-    expect(seen?.argv).toEqual([ENTRY, "--help", "x y", "", "$HOME *"])
-    expect(seen?.planted).toBeNull()
-    expect(marker).toBe(false)
-  },
-  30_000,
-)
+test("opencorp through a bun link symlink chain with OPENCORP_BUN gets args with spaces intact", () => {
+  const { result, seen, marker } = run(path.join(tmp, "links/opencorp"), ["--help", "x y", "", "$HOME *"], {
+    PATH: "/usr/bin:/bin",
+    OPENCORP_BUN: path.join(tmp, "bin/bun"),
+  })
+  expect(result.status).toBe(0)
+  expect(seen.argv).toEqual([ENTRY, "--help", "x y", "", "$HOME *"])
+  expect(seen.planted).toBeNull()
+  expect(marker).toBe(false)
+})
 
-test(
-  "opencorp run by a relative path with CDPATH set still finds the checkout",
-  () => {
-    const { result, seen } = run("/bin/sh", ["-c", 'link/opencorp "$@"', "sh", "--help"], {
-      PATH: "/usr/bin:/bin",
-      OPENCORP_BUN: path.join(tmp, "bin/bun"),
-      CDPATH: proj,
-    })
-    expect(result.status).toBe(0)
-    expect(seen?.argv).toEqual([ENTRY, "--help"])
-  },
-  30_000,
-)
+test("opencorp run by a relative path with CDPATH set still finds the checkout", () => {
+  const { result, seen } = run("/bin/sh", ["-c", 'link/opencorp "$@"', "sh", "--help"], {
+    PATH: "/usr/bin:/bin",
+    OPENCORP_BUN: path.join(tmp, "bin/bun"),
+    CDPATH: proj,
+  })
+  expect(result.status).toBe(0)
+  expect(seen.argv).toEqual([ENTRY, "--help"])
+})
