@@ -123,5 +123,6 @@ test("opencorp run by a relative path with CDPATH set still finds the checkout",
   })
   expect(result.status).toBe(0)
   expect(seen.argv).toEqual([ENTRY, "--help"])
+  expect(seen.planted).toBeNull()
   expect(seen.local).toBeNull()
 })
