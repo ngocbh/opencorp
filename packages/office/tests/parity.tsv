@@ -1,0 +1,196 @@
+python	status	ts	reason	item
+auth/test_identity.py	open	—	—	O1-14
+auth/test_passwords.py	open	—	—	O1-14
+auth/test_tokens.py	open	—	—	O1-14
+chat/test_check.py	open	—	—	O3-5
+chat/test_connections.py	open	—	—	O2-19
+chat/test_cost.py	open	—	—	O3-8b
+chat/test_harness.py	open	—	—	O4a-4
+chat/test_hire.py	open	—	—	O2-24
+chat/test_hooks.py	open	—	—	O3-8b
+chat/test_identity.py	open	—	—	O3-8b
+chat/test_logins.py	open	—	—	O2-20
+chat/test_models.py	open	—	—	O2-20
+chat/test_provider.py	open	—	split: O2-19 → O3-4	O3-4
+chat/test_restart.py	open	—	split: O4a-6 → O4b-1	O4b-1
+chat/test_run_records.py	open	—	—	O4a-5
+chat/test_sandbox.py	open	—	—	O4a-4
+chat/test_session_model.py	open	—	—	O4a-5
+chat/test_state.py	open	—	—	O3-8b
+chat/test_template.py	open	—	split: O2-16a → O4a-1	O4a-1
+chat/test_transcript.py	open	—	split: O4a-7a → O4b-1	O4b-1
+chat/test_turns.py	open	—	—	O3-8b
+chat/test_waiting.py	open	—	—	O4a-3
+chat/test_wake.py	open	—	—	O4a-3
+company/test_draft.py	open	—	—	O2-16b
+company/test_flows.py	open	—	—	O1-8
+company/test_git.py	open	—	—	O1-6
+company/test_lint.py	open	—	split: O1-8 → O2-16a	O2-16a
+company/test_loader.py	open	—	—	O1-7
+company/test_naming.py	open	—	—	O1-5
+company/test_secret_keys.py	open	—	—	O1-5
+company/test_snapshot.py	open	—	—	O1-7
+company/test_source.py	open	—	—	O1-7
+company/test_watch.py	open	—	—	O2-4
+company_template/test_writer.py	open	—	—	O2-16a
+daemon/test_app.py	open	—	—	O2-2
+daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
+daemon/test_bus.py	open	—	—	O2-2
+daemon/test_extensions.py	open	—	—	O2-4
+daemon/test_http.py	open	—	—	O2-1
+daemon/test_main.py	open	—	split: O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
+daemon/test_routes_connections.py	open	—	split: O2-21 → O3-5	O3-5
+daemon/test_routes_costs.py	open	—	—	O2-6
+daemon/test_routes_events.py	open	—	split: O2-2 → O4a-7b	O4a-7b
+daemon/test_routes_learning.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+daemon/test_routes_people.py	open	—	—	O2-6
+daemon/test_routes_profiles.py	open	—	—	O2-23
+daemon/test_routes_questions.py	open	—	split: O3-9 → O4a-9	O4a-9
+daemon/test_routes_runs.py	open	—	—	O4b-7
+daemon/test_routes_sessions.py	open	—	split: O3-15 → O4a-7b	O4a-7b
+daemon/test_routes_work_items.py	open	—	—	O2-6
+e2e/test_devices.py	open	—	—	O5-1
+e2e/test_failures.py	open	—	—	O5-1
+e2e/test_failures.py::test_two_feedbacks_learned_at_once_both_land_in_the_profile	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+e2e/test_hq.py	open	—	—	O5-1
+e2e/test_journey.py	open	—	—	O5-1
+e2e/test_run_logs.py	open	—	—	O5-1
+harness/test_approvals.py	open	—	—	O3-14
+harness/test_codex.py	open	—	—	O3-12
+harness/test_continue.py	open	—	—	O3-14
+harness/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+harness/test_errors.py	open	—	—	O3-15
+harness/test_restore.py	open	—	—	O3-14
+harness/test_rpc.py	open	—	—	O3-10
+harness/test_session.py	open	—	—	O3-13
+harness/test_translate.py	open	—	—	O3-11
+harness/test_waiting.py	open	—	—	O3-14
+hq/test_api.py	open	—	split: O2-9 → O4b-7	O4b-7
+hq/test_app_fixture.py	open	—	—	O2-7
+hq/test_auth.py	open	—	—	O2-9
+hq/test_config.py	open	—	—	O2-7
+hq/test_core.py	open	—	—	O2-10
+hq/test_events.py	open	—	—	O2-10
+hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
+hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
+hq/test_pairing.py	open	—	—	O2-7
+hq/test_servers.py	open	—	—	O2-10
+hq/test_sessions.py	open	—	—	O2-8
+hq/test_socket_routes.py	open	—	—	O2-10
+hq/test_source.py	open	—	—	O2-9
+hq/test_static.py	open	—	—	O2-7
+hq/test_status.py	open	—	—	O2-7
+hq/test_version.py	open	—	—	O2-7
+install/test_doctor.py	open	—	—	O2-18a
+install/test_fallback.py	open	—	—	O2-12
+install/test_init.py	open	—	—	O2-17
+install/test_interview.py	open	—	—	O2-17
+install/test_json_prompts.py	open	—	—	O2-13a
+install/test_launch.py	open	—	—	O2-11b
+install/test_launchd.py	open	—	—	O2-12
+install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
+install/test_main.py	open	—	—	O2-13b
+install/test_offboard.py	open	—	—	O2-18b
+install/test_onboard.py	open	—	—	O2-15
+install/test_provider_setup.py	open	—	—	O2-14
+install/test_service.py	open	—	—	O2-12
+install/test_systemd.py	open	—	—	O2-12
+perm/test_frames.py	open	—	—	O3-4
+perm/test_monitor.py	open	—	split: O1-13 → O3-2	O3-2
+perm/test_office.py	open	—	—	O1-13
+perm/test_redaction.py	open	—	split: O1-12 → O1-13	O1-13
+perm/test_workspace_audit.py	open	—	—	O2-22a
+profile/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_feedback.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_learning_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_learning_feedback.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_learning_logs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_learning_manager.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_learning_mismatch.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_learning_recovery.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+profile/test_manager.py	open	—	—	O4a-9
+profile/test_store.py	open	—	—	O2-23
+protocol/test_codegen.py	ported	packages/protocol/test/schemas.test.ts	behaviour tests ported onto zod (D6)	O0-6
+protocol/test_codegen.py::test_generated_models_are_current	dropped	—	no codegen (D6)	O0-6
+protocol/test_codegen.py::test_ids_and_enums_are_plain_str	dropped	—	pydantic-only; TS strings are plain (D6)	O0-6
+protocol/test_invalid.py	ported	packages/protocol/test/schemas.test.ts	zod schemas (D6, §5.4)	O0-6
+protocol/test_invalid.py::test_model_rejects	dropped	—	one schema now; schema rejects covers it (D6)	O0-6
+protocol/test_now.py	ported	packages/protocol/test/time.test.ts	§5.4	O0-6
+protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schemas (D6, §5.4)	O0-6
+protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
+questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
+questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9	O4a-9
+questions/test_checker.py	open	—	—	O3-7
+questions/test_format.py	open	—	—	O3-7
+questions/test_normalize.py	open	—	—	O3-7
+questions/test_seed.py	open	—	—	O4a-8
+questions/test_side.py	open	—	—	O4a-8
+questions/test_side_chat_flow.py	open	—	—	O4a-9
+runs/test_as_stored.py	open	—	—	O4b-7
+runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+runs/test_detail.py	open	—	—	O4b-7
+runs/test_launches.py	open	—	—	O4a-5
+runs/test_list.py	open	—	—	O4b-7
+runs/test_live.py	open	—	—	O4b-2
+runs/test_nodes.py	open	—	—	O4b-5
+runs/test_notify.py	open	—	—	O4b-7
+runs/test_outcome_names.py	open	—	—	O3-1
+runs/test_outcomes.py	open	—	—	O4a-4
+runs/test_reader.py	open	—	—	O4b-5
+runs/test_reason_cut.py	open	—	—	O4b-7
+runs/test_records.py	open	—	—	O4b-6
+runs/test_sweep.py	open	—	—	O4b-6
+sandbox/test_bwrap.py	open	—	—	O1-9
+sandbox/test_escape.py	open	—	—	O1-10
+sandbox/test_escapees.py	open	—	—	O1-10
+sandbox/test_fileops.py	open	—	—	O1-11
+sandbox/test_policy.py	open	—	—	O1-9
+sandbox/test_run.py	open	—	—	O1-10
+sandbox/test_seatbelt.py	open	—	—	O1-9
+sandbox/test_workspace_tools.py	open	—	—	O2-22a
+store/test_bookkeeping.py	open	—	—	O1-2
+store/test_close.py	open	—	—	O1-2
+store/test_costs.py	open	—	—	O1-3
+store/test_feedback.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+store/test_hq_sessions.py	open	—	—	O1-4
+store/test_learning.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
+store/test_messages.py	dropped	—	no office messages table (D9)	O0-9
+store/test_migrate.py	open	—	—	O1-2
+store/test_open.py	open	—	—	O1-2
+store/test_outbox.py	open	—	—	O1-2
+store/test_questions.py	open	—	—	O1-4
+store/test_runs.py	open	—	—	O1-3
+store/test_sessions.py	open	—	—	O1-3
+store/test_work_items.py	open	—	—	O1-4
+test_old_name.py	dropped	—	a repo grep whose allowed users are legacy.py and its tests; legacy.py goes (D24, D4)	O0-9
+test_packaging.py	dropped	—	the PyPI sdist and wheel; the office ships as a compiled binary (D25), tested by O2-26	O0-9
+test_secrets.py	open	—	—	O1-1
+test_smoke.py	ported	packages/office/tests/smoke.test.ts	the office package imports next to yian	O0-4
+testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, retired at cut-over (D29)	O0-9
+testing/test_fake_codex.py	open	—	—	O3-10
+tools/company/test_draft.py	open	—	—	O2-16b
+tools/company/test_work.py	open	—	—	O2-22b
+tools/test_build.py	open	—	—	O2-22b
+tools/test_work_items.py	open	—	—	O2-22a
+worker/test_channel.py	open	—	—	O3-1
+worker/test_fake_llm.py	open	—	split: O2-24 → O2-20	O2-20
+worker/test_job.py	open	—	split: O3-1 → O2-22b	O2-22b
+worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2
+worker/test_main.py	open	—	—	O3-3
+worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
+worker/test_remote_store.py	open	—	—	O3-2
+worker/test_resume.py	open	—	—	O4a-2
+worker/test_rpc.py	open	—	—	O3-2
+worker/test_spawn.py	open	—	—	O3-4
+worker/test_steering.py	open	—	—	O3-3
+—	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
+—	new	packages/protocol/test/errors.test.ts::422 text never holds an input value or an unknown key	§5.4, §6 rule 7	O0-6
+—	new	packages/protocol/test/errors.test.ts::every code a client branches on is a protocol error code	§5.4	O0-6
+—	new	packages/protocol/test/errors.test.ts::the shared constants keep their values	§5.4	O0-6
+—	new	packages/protocol/test/schemas.test.ts::each pattern is checked against the fixtures	§5.4	O0-6
+—	new	packages/protocol/test/schemas.test.ts::every def has a zod schema of the same name	today's names (§5.4)	O0-6
+—	new	packages/protocol/test/schemas.test.ts::every pattern carries the u flag	§5.4	O0-6
+—	new	packages/protocol/test/version.test.ts::a docs only change keeps the key	P8	O0-6
+—	new	packages/protocol/test/version.test.ts::a schema change changes the key	P8	O0-6
+—	new	packages/protocol/test/version.test.ts::the key is stable	P8	O0-6
+—	new	packages/protocol/test/version.test.ts::the key is the version and the schema hash	P8	O0-6
