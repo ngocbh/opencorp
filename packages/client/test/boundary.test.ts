@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { CHAT_TURN_PATH } from "@opencorp/protocol"
 import { readdirSync, readFileSync } from "node:fs"
 import path from "node:path"
 
@@ -49,6 +50,17 @@ test("no file the browser entry loads uses Node's or Bun's globals", () => {
     ),
   )
   expect(offenders).toEqual([])
+})
+
+test("the browser bundle leaves zod out", async () => {
+  // HQ's CSP is `script-src 'self'` and zod probes `new Function` when it builds an object
+  // schema, so zod must stay out of the browser bundle. The client uses only the protocol's
+  // types and constants, and the protocol's `sideEffects: false` lets a bundler drop the zod
+  // schemas the root re-exports.
+  const out = await Bun.build({ entrypoints: [path.join(SRC, "index.ts")], target: "browser" })
+  const text = await out.outputs[0]!.text()
+  expect(text).toContain(CHAT_TURN_PATH)
+  expect(text).not.toMatch(/ZodError|strictObject/)
 })
 
 test("the client never imports office, TUI, CLI or app code", () => {

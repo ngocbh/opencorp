@@ -1,9 +1,6 @@
 // Which open question is a chat's own turn. The office's chat flow keeps a `human_input` open at
 // its turn node while the chat is idle; clients show that one as the input box, not a card.
-import type { Question, Session } from "@opencorp/protocol"
-
-/** The turn node's path in the office's chat flows. */
-export const CHAT_TURN_PATH = "chat/ask"
+import { CHAT_TURN_PATH, type Question, type Session } from "@opencorp/protocol"
 
 /** `node_id` without the `#N` that LOOP and MAP add to each segment: `chat#3/ask` → `chat/ask`. */
 export function turnPath(nodeId: string) {

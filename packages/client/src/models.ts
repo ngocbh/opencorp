@@ -1,7 +1,7 @@
-import type { ConnectionList, Session } from "@opencorp/protocol"
+import { OFFICE, type ConnectionList, type Session } from "@opencorp/protocol"
 
-/** The connection set up at onboarding, which sessions from before connections ran on. */
-export const OFFICE = "office"
+// Re-exported: the TUI imports `OFFICE` from `@opencorp/client`.
+export { OFFICE }
 
 /**
  * The connection and model a session runs on: a null connection is `office`, and a null model is
