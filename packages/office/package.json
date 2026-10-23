@@ -1,0 +1,17 @@
+{
+  "name": "@opencorp/office",
+  "version": "0.0.1",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/main.ts" },
+  "scripts": { "test": "bun test", "typecheck": "tsc -p ." },
+  "dependencies": {
+    "@clack/prompts": "1.8.1",
+    "@ngocbh/yian": "workspace:*",
+    "@opencorp/protocol": "workspace:*",
+    "diff": "catalog:",
+    "yaml": "2.9.1",
+    "zod": "catalog:"
+  }
+}

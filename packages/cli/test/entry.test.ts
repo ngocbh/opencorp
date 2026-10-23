@@ -126,3 +126,69 @@ test("opencorp run by a relative path with CDPATH set still finds the checkout",
   expect(seen.planted).toBeNull()
   expect(seen.local).toBeNull()
 })
+
+/** The lines of `text` that are neither blank nor a `//` comment. */
+const code = (text: string) => text.split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("//"))
+
+test("the entry has no shebang, is not executable, and its first statement dispatches the internal modes", () => {
+  const text = fs.readFileSync(ENTRY, "utf8")
+  expect(text.split("\n")[0]!.startsWith("#!")).toBe(false)
+  expect(fs.statSync(ENTRY).mode & 0o111).toBe(0)
+  expect(code(text).slice(0, 2)).toEqual([
+    'const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker")',
+    'if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2))',
+  ])
+})
+
+const IMPORT = /^\s*import\b(?!\s+type\b)(?!\s*[(.])/m
+const REEXPORT = /^\s*export\s*(?!type\b)(?:\*(?:\s*as\s+[\w$]+)?|\{[^}]*\})\s*from\s*["']/m
+
+test("the entry and the office entry have no static imports, which would load before the dispatch", () => {
+  for (const sample of ['import fs from "node:fs"', 'import "x"', 'import { a } from "b"', 'import * as m from "m"'])
+    expect(sample).toMatch(IMPORT)
+  for (const sample of [
+    'export * from "x"',
+    'export { a } from "b"',
+    'export * as ns from "x"',
+    'export {\n  a,\n} from "b"',
+  ])
+    expect(sample).toMatch(REEXPORT)
+  for (const sample of [
+    'import type { A } from "b"',
+    'const m = await import("x")',
+    '  await import("y")',
+    "importer.run()",
+    "import.meta.main",
+    'export type { A } from "b"',
+    "export const from = 1",
+  ]) {
+    expect(sample).not.toMatch(IMPORT)
+    expect(sample).not.toMatch(REEXPORT)
+  }
+  for (const file of [ENTRY, path.join(CHECKOUT, "packages/office/src/main.ts")]) {
+    const text = fs.readFileSync(file, "utf8")
+    expect(IMPORT.test(text), `${file} has a static import`).toBe(false)
+    expect(REEXPORT.test(text), `${file} has a re-export`).toBe(false)
+  }
+})
+
+test(
+  "opencorp __worker and __fs-helper reach the office's modes",
+  () => {
+    for (const mode of ["__worker", "__fs-helper"]) {
+      fs.rmSync(path.join(proj, "MARKER"), { force: true })
+      const result = spawnSync(WRAPPER, [mode], {
+        cwd: proj,
+        env: { HOME: tmp, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
+        encoding: "utf8",
+        timeout: 20_000,
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.stderr).toContain(`opencorp ${mode}: not built yet`)
+      expect(result.status).toBe(1)
+      expect(result.stdout).toBe("")
+      expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
+    }
+  },
+  60_000,
+)

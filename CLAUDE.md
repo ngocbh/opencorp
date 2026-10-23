@@ -71,11 +71,10 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
   (`uv run pytest -q`) in any PR that touches it. Touch `packages/corp_office`, `pyproject.toml` or
   `uv.lock` only for such a fix or when a port issue names them. The cut-over deletes it, with no
   migration of its data.
-- **The TS office** lives in `packages/office` (`@opencorp/office`, from its skeleton PR on) and
-  mirrors the Python packages: `opencorp/<pkg>/<mod>.py` becomes
-  `packages/office/src/<pkg>/<mod>.ts`, and `tests/<pkg>/test_<mod>.py` becomes
-  `packages/office/tests/<pkg>/<mod>.test.ts`, keeping each test's name in words (no
-  apostrophes, so the parity ledger can match them). Run its tests with
+- **The TS office** lives in `packages/office` (`@opencorp/office`) and mirrors the Python
+  packages: `opencorp/<pkg>/<mod>.py` becomes `packages/office/src/<pkg>/<mod>.ts`, and
+  `tests/<pkg>/test_<mod>.py` becomes `packages/office/tests/<pkg>/<mod>.test.ts`, keeping each
+  test's name in words (no apostrophes, so the parity ledger can match them). Run its tests with
   `(cd packages/office && bun test <file>)`. `bun test` has no fixtures: inject dependencies, give
   children an explicit env, and never change `process.env` in a test.
 - **Two yian pins.** The `packages/yian` submodule pointer is the TS office's pin. The Python
@@ -102,7 +101,7 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
 pyproject.toml                        # Python project "opencorp" (import opencorp)
 packages/corp_office/src/opencorp/    # office daemon, run worker, sandbox launcher, permission layer, harness adapters
 packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/opencorp/
-packages/office/                      # the TS office (from its skeleton PR on; see "TS port in progress")
+packages/office/                      # the TS office (see "TS port in progress")
 packages/yian/                        # submodule; the TS side's yian (see "TS port in progress")
 packages/protocol/                    # zod schemas (the TS types); frozen JSON Schema → pydantic
 packages/tui/                         # the TUI (forked from OpenCode)
