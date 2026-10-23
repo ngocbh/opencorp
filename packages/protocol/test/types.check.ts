@@ -1,5 +1,7 @@
 // Type-checked by tsc, not run by bun test.
+import type * as Gen from "../src/gen/protocol"
 import type { AnswerRequest, HireRequest, Message, Person, Question } from "../src/index"
+import type * as Zod from "../src/schemas"
 
 export const minh: Person = {
   handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
@@ -41,8 +43,6 @@ export const officeOnlyKind: AnswerRequest = {
 }
 
 // The zod schemas' input types agree with today's generated types, def by def.
-import type * as Gen from "../src/gen/protocol"
-import type * as Zod from "../src/schemas"
 
 /** The string keys of T, per union member. */
 type Keys<T> = T extends unknown ? Extract<keyof T, string> : never
