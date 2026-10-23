@@ -1,0 +1,8 @@
+{
+  "socket": "/Users/owner/.opencorp/office/hq.sock",
+  "tcp": { "enabled": true, "port": 49380, "listening": false, "error": "[Errno 48] Address already in use", "next_retry_at": "2026-10-19T10:00:05.000Z" },
+  "url": null,
+  "health": { "ok": true, "office": { "api": "0.0.1+0123456789ab" }, "app": null },
+  "socket_error": "[Errno 13] Permission denied",
+  "warnings": ["the web port is on and this host has other users (ann); see `opencorp doctor`"]
+}

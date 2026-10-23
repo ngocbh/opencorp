@@ -19,7 +19,8 @@
     "opentui-spinner": "0.0.7",
     "remeda": "2.26.0",
     "solid-js": "1.9.10",
-    "strip-ansi": "7.1.2"
+    "strip-ansi": "7.1.2",
+    "zod": "4.6.7"
   },
   "patchedDependencies": {
     "solid-js@1.9.10": "packages/tui/patches/solid-js@1.9.10.patch"

@@ -1,0 +1,35 @@
+{
+  "id": "cluster-a",
+  "kind": "slurm_cluster",
+  "tools": {
+    "submit_job": {},
+    "read_logs": {},
+    "cancel_job": {},
+    "delete_data": {
+      "risk": "gated"
+    }
+  },
+  "grants": [
+    {
+      "who": "group:Infra",
+      "can": [
+        "submit_job",
+        "read_logs"
+      ],
+      "where": {
+        "partition": [
+          "gpu-small"
+        ]
+      }
+    },
+    {
+      "who": "minh",
+      "can": [
+        "admin"
+      ]
+    }
+  ],
+  "secrets": [
+    "cluster_a_ssh_key"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "name": "ngocbh-corp",
+  "hq": "https://hq.my-tailnet.ts.net",
+  "ceo": "ngocbh",
+  "defaults": { "provider_policy": "default", "cost_cap_usd": 5, "max_turns": 500 }
+}

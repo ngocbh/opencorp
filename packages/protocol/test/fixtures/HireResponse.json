@@ -1,0 +1,7 @@
+{
+  "person": { "handle": "ava", "name": "Ava", "kind": "agent",
+              "title": "Researcher", "manager": "ngocbh", "main": "../../shared/flows/chat.yaml" },
+  "diff": "--- /dev/null\n+++ b/people/ava/person.yaml\n@@ -0,0 +1 @@\n+handle: ava\n",
+  "issues": [],
+  "commit": "c3d5e7f9a1b2c4d6e8f0a2b4c6d8e0f1a3b5c7d9"
+}
