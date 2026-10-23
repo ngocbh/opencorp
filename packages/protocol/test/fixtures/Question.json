@@ -1,0 +1,33 @@
+{
+  "id": "01JA1Q0000000000000000000A",
+  "session_id": "01JA1S0000000000000000000A",
+  "run_id": "run-01JA1R0000000000000000000A",
+  "node_id": "setup",
+  "source": "human_input",
+  "asker": "minh",
+  "work_item_id": "01JA1W0000000000000000000A",
+  "title": "Project setup",
+  "question": "Project setup",
+  "questions": [
+    { "question": "Which database?", "header": "Database", "secret": false,
+      "options": [{ "label": "Postgres", "description": "Managed, in the cluster" }, { "label": "SQLite" }] },
+    { "question": "Which features?", "header": "Features", "multi_select": true,
+      "options": [{ "label": "auth" }, { "label": "search" }] }
+  ],
+  "answer_schema": [
+    { "name": "Database", "type": "str", "required": true, "enum": ["Postgres", "SQLite"] },
+    { "name": "Features", "type": "list[str]", "required": true },
+    { "name": "Limits", "type": "object", "required": false,
+      "fields": [{ "name": "max_users", "type": "int", "required": true }] }
+  ],
+  "discussion": [
+    { "role": "user", "text": "Why not SQLite?" },
+    { "role": "assistant", "text": "Several services write at once." }
+  ],
+  "status": "answered",
+  "answer": { "Database": "Postgres", "Features": ["auth", "search"] },
+  "answer_kind": "option",
+  "answered_by": "ngocbh",
+  "created_at": "2026-09-29T10:01:00.000Z",
+  "updated_at": "2026-09-29T10:03:00.000Z"
+}

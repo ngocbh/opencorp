@@ -57,6 +57,9 @@
     "packages/protocol": {
       "name": "@opencorp/protocol",
       "version": "0.0.1",
+      "dependencies": {
+        "zod": "catalog:",
+      },
       "devDependencies": {
         "json-schema-to-typescript": "15.0.4",
       },
@@ -131,6 +134,7 @@
     "remeda": "2.26.0",
     "solid-js": "1.9.10",
     "strip-ansi": "7.1.2",
+    "zod": "4.6.7",
   },
   "packages": {
     "@ampproject/remapping": ["@ampproject/remapping@2.3.0", "", { "dependencies": { "@jridgewell/gen-mapping": "^0.3.5", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-30iZtAPgz+LTIYoeivqYo853f02jBYSd5uGnGpkFV0M3xOt9aN73erkgYAmZU43x4VfqcnLxW9Kpg3R5LC4YYw=="],
