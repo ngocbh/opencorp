@@ -92,9 +92,9 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
   protocol fields if it updates every package that uses it (client, TUI, CLI, HQ app) in the same
   PR. The frozen `protocol.schema.json`, `models.py` and their fixtures are left as they are. The
   rules can return after the port (for example once there are outside clients).
-- **Run `opencorp` in a checkout through `packages/cli/bin/opencorp`** once that wrapper lands: it
-  runs Bun with `--no-install --no-env-file --config=/dev/null`, so the current folder's `.env`
-  and `bunfig.toml` aren't read.
+- **Run `opencorp` in a checkout through `packages/cli/bin/opencorp`**: it runs Bun with
+  `--no-install --no-env-file --config=/dev/null`, so the current folder's `.env` and
+  `bunfig.toml` aren't read (see Setup).
 
 ## Layout
 
@@ -120,6 +120,13 @@ git clone --recurse-submodules https://github.com/ngocbh/opencorp.git && cd open
 uv sync        # uses a uv-managed Python 3.12
 bun install
 ```
+
+Run `opencorp` from a checkout through `packages/cli/bin/opencorp`. Never run
+`bun packages/cli/src/main.ts`, which reads the folder's `.env` and `bunfig.toml`. Put the wrapper
+on `PATH` with
+`mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/bin/opencorp" ~/.local/bin/opencorp`.
+It runs the `bun` on `PATH`. If `PATH` can hold a project's folders (direnv's
+`PATH_add node_modules/.bin`), set `OPENCORP_BUN` to an absolute Bun path.
 
 ## Tests
 
