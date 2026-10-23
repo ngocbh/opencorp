@@ -1,8 +1,5 @@
 import { OFFICE, type ConnectionList, type Session } from "@opencorp/protocol"
 
-// Re-exported: the TUI imports `OFFICE` from `@opencorp/client`.
-export { OFFICE }
-
 /**
  * The connection and model a session runs on: a null connection is `office`, and a null model is
  * the connection's own, taken from `list` (unknown without it).
