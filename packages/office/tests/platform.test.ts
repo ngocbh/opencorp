@@ -80,25 +80,30 @@ test(
   60_000,
 )
 
-test("selfSpawnEnv drops BUN, NODE_OPTIONS, NODE_PATH, LD and DYLD variables and keeps the rest", () => {
-  const input = {
-    PATH: "/bin",
-    HOME: "/h",
-    LANG: "C",
-    BUN_OPTIONS: "--preload x",
-    BUN_INSTALL: "/b",
-    NODE_OPTIONS: "--require x",
-    NODE_PATH: "/n",
-    LD_PRELOAD: "/l.so",
-    LD_LIBRARY_PATH: "/l",
-    DYLD_INSERT_LIBRARIES: "/d",
-    MY_BUN_THING: "kept",
-    UNSET: undefined,
-  }
-  const copy = { ...input }
-  expect(selfSpawnEnv(input)).toStrictEqual({ PATH: "/bin", HOME: "/h", LANG: "C", MY_BUN_THING: "kept" })
-  expect(input).toStrictEqual(copy)
-})
+test(
+  "selfSpawnEnv drops BUN, NODE_OPTIONS, NODE_PATH, NODE_PRESERVE_SYMLINKS, LD and DYLD variables and keeps the rest",
+  () => {
+    const input = {
+      PATH: "/bin",
+      HOME: "/h",
+      LANG: "C",
+      BUN_OPTIONS: "--preload x",
+      BUN_INSTALL: "/b",
+      NODE_OPTIONS: "--require x",
+      NODE_PATH: "/n",
+      NODE_PRESERVE_SYMLINKS: "1",
+      NODE_PRESERVE_SYMLINKS_MAIN: "1",
+      LD_PRELOAD: "/l.so",
+      LD_LIBRARY_PATH: "/l",
+      DYLD_INSERT_LIBRARIES: "/d",
+      MY_BUN_THING: "kept",
+      UNSET: undefined,
+    }
+    const copy = { ...input }
+    expect(selfSpawnEnv(input)).toStrictEqual({ PATH: "/bin", HOME: "/h", LANG: "C", MY_BUN_THING: "kept" })
+    expect(input).toStrictEqual(copy)
+  },
+)
 
 test("selfSpawnCwd is the real path of the home dir", () => {
   const dir = tempDir()
@@ -164,9 +169,9 @@ test("embedded reads the bytes of the file a file import names", () => {
   expect(embedded(file)).toEqual(bytes)
 })
 
-/** Every `*.ts` under the office's src, as paths relative to it. */
+/** Every JS or TS file under the office's src, as paths relative to it. */
 function sourceFiles(): string[] {
-  return fs.readdirSync(SRC, { recursive: true, encoding: "utf8" }).filter((name) => name.endsWith(".ts"))
+  return fs.readdirSync(SRC, { recursive: true, encoding: "utf8" }).filter((name) => /\.[cm]?[jt]sx?$/.test(name))
 }
 
 /** The text of `name`, relative to the office's src. */
@@ -174,23 +179,40 @@ function source(name: string): string {
   return fs.readFileSync(path.join(SRC, name), "utf8")
 }
 
-// The patterns read source text, so they can't see a specifier built at run time or in a template
-// literal, `globalThis["Bu" + "n"]`, or a cast; review catches those. They also scan comments, so a
-// comment outside platform.ts says "Bun's" or "the Bun runtime", never "Bun" then a dot and a name.
-const BUN_API = /(?<![\w$])Bun\s*(?:\?\.|[.[])|=\s*Bun\b/
-const BUN_MODULE = /\b(?:from|import|require)\s*\(?\s*["']bun(?::[\w-]+)?["']/
+// The patterns read source text, so they can't see a specifier built at run time,
+// `globalThis["Bu" + "n"]`, or a cast other than `(Bun as T)`; review catches those. They also scan
+// comments, so a comment outside platform.ts says "Bun's" or "the Bun runtime", never "Bun" then a dot
+// and a name. BUN_MODULE refuses any string literal naming the bun module or a bun: module.
+const BUN_API =
+  /(?<![\w$])Bun\s*(?:\?\.|[.[])|=\s*Bun\b|\bglobalThis\s*\??\.\s*Bun\b|\bglobalThis\s*\[\s*["'`]Bun\b|\(\s*Bun\s+as\b/
+const BUN_MODULE = /["'`]bun(?::[\w-]+)?["'`]/
 
 test("no Bun or bun: API outside platform.ts", () => {
-  for (const sample of ["Bun.spawn(", 'globalThis.Bun["file"]', "Bun?.file(p)", "const { spawn } = Bun"])
+  for (const sample of [
+    "Bun.spawn(",
+    'globalThis.Bun["file"]',
+    "Bun?.file(p)",
+    "const { spawn } = Bun",
+    "const B = globalThis.Bun",
+    'globalThis["Bun"].spawn',
+    "(Bun as any).spawn",
+  ])
     expect(sample).toMatch(BUN_API)
   for (const sample of [
     'import { Database } from "bun:sqlite"',
     "await import('bun:ffi')",
     'import { file } from "bun"',
     'require("bun:test")',
+    "import(`bun:ffi`)",
   ])
     expect(sample).toMatch(BUN_MODULE)
-  for (const sample of ["type F = BunFile", "// Bun reads .env", 'import { x } from "./bun.ts"']) {
+  for (const sample of [
+    "type F = BunFile",
+    "// Bun reads .env",
+    'import { x } from "./bun.ts"',
+    "// the file. Bun loads it",
+    "// Bun's loader",
+  ]) {
     expect(sample).not.toMatch(BUN_API)
     expect(sample).not.toMatch(BUN_MODULE)
   }
@@ -206,10 +228,13 @@ test("no Bun or bun: API outside platform.ts", () => {
   }
 })
 
-// Any mention is refused, so no spawn form can slip past: `child_process.fork()` spawns
-// process.execPath with the parent's whole env and cwd, and `process.execve` is reexec's job.
+// Refuses any mention of execPath, argv0 or execve, `process.argv[0]` (also by `.at(0)` or
+// destructuring) and `fork` (a call, or a name in braces): `child_process.fork()` spawns process.execPath
+// with the parent's whole env and cwd, and `process.execve` is reexec's job. It can't see a spawn of bun by
+// name from PATH (BUN_MODULE refuses only a bare "bun" literal) or a name built at run time; review catches
+// those.
 const SELF =
-  /process\.(?:execPath|argv0|execve)\b|process\.argv\[0\]|\{[^}]*\bexecPath\b[^}]*\}\s*=\s*process\b|\bfork\s*\(/
+  /\b(?:execPath|argv0|execve)\b|process\.argv\s*(?:\[\s*0\s*\]|\.at\s*\(\s*0\s*\))|\[[^\]]*\]\s*=\s*process\.argv\b|\bfork\s*\(|\{[^}]*\bfork\b[^}]*\}/
 
 test("no spawn of process.execPath outside platform.ts", () => {
   for (const sample of [
@@ -218,6 +243,12 @@ test("no spawn of process.execPath outside platform.ts", () => {
     'fork("./x.ts")',
     "child_process.fork(m)",
     'process.execve("/bin/sh")',
+    'import { execPath } from "node:process"',
+    "proc.execPath",
+    'process["execPath"]',
+    "const [bin] = process.argv",
+    "process.argv.at(0)",
+    'import { fork as f } from "node:child_process"',
   ])
     expect(sample).toMatch(SELF)
   for (const sample of ["process.argv[2]", "process.argv.slice(2)", "selfCommand()", "forked(x)", "forkSession(id)"])

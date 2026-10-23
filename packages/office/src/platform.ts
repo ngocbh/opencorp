@@ -21,7 +21,7 @@ export function selfCommand(): [string, ...string[]] {
 }
 
 /** Names a self-spawn's env never carries: they change how Bun, Node or the loader start. */
-const UNSAFE_ENV = /^(BUN_|LD_|DYLD_)|^NODE_(OPTIONS|PATH)$/
+const UNSAFE_ENV = /^(BUN_|LD_|DYLD_)|^NODE_(OPTIONS|PATH|PRESERVE_SYMLINKS(_MAIN)?)$/
 
 /** `env` without the names that change how the runtime or loader starts, and without unset
  *  values: the last filter on every self-spawn's env. */
