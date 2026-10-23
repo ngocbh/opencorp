@@ -49,7 +49,10 @@ export function helperFiles(helper: Helper): string[] {
 /** At most this many symlinks are followed while resolving one path, as Linux does. */
 const MAX_LINKS = 40
 
-/** `p` with every symlink resolved: a missing tail is kept as given and a dangling link resolves to its target. */
+/**
+ * `p` with every symlink resolved: a missing tail is kept as given and a dangling link resolves to its target.
+ * Past `MAX_LINKS` links the path is kept as reached, its folder resolved.
+ */
 function real(p: string, links = 0): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
   // path the profile names must be resolved the same way.
@@ -64,8 +67,7 @@ function real(p: string, links = 0): string {
   try {
     isLink = fs.lstatSync(abs).isSymbolicLink()
   } catch {}
-  if (!isLink) return path.join(real(parent, links), path.basename(abs))
-  if (links >= MAX_LINKS) return path.join(real(parent, links), path.basename(abs))
+  if (!isLink || links >= MAX_LINKS) return path.join(real(parent, links), path.basename(abs))
   return real(path.resolve(real(parent, links), fs.readlinkSync(abs)), links + 1)
 }
 

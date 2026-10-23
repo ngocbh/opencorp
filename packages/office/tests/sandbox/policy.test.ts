@@ -203,11 +203,10 @@ test("office paths are compared resolved", () => {
   const pathLink = link(mkdirs(path.join(realPath, "bin"))[0]!, "path-link")
   // A dangling link resolves to its target, which may appear later.
   const dangling = link(path.join(target, "bin"), "dangling")
-  // A link loop reached through a linked folder: past the link limit its folder is still resolved.
+  // A link to itself through a linked folder: past the link limit its folder is still resolved.
   const [loopWs] = mkdirs(path.join(root, "loop-ws"))
   const loopLink = link(loopWs, "loop-link")
-  fs.symlinkSync(path.join(loopLink, "b"), path.join(loopWs, "a"))
-  fs.symlinkSync(path.join(loopLink, "a"), path.join(loopWs, "b"))
+  fs.symlinkSync(path.join(loopLink, "a"), path.join(loopWs, "a"))
   const tool = (ws: string, name: string) =>
     `workspace ${ws} contains ${path.join(ws, name)}, a program the office runs; use a project folder`
   const onPath = (ws: string, name: string) =>
