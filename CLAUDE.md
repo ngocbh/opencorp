@@ -176,7 +176,8 @@ Work is complete only when the PR merges.
 Yian changes go to the yian repo (github.com/ngocbh/yian) as their own issue and PR; never edit
 the submodule (`packages/yian/`) here. Bump the submodule pointer in a separate commit. When you
 bump it, also check that the root `typescript` and `@types/bun` pins still equal yian's:
-`grep -c '"bun-types@' bun.lock` and `grep -c '"typescript@' bun.lock` each print 1, and
+`grep -c '"typescript@' bun.lock` and `grep -c '"bun-types@' bun.lock` (the package behind
+`@types/bun`) each print 1, so yian resolves the same versions, and
 `(cd packages/yian/ts && bun run typecheck)` passes (the root typecheck skips yian).
 
 ## Releases
