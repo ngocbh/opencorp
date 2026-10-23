@@ -20,7 +20,7 @@ const sq = (s: string) => "'" + s.replaceAll("'", "'\\''") + "'"
 beforeAll(() => {
   tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-entry-")))
   proj = path.join(tmp, "proj")
-  // A folder a model could have written: Bun loads both files if it reads the folder.
+  // A folder a model could have written: Bun loads them if it reads the folder.
   fs.mkdirSync(proj)
   fs.writeFileSync(path.join(proj, ".env"), "PLANTED=1\n")
   fs.writeFileSync(path.join(proj, ".env.local"), "PLANTED_LOCAL=1\n")
