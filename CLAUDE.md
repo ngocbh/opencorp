@@ -60,13 +60,49 @@ Research notes on these live in `docs/plans/research/` (local only).
 OpenCorp is MIT-licensed. When you copy or substantially port code from another project, credit it in
 `THIRD_PARTY_NOTICES.md` (project, license, upstream paths and commit, our paths).
 
+## TS port in progress
+
+The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
+
+- **The Python office is frozen.** `packages/corp_office` gets no new features; they land in the
+  TS office. It gets bug fixes only, each through its own issue. Its code and tests are the spec
+  the port is checked against. Nobody runs the office itself during the port, so `main`'s TUI,
+  CLI and HQ may stop working with it as soon as the protocol changes; its tests still run when a
+  PR touches it. Touch `packages/corp_office`, `pyproject.toml` or `uv.lock` only for such
+  a fix or when a port issue names them. The cut-over deletes it, with no migration of its data.
+- **The TS office** lives in `packages/office` (`@opencorp/office`, from its skeleton PR on) and
+  mirrors the Python packages: `opencorp/<pkg>/<mod>.py` becomes
+  `packages/office/src/<pkg>/<mod>.ts`, and `tests/<pkg>/test_<mod>.py` becomes
+  `packages/office/tests/<pkg>/<mod>.test.ts`, keeping each test's name in words (no
+  apostrophes, so the parity ledger can match them). Run its tests with
+  `(cd packages/office && bun test <file>)`. `bun test` has no fixtures: inject dependencies, give
+  children an explicit env, and never change `process.env` in a test.
+- **Two yian pins.** The `packages/yian` submodule pointer is the TS office's pin. The Python
+  office takes yian from its own git rev in `pyproject.toml` (`[tool.uv.sources]`), not from the
+  submodule; that rev isn't bumped except for a Python bug fix that needs a yian fix (then only the
+  `rev` changes, in its own commit). A submodule bump is its own commit inside the PR that needs
+  it: move the pointer forward to a yian `main` commit (never a branch), run `bun run typecheck`
+  and the office tests on it, fix the office in the same PR if yian changed under it, and name in
+  the PR the yian PRs the bump brings in. If `main`'s pointer is newer when you rebase, keep the
+  newer one and re-run the checks.
+- **Protocol rules suspended.** The schema-only-PR rule and the additive-only rule in "Protocol
+  schema" don't apply during the port. Once the zod schemas in `packages/protocol/src/schemas/`
+  land, they are the only protocol source the TS side follows, and a PR may add, rename or remove
+  protocol fields if it updates the TUI, CLI and app in the same PR. The frozen
+  `protocol.schema.json`, `models.py` and their fixtures are left as they are. The rules can
+  return after the port (for example once there are outside clients).
+- **Run `opencorp` in a checkout through `packages/cli/bin/opencorp`** once that wrapper lands: it
+  runs Bun with `--no-install --no-env-file --config=/dev/null`, so the current folder's `.env`
+  and `bunfig.toml` aren't read.
+
 ## Layout
 
 ```
 pyproject.toml                        # Python project "opencorp" (import opencorp)
 packages/corp_office/src/opencorp/    # office daemon, run worker, sandbox launcher, permission layer, harness adapters
 packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/opencorp/
-packages/yian/                        # submodule; uv path dependency
+packages/office/                      # the TS office, @opencorp/office (see "TS port in progress")
+packages/yian/                        # submodule; the TS side's yian (see "TS port in progress")
 packages/protocol/                    # JSON Schema → TS types + pydantic
 packages/tui/                         # the TUI (forked from OpenCode)
 packages/cli/                         # the `opencorp` CLI (npm package "opencorp")
@@ -95,6 +131,9 @@ bun install
   directories don't collide.
 
 ## Protocol schema
+
+The schema-only-PR rule and the additive-only rule below are suspended during the TS port (see
+"TS port in progress").
 
 `packages/protocol/schema/protocol.schema.json` changes only in a schema-only PR that:
 
@@ -138,9 +177,10 @@ Trusted Publishing (the `pypi` environment); no token is stored.
 Actions must be enabled for the workflow to run; run it by hand (`workflow_dispatch`) for a
 build-only dry run.
 
-The published package depends on `yian[all]>=0.0.3` from PyPI, not the submodule. yian 0.0.3
-predates the submodule, so an install from PyPI can't load the flows the office ships yet. The
-0.0.x releases are placeholders until yian publishes a matching build; then raise the floor.
+The published package depends on `yian[all]>=0.0.3` from PyPI, not the git rev in
+`[tool.uv.sources]`. yian 0.0.3 predates that rev, so an install from PyPI can't load the flows
+the office ships yet. The 0.0.x releases are placeholders until yian publishes a matching build;
+then raise the floor.
 
 ## Code style
 
