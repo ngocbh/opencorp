@@ -3,7 +3,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, test } from "bun:test"
+import { loadFlow } from "@ngocbh/yian"
 import { MAX_NESTING, readFlow, readYaml, YamlError } from "../../src/company/flow_yaml.ts"
+import { tempDir } from "../helpers.ts"
 
 const SRC = fileURLToPath(new URL("../../src", import.meta.url))
 const INVALID = (line: number) => `isn't valid YAML (line ${line})`
@@ -234,5 +236,75 @@ describe("safety", () => {
     const files = fs.readdirSync(SRC, { recursive: true, encoding: "utf8" }).filter((name) => /\.[cm]?[jt]sx?$/.test(name))
     const importers = files.filter((name) => IMPORTS_YAML.test(fs.readFileSync(path.join(SRC, name), "utf8")))
     expect(importers).toEqual([path.join("company", "flow_yaml.ts")])
+  })
+})
+
+describe("readFlow agrees with yian", () => {
+  // Yian checks `system:` before the code file, which is missing on purpose, so a flow that gets past
+  // `system:` fails later with another message.
+  const BASE =
+    'id: f\nname: f\ninput:\n  x: !str\nnodes:\n  a: {kind: code, code: ./nowhere.ts:echo, input: {x: "${input.x}"}}\noutput: {y: "${a.output}"}\n'
+  // Yian allows only a list of strings under `system.paths`, so `paths: 5` gives this message when, and
+  // only when, yian read `system.paths`. Each case pins whether it did.
+  const YIAN_READ_PATHS = "system: paths must be a list of strings"
+  const CASES: [text: string, yian: boolean][] = [
+    ["system: {paths: 5}", true],
+    ["system: {<<: {paths: 5}}", true],
+    ['system: {"<<": {paths: 5}}', false],
+    ["system: {!!str <<: {paths: 5}}", false],
+    ["system: {!str <<: {paths: 5}}", false],
+    ["system: {!!merge x: {paths: 5}}", true],
+    ["system: {!<tag:yaml.org,2002:merge> <<: {paths: 5}}", true],
+    ["system: {<<: {paths: 5}, <<: {}}", true],
+    ["system: {<<: {}, <<: {paths: 5}}", true],
+    ["<<: {system: {paths: 5}}", true],
+    ["system: {<<: !!map {paths: 5}}", true],
+    ["system: {<<: !!seq {paths: 5}}", true],
+    ["system: {<<: [{}, {paths: 5}]}", true],
+    ["system: {<<: [&a {}, {paths: 5}]}", true],
+    ["system: {? <<\n  : {paths: 5}}", true],
+    ["system:\n  <<: {<<: {paths: 5}}", true],
+    ["system: !!map {<<: {paths: 5}}", true],
+    ["system: !foo {paths: 5}", true],
+    ["system: {<<: &m {paths: 5}}", true],
+    ["system: {&m <<: {}, *m : {paths: 5}}", true],
+    ["system: &s {<<: *s, paths: 5}", true],
+    ["!str system: {paths: 5}", true],
+    ["system: {!str paths: 5}", true],
+    ["system: {!!str paths: 5}", true],
+    ["system:\n  ? !!str\n    paths\n  : 5", true],
+    ["description: &k paths\nsystem: {*k : 5}", true],
+    ['system: {"pa\\x74hs": 5}', true],
+    ["system: {!!merge x: !!omap [{paths: 5}]}", true],
+    ["system: {<<: {bogus: 1}}", false],
+    ["system: {}", false],
+    // Yian refuses the repeated key, so it never reads `system.paths`.
+    ["system: {paths: 5, paths: 6}", false],
+  ]
+
+  test("readFlow and yian agree on system.paths", async () => {
+    const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value)
+    for (const [extra, pinned] of CASES) {
+      const text = BASE + extra
+      let threw = false
+      let doc: unknown
+      try {
+        doc = readFlow(text)
+      } catch (error) {
+        if (!(error instanceof YamlError)) throw error
+        threw = true
+      }
+      const hasPaths = !threw && isRecord(doc) && isRecord(doc.system) && Object.hasOwn(doc.system, "paths")
+      const message = await loadFlow(text, { baseDir: tempDir(), env: () => undefined }).then(
+        () => "",
+        (error: Error) => error.message,
+      )
+      const yian = message.startsWith(YIAN_READ_PATHS)
+      // The safety property: readFlow throws or sees `system.paths` whenever yian reads it.
+      expect({ extra, safe: !yian || threw || hasPaths }).toEqual({ extra, safe: true })
+      expect({ extra, yian }).toEqual({ extra, yian: pinned })
+      if (!threw) expect({ extra, hasPaths }).toEqual({ extra, hasPaths: yian })
+    }
   })
 })
