@@ -1,5 +1,5 @@
 // The Run Logs table: one row per top-level run, the runs started from it folded under it.
-import type { RunSummary } from "@opencorp/protocol"
+import { OFFICE, type RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
 import Check from "lucide-solid/icons/check"
 import Copy from "lucide-solid/icons/copy"
@@ -143,7 +143,7 @@ function Row(props: {
         </Show>
       </td>
       <td data-testid="run-second-line" class={`${CELL} whitespace-nowrap max-md:col-start-1 max-md:truncate`}>
-        {r().driver === "office" ? "office" : `@${r().driver}`}
+        {r().driver === OFFICE ? "office" : `@${r().driver}`}
       </td>
       <td class={`${CELL} max-md:truncate`}>{(r().participants ?? []).join(", ")}</td>
       <td class={`${CELL} wrap-anywhere`}>{where(r())}</td>

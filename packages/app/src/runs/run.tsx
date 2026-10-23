@@ -1,7 +1,7 @@
 // One run's page: its header (what ran, who drove it, when, its links and usage), the state of its log, the Timeline
 // of its node attempts with the detail of the one selected, Raw and the download, kept current by run.updated.
 import { isMissingRoute } from "@opencorp/client"
-import type { RunDetail, RunDivider, RunNode, RunSummary } from "@opencorp/protocol"
+import { OFFICE, type RunDetail, type RunDivider, type RunNode, type RunSummary } from "@opencorp/protocol"
 import { A } from "@solidjs/router"
 import {
   batch,
@@ -545,7 +545,7 @@ function Header(props: {
           </span>
         </Fact>
         <Fact label="People">
-          driven by {run().driver === "office" ? "office" : `@${run().driver}`}
+          driven by {run().driver === OFFICE ? "office" : `@${run().driver}`}
           <Show when={(run().participants ?? []).length}>
             <span class={MUTED}> · with </span>
             {(run().participants ?? []).join(", ")}

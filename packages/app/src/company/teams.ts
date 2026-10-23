@@ -11,7 +11,7 @@ export type Team = { group: Group; members: TeamMember[]; children: Team[] }
 export function byTeam(people: Person[], groups: Group[]): { teams: Team[]; noTeam: Person[] } {
   const ids = new Map(groups.map((x) => [x.id, x]))
   const teams = new Map(groups.map((x) => [x.id, { group: x, members: [] as TeamMember[], children: [] as Team[] }]))
-  // `groups` is optional in the generated type (the office always sends it, defaulting to []).
+  // `groups` is optional in the protocol's input type (the office always sends it, defaulting to []).
   const firstGroup = (p: Person) => (p.groups ?? []).find((id) => ids.has(id))
   const inCycle = (x: Group) => {
     const seen = new Set<string>()
