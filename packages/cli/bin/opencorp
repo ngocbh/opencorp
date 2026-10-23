@@ -1,0 +1,15 @@
+#!/bin/sh
+# `opencorp` from a checkout. Bun never reads the caller's folder (its .env, its bunfig.toml and
+# that file's preloads), since a project folder can be model-written. OPENCORP_BUN picks the Bun;
+# set it to an absolute path if your PATH can hold project folders. Your own BUN_OPTIONS is left alone.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink -- "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+# CDPATH= so `cd` never prints a path into $checkout.
+checkout=$(CDPATH= cd -P -- "$(dirname -- "$self")/../../.." && pwd) || exit 1
+exec "${OPENCORP_BUN:-bun}" --no-install --no-env-file --config=/dev/null "$checkout/packages/cli/src/main.ts" "$@"
