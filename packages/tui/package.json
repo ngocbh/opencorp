@@ -9,7 +9,8 @@
     "./debrief": "./src/routes/debrief/debrief.ts",
     "./editor-launch": "./src/editor-launch.ts",
     "./profile": "./src/routes/profile/profile.ts",
-    "./setup": "./src/setup/run.tsx"
+    "./setup": "./src/setup/run.tsx",
+    "./stub": "./script/stub.ts"
   },
   "scripts": {
     "dev": "bun run script/dev.ts",
