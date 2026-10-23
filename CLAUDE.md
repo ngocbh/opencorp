@@ -124,9 +124,10 @@ bun install
 Run `opencorp` from a checkout through `packages/cli/bin/opencorp`. Never run
 `bun packages/cli/src/main.ts`, which reads the folder's `.env` and `bunfig.toml`. Put the wrapper
 on `PATH` with
-`mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/bin/opencorp" ~/.local/bin/opencorp`.
-It runs the `bun` on `PATH`. If `PATH` can hold a project's folders (direnv's
-`PATH_add node_modules/.bin`), set `OPENCORP_BUN` to an absolute Bun path.
+`mkdir -p ~/.local/bin && ln -sf "$PWD/packages/cli/bin/opencorp" ~/.local/bin/opencorp` (this
+replaces any old `~/.local/bin/opencorp`). The wrapper runs the `bun` on `PATH`. If `PATH` can
+hold a project's folders (direnv's `PATH_add node_modules/.bin`), set `OPENCORP_BUN` to an
+absolute Bun path.
 
 ## Tests
 
