@@ -1,0 +1,40 @@
+/**
+ * The office's entry: the first argument picks the mode. `packages/cli/src/main.ts` hands its
+ * internal modes (`__worker`, `__fs-helper`) here before it loads anything else.
+ */
+
+/** A mode's entry point: takes the arguments after the mode, resolves to an exit code. */
+export type ModeMain = (argv: string[]) => Promise<number>
+
+/** Says on stderr that `mode` isn't built yet; exit code 1. */
+function notBuilt(mode: string): number {
+  console.error(`opencorp ${mode}: not built yet`)
+  return 1
+}
+
+/** The office daemon, one per home. */
+export const daemonMain: ModeMain = async () => notBuilt("daemon")
+/** One yian run in its own process, talking to the daemon over fd 3. */
+export const workerMain: ModeMain = async () => notBuilt("__worker")
+/** One file operation inside the sandbox. */
+export const fsHelperMain: ModeMain = async () => notBuilt("__fs-helper")
+/** The setup commands (init, onboard, offboard, doctor, start, restart). */
+export const installMain: ModeMain = async () => notBuilt("install")
+
+const MODES: Record<string, ModeMain> = {
+  daemon: daemonMain,
+  __worker: workerMain,
+  "__fs-helper": fsHelperMain,
+  install: installMain,
+}
+
+/** Runs the mode `argv[0]` names with the rest; resolves to the exit code (2 for an unknown mode). */
+export async function officeMain(argv: string[]): Promise<number> {
+  const [mode, ...rest] = argv
+  const run = mode !== undefined && Object.hasOwn(MODES, mode) ? MODES[mode] : undefined
+  if (!run) {
+    console.error("opencorp: unknown office mode")
+    return 2
+  }
+  return run(rest)
+}
