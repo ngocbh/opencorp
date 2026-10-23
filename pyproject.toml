@@ -31,7 +31,7 @@ dev = [
 python-preference = "only-managed"
 
 [tool.uv.sources]
-yian = { path = "packages/yian", editable = true }
+yian = { git = "https://github.com/ngocbh/yian", rev = "10c168001e748788523b43ee1d6ef55fec59aecb" }
 
 [build-system]
 requires = ["hatchling"]
