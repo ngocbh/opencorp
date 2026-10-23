@@ -87,8 +87,8 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
   under it, and name in the PR the yian PRs the bump brings in. If `main`'s pointer is newer when
   you rebase, keep the newer one and re-run the checks.
 - **Protocol rules suspended.** The schema-only-PR rule and the additive-only rule in "Protocol
-  schema" don't apply during the port. Once the zod schemas in `packages/protocol/src/schemas/`
-  land, they are the only protocol source the TS side follows, and a PR may add, rename or remove
+  schema" don't apply during the port. The zod schemas in `packages/protocol/src/schemas/` are
+  the only protocol source the TS side follows, and a PR may add, rename or remove
   protocol fields if it updates every package that uses it (client, TUI, CLI, HQ app) in the same
   PR. The frozen `protocol.schema.json`, `models.py` and their fixtures are left as they are. The
   rules can return after the port (for example once there are outside clients).
@@ -104,7 +104,7 @@ packages/corp_office/src/opencorp/    # office daemon, run worker, sandbox launc
 packages/corp_office/tests/           # Python tests, mirroring packages/corp_office/src/opencorp/
 packages/office/                      # the TS office (from its skeleton PR on; see "TS port in progress")
 packages/yian/                        # submodule; the TS side's yian (see "TS port in progress")
-packages/protocol/                    # JSON Schema → TS types + pydantic
+packages/protocol/                    # zod schemas (the TS types); frozen JSON Schema → pydantic
 packages/tui/                         # the TUI (forked from OpenCode)
 packages/cli/                         # the `opencorp` CLI (npm package "opencorp")
 docs/plans/                           # design docs and plans (local only, gitignored)
@@ -143,13 +143,14 @@ a model-written project could then shadow `bun` or `opencorp` itself.
 ## Protocol schema
 
 The schema-only-PR rule and the additive-only rule below are suspended during the TS port (see
-"TS port in progress").
+"TS port in progress"). The TS side's protocol types come from the zod schemas in
+`packages/protocol/src/schemas/`; no TS is generated from `protocol.schema.json`.
 
 `packages/protocol/schema/protocol.schema.json` changes only in a schema-only PR that:
 
 - edits the schema and its fixtures, and regenerates
-  `packages/corp_office/src/opencorp/protocol/models.py` and
-  `packages/protocol/src/gen/protocol.ts` in the same commit (drift tests fail otherwise);
+  `packages/corp_office/src/opencorp/protocol/models.py` in the same commit (its drift test
+  fails otherwise);
 - only adds fields, `$defs`, and enum members; never renames, removes, narrows, or changes the
   type of anything merged code uses;
 - while the PyPI releases are 0.0.x placeholders (see Releases), may also remove a field once
@@ -159,8 +160,8 @@ The schema-only-PR rule and the additive-only rule below are suspended during th
   exists;
 - merges before dependent work continues.
 
-Clients ignore enum values and event types they don't know. Make timestamps with
-`opencorp.protocol.now()`.
+Clients ignore enum values and event types they don't know. Make timestamps with `now()` from
+`@opencorp/protocol` (`opencorp.protocol.now()` in Python).
 
 ## GitHub workflow
 
@@ -173,7 +174,10 @@ Clients ignore enum values and event types they don't know. Make timestamps with
 Work is complete only when the PR merges.
 
 Yian changes go to the yian repo (github.com/ngocbh/yian) as their own issue and PR; never edit
-the submodule (`packages/yian/`) here. Bump the submodule pointer in a separate commit.
+the submodule (`packages/yian/`) here. Bump the submodule pointer in a separate commit. When you
+bump it, also check that the root `typescript` and `@types/bun` pins still equal yian's:
+`grep -c '"bun-types@' bun.lock` and `grep -c '"typescript@' bun.lock` each print 1, and
+`(cd packages/yian/ts && bun run typecheck)` passes (the root typecheck skips yian).
 
 ## Releases
 
