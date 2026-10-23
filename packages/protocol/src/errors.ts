@@ -5,6 +5,7 @@ import { z } from "zod"
  * land. `ApiError.error` stays a plain string, so a client ignores a code it doesn't know.
  */
 export const ERROR_CODES = [
+  "bad_credentials",
   "bad_login",
   "bad_path",
   "bad_target",
@@ -99,8 +100,14 @@ function phrase(issue: z.core.$ZodIssue, data: unknown): string {
  *
  * `data` is the parsed JSON body that failed `schema`, read only to tell a missing key from a wrong or disallowed
  * one: zod reports the input only with `reportInput`, which stays off.
+ *
+ * Callers must never log, rethrow or send the `ZodError` itself (`error.message`, `String(error)`) or its `issues`:
+ * they quote unknown keys and record keys, such as `Unrecognized key: "<key>"` or a path like
+ * `["tools", "<key>", "risk"]`.
  */
 export function validationMessage(schema: z.ZodType, error: z.ZodError, data: unknown): string {
   const keys = topKeys(schema)
-  return error.issues.map((issue) => `${field(issue, keys)}: ${phrase(issue, data)}`).join("; ")
+  const lines = error.issues.map((issue) => `${field(issue, keys)}: ${phrase(issue, data)}`)
+  // A long array of bad items gives one issue per item, so an 800 KB body could otherwise give megabytes of text.
+  return [...new Set(lines)].join("; ")
 }
