@@ -171,7 +171,9 @@ test("the database files are 0600", () => {
   const file = path.join(office, "store.sqlite")
   const store = storeAt(file)
   store.db.prepare("INSERT INTO worked_folders VALUES ('minh', '/w', '2026-09-29T10:00:00.000Z')").run()
-  // Before close(): SQLite deletes the -wal and -shm files on the last close.
+  // This pins 0600 from either protection, not each one: the pre-created 0600 file (SQLite gives -wal and -shm
+  // its mode) and the umask are both active inside the constructor. Checked before close(): SQLite deletes the
+  // -wal and -shm files on the last close.
   for (const f of [file, `${file}-wal`, `${file}-shm`]) expect(fs.statSync(f).mode & 0o777).toBe(0o600)
   expect(fs.statSync(office).mode & 0o777).toBe(0o700)
 })
@@ -207,6 +209,7 @@ test("a symlink at the store path is refused", () => {
 
 test("opening restores the umask", () => {
   const before = umask()
+  onTestFinished(() => process.umask(before))
   openStore()
   expect(umask()).toBe(before)
 
