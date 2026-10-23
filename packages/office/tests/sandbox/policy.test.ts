@@ -34,6 +34,15 @@ test("read only paths are resolved tuples", () => {
 test("workspace must exist", () => {
   const { root, tmp } = makePolicy()
   expect(() => policyAt(path.join(root, "missing"), tmp)).toThrow(/workspace/)
+  // A path through a file, or a symlink loop, is no directory either.
+  const file = path.join(root, "file")
+  fs.writeFileSync(file, "")
+  const loop = path.join(root, "loop")
+  fs.symlinkSync(loop, loop)
+  for (const ws of [path.join(file, "sub"), loop]) {
+    expect(() => policyAt(ws, tmp)).toThrow(/is not an existing directory/)
+    expect(() => policyAt(ws, tmp)).toThrow(/workspace/)
+  }
 })
 
 test("tmpdir must exist", () => {
@@ -194,14 +203,30 @@ test("office paths are compared resolved", () => {
   const pathLink = link(mkdirs(path.join(realPath, "bin"))[0]!, "path-link")
   // A dangling link resolves to its target, which may appear later.
   const dangling = link(path.join(target, "bin"), "dangling")
-  for (const [ws, office] of [
-    [realApp, { install: [install] }],
-    [realBin, { tools: [path.join(binLink, "git")] }],
-    [realBin, { tools: [path.join(binLink, "missing-tool")] }],
-    [realPath, { path: [pathLink] }],
-    [target, { path: [dangling] }],
-  ] as const) {
+  // A link loop reached through a linked folder: past the link limit its folder is still resolved.
+  const [loopWs] = mkdirs(path.join(root, "loop-ws"))
+  const loopLink = link(loopWs, "loop-link")
+  fs.symlinkSync(path.join(loopLink, "b"), path.join(loopWs, "a"))
+  fs.symlinkSync(path.join(loopLink, "a"), path.join(loopWs, "b"))
+  const tool = (ws: string, name: string) =>
+    `workspace ${ws} contains ${path.join(ws, name)}, a program the office runs; use a project folder`
+  const onPath = (ws: string, name: string) =>
+    `workspace ${ws} contains ${path.join(ws, name)}, a folder on the office's PATH; use a project folder`
+  const cases: [string, OfficePaths, string][] = [
+    [
+      realApp,
+      { install: [install] },
+      `workspace ${realApp} contains the office install at ${realInstall}; use a project folder`,
+    ],
+    [realBin, { tools: [path.join(binLink, "git")] }, tool(realBin, "git")],
+    [realBin, { tools: [path.join(binLink, "missing-tool")] }, tool(realBin, "missing-tool")],
+    [realPath, { path: [pathLink] }, onPath(realPath, "bin")],
+    [target, { path: [dangling] }, onPath(target, "bin")],
+    [loopWs, { path: [path.join(loopLink, "a")] }, onPath(loopWs, "a")],
+  ]
+  for (const [ws, office, message] of cases) {
     expect(() => policyAt(ws, tmp, { home, ...office })).toThrow(UnsafeWorkspace)
+    expect(() => policyAt(ws, tmp, { home, ...office })).toThrow(message)
   }
 })
 

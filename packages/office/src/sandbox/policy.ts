@@ -46,11 +46,10 @@ export function helperFiles(helper: Helper): string[] {
   return "binary" in helper ? [helper.binary] : [helper.bun, helper.entry]
 }
 
-/** At most this many symlinks are followed while resolving one path, as in the kernel. */
+/** At most this many symlinks are followed while resolving one path, as Linux does. */
 const MAX_LINKS = 40
 
-/** `p` with every symlink resolved, like Python's non-strict `os.path.realpath`: a missing tail is
- *  kept as given and a dangling link resolves to its target. */
+/** `p` with every symlink resolved: a missing tail is kept as given and a dangling link resolves to its target. */
 function real(p: string, links = 0): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
   // path the profile names must be resolved the same way.
@@ -66,7 +65,7 @@ function real(p: string, links = 0): string {
     isLink = fs.lstatSync(abs).isSymbolicLink()
   } catch {}
   if (!isLink) return path.join(real(parent, links), path.basename(abs))
-  if (links >= MAX_LINKS) return abs
+  if (links >= MAX_LINKS) return path.join(real(parent, links), path.basename(abs))
   return real(path.resolve(real(parent, links), fs.readlinkSync(abs)), links + 1)
 }
 
@@ -95,14 +94,14 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
       throw new UnsafeWorkspace(`workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`)
     }
   }
-  const absolute = (entry: string, kind: string): string => {
+  const resolvedEntry = (entry: string, kind: string): string => {
     if (path.isAbsolute(entry)) return real(entry)
     throw new UnsafeWorkspace(
       `workspace ${ws} is refused: the office's ${kind} has a relative entry ${JSON.stringify(entry)}; use absolute paths`,
     )
   }
   for (const entry of office.install ?? []) {
-    const install = absolute(entry, "install")
+    const install = resolvedEntry(entry, "install")
     if (within(install, ws)) {
       throw new UnsafeWorkspace(`workspace ${ws} contains the office install at ${install}; use a project folder`)
     }
@@ -111,13 +110,13 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
     }
   }
   for (const entry of office.tools ?? []) {
-    const tool = absolute(entry, "tool list")
+    const tool = resolvedEntry(entry, "tool list")
     if (within(tool, ws)) {
       throw new UnsafeWorkspace(`workspace ${ws} contains ${tool}, a program the office runs; use a project folder`)
     }
   }
   for (const entry of office.path ?? []) {
-    const dir = absolute(entry, "PATH")
+    const dir = resolvedEntry(entry, "PATH")
     if (within(dir, ws)) {
       throw new UnsafeWorkspace(`workspace ${ws} contains ${dir}, a folder on the office's PATH; use a project folder`)
     }
@@ -190,8 +189,11 @@ export class SandboxPolicy {
 /** `p` resolved; throws if it is not an existing directory. */
 function existingDir(name: string, p: string): string {
   const resolved = real(p)
-  if (!fs.statSync(resolved, { throwIfNoEntry: false })?.isDirectory()) {
-    throw new Error(`${name} ${resolved} is not an existing directory`)
-  }
+  // Any failed stat (missing, a file in the path, a link loop) means no directory.
+  let isDir = false
+  try {
+    isDir = fs.statSync(resolved).isDirectory()
+  } catch {}
+  if (!isDir) throw new Error(`${name} ${resolved} is not an existing directory`)
   return resolved
 }
