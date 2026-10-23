@@ -152,8 +152,41 @@ export type Listener = (event: Event) => void
 
 /** Options for opening a store. */
 export interface StoreOptions {
-  /** Where the store writes its log lines (default `console.error`). */
+  /** Where the store writes its log lines (default `console.error`). It must not throw: it runs while events
+   *  are delivered after a commit, and its error would escape to the writer whose change already committed. */
   log?: (line: string) => void
+}
+
+/** One tool call as recorded by the permission layer. */
+export interface AuditEntry {
+  id: number
+  at: string
+  person: string
+  kind: string
+  tool: string
+  args: Record<string, unknown>
+  outcome: string
+  sessionId: string | null
+  runId: string | null
+  detail: string | null
+}
+
+/** The price of one model call. */
+export interface UsageRecord {
+  id: number
+  at: string
+  sessionId: string
+  runId: string
+  model: string
+  usd: number
+}
+
+/** A spawned process under its key, for the reaper. */
+export interface WorkerRecord {
+  key: string
+  pid: number
+  pgid: number
+  startTime: number
 }
 
 /** Creates the store file 0600 if it's missing; throws `StoreError` if the path is anything but a regular
@@ -306,6 +339,148 @@ export class Store {
     } finally {
       this.#pending = undefined
     }
+  }
+
+  // Audit, usage, workers: office bookkeeping, no events.
+
+  /** Appends an audit row. `args` must already be redacted. */
+  recordAudit(entry: {
+    person: string
+    kind: string
+    tool: string
+    args: Record<string, unknown>
+    outcome: string
+    sessionId?: string | null
+    runId?: string | null
+    detail?: string | null
+  }): AuditEntry {
+    const at = now()
+    const { person, kind, tool, args, outcome } = entry
+    const sessionId = entry.sessionId ?? null
+    const runId = entry.runId ?? null
+    const detail = entry.detail ?? null
+    const row = this.transaction((tx) =>
+      tx.get(
+        "INSERT INTO audit (at, person, session_id, run_id, kind, tool, args, outcome, detail) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        at,
+        person,
+        sessionId,
+        runId,
+        kind,
+        tool,
+        JSON.stringify(args),
+        outcome,
+        detail,
+      ),
+    )!
+    return { id: row.id as number, at, person, kind, tool, args, outcome, sessionId, runId, detail }
+  }
+
+  /** Audit rows in the order they were written, optionally filtered. */
+  listAudit(filter?: { sessionId?: string; person?: string }): AuditEntry[] {
+    const clauses: string[] = []
+    const params: string[] = []
+    if (filter?.sessionId !== undefined) {
+      clauses.push("session_id = ?")
+      params.push(filter.sessionId)
+    }
+    if (filter?.person !== undefined) {
+      clauses.push("person = ?")
+      params.push(filter.person)
+    }
+    const where = clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""
+    return this.db
+      .prepare(`SELECT * FROM audit${where} ORDER BY id`)
+      .all(...params)
+      .map((r) => ({
+        id: r.id as number,
+        at: r.at as string,
+        person: r.person as string,
+        kind: r.kind as string,
+        tool: r.tool as string,
+        args: JSON.parse(r.args as string) as Record<string, unknown>,
+        outcome: r.outcome as string,
+        sessionId: r.session_id as string | null,
+        runId: r.run_id as string | null,
+        detail: r.detail as string | null,
+      }))
+  }
+
+  /** Appends the price of one model call. */
+  recordUsage(usage: { sessionId: string; runId: string; model: string; usd: number }): UsageRecord {
+    const at = now()
+    const { sessionId, runId, model, usd } = usage
+    const row = this.transaction((tx) =>
+      tx.get(
+        "INSERT INTO usage (at, session_id, run_id, model, usd) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        at,
+        sessionId,
+        runId,
+        model,
+        usd,
+      ),
+    )!
+    return { id: row.id as number, at, sessionId, runId, model, usd }
+  }
+
+  /** A session's usage rows in the order they were written. */
+  listUsage(sessionId: string): UsageRecord[] {
+    return this.db
+      .prepare("SELECT * FROM usage WHERE session_id = ? ORDER BY id")
+      .all(sessionId)
+      .map((r) => ({
+        id: r.id as number,
+        at: r.at as string,
+        sessionId: r.session_id as string,
+        runId: r.run_id as string,
+        model: r.model as string,
+        usd: r.usd as number,
+      }))
+  }
+
+  /** The summed price of a session's model calls. */
+  sessionUsageUsd(sessionId: string): number {
+    const row = this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE session_id = ?").get(sessionId)
+    return row!.usd as number
+  }
+
+  /** Records the process under `key`, replacing any earlier record for the key (which keeps its place). */
+  recordWorker(key: string, worker: { pid: number; pgid: number; startTime: number }): WorkerRecord {
+    const { pid, pgid, startTime } = worker
+    this.transaction((tx) =>
+      tx.run(
+        "INSERT INTO workers (key, pid, pgid, start_time) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT (key) DO UPDATE SET pid = excluded.pid, pgid = excluded.pgid, start_time = excluded.start_time",
+        key,
+        pid,
+        pgid,
+        startTime,
+      ),
+    )
+    return { key, pid, pgid, startTime }
+  }
+
+  /** Every recorded worker, in the order their keys were first recorded. */
+  listWorkers(): WorkerRecord[] {
+    return this.db
+      .prepare("SELECT * FROM workers ORDER BY rowid")
+      .all()
+      .map((r) => ({
+        key: r.key as string,
+        pid: r.pid as number,
+        pgid: r.pgid as number,
+        startTime: r.start_time as number,
+      }))
+  }
+
+  /** Forgets the worker under `key` (a no-op when none is recorded); with `pid`, only if the record is that
+   *  process's. */
+  removeWorker(key: string, pid?: number): void {
+    this.transaction((tx) => {
+      if (pid === undefined) tx.run("DELETE FROM workers WHERE key = ?", key)
+      else tx.run("DELETE FROM workers WHERE key = ? AND pid = ?", key, pid)
+    })
   }
 
   /** Closes the connection; a second call does nothing. */
