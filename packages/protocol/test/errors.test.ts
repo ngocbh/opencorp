@@ -22,21 +22,29 @@ function message(schema: z.ZodType, data: unknown) {
 test("422 text never holds an input value or an unknown key", () => {
   const person = fixture("Person.json")
   const chat = fixture("Message.json")
-  const cases: [z.ZodType, unknown][] = [
-    [Schemas.HqLoginRequest, { handle: "x", password: "p", [SECRET]: 1 }],
-    [Schemas.Person, { ...person, devices: [{ name: "macbook", token_sha256: HASH, [SECRET]: 1 }] }],
-    [Schemas.HqLoginRequest, { handle: "x", password: { [SECRET]: SECRET } }],
-    [Schemas.Person, { ...person, kind: SECRET }],
-    [Schemas.Message, { ...chat, parts: [{ ...chat.parts[0], type: SECRET }] }],
-    [Schemas.HqLoginRequest, { handle: "x", password: "p", label: SECRET.repeat(10) }],
-    [Schemas.AddDeviceRequest, { name: "macbook", token_sha256: SECRET }],
-    [Schemas.SetupPrompt, { type: SECRET, text: SECRET }],
-    [Schemas.Asset, { id: "cluster-a", kind: "slurm_cluster", tools: { [SECRET]: { risk: "bogus" } } }],
+  const cases: [z.ZodType, unknown, string][] = [
+    [Schemas.HqLoginRequest, { handle: "x", password: "p", [SECRET]: 1 }, "an extra field: isn't allowed"],
+    [
+      Schemas.Person,
+      { ...person, devices: [{ name: "macbook", token_sha256: HASH, [SECRET]: 1 }] },
+      "devices: has an unknown field",
+    ],
+    [Schemas.HqLoginRequest, { handle: "x", password: { [SECRET]: SECRET } }, "password: has the wrong type"],
+    [Schemas.Person, { ...person, kind: SECRET }, "kind: isn't an allowed value"],
+    [Schemas.Message, { ...chat, parts: [{ ...chat.parts[0], type: SECRET }] }, "parts: isn't an allowed value"],
+    [Schemas.HqLoginRequest, { handle: "x", password: "p", label: SECRET.repeat(10) }, "label: is too long"],
+    [Schemas.AddDeviceRequest, { name: "macbook", token_sha256: SECRET }, "token_sha256: isn't in the right format"],
+    [Schemas.SetupPrompt, { type: SECRET, text: SECRET }, "type: isn't an allowed value"],
+    [
+      Schemas.Asset,
+      { id: "cluster-a", kind: "slurm_cluster", tools: { [SECRET]: { risk: "bogus" } } },
+      "tools: isn't an allowed value",
+    ],
   ]
-  for (const [schema, data] of cases) {
+  for (const [schema, data, expected] of cases) {
     const text = message(schema, data)
-    expect(text).not.toContain(SECRET)
     expect(text).not.toContain("sk-PLANTED")
+    expect([data, text]).toEqual([data, expected])
   }
 })
 
@@ -68,6 +76,7 @@ test("every code a client branches on is a protocol error code", () => {
   // The client makes these itself; the office never sends them.
   const own = new Set(["office_unavailable", "timeout"])
   const branch = /\.code [!=]== "([a-z_]+)"/g
+  // Guards against matching packages/tui/src/routes/session/index.tsx's `typeof code === "number"`.
   expect('typeof code === "number"'.match(branch)).toBeNull()
   const found = new Set<string>()
   for (const pkg of ["client", "cli", "app", "tui"]) {

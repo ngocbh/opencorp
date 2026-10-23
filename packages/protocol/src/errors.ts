@@ -48,19 +48,26 @@ function topKeys(schema: z.ZodType): Set<string> {
   return new Set()
 }
 
-const isObject = (v: unknown): v is Record<PropertyKey, unknown> =>
-  typeof v === "object" && v !== null && !Array.isArray(v)
+const isContainer = (v: unknown): v is Record<PropertyKey, unknown> => typeof v === "object" && v !== null
 
 /** Whether `path`'s last key is missing from `data`; it reads key presence only, never a value. */
 function missing(data: unknown, path: readonly PropertyKey[]): boolean {
+  const last = path.at(-1)
+  if (last === undefined) return false
   let parent = data
-  for (const [i, key] of path.entries()) {
-    if (!isObject(parent) && !(typeof key === "number" && Array.isArray(parent))) return false
-    const container = parent as Record<PropertyKey, unknown>
-    if (i === path.length - 1) return !Object.hasOwn(container, key)
-    parent = container[key]
+  for (const key of path.slice(0, -1)) {
+    if (!isContainer(parent)) return false
+    parent = parent[key]
   }
-  return false
+  return isContainer(parent) && !Object.hasOwn(parent, last)
+}
+
+/** The field `issue` names: its top-level key when `keys` has it, else the body itself or an extra field. */
+function field(issue: z.core.$ZodIssue, keys: Set<string>): string {
+  const head = issue.path[0]
+  if (typeof head === "string" && keys.has(head)) return head
+  if (issue.path.length === 0 && issue.code !== "unrecognized_keys") return "body"
+  return "an extra field"
 }
 
 // Each phrase is fixed: zod's own messages can quote the input, such as an enum's or a literal's expected values.
@@ -95,16 +102,5 @@ function phrase(issue: z.core.$ZodIssue, data: unknown): string {
  */
 export function validationMessage(schema: z.ZodType, error: z.ZodError, data: unknown): string {
   const keys = topKeys(schema)
-  return error.issues
-    .map((issue) => {
-      const head = issue.path[0]
-      const where =
-        typeof head === "string" && keys.has(head)
-          ? head
-          : issue.path.length === 0 && issue.code !== "unrecognized_keys"
-            ? "body"
-            : "an extra field"
-      return `${where}: ${phrase(issue, data)}`
-    })
-    .join("; ")
+  return error.issues.map((issue) => `${field(issue, keys)}: ${phrase(issue, data)}`).join("; ")
 }
