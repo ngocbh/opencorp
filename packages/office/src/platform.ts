@@ -13,7 +13,8 @@ import { fileURLToPath } from "node:url"
 const CHECKOUT_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 /** The argv prefix that runs the office's own code: the binary itself when compiled (built with
- *  the two no-autoload flags), else this Bun with `CHECKOUT_FLAGS` on the CLI's entry. */
+ *  `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig`), else this Bun with
+ *  `CHECKOUT_FLAGS` on the CLI's entry. */
 export function selfCommand(): string[] {
   if (Bun.isStandaloneExecutable) return [process.execPath]
   return [process.execPath, ...CHECKOUT_FLAGS, fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url))]
@@ -26,7 +27,9 @@ const UNSAFE_ENV = /^(BUN_|LD_|DYLD_)|^NODE_(OPTIONS|PATH)$/
  *  values: the last filter on every self-spawn's env. */
 export function selfSpawnEnv(env: Record<string, string | undefined>): Record<string, string> {
   const kept: Record<string, string> = {}
-  for (const [name, value] of Object.entries(env)) if (value !== undefined && !UNSAFE_ENV.test(name)) kept[name] = value
+  for (const [name, value] of Object.entries(env)) {
+    if (value !== undefined && !UNSAFE_ENV.test(name)) kept[name] = value
+  }
   return kept
 }
 
@@ -36,11 +39,18 @@ export function selfSpawnCwd(): string {
   return fs.realpathSync(os.homedir())
 }
 
-/** Replaces this process (same pid) with `argv`, run in `cwd` with exactly `env`. Doesn't return. */
-export function reexec(argv: string[], env: Record<string, string>, cwd: string): never {
+/** Replaces this process (same pid) with `argv`, run in `cwd` with exactly `env`. Doesn't return; if the
+ *  exec fails it throws with the cwd put back. */
+export function reexec(argv: [string, ...string[]], env: Record<string, string>, cwd: string): never {
   if (!process.execve) throw new Error("this runtime has no process.execve")
+  const previous = process.cwd()
   process.chdir(cwd)
-  return process.execve(argv[0]!, argv, env)
+  try {
+    return process.execve(argv[0], argv, env)
+  } catch (error) {
+    process.chdir(previous)
+    throw error
+  }
 }
 
 /** The file a `node:worker_threads` worker named `name` starts from, in both layouts. */

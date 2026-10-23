@@ -49,8 +49,8 @@ test("selfSpawnEnv drops BUN, NODE_OPTIONS, NODE_PATH, LD and DYLD variables and
     UNSET: undefined,
   }
   const copy = { ...input }
-  expect(selfSpawnEnv(input)).toEqual({ PATH: "/bin", HOME: "/h", LANG: "C", MY_BUN_THING: "kept" })
-  expect(input).toEqual(copy)
+  expect(selfSpawnEnv(input)).toStrictEqual({ PATH: "/bin", HOME: "/h", LANG: "C", MY_BUN_THING: "kept" })
+  expect(input).toStrictEqual(copy)
 })
 
 test("selfSpawnCwd is the real path of the home dir", () => {
@@ -67,7 +67,9 @@ test("selfSpawnCwd is the real path of the home dir", () => {
     encoding: "utf8",
     timeout: 20_000,
   })
+  expect(result.error).toBeUndefined()
   expect(result.stderr).toBe("")
+  expect(result.status).toBe(0)
   expect(result.stdout.trim()).toBe(fs.realpathSync(real))
 })
 
@@ -91,7 +93,9 @@ test("reexec replaces the process in place with only the given env and cwd", () 
     encoding: "utf8",
     timeout: 20_000,
   })
+  expect(result.error).toBeUndefined()
   expect(result.stderr).toBe("")
+  expect(result.status).toBe(0)
   const lines = result.stdout.trimEnd().split("\n")
   expect(lines[0]).toMatch(/^\d+$/)
   expect(lines[1]).toBe(lines[0]!)
@@ -169,6 +173,8 @@ test("no spawn of process.execPath outside platform.ts", () => {
     'process.execve("/bin/sh")',
   ])
     expect(sample).toMatch(SELF)
+  for (const sample of ["process.argv[2]", "process.argv.slice(2)", "selfCommand()", "forked(x)", "forkSession(id)"])
+    expect(sample).not.toMatch(SELF)
   expect(source("platform.ts")).toMatch(SELF)
   for (const name of sourceFiles()) {
     if (name === "platform.ts") continue
