@@ -3,7 +3,7 @@
   "license": "MIT",
   "private": true,
   "packageManager": "bun@1.4.2",
-  "workspaces": ["packages/*"],
+  "workspaces": ["packages/*", "packages/yian/ts"],
   "catalog": {
     "@kobalte/core": "0.13.13",
     "@playwright/test": "1.59.1",
@@ -26,8 +26,8 @@
   },
   "scripts": {
     "build": "bun run --filter '@opencorp/app' build",
-    "test": "bun run --filter '*' test",
-    "typecheck": "bun run --filter '*' typecheck"
+    "test": "bun run --filter '*' --filter '!@ngocbh/yian' test",
+    "typecheck": "bun run --filter '*' --filter '!@ngocbh/yian' typecheck"
   },
-  "devDependencies": { "typescript": "^5.6.0", "@types/bun": "^1.1.0" }
+  "devDependencies": { "typescript": "^5.6.0", "@types/bun": "^1.1.0", "@types/node": "^26.6.3" }
 }
