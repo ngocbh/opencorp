@@ -102,3 +102,6 @@ jobs:
       - if: ${{ hashFiles('packages/cli/**/*.test.ts', 'packages/cli/**/*.test.tsx', '!packages/cli/node_modules/**') != '' }}
         run: bun test
         working-directory: packages/cli
+      - if: ${{ hashFiles('packages/office/**/*.test.ts', '!packages/office/node_modules/**') != '' }}
+        run: bun test
+        working-directory: packages/office
