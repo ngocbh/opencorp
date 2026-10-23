@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import type { PairCode } from "@opencorp/protocol"
-import { createFakeOffice, type FakeOffice } from "../../tui/script/stub"
+import { createFakeOffice, type FakeOffice } from "@opencorp/tui/stub"
 import { canOpen, pair, pairOutput, type PairDeps } from "../src/commands/pair"
 
 const code = (over: Partial<PairCode> = {}): PairCode => ({

@@ -8,7 +8,7 @@ import { restart } from "../src/commands/restart"
 import { start } from "../src/commands/start"
 import { main } from "../src/main"
 import { type Deps, REPO, officeAnswers, realDeps, syncThenInstall, venvPython } from "../src/office"
-import { createFakeOffice } from "../../tui/script/stub"
+import { createFakeOffice } from "@opencorp/tui/stub"
 
 const saved = { ...process.env }
 afterEach(() => {

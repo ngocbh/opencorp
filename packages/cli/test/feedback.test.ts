@@ -3,7 +3,7 @@ import type { Message } from "@opencorp/protocol"
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { createFakeOffice, type FakeOffice } from "../../tui/script/stub"
+import { createFakeOffice, type FakeOffice } from "@opencorp/tui/stub"
 import { main } from "../src/main"
 
 let home: string
