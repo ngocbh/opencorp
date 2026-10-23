@@ -23,6 +23,7 @@ beforeAll(() => {
   // A folder a model could have written: Bun loads both files if it reads the folder.
   fs.mkdirSync(proj)
   fs.writeFileSync(path.join(proj, ".env"), "PLANTED=1\n")
+  fs.writeFileSync(path.join(proj, ".env.local"), "PLANTED_LOCAL=1\n")
   fs.writeFileSync(path.join(proj, "bunfig.toml"), 'preload = ["./evil.ts"]\n')
   fs.writeFileSync(
     path.join(proj, "evil.ts"),
@@ -32,7 +33,8 @@ beforeAll(() => {
   fs.writeFileSync(
     probe,
     `import { writeFileSync } from "node:fs"\nwriteFileSync(${JSON.stringify(path.join(tmp, "seen.json"))}, ` +
-      `JSON.stringify({ planted: process.env.PLANTED ?? null, argv: process.argv.slice(1) }))\n`,
+      `JSON.stringify({ planted: process.env.PLANTED ?? null, local: process.env.PLANTED_LOCAL ?? null, ` +
+      `argv: process.argv.slice(1) }))\n`,
   )
   // A stand-in `bun` that records what the real one saw, so the real wrapper runs the real entry.
   fs.mkdirSync(path.join(tmp, "bin"))
@@ -63,7 +65,11 @@ function run(command: string, args: string[], env: Record<string, string>) {
   const result = spawnSync(command, args, { cwd: proj, env: { HOME: tmp, ...env }, encoding: "utf8", timeout: 20_000 })
   if (!fs.existsSync(seenFile))
     throw new Error(`Bun never ran (status ${result.status}, ${result.error ?? "no spawn error"}):\n${result.stderr}`)
-  const seen = JSON.parse(fs.readFileSync(seenFile, "utf8")) as { planted: string | null; argv: string[] }
+  const seen = JSON.parse(fs.readFileSync(seenFile, "utf8")) as {
+    planted: string | null
+    local: string | null
+    argv: string[]
+  }
   return { result, seen, marker: fs.existsSync(marker) }
 }
 
@@ -83,6 +89,7 @@ test("the wrapper is an executable sh script that execs Bun with the no-autoload
 test("plain bun from a folder holding .env and a bunfig.toml preload loads both", () => {
   const { seen, marker } = run(path.join(tmp, "bin/bun"), [ENTRY, "--help"], { PATH: "/usr/bin:/bin" })
   expect(seen.planted).toBe("1")
+  expect(seen.local).toBe("1")
   expect(marker).toBe(true)
 })
 
@@ -91,6 +98,7 @@ test("opencorp --help from a folder holding .env and a bunfig.toml preload sees 
   expect(result.status).toBe(0)
   expect(result.stdout).toContain("Usage: opencorp [command] [options]")
   expect(seen.planted).toBeNull()
+  expect(seen.local).toBeNull()
   expect(marker).toBe(false)
   expect(seen.argv).toEqual([ENTRY, "--help"])
 })
@@ -103,6 +111,7 @@ test("opencorp through a bun link symlink chain with OPENCORP_BUN gets args with
   expect(result.status).toBe(0)
   expect(seen.argv).toEqual([ENTRY, "--help", "x y", "", "$HOME *"])
   expect(seen.planted).toBeNull()
+  expect(seen.local).toBeNull()
   expect(marker).toBe(false)
 })
 
@@ -114,4 +123,5 @@ test("opencorp run by a relative path with CDPATH set still finds the checkout",
   })
   expect(result.status).toBe(0)
   expect(seen.argv).toEqual([ENTRY, "--help"])
+  expect(seen.local).toBeNull()
 })
