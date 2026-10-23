@@ -15,7 +15,7 @@ const CHECKOUT_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 /** The argv prefix that runs the office's own code: the binary itself when compiled (built with
  *  `--no-compile-autoload-dotenv` and `--no-compile-autoload-bunfig`), else this Bun with
  *  `CHECKOUT_FLAGS` on the CLI's entry. */
-export function selfCommand(): string[] {
+export function selfCommand(): [string, ...string[]] {
   if (Bun.isStandaloneExecutable) return [process.execPath]
   return [process.execPath, ...CHECKOUT_FLAGS, fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url))]
 }
@@ -39,18 +39,12 @@ export function selfSpawnCwd(): string {
   return fs.realpathSync(os.homedir())
 }
 
-/** Replaces this process (same pid) with `argv`, run in `cwd` with exactly `env`. Doesn't return; if the
- *  exec fails it throws with the cwd put back. */
+/** Replaces this process (same pid) with `argv`, run in `cwd` with exactly `env`. Doesn't return; if the exec
+ *  fails it throws, already in `cwd`. */
 export function reexec(argv: [string, ...string[]], env: Record<string, string>, cwd: string): never {
   if (!process.execve) throw new Error("this runtime has no process.execve")
-  const previous = process.cwd()
   process.chdir(cwd)
-  try {
-    return process.execve(argv[0], argv, env)
-  } catch (error) {
-    process.chdir(previous)
-    throw error
-  }
+  return process.execve(argv[0], argv, env)
 }
 
 /** The file a `node:worker_threads` worker named `name` starts from, in both layouts. */
