@@ -33,6 +33,53 @@ test("selfCommand runs the same command line as the opencorp wrapper", () => {
   expect(result.stdout.split("\0").slice(0, -1)).toEqual([...selfCommand().slice(1), "__worker", "a b"])
 })
 
+test(
+  "a self-spawn from a folder holding .env and a bunfig.toml preload with BUN_OPTIONS set loads none of them",
+  () => {
+    const dir = tempDir()
+    const proj = path.join(dir, "proj")
+    fs.mkdirSync(proj)
+    const marker = path.join(proj, "MARKER")
+    const optsMarker = path.join(dir, "OPTS_MARKER")
+    fs.writeFileSync(path.join(proj, ".env"), "PLANTED=1\n")
+    fs.writeFileSync(path.join(proj, "bunfig.toml"), 'preload = ["./evil.ts"]\n')
+    fs.writeFileSync(
+      path.join(proj, "evil.ts"),
+      `import { writeFileSync } from "node:fs"\nwriteFileSync(${JSON.stringify(marker)}, "")\n`,
+    )
+    const opts = path.join(dir, "opts.ts")
+    fs.writeFileSync(
+      opts,
+      `import { writeFileSync } from "node:fs"\n` +
+        `writeFileSync(${JSON.stringify(optsMarker)}, JSON.stringify({ planted: process.env.PLANTED ?? null }))\n`,
+    )
+    const env = {
+      PATH: "/usr/bin:/bin",
+      HOME: dir,
+      BUN_OPTIONS: `--preload ${opts}`,
+      NODE_OPTIONS: `--require ${opts}`,
+    }
+    const [cmd, ...args] = selfCommand()
+    const spawn = (spawnEnv: Record<string, string>) =>
+      spawnSync(cmd, [...args, "__worker"], { cwd: proj, env: spawnEnv, encoding: "utf8", timeout: 20_000 })
+
+    const result = spawn(selfSpawnEnv(env))
+    expect(result.error).toBeUndefined()
+    expect(result.stderr).toContain("opencorp __worker: not built yet")
+    expect(result.status).toBe(1)
+    expect(fs.existsSync(marker)).toBe(false)
+    expect(fs.existsSync(optsMarker)).toBe(false)
+
+    // The control: with the raw env the BUN_OPTIONS preload runs, so the check above can see one.
+    const raw = spawn(env)
+    expect(raw.error).toBeUndefined()
+    expect(fs.existsSync(optsMarker)).toBe(true)
+    expect(JSON.parse(fs.readFileSync(optsMarker, "utf8"))).toEqual({ planted: null })
+    expect(fs.existsSync(marker)).toBe(false)
+  },
+  60_000,
+)
+
 test("selfSpawnEnv drops BUN, NODE_OPTIONS, NODE_PATH, LD and DYLD variables and keeps the rest", () => {
   const input = {
     PATH: "/bin",

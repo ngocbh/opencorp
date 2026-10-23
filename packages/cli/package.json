@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@opencorp/client": "workspace:*",
+    "@opencorp/office": "workspace:*",
     "@opencorp/protocol": "workspace:*",
     "@opencorp/tui": "workspace:*",
     "@opentui/solid": "catalog:",
