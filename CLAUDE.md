@@ -125,7 +125,8 @@ bun install
 
 - Python: `uv run pytest -q packages/corp_office/tests/<path>` (all: `uv run pytest -q`).
 - TS: `(cd packages/<pkg> && bun test)`; from the root, `bun run test` and `bun run typecheck`
-  run each package's own `test` and `typecheck` scripts.
+  run each package's own `test` and `typecheck` scripts, except yian's (`@ngocbh/yian` in
+  `packages/yian/ts`), which the yian repo tests.
 - CI runs a package's `bun test` only once it has a `*.test.ts(x)` file.
 - `packages/corp_office/tests/<pkg>/` mirrors `packages/corp_office/src/opencorp/<pkg>/`.
   Every test directory has an empty `__init__.py` so same-named test modules in different

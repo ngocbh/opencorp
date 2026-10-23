@@ -82,6 +82,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          submodules: recursive
+          token: ${{ secrets.COMPOSER_READ_TOKEN }}   # yian is private
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
