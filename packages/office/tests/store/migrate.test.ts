@@ -1,8 +1,9 @@
 /** The migration ladder applies numbered SQL files above PRAGMA user_version. */
+import fs from "node:fs"
 import { join } from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { openSqlite, sqliteErrorCode, type Sqlite } from "@ngocbh/yian/platform"
-import { MigrationError, migrate, userVersion, type MigrationFile } from "../../src/store/migrate.ts"
+import { MIGRATIONS, MigrationError, migrate, userVersion, type MigrationFile } from "../../src/store/migrate.ts"
 import { tempDir } from "../helpers.ts"
 
 function open(): Sqlite {
@@ -106,4 +107,11 @@ test("an incomplete statement is refused", () => {
   expect((e as Error).message).toMatch(/incomplete input/)
   expect(tables(db).has("a")).toBe(false)
   expect(userVersion(db)).toBe(0)
+})
+
+test("every migration file is in the ladder", () => {
+  const dir = new URL("../../src/store/migrations/", import.meta.url)
+  const names = fs.readdirSync(dir).filter((name) => name.endsWith(".sql")).sort()
+  expect(MIGRATIONS.map((m) => m.name)).toEqual(names)
+  for (const m of MIGRATIONS) expect(m.sql).toBe(fs.readFileSync(new URL(m.name, dir), "utf8"))
 })
