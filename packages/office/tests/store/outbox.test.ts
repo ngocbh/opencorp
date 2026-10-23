@@ -1,9 +1,10 @@
 /** Transactions, events, and listeners. */
 import type { z } from "zod"
-import { expect, spyOn, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
+import { openSqlite } from "@ngocbh/yian/platform"
 import { Event, Ulid, now, type WorkItem } from "@opencorp/protocol"
 import { Store, StoreError, Tx, newId } from "../../src/store/store.ts"
-import { openStore, recordEvents, workItem } from "./helpers.ts"
+import { openStore, recordEvents, thrown, workItem } from "./helpers.ts"
 
 type Item = z.output<typeof WorkItem>
 
@@ -39,16 +40,6 @@ function updateItem(store: Store, id: string, status: Item["status"]): void {
 /** The item's row, or undefined. */
 function getItem(store: Store, id: string) {
   return store.db.prepare("SELECT * FROM work_items WHERE id = ?").get(id)
-}
-
-/** Runs `fn` and returns what it threw (fails the test if it didn't throw). */
-function thrown(fn: () => unknown): unknown {
-  try {
-    fn()
-  } catch (e) {
-    return e
-  }
-  throw new Error("expected a throw")
 }
 
 /** Makes an insert into worked_folders for `cwd` end the whole transaction, as a full disk or an I/O error can. */
@@ -138,6 +129,60 @@ test("own queries and events share the transaction", () => {
   expect(events[1]!.data.summary).toBe("hello")
 })
 
+test("listeners run after commit in order", () => {
+  const store = openStore()
+  const other = openSqlite(store.path)
+  onTestFinished(() => other.close())
+  const got: [string, boolean][] = []
+  store.addListener((event) => {
+    // The change is visible to other connections by the time the listener runs.
+    const row = other.prepare("SELECT id FROM work_items WHERE id = ?").get(event.subject_id)
+    got.push([event.type, row !== undefined])
+  })
+  const item = createItem(store, workItem())
+  updateItem(store, item.id, "done")
+  expect(got).toEqual([
+    ["work_item.created", true],
+    ["work_item.updated", true],
+  ])
+})
+
+test("rolled back events are not delivered", () => {
+  const store = openStore()
+  const got: Event[] = []
+  store.addListener((event) => got.push(event))
+  expect(() =>
+    store.transaction(() => {
+      createItem(store, workItem())
+      throw new Error("rolled back")
+    }),
+  ).toThrow(/rolled back/)
+  expect(got).toEqual([])
+})
+
+test("failing listener is logged not raised", () => {
+  const lines: string[] = []
+  const store = openStore({ log: (line) => lines.push(line) })
+  store.addListener(() => {
+    throw new TypeError("secret-ish text")
+  })
+  const got: Event[] = []
+  store.addListener((event) => got.push(event))
+  createItem(store, workItem())
+  expect(got).toHaveLength(1)
+  expect(lines.some((line) => line.includes("store listener failed") && line.includes("TypeError"))).toBe(true)
+  expect(lines.some((line) => line.includes("secret-ish text"))).toBe(false)
+})
+
+test("remove listener", () => {
+  const store = openStore()
+  const got: Event[] = []
+  const remove = store.addListener((event) => got.push(event))
+  remove()
+  createItem(store, workItem())
+  expect(got).toEqual([])
+})
+
 test("emit alone writes one event", () => {
   const store = openStore()
   const events = recordEvents(store)
@@ -159,6 +204,19 @@ test("bad event type rolls back", () => {
   expect((e as Error).message).toMatch(/^bad event: /)
   expect(getItem(store, item.id)).toBeUndefined()
   expect(events).toEqual([])
+})
+
+test("listener writes are delivered in commit order", () => {
+  const store = openStore()
+  const events = recordEvents(store)
+  store.addListener((event) => {
+    if (event.type === "work_item.created") updateItem(store, event.subject_id, "in_progress")
+  })
+  const seenByB: string[] = []
+  store.addListener((event) => seenByB.push(event.id))
+  createItem(store, workItem())
+  expect(seenByB).toEqual(events.map((e) => e.id))
+  expect(events.map((e) => e.type)).toEqual(["work_item.created", "work_item.updated"])
 })
 
 test("savepoint keeps the error when sqlite ended the transaction", () => {
@@ -222,6 +280,20 @@ test("a failure outside tx run still blocks later writes", () => {
   expect(getItem(store, item.id)).toBeUndefined()
   expect(events).toEqual([])
   expect(folders(store)).toEqual([])
+})
+
+test("remover can be called twice", () => {
+  const store = openStore()
+  const got: Event[] = []
+  const listener = (event: Event) => {
+    got.push(event)
+  }
+  store.addListener(listener)
+  const remove = store.addListener(listener)
+  remove()
+  remove()
+  createItem(store, workItem())
+  expect(got).toHaveLength(1)
 })
 
 test("a transaction callback that returns a promise is refused and rolled back", async () => {

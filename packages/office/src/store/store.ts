@@ -78,8 +78,8 @@ export function newId(): string {
 
 /** Whether `db` has a transaction open. */
 function inTransaction(db: Sqlite): boolean {
-  // Yian's Sqlite has no inTransaction. BEGIN fails only while a transaction is open, and when it
-  // succeeds the ROLLBACK undoes the probe.
+  // This probe stands in until Yian's Sqlite has an inTransaction (gap reported). BEGIN fails only while a
+  // transaction is open, and when it succeeds the ROLLBACK undoes the probe.
   try {
     db.exec("BEGIN")
   } catch {
@@ -176,9 +176,13 @@ export class Store {
   #closed = false
   #tx: Tx | undefined
   #listeners: Listener[] = []
+  /** The events still to deliver while a delivery is running, else undefined. */
+  #pending: Event[] | undefined
+  readonly #log: (line: string) => void
 
-  constructor(file: string, _options?: StoreOptions) {
+  constructor(file: string, options?: StoreOptions) {
     this.path = file
+    this.#log = options?.log ?? console.error
     // Every file SQLite creates beside the store (-wal, -shm, journals) is private too.
     const old = process.umask(0o077)
     try {
@@ -267,8 +271,9 @@ export class Store {
     return this.transaction((tx) => tx.emit(type, subjectId, data))
   }
 
-  /** Calls `listener(event)` for each event after its transaction commits; returns a function that removes
-   *  it (a second call does nothing). */
+  /** Calls `listener(event)` for each event after its transaction commits, in commit order. A listener's
+   *  own writes are delivered after the events still being delivered. A listener that throws is logged
+   *  (its error's type only) and the others still run. Returns an idempotent remover. */
   addListener(listener: Listener): () => void {
     this.#listeners.push(listener)
     let removed = false
@@ -280,7 +285,27 @@ export class Store {
   }
 
   #deliver(events: Event[]): void {
-    for (const event of events) for (const listener of [...this.#listeners]) listener(event)
+    if (this.#pending) {
+      // A listener wrote to the store: its events go after the ones still being delivered, so every
+      // listener sees commit order.
+      this.#pending.push(...events)
+      return
+    }
+    const pending = (this.#pending = [...events])
+    try {
+      for (let event = pending.shift(); event; event = pending.shift()) {
+        for (const listener of [...this.#listeners]) {
+          try {
+            listener(event)
+          } catch (error) {
+            const type = error instanceof Error ? error.name : typeof error
+            this.#log(`store listener failed on ${event.type} ${event.id}: ${type}`)
+          }
+        }
+      }
+    } finally {
+      this.#pending = undefined
+    }
   }
 
   /** Closes the connection; a second call does nothing. */

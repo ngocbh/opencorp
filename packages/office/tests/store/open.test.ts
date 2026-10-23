@@ -6,7 +6,7 @@ import { openSqlite, sqliteErrorCode, type SqliteStatement } from "@ngocbh/yian/
 import { MIGRATIONS, MigrationError, ladder, userVersion } from "../../src/store/migrate.ts"
 import { Store, StoreError, enableWal } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
-import { openStore } from "./helpers.ts"
+import { openStore, thrown } from "./helpers.ts"
 
 const TABLES = new Set([
   "work_items",
@@ -21,16 +21,6 @@ const TABLES = new Set([
   "workers",
   "hq_sessions",
 ])
-
-/** Runs `fn` and returns what it threw (fails the test if it didn't throw). */
-function thrown(fn: () => unknown): unknown {
-  try {
-    fn()
-  } catch (e) {
-    return e
-  }
-  throw new Error("expected a throw")
-}
 
 /** A store at `path`, closed when the test finishes. */
 function storeAt(file: string): Store {

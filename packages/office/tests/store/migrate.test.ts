@@ -5,6 +5,7 @@ import { expect, onTestFinished, test } from "bun:test"
 import { openSqlite, sqliteErrorCode, type Sqlite } from "@ngocbh/yian/platform"
 import { MIGRATIONS, MigrationError, migrate, userVersion, type MigrationFile } from "../../src/store/migrate.ts"
 import { tempDir } from "../helpers.ts"
+import { thrown } from "./helpers.ts"
 
 function open(): Sqlite {
   const db = openSqlite(join(tempDir(), "db.sqlite"))
@@ -18,16 +19,6 @@ function files(entries: Record<string, string>): MigrationFile[] {
 
 function tables(db: Sqlite): Set<string> {
   return new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => String(r.name)))
-}
-
-/** Runs `fn` and returns what it threw (fails the test if it didn't throw). */
-function thrown(fn: () => unknown): unknown {
-  try {
-    fn()
-  } catch (e) {
-    return e
-  }
-  throw new Error("expected a throw")
 }
 
 test("fresh db gets every file", () => {

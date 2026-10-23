@@ -37,3 +37,13 @@ export function recordEvents(store: Store): Event[] {
   onTestFinished(store.addListener((event) => events.push(event)))
   return events
 }
+
+/** Runs `fn` and returns what it threw; throws "expected a throw" if it returned. */
+export function thrown(fn: () => unknown): unknown {
+  try {
+    fn()
+  } catch (e) {
+    return e
+  }
+  throw new Error("expected a throw")
+}
