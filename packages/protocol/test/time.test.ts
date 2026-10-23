@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test"
+import { Timestamp } from "../src/schemas"
 import { now, stamp } from "../src/time"
 
 test("now is a valid timestamp", () => {
-  expect(now()).toMatch(/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/u)
+  const at = now()
+  expect(Timestamp.parse(at)).toBe(at)
 })
 
 test("now is current utc", () => {
