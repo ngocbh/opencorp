@@ -34,7 +34,7 @@
       "name": "opencorp",
       "version": "0.0.1",
       "bin": {
-        "opencorp": "src/main.ts",
+        "opencorp": "bin/opencorp",
       },
       "dependencies": {
         "@opencorp/client": "workspace:*",
