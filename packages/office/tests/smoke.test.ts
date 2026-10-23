@@ -1,4 +1,4 @@
-/** The office package imports next to yian. */
+/** The office package imports next to yian; also covers the mode dispatch and the test helpers. */
 import fs from "node:fs"
 import { expect, test } from "bun:test"
 import { runFlow } from "@ngocbh/yian"
@@ -33,6 +33,7 @@ test("each office mode is a stub until its item lands, and an unknown mode exits
   }
 })
 
+// bun runs a file's tests in order, one at a time, so the next test sees these paths.
 let helperDirs: string[] = []
 
 test("the test helpers wait for a value and make short dirs that go away", async () => {
@@ -40,7 +41,7 @@ test("the test helpers wait for a value and make short dirs that go away", async
   await expect(waitFor(() => 0, { timeout: 50, what: "zero" })).rejects.toThrow("timed out waiting for zero")
   const short = shortDir()
   expect(fs.existsSync(short)).toBe(true)
-  expect(short.startsWith("/private/tmp/oc-") || short.startsWith("/tmp/oc-")).toBe(true)
+  expect(short).toMatch(/^(\/private)?\/tmp\/oc-/)
   expect(Buffer.byteLength(short)).toBeLessThan(30)
   const temp = tempDir()
   expect(fs.existsSync(temp)).toBe(true)
