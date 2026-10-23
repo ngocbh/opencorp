@@ -51,6 +51,15 @@ test("no file the browser entry loads uses Node's or Bun's globals", () => {
   expect(offenders).toEqual([])
 })
 
+test("the browser bundle leaves zod out", async () => {
+  // The app imports the client's values and the protocol's types and constants only; the
+  // protocol's `sideEffects: false` lets a bundler drop the zod schemas the root re-exports.
+  const out = await Bun.build({ entrypoints: [path.join(SRC, "index.ts")], target: "browser" })
+  const text = await out.outputs[0]!.text()
+  expect(text).toContain("chat/ask")
+  expect(text).not.toMatch(/ZodError|strictObject/)
+})
+
 test("the client never imports office, TUI, CLI or app code", () => {
   const offenders = readdirSync(SRC).flatMap((f) =>
     imports(path.join(SRC, f)).filter((s) => /corp_office|@opencorp\/(tui|cli|app)\b|\.\.\/\.\./.test(s)),
