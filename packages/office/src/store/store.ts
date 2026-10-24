@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { inspect } from "node:util"
 import {
   openSqlite,
   sqliteErrorCode,
@@ -11,7 +12,17 @@ import {
   type SqliteRow,
   type SqliteStatement,
 } from "@ngocbh/yian/platform"
-import { Comment, CostReport, Event, Question, Session, WorkItem, now, validationMessage } from "@opencorp/protocol"
+import {
+  BrowserSession,
+  Comment,
+  CostReport,
+  Event,
+  Question,
+  Session,
+  WorkItem,
+  now,
+  validationMessage,
+} from "@opencorp/protocol"
 import type { z } from "zod"
 import { migrate } from "./migrate.ts"
 
@@ -407,6 +418,92 @@ export interface WorkerRecord {
   pid: number
   pgid: number
   startTime: number
+}
+
+/** A browser signed in to HQ, as stored: with its secret's sha256 and its password fingerprint, which never
+ *  print (inspect and JSON leave them out; they stay public readonly fields so equality checks see them). Expiry
+ *  compares as text: every time comes from now(). */
+export class HqSessionRecord {
+  readonly id: string
+  readonly person: string
+  readonly name: string
+  readonly label: string | null
+  readonly secretSha256: string
+  readonly passwordFp: string
+  readonly issuedBy: string
+  readonly via: z.output<typeof BrowserSession>["via"]
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly lastUsedAt: string | null
+
+  constructor(fields: {
+    id: string
+    person: string
+    name: string
+    label: string | null
+    secretSha256: string
+    passwordFp: string
+    issuedBy: string
+    via: z.output<typeof BrowserSession>["via"]
+    createdAt: string
+    expiresAt: string
+    lastUsedAt: string | null
+  }) {
+    this.id = fields.id
+    this.person = fields.person
+    this.name = fields.name
+    this.label = fields.label
+    this.secretSha256 = fields.secretSha256
+    this.passwordFp = fields.passwordFp
+    this.issuedBy = fields.issuedBy
+    this.via = fields.via
+    this.createdAt = fields.createdAt
+    this.expiresAt = fields.expiresAt
+    this.lastUsedAt = fields.lastUsedAt
+  }
+
+  /** The session as the API shows it: never the secret's hash or the fingerprint. */
+  public(): z.output<typeof BrowserSession> {
+    return {
+      id: this.id,
+      person: this.person,
+      name: this.name,
+      label: this.label,
+      via: this.via,
+      issued_by: this.issuedBy,
+      created_at: this.createdAt,
+      expires_at: this.expiresAt,
+      last_used_at: this.lastUsedAt,
+    }
+  }
+
+  /** The public form, so a serialized record never carries the secret's hash or the fingerprint. */
+  toJSON(): object {
+    return this.public()
+  }
+
+  /** The record without the secret's hash or the fingerprint, so a logged or printed one never carries them. */
+  [inspect.custom](): string {
+    const { id, person, name, label, issuedBy, via, createdAt, expiresAt, lastUsedAt } = this
+    return `HqSessionRecord ${inspect({ id, person, name, label, issuedBy, via, createdAt, expiresAt, lastUsedAt })}`
+  }
+}
+
+/** The browser session in an `hq_sessions` row. */
+function hqSessionRecord(r: SqliteRow): HqSessionRecord {
+  return new HqSessionRecord({
+    id: r.id as string,
+    person: r.person as string,
+    name: r.name as string,
+    label: r.label as string | null,
+    secretSha256: r.secret_sha256 as string,
+    passwordFp: r.password_fp as string,
+    issuedBy: r.issued_by as string,
+    via: r.via as HqSessionRecord["via"],
+    createdAt: r.created_at as string,
+    expiresAt: r.expires_at as string,
+    lastUsedAt: r.last_used_at as string | null,
+  })
 }
 
 /** Sets an existing store file to 0600 if it has any group or other bits; does nothing if it's missing;
@@ -1288,6 +1385,78 @@ export class Store {
     this.transaction((tx) => {
       if (pid === undefined) tx.run("DELETE FROM workers WHERE key = ?", key)
       else tx.run("DELETE FROM workers WHERE key = ? AND pid = ?", key, pid)
+    })
+  }
+
+  // HQ browser sessions: office-local bookkeeping, no events.
+
+  /** Inserts a browser session after deleting every one expired by its creation time; a repeated id or secret
+   *  hash → DuplicateKey. */
+  addHqSession(record: HqSessionRecord): void {
+    this.transaction((tx) => {
+      tx.run("DELETE FROM hq_sessions WHERE expires_at <= ?", record.createdAt)
+      tx.insert("hq_sessions", {
+        id: record.id,
+        person: record.person,
+        name: record.name,
+        label: record.label,
+        secret_sha256: record.secretSha256,
+        password_fp: record.passwordFp,
+        issued_by: record.issuedBy,
+        via: record.via,
+        created_at: record.createdAt,
+        expires_at: record.expiresAt,
+        last_used_at: record.lastUsedAt,
+      })
+    })
+  }
+
+  /** The browser session `sessionId`, or undefined. */
+  getHqSession(sessionId: string): HqSessionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM hq_sessions WHERE id = ?").get(sessionId)
+    return row && hqSessionRecord(row)
+  }
+
+  /** The browser session whose cookie secret hashes to `secretSha256`, unless it expired by `at`. */
+  hqSessionBySecret(secretSha256: string, at: string): HqSessionRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM hq_sessions WHERE secret_sha256 = ? AND expires_at > ?")
+      .get(secretSha256, at)
+    return row && hqSessionRecord(row)
+  }
+
+  /** Browser sessions, newest first, optionally one person's. */
+  listHqSessions(person?: string): HqSessionRecord[] {
+    const where = person === undefined ? "" : " WHERE person = ?"
+    return this.db
+      .prepare(`SELECT * FROM hq_sessions${where} ORDER BY created_at DESC, id DESC`)
+      .all(...(person === undefined ? [] : [person]))
+      .map(hqSessionRecord)
+  }
+
+  /** Records that the session was used at `at`, unless it was already recorded as used since `before`. */
+  touchHqSession(sessionId: string, at: string, before: string): void {
+    this.transaction((tx) =>
+      tx.run(
+        "UPDATE hq_sessions SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)",
+        at,
+        sessionId,
+        before,
+      ),
+    )
+  }
+
+  /** Deletes a browser session; returns whether there was one. */
+  deleteHqSession(sessionId: string): boolean {
+    const row = this.transaction((tx) => tx.get("DELETE FROM hq_sessions WHERE id = ? RETURNING id", sessionId))
+    return row !== undefined
+  }
+
+  /** Deletes the sessions expired by `at`; returns how many. */
+  pruneHqSessions(at: string): number {
+    return this.transaction((tx) => {
+      tx.run("DELETE FROM hq_sessions WHERE expires_at <= ?", at)
+      return tx.get("SELECT changes() AS n")!.n as number
     })
   }
 
