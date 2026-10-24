@@ -1,8 +1,11 @@
 /** Check an answer against its question, and convert typed text to the value a `human_input` node takes. */
-import { repr, splitLines, strip } from "../perm/redact.ts"
+import { casefold, repr, splitLines, strip } from "../perm/redact.ts"
 import type { QuestionRecord } from "../store/store.ts"
 
 type Field = QuestionRecord["answer_schema"][number]
+
+const TRUE = new Set(["true", "yes", "y"])
+const FALSE = new Set(["false", "no", "n"])
 
 /** The answer doesn't fit the question; the message says why, for the person answering. */
 export class InvalidAnswer extends Error {
@@ -163,16 +166,61 @@ const EXPECTED: Record<string, string> = {
 
 /** Python's `int` text, underscores between digits allowed. */
 const INT = /^[+-]?[0-9]+(?:_[0-9]+)*$/
+/** Python's decimal `float` text, underscores between digits allowed; `nan` and `inf` are never finite. */
+const FLOAT = /^[+-]?(?:[0-9]+(?:_[0-9]+)*(?:\.(?:[0-9]+(?:_[0-9]+)*)?)?|\.[0-9]+(?:_[0-9]+)*)(?:[eE][+-]?[0-9]+(?:_[0-9]+)*)?$/
+// Yian's one date grammar, restated since its `typesys/temporal.ts` doesn't export it: the office never takes a
+// date the engine refuses.
+const DATE = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/
+const DATETIME =
+  /^([0-9]{4})-([0-9]{2})-([0-9]{2})[T ]([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]{1,6}))?)?(Z|[+-][0-9]{2}:[0-9]{2})?$/
 
 /** `text` as a `kind` value, or null if it isn't one. */
 function parse(kind: string, text: string): unknown {
+  if (kind === "bool") {
+    const folded = casefold(text)
+    return TRUE.has(folded) ? true : FALSE.has(folded) ? false : null
+  }
   if (kind === "int") {
     if (!INT.test(text)) return null
     const number = Number(text.replaceAll("_", ""))
     // Python's int has no -0.
     return Number.isSafeInteger(number) ? (number === 0 ? 0 : number) : null
   }
+  if (kind === "float") {
+    if (!FLOAT.test(text)) return null
+    const number = Number(text.replaceAll("_", ""))
+    return Number.isFinite(number) ? number : null
+  }
+  if (kind === "date") {
+    const m = DATE.exec(text)
+    return m !== null && isDate(m[1]!, m[2]!, m[3]!) ? text : null
+  }
+  if (kind === "datetime") {
+    // A date alone is midnight, as Python's `datetime.fromisoformat` reads it.
+    if (parse("date", text) !== null) return `${text}T00:00:00`
+    const m = DATETIME.exec(text)
+    if (m === null || !isDate(m[1]!, m[2]!, m[3]!)) return null
+    const [, year, month, day, hour, minute, second = "00", fraction = "", offset] = m
+    if (Number(hour) >= 24 || Number(minute) >= 60 || Number(second) >= 60) return null
+    if (offset !== undefined && offset !== "Z" && (Number(offset.slice(1, 3)) >= 24 || Number(offset.slice(4)) >= 60)) {
+      return null
+    }
+    // Python's `isoformat()`: microseconds only when non-zero, and UTC as `+00:00`.
+    const micro = fraction.padEnd(6, "0")
+    const zone = offset === undefined ? "" : offset === "Z" || offset === "-00:00" ? "+00:00" : offset
+    return `${year}-${month}-${day}T${hour}:${minute}:${second}${Number(micro) === 0 ? "" : `.${micro}`}${zone}`
+  }
   return null
+}
+
+/** Whether the digits name a real day: year 1 or later, a month, and a day that month has. */
+function isDate(year: string, month: string, day: string): boolean {
+  const y = Number(year)
+  const m = Number(month)
+  const d = Number(day)
+  const leap = y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][m - 1]
+  return y >= 1 && days !== undefined && d >= 1 && d <= days
 }
 
 function json(text: string): unknown {

@@ -218,7 +218,8 @@ protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schema
 protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
 questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9	O4a-9
-questions/test_checker.py	open	—	—	O3-7
+questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
+questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
 questions/test_format.py	ported	packages/office/tests/questions/format.test.ts	—	O3-7
 questions/test_normalize.py	ported	packages/office/tests/questions/normalize.test.ts	—	O3-7
 questions/test_seed.py	open	—	—	O4a-8
@@ -593,6 +594,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::selfCommand, helperCommand, threadEntry and embedded work in a compiled binary	O0-4 handoff; a probe stands in for the real binary until O3-3/O4b-6	O2-26
 —	new	packages/office/tests/platform.test.ts::selfSpawnEnv drops a name a spawn cant pass as given	design §6.5: the spawn filter drops the names a spawn can't pass as given, as Provider.env refuses them	O2-19
+—	new	packages/office/tests/questions/checker.test.ts::answer keys on the prototype are not answers	design §6: prototype safety for answers (own-key lookups; records built with own keys)	O3-7
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9

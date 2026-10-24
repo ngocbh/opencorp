@@ -96,7 +96,10 @@ test("an enum in the schema hides free text on its page", () => {
 })
 
 test("a schema entry types its page", () => {
-  const gate = q("human_input", { questions: PAGES, answer_schema: fields(["db", "str", true], ["features", "str", true]) })
+  const gate = q("human_input", {
+    questions: PAGES,
+    answer_schema: fields(["db", "str", true], ["features", "str", true]),
+  })
   refused(() => checkAnswer(gate, { db: "SQLite", features: ["auth"] }, "option"), /'features' must be text/)
   const counted = q("human_input", {
     questions: [{ question: "How many?", header: "n", options: [{ label: "3" }] }],
@@ -105,9 +108,98 @@ test("a schema entry types its page", () => {
   expect(checkAnswer(counted, { n: "3" }, "option")).toEqual({ n: 3 })
 })
 
+type PageEntry = Omit<AnswerField, "name" | "required">
+
+/** A one-page gate whose `p` page has the schema entry `entry`. */
+function page(multi: boolean, entry: PageEntry): QuestionRecord {
+  return q("human_input", {
+    questions: [{ question: "Which?", header: "p", multi_select: multi, options: [{ label: "3" }, { label: "yes" }] }],
+    answer_schema: [{ name: "p", required: true, ...entry }],
+  })
+}
+
+const TYPED: [boolean, PageEntry, unknown, unknown][] = [
+  [false, { type: "int" }, "3", 3],
+  [false, { type: "float" }, "3", 3],
+  [false, { type: "bool" }, "yes", true],
+  [false, { type: "date" }, "2026-09-30", "2026-09-30"],
+  [false, { type: "str", enum: ["fast", "safe"] }, "safe", "safe"],
+  [false, { type: "list[str]" }, "a", ["a"]],
+  [true, { type: "list[str]", enum: ["x", "y"] }, ["y", "x"], ["y", "x"]],
+  [true, { type: "list[int]" }, ["3", "5"], [3, 5]],
+  [false, { type: "None" }, "", null],
+]
+
+test.each(TYPED)("a typed page answer converts to itself [%s]", (multi, entry, label, value) => {
+  const gate = page(multi, entry)
+  expect(checkAnswer(gate, { p: label }, "option")).toEqual({ p: value })
+  expect(checkAnswer(gate, { p: value }, "option")).toEqual({ p: value }) // the harness checks the stored value again
+})
+
+const TYPED_REFUSED: [boolean, PageEntry, unknown, RegExp][] = [
+  [false, { type: "int" }, " ", /'p' has no answer/],
+  [false, { type: "int" }, "three", /'p' must be a whole number/],
+  [false, { type: "str", enum: ["fast", "safe"] }, ["safe"], /'p' must be one of/],
+  [true, { type: "list[str]", enum: ["x", "y"] }, ["z"], /'p'\[0\] must be one of/],
+]
+
+test.each(TYPED_REFUSED)("a typed page refuses what its entry refuses [%s]", (multi, entry, answer, message) => {
+  refused(() => checkAnswer(page(multi, entry), { p: answer }, "option"), message)
+})
+
 test("a prompt gate without a schema takes text", () => {
   expect(checkAnswer(q(), "go ahead", "text")).toBe("go ahead")
   refused(() => checkAnswer(q(), 3, "text"))
+})
+
+const CONVERTED: [Entry, unknown, unknown][] = [
+  [["answer", "bool", true], "Yes", true],
+  [["answer", "bool", true], false, false],
+  [["answer", "str", true, { enum: ["high", "low"] }], "low", "low"],
+  [["answer", "list[str]", true, { enum: ["a", "b"] }], ["b"], ["b"]],
+  [["answer", "str", true], "  spaced  ", "  spaced  "],
+  [["answer", "int", true], " 12 ", 12],
+  [["answer", "float", true], "2.5", 2.5],
+  [["answer", "float", true], 3, 3],
+  [["answer", "date", true], "2026-09-30", "2026-09-30"],
+  [["answer", "datetime", true], "2026-09-30T10:00:00+07:00", "2026-09-30T10:00:00+07:00"],
+  [["answer", "list[int]", true], "1\n\n2\n", [1, 2]],
+  [["answer", "list[str]", true], ["x", "y"], ["x", "y"]],
+  [["answer", "int", false], "", null],
+  [["answer", "str", false], "  ", null],
+  [["answer", "str", false], null, null],
+  [["answer", "object", true], '{"k": 1}', { k: 1 }],
+]
+
+test.each(CONVERTED)("a single answer is converted to its type [%s]", (entry, answer, value) => {
+  const gate = q("human_input", { answer_schema: fields(entry) })
+  expect(checkAnswer(gate, answer, "text")).toEqual(value)
+  expect(checkAnswer(gate, value, "text")).toEqual(value) // a converted value converts to itself
+})
+
+const MISFITS: [Entry, unknown, RegExp][] = [
+  [["answer", "bool", true], "maybe", /yes or no/],
+  [["answer", "str", true, { enum: ["high", "low"] }], "medium", /must be one of/],
+  [["answer", "int", true], "1.5", /a whole number/],
+  [["answer", "int", true], true, /a whole number/],
+  [["answer", "float", true], "nan", /a number/],
+  [["answer", "date", true], "30/09/2026", /ISO-8601 date/],
+  [["answer", "int", true], "", /is required/],
+  [["answer", "str", true], "", /is required/],
+  [["answer", "str", true], " \n ", /is required/],
+  [["answer", "list[int]", true], "1\ntwo", /answer\[1\] must be a whole number/],
+  [["answer", "file", true], "x", /can't answer|cannot answer/],
+]
+
+test.each(MISFITS)("a single answer that does not fit is refused [%s]", (entry, answer, message) => {
+  refused(() => checkAnswer(q("human_input", { answer_schema: fields(entry) }), answer, "text"), message)
+})
+
+test("a whole float is a whole number", () => {
+  // JSON numbers don't tell 2.0 from 2, so only a fraction is refused.
+  const intGate = q("human_input", { answer_schema: fields(["answer", "int", true]) })
+  expect(checkAnswer(intGate, 2.0, "text")).toBe(2)
+  refused(() => checkAnswer(intGate, 2.5, "text"), /a whole number/)
 })
 
 test("a record gate converts each field and omits blank optional ones", () => {
