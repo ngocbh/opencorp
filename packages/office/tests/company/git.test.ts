@@ -522,6 +522,19 @@ test("unstage keeps the working file", async () => {
   expect(fs.readFileSync(path.join(company, PROFILE), "utf8")).toBe("# staged\n")
 })
 
+test("a path holding a nul or starting with a slash is refused before git runs", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  git(company, "add", "groups/eng.yaml")
+  const head = await g.head()
+  // A NUL would end the `:(literal)` entry on stdin and start an unprefixed pathspec.
+  await expect(g.commit([PROFILE, "x\0:(glob)**"], "x")).rejects.toBeInstanceOf(RangeError)
+  await expect(g.commit(["/etc/hosts"], "x")).rejects.toBeInstanceOf(RangeError)
+  await expect(g.unstage(["x\0:(glob)**"])).rejects.toBeInstanceOf(RangeError)
+  expect(await g.head()).toBe(head)
+  expect(git(company, "status", "--porcelain")).toBe("M  groups/eng.yaml")
+})
+
 test("a hand made directory name cannot forge a trailer", async () => {
   const { company, g } = setup()
   const rel = "people/m\n\nCommit-Id: c-1/profile.md"

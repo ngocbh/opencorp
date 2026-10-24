@@ -115,6 +115,14 @@ function lsTreeEntries(out: Buffer): { info: string[]; path: string }[] {
     })
 }
 
+/** A RangeError unless every path is relative and holds no NUL. */
+function checkPaths(paths: string[]): void {
+  // A NUL would end its `:(literal)` entry on stdin and start an unprefixed pathspec.
+  if (paths.some((p) => p.includes("\0") || p.startsWith("/"))) {
+    throw new RangeError("a commit path must be relative and hold no NUL")
+  }
+}
+
 /** Pathspecs that match `paths` exactly, with no glob expansion, as NUL-terminated entries for `FROM_STDIN`. */
 function literal(paths: string[]): Buffer {
   return Buffer.concat(paths.flatMap((p) => [Buffer.from(":(literal)"), encodePath(p), Buffer.of(0)]))
@@ -376,6 +384,7 @@ export class CompanyGit {
   async #commit(paths: string[], message: string): Promise<string> {
     // `git commit` with no pathspec would commit the whole index
     if (!paths.length) return this.head()
+    checkPaths(paths)
     const present = new Set<string>()
     for (const p of paths) {
       // lstat: a tracked symlink whose target is gone is still present.
@@ -403,6 +412,7 @@ export class CompanyGit {
 
   /** Resets `paths` in the index to HEAD, leaving the working files alone. */
   async unstage(paths: string[]): Promise<void> {
+    checkPaths(paths)
     // `git reset` with no pathspec would reset the whole index
     if (paths.length) await this.#run(["reset", "-q", ...FROM_STDIN], { input: literal(paths) })
   }

@@ -198,7 +198,8 @@ worker/test_rpc.py	open	—	—	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/git.test.ts::a locked section calling a locking method throws instead of deadlocking	design §3.3: the non-reentrant mutex	O1-6
-—	new	packages/office/tests/company/git.test.ts::pin leaves files under a symlinked folder alone and survives a symlink loop	design §6.9, rule 12: pins never touch files outside them	O1-6
+—	new	packages/office/tests/company/git.test.ts::a path holding a nul or starting with a slash is refused before git runs	design §6.9, rule 12: literal pathspecs (paths travel NUL-separated on stdin)	O1-6
+—	new	packages/office/tests/company/git.test.ts::pin leaves files under a symlinked folder alone and survives a symlink loop	plan.md O1-6 (pinned read-only worktrees): a pin never changes files outside it	O1-6
 —	new	packages/office/tests/company/git.test.ts::the test helpers git reads only the repos own config and runs no hooks	plan.md Test helpers (git isolation); design §10.1	O1-6
 —	new	packages/office/tests/store/close.test.ts::a store cannot close inside a transaction	close() refuses inside a transaction (final review)	O1-2
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
