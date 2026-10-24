@@ -399,6 +399,9 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/rpc.test.ts::a message whose method isnt a string is skipped	security rule 13, design §7.2: a malformed Codex line is logged and skipped	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
+—	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
+—	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
+—	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::killGroup kills the leader and its grandchild	design §6.6	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::killGroup refuses ids that are not another process group without signalling	design §6.6: kill(0), kill(-1) and the office's own group never signalled	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::killGroup returns false instead of throwing on any other error	design §6.6; O3-12 calls it from rpc's kill, which must not throw	O2-11a
@@ -410,6 +413,10 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/install/proc.test.ts::startTime of a running process is near now and the same on every read	design §2.4: psutil create_time replaced	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::startTime of an exited process is null	design §2.4	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::startTime reads a zombie	design §2.4: a zombie-led group is still reaped, as with psutil	O2-11a
+—	new	packages/office/tests/install/proc.test.ts::stopProcess ends a process with SIGTERM	design §9.4: polling kills	O2-11a
+—	new	packages/office/tests/install/proc.test.ts::stopProcess kills a process that ignores SIGTERM after the timeout	design §9.4: polling kills	O2-11a
+—	new	packages/office/tests/install/proc.test.ts::stopProcess leaves a process with another start time alone	design §9.4: start time re-checked before each signal	O2-11a
+—	new	packages/office/tests/install/proc.test.ts::stopProcess refuses ids that are not another process without signalling	design §6.6: kill(0), kill(-1) and the office itself never signalled	O2-11a
 —	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where holds an integer past the safe range grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where key is proto grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15

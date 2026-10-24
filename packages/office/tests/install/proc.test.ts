@@ -1,9 +1,9 @@
-/** Process start times, the reaper's match and group kills. */
+/** Process start times, the reaper's match, group kills, `ps` args and polling stops. */
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
-import { killGroup, linuxStartTime, sameProcess, startTime } from "../../src/install/proc.ts"
-import { isGone, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { args, killGroup, linuxStartTime, sameProcess, startTime, stopProcess } from "../../src/install/proc.ts"
+import { isGone, PS, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -128,5 +128,62 @@ test("killGroup refuses ids that are not another process group without signallin
   expect(kill).toHaveBeenCalledWith(-NO_GROUP, "SIGKILL")
   kill.mockClear()
   for (const id of [0, 1, -1, -NO_GROUP, 1.5, NaN, 2 ** 31, process.pid]) expect(killGroup(id)).toBe(false)
+  expect(kill).not.toHaveBeenCalled()
+})
+
+
+test("args shows the command line of a process", async () => {
+  // sh may not have exec'd yet, so each check waits for the expected line.
+  const g = startGroup("exec /bin/sleep 61")
+  await waitFor(() => args(g.pid, PS) === "/bin/sleep 61", { timeout: 5000, what: "ps args" })
+  // sh stays the leader, so ps joins its argv ["/bin/sh", "-c", script] with spaces.
+  const script = '/bin/sleep 61; : --home "/tmp/a b/ü"'
+  const h = startGroup(script)
+  await waitFor(() => args(h.pid, PS) === `/bin/sh -c ${script}`, { timeout: 5000, what: "ps args" })
+})
+
+test("args of an exited process is null", async () => {
+  const g = startGroup("exit 0")
+  await g.exited
+  expect(args(g.pid, PS)).toBeNull()
+})
+
+test("args refuses a ps that is not an absolute path", () => {
+  expect(args(process.pid, "ps")).toBeNull()
+  expect(args(process.pid, "./ps")).toBeNull()
+})
+
+test("stopProcess ends a process with SIGTERM", async () => {
+  const g = startGroup("exec /bin/sleep 61")
+  expect(await stopProcess(g.pid, g.started!)).toBe(true)
+  expect((await g.exited).signal).toBe("SIGTERM")
+})
+
+test("stopProcess kills a process that ignores SIGTERM after the timeout", async () => {
+  // An ignored signal stays ignored across exec, so one process ignores SIGTERM and no child is left behind.
+  const g = startGroup("trap '' TERM; echo ready; exec /bin/sleep 61")
+  await g.line()
+  expect(await stopProcess(g.pid, g.started!, { timeout: 300, killWait: 5000 })).toBe(true)
+  expect((await g.exited).signal).toBe("SIGKILL")
+})
+
+test("stopProcess leaves a process with another start time alone", async () => {
+  const g = startGroup("exec /bin/sleep 61")
+  expect(await stopProcess(g.pid, g.started! - 100, { timeout: 300 })).toBe(false)
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(g.child.exitCode).toBeNull()
+  expect(g.child.signalCode).toBeNull()
+})
+
+test("stopProcess refuses ids that are not another process without signalling", async () => {
+  const kill = mockKill(esrch())
+  // The precheck: process.kill goes through the spy, so the ids below can't slip past it unseen.
+  expect(killGroup(NO_GROUP)).toBe(false)
+  expect(kill).toHaveBeenCalledTimes(1)
+  expect(kill).toHaveBeenCalledWith(-NO_GROUP, "SIGKILL")
+  kill.mockClear()
+  for (const id of [0, 1, -1, 1.5, process.pid]) {
+    expect(await stopProcess(id, 0, { timeout: 50, killWait: 50 })).toBe(false)
+  }
   expect(kill).not.toHaveBeenCalled()
 })

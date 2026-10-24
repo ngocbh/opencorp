@@ -1,4 +1,5 @@
 /** The psutil replacement: process start times, group kills, `ps` args and polling stops. */
+import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { procStartTime } from "../platform.ts"
@@ -75,4 +76,61 @@ export function killGroup(pgid: number): boolean {
     // Delivery races the group's exit, so any error means "not killed", never a throw.
     return false
   }
+}
+
+/** The command line of `pid` as `ps -ww -o args=` prints it (argv joined by spaces, so callers match on word
+ *  pairs such as `--home <realpath>`), or null when there is no such process or `ps` isn't an absolute path.
+ *  `ps` is resolved by the caller; it runs with only `LC_ALL=C.UTF-8`, so non-ASCII prints as UTF-8. */
+export function args(pid: number, ps: string): string | null {
+  if (!path.isAbsolute(ps) || !isPid(pid)) return null
+  let out: string
+  try {
+    out = execFileSync(ps, ["-ww", "-o", "args=", "-p", String(pid)], {
+      env: { LC_ALL: "C.UTF-8" },
+      stdio: ["ignore", "pipe", "ignore"],
+      encoding: "utf8",
+      timeout: 5000,
+    })
+  } catch {
+    // ps exits 1 when there is no such process.
+    return null
+  }
+  const line = out.endsWith("\n") ? out.slice(0, -1) : out
+  return line === "" ? null : line
+}
+
+/** Sends `sig` to `pid`; a failed send (the process went meanwhile) is ignored. */
+function signal(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(pid, sig)
+  } catch {}
+}
+
+/** Polls every 20 ms until `pid` is no longer the process that started at `started` or `timeout` ms pass;
+ *  true when it went. */
+async function waitGone(pid: number, started: number, timeout: number): Promise<boolean> {
+  const deadline = performance.now() + timeout
+  for (;;) {
+    if (!sameProcess(pid, started)) return true
+    if (performance.now() >= deadline) return false
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+}
+
+/** Stops `pid` if it is still the process that started at `started`: SIGTERM, then SIGKILL after `timeout` ms,
+ *  then waits up to `killWait` ms for it to go. The start time is re-read before each signal, so a pid reused
+ *  meanwhile is never signalled. True when the process was found and signalled, false when it wasn't running. */
+export async function stopProcess(
+  pid: number,
+  started: number,
+  { timeout = 15_000, killWait = 5_000 } = {},
+): Promise<boolean> {
+  if (pid === process.pid || !sameProcess(pid, started)) return false
+  signal(pid, "SIGTERM")
+  // waitGone's last sameProcess read comes right before this SIGKILL, with nothing awaited in between.
+  if (!(await waitGone(pid, started, timeout))) {
+    signal(pid, "SIGKILL")
+    await waitGone(pid, started, killWait)
+  }
+  return true
 }
