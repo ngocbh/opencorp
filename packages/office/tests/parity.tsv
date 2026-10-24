@@ -65,7 +65,7 @@ harness/test_continue.py	open	—	—	O3-14
 harness/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 harness/test_errors.py	open	—	—	O3-15
 harness/test_restore.py	open	—	—	O3-14
-harness/test_rpc.py	open	—	—	O3-10
+harness/test_rpc.py	ported	packages/office/tests/harness/rpc.test.ts	—	O3-10
 harness/test_session.py	open	—	—	O3-13
 harness/test_translate.py	open	—	—	O3-11
 harness/test_waiting.py	open	—	—	O3-14
@@ -228,7 +228,7 @@ test_secrets.py::test_set_replaces_and_keeps_the_mode	changed	packages/office/te
 test_secrets.py::test_set_writes_into_the_root_it_checked	dropped	—	path-based calls under the folder's lock, no dir_fd or re-checks (D13)	O1-1
 test_smoke.py	ported	packages/office/tests/smoke.test.ts	the office package imports next to yian	O0-4
 testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, retired at cut-over (D29)	O0-9
-testing/test_fake_codex.py	open	—	—	O3-10
+testing/test_fake_codex.py	ported	packages/office/tests/testing/fake_codex.test.ts	—	O3-10
 tools/company/test_draft.py	open	—	—	O2-16b
 tools/company/test_work.py	open	—	—	O2-22b
 tools/test_build.py	open	—	—	O2-22b
@@ -319,6 +319,16 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.8 rule 3: codex is looked up as shutil.which does	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a broken stdin fails requests notifications and replies as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a character split across two writes arrives whole and a last line without a newline is read at the end	design §7.2: lines split as bytes, the last line read at the end	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a kill or closed handler that throws still fails the pending requests	design §7.2: a protocol failure never crashes the office	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a line of exactly 16 MiB is read and one byte more is not	P11, design §6.8 rule 13: a 16 MiB line cap kills the app-server	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a line over 16 MiB closes the connection and kills the app-server	P11, design §6.8 rule 13: a 16 MiB line cap kills the app-server	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a line that isnt a json object is logged cut to 200 characters	security rule 13, rpc.py:111: malformed Codex lines logged cut to 200 characters	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a message whose method isnt a string is skipped	security rule 13, design §7.2: a malformed Codex line is logged and skipped	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
+—	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
 —	new	packages/office/tests/perm/redaction.test.ts::a key named __proto__ stays a plain key	design §6.3: object keys scrubbed; a JS object needs an own key for __proto__	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret holding regex characters is scrubbed only as written	design §6.3: each form matched as text (Python's re.escape, hand-written here)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret in base64 is scrubbed in either alphabet	design §6.3: base64 in both alphabets (Python's vector has no - or _)	O1-12
