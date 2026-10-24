@@ -17,9 +17,10 @@ export function blobId(data: Uint8Array): string {
   return createHash("sha1").update(`blob ${data.length}\0`).update(data).digest("hex")
 }
 
-/** `text` with each run of Python's whitespace as one space, and none at either end. */
+/** `text` without NULs, with each run of Python's whitespace as one space, and none at either end. */
 function collapse(text: string): string {
-  return text.split(WHITESPACE).filter(Boolean).join(" ")
+  // A NUL in git's argv fails the spawn after the file was replaced; drop it rather than read it as a space.
+  return text.replaceAll("\0", "").split(WHITESPACE).filter(Boolean).join(" ")
 }
 
 /**
@@ -48,7 +49,9 @@ function commitIdOf(provenance: JsonObject | null | undefined): string | null {
   if (typeof value === "string" && value && !WHITESPACE.test(value) && !value.includes("\0") && value.isWellFormed()) {
     return value
   }
-  throw new RangeError(`commit_id must be a string without whitespace, not ${JSON.stringify(value) ?? String(value)}`)
+  // JSON.stringify throws on a bigint, and provenance from an RPC frame may hold one.
+  const shown = typeof value === "string" ? JSON.stringify(value) : String(value)
+  throw new RangeError(`commit_id must be a string without whitespace, not ${shown}`)
 }
 
 /** A Node system error (code `EIO`) for storage that can't be reached, as yian's store contract asks. */

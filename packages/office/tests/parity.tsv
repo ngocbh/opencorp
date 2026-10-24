@@ -672,6 +672,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/profile/store.test.ts::a byte order mark is kept	design §3 yian table: text round-trips to its blob id; TextDecoder drops a BOM unless told not to, where Python's decode kept it	O2-23
 —	new	packages/office/tests/profile/store.test.ts::a lone surrogate is a range error and writes nothing	design §3 yian table: Buffer.from replaces a lone surrogate, where Python's encode refused it	O2-23
 —	new	packages/office/tests/profile/store.test.ts::python whitespace collapses and blanks like python	design §6 rule 12: the subject collapses Python's whitespace set, which JS \s and trim() don't match	O2-23
+—	new	packages/office/tests/profile/store.test.ts::write refuses a person folder that resolves elsewhere	design §6 (writes never through a symlink): the realpath check, which Python's test reached only by either error	O2-23
 —	new	packages/office/tests/questions/ask.test.ts::a malformed request is refused without its values	O0-6 and design §6 rule 7: no raw ZodError and no request values in an error	O3-8a
 —	new	packages/office/tests/questions/ask.test.ts::a repeated question id is refused	a DuplicateKey that isnt a re-asked node is the caller's error (Python failed on None.id)	O3-8a
 —	new	packages/office/tests/questions/ask.test.ts::a work item that cannot be cancelled is logged by its error name	design §6: logs carry an error's type only	O3-8a

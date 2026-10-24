@@ -37,7 +37,9 @@ const rejection = (promise: Promise<unknown>) =>
   )
 
 /** `cases` as `test.each` rows labelled with their JSON, so a NUL, a newline or a number prints readably. */
-const labelled = <T>(cases: T[]): [string, T][] => cases.map((c) => [JSON.stringify(c), c])
+// JSON.stringify throws on a bigint, so a bigint is labelled as String writes it.
+const labelled = <T>(cases: T[]): [string, T][] =>
+  cases.map((c) => [typeof c === "bigint" ? String(c) : JSON.stringify(c), c])
 
 // Reads
 
@@ -150,6 +152,8 @@ test("python whitespace collapses and blanks like python", () => {
   expect(commitMessage("minh", { source: "\x1c\x85" })).toBe("profile(@minh): write")
   expect(commitMessage("minh", { source: "a\x1fb" })).toBe("profile(@minh): a b")
   expect(commitMessage("minh\x1cx", null)).toBe("profile(@minh x): write")
+  expect(commitMessage("minh", { source: "a\0b" })).toBe("profile(@minh): ab")
+  expect(commitMessage("minh", { run_id: "01\0J" })).toBe("profile(@minh): from feedback on run 01J")
 })
 
 // Writes
@@ -227,7 +231,7 @@ test("write refuses non strings", async () => {
   await expect(store.write("x\n", { baseVersion: Buffer.from(base) as unknown as string })).rejects.toThrow(TypeError)
 })
 
-test.each(labelled<unknown>(["", "a b", "a\nCommit-Id: b", 7, "a\x1cb", "a\x85b", "a\0b", "a\ud800"]))(
+test.each(labelled<unknown>(["", "a b", "a\nCommit-Id: b", 7, "a\x1cb", "a\x85b", "a\0b", "a\ud800", 1n]))(
   "bad commit id is a range error [%s]",
   async (_label, commitId) => {
     const { store } = setup()
@@ -467,6 +471,20 @@ test("write refuses a symlinked person directory", async () => {
   expect(error).not.toBeInstanceOf(MarkdownVersionMismatch)
   expect(error).toMatchObject({ code: "EIO", syscall: "write" })
   expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
+})
+
+test("write refuses a person folder that resolves elsewhere", async () => {
+  const { dir, root, store } = setup()
+  // With no profile at HEAD the sweep has nothing to add, so the write reaches target()'s realpath check.
+  git(root, "rm", "-q", PROFILE)
+  git(root, "commit", "-q", "-m", "no profile")
+  const outside = path.join(dir, "outside")
+  fs.renameSync(path.join(root, "people/minh"), outside)
+  fs.symlinkSync(outside, path.join(root, "people/minh"))
+  const error = await rejection(store.write("pwned\n", { baseVersion: EMPTY_BLOB }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/symlink/)
+  expect(fs.existsSync(path.join(outside, "profile.md"))).toBe(false)
 })
 
 test("a lone surrogate is a range error and writes nothing", async () => {
