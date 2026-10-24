@@ -115,21 +115,27 @@ harness/test_session.py	open	—	—	O3-13
 harness/test_translate.py	open	—	—	O3-11
 harness/test_waiting.py	open	—	—	O3-14
 hq/test_api.py	open	—	split: O2-9 → O4b-7	O4b-7
-hq/test_app_fixture.py	open	—	—	O2-7
+hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	open	—	—	O2-9
-hq/test_config.py	open	—	—	O2-7
+hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
 hq/test_events.py	open	—	—	O2-10
 hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
+hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers); the trickling client may lose Bun's 408 to its own write, so this test checks the close and the guard's settled promise, and `a body that stops arriving is 408` checks the 408 and `connection: close`	O2-7
+hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
+hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
 hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
-hq/test_pairing.py	open	—	—	O2-7
+hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
+hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
 hq/test_servers.py	open	—	—	O2-10
 hq/test_sessions.py	open	—	—	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10
 hq/test_source.py	open	—	—	O2-9
-hq/test_static.py	open	—	—	O2-7
-hq/test_status.py	open	—	—	O2-7
-hq/test_version.py	open	—	—	O2-7
+hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
+hq/test_status.py	ported	packages/office/tests/hq/status.test.ts	—	O2-7
+hq/test_version.py	ported	packages/app/test/build.test.ts,packages/office/tests/hq/version.test.ts,packages/protocol/test/version.test.ts	—	O2-7
+hq/test_version.py::test_a_pyproject_that_isnt_opencorps_with_a_version_falls_back_to_the_installed_version	dropped	—	design §5.4, O0-6: the key is apiId() (the CLI package's version, built in), with no checkout or installed-version form	O2-7
+hq/test_version.py::test_without_a_checkout_the_key_is_the_installed_version	dropped	—	design §5.4, O0-6: apiId() has no installed-version form; the key is the same with or without a checkout	O2-7
 install/test_doctor.py	open	—	—	O2-18a
 install/test_fallback.py	open	—	—	O2-12
 install/test_init.py	open	—	—	O2-17
@@ -467,6 +473,28 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/rpc.test.ts::a message whose method isnt a string is skipped	security rule 13, design §7.2: a malformed Codex line is logged and skipped	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
+—	new	packages/office/tests/hq/config.test.ts::a problem never quotes the files values	design §6, rule 13: no parser text or file values in a problem	O2-7
+—	new	packages/office/tests/hq/config.test.ts::app dir expands the home folder	design §6.4 (HQ settings): Node has no getpwnam, so only ~, ~/… and ~<me> expand; another ~name is refused	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a 404 from the pipeline carries the headers and keeps the connection	design §6.4, rule 7: the pipeline behind the guard, given the read body, keeps the connection open	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a body the guard read reaches the route once	design §6.4, rule 7: the pipeline parses the guard's body instead of reading the request again	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a chunked write past the cap is refused while it is read	design §6.4, rule 7: a chunked body over 16 KiB is 413 with the HQ headers and closes, on a real socket	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a localhost page visit is sent to 127 0 0 1 with its path and query	design §6.4, rule 7: keeps the raw target, quoted with Starlette's safe set; a non-ASCII target is quoted from Bun's UTF-8 decoding (Python double-encoded it)	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a path is decoded as uvicorn decodes it	design §6.4, rule 7: requestPath decodes each run of escapes as Python's `unquote` does, an invalid UTF-8 byte as U+FFFD, so an /api path with one is still judged as /api	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a refused request is answered before any body byte is read	design §6.4, rule 7: a refusal never waits for the declared body	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::an error in the app is a 500 with the headers	design §6.4, rule 13: a throw behind the guard is the fixed 500 text with the HQ headers, closing	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::an expect 100 continue write gets 100 only after the checks	design §6.4, rule 7: 100 Continue goes out only after every refusal check, the declared-length 413 included	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::an implicit head carries the security headers	design §6.4, rule 7: node:http writes a head implicitly on end; it must pass the guard's writeHead too	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::the first origin header counts	design §6.4, rule 7: header() reads the first raw value; node:http would join repeated values	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::the guard checks each refusal branch [$name]	design §6.4, rule 7: each Host, Fetch Metadata, Origin and JSON refusal against a stand-in, without the HQ app	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
+—	new	packages/office/tests/hq/pairing.test.ts::its inspect and json show no key or code	design §6, rule 1: inspect and JSON show the office dir and a count, never a code or its sha256 key	O2-7
+—	new	packages/office/tests/hq/pairing.test.ts::remove leftovers deletes redirect and temp files only	design §6, rule 6: a crashed office's redirect and writePrivate temp files go; the folder lock and other files stay	O2-7
+—	new	packages/office/tests/hq/static.test.ts::a client that leaves mid file leaves no file open	design §6 static rules: the file is streamed through stream.pipeline, which closes the fd when the client leaves	O2-7
+—	new	packages/office/tests/hq/static.test.ts::a fifo in app dir is never opened	design §6.4: resolve takes only regular files, so a FIFO is a 404 and is never opened	O2-7
+—	new	packages/office/tests/hq/static.test.ts::a file served behind the guard carries the security headers	design §6, rule 7: a streamed file's head goes out through an explicit writeHead, so the guard adds HQ's headers	O2-7
+—	new	packages/office/tests/hq/static.test.ts::a path with a doubled slash is not a file of the app	design §6 static rules: //index.html resolves as an absolute path outside app_dir (Python's app_dir / rel), so it is a 404	O2-7
+—	new	packages/office/tests/hq/static.test.ts::the not built page escapes the checkout path	design §6.4 (static): the checkout path is HTML-escaped in the not-built page, as Python's html.escape	O2-7
+—	new	packages/office/tests/hq/version.test.ts::build json that is a fifo is invalid without blocking	design §6: build.json is opened O_NONBLOCK and fstat-checked, so a FIFO never blocks	O2-7
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
@@ -631,7 +659,6 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/protocol/test/schemas.test.ts::each pattern is checked against the fixtures	§5.4	O0-6
 —	new	packages/protocol/test/schemas.test.ts::every def has a zod schema of the same name	today's names (§5.4)	O0-6
 —	new	packages/protocol/test/schemas.test.ts::every pattern carries the u flag	§5.4	O0-6
-—	new	packages/protocol/test/version.test.ts::a docs only change keeps the key	P8	O0-6
 —	new	packages/protocol/test/version.test.ts::a schema change changes the key	P8	O0-6
 —	new	packages/protocol/test/version.test.ts::the key is stable	P8	O0-6
 —	new	packages/protocol/test/version.test.ts::the key is the version and the schema hash	P8	O0-6

@@ -38,10 +38,7 @@ export const CostReport = z.strictObject({
 export type CostReport = z.input<typeof CostReport>
 
 export const ApiVersion = z.strictObject({
-  /**
-   * The compatibility key: `<version>+<first 12 hex of sha256(protocol.schema.json)>`, or just the version
-   * for an install without the schema.
-   */
+  /** The compatibility key, `apiId()`: the version plus 12 hex of a hash of the protocol's JSON Schema. */
   api: z.string(),
 })
 export type ApiVersion = z.input<typeof ApiVersion>

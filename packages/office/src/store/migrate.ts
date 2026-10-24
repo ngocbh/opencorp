@@ -1,3 +1,5 @@
+/// <reference path="../files.d.ts" />
+// The reference brings in the `*.sql` declaration for an importer's program too, such as the app's typecheck.
 /** Numbered SQL migrations, applied in order above `PRAGMA user_version`. */
 import { type Sqlite } from "@ngocbh/yian/platform"
 import { embedded } from "../platform.ts"

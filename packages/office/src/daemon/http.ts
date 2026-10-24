@@ -218,7 +218,7 @@ export const MAX_BODY = 1 << 20
 /** The deepest nesting of arrays and objects a JSON body may have. */
 export const MAX_DEPTH = 64
 
-const tooLarge = () => new HttpError(413, "body_too_large", `request body is over ${MAX_BODY} bytes`)
+const tooLarge = (cap: number) => new HttpError(413, "body_too_large", `request body is over ${cap} bytes`)
 const endedEarly = () => new HttpError(400, "invalid_body", "the body ended early")
 const notJson = () => new HttpError(422, "invalid_body", "the body isn't JSON")
 
@@ -246,17 +246,18 @@ export function continueIfExpected(res: ServerResponse): void {
   res.writeContinue()
 }
 
-/** The request body. Throws `HttpError` 413 once it passes `MAX_BODY`, reading no further, and 400 when it ends
- *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). Given
- *  `res`, which must be `req`'s response, it sends `100 Continue` first if the request waits for it, unless the
- *  declared length is too large. */
+/** The request body. Throws `HttpError` 413 once its declared length or the bytes read pass `cap` (`MAX_BODY` by
+ *  default), reading no further, and 400 when it ends early: the stream fails, or `signal` aborts (the client
+ *  left, or the runtime's 408 closed the request). Given `res`, which must be `req`'s response, it sends
+ *  `100 Continue` first if the request waits for it, unless the declared length is too large. */
 export async function readBody(
   req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders },
   signal?: AbortSignal,
   res?: ServerResponse,
+  cap = MAX_BODY,
 ): Promise<Buffer> {
   const length = req.headers["content-length"]
-  if (length !== undefined && /^\d+$/.test(length) && Number(length) > MAX_BODY) throw tooLarge()
+  if (length !== undefined && /^\d+$/.test(length) && Number(length) > cap) throw tooLarge(cap)
   if (res) continueIfExpected(res)
   // Chunks are taken by hand, never with `for await` or `it.return()`: leaving the loop early destroys an
   // unfinished request, and with it the socket on Node, so the 413 would never reach the client. The rest of an
@@ -275,7 +276,7 @@ export async function readBody(
     if (step.done) break
     const chunk = typeof step.value === "string" ? Buffer.from(step.value) : step.value
     size += chunk.length
-    if (size > MAX_BODY) throw tooLarge()
+    if (size > cap) throw tooLarge(cap)
     parts.push(chunk)
   }
   return Buffer.concat(parts)
@@ -322,19 +323,20 @@ function parseBody(schema: z.ZodType, buf: Buffer): unknown {
 }
 
 /** Whether the request carries a body. */
-function hasBody(req: IncomingMessage): boolean {
+export function hasBody(req: IncomingMessage): boolean {
   const length = req.headers["content-length"]
   return "transfer-encoding" in req.headers || (length !== undefined && length !== "0")
 }
 
 /** A `node:http` listener that serves `routes` through `options`' hooks; its promise settles once the request is
- *  answered and never rejects (node ignores it, tests await it). */
+ *  answered and never rejects (node ignores it, tests await it). Its `body`, when given, is a body already read
+ *  whole under the caller's own cap (HQ's guard): a body route parses it instead of reading the request. */
 export function requestListener<C>(
   routes: readonly Route<C>[],
   options: PipelineOptions<C>,
-): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+): (req: IncomingMessage, res: ServerResponse, body?: Buffer) => Promise<void> {
   const patterns = routes.map(compile)
-  return async (req, res) => {
+  return async (req, res, given) => {
     const controller = new AbortController()
     res.on("close", () => {
       if (!res.writableFinished) controller.abort()
@@ -357,7 +359,7 @@ export function requestListener<C>(
     }
     // A body left unread, or read only in part, stays on the connection, so it can't be reused: what follows on
     // it would start inside that body. Reading the whole body clears this.
-    let unread: Record<string, string> = hasBody(req) ? { connection: "close" } : {}
+    let unread: Record<string, string> = given === undefined && hasBody(req) ? { connection: "close" } : {}
     try {
       const target = originForm(req.url ?? "/")
       const q = target.indexOf("?")
@@ -395,7 +397,7 @@ export function requestListener<C>(
       // The body is read only after the guard: a refused request is answered without reading a byte of it.
       let body: unknown
       if (route.body) {
-        const buf = await readBody(req, controller.signal, res)
+        const buf = given ?? (await readBody(req, controller.signal, res))
         unread = {}
         body = parseBody(route.body, buf)
       }
@@ -445,7 +447,7 @@ export interface Limits {
  *  - The runtime checks `headersTimeout` and `requestTimeout` only every `connectionsCheckingInterval`, hence 1 s
  *    rather than the 30 s default.
  *  - `requestTimeout` covers receiving the request only: a slow handler's reply isn't cut.
- *  - HQ's listeners pass `{...LIMITS, requestTimeout: 10_000, maxConnections: 64}`. */
+ *  - HQ's listeners pass `{...LIMITS, requestTimeout: BODY_TIMEOUT, maxConnections: 64}` (hq/guard.ts). */
 export const LIMITS: Readonly<Limits> = {
   connectionsCheckingInterval: 1000,
   headersTimeout: 10_000,
