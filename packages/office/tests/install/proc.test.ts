@@ -102,7 +102,8 @@ test("sameProcess matches the start time within 0.01 s only", async () => {
 })
 
 test("killGroup kills the leader and its grandchild", async () => {
-  const g = startGroup("/bin/sleep 61 & echo $!; wait")
+  // The leader execs a sleep rather than waiting, so it can't wake when the grandchild is killed and exit 137 first.
+  const g = startGroup("/bin/sleep 61 & echo $!; exec /bin/sleep 61")
   const grand = Number(await g.line())
   const grandStarted = startTime(grand)
   expect(grandStarted).not.toBeNull()
