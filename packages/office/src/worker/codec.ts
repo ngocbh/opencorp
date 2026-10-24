@@ -6,7 +6,8 @@ const BIGINT = /^(0|-?[1-9][0-9]*)$/
 const PLAIN_V_KEY = "a record with a $v key can't be sent"
 const NO_JSON_FORM = "a value with no JSON form can't be sent"
 const FORGED_TAG = "a frame holds a $v record that isn't a tag"
-const NOT_JSON = "a frame isn't valid JSON"
+/** The message of the `SyntaxError` for frame text that isn't JSON. */
+export const NOT_JSON = "a frame isn't valid JSON"
 
 /** `value` as frame text: JSON, with a `bigint` as `{"$v": "bigint", "s": "<decimal>"}` and `NaN`, `Infinity` and
  *  `-Infinity` as `{"$v": "nan"}`, `{"$v": "inf"}` and `{"$v": "-inf"}`. Everything else is as `JSON.stringify`

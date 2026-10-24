@@ -3,7 +3,7 @@ import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { ChannelClosed, FrameTooLarge, socketChannel, type Channel } from "../../src/worker/channel.ts"
-import { shortDir } from "../helpers.ts"
+import { shortDir, waitFor } from "../helpers.ts"
 
 const TIMEOUT = 20_000
 
@@ -42,6 +42,7 @@ function framed(body: Buffer, size = body.length): Buffer {
 }
 
 /** `promise`, or a rejection with `still blocked` once `ms` pass. */
+// It turns a hang into a clear failure rather than the test's timeout.
 async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
@@ -52,6 +53,11 @@ async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** Destroys `socket` with an error holding `code` and a secret in its message, as a broken transport reports. */
+function breakWith(socket: net.Socket, code: string): void {
+  socket.destroy(Object.assign(new Error("sk-secret"), { code }))
 }
 
 test("frames round trip in order", async () => {
@@ -155,4 +161,40 @@ test("a frame that is not json is refused with a fixed message", async () => {
   }
   await left.send({ ok: 2 })
   expect(await right.recv()).toEqual({ ok: 2 })
+}, TIMEOUT)
+
+test("frames buffered before a reset still arrive", async () => {
+  const { right, leftSocket, rightSocket } = await pair()
+  const first = framed(Buffer.from('{"n":1}'))
+  const second = framed(Buffer.from('{"n":2}'))
+  await rawWrite(leftSocket, first)
+  await rawWrite(leftSocket, second)
+  const both = first.length + second.length
+  await waitFor(() => rightSocket.readableLength >= both, { timeout: 10_000, what: "both frames buffered" })
+  breakWith(rightSocket, "ECONNRESET")
+  expect(await right.recv()).toEqual({ n: 1 })
+  expect(await right.recv()).toEqual({ n: 2 })
+  const error = await right.recv().catch((error: unknown) => error)
+  expect(error).toBeInstanceOf(ChannelClosed)
+  expect((error as Error).message).toBe("channel closed")
+  expect((error as Error).message).not.toContain("sk-")
+}, TIMEOUT)
+
+test("a broken transport closes the channel with a fixed message", async () => {
+  const cases: [string, string][] = [
+    ["EPIPE", "the channel broke (EPIPE)"],
+    ["ECONNRESET", "channel closed"],
+    ["x y", "channel closed"],
+  ]
+  for (const [code, message] of cases) {
+    const { right, rightSocket } = await pair()
+    breakWith(rightSocket, code)
+    const received = await right.recv().catch((error: unknown) => error)
+    const sent = await right.send({}).catch((error: unknown) => error)
+    for (const error of [received, sent]) {
+      expect(error).toBeInstanceOf(ChannelClosed)
+      expect((error as Error).message).toBe(message)
+      expect((error as Error).message).not.toContain("sk-")
+    }
+  }
 }, TIMEOUT)

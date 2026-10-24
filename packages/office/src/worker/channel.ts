@@ -1,19 +1,17 @@
 /** Length-prefixed JSON frames over a socket, for traffic between the office and a worker. */
 import type net from "node:net"
 import type { Readable } from "node:stream"
-import { decode, encode } from "./codec.ts"
+import { decode, encode, NOT_JSON } from "./codec.ts"
 
 /** The largest frame body, in bytes, either end sends or accepts. */
 export const MAX_FRAME = 64 << 20
 
 const HEADER = 4
-// Fixed messages: a frame can hold secrets, so an error never quotes one.
-const NOT_JSON = "a frame isn't valid JSON"
 const UTF8 = new TextDecoder("utf-8", { fatal: true })
 
 /** The other end closed the channel, or the transport broke. */
 export class ChannelClosed extends Error {
-  constructor(message = "the channel closed") {
+  constructor(message = "channel closed") {
     super(message)
     this.name = "ChannelClosed"
   }
@@ -32,7 +30,7 @@ export type Frame = Record<string, unknown>
 
 /** The byte stream under a channel. `write` delivers whole buffers in call order and resolves once the bytes are
  *  taken; `readable`'s `end`, `error` and `close` events tell the channel the stream is over. */
-export type Transport = {
+type Transport = {
   readable: Readable
   write(data: Buffer): Promise<void>
   endWrite(): void
@@ -51,8 +49,8 @@ export class Channel {
   private sendClosed = false
   private readClosed = false
   // Set once the transport's stream ended or broke; reads still drain what it buffered before.
-  private over: ChannelClosed | undefined
-  // Set once the transport broke or closed, after which nothing can be sent.
+  private ended: ChannelClosed | undefined
+  // Set once the transport broke, closed or failed a write, after which nothing can be sent.
   private broken: ChannelClosed | undefined
   private chunks: Buffer[] = []
   private buffered = 0
@@ -64,7 +62,7 @@ export class Channel {
     // Attached at once: an `error` event with no listener would crash the process.
     transport.readable.on("readable", () => this.wake())
     transport.readable.on("end", () => {
-      this.over ??= new ChannelClosed()
+      this.ended ??= new ChannelClosed()
       this.wake()
     })
     transport.readable.on("error", (error) => this.stop(closedBy(error)))
@@ -87,7 +85,13 @@ export class Channel {
       this.pending.add(reject)
       this.transport
         .write(data)
-        .then(resolve, (error: unknown) => reject(closedBy(error)))
+        .then(resolve, (error: unknown) => {
+          // Not every transport reports a failed write on its readable (a write to a file descriptor doesn't), and
+          // reads still drain what arrived, so only sending stops.
+          const closed = closedBy(error)
+          this.broken ??= closed
+          reject(closed)
+        })
         .finally(() => this.pending.delete(reject))
     })
   }
@@ -95,7 +99,8 @@ export class Channel {
   /** The next frame. Rejects with `ChannelClosed` at end of stream, on a cut frame, a broken transport or after
    *  `close()`, and on every later call; with `FrameTooLarge` for a declared size over the limit (later calls get
    *  `ChannelClosed`); with a `SyntaxError` for a body that isn't UTF-8 JSON and a `TypeError` for one that isn't a
-   *  JSON object or holds a forged tag, after which the next frame still reads. Calls are served one at a time. */
+   *  JSON object (an array, `null`, or a number, string, boolean or tagged bigint) or holds a forged tag, after
+   *  which the next frame still reads. Calls are served one at a time. */
   recv(): Promise<Frame> {
     const next = this.reading.then(() => this.read())
     this.reading = next.catch(() => {})
@@ -121,7 +126,7 @@ export class Channel {
   }
 
   private stop(error: ChannelClosed): void {
-    this.over ??= error
+    this.ended ??= error
     this.broken ??= error
     this.settle(error)
   }
@@ -140,9 +145,9 @@ export class Channel {
       // once, yet every byte is still buffered.
       const frame = this.take()
       if (frame) return frame
-      if (this.over) {
+      if (this.ended) {
         this.readClosed = true
-        throw this.over
+        throw this.ended
       }
       await new Promise<void>((resolve) => {
         this.wake = resolve
@@ -187,7 +192,8 @@ export class Channel {
     while (have < n) have += this.chunks[count++]!.length
     const joined = count === 1 ? this.chunks[0]! : Buffer.concat(this.chunks.slice(0, count), have)
     const rest = joined.subarray(n)
-    this.chunks.splice(0, count, ...(rest.length > 0 ? [rest] : []))
+    this.chunks.splice(0, count)
+    if (rest.length > 0) this.chunks.unshift(rest)
     this.buffered -= n
     return joined.subarray(0, n)
   }
