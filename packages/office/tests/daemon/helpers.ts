@@ -7,7 +7,8 @@ import { onTestFinished } from "bun:test"
 import { CompanyGit } from "../../src/company/git.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
-import { Office, OfficePaths } from "../../src/daemon/office.ts"
+import { Office, OfficePaths, type RequestContext } from "../../src/daemon/office.ts"
+import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { Store } from "../../src/store/store.ts"
 import { company } from "../company/helpers.ts"
@@ -70,6 +71,29 @@ export async function serve<C>(
   })
   await listenUnix(server, sock)
   return { sock, server, settled: () => settled }
+}
+
+/**
+ * Starts `office` and serves the office's routes on a unix socket, every request acting as the CEO from no device
+ * (Python's `served`). `pingMs` sets the event stream's idle ping; `log` gets the pipeline's log lines.
+ *
+ * When the test finishes, `makeOffice`'s cleanup runs first: it stops the office, which ends open event streams;
+ * then `serve`'s closes the server.
+ */
+export async function served(
+  office: Office,
+  { pingMs, log }: { pingMs?: number; log?: (line: string) => void } = {},
+): Promise<{ sock: string; server: http.Server }> {
+  await office.start()
+  const context = (info: RequestInfo): RequestContext => ({
+    office,
+    person: CEO,
+    device: null,
+    signal: info.signal,
+    query: info.query,
+  })
+  const { sock, server } = await serve(allRoutes({ pingMs }), { context, log })
+  return { sock, server }
 }
 
 export type Reply = { status: number; headers: IncomingHttpHeaders; text: string; json(): unknown }
@@ -211,13 +235,17 @@ export class Conn {
     return true
   }
 
-  /** The next whole response, as soon as it is all read. */
-  async response({ timeout = 9000 } = {}): Promise<{ status: number; head: string; body: string }> {
+  /** The next whole response, as soon as it is all read. With `head`, the response to a HEAD request: its
+   *  `content-length` names a body that isn't sent. */
+  async response({
+    timeout = 9000,
+    head: isHead = false,
+  } = {}): Promise<{ status: number; head: string; body: string }> {
     const deadline = performance.now() + timeout
     if (!(await this.until(() => this.buf.includes("\r\n\r\n"), deadline))) throw new Error("no response head")
     const at = this.buf.indexOf("\r\n\r\n")
     const head = this.buf.subarray(0, at).toString()
-    const end = at + 4 + Number(/\r\ncontent-length: *(\d+)/i.exec(head)?.[1] ?? 0)
+    const end = at + 4 + (isHead ? 0 : Number(/\r\ncontent-length: *(\d+)/i.exec(head)?.[1] ?? 0))
     if (!(await this.until(() => this.buf.length >= end, deadline))) throw new Error("short response body")
     const body = this.buf.subarray(at + 4, end).toString()
     this.buf = this.buf.subarray(end)

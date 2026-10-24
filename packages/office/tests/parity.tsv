@@ -61,8 +61,14 @@ company/test_snapshot.py	ported	packages/office/tests/company/snapshot.test.ts	�
 company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O1-7
 company/test_watch.py	open	—	—	O2-4
 company_template/test_writer.py	open	—	—	O2-16a
-daemon/test_app.py	open	—	split: O2-1 → O2-2	O2-2
+daemon/test_app.py	ported	packages/office/tests/daemon/app.test.ts,packages/office/tests/daemon/http.test.ts	the five pipeline ids are in http.test.ts (O2-1); the route table grows with each route item	O2-2
 daemon/test_app.py::test_a_failing_stop_callback_does_not_skip_the_rest	changed	packages/office/tests/daemon/app.test.ts::a failing stop callback does not skip the rest	design §6 rule 13: the log names the error type, never its message	O2-2
+daemon/test_app.py::test_every_table_route_is_served[GET-/debriefs/01JA1H0000000000000000000A-None]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
+daemon/test_app.py::test_every_table_route_is_served[GET-/profiles/minh/proposals-None]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
+daemon/test_app.py::test_every_table_route_is_served[POST-/debriefs/01JA1H0000000000000000000A/confirm-body30]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
+daemon/test_app.py::test_every_table_route_is_served[POST-/feedback-body28]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
+daemon/test_app.py::test_every_table_route_is_served[POST-/profile-proposals/01JA1H0000000000000000000A/apply-None]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
+daemon/test_app.py::test_every_table_route_is_served[POST-/profiles/minh/manager-body25]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
 daemon/test_app.py::test_lifespan_starts_and_stops_the_office	dropped	—	design §2.3: no app lifespan; daemon/main.ts calls start and stop around serving (O2-5, test_main.py)	O2-2
 daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
 daemon/test_bus.py	ported	packages/office/tests/daemon/bus.test.ts	—	O2-2

@@ -2,8 +2,9 @@
 import path from "node:path"
 import { expect, test } from "bun:test"
 import { OfficePaths, type WorkerPool } from "../../src/daemon/office.ts"
+import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { tempDir } from "../helpers.ts"
-import { makeOffice } from "./helpers.ts"
+import { makeOffice, request, served } from "./helpers.ts"
 
 /** A WorkerPool that counts closeAll calls. */
 class FakePool implements WorkerPool {
@@ -85,4 +86,36 @@ test("a failing stop callback does not skip the rest", async () => {
   expect(calls).toEqual(["a start", "b start", "c stop", "b stop", "a stop"])
   // The type only: an error's message can quote a secret.
   expect(lines).toEqual(["office on_stop callback failed: StopFailed"])
+})
+
+// [method, route pattern] for the routes that stream; GET /events is tested over a socket in
+// routes_events.test.ts.
+const STREAMS: [string, string][] = [["GET", "/events"]]
+
+// [method, route pattern, concrete path, body] for every other route; null is no body. Each route area adds its
+// routes as it is ported. Still to come, from Python's table:
+// - people and work items: GET /people, GET /folders/*cwd/people, POST /people, GET /work-items/:id,
+//   GET /work-items/:id/comments;
+// - profiles: GET and PUT /profiles/:person;
+// - sessions: GET and POST /sessions, GET /sessions/:id, GET /sessions/:id/messages, and POST /sessions/:id/
+//   prompt, steer, interrupt, end, continue, cost-cap and model;
+// - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
+//   carried/dismiss.
+const TABLE: [string, string, string, unknown][] = []
+
+test("every table route is served", async () => {
+  const listed = new Set([...STREAMS, ...TABLE].map(([method, pattern]) => `${method} ${pattern}`))
+  expect(allRoutes().map((r) => `${r.method} ${r.path}`).filter((route) => !listed.has(route))).toEqual([])
+  const office = makeOffice()
+  const { sock } = await served(office)
+  for (const [method, , target, body] of TABLE) {
+    const r = await request(
+      sock,
+      method,
+      target,
+      body === null ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+    )
+    expect(r.headers["content-type"]).toStartWith("application/json")
+    if (r.status >= 400) expect(["no_route", "method_not_allowed"]).not.toContain((r.json() as { error: string }).error)
+  }
 })
