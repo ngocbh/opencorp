@@ -4,9 +4,46 @@ import http, { type IncomingHttpHeaders } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { onTestFinished } from "bun:test"
+import { CompanyGit } from "../../src/company/git.ts"
+import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
+import { Office, OfficePaths } from "../../src/daemon/office.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
-import { shortDir } from "../helpers.ts"
+import { Store } from "../../src/store/store.ts"
+import { company } from "../company/helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
+
+/** The base company's CEO. */
+export const CEO = "ngocbh"
+/** A well-formed id that names nothing. */
+export const ULID = "01JA1H0000000000000000000A"
+
+/**
+ * An office over a fresh home: the base company at `paths.company`, a store, company git and a bus; not started
+ * (Python's `office` fixture). `log` gets the office's raw log messages.
+ *
+ * When the test finishes it is stopped and its store closed, before its temp dir is removed. A test that already
+ * called `stop()` gets a second one then, after its assertions; that is harmless, though `stop` is not idempotent
+ * (its stop callbacks run again), as in Python.
+ */
+export function makeOffice({ log }: { log?: (message: string) => void } = {}): Office {
+  let office: Office | undefined
+  let store: Store | undefined
+  // Registered before tempDir's removal: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      store?.close()
+    }
+  })
+  const home = tempDir()
+  company(home)
+  const paths = new OfficePaths(home)
+  store = new Store(paths.store)
+  office = new Office({ paths, store, git: new CompanyGit(paths.company, paths.worktrees), bus: new Bus(), log })
+  return office
+}
 
 /** How `serve` builds each request's context, where its log lines go, and its server's limits. */
 export type ServeOptions<C> = {

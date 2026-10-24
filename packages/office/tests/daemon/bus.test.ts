@@ -3,6 +3,8 @@ import { expect, test } from "bun:test"
 import { now, type Event, type LiveEvent } from "@opencorp/protocol"
 import { Bus, PING, type Item } from "../../src/daemon/bus.ts"
 import { newId } from "../../src/store/store.ts"
+import { recordEvents, session } from "../store/helpers.ts"
+import { makeOffice } from "./helpers.ts"
 
 const S1 = newId()
 const S2 = newId()
@@ -79,6 +81,18 @@ test("closed subscription is removed", () => {
   const sub = bus.subscribe()
   sub.close()
   expect(bus.subscriberCount).toBe(0)
+})
+
+test("store events are published after commit", async () => {
+  const office = makeOffice()
+  await office.start()
+  const sub = office.bus.subscribe()
+  const events = recordEvents(office.store)
+  const created = office.store.createSession(session())
+  const got = await sub.next(1000)
+  expect(events.at(-1)).toMatchObject({ type: "session.created", subject_id: created.id })
+  expect(got).toEqual(["meta", events.at(-1)!])
+  await office.stop()
 })
 
 test("a type filter drops other types and live events before they are queued", async () => {

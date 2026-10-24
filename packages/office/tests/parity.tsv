@@ -62,8 +62,10 @@ company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O
 company/test_watch.py	open	—	—	O2-4
 company_template/test_writer.py	open	—	—	O2-16a
 daemon/test_app.py	open	—	split: O2-1 → O2-2	O2-2
+daemon/test_app.py::test_a_failing_stop_callback_does_not_skip_the_rest	changed	packages/office/tests/daemon/app.test.ts::a failing stop callback does not skip the rest	design §6 rule 13: the log names the error type, never its message	O2-2
+daemon/test_app.py::test_lifespan_starts_and_stops_the_office	dropped	—	design §2.3: no app lifespan; daemon/main.ts calls start and stop around serving (O2-5, test_main.py)	O2-2
 daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
-daemon/test_bus.py	open	—	—	O2-2
+daemon/test_bus.py	ported	packages/office/tests/daemon/bus.test.ts	—	O2-2
 daemon/test_bus.py::test_publish_and_close_racing_a_closing_loop_are_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_bus.py::test_publish_before_attach_is_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_bus.py::test_publish_from_another_thread_keeps_order	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
