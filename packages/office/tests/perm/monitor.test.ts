@@ -1,10 +1,11 @@
 /** The reference monitor: which asset tools a person gets, and every call's check and audit. */
 import fs from "node:fs"
+import path from "node:path"
 import { expect, test } from "bun:test"
 import type { Monitor } from "../../src/perm/monitor.ts"
 import { DETAIL_CHARS } from "../../src/perm/redact.ts"
 import { person } from "../company/helpers.ts"
-import { TOKEN, cluster, makeMonitor, setFile } from "./helpers.ts"
+import { KINDS, TOKEN, cluster, makeMonitor, setFile } from "./helpers.ts"
 
 const GROUPS = { "groups/infra.yaml": { id: "infra", name: "Infra", parent: "eng", head: null } }
 
@@ -155,6 +156,25 @@ test("unknown tools and people are denied and audited", async () => {
   expect(store.listAudit()).toHaveLength(2)
 })
 
+test("a failing tool is an error result without the secret", async () => {
+  const { monitor, store } = await makeMonitor({ "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["broken"] }]) })
+  const got = await monitor.call("minh", "r1", "cluster_a__broken", {})
+  expect(got).toBe("error: RuntimeError: cannot reach host (token [redacted])")
+  const rows = store.listAudit()
+  expect(rows).toHaveLength(1)
+  expect(rows[0]!.outcome).toBe("error")
+  expect(rows[0]!.detail).not.toContain(TOKEN)
+})
+
+test("a missing secret is an error result", async () => {
+  const { monitor, store, secrets } = await makeMonitor({
+    "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["read_logs"] }]),
+  })
+  fs.unlinkSync(path.join(secrets.root, "vault_token"))
+  expect(await monitor.call("minh", "r1", "cluster_a__read_logs", {})).toBe("error: secret 'vault_token' is not set")
+  expect(store.listAudit()[0]!.outcome).toBe("error")
+})
+
 test("toolbox tools carry the kind schema and audit the run", async () => {
   const { monitor, store } = await makeMonitor({
     "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["submit_job"] }]),
@@ -168,6 +188,40 @@ test("toolbox tools carry the kind schema and audit the run", async () => {
   expect(JSON.stringify(toolbox.fake__echo!.parameters)).toBe(JSON.stringify(golden.toolbox[0].parameters))
   expect(await toolbox.fake__echo!.call({ text: "hi" })).toBe("hi")
   expect(store.listAudit().map((r) => [r.runId, r.sessionId])).toEqual([["r1", "s1"]])
+})
+
+test("an unreadable secret file is an audited error", async () => {
+  const { monitor, store, secrets } = await makeMonitor({
+    "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["read_logs"] }]),
+  })
+  const file = path.join(secrets.root, "vault_token")
+  fs.chmodSync(file, 0)
+  let got: string
+  try {
+    got = String(await monitor.call("minh", "r1", "cluster_a__read_logs", {}))
+  } finally {
+    // Restored here: hooks run in order, so an onTestFinished one would run after the temp dir is gone.
+    fs.chmodSync(file, 0o600)
+  }
+  expect(got).toStartWith("error: ")
+  expect(got).toContain("vault_token")
+  const rows = store.listAudit()
+  expect(rows).toHaveLength(1)
+  expect(rows[0]!.outcome).toBe("error")
+  expect(rows[0]!.detail).toBe(got.slice("error: ".length))
+})
+
+test("a directory in place of a secret file is an audited error", async () => {
+  const { monitor, store, secrets } = await makeMonitor({
+    "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["read_logs"] }]),
+  })
+  const file = path.join(secrets.root, "vault_token")
+  fs.unlinkSync(file)
+  fs.mkdirSync(file)
+  const got = String(await monitor.call("minh", "r1", "cluster_a__read_logs", {}))
+  expect(got).toStartWith("error: ")
+  expect(got).toContain("vault_token")
+  expect(store.listAudit().map((r) => r.outcome)).toEqual(["error"])
 })
 
 test("large audit args are cut like the detail", async () => {
@@ -213,4 +267,84 @@ test("non json arguments are audited as text", async () => {
   expect(row.args.blob).toBe("[redacted]")
   expect(JSON.stringify(row)).not.toContain(TOKEN)
   expect(JSON.stringify(row)).not.toContain("115,51")
+})
+
+test("a secret changed between two calls is read on the next", async () => {
+  const kinds = {
+    ...KINDS,
+    cluster: {
+      ...KINDS.cluster,
+      peek: { run: (_a: unknown, _args: unknown, s: ReadonlyMap<string, string>) => `got ${s.get("vault_token")}` },
+    },
+  }
+  const asset = cluster([{ who: "minh", can: ["submit_job", "peek"] }], { tools: { submit_job: {}, peek: {} } })
+  const { monitor, store, secrets } = await makeMonitor({ "assets/cluster-a.yaml": asset }, kinds)
+  expect(String(await monitor.call("minh", "r1", "cluster_a__submit_job", { job: "a" }))).toStartWith("ran a")
+  const other = "an0ther-t0ken-value"
+  await secrets.set("vault_token", other)
+  // The kind checks for the old value, so it fails only if the new one was read.
+  expect(await monitor.call("minh", "r1", "cluster_a__submit_job", { job: "b" })).toBe("error: RuntimeError: no token")
+  expect(await monitor.call("minh", "r1", "cluster_a__peek", {})).toBe("got [redacted]")
+  const audit = JSON.stringify(store.listAudit())
+  expect(audit).not.toContain(TOKEN)
+  expect(audit).not.toContain(other)
+})
+
+test("a bigint result holding a digit secret is redacted", async () => {
+  const kinds = { ...KINDS, digits: { read: { run: () => ({ code: 12345678901234567890n }) } } }
+  const { monitor, store, secrets } = await makeMonitor({
+    "assets/vault.yaml": {
+      id: "vault", kind: "digits", secrets: ["pin_code"], tools: { read: {} }, grants: [{ who: "minh", can: ["read"] }],
+    },
+  }, kinds)
+  await secrets.set("pin_code", "12345678901234567890")
+  expect(await monitor.call("minh", "r1", "vault__read", {})).toEqual({ code: "[redacted]" })
+  const rows = store.listAudit()
+  expect(rows.map((r) => r.outcome)).toEqual(["ok"])
+  expect(JSON.stringify(rows)).not.toContain("12345678901234567890")
+})
+
+test("a kind or tool named after an object method is not a tool", async () => {
+  const { monitor } = await makeMonitor({
+    "assets/odd.yaml": {
+      id: "odd", kind: "constructor", tools: { name: {} }, grants: [{ who: "minh", can: ["name"] }],
+    },
+    "assets/fake2.yaml": {
+      id: "fake2", kind: "fake", tools: { toString: {} }, grants: [{ who: "minh", can: ["toString"] }],
+    },
+  })
+  expect(names(monitor, "minh")).toEqual(["fake__echo"])
+  expect(await monitor.call("minh", "r1", "odd__name", {})).toBe("error: asset kind 'constructor' has no tool 'name'")
+  expect(await monitor.call("minh", "r1", "fake2__toString", {})).toBe(
+    "error: asset kind 'fake' has no tool 'toString'",
+  )
+})
+
+test("a proto key in a result stays a plain key", async () => {
+  const kinds = { ...KINDS, odd: { read: { run: () => JSON.parse('{"__proto__": {"t": "s3cr3t-t0ken-value"}}') } } }
+  const { monitor } = await makeMonitor({
+    "assets/vault.yaml": {
+      id: "vault", kind: "odd", secrets: ["vault_token"], tools: { read: {} }, grants: [{ who: "minh", can: ["read"] }],
+    },
+  }, kinds)
+  const got = (await monitor.call("minh", "r1", "vault__read", {})) as object
+  expect(Object.hasOwn(got, "__proto__")).toBe(true)
+  expect(Object.getOwnPropertyDescriptor(got, "__proto__")!.value).toEqual({ t: "[redacted]" })
+})
+
+test("a shared value in a result is not a cycle", async () => {
+  const shared = { t: "x" }
+  const kinds = { ...KINDS, odd: { read: { run: () => ({ a: shared, b: shared }) }, holes: { run: () => [1, , 3] } } }
+  const { monitor, store } = await makeMonitor({
+    "assets/vault.yaml": {
+      id: "vault",
+      kind: "odd",
+      secrets: ["vault_token"],
+      tools: { read: {}, holes: {} },
+      grants: [{ who: "minh", can: ["read", "holes"] }],
+    },
+  }, kinds)
+  expect(await monitor.call("minh", "r1", "vault__read", {})).toEqual({ a: { t: "x" }, b: { t: "x" } })
+  expect(await monitor.call("minh", "r1", "vault__holes", {})).toStrictEqual([1, null, 3])
+  expect(store.listAudit().map((r) => r.outcome)).toEqual(["ok", "ok"])
 })
