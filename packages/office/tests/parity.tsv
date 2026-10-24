@@ -380,6 +380,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::a stalled head is cut with 408	D16: the runtime enforces the head deadline (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a store not found is 404 not found	design §2.3: the store's NotFound is 404 not_found, as Python's handler	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a streamed body ends when the client leaves	design §2.3: SSE needs a streamed reply (O2-1 handoff)	O2-2
+—	new	packages/office/tests/daemon/http.test.ts::a streamed body that fails after the client left logs nothing	design §2.3: a request the client left is neither answered nor logged (O2-1)	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a streamed reply sends each chunk as it is made	design §2.3: SSE needs a streamed reply (O2-1 handoff)	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a streamed reply waits while the client is not reading	design §2.3: a stuck client fills its bus queue and gets reset	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a wildcard param is decoded once	design §2.3: *cwd params get the same care	O2-1

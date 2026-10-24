@@ -896,12 +896,22 @@ describe("raw replies", () => {
     socket.on("error", () => {})
     socket.write("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
     socket.pause()
-    await new Promise((resolve) => setTimeout(resolve, 500))
-    const early = pulls
-    expect(early).toBeGreaterThan(0)
-    expect(early).toBeLessThanOrEqual(64)
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    expect(pulls).toBe(early)
+    // Steady once the count holds for 200 ms: the buffers between the generator and the paused socket are full.
+    let last = -1
+    let since = performance.now()
+    await waitFor(
+      () => {
+        if (pulls !== last) {
+          last = pulls
+          since = performance.now()
+          return false
+        }
+        return pulls > 0 && performance.now() - since >= 200
+      },
+      { timeout: 9000, what: "the body to stop being pulled" },
+    )
+    expect(pulls).toBeGreaterThan(0)
+    expect(pulls).toBeLessThanOrEqual(64)
     socket.destroy()
     await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
   })
@@ -932,6 +942,32 @@ describe("raw replies", () => {
     await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the first chunk" })
     conn.socket.destroy()
     await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toEqual([])
+  })
+
+  test("a streamed body that fails after the client left logs nothing", async () => {
+    class StreamBroke extends Error {}
+    const failing: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: (ctx) =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            yield "a"
+            await aborted(ctx.signal)
+            throw new StreamBroke("after the client left")
+          })(),
+        ),
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([failing], { log: (line) => lines.push(line) })
+    const conn = await Conn.open(sock)
+    conn.send("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the first chunk" })
+    conn.socket.destroy()
     await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
     expect(lines).toEqual([])
   })
