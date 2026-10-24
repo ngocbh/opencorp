@@ -11,7 +11,7 @@ export function whoami(ctx: RequestContext): { person: string; device: string | 
 
 /** The identity routes. */
 export const ROUTES: readonly Route<RequestContext>[] = [
-  /** `{"ok": true}`, exactly: the office is answering. Served without a token. */
+  // `{"ok": true}`, exactly: the office is answering. Served without a token.
   { method: "GET", path: "/health", handler: () => ({ ok: true }) },
   { method: "GET", path: "/whoami", handler: whoami },
 ]

@@ -169,6 +169,8 @@ test("the event stream is checked like any get", async () => {
           got += chunk
           if (got.includes("\n")) resolve({ status: res.statusCode!, line: got.split("\n")[0]! })
         })
+        // A refused stream sends a short body and ends, maybe without a newline.
+        res.on("end", () => resolve({ status: res.statusCode!, line: got.split("\n")[0]! }))
       })
       req.end()
     })
@@ -208,7 +210,7 @@ test("the check adds well under a millisecond", async () => {
     const start = performance.now()
     for (let i = 0; i < n; i++) {
       conn.send(head)
-      await conn.response()
+      expect((await conn.response()).status).toBe(200)
     }
     return (performance.now() - start) / n
   }
