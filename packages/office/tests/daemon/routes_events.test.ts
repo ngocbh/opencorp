@@ -186,7 +186,7 @@ test("head is 405 and leaves the connection usable", async () => {
   const head = await conn.response({ head: true })
   expect(head.status).toBe(405)
   expect(head.head).toMatch(/\r\nallow: GET\r\n/i)
-  // A plain request after it is answered, which shows the connection still serves requests.
+  // A plain request after it is still answered, which shows the connection still serves requests.
   conn.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
   const next = await conn.response()
   expect(next.status).toBe(200)

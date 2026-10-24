@@ -139,9 +139,12 @@ test("folder people most recent first", async () => {
   s.touchWorkedFolder("minh", "/w/my app", "2026-09-02T00:00:00.000Z")
   s.touchWorkedFolder("minh", "/w/other", "2026-09-03T00:00:00.000Z")
   s.touchWorkedFolder("ghost", "/w/my app", "2026-09-04T00:00:00.000Z") // not in the repo
+  const file = path.join(office.paths.company, "people/ngocbh/person.yaml")
+  fs.writeFileSync(file, `${fs.readFileSync(file, "utf8")}password_hash: "$scrypt$ln=15,r=8,p=1$c2FsdA$aGFzaA"\n`)
   const r = await request(sock, "GET", folder("/w/my app"))
   expect(r.status).toBe(200)
   expect(handles(r)).toEqual(["minh", "ngocbh"])
+  expect(r.text).not.toContain("scrypt")
   expect((r.json() as Served[]).map((p) => p.password_hash)).toEqual([null, null])
 })
 

@@ -67,12 +67,6 @@ test("since keeps milliseconds and python iso forms", () => {
     ["2026-10-19T02:00:00-00:00", "2026-10-19T02:00:00.000Z"],
   ]
   for (const [input, expected] of cases) expect(utcTimestamp(input)).toBe(expected)
-  let thrown: unknown
-  try {
-    utcTimestamp("x", "until")
-  } catch (e) {
-    thrown = e
-  }
-  expect(thrown).toBeInstanceOf(HttpError)
-  expect((thrown as HttpError).message).toStartWith("until must be")
+  expect(() => utcTimestamp("x", "until")).toThrow(HttpError)
+  expect(() => utcTimestamp("x", "until")).toThrow(/^until must be/)
 })
