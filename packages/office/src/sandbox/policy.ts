@@ -44,14 +44,13 @@ export function helperFiles(helper: Helper): string[] {
   return "binary" in helper ? [helper.binary] : [helper.bun, helper.entry]
 }
 
-/** At most this many symlinks are followed while resolving one path, as Linux does. */
-const MAX_LINKS = 40
-
 /**
  * `p` made absolute with its components resolved left to right, as the OS does: a symlink is
  * replaced by its target before later components (`..` included) apply, a missing component is
- * kept as given, and a dangling link resolves to its target. Past `MAX_LINKS` links no further
- * link is followed: later links are kept as given. When the result exists, its case is the one on disk.
+ * kept as given, and a dangling link resolves to its target. A link met again while its own target
+ * is being resolved is a loop and is kept as given, as Python's `os.path.realpath` does. The longest
+ * existing part with no `\` then gets its on-disk spelling (case, firmlinks). Throws if a link's
+ * target is not valid UTF-8.
  */
 function real(p: string): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
@@ -61,11 +60,10 @@ function real(p: string): string {
   const abs = path.isAbsolute(p) ? p : process.cwd() + "/" + p
   // A `{ done }` entry marks where a link's target ends, so its result can be kept.
   const pending: (string | { done: string })[] = abs.split("/").reverse()
-  // Links already resolved, as Python's realpath keeps them: a resolved link is not followed
-  // again, so a loop through a linked folder spends the cap on the looping link alone.
-  const seen = new Map<string, string>()
+  // Links met so far, as Python's realpath keeps them: a link maps to its resolved path, or to
+  // null while its target is being walked. Each link is followed once, so the walk ends.
+  const seen = new Map<string, string | null>()
   let resolved = "/"
-  let links = 0
   while (pending.length > 0) {
     const name = pending.pop()!
     if (typeof name !== "string") {
@@ -74,12 +72,17 @@ function real(p: string): string {
     }
     if (name === "" || name === ".") continue
     if (name === "..") {
-      // `resolved` holds no links, so its dirname is the physical parent.
+      // `resolved` holds no links (bar a looping one), so its dirname is the physical parent.
       resolved = path.dirname(resolved)
       continue
     }
     const next = resolved === "/" ? "/" + name : resolved + "/" + name
     const known = seen.get(next)
+    if (known === null) {
+      // A loop: no OS can traverse it (ELOOP), so the link stays as given.
+      resolved = next
+      continue
+    }
     if (known !== undefined) {
       resolved = known
       continue
@@ -88,23 +91,32 @@ function real(p: string): string {
     try {
       isLink = fs.lstatSync(next).isSymbolicLink()
     } catch {}
-    if (!isLink || links >= MAX_LINKS) {
+    if (!isLink) {
       resolved = next
       continue
     }
-    links += 1
-    const target = fs.readlinkSync(next)
+    seen.set(next, null)
+    const raw = fs.readlinkSync(next, { encoding: "buffer" })
+    const target = raw.toString("utf8")
+    // A lossy decode would make the walk look up a different name than the OS follows.
+    if (!Buffer.from(target, "utf8").equals(raw)) throw new Error(`symlink ${next} has a target that is not UTF-8`)
     if (target.startsWith("/")) resolved = "/"
     pending.push({ done: next }, ...target.split("/").reverse())
   }
-  if (resolved.includes("\\")) return resolved
-  // The walked path has no links and no `..` left, so this only gives it the on-disk
-  // case on a case-insensitive volume (home/.SSH is home/.ssh).
-  try {
-    return fs.realpathSync(resolved)
-  } catch {
-    return resolved
+  // On a case-insensitive volume home/.SSH is home/.ssh, and a firmlinked
+  // /System/Volumes/Data/Users is /Users; realpathSync gives the on-disk spelling.
+  let head = resolved
+  let tail = ""
+  while (head !== "/") {
+    if (!head.includes("\\")) {
+      try {
+        return path.join(fs.realpathSync(head), tail)
+      } catch {}
+    }
+    tail = "/" + path.basename(head) + tail
+    head = path.dirname(head)
   }
+  return resolved
 }
 
 /** Whether `child` is `parent` or lies inside it (both resolved). */

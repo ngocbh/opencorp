@@ -113,7 +113,18 @@ test("sensitive paths are compared resolved", () => {
   if (fs.existsSync(path.join(home, ".SSH"))) {
     mkdirs(path.join(home, ".ssh/x"))
     expect(() => policyAt(path.join(home, ".SSH/x"), tmp, { home })).toThrow(/sensitive/)
+    // The existing part gets its on-disk case even when a later name has a backslash.
+    mkdirs(path.join(home, ".ssh/a\\b"))
+    expect(() => policyAt(path.join(home, ".SSH/a\\b"), tmp, { home })).toThrow(/sensitive/)
   }
+  // Every link in a chain is followed, however long, so the chain cannot hide its end (the
+  // backslash keeps a final realpath from finishing the chain instead).
+  const [chain] = mkdirs(path.join(root, "chain\\dir"))
+  for (let i = 0; i < 41; i++) fs.symlinkSync(`c${i + 1}`, path.join(chain!, `c${i}`))
+  fs.symlinkSync(path.join(home, ".ssh"), path.join(chain!, "c41"))
+  expect(() => checkWorkspace(path.join(chain!, "c0"), { home })).toThrow(
+    `workspace ${path.join(home, ".ssh")} is inside the sensitive path ${path.join(home, ".ssh")}; use a project folder`,
+  )
   // Names that merely start like a sensitive path are fine.
   const [mounts] = mkdirs(path.join(home, ".sshfs-mounts"))
   expect(path.basename(policyAt(mounts, tmp, { home: homeLink }).workspace)).toBe(".sshfs-mounts")
@@ -247,9 +258,23 @@ test("office paths are compared resolved", () => {
     [dotsWs!, { tools: [`${other}/l/../bin/git`] }, tool(dotsWs!, "bin/git")],
     [dotsWs!, { path: [`${other}/l/../bin`] }, onPath(dotsWs!, "bin")],
   ]
+  // On a case-insensitive volume, entries that don't exist yet still get the on-disk case of their folder.
+  const [caseWs] = mkdirs(path.join(root, "ws"))
+  if (fs.existsSync(path.join(root, "WS"))) {
+    cases.push(
+      [caseWs!, { path: [path.join(root, "WS/bin")] }, onPath(caseWs!, "bin")],
+      [caseWs!, { tools: [path.join(root, "WS/bin/git")] }, tool(caseWs!, "bin/git")],
+    )
+  }
   for (const [ws, office, message] of cases) {
     expect(() => policyAt(ws, tmp, { home, ...office })).toThrow(UnsafeWorkspace)
     expect(() => policyAt(ws, tmp, { home, ...office })).toThrow(message)
+  }
+  // A link target that isn't UTF-8 can't be resolved exactly, so the check fails rather than guess.
+  if (process.platform === "linux") {
+    const badLink = path.join(root, "bad-target")
+    fs.symlinkSync(Buffer.from([0xff, 0x2f, 0x2e, 0x2e]), badLink)
+    expect(() => checkWorkspace(caseWs!, { home, path: [badLink] })).toThrow(badLink)
   }
 })
 
