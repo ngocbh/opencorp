@@ -41,8 +41,8 @@ function framed(body: Buffer, size = body.length): Buffer {
   return Buffer.concat([header, body])
 }
 
-/** `promise`, or a rejection with `still blocked` once `ms` pass. */
-// It turns a hang into a clear failure rather than the test's timeout.
+/** `promise`, or a rejection with `still blocked` once `ms` pass, so a hang fails clearly rather than at the test's
+ *  timeout. */
 async function within<T>(promise: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const deadline = new Promise<never>((_, reject) => {
@@ -171,7 +171,9 @@ test("frames buffered before a reset still arrive", async () => {
   await rawWrite(leftSocket, second)
   const both = first.length + second.length
   await waitFor(() => rightSocket.readableLength >= both, { timeout: 10_000, what: "both frames buffered" })
+  const closed = new Promise((resolve) => rightSocket.once("close", resolve))
   breakWith(rightSocket, "ECONNRESET")
+  await closed
   expect(await right.recv()).toEqual({ n: 1 })
   expect(await right.recv()).toEqual({ n: 2 })
   const error = await right.recv().catch((error: unknown) => error)
