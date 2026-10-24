@@ -12,6 +12,7 @@ import os from "node:os"
 import util from "node:util"
 
 const MAX_READ_CHARS = 200_000
+const MAX_EDIT_LINES = 10
 
 /** A request that can't be done; the message goes back to the model. */
 class OpError extends Error {}
@@ -110,6 +111,59 @@ function writeFile(path: string, content: string): string {
   return `wrote ${data.length} bytes to ${path}`
 }
 
+/** How many times `part` occurs in `text`, without overlaps (Python's `str.count`). */
+function count(text: string, part: string): number {
+  let n = 0
+  for (let at = text.indexOf(part); at >= 0; at = text.indexOf(part, at + part.length)) n++
+  return n
+}
+
+// Strict, as Python's `open(encoding="utf-8")`; a BOM stays in the text, as it does there.
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
+/** Replace `old` with `replacement`; `old` must occur exactly once unless `replaceAll`.
+ *
+ *  The reply names the line (1-based) each replaced occurrence starts on, the first `MAX_EDIT_LINES` of them. */
+function editFile(path: string, old: string, replacement: string, replaceAll: boolean): string {
+  if (!old) throw new OpError("old must not be empty")
+  let text: string
+  try {
+    text = STRICT_UTF8.decode(fs.readFileSync(path))
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error
+    throw new OpError("'utf-8' codec can't decode the file")
+  }
+  const n = count(text, old)
+  if (n === 0) throw new OpError(`old text not found in ${path}`)
+  if (n > 1 && !replaceAll) throw new OpError(`old text appears ${n} times in ${path}; add context or set replace_all`)
+  // Not String.replace with a string, which expands `$&` and `$$` in the replacement.
+  const at = text.indexOf(old)
+  fs.writeFileSync(
+    path,
+    replaceAll ? text.split(old).join(replacement) : text.slice(0, at) + replacement + text.slice(at + old.length),
+  )
+  const replaced = replaceAll ? n : 1
+  const lines = starts(text, old, Math.min(replaced, MAX_EDIT_LINES))
+  const where =
+    replaced === 1 ? `line ${lines[0]}` : `lines ${lines.join(", ")}${replaced > lines.length ? ", …" : ""}`
+  return `replaced ${replaced} occurrence${replaced > 1 ? "s" : ""} in ${path} at ${where}`
+}
+
+/** The 1-based lines the first `limit` non-overlapping occurrences of `old` start on; lines end at `\n`. */
+function starts(text: string, old: string, limit: number): number[] {
+  const lines: number[] = []
+  let line = 1
+  let pos = 0
+  while (lines.length < limit) {
+    const found = text.indexOf(old, pos)
+    line += count(text.slice(pos, found), "\n")
+    lines.push(line)
+    line += count(old, "\n")
+    pos = found + old.length
+  }
+  return lines
+}
+
 type Kind = "string" | "integer" | "boolean"
 
 /** Every op's arguments, each checked against the op's spec before `run` sees it. */
@@ -145,7 +199,10 @@ const OPS: Record<string, Op> = Object.assign(Object.create(null), {
     run: (a: Args) => readFile(a.path!, a.offset ?? 0, a.limit),
   },
   write_file: { args: { path: "string", content: "string" }, run: (a: Args) => writeFile(a.path!, a.content!) },
-  edit_file: { args: { path: "string", old: "string", new: "string", replace_all: "boolean?" }, run: notBuilt },
+  edit_file: {
+    args: { path: "string", old: "string", new: "string", replace_all: "boolean?" },
+    run: (a: Args) => editFile(a.path!, a.old!, a.new!, a.replace_all ?? false),
+  },
   list: { args: { path: "string?" }, run: notBuilt },
   search: { args: { pattern: "string", path: "string?", glob: "string?" }, run: notBuilt },
 } satisfies Record<string, Op>)

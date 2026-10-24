@@ -153,3 +153,66 @@ test("a bom is kept by read", () => {
   fs.writeFileSync(path.join(ws, "f"), "\ufeffhi")
   expect(reply(ws, { op: "read_file", path: "f" })).toEqual(ok("\ufeffhi"))
 })
+
+test("edit", () => {
+  const ws = tempDir()
+  const file = path.join(ws, "f.py")
+  fs.writeFileSync(file, "a = 1\nb = 1\n")
+  const edit = (args: object) => reply(ws, { op: "edit_file", path: "f.py", ...args })
+  expect(edit({ old: "= 1", new: "= 2" })).toEqual(
+    error("old text appears 2 times in f.py; add context or set replace_all"),
+  )
+  expect(edit({ old: "a = 1", new: "a = 3" })).toEqual(ok("replaced 1 occurrence in f.py at line 1"))
+  expect(edit({ old: "= ", new: "=", replace_all: true })).toEqual(
+    ok("replaced 2 occurrences in f.py at lines 1, 2"),
+  )
+  expect(fs.readFileSync(file, "utf8")).toBe("a =3\nb =1\n")
+  expect(edit({ old: "zzz", new: "y" })).toEqual(error("old text not found in f.py"))
+  expect(edit({ old: "", new: "y" })).toEqual(error("old must not be empty"))
+})
+
+test("edit reports the line each occurrence starts on", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "todo.md"), "# Plan\r\n\r\nStatus: TODO\r\nOwner: minh\r\n")
+  expect(reply(ws, { op: "edit_file", path: "todo.md", old: "TODO\r\nOwner", new: "DONE\r\nOwner" })).toEqual(
+    ok("replaced 1 occurrence in todo.md at line 3"),
+  )
+  fs.writeFileSync(path.join(ws, "x.txt"), "x\n\n".repeat(6))
+  expect(reply(ws, { op: "edit_file", path: "x.txt", old: "x", new: "y", replace_all: true })).toEqual(
+    ok("replaced 6 occurrences in x.txt at lines 1, 3, 5, 7, 9, 11"),
+  )
+  fs.writeFileSync(path.join(ws, "x.txt"), "x\n".repeat(12))
+  expect(reply(ws, { op: "edit_file", path: "x.txt", old: "x", new: "y", replace_all: true })).toEqual(
+    ok("replaced 12 occurrences in x.txt at lines 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, …"),
+  )
+})
+
+test("edit writes dollar signs literally", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "f"), "a b a")
+  expect(reply(ws, { op: "edit_file", path: "f", old: "b", new: "$&$$" })).toEqual(
+    ok("replaced 1 occurrence in f at line 1"),
+  )
+  expect(reply(ws, { op: "edit_file", path: "f", old: "a", new: "$'", replace_all: true })).toEqual(
+    ok("replaced 2 occurrences in f at lines 1, 1"),
+  )
+  expect(fs.readFileSync(path.join(ws, "f"), "utf8")).toBe("$' $&$$ $'")
+})
+
+test("edit refuses a file that is not utf8 and leaves it unchanged", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "f"), Buffer.from([0xff, 0x41]))
+  expect(reply(ws, { op: "edit_file", path: "f", old: "A", new: "B" })).toEqual(
+    error("'utf-8' codec can't decode the file"),
+  )
+  expect(fs.readFileSync(path.join(ws, "f"))).toEqual(Buffer.from([0xff, 0x41]))
+})
+
+test("edit keeps a bom", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "f"), Buffer.from([0xef, 0xbb, 0xbf, 0x61, 0x62]))
+  expect(reply(ws, { op: "edit_file", path: "f", old: "a", new: "c" })).toEqual(
+    ok("replaced 1 occurrence in f at line 1"),
+  )
+  expect(fs.readFileSync(path.join(ws, "f"))).toEqual(Buffer.from([0xef, 0xbb, 0xbf, 0x63, 0x62]))
+})
