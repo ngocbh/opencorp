@@ -8,6 +8,7 @@
     "opencorp": "bin/opencorp"
   },
   "scripts": {
+    "build": "bun --no-env-file --config=/dev/null script/build.ts",
     "test": "bun test",
     "typecheck": "tsc -p ."
   },

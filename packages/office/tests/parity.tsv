@@ -309,6 +309,8 @@ worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	pack
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
+—	new	packages/cli/test/entry.test.ts::the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset	§2.7, O0-10 P4	O2-26
+—	new	packages/cli/test/entry.test.ts::the entry sets the TUI asset root only in the compiled binary	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
 —	new	packages/cli/test/entry.test.ts::the npm shim finds the platform package in the npm nested, npm and bun hoisted, and pnpm layouts	§2.7, O0-10 P5	O2-26
 —	new	packages/cli/test/entry.test.ts::the npm shim is an executable sh script that never runs bun or node	§2.7, §6.2	O2-26

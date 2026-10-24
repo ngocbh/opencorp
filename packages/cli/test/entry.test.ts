@@ -1,5 +1,5 @@
-import { afterAll, beforeAll, expect, setDefaultTimeout, test } from "bun:test"
-import { spawnSync } from "node:child_process"
+import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -128,15 +128,15 @@ test("opencorp run by a relative path with CDPATH set still finds the checkout",
 })
 
 const SHIM = path.join(CHECKOUT, "packages/cli/bin/opencorp-npm")
-const OS = process.platform === "darwin" ? "darwin" : "linux"
-const PLATFORM = `opencorp-${OS}-${process.arch === "arm64" ? "arm64" : "x64"}`
+const HOST_OS = process.platform === "darwin" ? "darwin" : "linux"
+const PLATFORM = `opencorp-${HOST_OS}-${process.arch === "arm64" ? "arm64" : "x64"}`
 
-/** Lays out opencorp as `layout` installs it from npm under `root`, with `binary` put at the platform
+/** Lays out opencorp as `layout` installs it from npm under `root`, with `source` put at the platform
  *  package's bin/opencorp by `place` (a copy or a hard link); returns the bin link and that binary. */
 function npmInstall(
   root: string,
   layout: "nested" | "hoisted" | "pnpm",
-  binary: string,
+  source: string,
   place: (from: string, to: string) => void = fs.copyFileSync,
 ) {
   const dir = path.join(root, layout)
@@ -159,7 +159,7 @@ function npmInstall(
   for (const folder of [path.join(pkg, "bin"), path.join(platform, "bin"), path.dirname(link)])
     fs.mkdirSync(folder, { recursive: true })
   fs.copyFileSync(SHIM, path.join(pkg, "bin/opencorp"))
-  place(binary, path.join(platform, "bin/opencorp"))
+  place(source, path.join(platform, "bin/opencorp"))
   if (layout === "pnpm") {
     const sibling = path.join(store, "opencorp@0.0.0/node_modules", PLATFORM)
     fs.symlinkSync(`../../${PLATFORM}@0.0.0/node_modules/${PLATFORM}`, sibling)
@@ -331,3 +331,164 @@ test(
   },
   60_000,
 )
+
+const CLI = path.join(CHECKOUT, "packages/cli")
+
+/** Kills the process group `pid` leads; a group already gone is fine. */
+function killGroup(pid: number) {
+  try {
+    process.kill(-pid, "SIGKILL")
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e
+  }
+}
+
+/**
+ * Runs `argv` in its own process group (`groups` gets its pid, for cleanup) and resolves to its exit and output
+ * once it closes. After `limit` ms its group is killed and the run rejects with what it printed. Stdin stays open
+ * until the end unless `input` is given (written, then closed). When its stdout satisfies `until`, its group is
+ * killed and the result says `reached`.
+ */
+function runDetached(
+  argv: string[],
+  options: {
+    cwd: string
+    env: NodeJS.ProcessEnv
+    limit: number
+    groups: Set<number>
+    input?: string
+    until?: (stdout: string) => boolean
+  },
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stdout: string; stderr: string; reached: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env, detached: true, stdio: "pipe" })
+    child.on("error", reject)
+    const pid = child.pid
+    if (pid === undefined) return
+    options.groups.add(pid)
+    let stdout = ""
+    let stderr = ""
+    let reached = false
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      killGroup(pid)
+    }, options.limit)
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+      stdout += chunk
+      if (!reached && options.until?.(stdout)) {
+        reached = true
+        killGroup(pid)
+      }
+    })
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
+    // A child that exits without reading its stdin makes a write fail with EPIPE.
+    child.stdin.on("error", () => {})
+    if (options.input !== undefined) child.stdin.end(options.input)
+    child.on("close", (code, signal) => {
+      clearTimeout(timer)
+      child.stdin.destroy()
+      if (timedOut)
+        reject(new Error(`${argv.join(" ")} ran past ${options.limit} ms (exit ${code}, ${signal}):\n${stdout}\n${stderr}`))
+      else resolve({ code, signal, stdout, stderr, reached })
+    })
+  })
+}
+
+type NodeAssets = { getNodeAssets(target: { platform: string; arch: string }): readonly { key: string; source: string }[] }
+
+describe("the built binary", () => {
+  let built = ""
+  let npmOut = ""
+  let bin = ""
+  const groups = new Set<number>()
+  const pkg = JSON.parse(fs.readFileSync(path.join(CLI, "package.json"), "utf8")) as { version: string; license: string }
+  const description = "OpenCorp: run a company of AI employees on your machine"
+  const cpu = PLATFORM.split("-")[2]!
+
+  beforeAll(async () => {
+    built = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-built-")))
+    npmOut = path.join(built, "npm")
+    bin = path.join(npmOut, PLATFORM, "bin/opencorp")
+    const build = await runDetached(
+      [process.execPath, "--no-env-file", "--config=/dev/null", "script/build.ts", "--outdir", npmOut],
+      { cwd: CLI, env: process.env, limit: 600_000, groups },
+    )
+    if (build.code !== 0) throw new Error(`the build exited ${build.code}:\n${build.stdout}\n${build.stderr}`)
+    // The first run of a fresh binary can take minutes on macOS while the system scans it.
+    const warm = await runDetached([bin, "--help"], {
+      cwd: built,
+      env: { HOME: built, PATH: "/usr/bin:/bin" },
+      limit: 300_000,
+      groups,
+    })
+    if (warm.code !== 0) throw new Error(`the binary's --help exited ${warm.code}:\n${warm.stdout}\n${warm.stderr}`)
+  }, 960_000)
+
+  afterAll(() => {
+    for (const pid of groups) killGroup(pid)
+    fs.rmSync(built, { recursive: true, force: true })
+  })
+
+  test("the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset", async () => {
+    const readJson = (file: string) => JSON.parse(fs.readFileSync(path.join(npmOut, file), "utf8"))
+    const { version, license } = pkg
+    expect(readJson("opencorp/package.json")).toEqual({
+      name: "opencorp",
+      version,
+      description,
+      license,
+      bin: { opencorp: "bin/opencorp" },
+      files: ["bin", "LICENSE"],
+      optionalDependencies: {
+        "opencorp-darwin-arm64": version,
+        "opencorp-darwin-x64": version,
+        "opencorp-linux-arm64": version,
+        "opencorp-linux-x64": version,
+      },
+    })
+    expect(readJson(`${PLATFORM}/package.json`)).toEqual({
+      name: PLATFORM,
+      version,
+      description,
+      license,
+      os: [HOST_OS],
+      cpu: [cpu],
+      files: ["bin", "assets", "LICENSE"],
+    })
+    const shim = path.join(npmOut, "opencorp/bin/opencorp")
+    expect(fs.readFileSync(shim).equals(fs.readFileSync(SHIM))).toBe(true)
+    expect(fs.statSync(shim).mode & 0o777).toBe(0o755)
+    expect(fs.statSync(bin).mode & 0o111).toBe(0o111)
+
+    const nodeAssets = Bun.resolveSync(
+      "@opentui/core/node-assets",
+      path.dirname(fileURLToPath(import.meta.resolve("@opencorp/tui"))),
+    )
+    const expected = ((await import(nodeAssets)) as NodeAssets).getNodeAssets({
+      platform: process.platform,
+      arch: process.arch,
+    })
+    const assets = path.join(npmOut, PLATFORM, "assets")
+    const shipped = (fs.readdirSync(assets, { recursive: true }) as string[])
+      .filter((file) => fs.statSync(path.join(assets, file)).isFile() && path.basename(file) !== "LICENSE")
+      .sort()
+    expect(shipped).toEqual(expected.map((asset) => asset.key).sort())
+    for (const { key, source } of expected)
+      expect(fs.readFileSync(path.join(assets, key)).equals(fs.readFileSync(source)), key).toBe(true)
+    for (const owner of ["@opentui/core", `@opentui/core-${HOST_OS}-${cpu}`, "web-tree-sitter"])
+      expect(fs.statSync(path.join(assets, owner, "LICENSE")).isFile(), owner).toBe(true)
+    const repoLicense = fs.readFileSync(path.join(CHECKOUT, "LICENSE"))
+    for (const folder of ["opencorp", PLATFORM])
+      expect(fs.readFileSync(path.join(npmOut, folder, "LICENSE")).equals(repoLicense), folder).toBe(true)
+  })
+
+  test("the entry sets the TUI asset root only in the compiled binary", () => {
+    expect(code(fs.readFileSync(ENTRY, "utf8")).slice(2, 6)).toEqual([
+      'if (!internal && !import.meta.url.endsWith(".ts")) {',
+      '  const { dirname, join } = await import("node:path")',
+      '  process.env.OTUI_ASSET_ROOT = join(dirname(process.execPath), "..", "assets")',
+      "}",
+    ])
+  })
+})
