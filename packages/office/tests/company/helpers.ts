@@ -179,3 +179,15 @@ export function recordingGit(dir: string) {
     },
   }
 }
+
+/** A child flow `echo` that a parent calls through `uses:`. */
+export const CHILD = "id: echo\nname: echo\ninput:\n  text: !str\noutput: str\nkind: agent\nprompt: \"${text}\"\n"
+
+/** A flow `chat` that imports `ref` as `echo` and calls it. */
+export function parentFlow(ref: string): string {
+  return (
+    "id: chat\nname: chat\nuses:\n  echo: " + ref + "\nnodes:\n  ask:\n    kind: human_input\n" +
+    "    prompt: \"you> \"\n    output: str\n  reply:\n    kind: call\n    call: echo\n" +
+    "    input:\n      text: ${ask.output}\noutput: ${reply.output}\n"
+  )
+}
