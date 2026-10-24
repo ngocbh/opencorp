@@ -256,7 +256,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/auth/devices.test.ts::a device name with another hash or a hash someone lists is refused	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a failed commit restores the person file	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a refused change never echoes a value	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
-—	new	packages/office/tests/auth/devices.test.ts::a symlinked person file is never written through [%s]	design §6 rule 12: company writes stay inside the repo; stricter than Python, which wrote through the link	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::a symlinked person file is never written through [%s]	design §6.4 (O1-14 review): a person write never goes through a symlinked file or folder; stricter than Python, which wrote through the link	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::adding a device commits it and keeps the files key order	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::an unknown handle costs one password check	P4 (D36), design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::login adds the device once the password checks out	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
