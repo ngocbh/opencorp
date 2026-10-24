@@ -73,8 +73,6 @@ sandboxedMac("a process under the canary profile is found and killed", async () 
   expect(listAllPids()).toContain(plain.pid!)
   const killed = killEscaped(canary)
   expect(killed).toEqual([pid])
-  expect(killed).not.toContain(process.pid)
-  expect(killed).not.toContain(plain.pid!)
   await exited
 })
 

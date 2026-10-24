@@ -9,6 +9,8 @@ import { profile } from "./seatbelt.ts"
 
 export const SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
 const READER_GRACE_MS = 2_000
+// Timers hold a signed 32-bit millisecond count; anything longer fires at once.
+const MAX_TIMEOUT_S = 2_147_483
 
 /** This platform has no supported sandbox. */
 export class SandboxUnavailable extends Error {
@@ -70,13 +72,14 @@ export function refusal(platform: string, exit: number | null, stderr: Buffer): 
 
 export interface RunOptions {
   stdin?: string | Buffer
-  /** Seconds; default 120. */
+  /** Seconds, more than 0 and at most 2_147_483 (about 24.8 days); default 120. */
   timeout?: number
   signal?: AbortSignal
   /** Bytes kept per stream; default 1 MiB. */
   maxOutput?: number
   /** Called right after spawn with the leader's pid (the group id); the cleanup it returns runs after
-   *  the group kill and the sweep, on every path. */
+   *  the group kill and the sweep, on every path. A `track` that throws still has the call killed and
+   *  swept, and `run` then rejects with its error. */
   track?: (pid: number) => () => void
 }
 
@@ -88,10 +91,15 @@ export interface RunOptions {
  * seconds pass, or when `signal` aborts. On macOS, processes that left the group with
  * `setsid` are then found and killed too; on Linux the pid namespace dies with the call.
  * Each output stream keeps at most `maxOutput` bytes. Rejects with the spawn error when
- * the call can't start, and `SandboxUnavailable` on an unsupported platform.
+ * the call can't start, `SandboxUnavailable` on an unsupported platform, a `RangeError`
+ * for a `timeout` out of range (before anything starts), and the error of a `track` that
+ * throws, after the call is killed and swept.
  */
 export async function run(policy: SandboxPolicy, argv: readonly string[], options: RunOptions = {}): Promise<Result> {
   const { stdin, timeout = 120, signal, maxOutput = 1 << 20, track } = options
+  if (!(timeout > 0 && timeout <= MAX_TIMEOUT_S)) {
+    throw new RangeError(`timeout must be more than 0 and at most ${MAX_TIMEOUT_S} seconds, got ${timeout}`)
+  }
   const start = performance.now()
   let canary: Canary | undefined
   try {
@@ -160,7 +168,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
           try {
             untrack?.()
           } finally {
-            if (!exited) await exit
+            await exit
           }
         }
       }
@@ -210,8 +218,12 @@ function killGroup(pgid: number): void {
 /** Reads `stream` to its end, keeping at most `limit` bytes; past the cap it reads and discards, so a
  *  writer never blocks. */
 function capture(stream: Readable, limit: number) {
-  const state = { chunks: [] as Buffer[], size: 0, truncated: false, closed: Promise.resolve() }
-  state.closed = new Promise((resolve) => stream.once("close", () => resolve()))
+  const state = {
+    chunks: [] as Buffer[],
+    size: 0,
+    truncated: false,
+    closed: new Promise<void>((resolve) => stream.once("close", () => resolve())),
+  }
   // A read error ends the capture; it must not crash the office.
   stream.on("error", () => {})
   stream.on("data", (chunk: Buffer) => {

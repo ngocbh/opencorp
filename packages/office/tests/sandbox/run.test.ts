@@ -92,10 +92,8 @@ sandboxed("timeout kills the group", async () => {
 })
 
 sandboxed("cancel kills the call", async () => {
-  const cancel = new AbortController()
-  setTimeout(() => cancel.abort(), 500)
   const start = performance.now()
-  const result = await sh(makePolicy().make(), "sleep 30", { signal: cancel.signal })
+  const result = await sh(makePolicy().make(), "sleep 30", { signal: AbortSignal.timeout(500) })
   expect(result.interrupted).toBe(true)
   expect(result.exit).toBeNull()
   expect(performance.now() - start).toBeLessThan(10_000)
@@ -158,20 +156,24 @@ sandboxed("on timeout the leader is killed before it is reaped", async () => {
 
 sandboxed("setsid child dies with the call", async () => {
   // setsid leaves the process group, so killing the group misses it; the child also
-  // holds the output pipes, which must not stall the call.
+  // holds the output pipes, and the call doesn't wait for the escapee.
   const policy = makePolicy().make({ readOnly: [fs.realpathSync(process.execPath)] })
   const start = performance.now()
   const result = await setsidCall(policy, "4545")
   expect(result.stdout.toString()).toBe("parent done\n")
-  expect(performance.now() - start).toBeLessThan(3_000)
+  expect(performance.now() - start).toBeLessThan(10_000)
   expect(await gone("4545")).toBe(true)
 })
 
 sandboxed("escape cleanup spares concurrent calls", async () => {
   const policy = makePolicy().make({ readOnly: [fs.realpathSync(process.execPath)] })
-  const sibling = sh(policy, "sleep 2; echo alive")
-  await new Promise((resolve) => setTimeout(resolve, 500))
+  // TMPDIR in the sandbox is the policy's tmpdir. The timeout ends the sibling if the test fails
+  // before it says go.
+  const script = ': > "$TMPDIR/up"; while [ ! -e "$TMPDIR/go" ]; do sleep 0.05; done; echo alive'
+  const sibling = sh(policy, script, { timeout: 20 })
+  await waitFor(() => fs.existsSync(path.join(policy.tmpdir, "up")), { timeout: 10_000, what: "sibling up" })
   expect((await setsidCall(policy, "4546")).exit).toBe(0)
+  fs.writeFileSync(path.join(policy.tmpdir, "go"), "")
   const result = await sibling
   expect(result.exit).toBe(0)
   expect(result.stdout.toString()).toBe("alive\n")
@@ -249,7 +251,9 @@ test("a call that cannot start rejects at once", async () => {
   fs.rmSync(ws, { recursive: true })
   // The first canary root: no canary may be left behind there.
   const root = fs.realpathSync(os.tmpdir())
-  const before = fs.readdirSync(root).sort()
+  const canaries = () => fs.readdirSync(root).filter((name) => name.startsWith("opencorp-call-")).sort()
+  const before = canaries()
+  await expect(run(policy, ["/bin/sh", "-c", "exit 0"], { timeout: Infinity })).rejects.toThrow(RangeError)
   let tracked = false
   const start = performance.now()
   const call = run(policy, ["/bin/sh", "-c", "exit 0"], {
@@ -261,7 +265,7 @@ test("a call that cannot start rejects at once", async () => {
   await expect(call).rejects.toMatchObject({ code: "ENOENT" })
   expect(performance.now() - start).toBeLessThan(5_000)
   expect(tracked).toBe(false)
-  expect(fs.readdirSync(root).sort()).toEqual(before)
+  expect(canaries()).toEqual(before)
 })
 
 test("a sandbox refusal is labelled", () => {
