@@ -191,13 +191,18 @@ test(
       const result = spawnSync(WRAPPER, [mode], {
         cwd: proj,
         env: { HOME: tmp, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
+        input: "",
         encoding: "utf8",
         timeout: 20_000,
       })
       expect(result.error).toBeUndefined()
-      expect(result.stderr).toContain(`opencorp ${mode}: not built yet`)
+      if (mode === "__worker") {
+        expect(result.stderr).toContain("opencorp __worker: not built yet")
+        expect(result.stdout).toBe("")
+      } else {
+        expect(result.stdout, result.stderr).toBe('{"ok": false, "error": "request is not JSON"}')
+      }
       expect(result.status).toBe(1)
-      expect(result.stdout).toBe("")
       expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
     }
   },

@@ -3,8 +3,10 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { helperCommand } from "../../src/platform.ts"
+import { run } from "../../src/sandbox/run.ts"
 import { tempDir } from "../helpers.ts"
-import { helperOp } from "./helpers.ts"
+import { helperOp, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -16,8 +18,8 @@ function reply(ws: string, request: object): unknown {
   return result.reply
 }
 
-const ok = (output: string) => ({ ok: true, output })
-const error = (text: string) => ({ ok: false, error: text })
+const ok = (output: string) => ({ ok: true as const, output })
+const error = (text: string) => ({ ok: false as const, error: text })
 
 /** Whether this process runs as root, which reads files whatever their mode. */
 const root = process.getuid?.() === 0
@@ -385,4 +387,70 @@ test("python regex forms are translated", () => {
   expect(search("[^]a]")).toEqual(ok("f:2:x"))
   fs.writeFileSync(path.join(ws, "f"), "\ufeffx\n")
   expect(search("^\ufeffx")).toEqual(ok("f:1:\ufeffx"))
+})
+
+test("a planted env file and bunfig preload in the workspace are not read", () => {
+  const dir = tempDir()
+  const ws = path.join(dir, "ws")
+  fs.mkdirSync(ws)
+  const marker = path.join(ws, "MARKER")
+  const seen = path.join(dir, "seen.json")
+  fs.writeFileSync(path.join(ws, ".env"), "PLANTED=1\n")
+  fs.writeFileSync(path.join(ws, "bunfig.toml"), 'preload = ["./evil.ts"]\n')
+  fs.writeFileSync(
+    path.join(ws, "evil.ts"),
+    `import { writeFileSync } from "node:fs"\nwriteFileSync(${JSON.stringify(marker)}, "")\n`,
+  )
+  const opts = path.join(dir, "opts.ts")
+  fs.writeFileSync(
+    opts,
+    `import { writeFileSync } from "node:fs"\n` +
+      `writeFileSync(${JSON.stringify(seen)}, JSON.stringify(process.env.PLANTED ?? null))\n`,
+  )
+  const env = { BUN_OPTIONS: `--preload ${opts}` }
+
+  const result = helperOp(ws, { op: "list" }, env)
+  expect(result.reply, result.stderr).toEqual({ ok: true, output: ".env\nbunfig.toml\nevil.ts" })
+  expect(result.status).toBe(0)
+  expect(JSON.parse(fs.readFileSync(seen, "utf8"))).toBeNull()
+  expect(fs.existsSync(marker)).toBe(false)
+
+  // The control: without the two flags the same Bun reads both, so the checks above can see them.
+  fs.rmSync(seen)
+  const [file, ...args] = helperCommand().argv.filter((arg) => arg !== "--no-env-file" && arg !== "--config=/dev/null")
+  const raw = spawnSync(file!, args, {
+    cwd: ws,
+    env: { PATH: "/usr/bin:/bin", HOME: tempDir(), ...env },
+    input: JSON.stringify({ op: "list" }),
+    encoding: "utf8",
+    timeout: 20_000,
+  })
+  expect(raw.error).toBeUndefined()
+  expect(JSON.parse(fs.readFileSync(seen, "utf8"))).toBe("1")
+  expect(fs.existsSync(marker)).toBe(true)
+})
+
+test.skipIf(!sandboxAvailable())("the helper reads and writes inside the workspace under its own profile", async () => {
+  const { root, make } = makePolicy()
+  const policy = make()
+  fs.writeFileSync(path.join(root, "beside.txt"), "secret")
+  expect(await helperTool(policy, { op: "write_file", path: "a.txt", content: "hi" })).toEqual(
+    ok("wrote 2 bytes to a.txt"),
+  )
+  expect(await helperTool(policy, { op: "read_file", path: "a.txt" })).toEqual(ok("hi"))
+  expect(await helperTool(policy, { op: "list" })).toEqual(ok("a.txt"))
+  expect((await helperTool(policy, { op: "read_file", path: "../beside.txt" })).ok).toBe(false)
+  expect((await helperTool(policy, { op: "write_file", path: "../new.txt", content: "x" })).ok).toBe(false)
+  expect(fs.existsSync(path.join(root, "new.txt"))).toBe(false)
+})
+
+test.skipIf(!sandboxAvailable())("the helper does not run under the shell profile", async () => {
+  // The policy has no `helper`, so its profile has none of the helper's rules.
+  const result = await run(makePolicy().make(), helperCommand().argv, {
+    stdin: JSON.stringify({ op: "list" }),
+    timeout: 20,
+  })
+  expect(result.timedOut).toBe(false)
+  expect(result.stdout.toString()).toBe("")
+  expect(result.exit).not.toBe(0)
 })

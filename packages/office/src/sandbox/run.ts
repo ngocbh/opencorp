@@ -4,7 +4,8 @@ import os from "node:os"
 import type { Readable } from "node:stream"
 import * as bwrap from "./bwrap.ts"
 import { Canary, killEscaped } from "./escapees.ts"
-import type { SandboxPolicy } from "./policy.ts"
+import { helperCommand } from "../platform.ts"
+import { type Helper, helperFiles, isInside, type SandboxPolicy } from "./policy.ts"
 import { profile } from "./seatbelt.ts"
 
 export const SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
@@ -15,6 +16,18 @@ const MAX_TIMEOUT_S = 2_147_483
 /** This platform has no supported sandbox. */
 export class SandboxUnavailable extends Error {
   override name = "SandboxUnavailable"
+}
+
+/** The helper's argv and files for a call; throws `SandboxUnavailable` if a helper file lies inside
+ *  the office home (design §2.5: its profile would expose part of the home). */
+export function fsHelper(officeHome: string): { argv: string[]; helper: Helper } {
+  const { argv, helper } = helperCommand()
+  for (const file of helperFiles(helper)) {
+    if (isInside(file, officeHome)) {
+      throw new SandboxUnavailable(`the file helper ${file} lies inside the office home ${officeHome}`)
+    }
+  }
+  return { argv, helper }
 }
 
 /** The outcome of one sandboxed call. */
