@@ -283,6 +283,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/flow_yaml.test.ts::a type tagged key reads as its text	design §9.5: keys read as TS yian reads them	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::an alias bomb is refused	design §9.5: the alias cap	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::an alias names the latest node anchored before it	design §9.5: read as TS yian reads flows	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::an integer outside the safe range reads exactly as a bigint	#358: integers past 2^53 read exactly so they can be refused	O1-15
 —	new	packages/office/tests/company/flow_yaml.test.ts::an undefined alias is refused	design §6: a malformed company file is an issue, never an exception	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::core booleans nulls and floats	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::errors never quote the text	design §6 rules 1 and 13: no file text in errors	O1-5
@@ -304,11 +305,15 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/issues.test.ts::a deeply nested file is unreadable	design §9.5: the nesting limit	O1-5
 —	new	packages/office/tests/company/issues.test.ts::a file that isnt a mapping is a schema issue	design §5.4: path-only messages	O1-5
 —	new	packages/office/tests/company/issues.test.ts::a non utf8 file is unreadable	design §5.4: company file bytes are UTF-8	O1-5
+—	new	packages/office/tests/company/issues.test.ts::a proto key at any depth is a schema issue	#358, design §6 rule 1: fail closed on values the schemas can't hold exactly; field-only messages	O1-15
 —	new	packages/office/tests/company/issues.test.ts::a repo issue defaults to an error	design §5.4: company files through the zod schemas	O1-5
 —	new	packages/office/tests/company/issues.test.ts::a schema error names the field and never the value	design §5.4, §6 rule 1: path-only messages	O1-5
 —	new	packages/office/tests/company/issues.test.ts::a valid file parses with defaults filled	design §5.4: company files through the zod schemas	O1-5
+—	new	packages/office/tests/company/issues.test.ts::an integer outside the safe range is a schema issue	#358, design §6 rule 1: fail closed on values the schemas can't hold exactly; field-only messages	O1-15
 —	new	packages/office/tests/company/issues.test.ts::an undefined alias is unreadable	design §6: a malformed company file is an issue, never an exception	O1-5
 —	new	packages/office/tests/company/issues.test.ts::malformed yaml is unreadable with its line only	design §5.4, §6 rule 1: path-only messages	O1-5
+—	new	packages/office/tests/company/issues.test.ts::one issue names the first problem only	#358, design §6 rule 1: fail closed on values the schemas can't hold exactly; field-only messages	O1-15
+—	new	packages/office/tests/company/issues.test.ts::safe integers and ordinary keys are unaffected	#358, design §6 rule 1: fail closed on values the schemas can't hold exactly; field-only messages	O1-15
 —	new	packages/office/tests/company/issues.test.ts::yes stays text in a company file	D8: YAML 1.2 for company files	O1-5
 —	new	packages/office/tests/company/lint.test.ts::a child flow symlinked out of the repo is outside the repo	design §6 rule 10: uses: stays confined	O1-8
 —	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo in a child flow is a lint error	design §6 rule 10, Y6a: every nested load is confined	O1-8
@@ -353,6 +358,8 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
 —	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::a grant whose where holds an integer past the safe range grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
+—	new	packages/office/tests/perm/monitor.test.ts::a grant whose where key is proto grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
 —	new	packages/office/tests/perm/monitor.test.ts::a hole in a result array is null	design §6.3: the result goes through JSON; a JS array hole is null, as JSON.stringify writes it	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a kind or tool named after an object method is not a tool	design §6.3: tools of unknown kinds are never listed (Python dict lookups; JS objects need own-key lookups)	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a proto key in a result stays a plain key	design §6.3: the result goes through JSON before redaction; a JS copy needs own keys for __proto__	O1-13

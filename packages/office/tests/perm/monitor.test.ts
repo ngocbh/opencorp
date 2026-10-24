@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
+import { stringify } from "yaml"
 import type { Monitor } from "../../src/perm/monitor.ts"
 import { DETAIL_CHARS } from "../../src/perm/redact.ts"
 import { person } from "../company/helpers.ts"
@@ -125,6 +126,28 @@ test("where matches type as well as value", async () => {
   for (const nodes of [true, "1", [1]])
     expect(await call(nodes)).toBe("permission denied: cluster_a__submit_job: nodes must be one of [1]")
   expect(await call(1, 0)).toBe("permission denied: cluster_a__submit_job: debug must be one of [false]")
+})
+
+test("a grant whose where key is proto grants nothing", async () => {
+  // A computed key is an own property; a literal `__proto__:` would set the prototype instead.
+  const grant = { who: "minh", can: ["submit_job"], where: { ["__proto__"]: ["gpu-small"] } }
+  expect(stringify(cluster([grant]))).toContain("__proto__:")
+  const { monitor } = await makeMonitor({ "assets/cluster-a.yaml": cluster([grant]) })
+  expect(names(monitor, "minh")).toEqual(["fake__echo"])
+  expect(await monitor.call("minh", "r1", "cluster_a__submit_job", { job: "x" })).toBe(
+    "permission denied: no grant for cluster_a__submit_job",
+  )
+})
+
+test("a grant whose where holds an integer past the safe range grants nothing", async () => {
+  const grant = { who: "minh", can: ["submit_job"], where: { nodes: [9007199254740993n] } }
+  expect(stringify(cluster([grant]))).toContain("9007199254740993")
+  const { monitor } = await makeMonitor({ "assets/cluster-a.yaml": cluster([grant]) })
+  expect(names(monitor, "minh")).toEqual(["fake__echo"])
+  for (const nodes of [9007199254740993n, 9007199254740992n])
+    expect(await monitor.call("minh", "r1", "cluster_a__submit_job", { job: "x", nodes })).toBe(
+      "permission denied: no grant for cluster_a__submit_job",
+    )
 })
 
 test("any matching grant allows the call", async () => {

@@ -41,7 +41,7 @@ const BAD_MERGE = "has a merge key whose value isn't a mapping or a list of mapp
 
 /**
  * A company file's YAML as plain data (Python's yaml.safe_load, read as YAML 1.2); a tag outside the core
- * schema is an error.
+ * schema is an error. An integer outside `Number.isSafeInteger` reads exactly, as a bigint.
  */
 export function readYaml(text: string): unknown {
   return read(text, false)
@@ -55,7 +55,8 @@ export function writeYaml(value: unknown): string {
 
 /**
  * A flow's YAML as plain data, merge keys expanded and each type-tagged scalar value as its text
- * ("!int 5"); for looking at a flow's shape, not checking it (yian loads and checks flows).
+ * ("!int 5"); for looking at a flow's shape, not checking it (yian loads and checks flows). An integer
+ * outside `Number.isSafeInteger` reads exactly, as a bigint.
  */
 export function readFlow(text: string): unknown {
   return read(text, true)
@@ -68,6 +69,8 @@ function read(text: string, flowTags: boolean): unknown {
   // eemeli's own repeated-key check scans every earlier key of a mapping per key (quadratic), so
   // `convert` checks repeats instead. `resolveKnownTags: false` keeps a YAML 1.1 type such as
   // `!!timestamp` or `!!set` a plain node with its tag and a warning, never a Date, bytes or a Set.
+  // Core ints are built from their text as bigints so an int past 2^53 isn't rounded; safe ones become
+  // numbers again in `scalarValue`.
   let document
   try {
     document = parseDocument(text, {
@@ -77,6 +80,7 @@ function read(text: string, flowTags: boolean): unknown {
       resolveKnownTags: false,
       prettyErrors: false,
       uniqueKeys: false,
+      intAsBigInt: true,
     })
   } catch (error) {
     // eemeli catches a stack overflow only while composing collections; its parser also recurses
@@ -222,8 +226,10 @@ class Reader {
       // Two written keys repeat when they read as one value. Yian compares key text, a stricter rule (it
       // also refuses `1` beside `"1"`); both are safe. Keys written as aliases never repeat.
       if (!isAlias(pair.key)) {
-        if (seen.has(key.value)) throw new YamlError(invalid(this.text, at))
-        seen.add(key.value)
+        // Int keys are bigints (intAsBigInt), so an integer-valued float key compares as one: 1 and 1.0 repeat.
+        const id = typeof key.value === "number" && Number.isInteger(key.value) ? BigInt(key.value) : key.value
+        if (seen.has(id)) throw new YamlError(invalid(this.text, at))
+        seen.add(id)
       }
       own.push({ key, value: pair.value })
     }
@@ -265,9 +271,14 @@ class Reader {
 function scalarValue(node: Scalar): unknown {
   const tag = node.tag
   // `!` is the non-specific tag, not a type: its scalar is text.
-  if (tag === undefined || tag === "!" || CORE_TAGS.has(tag)) return node.value
+  if (tag === undefined || tag === "!" || CORE_TAGS.has(tag)) return exactInt(node.value)
   if (tag.startsWith(YAML_TAG)) return node.source
   return node.source ? `${tag} ${node.source}` : tag
+}
+
+/** `value` with a bigint inside `Number.isSafeInteger` as a number; any other value unchanged. */
+function exactInt(value: unknown): unknown {
+  return typeof value === "bigint" && Number.isSafeInteger(Number(value)) ? Number(value) : value
 }
 
 /** Sets `obj[key]` as an own property, so `__proto__` is a key, never the prototype. */

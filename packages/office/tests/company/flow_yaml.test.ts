@@ -51,6 +51,27 @@ describe("YAML 1.2 readings", () => {
     expect(readYaml("[true, False, ~, null, 1.5, .inf]")).toEqual([true, false, null, null, 1.5, Infinity])
   })
 
+  test("an integer outside the safe range reads exactly as a bigint", () => {
+    const text = "[9007199254740993, -9007199254740993, 0x20000000000001, 9007199254740992, 9007199254740991, -9007199254740991]"
+    const want = [9007199254740993n, -9007199254740993n, 9007199254740993n, 9007199254740992n, 9007199254740991, -9007199254740991]
+    for (const read of [readYaml, readFlow]) {
+      const value = read(text) as unknown[]
+      expect(value).toEqual(want)
+      expect(typeof value[4]).toBe("number")
+      expect(typeof value[5]).toBe("number")
+    }
+    expect(readYaml("!!int 9007199254740993")).toBe(9007199254740993n)
+    expect(readYaml("0o400000000000000001")).toBe(9007199254740993n)
+    expect(readYaml("1.0e20")).toBe(1e20)
+    expect(typeof readYaml("9007199254740993.0")).toBe("number")
+    expect(readYaml("{9007199254740993: a}")).toEqual({ "9007199254740993": "a" })
+    expect(refusal(() => readYaml("{1: a, 1.0: b}"))).toBe(INVALID(1))
+    expect(refusal(() => readYaml("{0: a, -0.0: b}"))).toBe(INVALID(1))
+    expect(refusal(() => readYaml("{9007199254740992: a, 9007199254740992.0: b}"))).toBe(INVALID(1))
+    expect(readYaml("[&n 9007199254740993, *n]")).toEqual([9007199254740993n, 9007199254740993n])
+    expect(Object.is(readYaml("-0"), 0)).toBe(true)
+  })
+
   test("missing values read as null and a null key is refused", () => {
     expect(readYaml("{a}")).toEqual({ a: null })
     expect(readYaml("a:\n")).toEqual({ a: null })

@@ -18,9 +18,37 @@ export function repoIssue(
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true })
 
+const PROTO = "has a key named __proto__"
+const BIG = "has an integer too large to read exactly"
+
+/**
+ * The phrase for the first `__proto__` key or bigint in `value`, depth-first in property order, or null.
+ * The recursion is bounded: `readYaml` caps nesting and builds a fresh tree of at most its node cap.
+ */
+function firstProblem(value: unknown): string | null {
+  if (typeof value === "bigint") return BIG
+  if (typeof value !== "object" || value === null) return null
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const problem = firstProblem(item)
+      if (problem !== null) return problem
+    }
+    return null
+  }
+  for (const [key, item] of Object.entries(value)) {
+    const problem = key === "__proto__" ? PROTO : firstProblem(item)
+    if (problem !== null) return problem
+  }
+  return null
+}
+
 /**
  * `data`, a company file's bytes, read as YAML (`readYaml`) and validated by `schema`; a file that doesn't
  * parse is recorded in `issues` and gives null. Messages name fields only, never a value.
+ *
+ * A `__proto__` key or an integer outside the safe range (a bigint) anywhere is refused before the schema:
+ * zod drops a `__proto__` record key and a number can't hold the integer, so a grant's `where` would
+ * otherwise read looser than written and fail open.
  */
 export function parseFile<S extends z.ZodObject>(
   path: string,
@@ -46,6 +74,13 @@ export function parseFile<S extends z.ZodObject>(
   }
   if (typeof doc !== "object" || doc === null || Array.isArray(doc)) {
     issues.push(repoIssue(path, "repo.schema", "file: isn't a mapping"))
+    return null
+  }
+  for (const [key, value] of Object.entries(doc)) {
+    const problem = key === "__proto__" ? PROTO : firstProblem(value)
+    if (problem === null) continue
+    const field = key === "__proto__" ? "file" : Object.hasOwn(schema.shape, key) ? key : "an extra field"
+    issues.push(repoIssue(path, "repo.schema", `${field}: ${problem}`))
     return null
   }
   const result = schema.safeParse(doc)
