@@ -142,11 +142,14 @@ test("one long message is cut to fit", () => {
 
 test("an astral discussion is cut by code points", () => {
   const q = answered("x", "text", { discussion: [{ role: "user", text: "😀".repeat(300) }] })
-  const last = lastLine(formatAnswer(q, [], 200))
-  const [entry] = JSON.parse(last)
-  expect(chars(last)).toBeLessThanOrEqual(200)
-  expect(entry.text.endsWith("…")).toBe(true)
-  expect(last.isWellFormed()).toBe(true)
+  // The JSON around the text is 27 characters, so Python keeps cap - 28 emoji and adds the "…". At cap 201 a cut by
+  // UTF-16 units would keep an odd count and split a pair.
+  for (const cap of [200, 201]) {
+    const last = lastLine(formatAnswer(q, [], cap))
+    expect(JSON.parse(last)).toEqual([{ role: "user", text: "😀".repeat(cap - 28) + "…" }])
+    expect(chars(last)).toBe(cap)
+    expect(last.isWellFormed()).toBe(true)
+  }
 })
 
 test("the real cap is 12000", () => {
