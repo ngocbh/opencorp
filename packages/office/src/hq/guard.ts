@@ -42,19 +42,18 @@ export function header(req: IncomingMessage, name: string): string | undefined {
   return undefined
 }
 
-/** The request target's path without its query, %-decoded: each run of escapes as UTF-8, a run that isn't valid
- *  UTF-8 left as it is (as uvicorn decodes paths). */
+// Non-fatal, and a leading BOM kept: Python's `unquote` decodes with errors="replace" and keeps U+FEFF.
+const UTF8 = new TextDecoder("utf-8", { ignoreBOM: true })
+
+/** The request target's path without its query, %-decoded as uvicorn decodes paths (Python's `unquote`): each run
+ *  of escapes as UTF-8, an invalid byte becoming U+FFFD. */
 export function requestPath(req: IncomingMessage): string {
   const target = req.url ?? ""
   const q = target.indexOf("?")
   const path = q < 0 ? target : target.slice(0, q)
-  return path.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) => {
-    try {
-      return decodeURIComponent(run)
-    } catch {
-      return run
-    }
-  })
+  return path.replace(/(?:%[0-9A-Fa-f]{2})+/g, (run) =>
+    UTF8.decode(Uint8Array.from(run.slice(1).split("%"), (hex) => parseInt(hex, 16))),
+  )
 }
 
 /** What HQ serves behind the guard; `body` is an /api write's whole body, read by the guard. */
@@ -182,8 +181,14 @@ export function hqGuard(
     const refused = refusal(req, api, port, devOrigins)
     if (refused) {
       closing = true
-      if ("location" in refused) res.writeHead(307, { location: refused.location, "content-length": "0" }).end()
-      else sendError(res, refused.status, refused.code, refused.message)
+      if (!("location" in refused)) return sendError(res, refused.status, refused.code, refused.message)
+      // Guarded as sendError is: a write to a closed socket may throw, and this promise never rejects.
+      if (res.destroyed || res.socket?.destroyed) return
+      try {
+        res.writeHead(307, { location: refused.location, "content-length": "0" }).end()
+      } catch {
+        res.destroy()
+      }
       return
     }
     let body: Buffer | undefined

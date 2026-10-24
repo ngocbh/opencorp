@@ -1,13 +1,13 @@
 /** The guard every HQ request passes before routing. */
 import fs from "node:fs"
-import type { OutgoingHttpHeader, ServerResponse } from "node:http"
+import type { IncomingMessage, OutgoingHttpHeader, ServerResponse } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { z } from "zod"
 import { LIMITS, type Limits, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
-import { HEADERS, type Inner, MAX_API_BODY, hqGuard } from "../../src/hq/guard.ts"
+import { HEADERS, type Inner, MAX_API_BODY, hqGuard, requestPath } from "../../src/hq/guard.ts"
 import { shortDir, waitFor } from "../helpers.ts"
 import { Conn, parse, raw } from "../daemon/helpers.ts"
 
@@ -445,6 +445,15 @@ const BRANCHES: Branch[] = [
     ...json,
     status: 403,
     error: "origin_not_allowed",
+  },  {
+    // uvicorn decodes an invalid byte to U+FFFD, so the run around it still decodes.
+    name: "an escaped api path with an invalid byte is judged decoded",
+    method: "POST",
+    target: "/%61%70%69%2F%FF",
+    origin: null,
+    ...json,
+    status: 403,
+    error: "origin_not_allowed",
   },
 ]
 
@@ -462,6 +471,13 @@ test.each(BRANCHES)("the guard checks each refusal branch [$name]", async (c) =>
     expect(closes(r.head)).toBe(true)
   }
   expect(ran).toHaveLength(c.status === 200 ? 1 : 0)
+})
+
+test("a path is decoded as uvicorn decodes it", () => {
+  const path = (url: string) => requestPath({ url } as IncomingMessage)
+  expect(path("/a%FFb%41")).toBe("/a\uFFFDbA")
+  expect(path("/%61%70%69%2F%FF?x=%41")).toBe("/api/\uFFFD")
+  expect(path("/%E2%82%AC%zz")).toBe("/\u20AC%zz")
 })
 
 test("the guard refuses host before fetch metadata before origin before json", async () => {

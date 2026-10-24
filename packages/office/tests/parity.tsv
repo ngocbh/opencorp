@@ -121,7 +121,7 @@ hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
 hq/test_events.py	open	—	—	O2-10
 hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
-hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers)	O2-7
+hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers); the trickling client may lose Bun's 408 to its own write, so this test checks the close and the guard's settled promise, and `a body that stops arriving is 408` checks the 408 and `connection: close`	O2-7
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
 hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
@@ -479,6 +479,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/guard.test.ts::a body the guard read reaches the route once	design §6.4, rule 7: the pipeline parses the guard's body instead of reading the request again	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::a chunked write past the cap is refused while it is read	design §6.4, rule 7: a chunked body over 16 KiB is 413 with the HQ headers and closes, on a real socket	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::a localhost page visit is sent to 127 0 0 1 with its path and query	design §6.4, rule 7: keeps the raw target, quoted with Starlette's safe set; a non-ASCII target is quoted from Bun's UTF-8 decoding (Python double-encoded it)	O2-7
+—	new	packages/office/tests/hq/guard.test.ts::a path is decoded as uvicorn decodes it	design §6.4, rule 7: requestPath decodes each run of escapes as Python's `unquote` does, an invalid UTF-8 byte as U+FFFD, so an /api path with one is still judged as /api	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::a refused request is answered before any body byte is read	design §6.4, rule 7: a refusal never waits for the declared body	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::an error in the app is a 500 with the headers	design §6.4, rule 13: a throw behind the guard is the fixed 500 text with the HQ headers, closing	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::an expect 100 continue write gets 100 only after the checks	design §6.4, rule 7: 100 Continue goes out only after every refusal check, the declared-length 413 included	O2-7
