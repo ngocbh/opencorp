@@ -12,7 +12,7 @@ import {
 import type { ModelList } from "@opencorp/protocol"
 import type { z } from "zod"
 import { type ConnectionFile, type Connections, configHash, providerLabel } from "./connections.ts"
-import type { LlmConfig, Provider } from "./provider.ts"
+import { type LlmConfig, type Provider, ProviderError } from "./provider.ts"
 
 /** How long one listing may take, in ms: under the TUI's 15 s read timeout. */
 export const DEADLINE_MS = 8_000
@@ -235,6 +235,9 @@ export function ownModels(
   return listing({ connection: name, models, listed: false, error }, options.refused ?? false)
 }
 
+/** The type of `error`, the only thing logged about an unexpected one: its message could quote a request. */
+const typeName = (error: unknown): string => (error instanceof Error ? error.constructor.name : typeof error)
+
 /** Lists connection `name` within `timeoutMs` per request; never rejects. */
 async function listed(
   conn: Provider,
@@ -270,9 +273,7 @@ async function listed(
     if (error instanceof ModelListError) {
       return ownModels(conn, name, error.message, { refused: error.status === 401 || error.status === 403 })
     }
-    // By type only: a client's message could quote the request.
-    const type = error instanceof Error ? error.constructor.name : typeof error
-    log(`listing the models of connection ${name} failed (${type})`)
+    log(`listing the models of connection ${name} failed (${typeName(error)})`)
     return ownModels(conn, name, "the listing failed")
   }
   // The configured model answered when the connection was added, though a host may list only dated ids for an
@@ -407,6 +408,36 @@ export class ModelCache {
     return this.#list(name, conn, entry, end)
   }
 
+  /**
+   * Those of `names` that offer `model`, using any listing kept, however old, and listing the rest and those whose
+   * last listing failed.
+   *
+   * Rejects with `ListTimeout` when `deadlineMs` passes before every connection was listed, and as `get` does.
+   */
+  async offers(names: Iterable<string>, model: string, options: { deadlineMs: number }): Promise<string[]> {
+    const end = performance.now() + options.deadlineMs
+    const found: string[] = []
+    for (const name of names) {
+      const conn = await this.connections.get(name)
+      const entry = this.#entries.get(name)
+      let got: ModelListing
+      // A listing that failed says nothing about the models, so it doesn't count as an answer.
+      if (
+        entry !== undefined &&
+        entry.hash === configHash(conn) &&
+        (entry.listing.listed || entry.listing.error === null)
+      ) {
+        got = entry.listing
+      } else {
+        got = await this.#list(name, conn, entry, end)
+        // Yian says "timed out" in the same fixed words, so a host that times out counts as a timeout too.
+        if (got.error === TIMED_OUT) throw new ListTimeout(`listing the models of connection '${name}' took too long`)
+      }
+      if (got.models.some((m) => m.id === model)) found.push(name)
+    }
+    return found
+  }
+
   /** Forgets the listing of connection `name`, or of every connection. */
   invalidate(name?: string): void {
     if (name === undefined) this.#entries.clear()
@@ -418,16 +449,25 @@ export class ModelCache {
     let names: string[]
     try {
       names = await this.connections.names()
-    } catch {
-      this.#log("the office's connections can't be read; no models are listed ahead of time")
+    } catch (error) {
+      if (error instanceof ProviderError) {
+        this.#log("the office's connections can't be read; no models are listed ahead of time")
+      } else {
+        this.#log(`listing the office's connections failed (${typeName(error)})`)
+      }
       return
     }
     await Promise.all(
       names.map(async (name) => {
         try {
           await this.get(name)
-        } catch {
-          this.#log(`connection ${name} can't be read; its models aren't listed ahead of time`)
+        } catch (error) {
+          // RangeError covers BadConnectionName.
+          if (error instanceof ProviderError || error instanceof RangeError) {
+            this.#log(`connection ${name} can't be read; its models aren't listed ahead of time`)
+          } else {
+            this.#log(`listing the models of connection ${name} failed (${typeName(error)})`)
+          }
         }
       }),
     )
@@ -436,8 +476,8 @@ export class ModelCache {
   /** Lists connection `name`, unless another caller lists it while this one waits; `seen` is the entry this caller
    *  found, and `end` the `performance.now()` it must be done by. */
   async #list(name: string, conn: ConnectionFile, seen: Entry | undefined, end: number): Promise<ModelListing> {
-    for (let flight = this.#flights.get(name); flight !== undefined; flight = this.#flights.get(name)) {
-      if (!(await settlesWithin(flight, end - performance.now()))) return ownModels(conn, name, TIMED_OUT)
+    for (let running = this.#flights.get(name); running !== undefined; running = this.#flights.get(name)) {
+      if (!(await settlesWithin(running, end - performance.now()))) return ownModels(conn, name, TIMED_OUT)
       const entry = this.#entries.get(name)
       // listed while this caller waited
       if (entry !== undefined && entry !== seen && entry.hash === configHash(conn)) return entry.listing

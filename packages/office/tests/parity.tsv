@@ -38,7 +38,8 @@ chat/test_hooks.py	ported	packages/office/tests/chat/hooks.test.ts	—	O3-8b
 chat/test_hooks.py::test_a_failing_callback_is_logged_and_the_rest_still_run	changed	packages/office/tests/chat/hooks.test.ts::a failing callback is logged and the rest still run	design §6 rules 1 and 13: the log line names the hook and the error type, never the message; notifications return nothing (P13), so the results part runs on a check	O3-8b
 chat/test_identity.py	ported	packages/office/tests/chat/identity.test.ts	—	O3-8b
 chat/test_logins.py	open	—	—	O2-20
-chat/test_models.py	open	—	—	O2-20
+chat/test_models.py	ported	packages/office/tests/chat/models.test.ts	—	O2-20
+chat/test_models.py::test_a_host_that_times_out_in_composer_makes_offers_time_out	changed	packages/office/tests/chat/models.test.ts::a host that times out in composer makes offers time out	Y1: yian's transport ProviderError isn't public, so the timeout comes from a local server that never answers	O2-20
 chat/test_models.py::test_a_request_that_fails_says_why_in_composers_words	changed	packages/office/tests/chat/models.test.ts::a request that fails says why in composers words [%s]	Y1: yian's transport ProviderError isn't public, so the cases come from a throwing sender, a malformed reply and a local server that never answers	O2-20
 chat/test_provider.py	open	—	split: O2-19 → O3-4	O3-4
 chat/test_restart.py	open	—	split: O4a-6 → O4b-1	O4b-1

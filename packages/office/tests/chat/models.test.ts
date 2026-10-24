@@ -17,10 +17,12 @@ import { ConnectionFile, ConnectionGone, Connections } from "../../src/chat/conn
 import {
   azureDeployments,
   FRESH_MS,
+  ListTimeout,
   listModels,
   ModelCache,
   ModelListError,
   type ModelListing,
+  ownModels,
   providerModels,
   TIMED_OUT,
 } from "../../src/chat/models.ts"
@@ -720,6 +722,114 @@ test("a slow connection never blocks another", async () => {
     slow.resolve()
     await listing
   }
+})
+
+test("offers uses an old entry and lists a missing one", async () => {
+  const conns = await connections()
+  const lister = new Lister({ models: { office: ["claude-x"], second: ["gpt-5", "claude-x"], fast: ["gpt-5"] } })
+  const time = clock()
+  const cache = new ModelCache(conns, { lister: lister.list, clock: time.read })
+  await cache.get("office")
+  time.now += 10 * FRESH_MS
+  expect(await cache.offers(["office", "second", "fast"], "claude-x", { deadlineMs: 5000 })).toEqual([
+    "office",
+    "second",
+  ])
+  expect(lister.calls).toEqual(["office", "second", "fast"])
+})
+
+test("a listed connection offers its own model first when its host doesnt list it", async () => {
+  // Anthropic lists dated ids, not the aliases that answer as well.
+  const conn = ConnectionFile.parse({
+    llm_config: { provider: "anthropic", api_key: ANTHROPIC_KEY, model: "claude-sonnet-4-5" },
+  })
+  const dated = ["claude-opus-4-1-20250805", "claude-sonnet-4-5-20250929"]
+  const request = new FakeRequest(new HttpResponse(200, { data: dated.map((id) => ({ id })), has_more: false }))
+  let got = await listModels(conn, "anthropic", { request: request.send })
+  expect([got.listed, got.models.map((m) => m.id)]).toEqual([true, ["claude-sonnet-4-5", ...dated]])
+  const conns = await connections()
+  await conns.put("anthropic", conn)
+  const cache = new ModelCache(conns, { lister: (conn, name) => listModels(conn, name, { request: request.send }) })
+  expect(await cache.offers(["anthropic", "fast"], "claude-sonnet-4-5", { deadlineMs: 5000 })).toEqual(["anthropic"])
+  const o3 = () => new FakeRequest(new HttpResponse(200, { data: [{ id: "o3" }] })).send
+  got = await listModels(openai("gpt-5"), "openai", { request: o3() })
+  expect(got.models.map((m) => m.id)).toEqual(["gpt-5", "o3"])
+  got = await listModels(openai("o3"), "openai", { request: o3() })
+  expect(got.models.map((m) => m.id)).toEqual(["o3"])
+})
+
+test("offers gives every connection together only the deadline", async () => {
+  const conns = await connections()
+  const slow = gate()
+  const lister = new Lister({ gates: { slow }, delays: { fast: 300 } })
+  const cache = new ModelCache(conns, { lister: lister.list })
+  const start = performance.now()
+  try {
+    await expect(cache.offers(["fast", "slow"], "m", { deadlineMs: 500 })).rejects.toBeInstanceOf(ListTimeout)
+  } finally {
+    slow.resolve()
+  }
+  const took = performance.now() - start
+  expect(took).toBeGreaterThan(450)
+  expect(took).toBeLessThan(2000)
+  expect(lister.calls).toEqual(["fast", "slow"])
+  expect(lister.deadlines.get("slow")!).toBeLessThan(250)
+})
+
+test("a host that times out in composer makes offers time out", async () => {
+  const conns = await connections()
+  let server: http.Server | undefined
+  let requests = 0
+  try {
+    // Accepts each request and never answers it.
+    const started = await serve(() => {
+      requests += 1
+    })
+    server = started.server
+    const host = ConnectionFile.parse({
+      llm_config: { provider: "vllm", model: "gpt-5" },
+      env: { VLLM_BASE_URL: `http://127.0.0.1:${started.port}/v1` },
+    })
+    const cache = new ModelCache(conns, { lister: (_, name) => listModels(host, name, { deadlineMs: 300 }) })
+    const start = performance.now()
+    await expect(cache.offers(["fast"], "gpt-5", { deadlineMs: 5000 })).rejects.toBeInstanceOf(ListTimeout)
+    expect(performance.now() - start).toBeLessThan(2000)
+    expect(requests).toBe(1)
+  } finally {
+    stop(server)
+  }
+})
+
+test.each([
+  ["timed out", TIMED_OUT],
+  ["cant reach", "can't reach api.openai.com"],
+  ["the listing failed", "the listing failed"],
+] as const)("offers lists again a connection whose last listing failed [%s]", async (_, error) => {
+  const conns = await connections()
+  const lister = new Lister({ errors: { slow: error } })
+  const cache = new ModelCache(conns, { lister: lister.list })
+  expect((await cache.get("slow")).error).toBe(error)
+  lister.errors.clear()
+  expect(await cache.offers(["slow"], "m", { deadlineMs: 5000 })).toEqual(["slow"])
+  expect(lister.calls).toEqual(["slow", "slow"])
+})
+
+test("offers uses a kept listing of a connection that cant list", async () => {
+  const conns = await connections()
+  await conns.put(
+    "other",
+    ConnectionFile.parse({ llm_config: { provider: "anthropic", api_key: SENTINEL, model: "claude-x" } }),
+  )
+  const calls: string[] = []
+  const cache = new ModelCache(conns, {
+    lister: async (conn, name) => {
+      calls.push(name)
+      return ownModels(conn, name)
+    },
+  })
+  await cache.get("other")
+  expect(await cache.offers(["other"], "claude-x", { deadlineMs: 5000 })).toEqual(["other"])
+  expect(calls).toEqual(["other"])
 })
 
 test("warm survives a connection that cant be read", async () => {
