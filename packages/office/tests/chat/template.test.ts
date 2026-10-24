@@ -99,6 +99,7 @@ test.each([
   for (const event of result.events) {
     if (event.type === "NodeSucceeded" && /^chat#\d+\/__end__$/.test(event.nodeId)) ends.set(event.nodeId, event.output)
   }
+  expect([...ends.keys()]).toEqual(["chat#0/__end__", "chat#1/__end__", "chat#2/__end__"])
   const last = ends.get("chat#2/__end__")
   expect(last.exited).toBe(true)
   expect(last.history).toEqual([

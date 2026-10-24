@@ -313,6 +313,16 @@ test("git dir in the environment is ignored", async () => {
   expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
 })
 
+test("init creates the repo on main with a clean env", async () => {
+  const dir = tempDir()
+  const other = writeRepo(path.join(tempDir(), "other"), { "x.txt": "x\n" })
+  const before = git(other, "rev-parse", "HEAD")
+  await new CompanyGit(dir, dir, { env: { ...process.env, GIT_DIR: path.join(other, ".git") } }).init()
+  expect(fs.existsSync(path.join(dir, ".git"))).toBe(true)
+  expect([git(other, "rev-parse", "HEAD"), git(other, "status", "--porcelain")]).toEqual([before, ""])
+  expect(git(dir, "symbolic-ref", "HEAD")).toBe("refs/heads/main")
+})
+
 test("author env does not override the office", async () => {
   const leaked = {
     GIT_AUTHOR_NAME: "leaked",

@@ -250,6 +250,11 @@ export class CompanyGit {
     return run
   }
 
+  /** Creates the repo at root (git init, branch main). */
+  async init(): Promise<void> {
+    await this.#run(["init", "-q", "-b", "main"])
+  }
+
   /** The commit id at HEAD. */
   head(): Promise<string> {
     return this.resolve("HEAD")

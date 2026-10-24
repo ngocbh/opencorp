@@ -60,7 +60,11 @@ company/test_secret_keys.py	ported	packages/office/tests/company/secret_keys.tes
 company/test_snapshot.py	ported	packages/office/tests/company/snapshot.test.ts	—	O1-7
 company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O1-7
 company/test_watch.py	open	—	—	O2-4
-company_template/test_writer.py	open	—	—	O2-16a
+company_template/test_writer.py	ported	packages/office/tests/company_template/writer.test.ts	—	O2-16a
+company_template/test_writer.py::test_a_bad_handle_is_refused_before_anything_is_written	changed	packages/office/tests/company_template/writer.test.ts::a bad handle is refused before anything is written	design §5.4: validation messages name the field (handle), never the value	O2-16a
+company_template/test_writer.py::test_a_company_from_before_the_learning_flows_gets_them_and_keeps_its_edits	changed	packages/office/tests/company_template/writer.test.ts::a company from before the profile manager flow gets it and keeps its edits	D32: debrief.yaml is left out of the template until learning returns (design §9.2)	O2-16a
+company_template/test_writer.py::test_a_new_company_gets_every_packaged_flow_so_it_can_chat_debrief_and_learn	changed	packages/office/tests/company_template/writer.test.ts::a new company gets every packaged flow so it can chat	D32: debrief.yaml is left out of the template until learning returns (design §9.2)	O2-16a
+company_template/test_writer.py::test_every_packaged_flow_is_found_missing_and_topped_up[shared/flows/debrief.yaml]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-16a
 daemon/test_app.py	ported	packages/office/tests/daemon/app.test.ts,packages/office/tests/daemon/http.test.ts	the five pipeline ids are in http.test.ts (O2-1); the route table grows with each route item	O2-2
 daemon/test_app.py::test_a_failing_stop_callback_does_not_skip_the_rest	changed	packages/office/tests/daemon/app.test.ts::a failing stop callback does not skip the rest	design §6 rule 13: the log names the error type, never its message	O2-2
 daemon/test_app.py::test_every_table_route_is_served[GET-/debriefs/01JA1H0000000000000000000A-None]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
@@ -364,6 +368,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/flows.test.ts::a flow whose yaml the office cant read is refused even if yian loads it	design §6 rule 10, §9.5: system.paths refused; a read error is never "no paths"	O1-8
 —	new	packages/office/tests/company/git.test.ts::a locked section calling a locking method throws instead of deadlocking	design §3.3: the non-reentrant mutex	O1-6
 —	new	packages/office/tests/company/git.test.ts::a path holding a nul or starting with a slash is refused before git runs	design §6.9, rule 12: literal pathspecs (paths travel NUL-separated on stdin)	O1-6
+—	new	packages/office/tests/company/git.test.ts::init creates the repo on main with a clean env	design §6.9: git init runs through CompanyGit (Python's company_template built its env by hand)	O2-16a
 —	new	packages/office/tests/company/git.test.ts::pin leaves files under a symlinked folder alone and survives a symlink loop	plan.md O1-6 (pinned read-only worktrees): a pin never changes files outside it	O1-6
 —	new	packages/office/tests/company/git.test.ts::the test helpers git reads only the repos own config and runs no hooks	plan.md Test helpers (git isolation); design §10.1	O1-6
 —	new	packages/office/tests/company/issues.test.ts::a deeply nested file is unreadable	design §9.5: the nesting limit	O1-5
@@ -387,6 +392,8 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
+—	new	packages/office/tests/company_template/writer.test.ts::every template flow loads and lints on ts yian	design §9.2: template flows load and lint on TS yian	O2-16a
+—	new	packages/office/tests/company_template/writer.test.ts::the template names every file in its folder	design §2.7: the template is embedded file by file, so the table must match the folder	O2-16a
 —	new	packages/office/tests/daemon/bus.test.ts::a burst overflows a full queue before a waiting reader runs	design §2.3: a reader is woken after the fan-out, as asyncio's queue	O2-2
 —	new	packages/office/tests/daemon/bus.test.ts::a second reader while one waits is refused	design §2.3: one stream reads each subscription	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a 500 logs only the error type	design §2.3, §6 rule 13: a 500 logs the error type only	O2-1
