@@ -222,6 +222,7 @@ test("write refuses non strings", async () => {
   const { store } = setup()
   const base = (await store.read())[1]
   await expect(store.write(Buffer.from("x") as unknown as string, { baseVersion: base })).rejects.toThrow(TypeError)
+  await expect(store.write("x\n", { baseVersion: Buffer.from(base) as unknown as string })).rejects.toThrow(TypeError)
 })
 
 test.each(labelled<unknown>(["", "a b", "a\nCommit-Id: b", 7, "a\x1cb", "a\x85b", "a\0b", "a\ud800"]))(
@@ -293,6 +294,9 @@ test("commit ids are per profile", async () => {
   const boss = new GitProfileStore(g, "ngocbh")
   await minh.write("# Minh\nv1\n", { baseVersion: (await minh.read())[1], provenance: { commit_id: "c-1" } })
   expect(await boss.committed("c-1")).toBeNull()
+  const error = await rejection(boss.committed("a b"))
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/commit_id/)
 })
 
 // Failed commits
@@ -398,8 +402,9 @@ test("write refuses a symlinked person directory", async () => {
   fs.renameSync(path.join(root, "people/minh"), outside)
   fs.symlinkSync(outside, path.join(root, "people/minh"))
   const error = await rejection(new GitProfileStore(g, "minh").write("pwned\n", { baseVersion: blobId(bytes(MINH)) }))
+  // git refuses to add a path beyond a symbolic link, so the hand-edit sweep fails first.
   expect(error).not.toBeInstanceOf(MarkdownVersionMismatch)
-  expect(error instanceof RangeError || typeof (error as { code?: unknown } | null)?.code === "string").toBe(true)
+  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
   expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
 })
 

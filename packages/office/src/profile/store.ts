@@ -115,7 +115,7 @@ export class GitProfileStore implements MarkdownStore {
     { baseVersion, provenance = null }: { baseVersion: string; provenance?: JsonObject | null },
   ): Promise<string> {
     if (typeof text !== "string" || typeof baseVersion !== "string") {
-      throw new TypeError("text and base_version must be strings")
+      throw new TypeError("text and baseVersion must be strings")
     }
     const commitId = commitIdOf(provenance)
     if (!text.isWellFormed()) throw new RangeError("text holds a lone surrogate, which has no UTF-8 encoding")
@@ -166,12 +166,14 @@ export class GitProfileStore implements MarkdownStore {
   /**
    * The version a write with `commitId` committed for this profile, or null if none did.
    *
-   * Throws a RangeError for a commit id that isn't one token, and a Node system error when git fails.
+   * Throws a TypeError for a non-string, a RangeError for a commit id that isn't one token, and a
+   * Node system error when git fails.
    */
   async committed(commitId: string): Promise<string | null> {
-    const id = commitIdOf({ commit_id: commitId })!
+    if (typeof commitId !== "string") throw new TypeError("commit_id must be a string")
+    commitIdOf({ commit_id: commitId }) // it reaches git's argv
     try {
-      return await this.#committed(id)
+      return await this.#committed(commitId)
     } catch (error) {
       if (error instanceof CompanyGitError) throw systemError(error.message, "read", error)
       throw error
@@ -185,6 +187,7 @@ export class GitProfileStore implements MarkdownStore {
   }
 
   /** The profile's path in the clone; a RangeError if it leaves the person's directory. */
+  // Protected, not #private, so a test can make a hand edit just before the replace.
   protected target(): string {
     const target = path.join(this.git.root, this.path)
     const person = path.join(fs.realpathSync(this.git.root), "people", this.handle)
@@ -210,12 +213,9 @@ export class GitProfileStore implements MarkdownStore {
       fs.closeSync(fd)
       fs.renameSync(temporary, target)
     } catch (error) {
-      try {
-        if (open) fs.closeSync(fd)
-        fs.unlinkSync(temporary)
-      } catch {
-        // the write's error is the one to report
-      }
+      // Best effort, each on its own: the write's error is the one to report.
+      if (open) ignoreErrors(() => fs.closeSync(fd))
+      ignoreErrors(() => fs.unlinkSync(temporary))
       throw error
     }
   }
@@ -270,5 +270,14 @@ function readIfExists(file: string): Buffer | null {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
     throw error
+  }
+}
+
+/** Runs `fn`, ignoring any error it throws. */
+function ignoreErrors(fn: () => void): void {
+  try {
+    fn()
+  } catch {
+    // the caller has a better error to report
   }
 }
