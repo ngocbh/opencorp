@@ -579,7 +579,8 @@ function pages(params: Obj, asked: Asked, questions: Obj[]): Issued {
       if (id === undefined) throw new RangeError(NOT_AN_OPTION)
       const values: unknown[] = Array.isArray(v) ? v : [v]
       const labels = enums.get(h)
-      if (labels !== undefined && !values.every((x) => labels.includes(x as string))) {
+      if (!values.every((x) => typeof x === "string")) throw new RangeError(NOT_AN_OPTION)
+      if (labels !== undefined && (values.length === 0 || !values.every((x) => labels.includes(x as string)))) {
         throw new RangeError(NOT_AN_OPTION)
       }
       return [id, { answers: values }]
@@ -628,7 +629,8 @@ function elicitation(params: Obj, asked: Asked, title: string): Issued {
     const content = Object.entries(answer).map(([k, v]) => {
       const spec = fields.get(k)
       const labels = choices.get(k)
-      if (spec === undefined || (labels !== undefined && !labels.includes(v as string))) {
+      if (spec === undefined || (labels !== undefined && !labels.includes(v as string))
+        || (labels === undefined && !NUMBERS.has(spec.type) && typeof v !== "string")) {
         throw new RangeError(NOT_AN_OPTION)
       }
       return [k, typed(spec, v)]

@@ -556,12 +556,17 @@ test("an answer that isnt an offered option makes no reply", () => {
   const option = card(t, commandApproval(1, "c1", "touch a"))
   for (const answer of ["Always allow", "toString", null, 1, ["Approve"]]) refused(option, answer)
   const page = card(t, userInput(4, "u1", [question("token", "Token", "Paste it", { secret: true })]))
-  for (const answer of [{ Tokn: "x" }, { constructor: "x" }, "dev"]) refused(page, answer)
+  for (const answer of [{ Tokn: "x" }, { constructor: "x" }, "dev", { Token: 1 }, { Token: { x: 1 } }]) {
+    refused(page, answer)
+  }
   const env = card(t, userInput(5, "u2", [question("env", "Env", "Where?", { options: ["prod", "dev"] })]))
-  for (const answer of [{ Env: "staging" }, { Env: ["prod", "staging"] }, new Date(), new Map()]) refused(env, answer)
+  for (const answer of [{ Env: "staging" }, { Env: ["prod", "staging"] }, { Env: [] }, new Date(), new Map()]) {
+    refused(env, answer)
+  }
   const form = card(t, formElicitation(9, "jira", "Ticket", { points: { type: "integer" },
-    priority: { type: "string", enum: ["low", "high"] }, urgent: { type: "boolean" } }))
-  for (const answer of [{ constructor: "x" }, { priority: "zzz" }, { urgent: "maybe" }, new Date(), new Map()]) {
+    priority: { type: "string", enum: ["low", "high"] }, urgent: { type: "boolean" }, summary: { type: "string" } }))
+  for (const answer of [{ constructor: "x" }, { priority: "zzz" }, { urgent: "maybe" }, { summary: { x: 1 } },
+    new Date(), new Map()]) {
     refused(form, answer)
   }
 })
