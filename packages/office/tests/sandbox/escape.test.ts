@@ -15,7 +15,6 @@ setDefaultTimeout(30_000)
 
 const ON_MAC = process.platform === "darwin"
 const ON_LINUX = process.platform.startsWith("linux")
-const sandboxed = test.skipIf(!sandboxAvailable())
 const SRC = fileURLToPath(new URL("../../src/sandbox/", import.meta.url))
 const BUN = fs.realpathSync(process.execPath)
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
@@ -46,29 +45,37 @@ function bunPolicy(network = false): SandboxPolicy {
   return makePolicy().make({ network, readOnly: [BUN] })
 }
 
-/** A fake home with the secrets and office state the sandbox must not reach (no `HOME` change). */
+/** The secrets and office state the sandbox must not reach, by path under the fake home. */
+const DECOY_FILES: Record<string, string> = {
+  ".config/yian/auth.json": '{"key": "sk-decoy-auth"}',
+  ".ssh/id_ed25519": "decoy-ssh-key",
+  ".aws/credentials": "decoy-aws",
+  ".opencorp/office/store.sqlite": "decoy-store",
+  ".opencorp/office/runs/r1/log.jsonl": "decoy-run-log",
+  ".opencorp/office/secrets/cluster-a": "decoy-asset-secret",
+  ".opencorp/company/people/minh/person.yaml": "decoy-repo",
+}
+const DECOYS = Object.keys(DECOY_FILES)
+
+/** A fake home holding `DECOY_FILES` (no `HOME` change). */
 function office(): string {
   const home = path.join(shortDir(), "home")
-  const files: Record<string, string> = {
-    ".config/yian/auth.json": '{"key": "sk-decoy-auth"}',
-    ".ssh/id_ed25519": "decoy-ssh-key",
-    ".aws/credentials": "decoy-aws",
-    ".opencorp/office/store.sqlite": "decoy-store",
-    ".opencorp/office/runs/r1/log.jsonl": "decoy-run-log",
-    ".opencorp/office/secrets/cluster-a": "decoy-asset-secret",
-    ".opencorp/company/people/minh/person.yaml": "decoy-repo",
-  }
-  for (const [rel, text] of Object.entries(files)) {
+  for (const [rel, text] of Object.entries(DECOY_FILES)) {
     fs.mkdirSync(path.dirname(path.join(home, rel)), { recursive: true })
     fs.writeFileSync(path.join(home, rel), text)
   }
   return home
 }
 
-/** A server listening at `address` outside the workspace, closed when the test finishes. */
+/** A server listening at `address` outside the workspace, closed when the test finishes. It holds every
+ *  connection open until then: a reset would make the client print `REFUSED` though it connected. */
 async function listen(address: string | { host: string; port: number }): Promise<net.Server> {
-  const server = net.createServer((socket) => socket.destroy())
-  onTestFinished(() => void server.close())
+  const held: net.Socket[] = []
+  const server = net.createServer((socket) => void held.push(socket))
+  onTestFinished(() => {
+    for (const socket of held) socket.destroy()
+    server.close()
+  })
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject)
     if (typeof address === "string") server.listen(address, resolve)
@@ -89,30 +96,18 @@ function connectCode(target: string | number): string {
   ].join("\n")
 }
 
-const DECOYS = [
-  ".config/yian/auth.json",
-  ".ssh/id_ed25519",
-  ".aws/credentials",
-  ".opencorp/office/store.sqlite",
-  ".opencorp/office/runs/r1/log.jsonl",
-  ".opencorp/office/secrets/cluster-a",
-  ".opencorp/company/people/minh/person.yaml",
-]
-
-sandboxed("cannot read owner or office files", async () => {
+test.skipIf(!sandboxAvailable()).each(DECOYS)("cannot read owner or office files [%s]", async (rel) => {
   const home = office()
   const policy = makePolicy().make()
-  for (const rel of DECOYS) {
-    // `cat` stands in for both the shell call and the read_file tool.
-    const read = await shell(policy, `cat ${path.join(home, rel)}`)
-    expect(read.output).not.toContain("decoy")
-    expect(read.exit).not.toBe(0)
-  }
+  // `cat` stands in for both the shell call and the read_file tool.
+  const read = await shell(policy, `cat ${path.join(home, rel)}`)
+  expect(read.output).not.toContain("decoy")
+  expect(read.exit).not.toBe(0)
   // The search tool's stand-in.
   expect((await shell(policy, `grep -r decoy ${home}`)).output).not.toContain("decoy")
 })
 
-sandboxed("cannot list the real home", async () => {
+test.skipIf(!sandboxAvailable())("cannot list the real home", async () => {
   const policy = bunPolicy()
   const home = fs.realpathSync(os.homedir())
   // The list_dir tool's stand-in; a trailing `/` marks a folder, as in Python's listing.
@@ -134,7 +129,7 @@ const UNIX_CASES = ["tmux-501/default", "office/office.sock"].flatMap((name) =>
   [false, true].map((network) => [name, network] as const),
 )
 
-sandboxed.each(UNIX_CASES)("cannot connect to unix sockets [%s, network %p]", async (name, network) => {
+test.skipIf(!sandboxAvailable()).each(UNIX_CASES)("cannot connect to unix sockets [%s, network %p]", async (name, network) => {
   const socket = path.join(shortDir(), name)
   fs.mkdirSync(path.dirname(socket), { recursive: true })
   await listen(socket)
@@ -143,7 +138,7 @@ sandboxed.each(UNIX_CASES)("cannot connect to unix sockets [%s, network %p]", as
   expect(out).not.toContain("CONNECTED")
 })
 
-sandboxed("cannot write outside the workspace", async () => {
+test.skipIf(!sandboxAvailable())("cannot write outside the workspace", async () => {
   const { ws, make } = makePolicy()
   const policy = make()
   const home = office()
@@ -161,7 +156,7 @@ sandboxed("cannot write outside the workspace", async () => {
   expect(fs.existsSync(path.join(path.dirname(ws), "escape.txt"))).toBe(false)
 })
 
-sandboxed("git hooks and config are read only", async () => {
+test.skipIf(!sandboxAvailable())("git hooks and config are read only", async () => {
   const { ws, make } = makePolicy()
   fs.mkdirSync(path.join(ws, ".git/hooks"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git/config"), "[core]\n")
@@ -178,14 +173,14 @@ sandboxed("git hooks and config are read only", async () => {
   expect(fs.readFileSync(path.join(ws, ".git/HEAD"), "utf8")).toBe("ref: refs/heads/main\n")
 })
 
-sandboxed("links do not escape", async () => {
+test.skipIf(!sandboxAvailable())("links do not escape", async () => {
   const policy = makePolicy().make()
   const secret = path.join(office(), ".ssh/id_ed25519")
   expect((await shell(policy, `ln -s ${path.dirname(secret)} sl; cat sl/id_ed25519`)).output).not.toContain("decoy")
   expect((await shell(policy, `ln ${secret} hard; cat hard`)).output).not.toContain("decoy")
 })
 
-sandboxed.each([false, true])("network only when allowed [network %p]", async (network) => {
+test.skipIf(!sandboxAvailable()).each([false, true])("network only when allowed [network %p]", async (network) => {
   const server = await listen({ host: "127.0.0.1", port: 0 })
   const port = (server.address() as net.AddressInfo).port
   const out = await bun(bunPolicy(network), connectCode(port))
@@ -197,14 +192,14 @@ sandboxed.each([false, true])("network only when allowed [network %p]", async (n
   }
 })
 
-sandboxed("background process is dead after the call", async () => {
+test.skipIf(!sandboxAvailable())("background process is dead after the call", async () => {
   const result = await sh(makePolicy().make(), "sleep 4343 >/dev/null 2>&1 & echo started")
   expect(result.stdout.toString()).toBe("started\n")
   expect(result.exit).toBe(0)
   expect(await gone("4343")).toBe(true)
 })
 
-sandboxed("no environment secrets", () => {
+test.skipIf(!sandboxAvailable())("no environment secrets", () => {
   const { ws, tmp } = makePolicy()
   // The secret is set in a child's env, since a test never changes its own.
   const script = path.join(tempDir(), "child.ts")

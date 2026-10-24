@@ -12,7 +12,6 @@ import { gone, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const sandboxed = test.skipIf(!sandboxAvailable())
 const SRC = fileURLToPath(new URL("../../src/sandbox/", import.meta.url))
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
@@ -35,7 +34,7 @@ function psField(field: string, pid: number): string {
   return spawnSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8" }).stdout.trim()
 }
 
-sandboxed("runs in the workspace", async () => {
+test.skipIf(!sandboxAvailable())("runs in the workspace", async () => {
   const policy = makePolicy().make()
   const result = await sh(policy, "pwd; echo err >&2; exit 3")
   expect(result.exit).toBe(3)
@@ -45,11 +44,11 @@ sandboxed("runs in the workspace", async () => {
   expect(result.duration).toBeGreaterThanOrEqual(0)
 })
 
-sandboxed("stdin is passed", async () => {
+test.skipIf(!sandboxAvailable())("stdin is passed", async () => {
   expect((await sh(makePolicy().make(), "cat", { stdin: "hello" })).stdout.toString()).toBe("hello")
 })
 
-sandboxed("environment is scrubbed", () => {
+test.skipIf(!sandboxAvailable())("environment is scrubbed", () => {
   const { ws, tmp, make } = makePolicy()
   // The secret is set in a child's env, since a test never changes its own.
   const script = path.join(tempDir(), "child.ts")
@@ -83,7 +82,7 @@ sandboxed("environment is scrubbed", () => {
   for (const name of Object.keys(scrubbedEnv(make()))) expect(Object.keys(env)).toContain(name)
 })
 
-sandboxed("timeout kills the group", async () => {
+test.skipIf(!sandboxAvailable())("timeout kills the group", async () => {
   const start = performance.now()
   const result = await sh(makePolicy().make(), "sleep 30", { timeout: 1 })
   expect(result.timedOut).toBe(true)
@@ -91,7 +90,7 @@ sandboxed("timeout kills the group", async () => {
   expect(performance.now() - start).toBeLessThan(10_000)
 })
 
-sandboxed("cancel kills the call", async () => {
+test.skipIf(!sandboxAvailable())("cancel kills the call", async () => {
   const start = performance.now()
   const result = await sh(makePolicy().make(), "sleep 30", { signal: AbortSignal.timeout(500) })
   expect(result.interrupted).toBe(true)
@@ -99,7 +98,7 @@ sandboxed("cancel kills the call", async () => {
   expect(performance.now() - start).toBeLessThan(10_000)
 })
 
-sandboxed("background process dies with the call", async () => {
+test.skipIf(!sandboxAvailable())("background process dies with the call", async () => {
   const start = performance.now()
   const result = await sh(makePolicy().make(), "sleep 4242 & echo started")
   expect(result.stdout.toString()).toBe("started\n")
@@ -108,7 +107,7 @@ sandboxed("background process dies with the call", async () => {
   expect(await gone("4242")).toBe(true)
 })
 
-sandboxed("std streams by path", async () => {
+test.skipIf(!sandboxAvailable())("std streams by path", async () => {
   const script = "echo out > /dev/stdout; echo err > /dev/stderr; echo fd > /dev/fd/1; cat /dev/fd/0"
   const result = await sh(makePolicy().make(), script, { stdin: "in" })
   expect(result.exit, result.stderr.toString()).toBe(0)
@@ -116,7 +115,7 @@ sandboxed("std streams by path", async () => {
   expect(result.stderr.toString()).toBe("err\n")
 })
 
-sandboxed("the group is killed after a leader that exits by itself", async () => {
+test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits by itself", async () => {
   // The runtime reaps the leader before the group kill, so its pid (the group id) could in
   // theory be reused by then: the documented window.
   let reaped: string | undefined
@@ -137,7 +136,7 @@ sandboxed("the group is killed after a leader that exits by itself", async () =>
   expect(reaped).toBe("ESRCH")
 })
 
-sandboxed("on timeout the leader is killed before it is reaped", async () => {
+test.skipIf(!sandboxAvailable())("on timeout the leader is killed before it is reaped", async () => {
   // The cleanup runs after the kill and before the leader is awaited. `sleep 30` can't exit
   // by itself, so a zombie leader there was killed before it was reaped; blocking the loop is
   // safe, since nothing reaps meanwhile.
@@ -154,7 +153,7 @@ sandboxed("on timeout the leader is killed before it is reaped", async () => {
   expect(stat).toStartWith("Z")
 })
 
-sandboxed("setsid child dies with the call", async () => {
+test.skipIf(!sandboxAvailable())("setsid child dies with the call", async () => {
   // setsid leaves the process group, so killing the group misses it; the child also
   // holds the output pipes, and the call doesn't wait for the escapee.
   const policy = makePolicy().make({ readOnly: [fs.realpathSync(process.execPath)] })
@@ -165,7 +164,7 @@ sandboxed("setsid child dies with the call", async () => {
   expect(await gone("4545")).toBe(true)
 })
 
-sandboxed("escape cleanup spares concurrent calls", async () => {
+test.skipIf(!sandboxAvailable())("escape cleanup spares concurrent calls", async () => {
   const policy = makePolicy().make({ readOnly: [fs.realpathSync(process.execPath)] })
   // TMPDIR in the sandbox is the policy's tmpdir. The timeout ends the sibling if the test fails
   // before it says go.
@@ -190,7 +189,7 @@ function setsidCall(policy: SandboxPolicy, marker: string) {
   return run(policy, [process.execPath, ...BUN_FLAGS, "-e", code])
 }
 
-sandboxed("output is capped", async () => {
+test.skipIf(!sandboxAvailable())("output is capped", async () => {
   const result = await sh(makePolicy().make(), "head -c 100000 /dev/zero", { maxOutput: 1000 })
   expect(result.stdout.length).toBe(1000)
   expect(result.truncated).toBe(true)
@@ -200,7 +199,7 @@ test("unsupported platform", () => {
   expect(() => command(makePolicy().make(), ["x"], undefined, "win32")).toThrow(SandboxUnavailable)
 })
 
-sandboxed("the tracking hook sees the leader while it runs and is cleaned up after the kill", async () => {
+test.skipIf(!sandboxAvailable())("the tracking hook sees the leader while it runs and is cleaned up after the kill", async () => {
   const policy = makePolicy().make()
   const cases: [string, RunOptions][] = [
     ["sleep 0.3", {}],
@@ -224,7 +223,7 @@ sandboxed("the tracking hook sees the leader while it runs and is cleaned up aft
   }
 })
 
-sandboxed("a throwing tracking hook still kills the call", async () => {
+test.skipIf(!sandboxAvailable())("a throwing tracking hook still kills the call", async () => {
   let leader = 0
   const call = sh(makePolicy().make(), "sleep 30", {
     track: (pid) => {
@@ -237,7 +236,7 @@ sandboxed("a throwing tracking hook still kills the call", async () => {
   await waitFor(() => groupGone(leader), { timeout: 5_000, what: "the call's group to die" })
 })
 
-sandboxed("stdin is ignored unless given", async () => {
+test.skipIf(!sandboxAvailable())("stdin is ignored unless given", async () => {
   const start = performance.now()
   const result = await sh(makePolicy().make(), "cat")
   expect(result.exit).toBe(0)

@@ -13,9 +13,9 @@ import { makePolicy, sandboxAvailable } from "./helpers.ts"
 setDefaultTimeout(30_000)
 
 // The run tests cover the sweep itself (a setsid child dies with the call).
-const macOnly = test.skipIf(process.platform !== "darwin")
+const ON_MAC = process.platform === "darwin"
 
-macOnly("canary directories exist until closed", () => {
+test.skipIf(!ON_MAC)("canary directories exist until closed", () => {
   const canary = new Canary()
   try {
     expect(fs.statSync(canary.allowed).isDirectory() && fs.statSync(canary.denied).isDirectory()).toBe(true)
@@ -27,7 +27,7 @@ macOnly("canary directories exist until closed", () => {
   expect(fs.existsSync(canary.root)).toBe(false)
 })
 
-macOnly("canary is created outside writable paths", () => {
+test.skipIf(!ON_MAC)("canary is created outside writable paths", () => {
   // Under a writable path, `denied` would be writable too and nothing would match.
   const tmp = fs.realpathSync(os.tmpdir())
   const canary = new Canary([tmp])
@@ -37,8 +37,6 @@ macOnly("canary is created outside writable paths", () => {
     canary.close()
   }
 })
-
-const sandboxedMac = test.skipIf(process.platform !== "darwin" || !sandboxAvailable())
 
 /** SIGKILLs `child` when the test finishes, whatever happened to it. */
 function killAtEnd(child: ChildProcess): void {
@@ -66,7 +64,7 @@ async function underCanary(): Promise<{ canary: Canary; pid: number; exited: Pro
   return { canary, pid: child.pid!, exited }
 }
 
-sandboxedMac("a process under the canary profile is found and killed", async () => {
+test.skipIf(!ON_MAC || !sandboxAvailable())("a process under the canary profile is found and killed", async () => {
   const { canary, pid, exited } = await underCanary()
   const plain = spawn("/bin/sleep", ["30"], { stdio: "ignore" })
   killAtEnd(plain)
@@ -76,7 +74,7 @@ sandboxedMac("a process under the canary profile is found and killed", async () 
   await exited
 })
 
-sandboxedMac("sandboxCheck tells the canary pair apart", async () => {
+test.skipIf(!ON_MAC || !sandboxAvailable())("sandboxCheck tells the canary pair apart", async () => {
   const { canary, pid } = await underCanary()
   expect(sandboxCheck(pid, "file-write-data", canary.allowed)).toBe(0)
   expect(sandboxCheck(pid, "file-write-data", canary.denied)).toBe(1)
