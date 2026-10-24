@@ -1,7 +1,7 @@
 /** The setup screen's prompts: one SetupPrompt JSON line out, one SetupAnswer JSON line back. */
 import { spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
-import { Readable } from "node:stream"
+import { PassThrough, Readable } from "node:stream"
 import { expect, test } from "bun:test"
 import { JsonPrompter } from "../../src/install/json_prompts.ts"
 import { OnboardError } from "../../src/install/prompts.ts"
@@ -133,6 +133,16 @@ test("stdin closing before an answer is an onboard error", async () => {
   expect(caught.message).toContain("stdin closed")
 })
 
+test("a stdin destroyed before an answer is an onboard error", async () => {
+  const stdin = new PassThrough()
+  const p = new JsonPrompter(output(), stdin)
+  const asked = rejection(p.ask("Company"))
+  stdin.destroy()
+  const caught = await asked
+  expect(caught).toBeInstanceOf(OnboardError)
+  expect(caught.message).toContain("stdin closed")
+})
+
 test("a line that isnt an answer is an onboard error without its text", async () => {
   const p = new JsonPrompter(output(), Readable.from(["sk-ant-sentinel-a7d93c10e5b2\n"]))
   const caught = await rejection(p.secret("API key"))
@@ -158,7 +168,8 @@ test("read line leaves the rest of the stream for the next read and lets the pro
     let stderr = ""
     child.stdout.on("data", (chunk: Buffer) => (stdout += chunk.toString()))
     child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()))
-    const exited = new Promise<number | null>((resolve) => child.on("exit", (status) => resolve(status)))
+    // "close" waits for the child's stdout to be read to the end; "exit" can come first.
+    const exited = new Promise<number | null>((resolve) => child.on("close", (status) => resolve(status)))
     // One write holding both lines, stdin kept open, as the TUI does.
     child.stdin.write("a\nb\n")
     let timer: ReturnType<typeof setTimeout> | undefined

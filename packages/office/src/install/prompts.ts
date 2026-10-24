@@ -52,13 +52,13 @@ export interface Prompter {
 }
 
 /** One line from `input` without its `\n` (and a trailing `\r`), the rest left unread; the last
- *  unterminated line at the end; `undefined` once the input has ended with nothing left. */
+ *  unterminated line at the end or close; `undefined` once the input has ended or closed with nothing left.
+ *  Rejects with the stream's error. */
 export function readLine(input: Readable): Promise<string | undefined> {
   return new Promise((resolve, reject) => {
-    if (input.readableEnded) {
-      resolve(undefined)
-      return
-    }
+    // A stream that already failed or closed emits nothing more, so waiting for an event would hang.
+    if (input.errored) return reject(input.errored)
+    if (input.readableEnded || input.destroyed) return resolve(undefined)
     const parts: Buffer[] = []
     const text = () => {
       const line = Buffer.concat(parts).toString("utf8")
@@ -70,6 +70,7 @@ export function readLine(input: Readable): Promise<string | undefined> {
     const finish = (settle: () => void) => {
       input.off("readable", onReadable)
       input.off("end", onEnd)
+      input.off("close", onEnd)
       input.off("error", onError)
       process.nextTick(() => input.pause())
       settle()
@@ -94,6 +95,8 @@ export function readLine(input: Readable): Promise<string | undefined> {
     const onError = (error: Error) => finish(() => reject(error))
     input.on("readable", onReadable)
     input.on("end", onEnd)
+    // A stream destroyed mid-read closes without an end.
+    input.on("close", onEnd)
     input.on("error", onError)
   })
 }
