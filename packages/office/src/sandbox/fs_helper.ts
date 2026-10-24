@@ -4,10 +4,10 @@
  * Reads one JSON request (`{"op": ..., ...args}`) on stdin and writes one JSON reply
  * (`{"ok": true, "output": ...}` or `{"ok": false, "error": ...}`) on stdout. The reply envelope and the
  * ops' own texts (their outputs, their errors, OS errors) match the Python office's helper byte for byte;
- * the texts for a bad argument, a bad request and a file `edit_file` can't decode are new. Paths are
- * relative to the working directory, the workspace. The sandbox,
- * not this code, decides what may be read or written. It imports only `node:` builtins, because the
- * sandbox exposes nothing else to it.
+ * the texts for a bad argument, a bad request, a file `edit_file` can't decode and a file too large to
+ * read are new, and a bad pattern's text is the JavaScript engine's, not Python's. Paths are relative to
+ * the working directory, the workspace. The sandbox, not this code, decides what may be read or written.
+ * It imports only `node:` builtins, because the sandbox exposes nothing else to it.
  */
 import fs from "node:fs"
 import os from "node:os"
@@ -44,6 +44,13 @@ const STRERROR: Record<string, string> = {
   EFBIG: "File too large",
   EINVAL: "Invalid argument",
   EILSEQ: "Illegal byte sequence",
+  EDQUOT: "Disc quota exceeded",
+  ESTALE: "Stale NFS file handle",
+  EOPNOTSUPP: "Operation not supported on socket",
+  ENOTSUP: "Operation not supported",
+  EDEADLK: "Resource deadlock avoided",
+  ENXIO: "Device not configured",
+  ENOMEM: "Cannot allocate memory",
 }
 
 /** `error` as the reply Python's `OSError` branch gave (`<strerror>: <filename>`), or undefined when it
@@ -103,11 +110,28 @@ function dirname(path: string): string {
   return /^\/*$/.test(head) ? head : head.replace(/\/+$/, "")
 }
 
+/** `decode` applied to the file's bytes. A file too large for a Buffer or a string is an `OpError`.
+ *
+ *  The runtime throws a RangeError (or ERR_STRING_TOO_LONG) without an errno for that, which would
+ *  otherwise end the helper with no reply. Untested: it needs a file of gigabytes. */
+function readText(path: string, decode: (data: Buffer) => string): string {
+  try {
+    return decode(fs.readFileSync(path))
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code
+    const errno = typeof code === "string" && Object.hasOwn(os.constants.errno, code)
+    if (!errno && (error instanceof RangeError || code === "ERR_STRING_TOO_LONG")) {
+      throw new OpError(`file too large to read: ${path}`)
+    }
+    throw error
+  }
+}
+
 /** Return the file's text, from line `offset` (0-based), at most `limit` lines. */
 function readFile(path: string, offset: number, limit: number | undefined): string {
   if (offset < 0 || (limit !== undefined && limit < 0)) throw new OpError("offset and limit must not be negative")
   // A bad byte becomes U+FFFD, as Python's errors="replace"; a BOM is kept.
-  const lines = splitLines(fs.readFileSync(path).toString("utf8"), true)
+  const lines = splitLines(readText(path, (data) => data.toString("utf8")), true)
   const text = lines.slice(offset, limit === undefined ? undefined : offset + limit).join("")
   const head = cut(text, MAX_READ_CHARS)
   return head === undefined ? text : `${head}\n[truncated at ${MAX_READ_CHARS} characters; use offset and limit]`
@@ -139,7 +163,7 @@ function editFile(path: string, old: string, replacement: string, replaceAll: bo
   if (!old) throw new OpError("old must not be empty")
   let text: string
   try {
-    text = STRICT_UTF8.decode(fs.readFileSync(path))
+    text = readText(path, (data) => STRICT_UTF8.decode(data))
   } catch (error) {
     if (!(error instanceof TypeError)) throw error
     throw new OpError("'utf-8' codec can't decode the file")
@@ -178,9 +202,19 @@ function starts(text: string, old: string, limit: number): number[] {
   return lines
 }
 
-/** Orders strings by code point, as Python sorts them (UTF-8 bytes sort in code-point order). */
+/** Orders well-formed strings by code point, as Python sorts them. */
 function byCodePoint(a: string, b: string): number {
-  return Buffer.compare(Buffer.from(a), Buffer.from(b))
+  const n = Math.min(a.length, b.length)
+  for (let i = 0; i < n; i++) {
+    const x = a.charCodeAt(i)
+    const y = b.charCodeAt(i)
+    if (x === y) continue
+    // UTF-16 code units sort U+E000-U+FFFF after the surrogates that encode U+10000 and up, where code
+    // points sort them before; moving the surrogates above U+FFFF restores code-point order.
+    if (x < 0xd800 || y < 0xd800) return x - y
+    return (x < 0xe000 ? x + 0x2000 : x - 0x800) - (y < 0xe000 ? y + 0x2000 : y - 0x800)
+  }
+  return a.length - b.length
 }
 
 /** Return the directory's entries, sorted, with a `/` after each subdirectory.
@@ -202,7 +236,11 @@ function listDir(path: string): string {
  *  (`i`, `m`, `s`; `a`, `L`, `u` dropped, `a` being JavaScript's default anyway; `x` refused), `\A` and `\Z`
  *  become `^` and `$`, `(?P<n>` becomes `(?<n>` and `(?P=n)` becomes `\k<n>`; character classes are kept as
  *  they are, but for a leading `]`. What still differs: without the `u` flag, `\w`, `\d`, `\s` and `\b` are
- *  ASCII-only where Python's are Unicode, and `\U0001f600` and `\N{...}` match their letters literally.
+ *  ASCII-only where Python's are Unicode, `.` and classes match UTF-16 code units (`^.$` misses an emoji,
+ *  `[😀]` matches any character sharing its high surrogate), and `\U0001f600` and `\N{...}` match their
+ *  letters literally; `x{,3}` is literal text (Python's `x{0,3}`); `(?P=n)` with no group `n` matches the
+ *  literal text `k<n>` where Python refuses the pattern; and the engine's backtracking limit makes a
+ *  pattern that runs too long report no match, silently, where Python ran on to the file timeout.
  *  Throws an `OpError` for a pattern that doesn't compile. */
 function translateRegex(pattern: string): RegExp {
   const lead = /^\(\?([aiLmsux]+)\)/.exec(pattern)

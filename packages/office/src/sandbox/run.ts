@@ -19,7 +19,7 @@ export class SandboxUnavailable extends Error {
 }
 
 /** The helper's argv and files for a call; throws `SandboxUnavailable` if a helper file lies inside
- *  the office home (design §2.5: its profile would expose part of the home). */
+ *  the office home (its profile would expose part of the home). */
 export function fsHelper(officeHome: string): { argv: string[]; helper: Helper } {
   const { argv, helper } = helperCommand()
   for (const file of helperFiles(helper)) {

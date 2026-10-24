@@ -194,6 +194,10 @@ test.skipIf(!sandboxAvailable())("links do not escape", async () => {
   const policy = makePolicy().make()
   const secret = path.join(office(), ".ssh/id_ed25519")
   expect((await shell(policy, `ln -s ${path.dirname(secret)} sl; cat sl/id_ed25519`)).output).not.toContain("decoy")
+  // The helper itself doesn't follow the planted link out either.
+  const file = await helperTool(policy, { op: "read_file", path: "sl/id_ed25519" })
+  expect(JSON.stringify(file)).not.toContain("decoy")
+  expect(file.ok, JSON.stringify(file)).toBe(false)
   expect((await shell(policy, `ln ${secret} hard; cat hard`)).output).not.toContain("decoy")
 })
 
