@@ -183,7 +183,7 @@ test("a question that goes stale raises", async () => {
   expect(answers.waiting).toBe(0)
 })
 
-test("a re asked ask node finds its stored question", async () => {
+test("an ask node asked again finds its stored question", async () => {
   const { store, sid, answers } = setup()
   const first = store.addQuestion(question(sid, { source: "ask", node_id: "sop#0/ask" }))
   store.answerQuestion(first.id, "kept", "text")

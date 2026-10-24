@@ -159,7 +159,7 @@ test("a chat turn is not a card, so it has no side chat", async () => {
   expect([e.status, e.code]).toEqual([422, "not_a_card"])
 })
 
-test("send back needs a discussion; neither send back nor stop is offered on an ask", async () => {
+test("send back needs a discussion; neither send back nor stop is offered on an ask node question", async () => {
   office = createFakeOffice()
   const plain = office.addQuestion({ question: "Retry?" })
   const none = await failure(client().questions.sendBack(plain.id, { note: "" }))

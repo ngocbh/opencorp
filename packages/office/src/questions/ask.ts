@@ -123,9 +123,9 @@ export class Answers {
    * promise.
    *
    * `workItem`, if given, is stored in the same transaction as the question, and set to `cancelled` if the question
-   * goes stale. An `ask` node asked again for the same run and node (after a restart) reuses the question already
-   * stored, and its answer if it has one. An aborted `signal` rejects with its reason and leaves the question and its
-   * work item as they are: nothing here moves that work item any more, so the caller settles it.
+   * goes stale. An `ask` node's question asked again for the same run and node (after a restart) reuses the
+   * question already stored, and its answer if it has one. An aborted `signal` rejects with its reason and leaves the
+   * question and its work item as they are: nothing here moves that work item any more, so the caller settles it.
    *
    * Rejects with `QuestionExpired` if the question went stale first, `AnswersClosed` if this was closed first.
    */

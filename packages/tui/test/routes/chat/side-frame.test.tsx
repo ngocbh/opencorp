@@ -130,7 +130,7 @@ test("after a discussion the card offers Send discussion back, which sends an em
   }
 })
 
-test("an ask card never offers Send discussion back", async () => {
+test("an ask node card never offers Send discussion back", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   office.addQuestion({

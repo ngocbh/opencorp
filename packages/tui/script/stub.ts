@@ -524,7 +524,7 @@ export function createFakeOffice(
   function openModelQuestion(id: string, code: string) {
     const q = question(id)
     if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
-    if (q.source === "ask") throw fail(422, code, `question ${q.id} is an ask`)
+    if (q.source === "ask") throw fail(422, code, `question ${q.id} is a flow's ask node question`)
     return q
   }
   /** Opens a question in a session (the seeded one by default), as a harness `ask_user` would. */

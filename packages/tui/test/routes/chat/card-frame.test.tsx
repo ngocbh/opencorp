@@ -39,7 +39,7 @@ test("Esc on a card asks 'Stop @minh? y/N'; Enter and n cancel, only y stops", a
   }
 })
 
-test("an ask card offers no stop", async () => {
+test("an ask node card offers no stop", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   office.addQuestion({ session_id: s.id, source: "ask", node_id: "review", question: "Ship it?" })

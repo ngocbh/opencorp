@@ -24,7 +24,7 @@ const q = (fields: Partial<Question>): Question => ({
   ...fields,
 })
 
-test("an ask at chat/ask is the chat's turn; anything else is a card", () => {
+test("an ask node question at chat/ask is the chat's turn; anything else is a card", () => {
   expect(isTurn(q({ node_id: "chat#1/ask" }))).toBe(true)
   expect(isTurn(q({ node_id: "chat#1/sub/ask" }))).toBe(false)
   expect(isTurn(q({ node_id: "ask" }))).toBe(false)

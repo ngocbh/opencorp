@@ -1,5 +1,5 @@
-// Which open question is a chat's own turn. The office's chat flow keeps an `ask` node open at
-// its turn node while the chat is idle; clients show that one as the input box, not a card.
+// Which open question is a chat's own turn. The office's chat flow keeps a question open at its
+// turn node (an `ask` node) while the chat is idle; clients show that one as the input box, not a card.
 import { CHAT_TURN_PATH, type Question, type Session } from "@opencorp/protocol"
 
 /** `node_id` without the `#N` that LOOP and MAP add to each segment: `chat#3/ask` → `chat/ask`. */
