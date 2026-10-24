@@ -391,17 +391,33 @@ function frame(value: unknown): Buffer {
   return Buffer.concat([header, body])
 }
 
-/** Calls `onFrame` with each frame read from `stream`, parsed; tags such as a bigint's stay as written. */
-function readFrames(stream: Readable, onFrame: (frame: Record<string, unknown>) => void) {
+/**
+ * Calls `onFrame` with each frame read from `stream`, parsed; tags such as a bigint's stay as written. A frame that
+ * isn't JSON goes to `onBadFrame` and ends the reading, since the stream's framing can't be trusted after it.
+ */
+function readFrames(
+  stream: Readable,
+  onFrame: (frame: Record<string, unknown>) => void,
+  onBadFrame: (error: Error) => void,
+) {
   let buffered = Buffer.alloc(0)
-  stream.on("data", (chunk: Buffer) => {
+  const onData = (chunk: Buffer) => {
     buffered = Buffer.concat([buffered, chunk])
     while (buffered.length >= 4 && buffered.length >= 4 + buffered.readUInt32BE(0)) {
       const end = 4 + buffered.readUInt32BE(0)
-      onFrame(JSON.parse(buffered.subarray(4, end).toString("utf8")) as Record<string, unknown>)
+      let parsed: Record<string, unknown>
+      try {
+        parsed = JSON.parse(buffered.subarray(4, end).toString("utf8")) as Record<string, unknown>
+      } catch (e) {
+        stream.off("data", onData)
+        onBadFrame(e as Error)
+        return
+      }
       buffered = buffered.subarray(end)
+      onFrame(parsed)
     }
-  })
+  }
+  stream.on("data", onData)
 }
 
 /**
@@ -675,7 +691,7 @@ describe("the built binary", () => {
   }, 150_000)
 
   test("the built binary worker runs a company CODE node that imports a sibling file", async () => {
-    const pin = path.join(built, "pin")
+    const pin = fs.mkdtempSync(path.join(built, "pin-"))
     const files = {
       "flows/flow.yaml":
         "id: compiled\nname: compiled\ninput:\n  n: !int\nnodes:\n  double:\n    kind: code\n" +
@@ -692,8 +708,7 @@ describe("the built binary", () => {
       fs.mkdirSync(path.dirname(path.join(pin, rel)), { recursive: true })
       fs.writeFileSync(path.join(pin, rel), text)
     }
-    const runs = path.join(built, "runs")
-    fs.mkdirSync(runs)
+    const runs = fs.mkdtempSync(path.join(built, "runs-"))
     const tmpdir = freshTmp()
     const child = spawn(bin, ["__worker"], {
       cwd: fs.mkdtempSync(path.join(built, "cwd-")),
@@ -701,31 +716,49 @@ describe("the built binary", () => {
       detached: true,
       stdio: ["ignore", "pipe", "pipe", "pipe"],
     })
-    if (child.pid === undefined) throw new Error("the worker did not start")
-    leaders.push({ pid: child.pid, started: lstart(child.pid) })
     let stderr = ""
     child.stderr!.setEncoding("utf8").on("data", (text: string) => (stderr += text))
     child.stdout!.resume()
     // `exit` can come before the last of stderr is read.
     const stderrEnded = new Promise<void>((resolve) => child.stderr!.once("close", () => resolve()))
-    const exited = new Promise<number | null>((resolve) => {
+    const exited = new Promise<number | null>((resolve, reject) => {
+      // A spawn that failed emits `error` instead of `exit`; with no listener it would crash the runner.
+      child.once("error", reject)
       child.once("exit", (code) => void stderrEnded.then(() => resolve(code)))
     })
+    if (child.pid === undefined) {
+      await exited
+      throw new Error("the worker did not start")
+    }
+    leaders.push({ pid: child.pid, started: lstart(child.pid) })
     const office = child.stdio[3] as net.Socket
     // A write to a worker that already died fails; its exit is reported below instead.
     office.on("error", () => {})
     cleanups.push(() => void office.destroy())
     const last = new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error(`no result within 60 s:\n${stderr}`)), 60_000)
-      readFrames(office, (frame) => {
-        if (frame.type !== "result" && frame.type !== "error") return
-        clearTimeout(timer)
-        resolve(frame)
-      })
-      void exited.then((code) => {
-        clearTimeout(timer)
-        reject(new Error(`the worker exited ${code} before its result:\n${stderr}`))
-      })
+      readFrames(
+        office,
+        (frame) => {
+          if (frame.type !== "result" && frame.type !== "error") return
+          clearTimeout(timer)
+          resolve(frame)
+        },
+        (error) => {
+          clearTimeout(timer)
+          reject(new Error(`the worker sent a frame that isn't JSON (${error.message}):\n${stderr}`))
+        },
+      )
+      exited.then(
+        (code) => {
+          clearTimeout(timer)
+          reject(new Error(`the worker exited ${code} before its result:\n${stderr}`))
+        },
+        (error: Error) => {
+          clearTimeout(timer)
+          reject(error)
+        },
+      )
     })
     const job = {
       kind: "chat",

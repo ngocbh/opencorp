@@ -268,12 +268,11 @@ test("a worker process with no channel on fd 3 exits 3", async () => {
 })
 
 test("the office channel must be a socket on fd 3", async () => {
+  // No process has this many fds open, so it is never an open fd.
+  expect(isOfficeChannel(2 ** 30)).toBe(false)
+  // An open fd that isn't a socket (a file here; Bun's own fd 3 is a pipe) isn't the channel.
   const file = path.join(tempDir(), "f")
-  const closed = fs.openSync(file, "w")
-  fs.closeSync(closed)
-  expect(isOfficeChannel(closed)).toBe(false)
-  // An open fd that isn't a socket isn't the channel either: Bun keeps a pipe of its own at fd 3 when the parent
-  // passes none.
+  fs.writeFileSync(file, "")
   const regular = fs.openSync(file, "r")
   try {
     expect(isOfficeChannel(regular)).toBe(false)

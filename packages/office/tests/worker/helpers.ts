@@ -397,7 +397,8 @@ export interface WorkerExit {
  * with only `PATH`, `HOME` and `TMPDIR` of this process's env plus `env`. With `channel`, the office's end of the
  * socket at the child's fd 3 is `office`; without, fd 3 is left to Bun. At test end the office end closes and the
  * group is killed if its leader is still the process that started (pid and start time). `exited` waits for stderr
- * to close, so a grandchild holding the worker's stderr delays it until that test-end group kill.
+ * to close after `exit`, so a grandchild holding the worker's stderr keeps it pending until the test times out; the
+ * test-end kill then skips the group, since its leader is gone (pid and start time no longer match).
  */
 export function spawnWorker({
   cwd,
