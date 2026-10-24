@@ -37,7 +37,7 @@ export class QuestionExpired extends Error {
 /**
  * Return a run's `ask_user` handler: the six `ASK_KEYS` in, the answer out.
  *
- * A call with a `node_id` is a `human_input` node: its pages and answer schema are kept, and it gets the answer
+ * A call with a `node_id` is a flow's `ask` node: its pages and answer schema are kept, and it gets the answer
  * value. A call without one is the model's: its options are normalized (`names` are the asker's names, for dropping
  * `Stop <name>`), and it gets the answer as text. The question is asked by `session.person` on
  * `session.work_item_id`. A request that doesn't make a valid question rejects with a `TypeError` naming only the
@@ -54,7 +54,7 @@ export function makeAskUser(
   return async (request) => {
     const nodeId = request.node_id ?? null
     const fields = nodeId
-      ? { source: "human_input", questions: request.questions, answer_schema: request.answer_schema ?? [] }
+      ? { source: "ask", questions: request.questions, answer_schema: request.answer_schema ?? [] }
       : { source: "ask_user", options: normalizeOptions(request.options, { names }) }
     const t = now()
     const data = {
@@ -123,7 +123,7 @@ export class Answers {
    * promise.
    *
    * `workItem`, if given, is stored in the same transaction as the question, and set to `cancelled` if the question
-   * goes stale. A `human_input` asked again for the same run and node (after a restart) reuses the question already
+   * goes stale. An `ask` node asked again for the same run and node (after a restart) reuses the question already
    * stored, and its answer if it has one. An aborted `signal` rejects with its reason and leaves the question and its
    * work item as they are: nothing here moves that work item any more, so the caller settles it.
    *

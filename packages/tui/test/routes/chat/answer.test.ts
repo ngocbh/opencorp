@@ -42,7 +42,7 @@ test("an ask_user question is one page: its options, then a typed answer; the an
 test("a questions gate is one page per question and answers with a record keyed by header", () => {
   const m = cardModel(
     q({
-      source: "human_input",
+      source: "ask",
       node_id: "setup",
       questions: [
         {
@@ -91,7 +91,7 @@ test("a questions gate is one page per question and answers with a record keyed 
 test("a one-question gate still answers with a record", () => {
   const m = cardModel(
     q({
-      source: "human_input",
+      source: "ask",
       node_id: "go",
       questions: [{ question: "Ship?", header: "Ship", options: [{ label: "now" }] }],
     }),
@@ -101,7 +101,7 @@ test("a one-question gate still answers with a record", () => {
 
 test("a prompt gate's single answer entry picks its control", () => {
   const gate = (f: Partial<AnswerField>) =>
-    cardModel(q({ source: "human_input", node_id: "ok", question: "Approve?", answer_schema: [field(f)] }))!
+    cardModel(q({ source: "ask", node_id: "ok", question: "Approve?", answer_schema: [field(f)] }))!
   const yesNo = gate({ type: "bool" })
   expect(yesNo.pages[0].options).toEqual([
     { label: "Yes", value: true },
@@ -129,12 +129,12 @@ test("a prompt gate's single answer entry picks its control", () => {
     answer: "12",
     answer_kind: "text",
   })
-  expect(cardModel(q({ source: "human_input", node_id: "ok", question: "Why?" }))!.pages[0].typed).toBe(true)
+  expect(cardModel(q({ source: "ask", node_id: "ok", question: "Why?" }))!.pages[0].typed).toBe(true)
 })
 
 test("a prompt gate with a record output or an object entry is read-only here", () => {
   const gate = (answer_schema: AnswerField[]) =>
-    cardModel(q({ source: "human_input", node_id: "ok", question: "Fill in", answer_schema }))
+    cardModel(q({ source: "ask", node_id: "ok", question: "Fill in", answer_schema }))
   expect(gate([field({ name: "title" }), field({ name: "count", type: "int" })])).toBeUndefined()
   expect(gate([field({ type: "object", fields: [field({ name: "x" })] })])).toBeUndefined()
   expect(gate([field({ type: "list[int]" })])).toBeUndefined()

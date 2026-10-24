@@ -3,7 +3,7 @@
   "session_id": "01JA1S0000000000000000000A",
   "run_id": "run-01JA1R0000000000000000000A",
   "node_id": "setup",
-  "source": "human_input",
+  "source": "ask",
   "asker": "minh",
   "work_item_id": "01JA1W0000000000000000000A",
   "title": "Project setup",

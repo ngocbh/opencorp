@@ -1127,7 +1127,7 @@ export class Store {
     return this.#get(QUESTIONS, questionId)
   }
 
-  /** The `human_input` question stored for a run's node, or undefined. */
+  /** The `ask` node question stored for a run's node, or undefined. */
   getQuestionByNode(runId: string, nodeId: string): QuestionRecord | undefined {
     const row = this.db.prepare("SELECT * FROM questions WHERE run_id = ? AND node_id = ?").get(runId, nodeId)
     return row && this.#entity(QUESTIONS, row)

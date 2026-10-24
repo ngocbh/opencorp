@@ -170,7 +170,7 @@ test("a multi-page question answers with a record, page by page; the header name
   }
   const q = office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "release",
     work_item_id: "w1",
     question: "Set up the release",
@@ -212,7 +212,7 @@ test("a prompt gate with a record output can't be answered here", async () => {
   const s = office.state.sessions[0]
   const q = office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "fill",
     question: "Describe the bug",
     answer_schema: [
@@ -259,12 +259,12 @@ test("stopping calls stop; a 501 toasts 'not available yet' and the question sta
 test("the chat's own turn question is the prompt, not a card", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
-  office.addQuestion({ session_id: s.id, source: "human_input", node_id: "chat#1/ask", question: "You:" })
+  office.addQuestion({ session_id: s.id, source: "ask", node_id: "chat#1/ask", question: "You:" })
   const app = await bootFrame(createStub(office), { sessionID: s.id })
   try {
     await app.until((f) => f.includes("@minh · idle") && f.includes("@minh · Software engineer"))
     expect(app.frame()).not.toContain("Type your answer here")
-    office.addQuestion({ session_id: s.id, source: "human_input", node_id: "chat#1/review", question: "Ship it?" })
+    office.addQuestion({ session_id: s.id, source: "ask", node_id: "chat#1/review", question: "Ship it?" })
     await app.until((f) => f.includes("Ship it?") && f.includes("Type your answer here"))
   } finally {
     await app.stop()

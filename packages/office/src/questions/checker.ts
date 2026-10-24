@@ -1,4 +1,4 @@
-/** Check an answer against its question, and convert typed text to the value a `human_input` node takes. */
+/** Check an answer against its question, and convert typed text to the value an `ask` node takes. */
 import { casefold, repr, splitLines, strip } from "../perm/redact.ts"
 import type { QuestionRecord } from "../store/store.ts"
 
@@ -17,7 +17,7 @@ export class InvalidAnswer extends Error {
  *
  * A harness card takes one of its options, or a record for its pages, and never the office's own answers.
  * Otherwise `sent_back` and `interrupted` answers are the office's own and pass unchanged. A model question
- * (`ask_user`, `ask_manager`) takes text, and an `option` answer must be one of its options. A `human_input`
+ * (`ask_user`, `ask_manager`) takes text, and an `option` answer must be one of its options. An `ask` node
  * question with pages takes a record keyed by each page's `header`. A page with an `answer_schema` entry takes
  * what that entry takes, and one without takes a label, or a list of labels for a multi-select page. One without
  * pages takes what its `answer_schema` says; text is converted to the field's type (numbers, ISO dates, yes/no,
@@ -32,7 +32,7 @@ export function checkAnswer(
 ): unknown {
   if (question.source === "harness") return harness(question, answer, kind)
   if (kind === "sent_back" || kind === "interrupted") return answer
-  if (question.source !== "human_input") {
+  if (question.source !== "ask") {
     if (typeof answer !== "string" || strip(answer) === "") throw new InvalidAnswer("the answer must be text")
     if (kind === "option" && !question.options.includes(answer)) {
       throw new InvalidAnswer(`${repr(answer)} is not one of the options`)

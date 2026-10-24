@@ -158,9 +158,9 @@ test("the real cap is 12000", () => {
 
 const VALUES: [unknown][] = [["plain text"], [{ db: "pg", tests: ["unit"] }], [true], [null]]
 
-test.each(VALUES)("human input gets its value unchanged [%s]", (value) => {
+test.each(VALUES)("an ask node gets its value unchanged [%s]", (value) => {
   const q = question(SID, {
-    source: "human_input",
+    source: "ask",
     node_id: "sop/ask",
     status: "answered",
     answer: value,

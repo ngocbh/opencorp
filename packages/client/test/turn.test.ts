@@ -15,7 +15,7 @@ const q = (fields: Partial<Question>): Question => ({
   session_id: "S",
   run_id: "run-1",
   node_id: null,
-  source: "human_input",
+  source: "ask",
   asker: "minh",
   question: "You:",
   status: "open",
@@ -24,7 +24,7 @@ const q = (fields: Partial<Question>): Question => ({
   ...fields,
 })
 
-test("a human_input at chat/ask is the chat's turn; anything else is a card", () => {
+test("an ask at chat/ask is the chat's turn; anything else is a card", () => {
   expect(isTurn(q({ node_id: "chat#1/ask" }))).toBe(true)
   expect(isTurn(q({ node_id: "chat#1/sub/ask" }))).toBe(false)
   expect(isTurn(q({ node_id: "ask" }))).toBe(false)

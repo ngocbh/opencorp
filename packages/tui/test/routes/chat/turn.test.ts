@@ -8,7 +8,7 @@ const q = (fields: Partial<Question>): Question => ({
   session_id: "S",
   run_id: "run-1",
   node_id: null,
-  source: "human_input",
+  source: "ask",
   asker: "minh",
   question: "You:",
   status: "open",

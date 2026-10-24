@@ -127,13 +127,13 @@ export function seed(nextId = counter()): FakeState {
     created_at: at,
     updated_at: at,
   }
-  // An idle chat waits on its open turn, the chat flow's `chat#1/ask` human_input.
+  // An idle chat waits on its open turn, the chat flow's `chat#1/ask` ask node.
   const turn: Question = {
     id: nextId(),
     session_id: session.id,
     run_id: "run-1",
     node_id: "chat#1/ask",
-    source: "human_input",
+    source: "ask",
     asker: "minh",
     question: "You:",
     status: "open",
@@ -488,8 +488,8 @@ export function createFakeOffice(
   function checkAnswer(q: Question, answer: unknown, kind: string) {
     const invalid = (message: string) => fail(422, "invalid_answer", message)
     const label = (v: unknown) => typeof v === "string" && v.trim().length > 0
-    // A Codex question card (it has pages) is answered like a human_input; a Codex approval like a model question.
-    if (q.source !== "human_input" && !(q.source === "harness" && q.questions?.length)) {
+    // A Codex question card (it has pages) is answered like an ask node; a Codex approval like a model question.
+    if (q.source !== "ask" && !(q.source === "harness" && q.questions?.length)) {
       if (!label(answer)) throw invalid("the answer must be text")
       if (kind === "option" && !q.options?.includes(answer as string))
         throw invalid(`${JSON.stringify(answer)} is not one of the options`)
@@ -520,11 +520,11 @@ export function createFakeOffice(
     const safe = new Set(pages.filter((p) => !p.secret).map((p) => p.header))
     return Object.fromEntries(Object.entries(answer).map(([k, v]) => [k, safe.has(k) ? v : "[secret]"]))
   }
-  /** An open question for send back or stop, which a `human_input` question doesn't offer (`code`). */
+  /** An open question for send back or stop, which an `ask` node question doesn't offer (`code`). */
   function openModelQuestion(id: string, code: string) {
     const q = question(id)
     if (q.status !== "open") throw fail(409, "not_open", `question ${q.id} is ${q.status}, not open`)
-    if (q.source === "human_input") throw fail(422, code, `question ${q.id} is a human_input`)
+    if (q.source === "ask") throw fail(422, code, `question ${q.id} is an ask`)
     return q
   }
   /** Opens a question in a session (the seeded one by default), as a harness `ask_user` would. */
@@ -546,12 +546,12 @@ export function createFakeOffice(
     return updateQuestion(q, "question.created")
   }
   /**
-   * Opens a session's next turn, as the chat flow's `chat#N/ask` human_input does when a reply ends:
+   * Opens a session's next turn, as the chat flow's `chat#N/ask` ask node does when a reply ends:
    * the session goes idle, or the queued messages take the turn at once.
    */
   function openTurn(sessionId: string) {
     const n = Object.values(state.questions).filter((q) => q.session_id === sessionId && isTurn(q)).length + 1
-    const q = addQuestion({ session_id: sessionId, source: "human_input", node_id: `chat#${n}/ask`, question: "You:" })
+    const q = addQuestion({ session_id: sessionId, source: "ask", node_id: `chat#${n}/ask`, question: "You:" })
     const pending = queued.get(sessionId)
     queued.delete(sessionId)
     if (pending) takeTurn(q, pending.join("\n\n"))

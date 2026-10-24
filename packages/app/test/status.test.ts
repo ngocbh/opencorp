@@ -20,7 +20,7 @@ test("first match wins: waiting, busy, away; only active main and side sessions 
 })
 
 test("a chat's own turn isn't a waiting card, and an idle session alone is away", () => {
-  const turn = q("t", "1", { source: "human_input", node_id: "chat#2/ask" })
+  const turn = q("t", "1", { source: "ask", node_id: "chat#2/ask" })
   expect(statusByPerson([s("1", "ann", "idle")], [turn]).get("ann")).toBeUndefined()
 })
 
@@ -54,7 +54,7 @@ test("ask_manager goes to its work item's assignee; anything else to who opened 
 
 test("needs you counts, per asking person, the open cards whose recipient is the viewer", () => {
   const sessions = [{ ...s("1", "minh", "idle"), opened_by: "ceo" } as Session, { ...s("2", "kai", "idle"), opened_by: "ann" } as Session]
-  const questions = [q("a", "1"), q("b", "1"), q("c", "2"), q("t", "1", { source: "human_input", node_id: "chat/ask" })]
+  const questions = [q("a", "1"), q("b", "1"), q("c", "2"), q("t", "1", { source: "ask", node_id: "chat/ask" })]
   expect(Object.fromEntries(needsYou("ceo", sessions, questions, "ceo", () => undefined))).toEqual({ minh: 2 })
   expect(Object.fromEntries(needsYou("ann", sessions, questions, "ceo", () => undefined))).toEqual({ kai: 1 })
 })

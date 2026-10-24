@@ -130,12 +130,12 @@ test("after a discussion the card offers Send discussion back, which sends an em
   }
 })
 
-test("a human_input card never offers Send discussion back", async () => {
+test("an ask card never offers Send discussion back", async () => {
   const office = createFakeOffice()
   const s = office.state.sessions[0]
   office.addQuestion({
     session_id: s.id,
-    source: "human_input",
+    source: "ask",
     node_id: "review",
     question: "Ship it?",
     discussion: [{ role: "user", text: "why?" }],

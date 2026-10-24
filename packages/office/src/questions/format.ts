@@ -24,7 +24,7 @@ type Entry = { role: string; text: string }
 /**
  * Return what the asker gets for an answered `question`.
  *
- * A `human_input` gets its answer value unchanged. A model question (`ask_user`, `ask_manager`) gets one line for
+ * An `ask` node gets its answer value unchanged. A model question (`ask_user`, `ask_manager`) gets one line for
  * the choice and, when the user discussed it (or `carried` holds the discussion of an earlier, expired question),
  * the discussion as one line of JSON, capped at `cap` code points.
  */
@@ -33,7 +33,7 @@ export function formatAnswer(
   carried: Iterable<DiscussionEntry> = [],
   cap = DISCUSSION_CAP,
 ): unknown {
-  if (question.source === "human_input") return question.answer
+  if (question.source === "ask") return question.answer
   const text = choice(question)
   const earlier = entriesOf(carried)
   const current = entriesOf(question.discussion)

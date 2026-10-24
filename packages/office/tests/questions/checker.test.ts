@@ -7,12 +7,12 @@ import { thrown } from "../store/helpers.ts"
 
 const T = "2026-09-30T00:00:00.000Z"
 
-function q(source: Question["source"] = "human_input", fields: Partial<Question> = {}): QuestionRecord {
+function q(source: Question["source"] = "ask", fields: Partial<Question> = {}): QuestionRecord {
   return Question.parse({
     id: "01J0000000000000000000000Q",
     session_id: "01J0000000000000000000000S",
     run_id: "r1",
-    node_id: source !== "human_input" ? null : "gate",
+    node_id: source !== "ask" ? null : "gate",
     source,
     asker: "minh",
     question: "Which?",
@@ -58,13 +58,13 @@ test("a model question takes text and checks options", () => {
 
 test("office answers pass unchanged", () => {
   expect(checkAnswer(q("ask_manager"), null, "sent_back")).toBeNull()
-  expect(checkAnswer(q("human_input", { questions: PAGES }), "[interrupted by the user]", "interrupted")).toBe(
+  expect(checkAnswer(q("ask", { questions: PAGES }), "[interrupted by the user]", "interrupted")).toBe(
     "[interrupted by the user]",
   )
 })
 
 test("pages take a record keyed by header", () => {
-  const gate = q("human_input", { questions: PAGES })
+  const gate = q("ask", { questions: PAGES })
   const answer = { db: "Postgres", features: ["auth", "graphs, typed"] }
   expect(checkAnswer(gate, answer, "text")).toEqual(answer)
   expect(checkAnswer(gate, { db: "MySQL, typed", features: [] }, "text")).toEqual({
@@ -83,11 +83,11 @@ const SHAPES: [unknown, RegExp][] = [
 ]
 
 test.each(SHAPES)("pages refuse other shapes [%s]", (answer, message) => {
-  refused(() => checkAnswer(q("human_input", { questions: PAGES }), answer, "option"), message)
+  refused(() => checkAnswer(q("ask", { questions: PAGES }), answer, "option"), message)
 })
 
 test("an enum in the schema hides free text on its page", () => {
-  const gate = q("human_input", {
+  const gate = q("ask", {
     questions: PAGES,
     answer_schema: fields(["db", "str", true, { enum: ["Postgres", "SQLite"] }], ["features", "list[str]", true]),
   })
@@ -96,12 +96,12 @@ test("an enum in the schema hides free text on its page", () => {
 })
 
 test("a schema entry types its page", () => {
-  const gate = q("human_input", {
+  const gate = q("ask", {
     questions: PAGES,
     answer_schema: fields(["db", "str", true], ["features", "str", true]),
   })
   refused(() => checkAnswer(gate, { db: "SQLite", features: ["auth"] }, "option"), /'features' must be text/)
-  const counted = q("human_input", {
+  const counted = q("ask", {
     questions: [{ question: "How many?", header: "n", options: [{ label: "3" }] }],
     answer_schema: fields(["n", "int", true]),
   })
@@ -112,7 +112,7 @@ type PageEntry = Omit<AnswerField, "name" | "required">
 
 /** A one-page gate whose `p` page has the schema entry `entry`. */
 function page(multi: boolean, entry: PageEntry): QuestionRecord {
-  return q("human_input", {
+  return q("ask", {
     questions: [{ question: "Which?", header: "p", multi_select: multi, options: [{ label: "3" }, { label: "yes" }] }],
     answer_schema: [{ name: "p", required: true, ...entry }],
   })
@@ -172,7 +172,7 @@ const CONVERTED: [Entry, unknown, unknown][] = [
 ]
 
 test.each(CONVERTED)("a single answer is converted to its type [%s]", (entry, answer, value) => {
-  const gate = q("human_input", { answer_schema: fields(entry) })
+  const gate = q("ask", { answer_schema: fields(entry) })
   expect(checkAnswer(gate, answer, "text")).toEqual(value)
   expect(checkAnswer(gate, value, "text")).toEqual(value) // a converted value converts to itself
 })
@@ -192,18 +192,18 @@ const MISFITS: [Entry, unknown, RegExp][] = [
 ]
 
 test.each(MISFITS)("a single answer that does not fit is refused [%s]", (entry, answer, message) => {
-  refused(() => checkAnswer(q("human_input", { answer_schema: fields(entry) }), answer, "text"), message)
+  refused(() => checkAnswer(q("ask", { answer_schema: fields(entry) }), answer, "text"), message)
 })
 
 test("a whole float is a whole number", () => {
   // JSON numbers don't tell 2.0 from 2, so only a fraction is refused.
-  const intGate = q("human_input", { answer_schema: fields(["answer", "int", true]) })
+  const intGate = q("ask", { answer_schema: fields(["answer", "int", true]) })
   expect(checkAnswer(intGate, 2.0, "text")).toBe(2)
   refused(() => checkAnswer(intGate, 2.5, "text"), /a whole number/)
 })
 
 test("a record gate converts each field and omits blank optional ones", () => {
-  const gate = q("human_input", {
+  const gate = q("ask", {
     answer_schema: fields(
       ["days", "int", true],
       ["note", "str", false],
@@ -225,7 +225,7 @@ test("a record gate converts each field and omits blank optional ones", () => {
 })
 
 test("a required none field in a record takes blank", () => {
-  const gate = q("human_input", { answer_schema: fields(["done", "None", true], ["note", "str", false]) })
+  const gate = q("ask", { answer_schema: fields(["done", "None", true], ["note", "str", false]) })
   expect(checkAnswer(gate, { done: null }, "text")).toEqual({ done: null })
   expect(checkAnswer(gate, { done: "" }, "text")).toEqual({ done: null })
   refused(() => checkAnswer(gate, { done: "x" }, "text"), /answer.done must be empty/)
@@ -271,11 +271,11 @@ test("a harness card with pages takes a record with typed numbers", () => {
 })
 
 test("answer keys on the prototype are not answers", () => {
-  const gate = q("human_input", {
+  const gate = q("ask", {
     questions: [{ question: "Which?", header: "constructor", options: [{ label: "a" }] }],
   })
   refused(() => checkAnswer(gate, {}, "option"), /'constructor' has no answer/)
-  const proto = q("human_input", { answer_schema: fields(["__proto__", "str", true]) })
+  const proto = q("ask", { answer_schema: fields(["__proto__", "str", true]) })
   const result = checkAnswer(proto, JSON.parse('{"__proto__": "x"}'), "text") as Record<string, unknown>
   expect(Object.hasOwn(result, "__proto__")).toBe(true)
   expect(result["__proto__"]).toBe("x")

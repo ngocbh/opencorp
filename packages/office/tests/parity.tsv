@@ -243,11 +243,14 @@ protocol/test_now.py	ported	packages/protocol/test/time.test.ts	§5.4	O0-6
 protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schemas (D6, §5.4)	O0-6
 protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
 questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
+questions/test_ask.py::test_a_human_input_call_keeps_its_node_pages_and_schema	changed	packages/office/tests/questions/ask.test.ts::an ask node call keeps its node pages and schema	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
+questions/test_ask.py::test_a_re_asked_human_input_finds_its_stored_question	changed	packages/office/tests/questions/ask.test.ts::a re asked ask node finds its stored question	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_an_answer_from_another_process_is_found_by_polling	dropped	—	design §3.3: only the daemon writes the store; the 30 s poll goes and waiters wake on its after-commit events	O3-8a
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9	O4a-9
 questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
 questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
 questions/test_format.py	ported	packages/office/tests/questions/format.test.ts	—	O3-7
+questions/test_format.py::test_human_input_gets_its_value_unchanged	changed	packages/office/tests/questions/format.test.ts::an ask node gets its value unchanged	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_normalize.py	ported	packages/office/tests/questions/normalize.test.ts	—	O3-7
 questions/test_seed.py	open	—	—	O4a-8
 questions/test_side.py	open	—	—	O4a-8
@@ -305,6 +308,7 @@ store/test_questions.py	ported	packages/office/tests/store/questions.test.ts	—
 store/test_questions.py::test_answer_is_absent_until_answered	changed	packages/office/tests/store/questions.test.ts::answer is null until answered	zod has no unset fields: an unanswered answer reads back null (D6)	O1-4
 store/test_questions.py::test_answer_is_stored_as_its_json_dump	changed	packages/office/tests/store/questions.test.ts::answer is stored as its json dump	JSON's form of JS values: a Date dumps as its ISO time (D6)	O1-4
 store/test_questions.py::test_first_answer_wins	changed	packages/office/tests/store/questions.test.ts::first answer wins	no threads: sync transactions on one connection (§3.3)	O1-4
+store/test_questions.py::test_human_input_key_is_unique	changed	packages/office/tests/store/questions.test.ts::an ask node key is unique	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 store/test_runs.py	ported	packages/office/tests/store/runs.test.ts	—	O1-3
 store/test_runs.py::test_a_launch_is_stored_and_emits_run_updated	changed	packages/office/tests/store/runs.test.ts::a launch is stored	the store emits no run.updated: runs/notify.ts publishes it from the status rule (§5.1)	O1-3
 store/test_runs.py::test_a_launch_range_is_since_inclusive_and_until_exclusive	dropped	—	run lists page yian's run index (§5.2)	O1-3

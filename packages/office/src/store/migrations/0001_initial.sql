@@ -113,7 +113,7 @@ CREATE TABLE questions (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
--- A human_input question is keyed by its node; model ask_user calls (null node) are not.
+-- A flow's ask-node question is keyed by its node; model ask_user calls (null node) are not.
 CREATE UNIQUE INDEX questions_run_node ON questions (run_id, node_id) WHERE node_id IS NOT NULL;
 CREATE INDEX questions_session ON questions (session_id, status);
 CREATE INDEX questions_run ON questions (run_id);
