@@ -102,6 +102,11 @@ test("only the person or the ceo changes a humans devices", async () => {
     "not_a_human",
     "@minh is an agent; agents have no password",
   ])
+  expect(await refusal(setPassword(g, "ngocbh", PASSWORD, "ava"))).toEqual([
+    403,
+    "forbidden",
+    "only @ngocbh or the CEO can change @ngocbh's password",
+  ])
   expect(head(root)).toBe(before)
 
   // The CEO changes anyone's devices.

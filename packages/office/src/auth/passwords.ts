@@ -17,6 +17,9 @@ const PHC = /^\$scrypt\$ln=([0-9]+),r=([0-9]+),p=([0-9]+)\$([A-Za-z0-9+/]+)\$([A
 const MAX_LN = 17
 const MAX_P = 4
 const MAX_MEMORY = 256 * 1024 * 1024
+const MAX_SALT = 64
+const MIN_KEY = 16
+const MAX_KEY = 64
 
 function b64(data: Buffer): string {
   return data.toString("base64").replace(/=+$/, "")
@@ -64,6 +67,9 @@ export async function checkPassword(password: string, phc: string | null | undef
   if (saltText.length % 4 === 1 || wantText.length % 4 === 1) return false
   const salt = Buffer.from(saltText, "base64")
   const want = Buffer.from(wantText, "base64")
+  // scrypt's PBKDF2 steps cost (salt + key length)·r·p, so a huge salt or key would burn CPU within the bounds
+  // above. Office and Python hashes have a 16-byte salt and a 32-byte key.
+  if (salt.length > MAX_SALT || want.length < MIN_KEY || want.length > MAX_KEY) return false
   let got: Buffer
   try {
     got = await scrypt(password, salt, ln, r, p, want.length)

@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { type Device, type LoginRequest, Person as PersonSchema, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
-import { readYaml, writeYaml } from "../company/flow_yaml.ts"
+import { readYaml, writeYaml, YamlError } from "../company/flow_yaml.ts"
 import type { CompanyGit, LockedGit } from "../company/git.ts"
 import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { checkPassword, DUMMY_HASH, hashPassword, passwordProblem } from "./passwords.ts"
@@ -37,6 +37,17 @@ function person(repo: CompanyRepo, handle: string, actor: string, what = "device
   return found
 }
 
+/** Replaces the existing file `file`'s contents with `data`. A symlink swapped in after `write`'s check isn't
+ *  followed: the open fails instead. */
+function overwrite(file: string, data: string | Buffer): void {
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW)
+  try {
+    fs.writeFileSync(fd, data)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 /** Sets `key` in `handle`'s `person.yaml` (an empty device list drops the key) and commits it; the file is
  *  restored if that fails. */
 async function write(
@@ -55,8 +66,19 @@ async function write(
     throw new DeviceRefused(422, "invalid_body", "person.yaml must be a regular file in the repo")
   }
   const before = fs.readFileSync(file)
-  // loadRepo just read and checked this file under the same lock.
-  const fields = readYaml(before.toString("utf8")) as Record<string, unknown>
+  // The lock doesn't stop a hand edit between loadRepo's read and this one, so the file is checked again.
+  let read: unknown
+  try {
+    read = readYaml(new TextDecoder("utf-8", { fatal: true }).decode(before))
+  } catch (error) {
+    // A decode error is a TypeError; either way the text is fixed, since the file can hold a password hash.
+    if (!(error instanceof TypeError || error instanceof YamlError)) throw error
+    read = undefined
+  }
+  if (read === null || typeof read !== "object" || Array.isArray(read)) {
+    throw new DeviceRefused(422, "invalid_body", "person.yaml can't be read")
+  }
+  const fields = read as Record<string, unknown>
   if (Array.isArray(value) && value.length === 0) delete fields[key]
   else fields[key] = value
   const parsed = PersonSchema.safeParse(fields)
@@ -64,10 +86,10 @@ async function write(
     throw new DeviceRefused(422, "invalid_body", validationMessage(PersonSchema, parsed.error, fields))
   }
   try {
-    fs.writeFileSync(file, writeYaml(fields))
+    overwrite(file, writeYaml(fields))
     await git.commit([rel], subject)
   } catch (error) {
-    fs.writeFileSync(file, before)
+    overwrite(file, before)
     throw error
   }
   return parsed.data

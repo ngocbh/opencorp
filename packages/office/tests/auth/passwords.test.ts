@@ -88,6 +88,19 @@ test.each([["salt"], ["key"]] as const)(
   },
 )
 
+// Each hash would check if the length caps were missing; the same construction at the caps still checks.
+test.each([["salt"], ["key"]] as const)("a hash with an oversized salt or key checks nothing [%s]", async (field) => {
+  const pw = "a fast password"
+  const options = { N: 2 ** 10, r: 8, p: 1 }
+  const phc = (saltLength: number, keyLength: number) => {
+    const salt = crypto.randomBytes(saltLength)
+    return `$scrypt$ln=10,r=8,p=1$${b64(salt)}$${b64(crypto.scryptSync(pw, salt, keyLength, options))}`
+  }
+  const [over, limit] = field === "salt" ? [phc(65, 32), phc(64, 32)] : [phc(16, 65), phc(16, 64)]
+  expect(await checkPassword(pw, limit)).toBe(true)
+  expect(await checkPassword(pw, over)).toBe(false)
+})
+
 // Python's rows past the bounds also fail on scrypt's memory cap; these match and fit in it, so only the bound
 // refuses them.
 test.each([["p"], ["ln"]] as const)(
