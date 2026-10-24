@@ -10,6 +10,7 @@ ALLOWED = {
     "packages/corp_office/src/opencorp/sandbox/policy.py",  # keeps an unmoved old home out of workspaces
     "packages/corp_office/tests/install/test_legacy.py",
     "packages/corp_office/tests/test_old_name.py",
+    "packages/office/tests/python_ids.txt",  # the snapshot of test ids holds test_policy.py's old-home cases
     "packages/tui/src/theme/index.ts",  # a theme saved under the old default name still loads
     "packages/tui/test/upstream-name.test.ts",  # pins that alias
 }
