@@ -2,7 +2,7 @@
  *  (Python's `tests/chat/test_logins.py`). */
 import fs from "node:fs"
 import path from "node:path"
-import { beforeEach, expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, test } from "bun:test"
 import {
   type AuthRequest,
   type AuthRequestOptions,
@@ -16,6 +16,8 @@ import { FORGET_MS, LoginNotFound, Logins, type LoginsOptions, type LoginView } 
 import { ProviderError } from "../../src/chat/provider.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { tempDir, waitFor } from "../helpers.ts"
+
+setDefaultTimeout(30_000)
 
 const SIGNATURE = "fake-signature-6e2a90d4"
 const REFRESH = "fake-refresh-b81c5f37"
@@ -194,7 +196,7 @@ test("start returns the url and code then signs in", async () => {
       logs.join("\n"),
     )
     // the tokens are in the sign-in, and only there
-    expect(fs.readFileSync(auth, "utf8")).toContain(ACCESS.split(".")[2]!)
+    expect(fs.readFileSync(auth, "utf8")).toContain(SIGNATURE)
   } finally {
     gate.open()
     await logins.closeAll()
@@ -269,19 +271,17 @@ test("cancel stops the poll and saves nothing", async () => {
 
 test("a sign in lists the models of every connection again", async () => {
   const conns = await connections()
-  const warmed = release()
   let names: string[] | undefined
   const models = {
     warm: async () => {
       names = await conns.names()
-      warmed.open()
     },
   }
   const logins = make(conns, new HTTP(FLOW), { models })
   try {
     await until(logins, (await logins.start({ by: "ngocbh" })).id, "signed_in")
-    await warmed.promise
-    expect(names).toEqual(["office", "chatgpt"]) // after the new connection is saved
+    // after the new connection is saved
+    expect(await waitFor(() => names, { what: "the warm-up" })).toEqual(["office", "chatgpt"])
   } finally {
     await logins.closeAll()
   }

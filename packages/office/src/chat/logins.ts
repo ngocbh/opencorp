@@ -58,8 +58,8 @@ class Login {
   /** Resolves once the code is shown, or the sign-in ends without one. */
   readonly shown: Promise<void>
   readonly setShown: () => void
-  /** The run's promise; never rejects. */
-  done: Promise<void> = Promise.resolve()
+  /** The run's promise, set by `start`; never rejects. */
+  done!: Promise<void>
 
   constructor(by: string) {
     this.by = by
