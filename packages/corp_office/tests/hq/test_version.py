@@ -60,6 +60,7 @@ def test_build_json_is_parsed_again_only_when_its_content_changes(tmp_path):
 
 @pytest.mark.skipif(shutil.which("bun") is None or not (CHECKOUT / "packages/app/vite.hq.ts").exists(),
                     reason="needs bun and packages/app")
+@pytest.mark.skip(reason="the app's build takes the TS office's key, apiId() in @opencorp/protocol (D31)")
 def test_the_app_build_and_the_office_compute_the_same_key():
     out = subprocess.run(["bun", "--eval", 'import { apiId } from "./packages/app/vite.hq.ts"; console.log(apiId())'],
                          cwd=CHECKOUT, capture_output=True, text=True, check=True)

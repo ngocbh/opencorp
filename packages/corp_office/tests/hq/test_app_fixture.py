@@ -12,6 +12,7 @@ FIXTURE = CHECKOUT / "packages/app/e2e/fixture.ts"
 
 
 @pytest.mark.skipif(not FIXTURE.exists(), reason="needs packages/app")
+@pytest.mark.skip(reason="the fixture imports CSP from the TS office's hq/guard.ts (D31)")
 def test_the_fixture_server_uses_the_offices_csp():
     # The formatter may break the line after "=", so match any whitespace there.
     found = re.search(r'const CSP =\s*"([^"]*)"', FIXTURE.read_text())

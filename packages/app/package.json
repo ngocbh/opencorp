@@ -5,8 +5,8 @@
   "type": "module",
   "license": "MIT",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "vite --configLoader runner",
+    "build": "vite build --configLoader runner",
     "test": "bun test ./test",
     "test:e2e": "playwright test",
     "test:real": "playwright test -c playwright.real.config.ts",
@@ -22,6 +22,7 @@
     "solid-js": "catalog:"
   },
   "devDependencies": {
+    "@opencorp/office": "workspace:*",
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "4.3.3",
     "tailwindcss": "4.3.3",

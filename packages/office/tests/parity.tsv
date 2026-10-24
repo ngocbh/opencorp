@@ -115,7 +115,7 @@ harness/test_session.py	open	—	—	O3-13
 harness/test_translate.py	open	—	—	O3-11
 harness/test_waiting.py	open	—	—	O3-14
 hq/test_api.py	open	—	split: O2-9 → O4b-7	O4b-7
-hq/test_app_fixture.py	open	—	—	O2-7
+hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	open	—	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
@@ -133,7 +133,9 @@ hq/test_socket_routes.py	open	—	—	O2-10
 hq/test_source.py	open	—	—	O2-9
 hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
 hq/test_status.py	ported	packages/office/tests/hq/status.test.ts	—	O2-7
-hq/test_version.py	open	—	—	O2-7
+hq/test_version.py	ported	packages/app/test/build.test.ts,packages/office/tests/hq/version.test.ts,packages/protocol/test/version.test.ts	—	O2-7
+hq/test_version.py::test_a_pyproject_that_isnt_opencorps_with_a_version_falls_back_to_the_installed_version	dropped	—	design §5.4, O0-6: the key is apiId() (the CLI package's version, built in), with no checkout or installed-version form	O2-7
+hq/test_version.py::test_without_a_checkout_the_key_is_the_installed_version	dropped	—	design §5.4, O0-6: apiId() has no installed-version form; the key is the same with or without a checkout	O2-7
 install/test_doctor.py	open	—	—	O2-18a
 install/test_fallback.py	open	—	—	O2-12
 install/test_init.py	open	—	—	O2-17
@@ -656,7 +658,6 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/protocol/test/schemas.test.ts::each pattern is checked against the fixtures	§5.4	O0-6
 —	new	packages/protocol/test/schemas.test.ts::every def has a zod schema of the same name	today's names (§5.4)	O0-6
 —	new	packages/protocol/test/schemas.test.ts::every pattern carries the u flag	§5.4	O0-6
-—	new	packages/protocol/test/version.test.ts::a docs only change keeps the key	P8	O0-6
 —	new	packages/protocol/test/version.test.ts::a schema change changes the key	P8	O0-6
 —	new	packages/protocol/test/version.test.ts::the key is stable	P8	O0-6
 —	new	packages/protocol/test/version.test.ts::the key is the version and the schema hash	P8	O0-6
