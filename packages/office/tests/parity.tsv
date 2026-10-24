@@ -178,7 +178,13 @@ store/test_sessions.py	open	—	—	O1-3
 store/test_work_items.py	open	—	—	O1-4
 test_old_name.py	dropped	—	a repo grep for the old name, kept for legacy.py's move, which goes; no migration (D24, D4)	O0-9
 test_packaging.py	dropped	—	the PyPI sdist and wheel; the office ships as a compiled binary (D25), tested by O2-26	O0-9
-test_secrets.py	open	—	—	O1-1
+test_secrets.py	ported	packages/office/tests/secrets.test.ts	§5.3 (D13); calls are async under the folder's lock	O1-1
+test_secrets.py::test_concurrent_sets_on_a_fresh_store_all_succeed	changed	packages/office/tests/secrets.test.ts::concurrent sets on a fresh store all succeed	one round of concurrent async calls instead of 20 rounds of threads; the folder also holds the lock file .lock (D13, §5.3)	O1-1
+test_secrets.py::test_delete_removes_from_the_root_it_checked	dropped	—	path-based calls under the folder's lock, no dir_fd or re-checks (D13)	O1-1
+test_secrets.py::test_delete_removes_the_secret	changed	packages/office/tests/secrets.test.ts::delete removes the secret	the folder keeps the lock file .lock (D13, §5.3)	O1-1
+test_secrets.py::test_get_reads_from_the_root_it_checked	dropped	—	path-based calls under the folder's lock, no dir_fd or re-checks (D13)	O1-1
+test_secrets.py::test_set_replaces_and_keeps_the_mode	changed	packages/office/tests/secrets.test.ts::set replaces and keeps the mode	the folder also holds the lock file .lock (D13, §5.3)	O1-1
+test_secrets.py::test_set_writes_into_the_root_it_checked	dropped	—	path-based calls under the folder's lock, no dir_fd or re-checks (D13)	O1-1
 test_smoke.py	ported	packages/office/tests/smoke.test.ts	the office package imports next to yian	O0-4
 testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, retired at cut-over (D29)	O0-9
 testing/test_fake_codex.py	open	—	—	O3-10
@@ -251,6 +257,16 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the checkout helper profile adds only the helper rules and lists the entry folder	§2.5, O0-11	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the compiled helper profile adds only the helper rules	§2.5, O0-11	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the install is write denied after every file allow	§6.1	O1-9
+—	new	packages/office/tests/secrets.test.ts::a folder of another user is refused	§6 rule 6: the folder is owned by the effective uid	O1-1
+—	new	packages/office/tests/secrets.test.ts::a lock file open to others is refused	§5.3, D13: the folder's lock file is private	O1-1
+—	new	packages/office/tests/secrets.test.ts::every call waits for the folders lock	§5.3, D13: every read and write holds the folder's lock	O1-1
+—	new	packages/office/tests/secrets.test.ts::read private of a missing file is an enoent error	§5.3: callers tell a missing file from a refused one	O1-1
+—	new	packages/office/tests/secrets.test.ts::read private refuses a symlink, a directory, a file open to others and a file of another user	§6 rule 6	O1-1
+—	new	packages/office/tests/secrets.test.ts::read private returns the bytes of a private file	§5.3	O1-1
+—	new	packages/office/tests/secrets.test.ts::set and write private fsync the temp file before renaming it	§6 rule 6	O1-1
+—	new	packages/office/tests/secrets.test.ts::the private file calls refuse a folder that is not private	§5.3: every private file's folder is checked	O1-1
+—	new	packages/office/tests/secrets.test.ts::the private file calls refuse the folders lock file	§5.3, D13: the lock file is never read or replaced	O1-1
+—	new	packages/office/tests/secrets.test.ts::write private makes a 0600 file and replaces a symlink without following it	§6 rule 6	O1-1
 —	new	packages/office/tests/store/close.test.ts::a store cannot close inside a transaction	close() refuses inside a transaction (final review)	O1-2
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a fifo at the store path is refused	never blocks on or follows a non-file (§6 rule 6)	O1-2
