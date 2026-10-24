@@ -1,9 +1,12 @@
 /** Checking a loaded company repo (Python's `tests/company/test_lint.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { assetToolName } from "../../src/company/naming.ts"
-import { baseFiles, company, makeCompany, person } from "./helpers.ts"
+import { tempDir } from "../helpers.ts"
+import { baseFiles, CHAT, CHILD, company, MAIN_INPUTS, makeCompany, parentFlow, person } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -124,6 +127,240 @@ test("gated tool granted directly is a warning", async () => {
   const root = makeCompany({ "assets/fake.yaml": asset({ tools: { echo: { risk: "gated" } } }) })
   expect(await codes(root)).toEqual(new Set())
   expect(await codes(root, "warning")).toContain("asset.gated_tool_granted")
+})
+
+test("missing flow", async () => {
+  const minh = person("minh", { main: "../../shared/flows/nope.yaml" })
+  const root = makeCompany({ "people/minh/person.yaml": minh })
+  expect(await codes(root)).toContain("person.flow_missing")
+})
+
+test("invalid flow carries composer message", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": "id: chat\nname: chat\noutputs: 1\n" })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("output")
+  expect(issue!.message).not.toContain("LoadError")
+})
+
+test("unexpected flow error names its type", async () => {
+  // A flow that isn't UTF-8 fails in the decoder, outside yian's LoadError.
+  const root = makeCompany({ "shared/flows/chat.yaml": new Uint8Array([0xff, 0xfe, 0x0a]) })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toStartWith("../../shared/flows/chat.yaml: TypeError: ")
+})
+
+test("flow outside repo", async () => {
+  const tmp = tempDir()
+  const minh = person("minh", { main: "../../../etc/passwd" })
+  const root = makeCompany({ "people/minh/person.yaml": minh }, tmp)
+  const [issue, ...rest] = await withCode(root, "person.flow_outside_repo")
+  expect(rest).toEqual([])
+  expect(issue!.message).not.toContain(tmp)
+  expect(issue!.message).toContain("../etc/passwd")
+})
+
+test("flow cycle message is repo relative", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("chat") })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).not.toContain(root)
+  expect(issue!.message).toContain("shared/flows/chat.yaml")
+})
+
+test("child flow inside repo is fine", async () => {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": parentFlow("echo") + MAIN_INPUTS,
+    "shared/flows/echo.yaml": CHILD,
+  })
+  expect(await codes(root)).toEqual(new Set())
+})
+
+test("child flow outside repo", async () => {
+  const tmp = tempDir()
+  fs.writeFileSync(path.join(tmp, "echo.yaml"), CHILD) // tmp/company is the repo
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("../../../echo") }, tmp)
+  const [issue, ...rest] = await withCode(root, "person.flow_outside_repo")
+  expect(rest).toEqual([])
+  expect(issue!.message).not.toContain(tmp)
+  expect(issue!.message).toContain("../echo.yaml")
+})
+
+test("repo reached through a symlink", async () => {
+  const tmp = tempDir()
+  const link = path.join(tmp, "link")
+  fs.symlinkSync(company(tmp), link)
+  expect(await lint(loadRepo(link))).toEqual([])
+})
+
+test("sop flows are checked", async () => {
+  const sops = [{ flow: "../../shared/flows/nope.yaml" }]
+  expect(await codes(makeCompany({ "people/minh/person.yaml": person("minh", { sops }) })))
+    .toContain("person.flow_missing")
+})
+
+test("routine flows are checked", async () => {
+  const routines = [{ name: "daily", flow: "../../shared/flows/nope.yaml" }]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { routines }) })
+  expect(await codes(root)).toContain("person.flow_missing")
+})
+
+test.each(["main", "sops", "routines"])("nul byte in a flow ref is invalid [%s]", async (field) => {
+  const ref = "../../shared/flows/chat\0.yaml"
+  const value = { main: ref, sops: [{ flow: ref }], routines: [{ name: "daily", flow: ref }] }[field]
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { [field]: value }) })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(issue!.message).not.toContain("\0")
+})
+
+test("agent needs a main flow", async () => {
+  const minh = person("minh")
+  delete minh["main"]
+  expect(await issues(makeCompany({ "people/minh/person.yaml": minh }))).toContain(
+    "person.no_main people/minh/person.yaml",
+  )
+})
+
+test("a main flow must declare person and talking_to", async () => {
+  const root = makeCompany({ "shared/flows/chat.yaml": CHAT })
+  const [issue, ...rest] = await withCode(root, "person.main_inputs_missing")
+  expect(rest).toEqual([])
+  expect([issue!.path, issue!.severity]).toEqual(["people/minh/person.yaml", "error"])
+  expect(issue!.message).toBe(
+    "../../shared/flows/chat.yaml doesn't declare the person and talking_to inputs; the office"
+      + " passes both to a main flow and Yian refuses inputs a flow doesn't declare, so declare"
+      + " `person: !Person` (name, handle, title, company, reports_to) and `talking_to: !str`"
+      + " under input: (as the template's shared/flows/chat.yaml does)",
+  )
+})
+
+test("a main flow missing one input names only that one", async () => {
+  const flow = CHAT.replace("name: chat\n", "name: chat\ninput:\n  person: !str\n")
+  const root = makeCompany({ "shared/flows/chat.yaml": flow })
+  const [issue] = await withCode(root, "person.main_inputs_missing")
+  expect(issue!.message).toStartWith("../../shared/flows/chat.yaml doesn't declare the talking_to input;")
+})
+
+test("only the main flow needs the office inputs", async () => {
+  const sops = [{ flow: "../../shared/flows/plain.yaml" }]
+  const routines = [{ name: "daily", flow: "../../shared/flows/plain.yaml" }]
+  const root = makeCompany({
+    "shared/flows/plain.yaml": CHAT.replace("id: chat\nname: chat", "id: p\nname: p"),
+    "people/minh/person.yaml": person("minh", { sops, routines }),
+  })
+  expect(await codes(root)).toEqual(new Set())
+})
+
+/** A flow `id` whose one CODE node calls `fn` in the file `file` with its `text` input. */
+function codeFlow(id: string, file: string): string {
+  return `id: ${id}\nname: ${id}\ninput:\n  text: !str\nnodes:\n`
+    + `  a: {kind: code, code: ${file}:fn, input: {x: "\${input.text}"}}\noutput: \${a.output}\n`
+}
+
+/** Writes a module outside the repo in `tmp` that a CODE node could name; loading never imports it. */
+function outsideModule(tmp: string): string {
+  const file = path.join(tmp, "outside.ts")
+  fs.writeFileSync(file, "export function fn(input: { x: string }) { return input.x }\n")
+  return file
+}
+
+/** Checks the repo at `root` has a single `person.flow_invalid` finding, naming the code root. */
+async function codeRootIssue(root: string) {
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.path).toBe("people/minh/person.yaml")
+  expect(issue!.message).toContain("outside the code root")
+}
+
+test("a code reference outside the repo is a lint error", async () => {
+  const tmp = tempDir()
+  outsideModule(tmp)
+  await codeRootIssue(makeCompany({ "shared/flows/chat.yaml": codeFlow("chat", "../../../outside.ts") }, tmp))
+})
+
+test("a code reference outside the repo in a child flow is a lint error", async () => {
+  const tmp = tempDir()
+  outsideModule(tmp)
+  const root = makeCompany({
+    "shared/flows/chat.yaml": parentFlow("echo"),
+    "shared/flows/echo.yaml": codeFlow("echo", "../../../outside.ts"),
+  }, tmp)
+  await codeRootIssue(root)
+})
+
+test("a symlinked code file pointing out of the repo is a lint error", async () => {
+  const tmp = tempDir()
+  const root = makeCompany({ "shared/flows/chat.yaml": codeFlow("chat", "./link.ts") }, tmp)
+  fs.symlinkSync(outsideModule(tmp), path.join(root, "shared/flows/link.ts"))
+  await codeRootIssue(root)
+})
+
+test("a child flow symlinked out of the repo is outside the repo", async () => {
+  const tmp = tempDir()
+  fs.writeFileSync(path.join(tmp, "echo.yaml"), CHILD)
+  const root = makeCompany({ "shared/flows/chat.yaml": parentFlow("echo") }, tmp)
+  fs.symlinkSync(path.join(tmp, "echo.yaml"), path.join(root, "shared/flows/echo.yaml"))
+  const [issue, ...rest] = await withCode(root, "person.flow_outside_repo")
+  expect(rest).toEqual([])
+  expect(issue!.message).not.toContain(tmp)
+})
+
+/** Checks the single `person.flow_invalid` finding for a main flow with `system` before its `uses:` names
+ *  `system.paths`. */
+async function systemPathsIssue(system: string) {
+  const root = makeCompany({
+    "shared/flows/chat.yaml": parentFlow("echo").replace("uses:", system + "uses:"),
+    "shared/flows/lib/echo.yaml": CHILD,
+  })
+  const [issue, ...rest] = await withCode(root, "person.flow_invalid")
+  expect(rest).toEqual([])
+  expect(issue!.message).toContain("system.paths")
+}
+
+test("system paths is refused", async () => {
+  await systemPathsIssue("system:\n  paths: [lib]\n")
+})
+
+test("system paths is refused in a flow with typed inputs", async () => {
+  // A tag such as `!str` is a type to yian, not a value.
+  await systemPathsIssue("input:\n  topic: !str\nsystem:\n  paths: [lib]\n")
+})
+
+test("system paths through a merge key is refused", async () => {
+  await systemPathsIssue("x-base: &base\n  paths: [lib]\nsystem:\n  <<: *base\n")
+})
+
+test("unknown skill", async () => {
+  const root = makeCompany({ "people/minh/person.yaml": person("minh", { skills: ["nope"] }) })
+  expect(await issues(root)).toContain("person.unknown_skill people/minh/person.yaml")
+})
+
+test("personal skill is found", async () => {
+  const root = makeCompany({
+    "people/minh/person.yaml": person("minh", { skills: ["mine"] }),
+    "people/minh/skills/mine/SKILL.md": "---\nname: mine\ndescription: Mine.\n---\nMine.\n",
+  })
+  expect(await codes(root)).toEqual(new Set())
+})
+
+test("invalid skill is reported", async () => {
+  const root = makeCompany({ "shared/skills/broken/SKILL.md": "no frontmatter\n" })
+  expect(await issues(root)).toContain("skill.invalid shared/skills/broken")
+})
+
+test("duplicate skill name in one root", async () => {
+  const root = makeCompany({
+    "shared/skills/review2/SKILL.md": "---\nname: code-review\ndescription: Again.\n---\nx\n",
+  })
+  expect(await issues(root)).toContain("skill.invalid shared/skills/review2")
+})
+
+test("a file in a skills folder is skipped", async () => {
+  // Its SKILL.md path runs through a file, which stat refuses with ENOTDIR.
+  expect(await lint(loadRepo(makeCompany({ "shared/skills/README.md": "# Skills\n" })))).toEqual([])
 })
 
 test("agent without profile is a warning", async () => {

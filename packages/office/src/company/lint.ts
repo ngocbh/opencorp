@@ -1,6 +1,9 @@
 /** Check a loaded company repo for problems the schema can't express. */
 import fs from "node:fs"
 import path from "node:path"
+import { LoadError } from "@ngocbh/yian"
+import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
+import { FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import type { CompanyRepo } from "./loader.ts"
 import { assetToolName, TOOL_NAME } from "./naming.ts"
@@ -19,13 +22,28 @@ export async function lint(repo: CompanyRepo): Promise<RepoIssue[]> {
 
 /** Whether `p` is a file; false for a path that doesn't exist or can't be one, as Python's `Path.is_file`. */
 function isFile(p: string): boolean {
+  return statOrNull(p)?.isFile() ?? false
+}
+
+/** Whether `p` is a directory; false for a path that doesn't exist or can't be one, as `Path.is_dir`. */
+function isDir(p: string): boolean {
+  return statOrNull(p)?.isDirectory() ?? false
+}
+
+/** `p`'s stat, or null for a path that doesn't exist or can't be one; other errors are thrown. */
+function statOrNull(p: string): fs.Stats | null {
   try {
-    return fs.statSync(p).isFile()
+    return fs.statSync(p)
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code ?? ""
-    if (["ENOENT", "ENOTDIR", "EBADF", "ELOOP"].includes(code)) return false
+    if (["ENOENT", "ENOTDIR", "EBADF", "ELOOP"].includes(errno(error) ?? "")) return null
     throw error
   }
+}
+
+/** A Node system error's errno code, such as `ENOENT`; undefined for anything else thrown. */
+function errno(error: unknown): string | undefined {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
+  return typeof code === "string" ? code : undefined
 }
 
 /** `items`' entries sorted by key, as Python's `sorted(d.items())`. */
@@ -33,6 +51,7 @@ function sorted<T>(items: ReadonlyMap<string, T>): [string, T][] {
   return [...items].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
 }
 
+/** The repo path of a person's `person.yaml`. */
 function personPath(handle: string): string {
   return `people/${handle}/person.yaml`
 }
@@ -160,6 +179,103 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
+/** The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare. */
+const MAIN_INPUTS = ["person", "talking_to"]
+
+/** Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles; a main
+ *  flow declares the inputs the office passes it. */
+async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
+  for (const [handle, person] of sorted(repo.people)) {
+    const file = personPath(handle)
+    if (person.kind === "agent" && !person.main) {
+      yield repoIssue(file, "person.no_main", "agents need a main flow")
+    }
+    const base = path.join(repo.root, "people", handle)
+    const refs: [ref: string, isMain: boolean][] = person.main ? [[person.main, true]] : []
+    for (const { flow } of [...person.sops, ...person.routines]) refs.push([flow, false])
+    for (const [ref, isMain] of refs) {
+      if (ref.includes("\0")) {
+        yield repoIssue(file, "person.flow_invalid", `${JSON.stringify(ref)}: embedded null byte`)
+        continue
+      }
+      const resolved = resolvePath(path.resolve(base, ref))
+      if (!outsideRoot(repo.root, resolved) && !isFile(resolved)) {
+        yield repoIssue(file, "person.flow_missing", `${ref} does not exist`)
+        continue
+      }
+      let declared: Set<string>
+      try {
+        declared = new Set((await loadConfined(repo.root, resolved)).input.map((parameter) => parameter.name))
+      } catch (error) {
+        if (error instanceof FlowOutsideRepo) {
+          yield repoIssue(file, "person.flow_outside_repo", `${ref}: ${error.message}`)
+        } else if (error instanceof LoadError) {
+          yield repoIssue(file, "person.flow_invalid", `${ref}: ${error.message}`)
+        } else {
+          // A system error or RangeError from a child file, or a surprise.
+          const what = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+          yield repoIssue(file, "person.flow_invalid", `${ref}: ${what}`)
+        }
+        continue
+      }
+      const missing = MAIN_INPUTS.filter((name) => !declared.has(name))
+      if (isMain && missing.length > 0) {
+        const what = `the ${missing.join(" and ")} input${missing.length > 1 ? "s" : ""}`
+        yield repoIssue(file, "person.main_inputs_missing",
+          `${ref} doesn't declare ${what}; the office passes both to a main flow and Yian refuses inputs a`
+          + " flow doesn't declare, so declare `person: !Person` (name, handle, title, company, reports_to)"
+          + " and `talking_to: !str` under input: (as the template's shared/flows/chat.yaml does)")
+      }
+    }
+  }
+}
+
+/**
+ * Loads each skill directory under one root and returns their names; each bad one becomes a `skill.invalid`
+ * issue in `issues`.
+ *
+ * Mirrors yian's `loadSkills`: hidden entries and directories without `SKILL.md` are skipped, and two skills
+ * with one name in the same root are a problem. It loads each directory itself to report each problem
+ * at its own path.
+ */
+function skillRoot(root: string, rel: string, issues: RepoIssue[]): Set<string> {
+  const names = new Set<string>()
+  const entries = isDir(root) ? fs.readdirSync(root).sort() : []
+  for (const name of entries) {
+    const dir = path.join(root, name)
+    if (name.startsWith(".") || !isFile(path.join(dir, "SKILL.md"))) continue
+    let skill: Skill
+    try {
+      skill = loadSkillDir(dir)
+    } catch (error) {
+      if (!(error instanceof SkillError) && errno(error) === undefined) throw error
+      issues.push(repoIssue(`${rel}/${name}`, "skill.invalid", (error as Error).message))
+      continue
+    }
+    if (names.has(skill.name)) {
+      issues.push(repoIssue(`${rel}/${name}`, "skill.invalid",
+        `skill name ${JSON.stringify(skill.name)} is used twice in ${rel}`))
+    }
+    names.add(skill.name)
+  }
+  return names
+}
+
+/** Granted skills exist in the person's own skills or in shared/skills. */
+function checkSkills(repo: CompanyRepo): RepoIssue[] {
+  const issues: RepoIssue[] = []
+  const shared = skillRoot(path.join(repo.root, "shared", "skills"), "shared/skills", issues)
+  for (const [handle, person] of sorted(repo.people)) {
+    const own = skillRoot(path.join(repo.root, "people", handle, "skills"), `people/${handle}/skills`, issues)
+    for (const name of person.skills) {
+      if (!own.has(name) && !shared.has(name)) {
+        issues.push(repoIssue(personPath(handle), "person.unknown_skill", name))
+      }
+    }
+  }
+  return issues
+}
+
 /** Agents should have a profile; humans may skip it. */
 function* checkProfiles(repo: CompanyRepo): Iterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
@@ -206,6 +322,5 @@ function* checkDevices(repo: CompanyRepo): Iterable<RepoIssue> {
   }
 }
 
-// The flow and skill checks belong between the assets and profiles checks, as in Python.
 const CHECKS: Check[] = [checkIdCase, checkManagers, checkCeo, checkGroups, checkPersonGroups, checkAssets,
-  checkProfiles, checkDevices]
+  checkFlows, checkSkills, checkProfiles, checkDevices]
