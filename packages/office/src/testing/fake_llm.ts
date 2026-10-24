@@ -75,6 +75,7 @@ export class FakeLLM {
   #authorizations: (string | null)[] = []
   #holds: Hold[] = []
   #ids = 0
+  #closed = false
 
   private constructor(server: http.Server, baseUrl: string) {
     this.#server = server
@@ -95,6 +96,7 @@ export class FakeLLM {
 
   /** Lets every held reply go, ends open connections and stops listening; a second call does nothing. */
   async close(): Promise<void> {
+    this.#closed = true
     this.release()
     // Bun's closeAllConnections also stops the listener, so close() then reports it isn't running.
     this.#server.closeAllConnections()
@@ -183,14 +185,15 @@ export class FakeLLM {
   }
 
   async #completions(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    let body: Obj
+    let body: Obj | undefined
     try {
       body = JSON.parse(await readBody(req))
     } catch {
-      return send(res, 400, { error: { message: "the request body isn't JSON", type: "invalid_request" } }, NO_RETRY)
+      // Not JSON: refused below, with JSON that isn't an object.
     }
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      return send(res, 400, { error: { message: "the request body isn't an object", type: "invalid_request" } }, NO_RETRY)
+      const error = { message: "the request body isn't a JSON object", type: "invalid_request" }
+      return send(res, 400, { error }, NO_RETRY)
     }
     this.#requests.push(body)
     this.#authorizations.push(req.headers.authorization ?? null)
@@ -245,6 +248,9 @@ export class FakeLLM {
 
   /** Waits until `release()`, or at most `hold` seconds when it is a positive number. */
   #hold(hold: boolean | number): Promise<void> {
+    // A request that finished reading its body after close() released the holds would otherwise start a hold
+    // nothing releases, whose timer outlives the test.
+    if (this.#closed) return Promise.resolve()
     return new Promise((resolve) => {
       const waiter: Hold = { resolve }
       const seconds = Number(hold)
