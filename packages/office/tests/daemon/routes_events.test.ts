@@ -186,11 +186,10 @@ test("head is 405 and leaves the connection usable", async () => {
   const head = await conn.response({ head: true })
   expect(head.status).toBe(405)
   expect(head.head).toMatch(/\r\nallow: GET\r\n/i)
-  // An unknown path has a known reply (404 no_route), which shows the connection still serves requests.
-  conn.send("GET /nope HTTP/1.1\r\nhost: office\r\n\r\n")
+  // A plain request after it is answered, which shows the connection still serves requests.
+  conn.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
   const next = await conn.response()
-  expect(next.status).toBe(404)
-  expect(JSON.parse(next.body).error).toBe("no_route")
+  expect(next.status).toBe(200)
   expect(office.bus.subscriberCount).toBe(0)
 })
 

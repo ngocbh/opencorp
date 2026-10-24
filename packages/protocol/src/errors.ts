@@ -22,6 +22,7 @@ export const ERROR_CODES = [
   "internal_error",
   "invalid_body",
   "json_required",
+  "lint_failed",
   "method_not_allowed",
   "no_file",
   "no_log",

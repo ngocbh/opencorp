@@ -33,11 +33,6 @@ const UNAUTHENTICATED = {
   message: "this office needs a device token; run `opencorp login`",
 }
 
-/** A stand-in GET route answering `[]`, for route areas not served here. */
-function standIn(path: string): Route<RequestContext> {
-  return { method: "GET", path, handler: () => [] }
-}
-
 const errorOf = (reply: { json(): unknown }) => (reply.json() as { error: string }).error
 
 test("without devices an unauthenticated request acts as the ceo", async () => {
@@ -74,7 +69,7 @@ test("once a human has a device unauthenticated requests are refused", async () 
 
 test("a token acts as its person", async () => {
   const office = makeOffice()
-  const { sock } = await served(office, { tokens: true, extra: [standIn("/people")] })
+  const { sock } = await served(office, { tokens: true })
   const company = office.paths.company
   addHuman(company, "ava")
   const ava = newToken()
@@ -187,7 +182,7 @@ test("the event stream is checked like any get", async () => {
 
 test("tokens work on a real socket", async () => {
   const office = makeOffice()
-  const { sock } = await served(office, { tokens: true, extra: [standIn("/folders/*cwd/people")] })
+  const { sock } = await served(office, { tokens: true })
   const token = newToken()
   giveDevice(office.paths.company, "ngocbh", "mac", token)
   expect((await request(sock, "GET", "/health")).status).toBe(200)
@@ -309,7 +304,7 @@ const personOf = (reply: { json(): unknown }) => reply.json() as PersonReply
 
 test("bootstrap an unauthenticated request adds the first device", async () => {
   const office = makeOffice()
-  const { sock } = await served(office, { tokens: true, extra: [standIn("/people")] })
+  const { sock } = await served(office, { tokens: true })
   const company = office.paths.company
   const token = newToken()
   const r = await send(sock, "POST", "/people/ngocbh/devices", device("mac", token))
