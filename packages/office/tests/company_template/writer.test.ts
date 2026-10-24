@@ -25,6 +25,7 @@ const PACKAGED_FLOWS = fs
   .map((name) => `shared/flows/${name}`)
 const MANAGER_FLOW = "shared/flows/profile_manager.yaml"
 
+/** Commits every tracked change in `root` with `message`. */
 function commitAll(root: string, message: string): void {
   git(root, "commit", "-qam", message)
 }
@@ -35,6 +36,7 @@ function dirs(): { tmp: string; root: string; worktrees: string } {
   return { tmp, root: path.join(tmp, "company"), worktrees: path.join(tmp, "worktrees") }
 }
 
+/** The text of `file`, as UTF-8. */
 function read(file: string): string {
   return fs.readFileSync(file, "utf8")
 }

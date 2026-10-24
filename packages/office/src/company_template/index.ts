@@ -114,6 +114,7 @@ function lexists(file: string): boolean {
   }
 }
 
+/** Whether `file` is a symlink (lstat); any error means it isn't (as Python's `Path.is_symlink`). */
 function isSymlink(file: string): boolean {
   try {
     return fs.lstatSync(file).isSymbolicLink()
@@ -144,7 +145,8 @@ function stoppedOwner(root: string): string | null {
   try {
     const ceo = (readYaml(UTF8.decode(fs.readFileSync(path.join(root, "company.yaml")))) as { ceo?: unknown }).ceo
     // The handle pattern allows no '/' or '.', so the handle names a directory directly under people/.
-    return Company.safeParse({ name: "-", ceo }).success ? (ceo as string) : null
+    const parsed = Company.safeParse({ name: "-", ceo })
+    return parsed.success ? parsed.data.ceo : null
   } catch {
     return null
   }
