@@ -232,8 +232,9 @@ function denial(
   return `${name}: ${reasons[0]}`
 }
 
-/** A kind tool's result as JSON data, as Python's `json.dumps(value, default=str)` reads back: `undefined` is null,
- *  a set an array, a map an object, bytes their UTF-8 text, a function `"[function]"`, anything else its text.
+/** A value (a kind tool's result, or a call's args for the audit) as JSON data, as Python's
+ *  `json.dumps(value, default=str)` reads back: `undefined` is null, a set an array, a map an object, bytes their
+ *  UTF-8 text, a function `"[function]"`, anything else its text.
  *  Throws `TypeError` on a cycle. */
 function toJson(value: unknown, path: Set<object> = new Set()): unknown {
   if (value === undefined) return null

@@ -266,7 +266,7 @@ test("non json arguments are audited as text", async () => {
   const row = store.listAudit().at(-1)!
   expect(row.args.blob).toBe("[redacted]")
   expect(JSON.stringify(row)).not.toContain(TOKEN)
-  expect(JSON.stringify(row)).not.toContain("115,51")
+  expect(JSON.stringify(row)).not.toContain('"0":115')
 })
 
 test("a secret changed between two calls is read on the next", async () => {
@@ -334,17 +334,27 @@ test("a proto key in a result stays a plain key", async () => {
 
 test("a shared value in a result is not a cycle", async () => {
   const shared = { t: "x" }
-  const kinds = { ...KINDS, odd: { read: { run: () => ({ a: shared, b: shared }) }, holes: { run: () => [1, , 3] } } }
+  const kinds = { ...KINDS, odd: { read: { run: () => ({ a: shared, b: shared }) } } }
+  const { monitor, store } = await makeMonitor({
+    "assets/vault.yaml": {
+      id: "vault", kind: "odd", secrets: ["vault_token"], tools: { read: {} }, grants: [{ who: "minh", can: ["read"] }],
+    },
+  }, kinds)
+  expect(await monitor.call("minh", "r1", "vault__read", {})).toEqual({ a: { t: "x" }, b: { t: "x" } })
+  expect(store.listAudit().map((r) => r.outcome)).toEqual(["ok"])
+})
+
+test("a hole in a result array is null", async () => {
+  const kinds = { ...KINDS, odd: { holes: { run: () => [1, , 3] } } }
   const { monitor, store } = await makeMonitor({
     "assets/vault.yaml": {
       id: "vault",
       kind: "odd",
       secrets: ["vault_token"],
-      tools: { read: {}, holes: {} },
-      grants: [{ who: "minh", can: ["read", "holes"] }],
+      tools: { holes: {} },
+      grants: [{ who: "minh", can: ["holes"] }],
     },
   }, kinds)
-  expect(await monitor.call("minh", "r1", "vault__read", {})).toEqual({ a: { t: "x" }, b: { t: "x" } })
   expect(await monitor.call("minh", "r1", "vault__holes", {})).toStrictEqual([1, null, 3])
-  expect(store.listAudit().map((r) => r.outcome)).toEqual(["ok", "ok"])
+  expect(store.listAudit().map((r) => r.outcome)).toEqual(["ok"])
 })
