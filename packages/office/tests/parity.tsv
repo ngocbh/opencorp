@@ -161,17 +161,18 @@ harness/test_translate.py::test_recorded_sessions_translate_as_their_golden_file
 harness/test_translate.py::test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in	changed	packages/office/tests/harness/translate.test.ts::the recorded steer keeps the running command in the message it started in	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_its_message	changed	packages/office/tests/harness/translate.test.ts::two steers around a running command keep it in its message	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_waiting.py	open	—	—	O3-14
-hq/test_api.py	open	—	split: O2-9 → O4b-7	O4b-7
+hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
-hq/test_auth.py	open	—	—	O2-9
+hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
 hq/test_events.py	open	—	—	O2-10
-hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
+hq/test_guard.py	ported	packages/office/tests/hq/guard.test.ts	—	O2-9
 hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers); the trickling client may lose Bun's 408 to its own write, so this test checks the close and the guard's settled promise, and `a body that stops arriving is 408` checks the 408 and `connection: close`	O2-7
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
+hq/test_guard.py::test_a_websocket_scope_is_closed_without_reaching_the_app	changed	packages/office/tests/hq/guard.test.ts::a websocket upgrade is served as plain http	design §2.3: no upgrade listener, so an upgrade is plain HTTP through the guard and the HQ app, with no websocket scope to close; O2-10's test_servers.py::test_a_websocket_upgrade_is_served_as_plain_http_on_hq pins it on the listener	O2-9
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
-hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
+hq/test_login.py	ported	packages/office/tests/hq/login.test.ts	—	O2-9
 hq/test_login.py::test_a_check_whose_request_went_away_still_holds_its_slot	changed	packages/office/tests/hq/login.test.ts::a check whose request went away still holds its slot	design §3.3: promises can't be cancelled, so a caller that leaves can't stop the check; the slot frees when the scrypt promise settles (pinned by Busy while two held checks run, and running back to 0); checked on Logins with a stand-in sessions object	O2-8
 hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
 hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
@@ -179,7 +180,7 @@ hq/test_servers.py	open	—	—	O2-10
 hq/test_sessions.py	ported	packages/office/tests/hq/sessions.test.ts	—	O2-8
 hq/test_sessions.py::test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row	changed	packages/office/tests/hq/sessions.test.ts::a revoke marks the entry a check made while it read the row	design §3.3: the TS store is synchronous, so a revoke's row read can't interleave with a check; the test checks that a revoke marks, never replaces or drops, the entry a check made	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10
-hq/test_source.py	open	—	—	O2-9
+hq/test_source.py	ported	packages/office/tests/hq/source.test.ts	—	O2-9
 hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
 hq/test_status.py	ported	packages/office/tests/hq/status.test.ts	—	O2-7
 hq/test_version.py	ported	packages/app/test/build.test.ts,packages/office/tests/hq/version.test.ts,packages/protocol/test/version.test.ts	—	O2-7
@@ -567,6 +568,9 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/harness/translate.test.ts::a reasoning item with an empty summary writes nothing	translate.py:166,241,339: Python's truthiness kept	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
+—	new	packages/office/tests/hq/api.test.ts::a work item and costs are on the allowlist	design §3.2: HQ reuses getWorkItem and costs; test_open_questions_a_work_item_and_costs stays open for O3-9's /api/questions	O2-9
+—	new	packages/office/tests/hq/api.test.ts::a wrong method under api is a json 404	design §6.4: a wrong method under /api is 404 no_route, as Starlette's catch-all route was	O2-9
+—	new	packages/office/tests/hq/api.test.ts::get office isnt on the hq allowlist	design §6, rule 7 (P14): GET /office is office.sock only	O2-9
 —	new	packages/office/tests/hq/auth.test.ts::only the first cookie header counts	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/auth.test.ts::the open requests and the app need no session	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/auth.test.ts::the session check reads the cookie named for the host port	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
@@ -587,6 +591,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
 —	new	packages/office/tests/hq/login.test.ts::a check that errors gives its slot back and counts no failure	design §6.4, rule 8: the two-check limit never leaks a slot when the hash read or the check fails	O2-8
 —	new	packages/office/tests/hq/login.test.ts::a throttled pair is refused before the password is checked	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
+—	new	packages/office/tests/hq/login.test.ts::an encoded login path is the open login route	design §6.4: the session check and the router both judge the decoded path (O2-8); a path only the session check decodes reaches no handler	O2-9
 —	new	packages/office/tests/hq/login.test.ts::an unknown handle is checked against the dummy hash and fails	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/login.test.ts::the right password returns the fingerprint of its hash and clears the failures	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/pairing.test.ts::its inspect and json show no key or code	design §6, rule 1: inspect and JSON show the office dir and a count, never a code or its sha256 key	O2-7

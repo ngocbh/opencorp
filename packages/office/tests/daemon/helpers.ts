@@ -142,7 +142,8 @@ export function giveDevice(company: string, handle: string, name: string, token:
 export type Reply = { status: number; headers: IncomingHttpHeaders; text: string; json(): unknown }
 
 /** One request over `node:http`, on a fresh connection. Under `bun test` this client is fetch-based, so
- *  assertions about `connection: close` or reuse go through `raw` or `Conn`. */
+ *  assertions about `connection: close` or reuse go through `raw` or `Conn`. `setHost` false sends the `host`
+ *  header exactly as given (Bun otherwise replaces an empty Host with `localhost`). */
 export function request(
   sock: string,
   method: string,
@@ -151,11 +152,18 @@ export function request(
     headers = {},
     body,
     chunks,
-  }: { headers?: Record<string, string>; body?: Buffer | string; chunks?: AsyncIterable<Buffer> } = {},
+    setHost,
+  }: {
+    headers?: Record<string, string>
+    body?: Buffer | string
+    chunks?: AsyncIterable<Buffer>
+    setHost?: boolean
+  } = {},
 ): Promise<Reply> {
   return new Promise((resolve, reject) => {
     let responded = false
-    const req = http.request({ socketPath: sock, method, path: target, headers, agent: false }, (res) => {
+    const options = { socketPath: sock, method, path: target, headers, agent: false, setHost }
+    const req = http.request(options, (res) => {
       responded = true
       const parts: Buffer[] = []
       res.on("data", (part: Buffer) => parts.push(part))
