@@ -10,8 +10,6 @@ import { checkPassword, DUMMY_HASH, hashPassword, passwordProblem } from "./pass
 
 type Person = z.output<typeof PersonSchema>
 
-const UTF8 = new TextDecoder("utf-8", { fatal: true })
-
 /** A device or password change that can't be made: `status` and `code` are the HTTP error's. */
 export class DeviceRefused extends Error {
   override name = "DeviceRefused"
@@ -39,32 +37,27 @@ function person(repo: CompanyRepo, handle: string, actor: string, what = "device
   return found
 }
 
-/** Sets `key` in `handle`'s `person.yaml` (an empty `value` drops it) and commits it; the file is restored
- *  if that fails. */
+/** Sets `key` in `handle`'s `person.yaml` (an empty device list drops the key) and commits it; the file is
+ *  restored if that fails. */
 async function write(
   git: LockedGit,
   root: string,
   handle: string,
   key: string,
-  value: unknown,
+  value: Device[] | string,
   subject: string,
 ): Promise<Person> {
   const rel = `people/${handle}/person.yaml`
   const file = path.join(root, rel)
+  // The loader follows a symlinked file or folder, but a write through one would change a file outside the repo.
+  const inRepo = fs.realpathSync(path.dirname(file)) === path.join(fs.realpathSync(root), "people", handle)
+  if (!inRepo || !fs.lstatSync(file).isFile()) {
+    throw new DeviceRefused(422, "invalid_body", "person.yaml must be a regular file in the repo")
+  }
   const before = fs.readFileSync(file)
-  let data: unknown
-  try {
-    data = readYaml(UTF8.decode(before))
-  } catch {
-    data = null
-  }
-  // Fixed text: a YAML error names a line of a file that holds a password hash.
-  if (typeof data !== "object" || data === null || Array.isArray(data)) {
-    throw new DeviceRefused(422, "invalid_body", "person.yaml can't be read")
-  }
-  const fields = data as Record<string, unknown>
-  // Python's falsy rule; a JS empty array is truthy.
-  if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) delete fields[key]
+  // loadRepo just read and checked this file under the same lock.
+  const fields = readYaml(before.toString("utf8")) as Record<string, unknown>
+  if (Array.isArray(value) && value.length === 0) delete fields[key]
   else fields[key] = value
   const parsed = PersonSchema.safeParse(fields)
   if (!parsed.success) {

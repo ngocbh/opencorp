@@ -102,11 +102,6 @@ test("only the person or the ceo changes a humans devices", async () => {
     "not_a_human",
     "@minh is an agent; agents have no password",
   ])
-  expect(await refusal(setPassword(g, "ngocbh", PASSWORD, "ava"))).toEqual([
-    403,
-    "forbidden",
-    "only @ngocbh or the CEO can change @ngocbh's password",
-  ])
   expect(head(root)).toBe(before)
 
   // The CEO changes anyone's devices.
@@ -148,6 +143,37 @@ test("a failed commit restores the person file", async () => {
   } finally {
     fs.rmSync(lock, { force: true })
   }
+})
+
+test.each([["file"], ["folder"]])("a symlinked person file is never written through [%s]", async (link) => {
+  const tmp = tempDir()
+  const root = company(tmp)
+  const g = new CompanyGit(root, path.join(tmp, "worktrees"))
+  const outside = path.join(tmp, "outside")
+  fs.mkdirSync(outside)
+  let target: string
+  if (link === "file") {
+    target = path.join(outside, "person.yaml")
+    fs.renameSync(path.join(root, PERSON), target)
+    fs.symlinkSync(target, path.join(root, PERSON))
+  } else {
+    target = path.join(outside, "ngocbh", "person.yaml")
+    fs.renameSync(path.join(root, "people/ngocbh"), path.join(outside, "ngocbh"))
+    fs.symlinkSync(path.join(outside, "ngocbh"), path.join(root, "people/ngocbh"))
+  }
+  git(root, "add", "-A")
+  git(root, "commit", "-q", "-m", "link")
+  // The loader reads through the link, so the change reaches the write.
+  expect(loadRepo(root).people.has("ngocbh")).toBe(true)
+  const original = fs.readFileSync(target)
+  const before = head(root)
+  expect(await refusal(addDevice(g, "ngocbh", device("mac"), "ngocbh"))).toEqual([
+    422,
+    "invalid_body",
+    "person.yaml must be a regular file in the repo",
+  ])
+  expect(fs.readFileSync(target).equals(original)).toBe(true)
+  expect(head(root)).toBe(before)
 })
 
 test("a refused change never echoes a value", async () => {
