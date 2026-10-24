@@ -1,7 +1,7 @@
 /** Signing a browser in with a handle and password: the throttle, the dummy hash, and two checks at a time. */
 import { expect, test } from "bun:test"
 import { checkPassword, DUMMY_HASH, hashPassword } from "../../src/auth/passwords.ts"
-import { BadCredentials, Busy, Logins, MAX_KEYS, Throttle, Throttled } from "../../src/hq/login.ts"
+import { BadCredentials, Busy, CHECKS, LIMIT, Logins, MAX_KEYS, Throttle, Throttled } from "../../src/hq/login.ts"
 import { passwordFp } from "../../src/hq/sessions.ts"
 import { waitFor } from "../helpers.ts"
 
@@ -26,7 +26,7 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 }
 
 test("the dummy hash costs what a real one does", async () => {
-  const cost = /\$scrypt\$ln=\d+,r=\d+,p=\d+\$/
+  const cost = /^\$scrypt\$ln=\d+,r=\d+,p=\d+\$/
   expect(cost.exec(DUMMY_HASH)?.[0]).toBe(cost.exec(await hashPassword("x".repeat(12)))![0])
   expect(await checkPassword(PASSWORD, DUMMY_HASH)).toBe(false)
 })
@@ -141,6 +141,33 @@ test("a check whose request went away still holds its slot", async () => {
   }
   for (const error of await Promise.all(outcomes)) expect(error).toBeInstanceOf(BadCredentials)
   expect(logins.running).toBe(0)
+})
+
+test("a check that errors gives its slot back and counts no failure", async () => {
+  const error = new Error("x")
+  const cases: [string, ConstructorParameters<typeof Logins>][] = [
+    ["the hash read rejects", [{ passwordHash: async () => Promise.reject(error) }]],
+    [
+      "the check throws",
+      [
+        { passwordHash: async () => PHC },
+        {
+          checkPassword: (() => {
+            throw error
+          }) as unknown as (password: string, phc: string) => Promise<boolean>,
+        },
+      ],
+    ],
+    ["the check rejects", [{ passwordHash: async () => PHC }, { checkPassword: () => Promise.reject(error) }]],
+  ]
+  for (const [what, args] of cases) {
+    const logins = new Logins(...args)
+    // More than CHECKS, so a leaked slot shows up as Busy, and more than LIMIT, so a counted failure locks.
+    for (let i = 0; i < Math.max(CHECKS, LIMIT) + 1; i++)
+      expect([what, await rejection(logins.check("p", "ngocbh", PASSWORD))]).toEqual([what, error])
+    expect(logins.running).toBe(0)
+    expect(logins.throttle.wait(["p", "ngocbh"])).toBeNull()
+  }
 })
 
 test("an unknown handle is checked against the dummy hash and fails", async () => {

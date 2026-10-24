@@ -69,7 +69,10 @@ export class Throttle {
   /** The lock end each pair was last refused under, for logging it once; null for a full table. */
   #told = new Map<string | null, number>()
 
-  constructor(public clock: () => number = () => performance.now() / 1000) {}
+  constructor(
+    /** Public and swappable on purpose, so a test can move time on the HQ app's throttle. */
+    public clock: () => number = () => performance.now() / 1000,
+  ) {}
 
   /** How many pairs are remembered. */
   get size(): number {
@@ -100,9 +103,9 @@ export class Throttle {
     this.#forget(now)
     const tries = this.#tries.get(k)
     if (tries !== undefined) return tries.until <= now ? null : tries.until
+    if (this.#tries.size < MAX_KEYS) return null
     const all = [...this.#tries.values()]
-    if (all.length >= MAX_KEYS && all.every((t) => t.until > now)) return Math.min(...all.map((t) => t.until))
-    return null
+    return all.every((t) => t.until > now) ? Math.min(...all.map((t) => t.until)) : null
   }
 
   /** Counts a failure for `key`, locking it once there are `LIMIT` within `WINDOW_S` or it was locked before. */

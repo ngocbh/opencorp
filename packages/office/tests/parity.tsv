@@ -543,6 +543,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/guard.test.ts::the first origin header counts	design §6.4, rule 7: header() reads the first raw value; node:http would join repeated values	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard checks each refusal branch [$name]	design §6.4, rule 7: each Host, Fetch Metadata, Origin and JSON refusal against a stand-in, without the HQ app	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
+—	new	packages/office/tests/hq/login.test.ts::a check that errors gives its slot back and counts no failure	design §6.4, rule 8: the two-check limit never leaks a slot when the hash read or the check fails	O2-8
 —	new	packages/office/tests/hq/login.test.ts::a throttled pair is refused before the password is checked	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/login.test.ts::an unknown handle is checked against the dummy hash and fails	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/login.test.ts::the right password returns the fingerprint of its hash and clears the failures	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
