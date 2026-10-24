@@ -88,9 +88,9 @@ export class Office {
   readonly guards: SandboxOfficePaths
   /** The office's model connections; the one `Connections` of `office/` (two could both take a free name). */
   readonly connections: Connections
-  /** Each connection's models, listed ahead of time on start. */
+  /** Each connection's models; `buildOffice`'s office lists them ahead of time on start. */
   readonly models: ModelCache
-  /** Subscription sign-ins; those still waiting are cancelled on stop. */
+  /** Subscription sign-ins; `buildOffice`'s office cancels those still waiting on stop. */
   readonly logins: Logins
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */

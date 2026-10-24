@@ -17,7 +17,7 @@ import {
   officeLogger,
   trackRequests,
 } from "../../src/daemon/main.ts"
-import { OfficePaths } from "../../src/daemon/office.ts"
+import { type Office, OfficePaths } from "../../src/daemon/office.ts"
 import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
 import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
@@ -429,23 +429,32 @@ test("the office holds the company snapshots and the secret store", () => {
 })
 
 test("build office lists models on start and cancels sign ins on stop", async () => {
-  const office = buildOffice(new OfficePaths(home()), { write: collect().write })
-  try {
-    expect(office.models.connections).toBe(office.connections)
-    expect(office.logins.connections).toBe(office.connections)
-    expect(office.connections.office).toBe(office.paths.office)
-    // Never settles: start must not wait for the warm-up.
-    const warm = spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
-    const close = spyOn(office.logins, "closeAll").mockResolvedValue(undefined)
-    await office.start()
-    expect(warm).toHaveBeenCalledTimes(1)
-    expect(close).not.toHaveBeenCalled()
-    await office.stop()
-    expect(close).toHaveBeenCalledTimes(1)
-  } finally {
-    await office.stop()
-    office.store.close()
-  }
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const rec = recordingGit(tempDir())
+  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  expect(office.models.connections).toBe(office.connections)
+  expect(office.logins.connections).toBe(office.connections)
+  expect(office.connections.office).toBe(office.paths.office)
+  // Never settles: start must not wait for the warm-up.
+  const warm = spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  const close = spyOn(office.logins, "closeAll").mockResolvedValue(undefined)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const held = new Promise((resolve) => (timer = setTimeout(() => resolve("held"), 2000)))
+  const started = await Promise.race([office.start().then(() => "started"), held])
+  clearTimeout(timer)
+  expect(started).toBe("started")
+  expect(warm).toHaveBeenCalledTimes(1)
+  expect(close).not.toHaveBeenCalled()
+  await office.stop()
+  expect(close).toHaveBeenCalledTimes(1)
 })
 
 /** How a process exited. */

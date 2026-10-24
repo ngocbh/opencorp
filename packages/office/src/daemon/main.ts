@@ -208,8 +208,9 @@ export function exitOnCrash(write: Write = writeStderr): void {
 const NO_GIT = "no git on the office's PATH"
 
 /** Opens the store and the company clone (run by `tools.git`), kills the processes an earlier office left, and
- *  assembles the office with its tools, its workspace guards and its HEAD watcher (started and stopped with the
- *  office). `OfficeStartError` when `tools` has no git. */
+ *  assembles the office with its tools, its workspace guards, its HEAD watcher (started and stopped with the
+ *  office), a model warm-up on start (not awaited) and the cancelling of sign-ins still waiting on stop.
+ *  `OfficeStartError` when `tools` has no git. */
 export function buildOffice(
   paths: OfficePaths,
   { tools, guards, write }: { tools: Tools; guards: SandboxOfficePaths; write: Write },
