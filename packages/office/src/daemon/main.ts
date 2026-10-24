@@ -135,9 +135,9 @@ function failureReport(what: string, error: unknown): string {
   try {
     const lines = [first(typeOf(error))]
     if (error instanceof Error && typeof error.stack === "string") {
-      // The stack starts with `<name>: <message>`, and a message line can look like a frame, so the header's
-      // lines go first.
-      const header = String(error.message).split("\n").length
+      // The stack starts with `<name>: <message>`, and a name or message line can look like a frame, so the
+      // header's lines go first.
+      const header = `${String(error.name)}: ${String(error.message)}`.split("\n").length
       lines.push(...error.stack.split("\n").slice(header).filter((line) => /^\s+at /.test(line)))
     }
     return lines.join("\n") + "\n"
@@ -208,14 +208,11 @@ export function trackRequests(listener: (req: IncomingMessage, res: ServerRespon
 
 const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 
-/** Closes `server`; also resolves when it already stopped listening (closeAllConnections stops the listener
- *  on some runtimes, and close then reports ERR_SERVER_NOT_RUNNING). */
+/** Closes `server` and resolves once it has, whatever its callback reports, so the stop never skips the
+ *  socket removal and the handler wait. */
 function close(server: Server): Promise<void> {
-  return new Promise((resolve, reject) =>
-    server.close((error) =>
-      error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve(),
-    ),
-  )
+  // closeAllConnections already stopped the listener on this runtime, so close reports ERR_SERVER_NOT_RUNNING.
+  return new Promise((resolve) => server.close(() => resolve()))
 }
 
 /**
@@ -240,8 +237,7 @@ async function run(
   const pidfile = new PidFile(paths.pidfile, paths.lock)
   await pidfile.acquire()
   try {
-    let stop!: () => void
-    const stopped = new Promise<void>((resolve) => (stop = resolve))
+    const { promise: stopped, resolve: stop } = Promise.withResolvers<void>()
     // Resolving twice does nothing, so the first signal wins.
     const onSignal = () => stop()
     for (const sig of STOP_SIGNALS) process.on(sig, onSignal)
@@ -356,7 +352,13 @@ export async function main(
     return 2
   }
   try {
-    const home = resolveHome(value ?? path.join(os.homedir(), ".opencorp"))
+    const wanted = value ?? path.join(os.homedir(), ".opencorp")
+    let home: string
+    try {
+      home = resolveHome(wanted)
+    } catch (error) {
+      throw new OfficeStartError(`can't resolve the home ${wanted}: ${messageOf(error)}`)
+    }
     await run(new OfficePaths(home), { extensions, write, git })
     return 0
   } catch (error) {

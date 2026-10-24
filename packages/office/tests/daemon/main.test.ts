@@ -289,6 +289,13 @@ test("the crash report names the error type and its frames never its message", (
       throw new Error("no reading this")
     },
   })
+  class Named extends Error {
+    override name = "N\n    at leak (y:1:1)"
+  }
+  const named = crashReport(new Named("m-secret"))
+  expect(named).not.toContain("leak")
+  expect(named).not.toContain("m-secret")
+
   const fallback = crashReport(hidden)
   expect(fallback).toMatch(/office crashed: \w+\n$/)
   expect(fallback).not.toContain("hidden words")
@@ -325,6 +332,17 @@ test("a home that does not exist yet resolves through its real parent", () => {
   fs.mkdirSync(path.join(d, "real"))
   fs.symlinkSync(path.join(d, "real"), path.join(d, "link"))
   expect(resolveHome(path.join(d, "link", "new"))).toBe(path.join(fs.realpathSync(d), "real", "new"))
+})
+
+test("a home that cannot be resolved exits 1", async () => {
+  const d = shortDir()
+  fs.symlinkSync(path.join(d, "b"), path.join(d, "a"))
+  fs.symlinkSync(path.join(d, "a"), path.join(d, "b"))
+  const out = collect()
+  const home = path.join(d, "a", "home")
+  expect(await inProcess(() => main(["--home", home], { write: out.write }))).toBe(1)
+  expect(out.text()).toStartWith(`opencorp office: can't resolve the home ${home}: `)
+  expect(out.text()).not.toContain("office crashed")
 })
 
 test("the stop waits for running handlers but not for ever", async () => {
