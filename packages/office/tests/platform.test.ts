@@ -8,6 +8,7 @@ import {
   embedded,
   helperCommand,
   listAllPids,
+  procStartTime,
   sandboxCheck,
   selfCommand,
   selfSpawnEnv,
@@ -195,6 +196,22 @@ test.skipIf(process.platform !== "darwin")("listAllPids includes this process an
   const pids = listAllPids()
   expect(pids).toContain(process.pid)
   expect(pids).toContain(child.pid!)
+})
+
+test.skipIf(process.platform !== "darwin")("procStartTime reads a running child and is null for an exited one", async () => {
+  const child = spawn("/bin/sleep", ["61"], { stdio: "ignore" })
+  onTestFinished(() => {
+    // Our own child, unreaped until its exit event: once reaped, the runtime no longer signals its pid.
+    child.kill("SIGKILL")
+  })
+  const started = procStartTime(child.pid!)
+  expect(started).not.toBeNull()
+  expect(Math.abs(started! - Date.now() / 1000)).toBeLessThan(5)
+  expect(procStartTime(child.pid!)).toBe(started)
+  expect(procStartTime(process.pid)!).toBeLessThan(started!)
+  const done = spawn("/bin/sh", ["-c", "exit 0"], { stdio: "ignore" })
+  await new Promise((resolve) => done.once("exit", resolve))
+  expect(procStartTime(done.pid!)).toBeNull()
 })
 
 test.skipIf(process.platform !== "darwin")("sandboxCheck answers for this process", () => {

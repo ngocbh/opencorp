@@ -134,19 +134,52 @@ export function sandboxCheck(pid: number, operation: string | null, path?: strin
   return check(pid, cString(operation), pathFilter, cString(path!))
 }
 
-/** libproc's `proc_listallpids`, opened once. */
-let procListAllPids: ((buffer: Int32Array | null, bytes: number) => number) | undefined
+/** libproc's `proc_listallpids` and `proc_pidinfo`, as declared through bun:ffi. */
+type LibProc = {
+  proc_listallpids: (buffer: Int32Array | null, bytes: number) => number
+  proc_pidinfo: (pid: number, flavor: number, arg: bigint, buffer: Uint8Array, bytes: number) => number
+}
+let libProc: LibProc | undefined
+
+/** Opens libproc on first use, so importing this file works where there is no libproc. */
+function loadLibProc(): LibProc {
+  const { ptr: P, i32: I, u64: U } = FFIType
+  libProc ??= dlopen("/usr/lib/libproc.dylib", {
+    proc_listallpids: { args: [P, I], returns: I },
+    proc_pidinfo: { args: [I, I, U, P, I], returns: I },
+  }).symbols
+  return libProc
+}
 
 /** Every pid on the machine (libproc `proc_listallpids`). */
 export function listAllPids(): number[] {
-  procListAllPids ??= dlopen("/usr/lib/libproc.dylib", {
-    proc_listallpids: { args: [FFIType.ptr, FFIType.i32], returns: FFIType.i32 },
-  }).symbols.proc_listallpids
+  const lib = loadLibProc()
   // The size argument is in bytes, the result a count; the slack covers pids born in between.
-  const count = procListAllPids(null, 0)
+  const count = lib.proc_listallpids(null, 0)
   if (count < 0) throw new Error("proc_listallpids failed")
   const pids = new Int32Array(count + 64)
-  const got = procListAllPids(pids, pids.byteLength)
+  const got = lib.proc_listallpids(pids, pids.byteLength)
   if (got < 0) throw new Error("proc_listallpids failed")
   return Array.from(pids.subarray(0, got))
+}
+
+const PROC_PIDTBSDINFO = 3
+// struct proc_bsdinfo: pbi_pid (u32) at 12, pbi_start_tvsec (u64) at 120, pbi_start_tvusec (u64) at 128,
+// 136 bytes in all; the same layout and call form on arm64 and x86_64.
+const BSDINFO_SIZE = 136
+
+/** The start time of `pid` in seconds since the epoch (µs resolution), from libproc's
+ *  `proc_pidinfo(PROC_PIDTBSDINFO)`, zombies included; null when it can't be read: no such process, another
+ *  user's process, or an id outside 2..2^31 − 1. macOS only. */
+export function procStartTime(pid: number): number | null {
+  // The office-wide pid guard: never 0 or 1 (process.kill would hit our own group or every process),
+  // never a value i32 would wrap.
+  if (!Number.isInteger(pid) || pid < 2 || pid > 0x7fffffff) return null
+  const info = new Uint8Array(BSDINFO_SIZE)
+  // A non-zero `arg` makes xnu look among zombies too, so an exited but unreaped child still reads.
+  const size = loadLibProc().proc_pidinfo(pid, PROC_PIDTBSDINFO, 1n, info, BSDINFO_SIZE)
+  if (size !== BSDINFO_SIZE) return null
+  const view = new DataView(info.buffer)
+  if (view.getUint32(12, true) !== pid) return null
+  return Number(view.getBigUint64(120, true)) + Number(view.getBigUint64(128, true)) / 1e6
 }
