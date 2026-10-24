@@ -83,6 +83,47 @@ function replaceFile(dir: string, name: string, data: string | Uint8Array): void
   }
 }
 
+/** Replaces `file` with `data` as a 0600 file, atomically, under its folder's lock; a symlink at `file` is
+ *  replaced, not followed. Rejects with `PrivateFileError` when the folder is not a private directory of this
+ *  user, the `ENOENT` error when it is missing, and yian's `FileLockError` when the folder's lock can't be
+ *  taken (a 30 s wait for another holder, or a `.lock` that isn't private). */
+export async function writePrivate(file: string, data: string | Uint8Array): Promise<void> {
+  const dir = path.dirname(file)
+  checkFolder(dir, "folder")
+  using _lock = await lockFolder(dir)
+  replaceFile(dir, path.basename(file), data)
+}
+
+/** The contents of `file`, read under its folder's lock; the file must be a regular file of this user that
+ *  others can't read or write. Rejects with the `ENOENT` error when the file or its folder is missing,
+ *  `PrivateFileError` when the folder is not a private directory of this user or the file is a symlink, not a
+ *  regular file, another user's, open to others, or can't be opened, and yian's `FileLockError` when the
+ *  folder's lock can't be taken (a 30 s wait for another holder, or a `.lock` that isn't private). */
+export async function readPrivate(file: string): Promise<Buffer> {
+  const dir = path.dirname(file)
+  checkFolder(dir, "folder")
+  using _lock = await lockFolder(dir)
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
+  let fd: number
+  try {
+    // O_NONBLOCK so a FIFO planted in its place can't hang the open; fstat then refuses it.
+    fd = fs.openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
+  } catch (error) {
+    const code = errnoCode(error)
+    if (code === "ENOENT") throw error
+    throw new PrivateFileError(`can't open '${file}': ${code}`)
+  }
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile() || st.uid !== process.geteuid!() || st.mode & 0o077) {
+      throw new PrivateFileError(`'${file}' must be a regular file private to its owner (mode 0600)`)
+    }
+    return fs.readFileSync(fd)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 /**
  * Secrets as files in `root` (mode 0700, owned by this user), each a regular file of mode 0600.
  *
