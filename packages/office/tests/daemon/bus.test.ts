@@ -117,7 +117,6 @@ test("end wakes a waiting next and removes the subscription", async () => {
   const bus = new Bus()
   const sub = bus.subscribe()
   const waiting = sub.next(5000)
-  await Promise.resolve()
   sub.end()
   expect(await waiting).toBeNull()
   expect(bus.subscriberCount).toBe(0)
@@ -140,4 +139,9 @@ test("a second reader while one waits is refused", async () => {
   await expect(sub.next(5000)).rejects.toThrow("a subscription has one reader at a time")
   bus.publishLive(live(S1, "a"))
   expect(text(await first)).toBe("a")
+  // A read woken but not yet resumed still holds the subscription.
+  const woken = sub.next(5000)
+  bus.publishLive(live(S1, "b"))
+  await expect(sub.next(5000)).rejects.toThrow("a subscription has one reader at a time")
+  expect(text(await woken)).toBe("b") // not a false end
 })
