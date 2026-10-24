@@ -220,7 +220,7 @@ questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9	O4a-9
 questions/test_checker.py	open	—	—	O3-7
 questions/test_format.py	open	—	—	O3-7
-questions/test_normalize.py	open	—	—	O3-7
+questions/test_normalize.py	ported	packages/office/tests/questions/normalize.test.ts	—	O3-7
 questions/test_seed.py	open	—	—	O4a-8
 questions/test_side.py	open	—	—	O4a-8
 questions/test_side_chat_flow.py	open	—	—	O4a-9
