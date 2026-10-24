@@ -4,10 +4,11 @@ import net from "node:net"
 import path from "node:path"
 import { onTestFinished } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { type Channel, socketChannel } from "../../src/worker/channel.ts"
+import { type Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
+  type AskRequest,
   BaseHandlers,
   isRequest,
   type JobWorker,
@@ -196,4 +197,167 @@ export async function startWorker({ env = {}, linger }: { env?: WorkerEnv; linge
     if (late) throw new Error("the worker did not return within 10 s of the office closing")
   })
   return { office, done, out }
+}
+
+/** Handlers that record every frame and answer questions from a list. */
+export class Recorder extends BaseHandlers {
+  readonly frames: Frame[] = []
+  readonly asked: AskRequest[] = []
+  readonly answers: unknown[]
+  readonly left: [string, string[]][] = []
+  /** The types of the `steer_left`, `result` and `error` frames, in order. */
+  readonly order: string[] = []
+  outcome: Frame | null = null
+  returncode: number | null = null
+
+  constructor({
+    answers = [],
+    ...options
+  }: { answers?: unknown[] } & ConstructorParameters<typeof BaseHandlers>[0] = {}) {
+    super(options)
+    this.answers = [...answers]
+  }
+
+  override event(_worker: unknown, frame: Frame): void {
+    this.frames.push(frame)
+  }
+
+  override stream(_worker: unknown, frame: Frame): void {
+    this.frames.push(frame)
+  }
+
+  override steerLeft(_worker: unknown, nodeId: string, texts: string[]): void {
+    this.left.push([nodeId, texts])
+    this.order.push("steer_left")
+  }
+
+  override result(_worker: unknown, frame: Frame): void {
+    this.outcome = frame
+    this.order.push("result")
+  }
+
+  override error(_worker: unknown, frame: Frame): void {
+    this.outcome = frame
+    this.order.push("error")
+  }
+
+  override exited(_worker: unknown, returncode: number | null): void {
+    this.returncode = returncode
+  }
+
+  override askUser(_worker: unknown, request: AskRequest): unknown {
+    this.asked.push(request)
+    if (this.answers.length === 0) throw new Error("no answer left")
+    return this.answers.shift()
+  }
+
+  /** Each recorded frame's `name`, or its `type` when it has none. */
+  names(): string[] {
+    return this.frames.map((frame) => String(frame.name ?? frame.type))
+  }
+}
+
+/** The office's handle on an in-process worker, as handlers receive it. */
+export interface TestWorker extends JobWorker {
+  /** Sends a steer for `nodeId`; false if the channel is closed. */
+  steer(nodeId: string, text: string): Promise<boolean>
+  /** Sends an interrupt for `nodeId`; false if the channel is closed. */
+  interrupt(nodeId: string): Promise<boolean>
+  /** Sends a stop; false if the channel is closed. */
+  stop(): Promise<boolean>
+  /** Closes the office end; the worker exits 3 if its job has not finished. */
+  closeChannel(): void
+  /** The exit code once `handlers.exited` has run; `null` if that takes longer than `ms`. */
+  wait(ms?: number): Promise<number | null>
+}
+
+/**
+ * Runs `job` in an in-process worker (`serve` over a channel pair) and reads its frames as the office's worker does:
+ * requests are answered by `handlers` without waiting, notifications go to the handler of that name, and after
+ * `result` or `error` the office stops sending. Once the office read loop has ended and the worker's code is known,
+ * the office end closes and `handlers.exited` runs. At test end the office end closes and the test fails if `serve`
+ * hasn't returned within 10 s.
+ */
+export async function inProcessWorker(
+  job: Job,
+  handlers: WorkerHandlers<TestWorker>,
+  { env = {}, linger }: { env?: WorkerEnv; linger?: number } = {},
+): Promise<TestWorker> {
+  const { office, worker: workerSide } = await channelPair()
+  let settle!: (code: number) => void
+  // Resolving twice does nothing, so the first of `exit` and the return value wins.
+  const code = new Promise<number>((resolve) => (settle = resolve))
+  const served = serve(workerSide, { env, linger, exit: settle })
+  served.then(settle, () => {})
+  const send = async (frame: Frame): Promise<boolean> => {
+    try {
+      await office.send(frame)
+      return true
+    } catch (error) {
+      if (error instanceof ChannelClosed) return false
+      throw error
+    }
+  }
+  const worker: TestWorker = {
+    job,
+    steer: (nodeId, text) => send({ type: "steer", node_id: nodeId, text }),
+    interrupt: (nodeId) => send({ type: "interrupt", node_id: nodeId }),
+    stop: () => send({ type: "stop" }),
+    closeChannel: () => office.close(),
+    wait: async (ms = 30_000) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const timedOut = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))
+      const result = await Promise.race([finished, timedOut])
+      clearTimeout(timer)
+      return result
+    },
+  }
+  const readLoop = async () => {
+    try {
+      for (;;) {
+        const frame = await office.recv()
+        const kind = frame.type
+        if (isRequest(kind)) {
+          void replyTo(office, frame, handlers, worker)
+        } else if (kind === "steer_left") {
+          handlers.steerLeft(worker, frame.node_id as string, frame.texts as string[])
+        } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
+          handlers[kind](worker, frame)
+          // The run is over: later steers fail here, and the worker, having answered the ones already sent, sees the
+          // end of stream and returns.
+          if (kind === "result" || kind === "error") office.closeSend()
+        }
+      }
+    } catch {}
+  }
+  // Not closed when the code settles: late steer_left frames may still be buffered. Both waits are bounded, since
+  // `serve` always closes the worker's channel on its way out.
+  const finished = (async () => {
+    await readLoop()
+    const returncode = await code
+    office.close()
+    handlers.exited(worker, returncode)
+    return returncode
+  })()
+  onTestFinished(async () => {
+    office.close()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(true), 10_000)))
+    const late = await Promise.race([served.then(() => false), timedOut])
+    clearTimeout(timer)
+    if (late) throw new Error("the worker did not return within 10 s of the office closing")
+  })
+  await office.send({ type: "start", job })
+  return worker
+}
+
+/** Runs `job` in an in-process worker and waits for it to exit; returns `handlers`. */
+export async function run<H extends WorkerHandlers<TestWorker>>(
+  job: Job,
+  handlers: H,
+  { env, timeout = 30_000 }: { env?: WorkerEnv; timeout?: number } = {},
+): Promise<H> {
+  const worker = await inProcessWorker(job, handlers, { env })
+  if ((await worker.wait(timeout)) === null) throw new Error("the worker did not exit")
+  return handlers
 }

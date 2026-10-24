@@ -1,8 +1,14 @@
 /** The run worker: read one job from the office, run it with Yian, report, exit. */
+import path from "node:path"
+import { ProfileMemory, runFlow } from "@ngocbh/yian"
+import { type EventHook, runLogPath } from "@ngocbh/yian/run"
+import { loadSkills, type Skill } from "@ngocbh/yian/skills"
+import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge } from "./channel.ts"
 import { Inbox } from "./inbox.ts"
 import { type Job, parseJob } from "./job.ts"
-import { errorMessage, errorName, REPLY_TYPES, Rpc } from "./rpc.ts"
+import { RemoteMarkdownStore } from "./remote_store.ts"
+import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
 
 export const EXIT_OK = 0
 export const EXIT_FAILED = 1
@@ -12,6 +18,42 @@ export const LINGER_MS = 5000
 
 /** The worker's environment, passed in explicitly. */
 export type WorkerEnv = Readonly<Record<string, string | undefined>>
+
+/** How yian reads an environment variable (yian doesn't export its own `Env` type). */
+type Env = (name: string) => string | undefined
+
+/** The person's listed skills that exist, in `names` order; a personal skill shadows a shared one of the same name. */
+export function pickSkills(pin: string, handle: string, names: string[]): Map<string, Skill> {
+  const found = loadSkills([path.join(pin, "people", handle, "skills"), path.join(pin, "shared", "skills")], {
+    skipInvalid: true,
+  })
+  return new Map(names.filter((name) => found.has(name)).map((name) => [name, found.get(name)!]))
+}
+
+/** Yian's `tools`: each office group as remote tools, plus the `ask_user` stub. */
+export function jobTools(job: Job, rpc: Rpc) {
+  return {
+    ...Object.fromEntries(
+      Object.entries(job.groups).map(([group, specs]) => [group, specs.map((spec) => remoteTool(rpc, group, spec))]),
+    ),
+    ask_user: askUserStub(rpc),
+  }
+}
+
+/** Yian's `memory` for the job: a `ProfileMemory` over the office store of each spec; `null` when there is none. */
+export function jobMemory(job: Job, rpc: Rpc, env: Env): Map<string, ProfileMemory> | null {
+  const memory = new Map(
+    Object.entries(job.memory).map(([name, spec]) => [
+      name,
+      new ProfileMemory(new RemoteMarkdownStore(rpc, spec.store), {
+        llmConfig: spec.llm_config,
+        maxChars: spec.max_chars,
+        env,
+      }),
+    ]),
+  )
+  return memory.size > 0 ? memory : null
+}
 
 /**
  * Runs the job the office sends on `channel`; returns the exit code.
@@ -64,13 +106,54 @@ export async function serve(
 
 /** Runs `job`, sending its event, stream and `steer_left` frames; returns the result frame's fields. */
 async function runJob(
-  _job: Job,
-  _channel: Channel,
-  _rpc: Rpc,
-  _inbox: Inbox,
-  _options: { env: WorkerEnv; signal: AbortSignal },
+  job: Job,
+  channel: Channel,
+  rpc: Rpc,
+  inbox: Inbox,
+  { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
-  throw new Error("not built")
+  if (job.kind === "resume") throw new Error("this worker can't resume a run yet")
+  const read: Env = (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
+  const flow = await loadConfined(job.pin, path.join(job.pin, job.flow))
+  const runs = path.dirname(path.dirname(job.log))
+  if (job.log !== path.join(runs, job.run_id, "log.jsonl")) {
+    throw new RangeError("a chat job's log must be <runs>/<run_id>/log.jsonl")
+  }
+  // Makes the run's folder, and throws EEXIST if it is already there: each launch gets a fresh one.
+  const log = runLogPath(runs, job.run_id)
+  const onEvent: EventHook = (event) => {
+    const name = event.type
+    const data = event.toJSON() as Record<string, unknown>
+    let id: string | null = null
+    let texts: string[] = []
+    if (event.type === "NodeSucceeded" || event.type === "NodeSkipped" || event.type === "NodeFailed") {
+      id = event.type === "NodeFailed" ? event.failure.nodeId : event.nodeId
+      if (id) {
+        if (inbox.cut(id)) data.interrupted = true
+        // Finished before the office sees the event, so a steer it sends afterwards is refused.
+        texts = inbox.finish(id)
+      }
+    }
+    const sends = [channel.send({ type: "event", name, data })]
+    if (texts.length > 0) sends.push(channel.send({ type: "steer_left", node_id: id, texts }))
+    // A send that fails rejects the run.
+    return Promise.all(sends)
+  }
+  const result = await runFlow(flow, job.inputs, {
+    log,
+    runId: job.run_id,
+    numWorkers: job.num_workers,
+    onEvent,
+    onStream: (chunk) => channel.send({ type: "stream", ...chunk.toJSON() }),
+    llmConfig: job.llm_config,
+    memory: jobMemory(job, rpc, read),
+    tools: jobTools(job, rpc),
+    skills: pickSkills(job.pin, job.person, job.skills),
+    steering: inbox,
+    signal,
+    env: read,
+  })
+  return { status: result.status, run_id: result.runId, output: result.output, failure: result.failure }
 }
 
 /**

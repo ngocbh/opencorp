@@ -56,7 +56,7 @@ test("a worker stops waiting for the office after a while", async () => {
   const { office, out } = await startWorker({ linger: 200 })
   await office.send(badStart())
   expect((await office.recv()).type).toBe("error")
-  await waitFor(() => out.code !== undefined, { timeout: 5000, what: "the worker to return" })
+  await waitFor(() => out.code !== undefined, { timeout: 2000, what: "the worker to return" })
   expect(out.code).toBe(EXIT_FAILED)
 })
 
@@ -76,6 +76,7 @@ test("a worker exits 3 when the office closes before the start frame", async () 
   office.close()
   await waitFor(() => out.code !== undefined, { timeout: 5000, what: "the worker to return" })
   expect(out.code).toBe(EXIT_ORPHANED)
+  expect(out.exit).toBeUndefined()
 })
 
 test("a frame other than start is an error", async () => {
