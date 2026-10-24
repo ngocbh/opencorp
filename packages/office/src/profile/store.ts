@@ -1,12 +1,10 @@
 /** A person's profile.md in the company clone as a yian MarkdownStore, versioned by git blob id. */
 import { createHash } from "node:crypto"
-import type { MarkdownStore } from "@ngocbh/yian"
+import type { JsonObject } from "@ngocbh/yian/run"
 import { Handle } from "@opencorp/protocol"
 import { type CompanyGit, CompanyGitError, WHITESPACE } from "../company/git.ts"
 
-/** The JSON object a `MarkdownStore` write carries as provenance. */
-export type JsonObject = NonNullable<Parameters<MarkdownStore["write"]>[1]["provenance"]>
-
+/** The git blob id of empty content. */
 export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
@@ -51,9 +49,7 @@ function commitIdOf(provenance: JsonObject | null | undefined): string | null {
 }
 
 /** A Node system error (code `EIO`) for storage that can't be reached, as yian's store contract asks. */
-function systemError(messageOrError: string | Error, syscall: string): Error {
-  const [message, cause] =
-    typeof messageOrError === "string" ? [messageOrError, undefined] : [messageOrError.message, messageOrError]
+function systemError(message: string, syscall: "read" | "write", cause?: unknown): Error {
   return Object.assign(new Error(message, { cause }), { code: "EIO", syscall })
 }
 
@@ -87,15 +83,18 @@ export class GitProfileStore {
       if (data === null) throw new RangeError(`unknown profile version ${JSON.stringify(version)}`)
       return [this.#decode(data), version]
     }
-    const [current, data] = await this.git
-      .locked(async (locked) => {
+    let found: { current: string; data: Uint8Array | null }
+    try {
+      found = await this.git.locked(async (locked) => {
         await locked.commitHandEdits()
-        const current = await this.#current()
-        return [current, await this.#blob(current)] as const
+        const head = await this.#current()
+        return { current: head, data: await this.#blob(head) }
       })
-      .catch((error: unknown) => {
-        throw error instanceof CompanyGitError ? systemError(error, "read") : error
-      })
+    } catch (error) {
+      if (error instanceof CompanyGitError) throw systemError(error.message, "read", error)
+      throw error
+    }
+    const { current, data } = found
     if (data === null) throw systemError(`blob ${current} of ${this.path} is missing from the clone`, "read")
     return [this.#decode(data), current]
   }

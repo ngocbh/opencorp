@@ -39,9 +39,16 @@ test("constructor does no io", () => {
 test.each(
   labelled(["", "../minh", "minh/x", "Minh", "a_b", "-minh", "minh-", "a".repeat(33), "01J8Z3NDEKTSV4RRFFQ69G5FAV"]),
 )("constructor refuses a bad handle [%s]", (_label, handle) => {
-  const { g } = setup()
-  expect(() => new GitProfileStore(g, handle)).toThrow(RangeError)
-  expect(() => new GitProfileStore(g, handle)).toThrow(/not a handle/)
+  const dir = tempDir()
+  const g = new CompanyGit(path.join(dir, "missing"), path.join(dir, "worktrees"))
+  let error: unknown
+  try {
+    new GitProfileStore(g, handle)
+  } catch (caught) {
+    error = caught
+  }
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/not a handle/)
 })
 
 test("read returns text and blob id", async () => {
