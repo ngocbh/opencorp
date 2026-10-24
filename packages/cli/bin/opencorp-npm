@@ -1,0 +1,32 @@
+#!/bin/sh
+# `opencorp` from npm: exec this platform's binary from the `opencorp-<os>-<arch>` package. Never
+# `bun` or `node`, so no runtime reads the caller's folder (its .env, its bunfig.toml). The search
+# is bounded: this package's own node_modules (npm nested), then the node_modules holding this
+# package (npm and bun hoisted, pnpm's sibling in .pnpm/<pkg>@<v>/node_modules); never further up.
+self=$0
+# Follow symlinks (global bins, pnpm) to this file's real location.
+while [ -L "$self" ]; do
+  link=$(readlink -- "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname -- "$self")/$link ;;
+  esac
+done
+# CDPATH= so `cd` never prints a path into $pkg.
+pkg=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd) || exit 1
+case $(uname -s) in
+  Darwin) os=darwin ;;
+  Linux) os=linux ;;
+  *) echo "opencorp: unsupported OS $(uname -s)" >&2; exit 1 ;;
+esac
+case $(uname -m) in
+  arm64|aarch64) arch=arm64 ;;
+  x86_64|amd64) arch=x64 ;;
+  *) echo "opencorp: unsupported CPU $(uname -m)" >&2; exit 1 ;;
+esac
+name=opencorp-$os-$arch
+for bin in "$pkg/node_modules/$name/bin/opencorp" "$pkg/../$name/bin/opencorp"; do
+  if [ -f "$bin" ] && [ -x "$bin" ]; then exec "$bin" "$@"; fi
+done
+echo "opencorp: the package $name is not installed next to $pkg; reinstall opencorp" >&2
+exit 1

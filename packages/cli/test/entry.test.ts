@@ -127,6 +127,118 @@ test("opencorp run by a relative path with CDPATH set still finds the checkout",
   expect(seen.local).toBeNull()
 })
 
+const SHIM = path.join(CHECKOUT, "packages/cli/bin/opencorp-npm")
+const OS = process.platform === "darwin" ? "darwin" : "linux"
+const PLATFORM = `opencorp-${OS}-${process.arch === "arm64" ? "arm64" : "x64"}`
+
+/** Lays out opencorp as `layout` installs it from npm under `root`, with `binary` put at the platform
+ *  package's bin/opencorp by `place` (a copy or a hard link); returns the bin link and that binary. */
+function npmInstall(
+  root: string,
+  layout: "nested" | "hoisted" | "pnpm",
+  binary: string,
+  place: (from: string, to: string) => void = fs.copyFileSync,
+) {
+  const dir = path.join(root, layout)
+  const store = path.join(dir, "node_modules/.pnpm")
+  let pkg: string
+  let platform: string
+  let link: string
+  let target: string
+  if (layout === "pnpm") {
+    pkg = path.join(store, "opencorp@0.0.0/node_modules/opencorp")
+    platform = path.join(store, `${PLATFORM}@0.0.0/node_modules/${PLATFORM}`)
+    link = path.join(dir, "node_modules/.bin/opencorp")
+    target = "../opencorp/bin/opencorp"
+  } else {
+    pkg = path.join(dir, "lib/node_modules/opencorp")
+    platform = path.join(layout === "nested" ? pkg : path.join(dir, "lib"), "node_modules", PLATFORM)
+    link = path.join(dir, "bin/opencorp")
+    target = "../lib/node_modules/opencorp/bin/opencorp"
+  }
+  for (const folder of [path.join(pkg, "bin"), path.join(platform, "bin"), path.dirname(link)])
+    fs.mkdirSync(folder, { recursive: true })
+  fs.copyFileSync(SHIM, path.join(pkg, "bin/opencorp"))
+  place(binary, path.join(platform, "bin/opencorp"))
+  if (layout === "pnpm") {
+    const sibling = path.join(store, "opencorp@0.0.0/node_modules", PLATFORM)
+    fs.symlinkSync(`../../${PLATFORM}@0.0.0/node_modules/${PLATFORM}`, sibling)
+    fs.symlinkSync(".pnpm/opencorp@0.0.0/node_modules/opencorp", path.join(dir, "node_modules/opencorp"))
+  }
+  fs.symlinkSync(target, link)
+  return { link, binary: path.join(platform, "bin/opencorp") }
+}
+
+/** Runs `command` in the planted folder with only HOME, a system PATH and `env`. */
+const runShim = (command: string, args: string[], env: Record<string, string> = {}) =>
+  spawnSync(command, args, {
+    cwd: proj,
+    env: { HOME: tmp, PATH: "/usr/bin:/bin", ...env },
+    encoding: "utf8",
+    timeout: 20_000,
+    killSignal: "SIGKILL",
+  })
+
+test("the npm shim is an executable sh script that never runs bun or node", () => {
+  expect(fs.statSync(SHIM).mode & 0o111).toBe(0o111)
+  const text = fs.readFileSync(SHIM, "utf8")
+  expect(text.split("\n")[0]).toBe("#!/bin/sh")
+  const lines = text.split("\n").filter((line) => !line.trim().startsWith("#"))
+  expect(lines.filter((line) => /\b(bun|node)\b/.test(line.replaceAll("node_modules", "")))).toEqual([])
+  expect(text).toContain('"$pkg/node_modules/$name/bin/opencorp" "$pkg/../$name/bin/opencorp"')
+  expect(text).toContain('exec "$bin" "$@"')
+})
+
+test(
+  "the npm shim finds the platform package in the npm nested, npm and bun hoisted, and pnpm layouts",
+  () => {
+    const root = fs.mkdtempSync(path.join(tmp, "npm-"))
+    // A stand-in binary that prints how it was run, NUL-separated.
+    const standIn = path.join(root, "stand-in")
+    fs.writeFileSync(standIn, "#!/bin/sh\nprintf '%s\\0' \"$0\" \"$@\"\n", { mode: 0o755 })
+    const args = ["--help", "x y", "", "$HOME *"]
+    const check = (result: ReturnType<typeof runShim>, binary: string) => {
+      expect(result.status, result.stderr).toBe(0)
+      const [arg0, ...rest] = result.stdout.split("\0").slice(0, -1)
+      expect(fs.realpathSync(arg0!)).toBe(fs.realpathSync(binary))
+      expect(rest).toEqual(args)
+    }
+    const installs = (["nested", "hoisted", "pnpm"] as const).map((layout) => npmInstall(root, layout, standIn))
+    for (const { link, binary } of installs) check(runShim(link, args), binary)
+    // Run by a relative path that CDPATH also reaches, so a plain `cd` would print the folder into the package path.
+    fs.symlinkSync(path.join(root, "nested"), path.join(proj, "npm-nested"))
+    const relative = runShim("/bin/sh", ["-c", 'npm-nested/bin/opencorp "$@"', "sh", ...args], { CDPATH: proj })
+    check(relative, installs[0]!.binary)
+  },
+  90_000,
+)
+
+test("the npm shim never searches above the package and names the missing package", () => {
+  const root = fs.mkdtempSync(path.join(tmp, "npm-"))
+  const pkg = path.join(root, "missing/node_modules/opencorp")
+  fs.mkdirSync(path.join(pkg, "bin"), { recursive: true })
+  fs.copyFileSync(SHIM, path.join(pkg, "bin/opencorp"))
+  // A platform package where Node's module search would look next, which the shim must not reach.
+  const marker = path.join(root, "DECOY_RAN")
+  fs.mkdirSync(path.join(root, "node_modules", PLATFORM, "bin"), { recursive: true })
+  fs.writeFileSync(path.join(root, "node_modules", PLATFORM, "bin/opencorp"), `#!/bin/sh\n: > ${sq(marker)}\n`, {
+    mode: 0o755,
+  })
+  const result = runShim(path.join(pkg, "bin/opencorp"), ["--help"])
+  expect(result.status).toBe(1)
+  expect(result.stderr).toContain(PLATFORM)
+  expect(result.stderr).toBe(`opencorp: the package ${PLATFORM} is not installed next to ${pkg}; reinstall opencorp\n`)
+  expect(fs.existsSync(marker)).toBe(false)
+})
+
+test("the npm shim refuses an unsupported OS", () => {
+  const fake = fs.mkdtempSync(path.join(tmp, "uname-"))
+  fs.writeFileSync(path.join(fake, "uname"), "#!/bin/sh\necho FreeBSD\n", { mode: 0o755 })
+  const result = runShim(SHIM, ["--help"], { PATH: `${fake}:/usr/bin:/bin` })
+  expect(result.status).toBe(1)
+  expect(result.stderr).toBe("opencorp: unsupported OS FreeBSD\n")
+})
+
 /** The lines of `text` that are neither blank nor a `//` comment. */
 const code = (text: string) => text.split("\n").filter((line) => line.trim() !== "" && !line.trim().startsWith("//"))
 
