@@ -1,5 +1,6 @@
 /** Setting up the model provider, and the terminal prompter that asks for it. */
 import { PassThrough, Readable, Writable } from "node:stream"
+import { fileURLToPath } from "node:url"
 import { expect, test } from "bun:test"
 import {
   KeyboardInterrupt,
@@ -12,6 +13,9 @@ import {
 } from "../../src/install/prompts.ts"
 
 const KEY = "sk-ant-test-0123456789"
+
+const OFFICE = fileURLToPath(new URL("../..", import.meta.url))
+const PROMPTS = fileURLToPath(new URL("../../src/install/prompts.ts", import.meta.url))
 
 const DOWN = "\x1b[B"
 const ENTER = "\r"
@@ -289,6 +293,8 @@ test("a secret on a dumb terminal is still read masked", async () => {
   expect(drawn()).not.toContain(KEY)
 })
 
+// Reads in turn on one stream: lines before and after clack prompts each get their own input. A PassThrough isn't
+// Bun's tty stream; the next test reads on a real terminal.
 test("a clack prompt and a line read share one input", async () => {
   const terminal = fakeTerminal()
   const { input, output } = terminal
@@ -305,3 +311,40 @@ test("a clack prompt and a line read share one input", async () => {
   input.write("last line\n")
   expect(await readLine(input)).toBe("last line")
 })
+
+// Bun's tty stream, unlike a PassThrough, once stopped delivering to a line read after a clack prompt had used it.
+test("on a real dumb terminal a numbered list after a secret gets its answer", async () => {
+  const code = [
+    `import { TtyPrompter } from ${JSON.stringify(PROMPTS)}`,
+    "const prompter = new TtyPrompter()",
+    'const key = await prompter.secret("KEYQ")',
+    'const picked = await prompter.choose("LISTQ", ["a", "b"])',
+    "console.log(`picked ${picked} after a key of ${key.length}`)",
+  ].join("\n")
+  let drawn = ""
+  const decoder = new TextDecoder()
+  const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code], {
+    cwd: OFFICE,
+    env: { PATH: process.env.PATH, TERM: "dumb" },
+    terminal: { cols: 80, rows: 24, data: (_terminal, bytes) => (drawn += decoder.decode(bytes, { stream: true })) },
+  })
+  const typeWhenDrawn = async (shown: string, keys: string) => {
+    for (let i = 0; i < 400 && !drawn.includes(shown); i++) await Bun.sleep(25)
+    if (!drawn.includes(shown)) throw new Error(`${shown} was never drawn: ${JSON.stringify(drawn)}`)
+    child.terminal!.write(keys)
+  }
+  try {
+    await typeWhenDrawn("KEYQ", KEY + ENTER)
+    await typeWhenDrawn("LISTQ: ", "2" + ENTER)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), 10_000)))
+    const status = await Promise.race([child.exited, timeout])
+    clearTimeout(timer)
+    expect(status).toBe(0)
+    expect(drawn).toContain(`picked b after a key of ${KEY.length}`)
+    expect(drawn).not.toContain(KEY)
+  } finally {
+    child.kill("SIGKILL")
+    child.terminal!.close()
+  }
+}, 30_000)

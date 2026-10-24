@@ -65,40 +65,44 @@ export function readLine(input: Readable): Promise<string | undefined> {
       const line = Buffer.concat(parts).toString("utf8")
       return line.endsWith("\r") ? line.slice(0, -1) : line
     }
-    // No listener stays on the stream, so a later terminal prompt on it gets every key. The pause waits a tick
-    // because Bun undoes one made inside the handler, and a stream left reading keeps the process alive while the
-    // TUI holds stdin open.
+    // No listener stays on the stream, so a later terminal prompt on it gets every key, and a paused stream doesn't
+    // keep the process alive while the TUI holds stdin open. The pause is made now, not a tick later, where it
+    // would stop the next read's resume.
     const finish = (settle: () => void) => {
-      input.off("readable", onReadable)
+      input.off("data", onData)
       input.off("end", onEnd)
       input.off("close", onEnd)
       input.off("error", onError)
-      process.nextTick(() => input.pause())
+      input.pause()
       settle()
     }
-    const onReadable = () => {
-      let chunk: string | Buffer | null
-      while ((chunk = input.read()) !== null) {
-        const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk
-        // A newline byte never sits inside a UTF-8 sequence, so splitting the bytes there is safe.
-        const at = bytes.indexOf(0x0a)
-        if (at === -1) {
-          parts.push(bytes)
-          continue
-        }
-        if (at + 1 < bytes.length) input.unshift(bytes.subarray(at + 1))
-        parts.push(bytes.subarray(0, at))
-        finish(() => resolve(text()))
+    // Flowing mode, not 'readable' and read(): once a readline interface (clack's prompts) has used Bun's tty
+    // stream, the stream never delivers to a paused-mode reader again, so a line question after a secret on a dumb
+    // terminal would wait for ever.
+    const onData = (chunk: string | Buffer) => {
+      const bytes = typeof chunk === "string" ? Buffer.from(chunk) : chunk
+      // A newline byte never sits inside a UTF-8 sequence, so splitting the bytes there is safe.
+      const at = bytes.indexOf(0x0a)
+      if (at === -1) {
+        parts.push(bytes)
         return
       }
+      parts.push(bytes.subarray(0, at))
+      // Paused and without our listener first: an unshift into a flowing stream would hand the rest straight back
+      // to a 'data' handler, or drop it with none.
+      finish(() => {
+        if (at + 1 < bytes.length) input.unshift(bytes.subarray(at + 1))
+        resolve(text())
+      })
     }
     const onEnd = () => finish(() => resolve(parts.some((p) => p.length > 0) ? text() : undefined))
     const onError = (error: Error) => finish(() => reject(error))
-    input.on("readable", onReadable)
+    input.on("data", onData)
     input.on("end", onEnd)
     // A stream destroyed mid-read closes without an end.
     input.on("close", onEnd)
     input.on("error", onError)
+    input.resume()
   })
 }
 
