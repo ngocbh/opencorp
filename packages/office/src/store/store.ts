@@ -152,8 +152,7 @@ export type Listener = (event: Event) => void
 
 /** Options for opening a store. */
 export interface StoreOptions {
-  /** Where the store writes its log lines (default `console.error`). It must not throw: it runs while events
-   *  are delivered after a commit, and its error would escape to the writer whose change already committed. */
+  /** Where the store writes its log lines (default `console.error`). */
   log?: (line: string) => void
 }
 
@@ -189,8 +188,32 @@ export interface WorkerRecord {
   startTime: number
 }
 
-/** Creates the store file 0600 if it's missing; throws `StoreError` if the path is anything but a regular
- *  file (a symlink is never followed). */
+/** Sets an existing store file to 0600 if it has any group or other bits; does nothing if it's missing;
+ *  throws `StoreError` if it's anything but a regular file (a symlink is never followed). */
+function tighten(file: string): void {
+  // SQLite gives a new -wal or -shm the database's mode but never tightens an existing file, so a store
+  // copied or restored with a loose mode would stay readable, and spread it to its sidecars. OpenCode's
+  // restrictToOwner does the same for this reason.
+  let fd: number
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT") return
+    if (code === "ELOOP") throw new StoreError(`store file ${file} is not a regular file`)
+    throw error
+  }
+  try {
+    const stat = fs.fstatSync(fd)
+    if (!stat.isFile()) throw new StoreError(`store file ${file} is not a regular file`)
+    if (stat.mode & 0o077) fs.fchmodSync(fd, 0o600)
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+/** Creates the store file 0600 if it's missing, else tightens it to 0600; throws `StoreError` if the path
+ *  is anything but a regular file (a symlink is never followed). */
 function createStoreFile(file: string): void {
   const { O_CREAT, O_EXCL, O_NOFOLLOW, O_RDWR } = fs.constants
   try {
@@ -198,7 +221,7 @@ function createStoreFile(file: string): void {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code
     if (code !== "EEXIST" && code !== "ELOOP") throw error
-    if (!fs.lstatSync(file).isFile()) throw new StoreError(`store file ${file} is not a regular file`)
+    tighten(file)
   }
 }
 
@@ -221,6 +244,7 @@ export class Store {
     try {
       fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
       createStoreFile(file)
+      for (const sidecar of ["-wal", "-shm", "-journal"]) tighten(file + sidecar)
       const db = openSqlite(file)
       try {
         db.exec(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`)
@@ -332,7 +356,11 @@ export class Store {
             listener(event)
           } catch (error) {
             const type = error instanceof Error ? error.name : typeof error
-            this.#log(`store listener failed on ${event.type} ${event.id}: ${type}`)
+            // A broken log must not cost the other listeners their events, nor give the writer an error
+            // after its change committed.
+            try {
+              this.#log(`store listener failed on ${event.type} ${event.id}: ${type}`)
+            } catch {}
           }
         }
       }
@@ -483,9 +511,10 @@ export class Store {
     })
   }
 
-  /** Closes the connection; a second call does nothing. */
+  /** Closes the connection; a second call does nothing. Throws `StoreError` inside a transaction. */
   close(): void {
     if (this.#closed) return
+    if (this.#tx) throw new StoreError("the store can't close inside a transaction")
     this.#closed = true
     this.#db.close()
   }

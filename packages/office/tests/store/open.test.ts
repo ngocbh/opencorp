@@ -197,16 +197,50 @@ test("a symlink at the store path is refused", () => {
   expect((e as Error).message).toMatch(/not a regular file/)
 })
 
+test("an existing store file is tightened to 0600", () => {
+  const dir = tempDir()
+  const office = path.join(dir, "office")
+  fs.mkdirSync(office, { mode: 0o700 })
+  const file = path.join(office, "store.sqlite")
+  new Store(file).close()
+  // Set after creating: the test's umask may mask a mode passed to the create call.
+  fs.chmodSync(file, 0o644)
+  // An empty journal is not hot, so SQLite leaves it be.
+  fs.writeFileSync(`${file}-journal`, "")
+  fs.chmodSync(`${file}-journal`, 0o644)
+  const store = storeAt(file)
+  store.db.prepare("INSERT INTO worked_folders VALUES ('minh', '/w', '2026-09-29T10:00:00.000Z')").run()
+  // Checked before close(): SQLite deletes the -wal and -shm files on the last close.
+  for (const f of [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]) {
+    if (fs.existsSync(f)) expect(fs.statSync(f).mode & 0o777).toBe(0o600)
+  }
+  for (const f of [file, `${file}-wal`, `${file}-shm`]) expect(fs.existsSync(f)).toBe(true)
+  store.close()
+
+  // A symlinked sidecar is refused, and its target keeps its mode.
+  const elsewhere = path.join(dir, "elsewhere")
+  fs.writeFileSync(elsewhere, "")
+  fs.chmodSync(elsewhere, 0o644)
+  fs.rmSync(`${file}-wal`, { force: true })
+  fs.symlinkSync(elsewhere, `${file}-wal`)
+  const e = thrown(() => storeAt(file))
+  expect(e).toBeInstanceOf(StoreError)
+  expect((e as Error).message).toMatch(/not a regular file/)
+  expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o644)
+  expect(fs.statSync(elsewhere).size).toBe(0)
+})
+
 test("opening restores the umask", () => {
-  const before = umask()
-  onTestFinished(() => process.umask(before))
+  // A umask other than the store's 0o077, so a missing restore shows.
+  const ambient = process.umask(0o022)
+  onTestFinished(() => process.umask(ambient))
   openStore()
-  expect(umask()).toBe(before)
+  expect(umask()).toBe(0o022)
 
   const dir = tempDir()
   fs.mkdirSync(path.join(dir, "office"))
   const file = path.join(dir, "office", "store.sqlite")
   fs.symlinkSync(path.join(dir, "missing"), file)
   expect(() => storeAt(file)).toThrow(StoreError)
-  expect(umask()).toBe(before)
+  expect(umask()).toBe(0o022)
 })
