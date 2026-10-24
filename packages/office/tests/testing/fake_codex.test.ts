@@ -26,9 +26,9 @@ function validator(name: string): ValidateFunction {
 const NOTES = validator("ServerNotification")
 const REQUESTS = validator("ServerRequest")
 
-/** Fails, with ajv's errors, unless `msg` is valid against `validate`. */
-function validate(validate: ValidateFunction, msg: unknown): void {
-  expect(validate(msg), ajv.errorsText(validate.errors)).toBe(true)
+/** Fails, with ajv's errors, unless `msg` is valid against `check`. */
+function validate(check: ValidateFunction, msg: unknown): void {
+  expect(check(msg), ajv.errorsText(check.errors)).toBe(true)
 }
 
 const SCRIPTS: [string, Msg][] = [

@@ -26,6 +26,7 @@ import fs from "node:fs"
 import path from "node:path"
 import readline from "node:readline"
 
+/** A JSON object from a script or the wire: `any`, since its shape is whatever the script or Codex sent. */
 type Obj = Record<string, any>
 
 export const THREAD = { id: "thr_fake", model: "gpt-fake-codex" }
