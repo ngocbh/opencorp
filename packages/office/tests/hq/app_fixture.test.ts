@@ -10,7 +10,7 @@ const FIXTURE = path.join(CHECKOUT, "packages/app/e2e/fixture.ts")
 
 test("the fixture server uses the offices csp", () => {
   const text = fs.readFileSync(FIXTURE, "utf8")
-  expect(text).toMatch(/^import \{ CSP, HEADERS \} from "@opencorp\/office\/hq\/guard"$/mu)
+  expect(text).toMatch(/^import\s*\{[^}]*\bHEADERS\b[^}]*\}\s*from\s*"@opencorp\/office\/hq\/guard"/mu)
   expect(text).not.toMatch(/\bconst (CSP|HEADERS)\b/u)
   expect(text).not.toContain("default-src")
   expect(HEADERS["content-security-policy"]).toBe(CSP)

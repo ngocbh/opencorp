@@ -1,9 +1,9 @@
 // A fixture HQ for Playwright: the app as built into e2e/dist, served with the office's headers and static rules, and /api
 // answered from in-memory state. It tests the app, not the office.
-// Its CSP and security headers are the office's own, imported from HQ's guard.
+// Its security headers, the CSP among them, are the office's own, imported from HQ's guard.
 import { existsSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
-import { CSP, HEADERS } from "@opencorp/office/hq/guard"
+import { HEADERS } from "@opencorp/office/hq/guard"
 import type { BrowserSession, RunDetail, RunEvent, RunSummary } from "@opencorp/protocol"
 import { acme, source, type Data, type Source } from "./company"
 import { runLogs, runPages, summaryOf, wholeEvents, type RunPages, type Runs } from "./runs"

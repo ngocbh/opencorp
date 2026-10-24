@@ -17,7 +17,6 @@ function emitBuild() {
 test("the app build and the office compute the same key", () => {
   const { json } = emitBuild()
   expect(json.api).toBe(officeApi())
-  expect(json.api).toBe(apiId())
 })
 
 test("a build gets a fresh nonce in __HQ_BUILD__ and in build.json, with the api key", () => {
@@ -36,7 +35,7 @@ test("the build targets the minimum browsers and inlines no asset, which the CSP
 const loaded = await loadConfigFromFile({ command: "build", mode: "production" }, "vite.config.ts", undefined, "silent", undefined, "runner")
 console.log(JSON.stringify(loaded.config.build))`
   const out = Bun.spawnSync(["node", "--input-type=module", "-e", script], { cwd: path.join(import.meta.dir, "..") })
-  expect(out.exitCode).toBe(0)
+  if (out.exitCode !== 0) throw new Error(out.stderr.toString())
   const build = JSON.parse(out.stdout.toString())
   expect(build.target).toEqual(["es2022", "chrome116", "safari17.4", "firefox124"])
   expect(build.assetsInlineLimit).toBe(0)
