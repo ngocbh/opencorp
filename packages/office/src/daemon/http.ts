@@ -1,5 +1,5 @@
 /** The office's HTTP pipeline: the route table, how a request target finds its route, how a request body is
- *  read and parsed, and the JSON replies and `ApiError` bodies it sends. */
+ *  read and parsed, and the JSON replies, `ApiError` bodies, and raw or streamed replies it sends. */
 import http, {
   type IncomingHttpHeaders,
   type IncomingMessage,
@@ -38,7 +38,7 @@ export interface Route<C> {
   body?: z.ZodType
   /** The reply schema; its `parse` fills defaults. */
   reply?: z.ZodType
-  /** Returns a JSON value: `undefined` (without a reply schema) is a 500. */
+  /** Returns a JSON value or a `RawReply`: `undefined` (without a reply schema) is a 500. */
   handler(ctx: C, params: Params, body: unknown): unknown | Promise<unknown>
 }
 
@@ -78,6 +78,54 @@ function send(res: ServerResponse, status: number, text: string, headers: Record
   } catch {
     res.destroy()
   }
+}
+
+/** A reply the handler shapes itself, sent as is (no reply schema): `status`, `headers` (lower-case names), and a
+ *  body that is either text, sent whole with its length (`content-type` defaults to `application/json`), or chunks
+ *  streamed as they come. A streamed body that waits must end once `ctx.signal` aborts: an async generator can't be
+ *  stopped from outside while it awaits. A streamed body should take its resources (a subscription, a file) inside
+ *  the generator body, which runs only on the first pull: HEAD, and a client that left before the reply, never
+ *  start it. */
+export class RawReply {
+  constructor(
+    readonly status: number,
+    readonly headers: Readonly<Record<string, string>>,
+    readonly body: string | AsyncIterable<string>,
+  ) {}
+}
+
+/** Resolves once `res` can take more data or has closed. */
+function drained(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    if (res.destroyed) return resolve()
+    const done = () => {
+      res.off("drain", done)
+      res.off("close", done)
+      resolve()
+    }
+    res.on("drain", done)
+    res.on("close", done)
+  })
+}
+
+/** Sends `reply` with `extra` headers added: text whole through `send`, a stream chunk by chunk, waiting while
+ *  the client isn't reading. HEAD gets the head only and never starts the stream. An error from the stream
+ *  rejects, after the head has gone out. */
+async function sendRaw(res: ServerResponse, reply: RawReply, extra: Record<string, string>): Promise<void> {
+  const headers = { ...reply.headers, ...extra }
+  if (typeof reply.body === "string") return send(res, reply.status, reply.body, headers)
+  res.writeHead(reply.status, headers)
+  if (res.req.method === "HEAD") {
+    res.end()
+    return
+  }
+  for await (const chunk of reply.body) {
+    if (res.destroyed) break
+    if (!res.write(chunk)) await drained(res)
+    // A client that left while we waited must not cost another chunk: for an event stream, one taken and lost.
+    if (res.destroyed) break
+  }
+  if (!res.destroyed) res.end()
 }
 
 /** An `ApiError` JSON body. */
@@ -187,14 +235,29 @@ function nextUnlessAborted<T>(it: AsyncIterator<T>, signal?: AbortSignal): Promi
   })
 }
 
+/** Sends `100 Continue` if `res`'s request waits for it, on a server from `createServer` (which never sends it on
+ *  its own); not for HTTP/1.0. Call it once, right before reading a body, after every check. */
+export function continueIfExpected(res: ServerResponse): void {
+  const { headers, httpVersion } = res.req
+  // Node's own test of the header.
+  if (headers.expect === undefined || !/(?:^|\W)100-continue(?:$|\W)/i.test(headers.expect)) return
+  // An HTTP/1.0 client doesn't know 100 (RFC 9110).
+  if (httpVersion === "1.0") return
+  res.writeContinue()
+}
+
 /** The request body. Throws `HttpError` 413 once it passes `MAX_BODY`, reading no further, and 400 when it ends
- *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). */
+ *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). Given
+ *  `res`, which must be `req`'s response, it sends `100 Continue` first if the request waits for it, unless the
+ *  declared length is too large. */
 export async function readBody(
   req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders },
   signal?: AbortSignal,
+  res?: ServerResponse,
 ): Promise<Buffer> {
   const length = req.headers["content-length"]
   if (length !== undefined && /^\d+$/.test(length) && Number(length) > MAX_BODY) throw tooLarge()
+  if (res) continueIfExpected(res)
   // Chunks are taken by hand, never with `for await` or `it.return()`: leaving the loop early destroys an
   // unfinished request, and with it the socket on Node, so the 413 would never reach the client. The rest of an
   // oversized body is never drained either; the reply closes the connection instead.
@@ -282,10 +345,19 @@ export function requestListener<C>(
       if (!controller.signal.aborted) send(res, status, text, headers)
     }
     const method = req.method ?? "GET"
+    let route: Route<C> | undefined
+    // Guarded: a throwing log hook must not make the listener reject.
+    const logInternal = (error: unknown) => {
+      try {
+        // The type only: a message (or a settable `.name`) can quote a secret or a request's input.
+        const type = error instanceof Error ? error.constructor.name : typeof error
+        const where = `${method} ${route?.path ?? "(no route)"}`
+        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${type}`))
+      } catch {}
+    }
     // A body left unread, or read only in part, stays on the connection, so it can't be reused: what follows on
     // it would start inside that body. Reading the whole body clears this.
     let unread: Record<string, string> = hasBody(req) ? { connection: "close" } : {}
-    let route: Route<C> | undefined
     try {
       const target = originForm(req.url ?? "/")
       const q = target.indexOf("?")
@@ -323,15 +395,28 @@ export function requestListener<C>(
       // The body is read only after the guard: a refused request is answered without reading a byte of it.
       let body: unknown
       if (route.body) {
-        const buf = await readBody(req, controller.signal)
+        const buf = await readBody(req, controller.signal, res)
         unread = {}
         body = parseBody(route.body, buf)
       }
       const value = await route.handler(ctx, params!, body)
+      if (value instanceof RawReply) {
+        if (!controller.signal.aborted) await sendRaw(res, value, unread)
+        return
+      }
       const text = JSON.stringify(route.reply ? route.reply.parse(value) : value) as string | undefined
       if (text === undefined) throw new TypeError("the handler returned no JSON value")
       reply(200, text, unread)
     } catch (error) {
+      if (res.headersSent) {
+        // No reply can follow a head: the client sees the connection close without the last chunk.
+        const left = controller.signal.aborted
+        // Bun sends what was written only at the end of the event loop turn, and a destroy before then drops it.
+        await new Promise((resolve) => setImmediate(resolve))
+        res.destroy()
+        if (!left) logInternal(error)
+        return
+      }
       if (error instanceof HttpError) return reply(error.status, apiError(error.code, error.message), unread)
       // Store messages name ids, never values.
       if (error instanceof NotFound) return reply(404, apiError("not_found", error.message), unread)
@@ -339,13 +424,8 @@ export function requestListener<C>(
       // nor logged.
       if (controller.signal.aborted) return
       reply(500, apiError("internal_error", "internal error"), { connection: "close" })
-      // After the reply, and guarded: a throwing log hook must neither leave the client waiting nor reject.
-      try {
-        // The type only: a message (or a settable `.name`) can quote a secret or a request's input.
-        const type = error instanceof Error ? error.constructor.name : typeof error
-        const where = `${method} ${route?.path ?? "(no route)"}`
-        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${type}`))
-      } catch {}
+      // After the reply, so a throwing log hook can't leave the client waiting.
+      logInternal(error)
     }
   }
 }
@@ -374,10 +454,17 @@ export const LIMITS: Readonly<Limits> = {
 }
 
 /** An HTTP server for `listener` with `limits`; it has no idle socket timeout (`requestTimeout` bounds a
- *  request) and no upgrade listener, so an upgrade request is served as plain HTTP. */
+ *  request) and no upgrade listener, so an upgrade request is served as plain HTTP. It never sends `100 Continue`
+ *  on its own and serves a request with any `Expect` value: `listener` must call `continueIfExpected` (or
+ *  `readBody` with `res`) before it reads a body. */
 export function createServer(listener: RequestListener, limits: Limits = LIMITS): http.Server {
   const { maxConnections, ...options } = limits
   const server = http.createServer(options, listener)
+  // Otherwise the runtime answers `Expect` before the listener runs: 100 for 100-continue, 417 for anything else.
+  // Nothing may go out before the context hook (auth) and the guard; unknown expectations are ignored, as
+  // uvicorn did.
+  server.on("checkContinue", (req, res) => server.emit("request", req, res))
+  server.on("checkExpectation", (req, res) => server.emit("request", req, res))
   // An event stream stays open with long quiet spells, so there is no idle cut.
   server.timeout = 0
   if (maxConnections !== undefined) server.maxConnections = maxConnections

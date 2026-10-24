@@ -1,6 +1,6 @@
 /** The office's sockets and HTTP pipeline: a 0700 office dir, 0600 unix sockets, HQ's TCP socket on loopback. */
 import fs from "node:fs"
-import http, { type IncomingHttpHeaders } from "node:http"
+import http from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
@@ -11,12 +11,12 @@ import {
   LIMITS,
   type Limits,
   MAX_BODY,
+  RawReply,
   type RequestInfo,
   type Route,
   createServer,
   logLine,
   readBody,
-  requestListener,
 } from "../../src/daemon/http.ts"
 import {
   OfficeStartError,
@@ -27,6 +27,7 @@ import {
 } from "../../src/daemon/sockets.ts"
 import { NotFound } from "../../src/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
+import { Conn, type ServeOptions, exchange, parse, raw, request, serve as serveRoutes } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -35,187 +36,9 @@ type Ctx = { person: string; signal: AbortSignal; query: URLSearchParams }
 
 const defaultContext = (info: RequestInfo): Ctx => ({ person: "ngocbh", signal: info.signal, query: info.query })
 
-/** Serves `routes` on a unix socket until the current test finishes; `settled` counts answered requests. */
-async function serve(
-  routes: readonly Route<Ctx>[],
-  {
-    log = () => {},
-    context = defaultContext,
-    limits,
-  }: { log?: (line: string) => void; context?: (info: RequestInfo) => Ctx | Promise<Ctx>; limits?: Limits } = {},
-): Promise<{ sock: string; server: http.Server; settled: () => number }> {
-  let settled = 0
-  const listener = requestListener(routes, { context, log })
-  const server = createServer((req, res) => listener(req, res).finally(() => settled++), limits)
-  const sock = path.join(shortDir(), "o.sock")
-  onTestFinished(async () => {
-    // On Bun's node:http, closeAllConnections also stops the listener, so close's callback gets
-    // ERR_SERVER_NOT_RUNNING; on Node close is still needed. The other order force-closes nothing on Bun.
-    server.closeAllConnections()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    fs.rmSync(sock, { force: true })
-  })
-  await listenUnix(server, sock)
-  return { sock, server, settled: () => settled }
-}
-
-type Reply = { status: number; headers: IncomingHttpHeaders; text: string; json(): unknown }
-
-/** One request over `node:http`, on a fresh connection. Under `bun test` this client is fetch-based, so
- *  assertions about `connection: close` or reuse go through `raw` or `Conn`. */
-function request(
-  sock: string,
-  method: string,
-  target: string,
-  {
-    headers = {},
-    body,
-    chunks,
-  }: { headers?: Record<string, string>; body?: Buffer | string; chunks?: AsyncIterable<Buffer> } = {},
-): Promise<Reply> {
-  return new Promise((resolve, reject) => {
-    let responded = false
-    const req = http.request({ socketPath: sock, method, path: target, headers, agent: false }, (res) => {
-      responded = true
-      const parts: Buffer[] = []
-      res.on("data", (part: Buffer) => parts.push(part))
-      res.on("error", reject)
-      res.on("end", () => {
-        const text = Buffer.concat(parts).toString()
-        resolve({ status: res.statusCode!, headers: res.headers, text, json: () => JSON.parse(text) })
-      })
-    })
-    // A write error (EPIPE, ECONNRESET) after the server answered is the server not reading the rest.
-    const failed = (error: unknown) => {
-      if (!responded) reject(error)
-    }
-    req.on("error", failed)
-    if (chunks)
-      (async () => {
-        for await (const chunk of chunks) req.write(chunk)
-        req.end()
-      })().catch(failed)
-    else req.end(body)
-  })
-}
-
-/** Writes `text` on a new connection and reads until the first line, the end of the head, or EOF. `closed`
- *  is true only when the peer ended the connection (a reset counts). */
-function raw(
-  sock: string,
-  text: string,
-  { until = "close", timeout = 9000 }: { until?: "line" | "head" | "close"; timeout?: number } = {},
-): Promise<{ text: string; closed: boolean }> {
-  return new Promise((resolve, reject) => {
-    const socket = net.connect(sock)
-    let got = ""
-    const timer = setTimeout(() => {
-      socket.destroy()
-      reject(new Error("raw read timed out"))
-    }, timeout)
-    const finish = (closed: boolean) => {
-      clearTimeout(timer)
-      socket.destroy()
-      resolve({ text: got, closed })
-    }
-    socket.on("connect", () => socket.write(text))
-    socket.on("data", (data: Buffer) => {
-      got += data.toString()
-      if ((until === "line" && got.includes("\r\n")) || (until === "head" && got.includes("\r\n\r\n"))) finish(false)
-    })
-    socket.on("end", () => finish(true))
-    socket.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ECONNRESET") return finish(true)
-      clearTimeout(timer)
-      socket.destroy()
-      reject(error)
-    })
-  })
-}
-
-/** The status, head and body of one raw response. */
-function parse(text: string): { status: number; head: string; body: string } {
-  const at = text.indexOf("\r\n\r\n")
-  const head = at < 0 ? text : text.slice(0, at)
-  return { status: Number(head.split(" ")[1]), head, body: at < 0 ? "" : text.slice(at + 4) }
-}
-
-/** A raw `method target` request on its own connection, asking the server to close it after. */
-async function exchange(sock: string, method: string, target: string) {
-  const { text } = await raw(sock, `${method} ${target} HTTP/1.1\r\nhost: office\r\nconnection: close\r\n\r\n`)
-  return parse(text)
-}
-
-/** One held connection, for keep-alive checks. */
-class Conn {
-  private buf = Buffer.alloc(0)
-  private ended = false
-  private wake: (() => void) | undefined
-
-  private constructor(readonly socket: net.Socket) {
-    const end = () => {
-      this.ended = true
-      this.wake?.()
-    }
-    socket.on("data", (data: Buffer) => {
-      this.buf = Buffer.concat([this.buf, data])
-      this.wake?.()
-    })
-    socket.on("end", end)
-    socket.on("close", end)
-    socket.on("error", end)
-  }
-
-  static async open(sock: string): Promise<Conn> {
-    const socket = net.connect(sock)
-    onTestFinished(() => socket.destroy())
-    await new Promise<void>((resolve, reject) => {
-      socket.once("connect", () => resolve())
-      socket.once("error", reject)
-    })
-    return new Conn(socket)
-  }
-
-  send(text: string): void {
-    this.socket.write(text)
-  }
-
-  /** Waits until `ready()` holds or `deadline` passes; false if it didn't hold. */
-  private async until(ready: () => boolean, deadline: number): Promise<boolean> {
-    while (!ready()) {
-      const left = deadline - performance.now()
-      if (this.ended || left <= 0) return ready()
-      await new Promise<void>((resolve) => {
-        const done = () => {
-          clearTimeout(timer)
-          this.wake = undefined
-          resolve()
-        }
-        const timer = setTimeout(done, left)
-        this.wake = done
-      })
-    }
-    return true
-  }
-
-  /** The next whole response, as soon as it is all read. */
-  async response({ timeout = 9000 } = {}): Promise<{ status: number; head: string; body: string }> {
-    const deadline = performance.now() + timeout
-    if (!(await this.until(() => this.buf.includes("\r\n\r\n"), deadline))) throw new Error("no response head")
-    const at = this.buf.indexOf("\r\n\r\n")
-    const head = this.buf.subarray(0, at).toString()
-    const end = at + 4 + Number(/\r\ncontent-length: *(\d+)/i.exec(head)?.[1] ?? 0)
-    if (!(await this.until(() => this.buf.length >= end, deadline))) throw new Error("short response body")
-    const body = this.buf.subarray(at + 4, end).toString()
-    this.buf = this.buf.subarray(end)
-    return { status: Number(head.split(" ")[1]), head, body }
-  }
-
-  /** Whether the peer ends or resets the connection (or already has) within `timeout`. */
-  closed({ timeout = 9000 } = {}): Promise<boolean> {
-    return this.until(() => this.ended, performance.now() + timeout)
-  }
-}
+/** Serves `routes` with the test context unless `options` gives another. */
+const serve = (routes: readonly Route<Ctx>[], options: Partial<ServeOptions<Ctx>> = {}) =>
+  serveRoutes(routes, { context: defaultContext, ...options })
 
 function mode(p: string): number {
   return fs.statSync(p).mode & 0o777
@@ -961,5 +784,383 @@ describe("bodies", () => {
     expect(second.head.toLowerCase()).not.toContain("connection: close")
     read.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
     expect((await read.response()).status).toBe(200)
+  })
+
+  test("expect 100 continue is not answered before the context the guard or a body read", async () => {
+    const waiting = (target: string) =>
+      `POST ${target} HTTP/1.1\r\nhost: office\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n`
+    const ping: Route<Ctx> = { method: "POST", path: "/ping", handler: () => ({ ok: true }) }
+    const { sock } = await serveBodies([ping])
+
+    const guarded = await raw(sock, waiting("/guarded"))
+    expect(guarded.text).toStartWith("HTTP/1.1 403")
+    expect(guarded.text).not.toContain("100 Continue")
+    expect(parse(guarded.text).head.toLowerCase()).toContain("\r\nconnection: close")
+
+    const unbodied = await raw(sock, waiting("/ping"))
+    expect(unbodied.text).toStartWith("HTTP/1.1 200")
+    expect(unbodied.text).not.toContain("100 Continue")
+
+    const refused = await serveBodies([], {
+      context: () => {
+        throw new HttpError(401, "unauthenticated", "who are you")
+      },
+    })
+    const unauthenticated = await raw(refused.sock, waiting(ANSWER))
+    expect(unauthenticated.text).toStartWith("HTTP/1.1 401")
+    expect(unauthenticated.text).not.toContain("100 Continue")
+  })
+
+  test("expect 100 continue is answered once the body is read", async () => {
+    const { sock, answered } = await serveBodies()
+    const conn = await Conn.open(sock)
+    const body = answerBody("yes")
+    const length = Buffer.byteLength(body)
+    conn.send(`POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: ${length}\r\nexpect: 100-continue\r\n\r\n`)
+    expect((await conn.response()).head).toStartWith("HTTP/1.1 100 Continue")
+    conn.send(body)
+    const res = await conn.response()
+    expect([res.status, JSON.parse(res.body)]).toEqual([200, { answer: "yes" }])
+    expect(answered()).toBe(1)
+  })
+
+  test("an unknown expectation is served as a plain request", async () => {
+    let runs = 0
+    const count: Route<Ctx> = { method: "GET", path: "/count", handler: () => ({ runs: ++runs }) }
+    const { sock } = await serveBodies([count])
+    const head = "GET /count HTTP/1.1\r\nhost: office\r\nexpect: something\r\nconnection: close\r\n\r\n"
+    const got = await raw(sock, head)
+    const res = parse(got.text)
+    expect([res.status, JSON.parse(res.body)]).toEqual([200, { runs: 1 }])
+    expect(runs).toBe(1)
+  })
+
+  test("expect 100 continue is not sent for a too large body or to http 1 0", async () => {
+    const { sock } = await serveBodies()
+    const large = await raw(
+      sock,
+      `POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: 2000000\r\nexpect: 100-continue\r\n\r\n`,
+    )
+    expect(large.text).toStartWith("HTTP/1.1 413")
+    expect(large.text).not.toContain("100 Continue")
+
+    const conn = await Conn.open(sock)
+    const body = answerBody("yes")
+    const length = Buffer.byteLength(body)
+    conn.send(`POST ${ANSWER} HTTP/1.0\r\nhost: office\r\ncontent-length: ${length}\r\nexpect: 100-continue\r\n\r\n`)
+    expect(await conn.response({ timeout: 300 }).catch((e: Error) => e.message)).toBe("no response head")
+    conn.send(body)
+    const res = await conn.response()
+    expect([res.status, JSON.parse(res.body)]).toEqual([200, { answer: "yes" }])
+  })
+})
+
+/** Resolves once `signal` aborts (at once if it already has). */
+function aborted(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve()
+    else signal.addEventListener("abort", () => resolve(), { once: true })
+  })
+}
+
+/** A raw `net` connection to `sock`, destroyed when the current test finishes. */
+function connect(sock: string): net.Socket {
+  const socket = net.connect(sock)
+  onTestFinished(() => socket.destroy())
+  return socket
+}
+
+describe("raw replies", () => {
+  test("a raw reply sends its own status headers and text", async () => {
+    const json: Route<Ctx> = {
+      method: "GET",
+      path: "/conflict",
+      handler: () => new RawReply(409, { "x-a": "b" }, '{"k":1}'),
+    }
+    const text: Route<Ctx> = {
+      method: "GET",
+      path: "/text",
+      handler: () => new RawReply(200, { "content-type": "text/plain" }, "hello"),
+    }
+    const { sock } = await serve([json, text])
+    const r = await request(sock, "GET", "/conflict")
+    expect(r.status).toBe(409)
+    expect(r.headers["content-type"]).toBe("application/json")
+    expect(r.headers["x-a"]).toBe("b")
+    expect(r.headers["content-length"]).toBe("7")
+    expect(r.text).toBe('{"k":1}')
+    const t = await request(sock, "GET", "/text")
+    expect([t.status, t.headers["content-type"], t.text]).toEqual([200, "text/plain", "hello"])
+  })
+
+  test("a streamed reply sends each chunk as it is made", async () => {
+    let release!: () => void
+    const released = new Promise<void>((resolve) => (release = resolve))
+    const stream: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            yield "a"
+            await released
+            yield "b"
+          })(),
+        ),
+    }
+    const { sock } = await serve([stream])
+    const seen: string[] = []
+    const result = await new Promise<{ headers: http.IncomingHttpHeaders; beforeRelease: string }>(
+      (resolve, reject) => {
+        let beforeRelease = ""
+        const req = http.request({ socketPath: sock, method: "GET", path: "/s", agent: false }, (res) => {
+          res.on("data", (part: Buffer) => {
+            seen.push(part.toString())
+            if (!beforeRelease) {
+              beforeRelease = seen.join("")
+              release()
+            }
+          })
+          res.on("error", reject)
+          res.on("end", () => resolve({ headers: res.headers, beforeRelease }))
+        })
+        onTestFinished(() => req.destroy())
+        req.on("error", reject)
+        req.end()
+      },
+    )
+    expect(result.beforeRelease).toBe("a")
+    expect(seen.join("")).toBe("ab")
+    expect(result.headers["transfer-encoding"]).toBe("chunked")
+  })
+
+  test("a streamed reply waits while the client is not reading", async () => {
+    let pulls = 0
+    let finished = false
+    const chunk = "x".repeat(64 * 1024)
+    const forever: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: (ctx) =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            try {
+              while (!ctx.signal.aborted) {
+                pulls++
+                yield chunk
+              }
+            } finally {
+              finished = true
+            }
+          })(),
+        ),
+    }
+    const { sock } = await serve([forever])
+    const socket = connect(sock)
+    socket.on("error", () => {})
+    socket.write("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    socket.pause()
+    // Steady once the count holds for 200 ms: the buffers between the generator and the paused socket are full.
+    let last = -1
+    let since = performance.now()
+    await waitFor(
+      () => {
+        if (pulls !== last) {
+          last = pulls
+          since = performance.now()
+          return false
+        }
+        return pulls > 0 && performance.now() - since >= 200
+      },
+      { timeout: 9000, what: "the body to stop being pulled" },
+    )
+    expect(pulls).toBeGreaterThan(0)
+    expect(pulls).toBeLessThanOrEqual(64)
+    socket.destroy()
+    await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+  })
+
+  test("a streamed reply resumes when a paused client reads again", async () => {
+    const chunks = 64
+    const chunk = "x".repeat(64 * 1024)
+    let pulls = 0
+    let ran = false
+    const finite: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            while (pulls < chunks) {
+              pulls++
+              yield chunk
+            }
+            yield "end"
+            ran = true
+          })(),
+        ),
+    }
+    const { sock } = await serve([finite])
+    const socket = connect(sock)
+    socket.write("GET /s HTTP/1.1\r\nhost: office\r\nconnection: close\r\n\r\n")
+    socket.pause()
+    // Blocked once the count holds for 200 ms short of the end: the buffers up to the paused socket are full.
+    let last = -1
+    let since = performance.now()
+    await waitFor(
+      () => {
+        if (pulls !== last) {
+          last = pulls
+          since = performance.now()
+          return false
+        }
+        return pulls > 0 && performance.now() - since >= 200
+      },
+      { timeout: 9000, what: "the body to stop being pulled" },
+    )
+    expect(pulls).toBeLessThan(chunks)
+    const parts: Buffer[] = []
+    const text = await new Promise<string>((resolve, reject) => {
+      socket.on("data", (part: Buffer) => parts.push(part))
+      socket.on("end", () => resolve(Buffer.concat(parts).toString()))
+      socket.on("error", reject)
+      socket.resume()
+    })
+    const { status, body } = parse(text)
+    expect(status).toBe(200)
+    // Decode the chunked body: a hex size line, that many bytes, CRLF; a zero size ends it.
+    let decoded = ""
+    let at = 0
+    for (;;) {
+      const eol = body.indexOf("\r\n", at)
+      const size = Number.parseInt(body.slice(at, eol), 16)
+      if (!size) break
+      decoded += body.slice(eol + 2, eol + 2 + size)
+      at = eol + 2 + size + 2
+    }
+    expect(body.endsWith("0\r\n\r\n")).toBe(true)
+    expect(decoded.length).toBe(chunks * chunk.length + "end".length)
+    expect(decoded.endsWith("xend")).toBe(true)
+    expect(ran).toBe(true)
+  })
+
+  test("a streamed body ends when the client leaves", async () => {
+    let finished = false
+    const waiting: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: (ctx) =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            try {
+              yield "a"
+              await aborted(ctx.signal)
+            } finally {
+              finished = true
+            }
+          })(),
+        ),
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([waiting], { log: (line) => lines.push(line) })
+    const conn = await Conn.open(sock)
+    conn.send("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the first chunk" })
+    conn.socket.destroy()
+    await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toEqual([])
+  })
+
+  test("a streamed body that fails after the client left logs nothing", async () => {
+    class StreamBroke extends Error {}
+    const failing: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: (ctx) =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            yield "a"
+            await aborted(ctx.signal)
+            throw new StreamBroke("after the client left")
+          })(),
+        ),
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([failing], { log: (line) => lines.push(line) })
+    const conn = await Conn.open(sock)
+    conn.send("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the first chunk" })
+    conn.socket.destroy()
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toEqual([])
+  })
+
+  test("an error in a streamed reply closes the connection and logs its type", async () => {
+    class StreamBroke extends Error {}
+    const broken: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            yield "a"
+            throw new StreamBroke("secret detail")
+          })(),
+        ),
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([broken], { log: (line) => lines.push(line) })
+    const got = await raw(sock, "GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    expect(got.closed).toBe(true)
+    const { status, body } = parse(got.text)
+    expect(status).toBe(200)
+    expect(body).toStartWith("1\r\na\r\n")
+    expect(body).not.toContain("0\r\n\r\n")
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toEndWith("internal error on GET /s: StreamBroke")
+    expect(lines[0]).not.toContain("secret")
+  })
+
+  test("head on a streamed reply sends no body and never starts it", async () => {
+    let pulls = 0
+    const stream: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/event-stream", "cache-control": "no-cache" },
+          (async function* () {
+            pulls++
+            yield "a"
+          })(),
+        ),
+    }
+    const { sock } = await serve([stream])
+    const conn = await Conn.open(sock)
+    conn.send("HEAD /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    const r = await conn.response({ head: true })
+    expect(r.status).toBe(200)
+    expect(r.head.toLowerCase()).toContain("\r\ncontent-type: text/event-stream")
+    expect(r.head.toLowerCase()).toContain("\r\ncache-control: no-cache")
+    expect(pulls).toBe(0)
+    // The same connection still serves: HEAD left no body behind to confuse the next response.
+    conn.send("GET /nope HTTP/1.1\r\nhost: office\r\n\r\n")
+    expect((await conn.response()).status).toBe(404)
+    expect(pulls).toBe(0)
   })
 })
