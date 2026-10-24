@@ -154,7 +154,8 @@ store/test_close.py::test_a_closed_store_refuses_reads_and_writes_on_every_threa
 store/test_close.py::test_closing_the_store_during_another_threads_write_doesnt_crash	dropped	—	thread-only (§3.3)	O1-2
 store/test_costs.py	ported	packages/office/tests/store/costs.test.ts	—	O1-3
 store/test_feedback.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
-store/test_hq_sessions.py	open	—	—	O1-4
+store/test_hq_sessions.py	ported	packages/office/tests/store/hq_sessions.test.ts	—	O1-4
+store/test_hq_sessions.py::test_another_integrity_error_is_not_a_duplicate	changed	packages/office/tests/store/hq_sessions.test.ts::another integrity error is not a duplicate	Tx.insert maps it to StoreError, not a raw SQLite error (O1-3)	O1-4
 store/test_learning.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 store/test_messages.py	dropped	—	no office messages table (D9)	O0-9
 store/test_migrate.py	ported	packages/office/tests/store/migrate.test.ts	—	O1-2
@@ -172,7 +173,10 @@ store/test_outbox.py::test_subscribe_from_the_start	dropped	—	no outbox, no re
 store/test_outbox.py::test_subscribe_refusals	dropped	—	no outbox, no replay (§2.3, §5.1)	O1-2
 store/test_outbox.py::test_subscribe_replays_then_follows_without_gaps_or_repeats	dropped	—	no outbox, no replay (§2.3, §5.1)	O1-2
 store/test_outbox.py::test_unsent_and_mark_sent	dropped	—	the outbox goes (§5.1)	O1-2
-store/test_questions.py	open	—	—	O1-4
+store/test_questions.py	ported	packages/office/tests/store/questions.test.ts	—	O1-4
+store/test_questions.py::test_answer_is_absent_until_answered	changed	packages/office/tests/store/questions.test.ts::answer is null until answered	zod has no unset fields: an unanswered answer reads back null (D6)	O1-4
+store/test_questions.py::test_answer_is_stored_as_its_json_dump	changed	packages/office/tests/store/questions.test.ts::answer is stored as its json dump	JSON's form of JS values: a Date dumps as its ISO time (D6)	O1-4
+store/test_questions.py::test_first_answer_wins	changed	packages/office/tests/store/questions.test.ts::first answer wins	no threads: sync transactions on one connection (§3.3)	O1-4
 store/test_runs.py	ported	packages/office/tests/store/runs.test.ts	—	O1-3
 store/test_runs.py::test_a_launch_is_stored_and_emits_run_updated	changed	packages/office/tests/store/runs.test.ts::a launch is stored	the store emits no run.updated: runs/notify.ts publishes it from the status rule (§5.1)	O1-3
 store/test_runs.py::test_a_launch_range_is_since_inclusive_and_until_exclusive	dropped	—	run lists page yian's run index (§5.2)	O1-3
@@ -205,7 +209,8 @@ store/test_sessions.py::test_session_owned_rows_need_their_session[debrief]	drop
 store/test_sessions.py::test_session_owned_rows_need_their_session[feedback]	dropped	—	no feedback table (D32)	O1-3
 store/test_sessions.py::test_session_owned_rows_need_their_session[message]	dropped	—	no messages table (D9)	O1-3
 store/test_sessions.py::test_session_owned_rows_need_their_session[proposal]	dropped	—	no profile_proposals table (D32)	O1-3
-store/test_work_items.py	open	—	—	O1-4
+store/test_work_items.py	ported	packages/office/tests/store/work_items.test.ts	—	O1-4
+store/test_work_items.py::test_null_fields_come_back_unset	changed	packages/office/tests/store/work_items.test.ts::null fields come back as null	zod has no unset fields (D6)	O1-4
 test_old_name.py	dropped	—	a repo grep for the old name, kept for legacy.py's move, which goes; no migration (D24, D4)	O0-9
 test_packaging.py	dropped	—	the PyPI sdist and wheel; the office ships as a compiled binary (D25), tested by O2-26	O0-9
 test_secrets.py	ported	packages/office/tests/secrets.test.ts	§5.3 (D13); calls are async under the folder's lock	O1-1
@@ -326,6 +331,8 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/store/open.test.ts::the database files are 0600	§5.1, §6 rule 6	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::a failure outside tx run still blocks later writes	§5.1	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::new ids are monotonic ULIDs	§5.1	O1-2
+—	new	packages/office/tests/store/questions.test.ts::an answer that isnt json is refused	a value JSON can't hold is a StoreError, never a NULL answer or a raw error quoting it (§6 rule 13)	O1-4
+—	new	packages/office/tests/store/questions.test.ts::questions are read by a long run id list in one statement	one json_each bind (O1-3's getRuns); Python's chunked read was pinned by store/test_runs.py	O1-4
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3

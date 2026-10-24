@@ -2,7 +2,7 @@
 import path from "node:path"
 import type { z } from "zod"
 import { onTestFinished } from "bun:test"
-import { Event, Session, WorkItem, now } from "@opencorp/protocol"
+import { Comment, Event, Question, Session, WorkItem, now } from "@opencorp/protocol"
 import { Store, newId, type StoreOptions } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 
@@ -30,6 +30,19 @@ export function workItem(over?: Partial<WorkItem>): z.output<typeof WorkItem> {
   })
 }
 
+/** A Comment on `workItemId` with Python's defaults (`comment` in conftest): a new id, author ngocbh, body
+ *  "looks good", now(), overridden by `over`; parsed, so defaults are filled. */
+export function comment(workItemId: string, over?: Partial<Comment>): z.output<typeof Comment> {
+  return Comment.parse({
+    id: newId(),
+    work_item_id: workItemId,
+    author: "ngocbh",
+    body: "looks good",
+    created_at: now(),
+    ...over,
+  })
+}
+
 /** A git commit id for fixtures. */
 export const COMMIT = "a".repeat(40)
 
@@ -46,6 +59,25 @@ export function session(over?: Partial<Session>): z.output<typeof Session> {
     repo_commit: COMMIT,
     status: "idle",
     kind: "main",
+    created_at: t,
+    updated_at: t,
+    ...over,
+  })
+}
+
+/** A Question in `sessionId` with Python's defaults (`question` in conftest): run "run-1", no node, ask_user,
+ *  asker minh, "Which db?", open, now() times, overridden by `over`; parsed, so defaults are filled. */
+export function question(sessionId: string, over?: Partial<Question>): z.output<typeof Question> {
+  const t = now()
+  return Question.parse({
+    id: newId(),
+    session_id: sessionId,
+    run_id: "run-1",
+    node_id: null,
+    source: "ask_user",
+    asker: "minh",
+    question: "Which db?",
+    status: "open",
     created_at: t,
     updated_at: t,
     ...over,

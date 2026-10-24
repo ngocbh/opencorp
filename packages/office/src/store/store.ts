@@ -3,6 +3,7 @@
 import { randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { inspect } from "node:util"
 import {
   openSqlite,
   sqliteErrorCode,
@@ -11,7 +12,17 @@ import {
   type SqliteRow,
   type SqliteStatement,
 } from "@ngocbh/yian/platform"
-import { CostReport, Event, Session, now, validationMessage } from "@opencorp/protocol"
+import {
+  BrowserSession,
+  Comment,
+  CostReport,
+  Event,
+  Question,
+  Session,
+  WorkItem,
+  now,
+  validationMessage,
+} from "@opencorp/protocol"
 import type { z } from "zod"
 import { migrate } from "./migrate.ts"
 
@@ -33,6 +44,29 @@ export class DuplicateKey extends StoreError {
   override name = "DuplicateKey"
 }
 
+/** A status change the entity's state machine doesn't allow. */
+export class InvalidTransition extends StoreError {
+  override name = "InvalidTransition"
+}
+
+/** A work item update was based on an older version. */
+export class StaleVersion extends StoreError {
+  override name = "StaleVersion"
+
+  constructor(
+    readonly expected: number,
+    readonly current: number,
+  ) {
+    super(`based on version ${expected}, current is ${current}`)
+  }
+}
+
+/** A stored work item, defaults filled. */
+export type WorkItemRecord = z.output<typeof WorkItem>
+
+/** A stored comment, defaults filled. */
+export type CommentRecord = z.output<typeof Comment>
+
 /** A folder a person has had a session in, for the picker. */
 export interface WorkedFolder {
   cwd: string
@@ -41,6 +75,9 @@ export interface WorkedFolder {
 
 /** A stored session, defaults filled. */
 export type SessionRecord = z.output<typeof Session>
+
+/** A stored question, defaults filled. */
+export type QuestionRecord = z.output<typeof Question>
 
 /** The longest reason a run shows. */
 export const REASON_CHARS = 200
@@ -105,6 +142,26 @@ interface Table<S extends z.ZodObject> {
   derived: Set<string>
 }
 
+const WORK_ITEMS: Table<typeof WorkItem> = {
+  name: "work_items",
+  label: "WorkItem",
+  key: "id",
+  schema: WorkItem,
+  json: new Set(["groups"]),
+  bools: new Set(["gate"]),
+  derived: new Set(),
+}
+
+const COMMENTS: Table<typeof Comment> = {
+  name: "comments",
+  label: "Comment",
+  key: "id",
+  schema: Comment,
+  json: new Set(),
+  bools: new Set(),
+  derived: new Set(),
+}
+
 const SESSIONS: Table<typeof Session> = {
   name: "sessions",
   label: "Session",
@@ -113,6 +170,26 @@ const SESSIONS: Table<typeof Session> = {
   json: new Set(["harness_usage", "waiting_on"]),
   bools: new Set(["capped"]),
   derived: new Set(["run_ids"]),
+}
+
+const QUESTIONS: Table<typeof Question> = {
+  name: "questions",
+  label: "Question",
+  key: "id",
+  schema: Question,
+  json: new Set(["options", "questions", "answer_schema", "discussion", "answer"]),
+  bools: new Set(["gate"]),
+  derived: new Set(),
+}
+
+/** The statuses whose question keeps its answer. */
+const ANSWERED = new Set(["answered", "consumed"])
+/** The status moves a question may make. */
+const QUESTION_MOVES: Record<string, string[]> = { open: ["answered", "stale"], answered: ["consumed"] }
+
+/** Throws `InvalidTransition` unless `moves` lets a `kind` go from `from` to `to`. */
+function checkMove(kind: string, moves: Record<string, string[]>, from: string, to: string): void {
+  if (!moves[from]?.includes(to)) throw new InvalidTransition(`${kind} cannot move from ${from} to ${to}`)
 }
 
 /** `name` quoted as an SQL identifier (a column may be a keyword, like `groups`). */
@@ -133,6 +210,20 @@ function parseJson(table: string, name: string, text: string): unknown {
     // The parser's message quotes the text, which could hold a secret.
     throw new StoreError(`${table}: ${name} isn't valid JSON`)
   }
+}
+
+/** `value` as JSON text for column `name` of `table`; throws `StoreError` if it can't be stored as JSON. */
+function jsonText(table: string, name: string, value: unknown): string {
+  let text: string | undefined
+  try {
+    text = JSON.stringify(value)
+  } catch {
+    // The serializer's or a toJSON's message could quote the value, which could hold a secret.
+    throw new StoreError(`${table}: ${name} can't be stored as JSON`)
+  }
+  // A function, a symbol or a toJSON returning undefined gives undefined, which would bind as SQL NULL.
+  if (text === undefined) throw new StoreError(`${table}: ${name} can't be stored as JSON`)
+  return text
 }
 
 /** Puts the database in WAL mode, unless it already is. Switching needs an exclusive lock: when several
@@ -327,6 +418,92 @@ export interface WorkerRecord {
   pid: number
   pgid: number
   startTime: number
+}
+
+/** A browser signed in to HQ, as stored: with its secret's sha256 and its password fingerprint, which never
+ *  print (inspect and JSON leave them out; they stay public readonly fields so equality checks see them). Expiry
+ *  compares as text: every time comes from now(). */
+export class HqSessionRecord {
+  readonly id: string
+  readonly person: string
+  readonly name: string
+  readonly label: string | null
+  readonly secretSha256: string
+  readonly passwordFp: string
+  readonly issuedBy: string
+  readonly via: z.output<typeof BrowserSession>["via"]
+  readonly createdAt: string
+  readonly expiresAt: string
+  readonly lastUsedAt: string | null
+
+  constructor(fields: {
+    id: string
+    person: string
+    name: string
+    label: string | null
+    secretSha256: string
+    passwordFp: string
+    issuedBy: string
+    via: z.output<typeof BrowserSession>["via"]
+    createdAt: string
+    expiresAt: string
+    lastUsedAt: string | null
+  }) {
+    this.id = fields.id
+    this.person = fields.person
+    this.name = fields.name
+    this.label = fields.label
+    this.secretSha256 = fields.secretSha256
+    this.passwordFp = fields.passwordFp
+    this.issuedBy = fields.issuedBy
+    this.via = fields.via
+    this.createdAt = fields.createdAt
+    this.expiresAt = fields.expiresAt
+    this.lastUsedAt = fields.lastUsedAt
+  }
+
+  /** The session as the API shows it: never the secret's hash or the fingerprint. */
+  public(): z.output<typeof BrowserSession> {
+    return {
+      id: this.id,
+      person: this.person,
+      name: this.name,
+      label: this.label,
+      via: this.via,
+      issued_by: this.issuedBy,
+      created_at: this.createdAt,
+      expires_at: this.expiresAt,
+      last_used_at: this.lastUsedAt,
+    }
+  }
+
+  /** The public form, so a serialized record never carries the secret's hash or the fingerprint. */
+  toJSON(): object {
+    return this.public()
+  }
+
+  /** The record without the secret's hash or the fingerprint, so a logged or printed one never carries them. */
+  [inspect.custom](): string {
+    const { id, person, name, label, issuedBy, via, createdAt, expiresAt, lastUsedAt } = this
+    return `HqSessionRecord ${inspect({ id, person, name, label, issuedBy, via, createdAt, expiresAt, lastUsedAt })}`
+  }
+}
+
+/** The browser session in an `hq_sessions` row. */
+function hqSessionRecord(r: SqliteRow): HqSessionRecord {
+  return new HqSessionRecord({
+    id: r.id as string,
+    person: r.person as string,
+    name: r.name as string,
+    label: r.label as string | null,
+    secretSha256: r.secret_sha256 as string,
+    passwordFp: r.password_fp as string,
+    issuedBy: r.issued_by as string,
+    via: r.via as HqSessionRecord["via"],
+    createdAt: r.created_at as string,
+    expiresAt: r.expires_at as string,
+    lastUsedAt: r.last_used_at as string | null,
+  })
 }
 
 /** Sets an existing store file to 0600 if it has any group or other bits; does nothing if it's missing;
@@ -540,7 +717,7 @@ export class Store {
     const cols: Record<string, SqliteParam> = {}
     for (const [name, value] of Object.entries(result.data as Record<string, unknown>)) {
       if (table.derived.has(name)) continue
-      if (table.json.has(name)) cols[name] = value === null ? null : JSON.stringify(value)
+      if (table.json.has(name)) cols[name] = value === null ? null : jsonText(table.name, name, value)
       else if (table.bools.has(name)) cols[name] = value ? 1 : 0
       else cols[name] = value as SqliteParam
     }
@@ -562,6 +739,49 @@ export class Store {
     return result.data
   }
 
+  /** The row of `table` whose key is `key`, as an entity, or undefined. */
+  #get<S extends z.ZodObject>(table: Table<S>, key: string): z.output<S> | undefined {
+    const row = this.db.prepare(`SELECT * FROM ${quote(table.name)} WHERE ${quote(table.key)} = ?`).get(key)
+    return row && this.#entity(table, row)
+  }
+
+  /** The row of `table` whose key is `key`, as an entity; throws `NotFound` if there is none. */
+  #must<S extends z.ZodObject>(table: Table<S>, key: string): z.output<S> {
+    const found = this.#get(table, key)
+    if (!found) throw new NotFound(`no ${table.name} row ${key}`)
+    return found
+  }
+
+  /** The rows of `table` matching `where` (an undefined or null value is no filter, an array is any of its
+   *  values), in `order`, at most `limit`, as entities. */
+  #list<S extends z.ZodObject>(
+    table: Table<S>,
+    where: Record<string, string | string[] | null | undefined>,
+    order: string,
+    limit?: number,
+  ): z.output<S>[] {
+    const clauses: string[] = []
+    const params: SqliteParam[] = []
+    for (const [name, value] of Object.entries(where)) {
+      if (value === undefined || value === null) continue
+      if (Array.isArray(value)) {
+        // One JSON parameter rather than a `?` per value: a long list would pass SQLite's variable limit.
+        clauses.push(`${quote(name)} IN (SELECT value FROM json_each(?))`)
+        params.push(JSON.stringify(value))
+      } else {
+        clauses.push(`${quote(name)} = ?`)
+        params.push(value)
+      }
+    }
+    const sql =
+      `SELECT * FROM ${quote(table.name)}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ` +
+      `ORDER BY ${order} LIMIT ?`
+    return this.db
+      .prepare(sql)
+      .all(...params, limit ?? -1)
+      .map((row) => this.#entity(table, row))
+  }
+
   /** `current` with `changes` applied (undefined entries skipped), validated; throws `StoreError` if `changes`
    *  touches a `frozen` field. */
   #changed<S extends z.ZodObject>(
@@ -577,6 +797,69 @@ export class Store {
     const result = table.schema.safeParse(data)
     if (!result.success) throw new StoreError(`${table.name}: ${validationMessage(table.schema, result.error, data)}`)
     return result.data
+  }
+
+  // Work items and comments.
+
+  /** Inserts a work item and emits `work_item.created`. */
+  createWorkItem(item: WorkItemRecord): WorkItemRecord {
+    return this.transaction((tx) => {
+      tx.insert(WORK_ITEMS.name, this.#columns(WORK_ITEMS, item))
+      const stored = this.#must(WORK_ITEMS, item.id)
+      tx.emit("work_item.created", item.id, stored)
+      return stored
+    })
+  }
+
+  /** The work item, or undefined. */
+  getWorkItem(itemId: string): WorkItemRecord | undefined {
+    return this.#get(WORK_ITEMS, itemId)
+  }
+
+  /** Work items, newest first, optionally filtered. */
+  listWorkItems(filter?: { assignee?: string; status?: string | string[]; limit?: number }): WorkItemRecord[] {
+    return this.#list(
+      WORK_ITEMS,
+      { assignee: filter?.assignee, status: filter?.status },
+      "created_at DESC, rowid DESC",
+      filter?.limit,
+    )
+  }
+
+  /** Changes fields of a work item, bumps its version and emits `work_item.updated` (`updated_at` defaults to
+   *  now). With `baseVersion`, a work item at another version throws `StaleVersion`. */
+  updateWorkItem(itemId: string, changes: Partial<WorkItemRecord>, baseVersion?: number): WorkItemRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(WORK_ITEMS, itemId)
+      if (baseVersion !== undefined && baseVersion !== current.version) {
+        throw new StaleVersion(baseVersion, current.version)
+      }
+      const changed = this.#changed(WORK_ITEMS, current, { updated_at: now(), ...defined(changes) }, [
+        "id",
+        "version",
+        "created_at",
+      ])
+      const item = { ...changed, version: current.version + 1 }
+      tx.update(WORK_ITEMS.name, WORK_ITEMS.key, this.#columns(WORK_ITEMS, item))
+      const stored = this.#must(WORK_ITEMS, itemId)
+      tx.emit("work_item.updated", itemId, stored)
+      return stored
+    })
+  }
+
+  /** Inserts a comment and emits `comment.created`; a missing work item → NotFound. */
+  addComment(comment: CommentRecord): CommentRecord {
+    return this.transaction((tx) => {
+      tx.insert(COMMENTS.name, this.#columns(COMMENTS, comment))
+      const stored = this.#must(COMMENTS, comment.id)
+      tx.emit("comment.created", comment.id, stored)
+      return stored
+    })
+  }
+
+  /** A work item's comments, oldest first. */
+  listComments(workItemId: string): CommentRecord[] {
+    return this.#list(COMMENTS, { work_item_id: workItemId }, "created_at, rowid")
   }
 
   // Sessions, their runs, worked folders.
@@ -817,6 +1100,128 @@ export class Store {
     return this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE run_id = ?").get(runId)!.usd as number
   }
 
+  // Questions.
+
+  #questionColumns(question: QuestionRecord): Record<string, SqliteParam> {
+    const cols = this.#columns(QUESTIONS, question)
+    // SQL NULL means "not answered"; an answered question stores its answer as JSON, which may be the text
+    // `null`. An open or stale question keeps no answer fields.
+    if (ANSWERED.has(question.status)) cols.answer = jsonText(QUESTIONS.name, "answer", question.answer ?? null)
+    else Object.assign(cols, { answer: null, answer_kind: null, answered_by: null })
+    return cols
+  }
+
+  /** Inserts a question and emits `question.created`. A second question with the same `(run_id, node_id)`
+   *  throws `DuplicateKey`; questions with a null `node_id` never collide. */
+  addQuestion(question: QuestionRecord): QuestionRecord {
+    return this.transaction((tx) => {
+      tx.insert(QUESTIONS.name, this.#questionColumns(question))
+      const stored = this.#must(QUESTIONS, question.id)
+      tx.emit("question.created", question.id, stored)
+      return stored
+    })
+  }
+
+  /** The question, or undefined. `answer` is null until the question is answered. */
+  getQuestion(questionId: string): QuestionRecord | undefined {
+    return this.#get(QUESTIONS, questionId)
+  }
+
+  /** The `human_input` question stored for a run's node, or undefined. */
+  getQuestionByNode(runId: string, nodeId: string): QuestionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM questions WHERE run_id = ? AND node_id = ?").get(runId, nodeId)
+    return row && this.#entity(QUESTIONS, row)
+  }
+
+  /** Questions, oldest first, optionally filtered (by any of several run ids or statuses). */
+  listQuestions(filter?: {
+    sessionId?: string
+    runId?: string | string[]
+    status?: string | string[]
+    source?: string
+  }): QuestionRecord[] {
+    const where = {
+      session_id: filter?.sessionId,
+      run_id: filter?.runId,
+      status: filter?.status,
+      source: filter?.source,
+    }
+    return this.#list(QUESTIONS, where, "created_at, rowid")
+  }
+
+  #writeQuestion(tx: Tx, question: QuestionRecord): QuestionRecord {
+    tx.update(QUESTIONS.name, QUESTIONS.key, this.#questionColumns(question))
+    const stored = this.#must(QUESTIONS, question.id)
+    tx.emit("question.updated", question.id, stored)
+    return stored
+  }
+
+  /** Answers an open question and emits `question.updated`; the answer is stored as its JSON form. The first
+   *  answer wins: answering a question that is not open throws `InvalidTransition`. */
+  answerQuestion(
+    questionId: string,
+    answer: unknown,
+    answerKind: NonNullable<QuestionRecord["answer_kind"]>,
+    answeredBy?: string | null,
+  ): QuestionRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      checkMove("question", QUESTION_MOVES, current.status, "answered")
+      const question = this.#changed(
+        QUESTIONS,
+        current,
+        { status: "answered", answer, answer_kind: answerKind, answered_by: answeredBy ?? null, updated_at: now() },
+        [],
+      )
+      return this.#writeQuestion(tx, question)
+    })
+  }
+
+  /** Moves a question to `consumed` (from answered) or `stale` (from open) and emits `question.updated`. */
+  setQuestionStatus(questionId: string, status: QuestionRecord["status"]): QuestionRecord {
+    if (status === "answered") throw new InvalidTransition("answer a question with answerQuestion")
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      checkMove("question", QUESTION_MOVES, current.status, status)
+      return this.#writeQuestion(tx, { ...current, status, updated_at: now() })
+    })
+  }
+
+  /** Moves an answered question to `stale`, dropping its answer: the answer never reached the asker (a harness
+   *  request that resolved, or whose process died, before the reply). Emits `question.updated`.
+   *
+   *  Only this move leaves `answered` for `stale`. `setQuestionStatus` never does, so a run that ends can't
+   *  expire an answer that has just landed. */
+  loseAnswer(questionId: string): QuestionRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      if (current.status !== "answered") {
+        throw new InvalidTransition(`question ${questionId} is ${current.status}, not answered`)
+      }
+      return this.#writeQuestion(tx, { ...current, status: "stale", updated_at: now() })
+    })
+  }
+
+  /** Changes non-status fields (discussion, side_session_id, ...) and emits `question.updated` (`updated_at`
+   *  defaults to now). */
+  updateQuestion(questionId: string, changes: Partial<QuestionRecord>): QuestionRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      const question = this.#changed(QUESTIONS, current, { updated_at: now(), ...defined(changes) }, [
+        "id",
+        "session_id",
+        "run_id",
+        "node_id",
+        "status",
+        "answer",
+        "answer_kind",
+        "answered_by",
+        "created_at",
+      ])
+      return this.#writeQuestion(tx, question)
+    })
+  }
+
   // Audit, usage, workers: office bookkeeping, no events.
 
   /** Appends an audit row. `args` must already be redacted. */
@@ -985,6 +1390,78 @@ export class Store {
     this.transaction((tx) => {
       if (pid === undefined) tx.run("DELETE FROM workers WHERE key = ?", key)
       else tx.run("DELETE FROM workers WHERE key = ? AND pid = ?", key, pid)
+    })
+  }
+
+  // HQ browser sessions: office-local bookkeeping, no events.
+
+  /** Inserts a browser session after deleting every one expired by its creation time; a repeated id or secret
+   *  hash → DuplicateKey. */
+  addHqSession(record: HqSessionRecord): void {
+    this.transaction((tx) => {
+      tx.run("DELETE FROM hq_sessions WHERE expires_at <= ?", record.createdAt)
+      tx.insert("hq_sessions", {
+        id: record.id,
+        person: record.person,
+        name: record.name,
+        label: record.label,
+        secret_sha256: record.secretSha256,
+        password_fp: record.passwordFp,
+        issued_by: record.issuedBy,
+        via: record.via,
+        created_at: record.createdAt,
+        expires_at: record.expiresAt,
+        last_used_at: record.lastUsedAt,
+      })
+    })
+  }
+
+  /** The browser session `sessionId`, or undefined. */
+  getHqSession(sessionId: string): HqSessionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM hq_sessions WHERE id = ?").get(sessionId)
+    return row && hqSessionRecord(row)
+  }
+
+  /** The browser session whose cookie secret hashes to `secretSha256`, unless it expired by `at`. */
+  hqSessionBySecret(secretSha256: string, at: string): HqSessionRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM hq_sessions WHERE secret_sha256 = ? AND expires_at > ?")
+      .get(secretSha256, at)
+    return row && hqSessionRecord(row)
+  }
+
+  /** Browser sessions, newest first, optionally one person's. */
+  listHqSessions(person?: string): HqSessionRecord[] {
+    const where = person === undefined ? "" : " WHERE person = ?"
+    return this.db
+      .prepare(`SELECT * FROM hq_sessions${where} ORDER BY created_at DESC, id DESC`)
+      .all(...(person === undefined ? [] : [person]))
+      .map(hqSessionRecord)
+  }
+
+  /** Records that the session was used at `at`, unless it was already recorded as used since `before`. */
+  touchHqSession(sessionId: string, at: string, before: string): void {
+    this.transaction((tx) =>
+      tx.run(
+        "UPDATE hq_sessions SET last_used_at = ? WHERE id = ? AND (last_used_at IS NULL OR last_used_at < ?)",
+        at,
+        sessionId,
+        before,
+      ),
+    )
+  }
+
+  /** Deletes a browser session; returns whether there was one. */
+  deleteHqSession(sessionId: string): boolean {
+    const row = this.transaction((tx) => tx.get("DELETE FROM hq_sessions WHERE id = ? RETURNING id", sessionId))
+    return row !== undefined
+  }
+
+  /** Deletes the sessions expired by `at`; returns how many. */
+  pruneHqSessions(at: string): number {
+    return this.transaction((tx) => {
+      tx.run("DELETE FROM hq_sessions WHERE expires_at <= ?", at)
+      return tx.get("SELECT changes() AS n")!.n as number
     })
   }
 
