@@ -89,20 +89,30 @@ export class WorkspaceTools {
    *
    *  Missing, unexpected or (for `shell`) mistyped arguments come back as an `error:` outcome that never
    *  ran. Rejects with a `RangeError` when `name` is not a workspace tool. */
-  async call(name: string, args: Record<string, unknown>, options: { signal?: AbortSignal } = {}): Promise<ToolOutcome> {
+  async call(
+    name: string,
+    args: Record<string, unknown>,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<ToolOutcome> {
     if (!Object.hasOwn(SIGNATURES, name)) throw new RangeError(`unknown workspace tool ${repr(name)}`)
     const tool = name as ToolName
     const bound = bind(tool, args)
     if (typeof bound === "string") return unrun(name, args, bound)
+    let shell: { command: string; limit: number } | undefined
     if (tool === "shell") {
-      if (typeof bound.command !== "string") return unrun(name, args, "argument 'command' must be a string")
-      const timeout = bound.timeout
-      if (timeout != null && typeof timeout !== "number" && typeof timeout !== "bigint") {
-        return unrun(name, args, "argument 'timeout' must be a number")
+      const { command, timeout } = bound
+      if (typeof command !== "string") return unrun(name, args, "argument 'command' must be a string")
+      let limit = this.#shellTimeout
+      if (timeout != null) {
+        // NaN would make run() reject; infinities clamp as in Python.
+        if (typeof timeout !== "bigint" && (typeof timeout !== "number" || Number.isNaN(timeout))) {
+          return unrun(name, args, "argument 'timeout' must be a number")
+        }
+        limit = Math.min(Math.max(Number(timeout), 1), MAX_SHELL_TIMEOUT)
       }
+      shell = { command, limit }
     }
     const own = new AbortController()
-    this.#active.add(own)
     const signal = options.signal ? AbortSignal.any([own.signal, options.signal]) : own.signal
     const track = (pid: number) => {
       const key = "call:" + newId()
@@ -110,19 +120,17 @@ export class WorkspaceTools {
       this.#store.recordWorker(key, { pid, pgid: pid, startTime: startTime(pid) ?? 0 })
       return () => this.#store.removeWorker(key, pid)
     }
+    this.#active.add(own)
     try {
       let output: string
       let result: Result
-      if (tool === "shell") {
-        const timeout = bound.timeout as number | bigint | null
-        const limit =
-          timeout == null ? this.#shellTimeout : Math.min(Math.max(Number(timeout), 1), MAX_SHELL_TIMEOUT)
-        result = await run(this.#shellPolicy, ["/bin/sh", "-c", bound.command as string], {
-          timeout: limit,
+      if (shell) {
+        result = await run(this.#shellPolicy, ["/bin/sh", "-c", shell.command], {
+          timeout: shell.limit,
           signal,
           track,
         })
-        output = shellOutput(result, limit)
+        output = shellOutput(result, shell.limit)
       } else {
         result = await run(this.#filePolicy, this.#argv, {
           stdin: pyJson({ op: tool, ...bound }, true),
@@ -170,7 +178,10 @@ function bind(tool: ToolName, args: Record<string, unknown>): Record<string, unk
 
 /** The outcome of a call refused before it ran. */
 function unrun(tool: string, args: Record<string, unknown>, message: string): ToolOutcome {
-  return { output: `error: ${tool}: ${message}`, audit: { tool, argsSummary: summarize(args), exit: null, duration: 0 } }
+  return {
+    output: `error: ${tool}: ${message}`,
+    audit: { tool, argsSummary: summarize(args), exit: null, duration: 0 },
+  }
 }
 
 /** Python's `f"{x:g}"` for the timeouts used here. */

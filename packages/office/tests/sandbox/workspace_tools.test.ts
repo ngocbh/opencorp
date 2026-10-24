@@ -22,7 +22,9 @@ function tools({ policy, ...over }: { policy?: MakeOptions } & Partial<Workspace
 
 test.skipIf(!sandboxAvailable())("file tools round trip", async () => {
   const { tools: t, ws } = tools()
-  expect((await t.call("write_file", { path: "pkg/a.py", content: "x = 1\n" })).output).toBe("wrote 6 bytes to pkg/a.py")
+  expect((await t.call("write_file", { path: "pkg/a.py", content: "x = 1\n" })).output).toBe(
+    "wrote 6 bytes to pkg/a.py",
+  )
   expect(fs.readFileSync(path.join(ws, "pkg/a.py"), "utf8")).toBe("x = 1\n")
   expect((await t.call("read_file", { path: "pkg/a.py" })).output).toBe("x = 1\n")
   expect((await t.call("edit_file", { path: "pkg/a.py", old: "x = 1", new: "x = 2" })).output).toBe(
@@ -131,9 +133,9 @@ test("unknown tool", async () => {
 })
 
 test.each([
-  [{}, "missing a required argument: 'path'"],
-  [{ path: "f.txt", mode: "x" }, "got an unexpected keyword argument 'mode'"],
-])("bad arguments come back as text [%s]", async (args, message) => {
+  ["missing path", {}, "missing a required argument: 'path'"],
+  ["unexpected mode", { path: "f.txt", mode: "x" }, "got an unexpected keyword argument 'mode'"],
+])("bad arguments come back as text [%s]", async (_shown, args, message) => {
   const out = await tools().tools.call("read_file", args)
   expect(out.output).toBe(`error: read_file: ${message}`)
   expect(out.audit.tool).toBe("read_file")
@@ -152,6 +154,7 @@ test.skipIf(!sandboxAvailable())("a call aborted by its signal ends as interrupt
 test.skipIf(!sandboxAvailable())("a running call is recorded in workers until it ends", async () => {
   const { tools: t, store } = tools()
   const call = t.call("shell", { command: "sleep 30" })
+  let out
   try {
     const row = await waitFor(() => store.listWorkers().find((w) => w.key.startsWith("call:")), {
       timeout: 10_000,
@@ -160,9 +163,11 @@ test.skipIf(!sandboxAvailable())("a running call is recorded in workers until it
     expect(row.pgid).toBe(row.pid)
     expect(row.startTime).toBeGreaterThan(0)
   } finally {
+    // Awaited even when a check fails, so the store isn't closed while run() still removes the row.
     t.interrupt()
+    out = await call
   }
-  expect((await call).output.endsWith("[interrupted]")).toBe(true)
+  expect(out.output.endsWith("[interrupted]")).toBe(true)
   expect(store.listWorkers()).toEqual([])
 })
 
@@ -171,6 +176,7 @@ test("shell arguments of the wrong type come back as text", async () => {
   const cases: [Record<string, unknown>, string][] = [
     [{ command: 1 }, "error: shell: argument 'command' must be a string"],
     [{ command: "true", timeout: "5" }, "error: shell: argument 'timeout' must be a number"],
+    [{ command: "true", timeout: NaN }, "error: shell: argument 'timeout' must be a number"],
   ]
   for (const [args, output] of cases) {
     const out = await t.call("shell", args)
@@ -187,8 +193,12 @@ test.skipIf(!sandboxAvailable())("shell calls run without the helper profile and
   expect(env.endsWith("[exit 0]")).toBe(true)
   expect(env).not.toContain("BUN_RUNTIME_TRANSPILER_CACHE_PATH")
   if ("bun" in helper) {
-    // The plain profile doesn't expose the helper's files.
-    expect((await t.call("shell", { command: `cat '${helper.entry}'` })).output.endsWith("[exit 0]")).toBe(false)
+    // The plain profile doesn't expose the helper's files: Seatbelt denies the read; bwrap doesn't mount them.
+    expect(fs.existsSync(helper.entry)).toBe(true)
+    const quoted = "'" + helper.entry.replaceAll("'", "'\\''") + "'"
+    const cat = (await t.call("shell", { command: `cat ${quoted}` })).output
+    expect(cat).toContain(process.platform === "darwin" ? "Operation not permitted" : "No such file or directory")
+    expect(cat.endsWith("[exit 0]")).toBe(false)
   }
   // A file op still runs the helper under its own profile.
   const listing = await t.call("list", { path: "." })
