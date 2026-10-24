@@ -341,6 +341,7 @@ test("a symlinked connections folder is refused and its target keeps its mode", 
   fs.symlinkSync(target, c.dir)
   expect(() => c.ensureDir()).toThrow(ProviderError)
   expect(mode(target)).toBe(0o755)
+  // Guards the write paths: readPrivate's folder check refuses the link before they reach ensureDir.
   for (const call of [() => c.put("azure", apiKey({ baseUrl: azureBaseUrl("acme") })), () => c.setDefault("office")]) {
     const error = (await raised(call)) as Error
     expect(error).toBeInstanceOf(ProviderError)
