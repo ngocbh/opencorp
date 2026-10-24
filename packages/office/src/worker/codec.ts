@@ -18,15 +18,15 @@ export const NOT_JSON = "a frame isn't valid JSON"
  *  `null` and a boxed bigint makes `JSON.stringify` throw its own `TypeError`. A throwing `toJSON()` passes its own
  *  error through. Throws a `TypeError` with a fixed message for a value with no JSON form (`undefined`, a function).
  *
- *  Two values don't round trip (neither comes from yian or from JSON): a boxed primitive with an own `$v` key is
- *  escaped around its unwrapped primitive, which `decode` refuses; and a `toJSON()` result that has its own `toJSON`
- *  and a `$v` key is escaped, then that inner `toJSON` runs on the escaped value. */
+ *  Two values don't round trip (neither comes from yian or from JSON): a boxed number, string or boolean with an own
+ *  `$v` key is escaped around its unwrapped primitive, which `decode` refuses; and a `toJSON()` result that has its own
+ *  `toJSON` and a `$v` key is escaped, then that inner `toJSON` runs on the escaped value. */
 export function encode(value: unknown): string {
   // The escapes this call wrote: a wrapper's value is the escaped record itself, never escaped again.
   const wrappers = new WeakSet<object>()
   // JSON.stringify hands the replacer each value after its toJSON(), with the holder as `this`, and doesn't hand it
   // the objects the replacer returns, so a tag or a wrapper never trips the $v check itself.
-  const text = JSON.stringify(value, function (this: unknown, key: string, item: unknown): unknown {
+  const text = JSON.stringify(value, function (this: object, key: string, item: unknown): unknown {
     if (typeof item === "bigint") return { $v: "bigint", s: item.toString() }
     if (typeof item === "number") {
       if (Number.isNaN(item)) return { $v: "nan" }
@@ -35,7 +35,7 @@ export function encode(value: unknown): string {
       return item
     }
     if (!isRecord(item) || !Object.hasOwn(item, "$v")) return item
-    if (key === "value" && wrappers.has(this as object)) return item
+    if (key === "value" && wrappers.has(this)) return item
     const wrapper = { $v: "record", value: item }
     wrappers.add(wrapper)
     return wrapper
