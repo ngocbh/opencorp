@@ -430,12 +430,12 @@ export async function askProvider(
   await saveProvider(office, await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers))
 }
 
-/** Whether `file` exists, a symlink included; a parent that is a file counts as missing (Python's `lexists`). */
+/** Whether `file` exists, a symlink included; one that can't be looked at counts as missing (Python's `lexists`). */
 function lexists(file: string): boolean {
   try {
     return fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined
   } catch (error) {
-    if (errnoCode(error) === "ENOTDIR") return false
+    if (errnoCode(error) !== undefined) return false
     throw error
   }
 }
@@ -468,6 +468,8 @@ export async function ensureProvider(office: string, prompter: Prompter, options
         if (error instanceof FileLockError) throw new OnboardError(`can't read ${file}: ${error.message}`)
         // Its message names the file.
         if (error instanceof ProviderError) throw new OnboardError(`${error.message}; ${again}`)
+        const code = errnoCode(error)
+        if (code !== undefined) throw new OnboardError(`can't read ${file}: ${code}`)
         if (!(error instanceof OnboardError)) throw error
         if (!prompter.interactive) throw new OnboardError(`${file}: ${error.message}; ${again}`)
         prompter.say(`${file}: ${error.message}; set up the model again.`)

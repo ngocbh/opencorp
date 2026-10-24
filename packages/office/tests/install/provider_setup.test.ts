@@ -730,6 +730,24 @@ test("an existing provider others can read is an error and left alone", async ()
   expect(error.message).toContain("0600")
   expect(readFileSync(file(office), "utf8")).toBe("{}\n")
   expect(mode(file(office))).toBe(0o644)
+  chmodSync(file(office), 0o600)
+  const connections = join(office, "connections")
+  try {
+    // Search only: the file is seen, but its folder's lock, removed here, can't be made again.
+    rmSync(join(connections, ".lock"), { force: true })
+    chmodSync(connections, 0o100)
+    const unreadable = await rejection(ensure(office, new Script()))
+    expect(unreadable).toBeInstanceOf(OnboardError)
+    expect(unreadable.message).toBe(`can't read ${file(office)}: EACCES`)
+    // No access: the file can't be seen, so it is asked for, and without a terminal the key can't be.
+    chmodSync(connections, 0o000)
+    const { input, output } = pipe("")
+    const prompter = new TtyPrompter({ interactive: false, input, output, env: {} })
+    expect(await rejection(ensure(office, prompter))).toBeInstanceOf(OnboardError)
+  } finally {
+    chmodSync(connections, 0o700)
+  }
+  expect(readFileSync(file(office), "utf8")).toBe("{}\n")
 })
 
 test("an existing provider composer wont take is an error without the key", async () => {
