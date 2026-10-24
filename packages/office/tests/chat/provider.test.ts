@@ -10,9 +10,9 @@ import { tempDir } from "../helpers.ts"
 
 const SENTINEL = "sk-sentinel-4b1d9e"
 
-/** Writes `data` (text, or JSON for anything else) to `file` with `mode`, and returns `file`. */
+/** Writes `data` (text or bytes as is, JSON for anything else) to `file` with `mode`, and returns `file`. */
 function write(file: string, data: unknown, mode = 0o600): string {
-  fs.writeFileSync(file, typeof data === "string" ? data : JSON.stringify(data))
+  fs.writeFileSync(file, typeof data === "string" || Buffer.isBuffer(data) ? data : JSON.stringify(data))
   fs.chmodSync(file, mode)
   return file
 }
@@ -171,6 +171,16 @@ test.each(['{"env": {"KEY": 12345678}, "llm_config": "sk-secret-value"}', "sk-se
   },
 )
 
+test.each(
+  [
+    ["a bom", "\ufeff{}"],
+    ["bad utf 8", Buffer.from([0x7b, 0xff, 0x7d])],
+  ] as const,
+)("a bom or bad utf 8 is not valid json [%s]", async (_label, data) => {
+  const error = await refusal(write(path.join(tempDir(), "provider.json"), data))
+  expect(error.message).toMatch(/not valid JSON/)
+})
+
 test.each([
   "BUN_OPTIONS",
   "BUN_INSTALL",
@@ -180,11 +190,13 @@ test.each([
   "NODE_OPTIONS",
   "NODE_PATH",
 ])("a runtime or loader variable in env is refused [%s]", async (name) => {
-  const tmp = tempDir()
-  const error = await refusal(write(path.join(tmp, "provider.json"), { env: { [name]: "x" } }))
+  const error = await refusal(write(path.join(tempDir(), "provider.json"), { env: { [name]: "x" } }))
   expect(error.message).toContain(name)
+})
+
+test("runtime settings that arent loader variables are kept", async () => {
   // BUNDLE_PATH sits just outside the BUN_ prefix.
   const kept = { NODE_ENV: "production", BUNDLE_PATH: "/b", NODE_EXTRA_CA_CERTS: "/etc/ssl/ca.pem" }
-  const file = write(path.join(tmp, "kept.json"), { env: kept })
+  const file = write(path.join(tempDir(), "provider.json"), { env: kept })
   expect((await loadProvider(file, Provider.parse)).env).toEqual(kept)
 })

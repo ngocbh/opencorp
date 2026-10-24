@@ -1,4 +1,4 @@
-/** The model provider runs use: `office/provider.json`, read at each spawn. */
+/** The model provider a run uses: a connection file's llm_config, env and prices, read at each spawn. */
 import { inspect } from "node:util"
 import { z } from "zod"
 import { unsafeEnvName } from "../platform.ts"
@@ -116,7 +116,9 @@ export function validationErrors(error: z.ZodError): string {
     if (loc.length > 1 && loc[0] === "env") loc[1] = shown(loc[1]!)
     if (loc.length > 1 && loc[0] === "prices") loc[1] = "a model"
     const phrase =
-      issue.code === "custom"
+      issue.code === "unrecognized_keys"
+        ? "is not allowed"
+        : issue.code === "custom"
         ? issue.message
         : issue.code === "invalid_type"
           ? `expected ${issue.expected}`
@@ -153,6 +155,7 @@ export async function loadProvider<P extends Provider>(
   }
   let data: unknown
   try {
+    // Invalid UTF-8 or a leading BOM is "not valid JSON", never silently repaired.
     data = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes))
   } catch {
     // JSON.parse's message quotes the bad input, which may be a key.
