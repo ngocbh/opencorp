@@ -1,5 +1,4 @@
-/** Spawn run workers, at most one per session (the spawn itself lands with the worker registry); for now the
- *  environment a worker starts with. */
+/** Spawn run workers, at most one per session: so far, the environment a worker starts with. */
 import { type Env, INHERITED_ENV } from "../install/launch.ts"
 
 // Defined in launch.ts so the daemon's pre-re-exec check doesn't load this module's later imports.
