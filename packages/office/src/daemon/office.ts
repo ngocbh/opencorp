@@ -1,6 +1,7 @@
 /** The office object and its paths: what the routes and services share. */
 import path from "node:path"
 import { now } from "@opencorp/protocol"
+import { Hiring } from "../chat/hire.ts"
 import type { CompanyGit } from "../company/git.ts"
 import type { Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
@@ -55,12 +56,14 @@ export interface RequestContext {
   query: URLSearchParams
 }
 
-/** Everything the routes and services share: store, company git, bus, workers, and start and stop hooks. */
+/** Everything the routes and services share: store, company git, bus, hiring, workers, and start and stop hooks. */
 export class Office {
   readonly paths: OfficePaths
   readonly store: Store
   readonly git: CompanyGit
   readonly bus: Bus
+  /** Hire previews and confirms; one for the office's life, since previews live in memory. */
+  readonly hiring: Hiring
   workers: WorkerPool | undefined
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
   readonly startedAt: string = now()
@@ -91,6 +94,7 @@ export class Office {
     this.store = store
     this.git = git
     this.bus = bus
+    this.hiring = new Hiring(git)
     this.workers = workers
     this.#log = log
   }

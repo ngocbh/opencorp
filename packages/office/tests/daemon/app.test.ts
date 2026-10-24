@@ -4,7 +4,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { OfficePaths, type WorkerPool } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { tempDir } from "../helpers.ts"
-import { makeOffice, request, served } from "./helpers.ts"
+import { makeOffice, request, served, ULID } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -96,14 +96,13 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 
 // [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
 // (tests/daemon/test_app.py) also covered these routes; each is added here when its route area is ported:
-// - people and work items: GET /people, GET /folders/*cwd/people, POST /people, GET /work-items/:id,
-//   GET /work-items/:id/comments;
 // - profiles: GET and PUT /profiles/:person;
 // - sessions: GET and POST /sessions, GET /sessions/:id, GET /sessions/:id/messages, and POST /sessions/:id/
 //   prompt, steer, interrupt, end, continue, cost-cap and model;
 // - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
 //   carried/dismiss.
-// GET /health, GET /office, GET /whoami and the device routes weren't in Python's table.
+// GET /health, GET /office, GET /whoami, the device routes, GET /costs and the GET /runs* stubs weren't in
+// Python's table.
 const TABLE: [string, string, string, unknown][] = [
   ["GET", "/health", "/health", null],
   ["GET", "/office", "/office", null],
@@ -112,6 +111,18 @@ const TABLE: [string, string, string, unknown][] = [
   ["DELETE", "/people/:handle/devices/:name", "/people/ngocbh/devices/pc", null],
   ["POST", "/login", "/login", { handle: "ngocbh", password: "x", device: "mac", token_sha256: "b".repeat(64) }],
   ["PUT", "/people/:handle/password", "/people/ngocbh/password", { password: "a-long-enough-password" }],
+  ["GET", "/people", "/people", null],
+  ["POST", "/people", "/people", { name: "Ava", handle: "ava", title: "R", manager: "ngocbh" }],
+  ["GET", "/folders/*cwd/people", "/folders/%2Fw%2Fapp/people", null],
+  ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
+  ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
+  ["GET", "/costs", "/costs?since=2026-01-01T00:00:00Z", null],
+  ["GET", "/runs", "/runs", null],
+  ["GET", "/runs/:id", "/runs/R1", null],
+  ["GET", "/runs/:id/nodes", "/runs/R1/nodes", null],
+  ["GET", "/runs/:id/events", "/runs/R1/events", null],
+  ["GET", "/runs/:id/events/:seq", "/runs/R1/events/3", null],
+  ["GET", "/runs/:id/log", "/runs/R1/log", null],
 ]
 
 test("every table route is served", async () => {
