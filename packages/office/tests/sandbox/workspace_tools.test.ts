@@ -186,7 +186,7 @@ test("composer accepts the tool functions", async () => {
     search: new Set(["pattern", "path", "glob"]),
     shell: new Set(["command", "timeout"]),
   })
-  expect(resolved.every((t) => t.description)).toBe(true)
+  expect(resolved.map((t) => t.description)).toEqual(TOOL_NAMES.map((n) => fns[n]!.description))
   expect(await toolset.invoke("list", {})).toBe("ok")
   expect(seen).toEqual([["list", { path: "." }]])
 })

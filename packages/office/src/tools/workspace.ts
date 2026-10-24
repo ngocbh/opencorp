@@ -157,7 +157,10 @@ const SPECS: Record<ToolName, { description: string; parameters: Record<string, 
  *  then any other keys of `args`, which `WorkspaceTools` reports. */
 export function workspaceToolFunctions(call: WorkspaceCall): Record<string, WorkspaceTool> {
   return Object.fromEntries(
-    TOOL_NAMES.map((name) => [name, { ...SPECS[name], call: (args, options) => call(name, fill(name, args), options) }]),
+    TOOL_NAMES.map((name) => [
+      name,
+      { ...SPECS[name], call: (args, options) => call(name, fill(name, args), options) },
+    ]),
   )
 }
 
