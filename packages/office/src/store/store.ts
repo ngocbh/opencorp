@@ -192,8 +192,7 @@ export interface WorkerRecord {
  *  throws `StoreError` if it's anything but a regular file (a symlink is never followed). */
 function tighten(file: string): void {
   // SQLite gives a new -wal or -shm the database's mode but never tightens an existing file, so a store
-  // copied or restored with a loose mode would stay readable, and spread it to its sidecars. OpenCode's
-  // restrictToOwner does the same for this reason.
+  // copied or restored with a loose mode would stay readable, and spread it to its sidecars.
   const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = fs.constants
   let fd: number
   try {

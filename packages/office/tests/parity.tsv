@@ -201,7 +201,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a fifo at the store path is refused	never blocks on or follows a non-file (§6 rule 6)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a symlink at the store path is refused	O_EXCL and O_NOFOLLOW pre-create (§5.1, §6 rule 6)	O1-2
-—	new	packages/office/tests/store/open.test.ts::an existing store file is tightened to 0600	§5.1, §6 rule 6 (as OpenCode's restrictToOwner)	O1-2
+—	new	packages/office/tests/store/open.test.ts::an existing store file is tightened to 0600	§5.1, §6 rule 6	O1-2
 —	new	packages/office/tests/store/open.test.ts::opening restores the umask	§5.1	O1-2
 —	new	packages/office/tests/store/open.test.ts::the database files are 0600	§5.1, §6 rule 6	O1-2
 —	new	packages/office/tests/store/outbox.test.ts::a failure outside tx run still blocks later writes	§5.1	O1-2
