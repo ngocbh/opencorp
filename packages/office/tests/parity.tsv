@@ -732,6 +732,10 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the checkout helper profile adds only the helper rules and lists the entry folder	§2.5, O0-11	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the compiled helper profile adds only the helper rules	§2.5, O0-11	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the install is write denied after every file allow	§6.1	O1-9
+—	new	packages/office/tests/sandbox/workspace_tools.test.ts::a call aborted by its signal ends as interrupted	design §3.3 (the call's AbortSignal)	O2-22a
+—	new	packages/office/tests/sandbox/workspace_tools.test.ts::a running call is recorded in workers until it ends	design §6.6 (call:<id> rows)	O2-22a
+—	new	packages/office/tests/sandbox/workspace_tools.test.ts::shell arguments of the wrong type come back as text	plan decision 4 (narrows Python: a non-string argv would throw in spawn)	O2-22a
+—	new	packages/office/tests/sandbox/workspace_tools.test.ts::shell calls run without the helper profile and env	design §2.5, security rule 4 (helper-only profile rules and env)	O2-22a
 —	new	packages/office/tests/secrets.test.ts::a folder of another user is refused	§6 rule 6: the folder is owned by the effective uid	O1-1
 —	new	packages/office/tests/secrets.test.ts::a lock file open to others is refused	§5.3, D13: the folder's lock file is private	O1-1
 —	new	packages/office/tests/secrets.test.ts::every call waits for the folders lock	§5.3, D13: every read and write holds the folder's lock	O1-1
