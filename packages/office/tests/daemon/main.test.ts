@@ -26,7 +26,7 @@ import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
 import { company } from "../company/helpers.ts"
 import { isGone, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
-import { CEO, makeOffice, request, served } from "./helpers.ts"
+import { makeOffice, request, served } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -250,9 +250,9 @@ test("a failing stop hook does not stop the others", async () => {
 
 test("served over a real socket", async () => {
   const { sock } = await served(makeOffice())
-  const r = await request(sock, "GET", "/whoami")
+  const r = await request(sock, "GET", "/people")
   expect(r.status).toBe(200)
-  expect(r.json()).toEqual({ person: CEO, device: null })
+  expect((r.json() as { handle: string }[]).map((p) => p.handle)).toEqual(["minh", "ngocbh"])
   expect(fs.statSync(sock).mode & 0o777).toBe(0o600)
 })
 
