@@ -60,7 +60,7 @@ export function scrubbedEnv(policy: SandboxPolicy): Record<string, string> {
     GIT_CONFIG_NOSYSTEM: "1",
   }
   // Bun would cache the helper's transpiled code under HOME, which sandboxed calls can write.
-  if (policy.helper !== undefined && "bun" in policy.helper) env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
+  if (policy.helper !== undefined && "entry" in policy.helper) env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
   return env
 }
 
