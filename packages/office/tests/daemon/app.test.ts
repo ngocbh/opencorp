@@ -107,6 +107,10 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 const TABLE: [string, string, string, unknown][] = [
   ["GET", "/health", "/health", null],
   ["GET", "/whoami", "/whoami", null],
+  ["POST", "/people/:handle/devices", "/people/ngocbh/devices", { name: "mac", token_sha256: "a".repeat(64) }],
+  ["DELETE", "/people/:handle/devices/:name", "/people/ngocbh/devices/pc", null],
+  ["POST", "/login", "/login", { handle: "ngocbh", password: "x", device: "mac", token_sha256: "b".repeat(64) }],
+  ["PUT", "/people/:handle/password", "/people/ngocbh/password", { password: "a-long-enough-password" }],
 ]
 
 test("every table route is served", async () => {

@@ -3,7 +3,9 @@ import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { parse as parseYaml } from "yaml"
 import { z } from "zod"
+import { checkPassword, hashPassword } from "../../src/auth/passwords.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
 import { actingPerson } from "../../src/daemon/auth.ts"
 import type { Route } from "../../src/daemon/http.ts"
@@ -249,4 +251,318 @@ test("without a ceo a tokenless request has no person to act as", async () => {
     { error: "unauthenticated", message: "this request has no person to act as" },
   ])
   expect((await request(sock, "GET", "/health")).status).toBe(200)
+})
+
+// Device routes.
+
+function device(name: string, token: string): { name: string; token_sha256: string } {
+  return { name, token_sha256: tokenSha256(token) }
+}
+
+/** The devices in `handle`'s `person.yaml` in the repo at `company`, or `undefined` without the key. */
+function devices(company: string, handle: string): unknown {
+  const file = path.join(company, "people", handle, "person.yaml")
+  return (parseYaml(fs.readFileSync(file, "utf8")) as { devices?: unknown }).devices
+}
+
+function subjects(company: string): string[] {
+  return git(company, "log", "--format=%s").split("\n")
+}
+
+/** A `method target` request with `body` as JSON. */
+function send(sock: string, method: string, target: string, body: unknown, headers: Record<string, string> = {}) {
+  return request(sock, method, target, {
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  })
+}
+
+type PersonReply = { handle: string; devices: { name: string; token_sha256: string }[] }
+const personOf = (reply: { json(): unknown }) => reply.json() as PersonReply
+
+test("bootstrap an unauthenticated request adds the first device", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true, extra: [standIn("/people")] })
+  const company = office.paths.company
+  const token = newToken()
+  const r = await send(sock, "POST", "/people/ngocbh/devices", device("mac", token))
+  expect(r.status).toBe(200)
+  expect(personOf(r).devices).toEqual([device("mac", token)])
+  expect(subjects(company)[0]).toBe("devices(@ngocbh): add mac")
+  expect(devices(company, "ngocbh")).toEqual([device("mac", token)])
+  expect((await request(sock, "GET", "/people")).status).toBe(401) // tokens are needed now
+  expect((await request(sock, "GET", "/people", { headers: bearer(token) })).status).toBe(200)
+})
+
+test("a device change answers without the password hash", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const file = path.join(office.paths.company, "people/ngocbh/person.yaml")
+  fs.appendFileSync(file, 'password_hash: "$scrypt$ln=15,r=8,p=1$c2FsdA$aGFzaA"\n')
+  const r = await send(sock, "POST", "/people/ngocbh/devices", device("mac", newToken()))
+  expect(r.status).toBe(200)
+  expect(r.text).not.toContain("scrypt")
+  expect(fs.readFileSync(file, "utf8")).toContain("scrypt") // kept in the file
+})
+
+test("a human adds and removes their own devices", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "ava")
+  const pc = newToken()
+  const laptop = newToken()
+  giveDevice(company, "ava", "pc", pc)
+  let r = await send(sock, "POST", "/people/ava/devices", device("laptop", laptop), bearer(pc))
+  expect(r.status).toBe(200)
+  expect(personOf(r).devices).toEqual([device("pc", pc), device("laptop", laptop)])
+  r = await request(sock, "DELETE", "/people/ava/devices/pc", { headers: bearer(laptop) })
+  expect(r.status).toBe(200)
+  expect(personOf(r).devices).toEqual([device("laptop", laptop)])
+  expect(subjects(company).slice(0, 2)).toEqual(["devices(@ava): remove pc", "devices(@ava): add laptop"])
+  expect((await request(sock, "GET", "/whoami", { headers: bearer(pc) })).status).toBe(401)
+})
+
+test("subjects never carry a hash", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  const token = newToken()
+  await send(sock, "POST", "/people/ngocbh/devices", device("mac", token))
+  await request(sock, "DELETE", "/people/ngocbh/devices/mac", { headers: bearer(token) })
+  const log = git(company, "log", "--format=%B")
+  expect(log).not.toContain(tokenSha256(token))
+  expect(log).not.toContain(token)
+})
+
+test("the same device again changes nothing and a new hash conflicts", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  const token = newToken()
+  giveDevice(company, "ngocbh", "mac", token)
+  const head = subjects(company)
+  let r = await send(sock, "POST", "/people/ngocbh/devices", device("mac", token), bearer(token))
+  expect(r.status).toBe(200)
+  expect(personOf(r).devices).toEqual([device("mac", token)])
+  expect(subjects(company)).toEqual(head)
+  r = await send(sock, "POST", "/people/ngocbh/devices", device("mac", newToken()), bearer(token))
+  expect([r.status, errorOf(r)]).toEqual([409, "device_exists"])
+  expect(subjects(company)).toEqual(head)
+})
+
+test("a token already listed is refused", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "ava")
+  const token = newToken()
+  giveDevice(company, "ngocbh", "mac", token)
+  let r = await send(sock, "POST", "/people/ngocbh/devices", device("other", token), bearer(token))
+  expect([r.status, errorOf(r)]).toEqual([409, "token_in_use"])
+  r = await send(sock, "POST", "/people/ava/devices", device("pc", token), bearer(token))
+  expect([r.status, errorOf(r)]).toEqual([409, "token_in_use"])
+})
+
+test("the ceo changes anyones devices and others cannot", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "ava")
+  addHuman(company, "bo")
+  const [ceo, ava, bo] = [newToken(), newToken(), newToken()]
+  giveDevice(company, "ngocbh", "mac", ceo)
+  giveDevice(company, "bo", "pc", bo)
+  let r = await send(sock, "POST", "/people/ava/devices", device("pc", ava), bearer(ceo))
+  expect(r.status).toBe(200)
+  r = await send(sock, "POST", "/people/ava/devices", device("x", newToken()), bearer(bo))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await request(sock, "DELETE", "/people/ngocbh/devices/mac", { headers: bearer(ava) })
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  r = await request(sock, "DELETE", "/people/bo/devices/pc", { headers: bearer(ceo) })
+  expect(r.status).toBe(200)
+  expect(personOf(r).devices).toEqual([])
+})
+
+test("agents have no devices", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const r = await send(sock, "POST", "/people/minh/devices", device("box", newToken()))
+  expect([r.status, errorOf(r)]).toEqual([422, "not_a_human"])
+})
+
+test("unknown people and devices are 404", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  let r = await send(sock, "POST", "/people/ghost/devices", device("mac", newToken()))
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  const token = newToken()
+  giveDevice(office.paths.company, "ngocbh", "mac", token)
+  r = await request(sock, "DELETE", "/people/ngocbh/devices/pc", { headers: bearer(token) })
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+})
+
+test("a device name that cannot exist is 404 and changes nothing", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  const token = newToken()
+  giveDevice(company, "ngocbh", "mac", token)
+  const head = subjects(company)
+  const r = await request(sock, "DELETE", "/people/ngocbh/devices/Bad%20Name", { headers: bearer(token) })
+  expect([r.status, errorOf(r)]).toEqual([404, "not_found"])
+  expect((r.json() as { message: string }).message).not.toContain("Bad Name")
+  expect(subjects(company)).toEqual(head)
+})
+
+test("a malformed device is invalid body", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const r = await send(sock, "POST", "/people/ngocbh/devices", { name: "Mac", token_sha256: "A".repeat(64) })
+  expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+})
+
+test("removing the last device turns enforcement off", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  const token = newToken()
+  giveDevice(company, "ngocbh", "mac", token)
+  const r = await request(sock, "DELETE", "/people/ngocbh/devices/mac", { headers: bearer(token) })
+  expect(r.status).toBe(200)
+  expect(devices(company, "ngocbh")).toBeUndefined()
+  expect((await request(sock, "GET", "/whoami")).json()).toEqual({ person: "ngocbh", device: null })
+})
+
+// Logging in with a password, and setting one.
+
+const PASSWORD = "pw-sentinel-c41e"
+
+/** Commits `PASSWORD`'s hash for `handle`, as `opencorp init` would have. */
+async function givePassword(company: string, handle: string): Promise<void> {
+  const file = path.join(company, "people", handle, "person.yaml")
+  fs.appendFileSync(file, `password_hash: ${JSON.stringify(await hashPassword(PASSWORD))}\n`)
+  git(company, "commit", "-qam", `password for ${handle}`)
+}
+
+function login(handle: string, password: string, name: string, token: string) {
+  return { handle, password, device: name, token_sha256: tokenSha256(token) }
+}
+
+test("a password logs a new device in without a token", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  await givePassword(company, "ngocbh")
+  giveDevice(company, "ngocbh", "mac", newToken()) // tokens are enforced
+  const laptop = newToken()
+  const r = await send(sock, "POST", "/login", login("ngocbh", PASSWORD, "laptop", laptop))
+  expect(r.status).toBe(200)
+  expect(personOf(r).handle).toBe("ngocbh")
+  expect(r.text).not.toContain("scrypt")
+  expect(personOf(r).devices.map((d) => d.name)).toEqual(["mac", "laptop"])
+  expect(subjects(company)[0]).toBe("devices(@ngocbh): add laptop")
+  expect((await request(sock, "GET", "/whoami", { headers: bearer(laptop) })).json()).toEqual({
+    person: "ngocbh",
+    device: "laptop",
+  })
+})
+
+test("a wrong password an unknown handle or an agent is a bad login", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  await givePassword(company, "ngocbh")
+  const head = subjects(company)
+  for (const [handle, password] of [
+    ["ngocbh", "not-the-password"],
+    ["ghost", PASSWORD],
+    ["minh", PASSWORD],
+  ] as const) {
+    const r = await send(sock, "POST", "/login", login(handle, password, "laptop", newToken()))
+    expect([r.status, errorOf(r)]).toEqual([401, "bad_login"])
+    expect((r.json() as { message: string }).message).toBe("wrong handle or password")
+    expect(r.text).not.toContain(PASSWORD)
+  }
+  expect(subjects(company)).toEqual(head)
+})
+
+test("a human without a password cannot log in with one", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const r = await send(sock, "POST", "/login", login("ngocbh", PASSWORD, "laptop", newToken()))
+  expect([r.status, errorOf(r)]).toEqual([409, "no_password"])
+})
+
+test("a login follows the device rules", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  await givePassword(company, "ngocbh")
+  const token = newToken()
+  giveDevice(company, "ngocbh", "mac", token)
+  const head = subjects(company)
+  let r = await send(sock, "POST", "/login", login("ngocbh", PASSWORD, "mac", token))
+  expect(r.status).toBe(200)
+  expect(subjects(company)).toEqual(head)
+  r = await send(sock, "POST", "/login", login("ngocbh", PASSWORD, "mac", newToken()))
+  expect([r.status, errorOf(r)]).toEqual([409, "device_exists"])
+})
+
+test("a human sets their password and only its hash is committed", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "ava")
+  const ava = newToken()
+  giveDevice(company, "ava", "pc", ava)
+  let r = await send(sock, "PUT", "/people/ava/password", { password: PASSWORD }, bearer(ava))
+  expect(r.status).toBe(200)
+  expect(personOf(r).handle).toBe("ava")
+  expect(r.text).not.toContain("scrypt")
+  expect(subjects(company)[0]).toBe("password(@ava): set")
+  const file = path.join(company, "people/ava/person.yaml")
+  const stored = (parseYaml(fs.readFileSync(file, "utf8")) as { password_hash: string }).password_hash
+  expect(await checkPassword(PASSWORD, stored)).toBe(true)
+  expect(git(company, "log", "-p")).not.toContain(PASSWORD)
+  r = await send(sock, "POST", "/login", login("ava", PASSWORD, "laptop", newToken()))
+  expect(r.status).toBe(200)
+})
+
+test("the ceo sets anyones password and others cannot", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const company = office.paths.company
+  addHuman(company, "ava")
+  addHuman(company, "bo")
+  const [ceo, bo] = [newToken(), newToken()]
+  giveDevice(company, "ngocbh", "mac", ceo)
+  giveDevice(company, "bo", "pc", bo)
+  let r = await send(sock, "PUT", "/people/ava/password", { password: PASSWORD }, bearer(ceo))
+  expect(r.status).toBe(200)
+  r = await send(sock, "PUT", "/people/ava/password", { password: PASSWORD }, bearer(bo))
+  expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
+  expect((r.json() as { message: string }).message).toContain("password")
+})
+
+test("bootstrap an unauthenticated request sets the ceos password", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const r = await send(sock, "PUT", "/people/ngocbh/password", { password: PASSWORD })
+  expect(r.status).toBe(200)
+  expect(subjects(office.paths.company)[0]).toBe("password(@ngocbh): set")
+})
+
+test("a short password or an agents is refused", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  let r: Awaited<ReturnType<typeof send>> | undefined
+  for (const short of ["short", "eleven-char"]) {
+    // under the schema's 8, then under the office's 12
+    r = await send(sock, "PUT", "/people/ngocbh/password", { password: short })
+    expect([r.status, errorOf(r)]).toEqual([422, "invalid_body"])
+  }
+  expect((r!.json() as { message: string }).message).toBe("use at least 12 characters")
+  r = await send(sock, "PUT", "/people/minh/password", { password: PASSWORD })
+  expect([r.status, errorOf(r)]).toEqual([422, "not_a_human"])
 })

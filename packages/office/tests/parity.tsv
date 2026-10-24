@@ -400,6 +400,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
 —	new	packages/office/tests/company_template/writer.test.ts::every template flow loads and lints on ts yian	design §9.2: template flows load and lint on TS yian	O2-16a
 —	new	packages/office/tests/company_template/writer.test.ts::the template names every file in its folder	design §2.7: the template is embedded file by file, so the table must match the folder	O2-16a
+—	new	packages/office/tests/daemon/auth.test.ts::a device name that cannot exist is 404 and changes nothing	design §6.4: path device names are checked with DeviceName (O1-14 handoff), so an odd name never reaches a reply or git	O2-3
 —	new	packages/office/tests/daemon/auth.test.ts::an encoded open path still needs a token	design §6.4: the OPEN set is matched on the raw path before routing, so an encoded spelling needs a token (stricter than Python, O2-1)	O2-3
 —	new	packages/office/tests/daemon/auth.test.ts::without a ceo a tokenless request has no person to act as	design §6.4: Python's acting_person 401; RequestContext.person is nullable	O2-3
 —	new	packages/office/tests/daemon/bus.test.ts::a burst overflows a full queue before a waiting reader runs	design §2.3: a reader is woken after the fan-out, as asyncio's queue	O2-2
