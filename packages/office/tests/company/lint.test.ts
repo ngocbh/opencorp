@@ -2,9 +2,11 @@
 import { expect, setDefaultTimeout, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
+import { writeYaml } from "../../src/company/flow_yaml.ts"
 import { lint } from "../../src/company/lint.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { assetToolName } from "../../src/company/naming.ts"
+import { writeCompany } from "../../src/company_template/index.ts"
 import { tempDir } from "../helpers.ts"
 import { baseFiles, CHAT, CHILD, company, MAIN_INPUTS, makeCompany, parentFlow, person } from "./helpers.ts"
 
@@ -252,6 +254,20 @@ test("only the main flow needs the office inputs", async () => {
     "people/minh/person.yaml": person("minh", { sops, routines }),
   })
   expect(await codes(root)).toEqual(new Set())
+})
+
+test("the template flows pass lint", async () => {
+  const dir = tempDir()
+  const root = path.join(dir, "company")
+  await writeCompany(root, path.join(dir, "worktrees"), { company: "Acme", owner: { handle: "ngocbh", name: "Ngoc" } })
+  const agent = {
+    handle: "minh", name: "Minh", kind: "agent", title: "Engineer", manager: "ngocbh",
+    main: "../../shared/flows/chat.yaml", harnesses: ["composer"],
+  }
+  fs.mkdirSync(path.join(root, "people/minh"))
+  fs.writeFileSync(path.join(root, "people/minh/person.yaml"), writeYaml(agent))
+  fs.writeFileSync(path.join(root, "people/minh/profile.md"), "# Minh, Engineer\n")
+  expect(await lint(loadRepo(root))).toEqual([])
 })
 
 /** A flow `id` whose one CODE node calls `fn` in the file `file` with its `text` input. */

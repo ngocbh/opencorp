@@ -240,8 +240,8 @@ test("a preview leaves hand edits alone", async () => {
 
 test("issue messages name the company repo not the scratch copy", async () => {
   const check =
-    "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${ask.output}\n    output: str\n"
-  const flow = CHAT_FLOW.replace("output: ${reply.output}\n", check + "output: ${reply.output}\n")
+    "  check:\n    kind: code\n    code: ./nope.ts:fn\n    input:\n      x: ${chat.output.reply}\n    output: str\n"
+  const flow = CHAT_FLOW.replace("output: ${chat.output.reply}\n", check + "output: ${chat.output.reply}\n")
   const git = makeGit({ ...baseFiles(), "shared/flows/chat.yaml": flow })
   const preview = await new Hiring(git).hire(req(FORM))
   const named = preview.issues.filter((i) => i.message.includes("nope.ts"))

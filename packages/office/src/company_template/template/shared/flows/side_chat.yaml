@@ -1,0 +1,105 @@
+# "Chat about this" on a question card: a chat with the person who asked, in a side
+# session of its own. The office answers the first turn with the question's context
+# and the card before the human's message, and ends the chat with /exit when the
+# question closes. The reply has read-only lookups only.
+id: side_chat
+name: side_chat
+description: Talk through a question with the person who asked it.
+long_term_memory: profile
+
+typedefs:
+  Person:
+    name: str
+    handle: str
+    title: str
+    company: str
+    reports_to: str  # "You report to <Name> (@<handle>)." or ""
+  Msg:
+    role: Literal(user, assistant)
+    text: str
+input:
+  person: !Person  # who the reply speaks as; the office passes it
+  talking_to: !str  # "You're talking with <Name> (@<handle>), <roles>." or ""; the office passes it
+  history: !list(Msg)  # the conversation so far; the office passes [] for a new chat
+
+defs:
+  turn:
+    input:
+      person: !Person
+      talking_to: !str
+      history: !list(Msg)
+      exited: !bool
+      reply: !str
+    nodes:
+      # The turn's one input: what the person sent. Every node below reads it from here.
+      ask:
+        kind: human_input
+        prompt: "You:"
+        output: str
+      route:
+        kind: case
+        on: ${ask.output}
+        cases:
+          - when: /exit
+            then: exit_turn
+        else: reply
+      exit_turn:
+        kind: code
+        output:
+          exited: bool
+        code: |
+          return {exited: true}
+      reply:
+        kind: agent
+        steerable: true
+        env:
+          max_tool_iterations: 50
+        tools: [workspace, work_items]
+        input:
+          history: ${input.history}
+          message: ${ask.output}
+          person: ${input.person}
+          talking_to: ${input.talking_to}
+        output: str
+        system_prompt: |-
+          You are ${person.name} (@${person.handle}), ${person.title} at ${person.company}. ${person.reports_to} ${talking_to}
+          You work in the office alongside the people you talk with. Speak as yourself, in the first person;
+          you are a person here, not a generic assistant. Your profile, in the memory below, is what you've
+          learned about your work and the people you work with: follow it.
+          This is a side conversation about a question you asked: help the person you asked understand it
+          and decide. Here you can only look things up; you can't change files or run anything.
+        prompt:
+          - ${history}
+          - user: ${message}
+      # Code, not an output expression: yian evaluates both sides of an expression, so appending the
+      # reply there fails the exit turn, where reply never ran.
+      remember:
+        kind: code
+        input:
+          history: ${input.history}
+          message: ${ask.output}
+          reply: ${reply.output}
+        output: list(Msg)
+        code: |
+          return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
+    # A LOOP body maps its carried record to the next one, so the person and who they talk with ride along
+    # unchanged, and an exit turn leaves the history as it was.
+    output:
+      person: ${input.person}
+      talking_to: ${input.talking_to}
+      history: ${remember.output :- input.history}
+      exited: ${exit_turn.output.exited == true}
+      reply: '${reply.output:-""}'
+
+nodes:
+  chat:
+    kind: loop
+    call: turn
+    input:
+      person: ${input.person}
+      talking_to: ${input.talking_to}
+      history: ${input.history}
+      exited: false
+      reply: ""
+    while: not exited
+output: ${chat.output.reply}
