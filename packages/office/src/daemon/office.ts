@@ -14,6 +14,8 @@ export class OfficePaths {
   readonly store: string
   readonly socket: string
   readonly pidfile: string
+  /** The single-daemon lock. */
+  readonly lock: string
   readonly worktrees: string
   readonly runs: string
   readonly memory: string
@@ -26,6 +28,7 @@ export class OfficePaths {
     this.store = path.join(this.office, "store.sqlite")
     this.socket = path.join(this.office, "office.sock")
     this.pidfile = path.join(this.office, "office.pid")
+    this.lock = path.join(this.office, "office.lock")
     this.worktrees = path.join(this.office, "worktrees")
     this.runs = path.join(this.office, "runs")
     this.memory = path.join(this.office, "memory")

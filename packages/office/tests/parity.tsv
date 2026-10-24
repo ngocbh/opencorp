@@ -520,6 +520,9 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/daemon/main.test.ts::a lock file that is not private is refused	design §2.3, §6 rule 6: the lock file follows yian's private rules (Y4)	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a pidfile left by a dead office is taken over	design §2.3: the lock, not the pidfile, says who runs	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5
 —	new	packages/office/tests/daemon/routes_costs.test.ts::since keeps milliseconds and python iso forms	design §5 (fixed-width Timestamp); the TS parser is narrower than fromisoformat (no week dates, basic form or other separators), so its accepted forms are pinned; also refused: mixed basic forms, a space before the offset, fractional hours or minutes, offset seconds, offset minutes 60, an empty fraction	O2-6
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.8 rule 3: codex is looked up as shutil.which does	O3-10
