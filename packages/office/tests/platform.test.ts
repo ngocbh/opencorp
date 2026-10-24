@@ -119,6 +119,10 @@ test(
   },
 )
 
+test("selfSpawnEnv drops a name a spawn cant pass as given", () => {
+  expect(selfSpawnEnv({ "A=B": "x", "": "y", "C\0D": "z", KEEP: "k" })).toStrictEqual({ KEEP: "k" })
+})
+
 test("selfSpawnCwd is the real path of the home dir", () => {
   const dir = tempDir()
   const real = path.join(dir, "real")

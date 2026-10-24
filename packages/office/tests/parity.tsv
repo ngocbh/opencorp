@@ -3,7 +3,34 @@ auth/test_identity.py	ported	packages/office/tests/auth/identity.test.ts	—	O1-
 auth/test_passwords.py	ported	packages/office/tests/auth/passwords.test.ts	—	O1-14
 auth/test_tokens.py	ported	packages/office/tests/auth/tokens.test.ts	—	O1-14
 chat/test_check.py	open	—	—	O3-5
-chat/test_connections.py	open	—	—	O2-19
+chat/test_connections.py	ported	packages/office/tests/chat/connections.test.ts	—	O2-19
+chat/test_connections.py::test_a_run_record_holds_hashes_and_no_key	changed	packages/office/tests/chat/connections.test.ts::a run record holds hashes and no key	D32: no target hash; design §5.1: the record is the store's runs values, not a file	O2-19
+chat/test_connections.py::test_a_run_record_refuses_unknown_fields	dropped	—	D4, design §5.1: the run record is the store's runs row, not a file	O2-19
+chat/test_connections.py::test_a_run_without_a_record_and_no_base_url_matches_an_office_on_the_same_provider	dropped	—	D4: a fresh office has no run without a record	O2-19
+chat/test_connections.py::test_a_run_without_a_record_follows_the_endpoint_the_environment_gave	dropped	—	D4: a fresh office has no run without a record	O2-19
+chat/test_connections.py::test_a_run_without_a_record_from_another_provider_is_refused	dropped	—	D4: a fresh office has no run without a record	O2-19
+chat/test_connections.py::test_a_run_without_a_record_is_office_only_on_the_same_base_url	dropped	—	D4: a fresh office has no run without a record	O2-19
+chat/test_connections.py::test_a_run_without_a_record_on_an_unusable_office_raises_run_moved	dropped	—	D4: a fresh office has no run without a record	O2-19
+chat/test_connections.py::test_a_run_without_a_record_or_models_matches_office	dropped	—	D4: a fresh office has no run without a record	O2-19
+chat/test_connections.py::test_add_removes_the_sign_in_when_the_connection_cannot_be_written	changed	packages/office/tests/chat/connections.test.ts::add removes the sign in when the connection cannot be written	D13: every read and write takes the folder's .lock; Y2: sign-ins go through yian's AuthStore.delete, which keeps <name>.auth.json.lock and words its own errors	O2-19
+chat/test_connections.py::test_an_env_change_trips_both_hashes	changed	packages/office/tests/chat/connections.test.ts::an env change trips the config hash	D32, design §8.4: no target hash, so for_run is the exact resume check only	O2-19
+chat/test_connections.py::test_concurrent_adds_take_distinct_names_and_defaults_stay_whole	changed	packages/office/tests/chat/connections.test.ts::concurrent adds take distinct names and defaults stay whole	D13: every read and write takes the folder's .lock, which listings now show	O2-19
+chat/test_connections.py::test_for_run_exact_needs_the_whole_config	changed	packages/office/tests/chat/connections.test.ts::for run exact needs the whole config	D32, design §8.4: no target hash, so for_run is the exact resume check only	O2-19
+chat/test_connections.py::test_for_run_fails_on_a_changed_key_or_endpoint	changed	packages/office/tests/chat/connections.test.ts::for run fails on a changed key or endpoint	D32, design §8.4: no target hash, so for_run is the exact resume check only	O2-19
+chat/test_connections.py::test_for_run_fails_on_a_removed_connection	changed	packages/office/tests/chat/connections.test.ts::for run fails on a removed connection	D32, design §8.4: no target hash, so for_run is the exact resume check only	O2-19
+chat/test_connections.py::test_for_run_raises_only_run_moved	changed	packages/office/tests/chat/connections.test.ts::for run raises only run moved	D32, design §8.4: no target hash, so for_run is the exact resume check only	O2-19
+chat/test_connections.py::test_for_run_tells_a_connection_that_cant_be_used_now_from_one_that_moved	changed	packages/office/tests/chat/connections.test.ts::for run tells a connection that cant be used now from one that moved	D32, design §8.4: no target hash, so for_run is the exact resume check only	O2-19
+chat/test_connections.py::test_no_provider_json_is_an_office_connection_on_composer_defaults	changed	packages/office/tests/chat/connections.test.ts::no office json is an office connection on composer defaults	P3: the office connection is office/connections/office.json	O2-19
+chat/test_connections.py::test_office_cannot_be_removed	changed	packages/office/tests/chat/connections.test.ts::office cannot be removed	P3: the office connection is office/connections/office.json	O2-19
+chat/test_connections.py::test_office_may_still_set_the_auth_file	changed	packages/office/tests/chat/connections.test.ts::office may still set the auth file	P3: office.json; D4: no run without a record, the record is runRecord's values	O2-19
+chat/test_connections.py::test_provider_json_is_the_office_connection_and_the_default	changed	packages/office/tests/chat/connections.test.ts::office json is the office connection and the default	P3: the office connection is office/connections/office.json	O2-19
+chat/test_connections.py::test_remove_cleans_a_sign_in_whose_connection_was_never_written	changed	packages/office/tests/chat/connections.test.ts::remove cleans a sign in whose connection was never written	D13: every read and write takes the folder's .lock; Y2: sign-ins go through yian's AuthStore.delete, which keeps <name>.auth.json.lock and words its own errors	O2-19
+chat/test_connections.py::test_remove_finishes_a_remove_cut_short	changed	packages/office/tests/chat/connections.test.ts::remove finishes a remove cut short	D13: every read and write takes the folder's .lock, which listings now show	O2-19
+chat/test_connections.py::test_remove_gives_up_on_a_sign_in_locked_too_long	changed	packages/office/tests/chat/connections.test.ts::remove gives up on a sign in locked too long	D13: every read and write takes the folder's .lock; Y2: sign-ins go through yian's AuthStore.delete, which keeps <name>.auth.json.lock and words its own errors	O2-19
+chat/test_connections.py::test_remove_refuses_a_symlinked_lock	changed	packages/office/tests/chat/connections.test.ts::remove refuses a symlinked lock	D13: every read and write takes the folder's .lock; Y2: sign-ins go through yian's AuthStore.delete, which keeps <name>.auth.json.lock and words its own errors	O2-19
+chat/test_connections.py::test_remove_unlinks_the_connection_and_its_sign_in	changed	packages/office/tests/chat/connections.test.ts::remove unlinks the connection and its sign in	D13: every read and write takes the folder's .lock; Y2: sign-ins go through yian's AuthStore.delete, which keeps <name>.auth.json.lock and words its own errors	O2-19
+chat/test_connections.py::test_remove_waits_for_composer_to_let_go_of_the_sign_in	changed	packages/office/tests/chat/connections.test.ts::remove waits for composer to let go of the sign in	D13: every read and write takes the folder's .lock; Y2: sign-ins go through yian's AuthStore.delete, which keeps <name>.auth.json.lock and words its own errors	O2-19
+chat/test_connections.py::test_write_run_record_creates_runs_dir	dropped	—	D4, design §5.1: the run record is the store's runs row, not a file	O2-19
 chat/test_cost.py	open	—	—	O3-8b
 chat/test_harness.py	open	—	—	O4a-4
 chat/test_hire.py	open	—	—	O2-24
@@ -272,6 +299,11 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/auth/passwords.test.ts::a password that isnt well formed checks nothing	design §6.4 (passwords as Python's): Python's encode refuses lone surrogates	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::the dummy hash checks nothing	P4 (D36)	O1-14
 —	new	packages/office/tests/auth/tokens.test.ts::a person file in the wrong folder lets no one in	design §6.4: the roster reads people as the loader does	O1-14
+—	new	packages/office/tests/chat/connections.test.ts::a connection file has the python layout and a python file reads	design §10.4 (R2 m9): test_run_logs.py writes connections through the Python code	O2-19
+—	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
+—	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
+—	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
+—	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19
 —	new	packages/office/tests/company/flow_yaml.test.ts::a company file refuses a tag outside the core schema	D8: YAML 1.2 core schema for company files	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a leading zero int is decimal and 0o and 0x are octal and hex	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a lone cr is a line break	design §9.5: read as TS yian reads flows	O1-5
@@ -384,6 +416,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/platform.test.ts::helperCommand in a checkout runs fs_helper.ts with the no-autoload flags	§2.5 checkout form, 2026-10-23 design fix	O1-11
 —	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
+—	new	packages/office/tests/platform.test.ts::selfSpawnEnv drops a name a spawn cant pass as given	design §6.5: the spawn filter drops the names a spawn can't pass as given, as Provider.env refuses them	O2-19
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
