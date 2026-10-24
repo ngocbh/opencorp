@@ -134,7 +134,7 @@ export function sandboxCheck(pid: number, operation: string | null, path?: strin
   return check(pid, cString(operation), pathFilter, cString(path!))
 }
 
-/** libproc's `proc_listallpids` and `proc_pidinfo`, opened once. */
+/** libproc's `proc_listallpids` and `proc_pidinfo`, as declared through bun:ffi. */
 type LibProc = {
   proc_listallpids: (buffer: Int32Array | null, bytes: number) => number
   proc_pidinfo: (pid: number, flavor: number, arg: bigint, buffer: Uint8Array, bytes: number) => number
@@ -153,12 +153,12 @@ function loadLibProc(): LibProc {
 
 /** Every pid on the machine (libproc `proc_listallpids`). */
 export function listAllPids(): number[] {
-  const { proc_listallpids: procListAllPids } = loadLibProc()
+  const lib = loadLibProc()
   // The size argument is in bytes, the result a count; the slack covers pids born in between.
-  const count = procListAllPids(null, 0)
+  const count = lib.proc_listallpids(null, 0)
   if (count < 0) throw new Error("proc_listallpids failed")
   const pids = new Int32Array(count + 64)
-  const got = procListAllPids(pids, pids.byteLength)
+  const got = lib.proc_listallpids(pids, pids.byteLength)
   if (got < 0) throw new Error("proc_listallpids failed")
   return Array.from(pids.subarray(0, got))
 }
@@ -172,6 +172,8 @@ const BSDINFO_SIZE = 136
  *  `proc_pidinfo(PROC_PIDTBSDINFO)`, zombies included; null when it can't be read: no such process, another
  *  user's process, or an id outside 2..2^31 − 1. macOS only. */
 export function procStartTime(pid: number): number | null {
+  // The office-wide pid guard: never 0 or 1 (process.kill would hit our own group or every process),
+  // never a value i32 would wrap.
   if (!Number.isInteger(pid) || pid < 2 || pid > 0x7fffffff) return null
   const info = new Uint8Array(BSDINFO_SIZE)
   // A non-zero `arg` makes xnu look among zombies too, so an exited but unreaped child still reads.
