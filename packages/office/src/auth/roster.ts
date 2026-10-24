@@ -30,8 +30,8 @@ export function tokenTable(people: Iterable<Person>): Map<string, readonly [stri
   for (const person of people) {
     if (person.kind !== "human") continue
     for (const device of person.devices) {
-      let by = owners.get(device.token_sha256)
-      if (!by) owners.set(device.token_sha256, (by = new Map()))
+      const by = owners.get(device.token_sha256) ?? new Map<string, string>()
+      owners.set(device.token_sha256, by)
       if (!by.has(person.handle)) by.set(person.handle, device.name)
     }
   }

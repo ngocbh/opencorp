@@ -60,8 +60,8 @@ export async function writeIdentity(file: string, identity: Identity): Promise<v
   await writePrivate(file, JSON.stringify({ handle, device, token }, null, 2) + "\n")
 }
 
-/** The identity in `file`, or undefined if there is none, it isn't one, or the file or its folder isn't
- *  private. */
+/** The identity in `file`, or undefined if there is none, it isn't one, the file or its folder isn't
+ *  private, or the folder's lock can't be taken (yian's `FileLockError` after its 30 s wait). */
 export async function readIdentity(file: string): Promise<Identity | undefined> {
   let data: unknown
   try {
