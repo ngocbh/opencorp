@@ -217,12 +217,12 @@ export function socketChannel(socket: net.Socket, options?: { maxFrame?: number 
   )
 }
 
-/** The worker's channel over the socket the office passed as `fd`. End of stream leaves the fd open, so the worker
- *  can still send after the office stops sending; the worker's `closeSend()` only stops this end sending, since a
- *  file descriptor can't be half-closed. Nothing here closes the fd: the worker ends with `process.exit`, because a
- *  read blocked on the fd keeps the event loop alive, and the fd closes with the process. Closing it sooner could let
- *  a read or write still queued in the thread pool hit an unrelated file that reused its number. */
+/** The worker's channel over the socket the office passed as `fd`. `closeSend()` only stops this end sending; nothing
+ *  here closes the fd. */
 export function fdChannel(fd = 3, options?: { maxFrame?: number }): Channel {
+  // The fd is left to process exit: the worker ends with `process.exit`, since a read blocked on the fd keeps the event
+  // loop alive. Closing it sooner could let a read or write still queued in the thread pool hit an unrelated file
+  // that reused its number.
   // A file stream, not a socket: Bun's runtime can't wrap fd 3 in a `net.Socket`. `autoClose: false` keeps the fd for
   // writes after end of stream, and also turns off `autoDestroy`, so end of stream emits no `close`, which the
   // channel would take for a broken transport. The stream's `fs.close` is a no-op, since `destroy()` closes the fd
@@ -238,6 +238,7 @@ export function fdChannel(fd = 3, options?: { maxFrame?: number }): Channel {
         queue = done.catch(() => {})
         return done
       },
+      // A file descriptor can't be half-closed, and end of stream leaves it open so this end can still send.
       endWrite: () => {},
       destroy: () => readable.destroy(),
     },

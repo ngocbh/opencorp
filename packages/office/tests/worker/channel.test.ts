@@ -1,4 +1,5 @@
-/** The worker channel: length-prefixed JSON frames over a socket, in order, size-capped, closed cleanly. */
+/** The worker channel: length-prefixed JSON frames over a socket and the worker's fd 3, in order, size-capped,
+ *  closed cleanly. */
 import { spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import fs from "node:fs"
@@ -264,11 +265,14 @@ test(
     `)
     const text = "o".repeat(20 * 2 ** 20)
     const big = 2n ** 80n + 7n
-    // Resolves once the child has taken nearly all of it, so the wait below starts with the child sending.
     await office.send({ text, big })
+    // A best-effort delay so the child's writes meet a full socket, not a synchronisation point: its 20 MiB frame is
+    // bigger than the socket buffer anyway.
     await new Promise((resolve) => setTimeout(resolve, 1_000))
-    const first = await office.recv()
-    expect(first.text).toBe("w".repeat(20 * 2 ** 20))
+    // Compared by length and hash, so a failure doesn't print 20 MiB.
+    const first = (await office.recv()).text as string
+    const sent = "w".repeat(20 * 2 ** 20)
+    expect({ length: first.length, sha256: sha256(first) }).toEqual({ length: sent.length, sha256: sha256(sent) })
     expect(await office.recv()).toEqual({ length: text.length, sha256: sha256(text), big })
     for (const n of [1, 2, 3]) expect(await office.recv()).toEqual({ n })
     expect(await exited).toEqual({ code: 0, signal: null })
@@ -300,7 +304,10 @@ test(
       const channel = fdChannel(3)
       const first = await channel.recv()
       const ended = await channel.recv().then(() => undefined, (error) => error)
-      if (first.n !== 1 || !(ended instanceof ChannelClosed)) process.exit(1)
+      if (first.n !== 1 || !(ended instanceof ChannelClosed)) {
+        console.error("worker saw", typeof first.n === "number" ? first.n : typeof first.n, String(ended?.name))
+        process.exit(1)
+      }
       await channel.send({ late: true })
       process.exit(0)
     `)
@@ -320,9 +327,16 @@ test(
       const channel = fdChannel(3)
       await channel.send({ ready: true })
       const received = await channel.recv().then(() => undefined, (error) => error)
-      if (!(received instanceof ChannelClosed)) process.exit(1)
+      if (!(received instanceof ChannelClosed)) {
+        console.error("worker saw recv give", String(received?.name))
+        process.exit(1)
+      }
       const sent = await channel.send({ after: true }).then(() => undefined, (error) => error)
-      process.exit(sent instanceof ChannelClosed ? 7 : 1)
+      if (!(sent instanceof ChannelClosed)) {
+        console.error("worker saw send give", String(sent?.name))
+        process.exit(1)
+      }
+      process.exit(7)
     `)
     expect(await office.recv()).toEqual({ ready: true })
     office.close()
@@ -338,17 +352,17 @@ test(
     const probe =
       'for f in 3 4 5 6 7 8 9; do if { true >&$f; } 2>/dev/null; then printf "fd$f "; fi; done > fds; ' +
       "echo end >> fds; exec sleep 60"
-    const { office, dir } = worker(`
+    const { office, exited, dir } = worker(`
       import { spawn } from "node:child_process"
       const channel = fdChannel(3)
-      const grandchild = spawn("/bin/sh", ["-c", ${JSON.stringify(probe)}], { detached: true, stdio: "ignore" })
+      const grandchild = spawn("/bin/sh", ["-c", ${JSON.stringify(probe)}], { stdio: "ignore" })
       await channel.send({ pid: grandchild.pid })
       process.exit(0)
     `)
     const { pid } = (await office.recv()) as { pid: number }
-    // Detached, so the grandchild leads its own process group.
-    onTestFinished(() => killGroup(pid))
     expect(await within(office.recv().catch((error: unknown) => error), 15_000)).toBeInstanceOf(ChannelClosed)
+    expect(await exited).toEqual({ code: 0, signal: null })
+    // Still in the worker's process group, which the cleanup kills.
     expect(() => process.kill(pid, 0)).not.toThrow()
     const fds = path.join(dir, "fds")
     const listed = await waitFor(
