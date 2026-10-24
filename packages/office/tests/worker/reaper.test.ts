@@ -3,19 +3,16 @@ import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test
 import { killGroup, startTime } from "../../src/install/proc.ts"
 import type { Store } from "../../src/store/store.ts"
 import { reap } from "../../src/worker/reaper.ts"
-import { type Group, isGone, startGroup, waitFor } from "../helpers.ts"
+import { type Group, isGone, NO_GROUP, startGroup, waitFor } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 
 setDefaultTimeout(30_000)
 
 // A process-group leader that starts a grandchild and prints its pid, as a worker running a shell tool would.
 // It execs a sleep rather than waiting: a waiting sh could wake when the grandchild is killed and exit with
-// status 137 before its own SIGKILL lands, and the grandchild left unreaped is a zombie, which isGone accepts.
+// status 137 before its own SIGKILL lands; after the exec nothing reaps the grandchild until the leader dies, so
+// it may linger as a zombie, which isGone counts as gone.
 const LEADER = "/bin/sleep 61 & echo $!; exec /bin/sleep 61"
-
-// A group id no real process can have (Linux PID_MAX_LIMIT is 4,194,304; macOS pids stay under 100,000), so
-// a call that slipped past a mocked process.kill could never signal anything.
-const NO_GROUP = 2_000_000_000
 
 /** Records `g` under `key` as a worker leading its own group, with its start time moved by `skew` seconds. */
 function record(store: Store, key: string, g: Group, skew = 0) {
@@ -82,6 +79,8 @@ test("kill group ignores a group it may not signal", () => {
   })
   onTestFinished(() => kill.mockRestore())
   expect(killGroup(NO_GROUP)).toBe(false)
+  expect(kill).toHaveBeenCalledTimes(1)
+  expect(kill).toHaveBeenCalledWith(-NO_GROUP, "SIGKILL")
 })
 
 test("reap kills leftover sandboxed calls and harness processes too", async () => {

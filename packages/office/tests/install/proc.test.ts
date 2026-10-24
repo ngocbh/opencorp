@@ -3,13 +3,9 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { args, killGroup, linuxStartTime, sameProcess, startTime, stopProcess } from "../../src/install/proc.ts"
-import { isGone, PS, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { isGone, NO_GROUP, PS, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
-
-// A group id no real process can have (Linux PID_MAX_LIMIT is 4,194,304; macOS pids stay under 100,000), so
-// a call that slipped past a mocked process.kill could never signal anything.
-const NO_GROUP = 2_000_000_000
 
 /** The error process.kill throws for a group that is gone. */
 function esrch(): Error {

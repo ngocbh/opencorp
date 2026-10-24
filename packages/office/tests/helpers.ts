@@ -40,6 +40,10 @@ export function shortDir(): string {
   return dirForThisTest("/tmp/oc-")
 }
 
+// A group id no real process can have (Linux PID_MAX_LIMIT is 4,194,304; macOS pids stay under 100,000), so
+// a call that slipped past a mocked process.kill could never signal anything.
+export const NO_GROUP = 2_000_000_000
+
 /** The `ps` binary: /bin/ps on macOS, /usr/bin/ps on some Linux images. */
 export const PS = (() => {
   const found = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p))
