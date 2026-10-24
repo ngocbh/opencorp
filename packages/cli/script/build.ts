@@ -55,6 +55,18 @@ const builds = names.map((name) => {
   return { name, os, cpu, target: positionals.length ? (`bun-${name}` as const) : undefined }
 })
 
+// Each output folder is deleted and rewritten, and `opencorp` is also the default clone name: an outdir above a
+// checkout must not delete it. So a folder is replaced only when it holds the package this build writes there.
+for (const pkgName of ["opencorp", ...builds.map(({ name }) => `opencorp-${name}`)]) {
+  const dir = path.join(outdir, pkgName)
+  if (!fs.existsSync(dir)) continue
+  let found: unknown
+  try {
+    found = (JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { name?: unknown }).name
+  } catch {}
+  if (found !== pkgName) fail(`refusing to replace ${dir}: it isn't a package this build wrote`, 1)
+}
+
 /** The package an asset key starts with (`@scope/name` or `name`), and the key's path inside it. */
 function splitKey(key: string) {
   const parts = key.split("/")

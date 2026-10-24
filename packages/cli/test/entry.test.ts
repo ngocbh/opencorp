@@ -338,6 +338,26 @@ test(
 
 const CLI = path.join(CHECKOUT, "packages/cli")
 
+test("the build refuses to replace a folder it did not write", () => {
+  // `opencorp` is also the default clone name, so an outdir above a checkout would otherwise delete it.
+  const out = path.join(fs.mkdtempSync(path.join(tmp, "build-")), "out")
+  const checkout = path.join(out, "opencorp")
+  fs.mkdirSync(checkout, { recursive: true })
+  fs.writeFileSync(path.join(checkout, "package.json"), '{"name":"opencorp-workspace"}')
+  fs.writeFileSync(path.join(checkout, "keep.txt"), "")
+  const result = spawnSync(
+    process.execPath,
+    ["--no-env-file", "--config=/dev/null", "script/build.ts", "--outdir", out],
+    { cwd: CLI, env: process.env, encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL" },
+  )
+  expect(result.status, result.stderr).toBe(1)
+  expect(result.stderr.trimEnd().split("\n")).toHaveLength(1)
+  expect(result.stderr).toContain("refusing to replace")
+  expect(fs.existsSync(path.join(checkout, "keep.txt"))).toBe(true)
+  expect(fs.readFileSync(path.join(checkout, "package.json"), "utf8")).toBe('{"name":"opencorp-workspace"}')
+  expect(fs.existsSync(path.join(out, PLATFORM))).toBe(false)
+}, 90_000)
+
 /** Kills the process group `pid` leads; a group already gone is fine. */
 function killGroup(pid: number) {
   try {
@@ -514,10 +534,10 @@ describe("the built binary", () => {
   }
 
   /** Runs `command tui` against a fake office with a fresh TMPDIR until the renderer writes an escape sequence
-   *  (its native library loaded), or the process exits. */
-  async function runTui(command: string) {
+   *  (its native library loaded), or the process exits; `extra` is added to its env. */
+  async function runTui(command: string, extra: Record<string, string> = {}) {
     const tmpdir = freshTmp()
-    const env = { OPENCORP_HOME: await fakeOffice(), TERM: "xterm" }
+    const env = { OPENCORP_HOME: await fakeOffice(), TERM: "xterm", ...extra }
     return { ...(await runBuilt([command, "tui"], { env, tmpdir, until: (out) => out.includes("\x1b[") })), tmpdir }
   }
 
@@ -624,10 +644,13 @@ describe("the built binary", () => {
     const bare = path.join(built, "bare/bin/opencorp")
     fs.mkdirSync(path.dirname(bare), { recursive: true })
     fs.linkSync(bin, bare)
-    const result = await runTui(bare)
+    // A caller's OTUI_ASSET_ROOT naming a full asset set is ignored: the caller's env must not choose the native
+    // library the binary loads.
+    const result = await runTui(bare, { OTUI_ASSET_ROOT: path.join(npmOut, PLATFORM, "assets") })
     expect(result.reached, result.stdout).toBe(false)
     expect(result.code).not.toBe(0)
     expect(result.stderr).toContain("Missing OpenTUI asset")
+    expect(result.stderr).toContain(path.join(built, "bare/assets"))
     expect(fs.readdirSync(result.tmpdir)).toEqual([])
   }, 90_000)
 })

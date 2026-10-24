@@ -314,6 +314,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/cli/test/entry.test.ts::the binary from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary loads the TUI assets from beside it and extracts nothing to TMPDIR	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary runs the fs helper in its compiled form and reaches the worker stub	§2.5, O1-11	O2-26
+—	new	packages/cli/test/entry.test.ts::the build refuses to replace a folder it did not write	§2.7 (the build only replaces its own output)	O2-26
 —	new	packages/cli/test/entry.test.ts::the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset	§2.7, O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the entry sets the TUI asset root only in the compiled binary	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
