@@ -162,6 +162,28 @@ test("a stop frame stops a run waiting on a question", async () => {
   expect(inspectRun(job.log).status).toBe("stopped")
 })
 
+test("a stop frame stops a run waiting on an office tool", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "", tool_calls: [{ name: "shout", arguments: { text: "hi" } }] })
+  let called = false
+  const hanging: OfficeTool = {
+    ...shout,
+    call: () => {
+      called = true
+      return new Promise(() => {})
+    },
+  }
+  const rec = new Recorder({ tools: { toolbox: { shout: hanging } } })
+  const job = makeJob(base(), "flows/tools.yaml", { groups: groupSpecs(rec.tools) })
+  const worker = await inProcessWorker(job, rec, { env: fake.env() })
+  await waitFor(() => called, { timeout: 10_000, what: "the tool call" })
+  expect(await worker.stop()).toBe(true)
+  expect(await worker.wait()).toBe(EXIT_FAILED)
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toContain(STOPPED)
+  expect(inspectRun(job.log).status).toBe("stopped")
+})
+
 test("a reused run id is refused", async () => {
   const fake = await fakeLlm()
   const where = base()
@@ -198,9 +220,18 @@ test("a resume job is refused until the worker can resume", async () => {
 })
 
 test("a reserved tool name is refused before any model call", async () => {
+  // Yian names a reserved tool "a reserved name", and a reserved group key "reserved by yian".
   const cases: [string, Partial<JobInput>, string][] = [
-    ["flows/tools.yaml", { groups: groupSpecs({ toolbox: { take: shout } }) }, "RangeError: "],
-    ["flows/echo.yaml", { groups: groupSpecs({ sleep: { shout } }) }, "RangeError: "],
+    [
+      "flows/tools.yaml",
+      { groups: groupSpecs({ toolbox: { take: shout } }) },
+      "RangeError: group 'toolbox' has a tool named 'take', a reserved name",
+    ],
+    [
+      "flows/echo.yaml",
+      { groups: groupSpecs({ sleep: { shout } }) },
+      'RangeError: tools["sleep"]: the name is reserved by yian',
+    ],
     ["flows/echo.yaml", { groups: groupSpecs({ ask: { shout } }) }, "TypeError: pass the ask handler once"],
   ]
   for (const [flow, over, start] of cases) {

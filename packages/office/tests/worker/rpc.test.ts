@@ -670,6 +670,8 @@ test("a request ends when its signal aborts", async () => {
   expect(await during).toBe(reason)
   // An already aborted signal sends nothing.
   expect(await rejection(slow.rpc.request("tool_call", {}, { signal: early.signal }))).toBe(reason)
+  // The first write's 20 ms timer, set earlier, always fires first: this only checks nothing more is written, and a
+  // slow machine can't make it fail wrongly.
   await Bun.sleep(50)
   expect(slow.writes()).toBe(1)
 })

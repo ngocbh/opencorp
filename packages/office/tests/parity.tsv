@@ -733,6 +733,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/worker/main.test.ts::a resume job is refused until the worker can resume	plan: the resume path is O4a-2's; §6 rule 1 (frames-only traceback)	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a reused run id is refused	design §2.4 (#1000 part 1, S5)	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a stop frame stops a run waiting on a question	P1, design §2.4	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a stop frame stops a run waiting on an office tool	P1, design §2.4	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a stop frame stops the run	P1, design §2.4	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a waiting run ends normally with its status	yian #1064/#1073 coordination note	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker exits 3 when the office closes before the start frame	design §2.4 step 6	O3-3
