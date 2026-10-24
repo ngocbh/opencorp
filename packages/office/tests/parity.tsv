@@ -762,6 +762,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
+—	new	packages/office/tests/tools/work_items.test.ts::a work item id that is not a string is no work item	plan decision 7; security rule 9 (only own work items)	O2-22a
 —	new	packages/office/tests/tools/work_items.test.ts::the work item tool specs equal the saved copy	D20	O2-22a
 —	new	packages/office/tests/worker/channel.test.ts::a broken transport closes the channel with a fixed message	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/channel.test.ts::a channel shows no frame bytes when inspected	design §2.4: buffered bytes can hold the start frame's provider key	O3-1

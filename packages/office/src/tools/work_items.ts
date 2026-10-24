@@ -30,9 +30,9 @@ export function workItemTools(
   if (asker?.work_item_id) roots.push(asker.work_item_id)
   const chain = new Set<string>()
   for (const root of roots) {
-    let itemId: string | null | undefined = root
-    let item: WorkItemRecord | undefined
-    while (itemId && !chain.has(itemId) && (item = store.getWorkItem(itemId)) !== undefined) {
+    for (let itemId: string | null | undefined = root; itemId && !chain.has(itemId); ) {
+      const item = store.getWorkItem(itemId)
+      if (item === undefined) break
       chain.add(item.id)
       itemId = item.parent_id
     }
@@ -66,9 +66,10 @@ export function workItemTools(
         type: "object",
       },
       call: (args) => {
-        const id = args.work_item_id as string
-        const item = store.getWorkItem(id)
-        if (item === undefined || !visible(item)) throw new RangeError(`no work item ${id}`)
+        const id = args.work_item_id
+        // Only a string reaches the store: SQLite binds an object as named parameters and an array as positional ones.
+        const item = typeof id === "string" ? store.getWorkItem(id) : undefined
+        if (item === undefined || !visible(item)) throw new RangeError(`no work item ${String(id)}`)
         const { version: _, ...rest } = item
         const children = store
           .listWorkItems()

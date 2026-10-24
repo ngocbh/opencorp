@@ -24,7 +24,19 @@ test("work item tools show only what the asker can see", () => {
   expect(JSON.parse(tools.read_work_item!.call({ work_item_id: sibling.id })).parent_id).toBe(top.id)
   expect(JSON.parse(tools.read_work_item!.call({ work_item_id: mine.id })).title).toBe("Mine")
   for (const hidden of [other.id, newId()]) {
+    expect(() => tools.read_work_item!.call({ work_item_id: hidden })).toThrow(RangeError)
     expect(() => tools.read_work_item!.call({ work_item_id: hidden })).toThrow("no work item")
+  }
+})
+
+test("a work item id that is not a string is no work item", () => {
+  const store = openStore()
+  const top = store.createWorkItem(workItem({ title: "Ship v2", assignee: "minh" }))
+  const tools = workItemTools(store, "minh", null)
+  expect(JSON.parse(tools.read_work_item!.call({ work_item_id: top.id })).title).toBe("Ship v2")
+  for (const args of [{ work_item_id: {} }, { work_item_id: [top.id] }, {}]) {
+    expect(() => tools.read_work_item!.call(args)).toThrow(RangeError)
+    expect(() => tools.read_work_item!.call(args)).toThrow("no work item")
   }
 })
 
