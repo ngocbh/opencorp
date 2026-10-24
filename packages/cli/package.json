@@ -12,6 +12,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@ngocbh/yian": "workspace:*",
     "@opencorp/client": "workspace:*",
     "@opencorp/office": "workspace:*",
     "@opencorp/protocol": "workspace:*",

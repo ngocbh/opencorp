@@ -37,6 +37,7 @@
         "opencorp": "bin/opencorp",
       },
       "dependencies": {
+        "@ngocbh/yian": "workspace:*",
         "@opencorp/client": "workspace:*",
         "@opencorp/office": "workspace:*",
         "@opencorp/protocol": "workspace:*",

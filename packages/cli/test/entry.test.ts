@@ -183,6 +183,17 @@ test("the fs helper imports only node builtins", () => {
   expect(found.filter((name) => !name.startsWith("node:"))).toEqual([])
 })
 
+test("the CODE worker shim only imports the code-worker entry of yian", () => {
+  const shim = path.join(CHECKOUT, "packages/cli/src/nodes/code/worker.ts")
+  expect(fs.existsSync(shim)).toBe(true)
+  const transpiler = new Bun.Transpiler({ loader: "ts" })
+  expect(transpiler.scanImports(fs.readFileSync(shim, "utf8")).map((entry) => entry.path)).toEqual([
+    "@ngocbh/yian/code-worker",
+  ])
+  const resolved = Bun.resolveSync("@ngocbh/yian/code-worker", path.join(CHECKOUT, "packages/cli"))
+  expect(fs.realpathSync(resolved)).toBe(path.join(CHECKOUT, "packages/yian/ts/src/nodes/code/worker.ts"))
+})
+
 test(
   "opencorp __worker and __fs-helper reach the office's modes",
   () => {
