@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { LoadError } from "@ngocbh/yian"
 import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
-import { FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
+import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import type { CompanyRepo } from "./loader.ts"
 import { assetToolName, TOOL_NAME } from "./naming.ts"
@@ -38,12 +38,6 @@ function statOrNull(p: string): fs.Stats | null {
     if (["ENOENT", "ENOTDIR", "EBADF", "ELOOP"].includes(errno(error) ?? "")) return null
     throw error
   }
-}
-
-/** A Node system error's errno code, such as `ENOENT`; undefined for anything else thrown. */
-function errno(error: unknown): string | undefined {
-  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
-  return typeof code === "string" ? code : undefined
 }
 
 /** `items`' entries sorted by key, as Python's `sorted(d.items())`. */

@@ -268,6 +268,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/flow_yaml.test.ts::readFlow and yian agree on system.paths	design §9.5, §6 rule 10: the yian-agreement test	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::yes no on and off are text and dates stay text	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flows.test.ts::a flow named with two leading dots inside the repo loads	Python's is_relative_to compares path components	O1-8
+—	new	packages/office/tests/company/flows.test.ts::a flow whose yaml the office cant read is refused even if yian loads it	design §6 rule 10, §9.5: system.paths refused; a read error is never "no paths"	O1-8
 —	new	packages/office/tests/company/git.test.ts::a locked section calling a locking method throws instead of deadlocking	design §3.3: the non-reentrant mutex	O1-6
 —	new	packages/office/tests/company/git.test.ts::a path holding a nul or starting with a slash is refused before git runs	design §6.9, rule 12: literal pathspecs (paths travel NUL-separated on stdin)	O1-6
 —	new	packages/office/tests/company/git.test.ts::pin leaves files under a symlinked folder alone and survives a symlink loop	plan.md O1-6 (pinned read-only worktrees): a pin never changes files outside it	O1-6

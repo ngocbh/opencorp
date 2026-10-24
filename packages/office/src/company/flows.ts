@@ -15,7 +15,8 @@ export class FlowOutsideRepo extends Error {
  *
  * @throws {FlowOutsideRepo} For a flow or child outside `root`.
  * @throws {LoadError} For a bad flow, and for a child's other problems below.
- * @throws {RangeError} For a reference cycle, a pinned-version mismatch, or a flow that sets `system.paths`.
+ * @throws {RangeError} For a reference cycle, a pinned-version mismatch, a `uses:` ref with a NUL, or a flow
+ *   that sets `system.paths` or whose YAML the office can't check for it.
  * @throws {TypeError} For a flow that isn't UTF-8 text.
  * @throws {Error} A system error for an unreadable file.
  */
@@ -36,19 +37,22 @@ export async function loadConfined(root: string, file: string): Promise<Composed
  * `p` made absolute with symlinks resolved, as Python's non-strict `Path.resolve()`: when `p` doesn't
  * resolve, the real path of its deepest existing ancestor joined with the rest (`..` after a symlinked
  * folder is then applied lexically).
+ *
+ * A dangling symlink isn't followed: its missing target counts as a missing file, where Python's `resolve()`
+ * followed it and could report the target outside the repo.
  */
 export function resolvePath(p: string): string {
   try {
     return fs.realpathSync(p)
   } catch (error) {
-    if (!isSystemError(error)) throw error
+    if (errno(error) === undefined) throw error
   }
   const abs = path.resolve(p)
   for (let candidate = abs; ; ) {
     try {
       return path.join(fs.realpathSync(candidate), path.relative(candidate, abs))
     } catch (error) {
-      if (!isSystemError(error)) throw error
+      if (errno(error) === undefined) throw error
       const parent = path.dirname(candidate)
       if (parent === candidate) return abs
       candidate = parent
@@ -62,18 +66,22 @@ export function outsideRoot(root: string, resolved: string): boolean {
   return rel === ".." || rel.startsWith("../") || path.isAbsolute(rel)
 }
 
-/** Whether `error` is a Node system error (one with an errno code). */
-function isSystemError(error: unknown): boolean {
-  return error instanceof Error && typeof (error as NodeJS.ErrnoException).code === "string"
+/** A Node system error's errno code, such as `ENOENT`; undefined for anything else thrown. */
+export function errno(error: unknown): string | undefined {
+  const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined
+  return typeof code === "string" ? code : undefined
 }
 
-/** Whether the flow sets `system.paths`, which a custom child resolver would ignore. */
-function declaresSystemPaths(text: string): boolean {
+/**
+ * Whether the flow sets `system.paths`, which a custom child resolver would ignore; undefined when the office
+ * can't read its YAML.
+ */
+function declaresSystemPaths(text: string): boolean | undefined {
   let doc: unknown
   try {
     doc = readFlow(text)
   } catch (error) {
-    if (error instanceof YamlError) return false // yian reports the syntax error with a location
+    if (error instanceof YamlError) return undefined
     throw error
   }
   const system = isRecord(doc) ? doc["system"] : undefined
@@ -100,17 +108,26 @@ async function load(root: string, file: string, loading: ReadonlySet<string>): P
   if (outsideRoot(root, resolved)) throw new FlowOutsideRepo(`${shown} is outside the company repo`)
   if (loading.has(resolved)) throw new RangeError(`flow-reference cycle at ${shown}`)
   const text = new TextDecoder("utf-8", { fatal: true }).decode(fs.readFileSync(resolved))
-  if (declaresSystemPaths(text)) {
+  const declared = declaresSystemPaths(text)
+  if (declared === true) {
     throw new RangeError(`${shown}: system.paths is not supported in company flows; use a relative uses: path`)
   }
   const dir = path.dirname(resolved)
   const importing = new Set([...loading, resolved])
   const childResolver = async (ref: string, version: string | null): Promise<ComposedFlow> => {
+    if (ref.includes("\0")) throw new RangeError(`${JSON.stringify(ref)}: embedded null byte`)
     const child = await load(root, path.resolve(dir, ref + ".yaml"), importing)
     if (version !== null && child.version !== version) {
       throw new RangeError(`${ref} is version ${JSON.stringify(child.version)}, not ${JSON.stringify(version)}`)
     }
     return child
   }
-  return loadFlow(text, { childResolver, sourceLabel: shown, baseDir: dir, codeRoot: root })
+  const options = { childResolver, sourceLabel: shown, baseDir: dir, codeRoot: root }
+  if (declared === undefined) {
+    // The office's reader is stricter than yian's (it refuses merge cycles, which yian accepts), so a read
+    // error is never taken as "no system.paths". yian reports a real syntax error with its location.
+    await loadFlow(text, options)
+    throw new RangeError(`${shown}: system.paths can't be checked in this flow; simplify its YAML`)
+  }
+  return loadFlow(text, options)
 }

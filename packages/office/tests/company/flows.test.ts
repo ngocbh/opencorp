@@ -40,3 +40,17 @@ test("a flow named with two leading dots inside the repo loads", async () => {
   const root = makeCompany({ "shared/flows/..x.yaml": CHAT })
   expect((await loadConfined(root, path.join(root, "shared/flows/..x.yaml"))).name).toBe("chat")
 })
+
+test("a flow whose yaml the office cant read is refused even if yian loads it", async () => {
+  // The office's reader refuses merge cycles that yian accepts, so system.paths can't be checked.
+  const flows = [
+    CHAT + "system:\n  paths: [lib]\nx-m: &m {<<: *m}\n",
+    CHAT + "system: &s {<<: *s, paths: [lib]}\n",
+  ]
+  for (const flow of flows) {
+    const root = makeCompany({ "shared/flows/chat.yaml": flow })
+    const load = loadConfined(root, path.join(root, "shared/flows/chat.yaml"))
+    await expect(load).rejects.toBeInstanceOf(RangeError)
+    await expect(load).rejects.toThrow(/system.paths can't be checked/)
+  }
+})
