@@ -12,6 +12,7 @@ import os from "node:os"
 import util from "node:util"
 
 const MAX_READ_CHARS = 200_000
+const MAX_LIST_ENTRIES = 5000
 const MAX_EDIT_LINES = 10
 
 /** A request that can't be done; the message goes back to the model. */
@@ -164,6 +165,26 @@ function starts(text: string, old: string, limit: number): number[] {
   return lines
 }
 
+/** Orders strings by code point, as Python sorts them (UTF-8 bytes sort in code-point order). */
+function byCodePoint(a: string, b: string): number {
+  return Buffer.compare(Buffer.from(a), Buffer.from(b))
+}
+
+/** Return the directory's entries, sorted, with a `/` after each subdirectory.
+ *
+ *  Stops after 5000 entries, so the reply stays bounded. */
+function listDir(path: string): string {
+  // A Dirent's type is the entry's own: a link to a folder gets no `/`.
+  const names = fs
+    .readdirSync(path, { withFileTypes: true })
+    .map((entry) => entry.name + (entry.isDirectory() ? "/" : ""))
+    .sort(byCodePoint)
+  if (names.length > MAX_LIST_ENTRIES) {
+    return `${names.slice(0, MAX_LIST_ENTRIES).join("\n")}\n[stopped at ${MAX_LIST_ENTRIES} of ${names.length} entries]`
+  }
+  return names.join("\n") || "(empty)"
+}
+
 type Kind = "string" | "integer" | "boolean"
 
 /** Every op's arguments, each checked against the op's spec before `run` sees it. */
@@ -203,7 +224,7 @@ const OPS: Record<string, Op> = Object.assign(Object.create(null), {
     args: { path: "string", old: "string", new: "string", replace_all: "boolean?" },
     run: (a: Args) => editFile(a.path!, a.old!, a.new!, a.replace_all ?? false),
   },
-  list: { args: { path: "string?" }, run: notBuilt },
+  list: { args: { path: "string?" }, run: (a: Args) => listDir(a.path ?? ".") },
   search: { args: { pattern: "string", path: "string?", glob: "string?" }, run: notBuilt },
 } satisfies Record<string, Op>)
 

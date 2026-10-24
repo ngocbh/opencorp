@@ -216,3 +216,31 @@ test("edit keeps a bom", () => {
   )
   expect(fs.readFileSync(path.join(ws, "f"))).toEqual(Buffer.from([0xef, 0xbb, 0xbf, 0x63, 0x62]))
 })
+
+test("list", () => {
+  const ws = tempDir()
+  fs.mkdirSync(path.join(ws, "d"))
+  fs.writeFileSync(path.join(ws, "f"), "")
+  expect(reply(ws, { op: "list", path: "." })).toEqual(ok("d/\nf"))
+  expect(reply(ws, { op: "list" })).toEqual(ok("d/\nf"))
+  expect(reply(ws, { op: "list", path: "d" })).toEqual(ok("(empty)"))
+})
+
+test("list is capped", () => {
+  const ws = tempDir()
+  const names = Array.from({ length: 5001 }, (_, i) => String(i).padStart(4, "0"))
+  for (const name of names) fs.writeFileSync(path.join(ws, name), "")
+  expect(reply(ws, { op: "list" })).toEqual(
+    ok(`${names.slice(0, 5000).join("\n")}\n[stopped at 5000 of 5001 entries]`),
+  )
+})
+
+test("list marks folders but not links to them and sorts by code point", () => {
+  const ws = tempDir()
+  fs.mkdirSync(path.join(ws, "a"))
+  for (const name of ["a.txt", "a-b", "\uff01", "\u{1f600}"]) fs.writeFileSync(path.join(ws, name), "")
+  fs.symlinkSync("a", path.join(ws, "lnk"))
+  expect(reply(ws, { op: "list" })).toEqual(ok("a-b\na.txt\na/\nlnk\n\uff01\n\u{1f600}"))
+  fs.writeFileSync(path.join(ws, "f"), "")
+  expect(reply(ws, { op: "list", path: "f" })).toEqual(error("Not a directory: f"))
+})
