@@ -639,10 +639,10 @@ test("a dev origin passes", async () => {
   expect((await c.post("/api/nope", {})).status).toBe(401) // past the guard, to the session check
 })
 
-test.each(["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", null])(
+test.each(["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", "None"])(
   "a write that isnt json is 415 [%s]",
   async (kind) => {
-    const headers: Record<string, string> = kind ? { "content-type": kind } : {}
+    const headers: Record<string, string> = kind === "None" ? {} : { "content-type": kind }
     const r = await (await web(await newHq())).request("POST", "/api/pair", { body: '{"code":"x"}', headers })
     expect([r.status, error(r)]).toEqual([415, "json_required"])
   },
@@ -723,6 +723,7 @@ test("a websocket upgrade is served as plain http", async () => {
     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
     "Sec-WebSocket-Version: 13",
   ]
+  // No Connection: close, so the only Connection token is Upgrade and the request is a real upgrade.
   const opts = { origin: null, headers: upgrade, close: false }
   const r = parse((await raw(c.sock, message("GET", "/api/health", opts), { until: "head" })).text)
   expect(r.status).toBe(200)
