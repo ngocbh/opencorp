@@ -218,15 +218,12 @@ export const MAX_BODY = 1 << 20
 /** The deepest nesting of arrays and objects a JSON body may have. */
 export const MAX_DEPTH = 64
 
-const tooLarge = () => new HttpError(413, "body_too_large", `request body is over ${MAX_BODY} bytes`)
+const tooLarge = (cap: number) => new HttpError(413, "body_too_large", `request body is over ${cap} bytes`)
 const endedEarly = () => new HttpError(400, "invalid_body", "the body ended early")
 const notJson = () => new HttpError(422, "invalid_body", "the body isn't JSON")
 
 /** The iterator's next step, or undefined once `signal` aborts first. */
-export function nextUnlessAborted<T>(
-  it: AsyncIterator<T>,
-  signal?: AbortSignal,
-): Promise<IteratorResult<T> | undefined> {
+function nextUnlessAborted<T>(it: AsyncIterator<T>, signal?: AbortSignal): Promise<IteratorResult<T> | undefined> {
   if (!signal) return it.next()
   if (signal.aborted) return Promise.resolve(undefined)
   return new Promise((resolve, reject) => {
@@ -249,17 +246,18 @@ export function continueIfExpected(res: ServerResponse): void {
   res.writeContinue()
 }
 
-/** The request body. Throws `HttpError` 413 once it passes `MAX_BODY`, reading no further, and 400 when it ends
- *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). Given
- *  `res`, which must be `req`'s response, it sends `100 Continue` first if the request waits for it, unless the
- *  declared length is too large. */
+/** The request body. Throws `HttpError` 413 once its declared length or the bytes read pass `cap` (`MAX_BODY` by
+ *  default), reading no further, and 400 when it ends early: the stream fails, or `signal` aborts (the client
+ *  left, or the runtime's 408 closed the request). Given `res`, which must be `req`'s response, it sends
+ *  `100 Continue` first if the request waits for it, unless the declared length is too large. */
 export async function readBody(
   req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders },
   signal?: AbortSignal,
   res?: ServerResponse,
+  cap = MAX_BODY,
 ): Promise<Buffer> {
   const length = req.headers["content-length"]
-  if (length !== undefined && /^\d+$/.test(length) && Number(length) > MAX_BODY) throw tooLarge()
+  if (length !== undefined && /^\d+$/.test(length) && Number(length) > cap) throw tooLarge(cap)
   if (res) continueIfExpected(res)
   // Chunks are taken by hand, never with `for await` or `it.return()`: leaving the loop early destroys an
   // unfinished request, and with it the socket on Node, so the 413 would never reach the client. The rest of an
@@ -278,7 +276,7 @@ export async function readBody(
     if (step.done) break
     const chunk = typeof step.value === "string" ? Buffer.from(step.value) : step.value
     size += chunk.length
-    if (size > MAX_BODY) throw tooLarge()
+    if (size > cap) throw tooLarge(cap)
     parts.push(chunk)
   }
   return Buffer.concat(parts)
@@ -325,7 +323,7 @@ function parseBody(schema: z.ZodType, buf: Buffer): unknown {
 }
 
 /** Whether the request carries a body. */
-function hasBody(req: IncomingMessage): boolean {
+export function hasBody(req: IncomingMessage): boolean {
   const length = req.headers["content-length"]
   return "transfer-encoding" in req.headers || (length !== undefined && length !== "0")
 }
@@ -449,7 +447,7 @@ export interface Limits {
  *  - The runtime checks `headersTimeout` and `requestTimeout` only every `connectionsCheckingInterval`, hence 1 s
  *    rather than the 30 s default.
  *  - `requestTimeout` covers receiving the request only: a slow handler's reply isn't cut.
- *  - HQ's listeners pass `{...LIMITS, requestTimeout: 10_000, maxConnections: 64}`. */
+ *  - HQ's listeners pass `{...LIMITS, requestTimeout: BODY_TIMEOUT, maxConnections: 64}` (hq/guard.ts). */
 export const LIMITS: Readonly<Limits> = {
   connectionsCheckingInterval: 1000,
   headersTimeout: 10_000,

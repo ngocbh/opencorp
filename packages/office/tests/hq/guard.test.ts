@@ -1,13 +1,13 @@
 /** The guard every HQ request passes before routing. */
 import fs from "node:fs"
-import type { ServerResponse } from "node:http"
+import type { OutgoingHttpHeader, ServerResponse } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { z } from "zod"
 import { LIMITS, type Limits, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
-import { CSP, HEADERS, type Inner, MAX_API_BODY, hqGuard } from "../../src/hq/guard.ts"
+import { HEADERS, type Inner, MAX_API_BODY, hqGuard } from "../../src/hq/guard.ts"
 import { shortDir, waitFor } from "../helpers.ts"
 import { Conn, parse, raw } from "../daemon/helpers.ts"
 
@@ -101,32 +101,33 @@ function expectSecurityHeaders(head: string): void {
 
 const closes = (head: string) => values(head, "connection").some((v) => v.toLowerCase() === "close")
 
-/** Sends `head`, then a byte every 100 ms; what came back and whether the server closed within `ms`. */
-function trickle(sock: string, head: string, ms = 4000): Promise<{ text: string; closed: boolean }> {
+/** Sends `head`, then a byte every 100 ms: from the start with `now`, else once a reply's head has arrived, so
+ *  the reply is read before a write can fail with EPIPE. What came back and whether the server closed in 4 s. */
+function trickle(sock: string, head: string, { now = false } = {}): Promise<{ text: string; closed: boolean }> {
   return new Promise((resolve) => {
     const socket = net.connect(sock)
     let text = ""
     let timer: ReturnType<typeof setInterval> | undefined
     const finish = (closed: boolean) => {
-      clearTimeout(start)
       clearInterval(timer)
       clearTimeout(deadline)
       socket.destroy()
       resolve({ text, closed })
     }
-    const write = () => {
-      if (socket.writable) socket.write("x")
+    const start = () => {
+      timer ??= setInterval(() => {
+        if (socket.writable) socket.write("x")
+      }, 100)
     }
-    // The runtime checks its timeouts every 100 ms here (SHORT), counted from about when this test's server
-    // started. Writing half way between its checks lets a reply be read first: a write after the server closed
-    // fails with EPIPE, and the failure drops a reply not yet read.
-    const start = setTimeout(() => {
-      write()
-      timer = setInterval(write, 100)
-    }, 50)
-    const deadline = setTimeout(() => finish(false), ms)
-    socket.on("connect", () => socket.write(head))
-    socket.on("data", (data: Buffer) => (text += data.toString()))
+    const deadline = setTimeout(() => finish(false), 4000)
+    socket.on("connect", () => {
+      socket.write(head)
+      if (now) start()
+    })
+    socket.on("data", (data: Buffer) => {
+      text += data.toString()
+      if (text.includes("\r\n\r\n")) start()
+    })
     socket.on("end", () => finish(true))
     socket.on("close", () => finish(true))
     socket.on("error", () => finish(true))
@@ -137,9 +138,9 @@ function trickle(sock: string, head: string, ms = 4000): Promise<{ text: string;
 const post = (target: string, { host = HOST, length = 1000 } = {}) =>
   message("POST", target, { host, headers: [JSON_TYPE, `Content-Length: ${length}`], close: false })
 
-/** Resolves once `call` settles, or fails after `ms`. */
-async function settles(call: Call | undefined, ms = 3000): Promise<void> {
-  await waitFor(() => call?.settled, { timeout: ms, what: "the guard to settle" })
+/** Resolves once `call` settles, or fails after 3 s. */
+async function settles(call: Call | undefined): Promise<void> {
+  await waitFor(() => call?.settled, { timeout: 3000, what: "the guard to settle" })
 }
 
 /** One chunk of a chunked body. */
@@ -188,9 +189,9 @@ test("a client that goes away mid body never reaches the app", async () => {
 test("a 408 closes the connection while the client still trickles", async () => {
   const { inner } = echo()
   const { sock, calls } = await guarded(inner, { limits: SHORT })
-  const { text, closed } = await trickle(sock, post("/api/pair"))
-  expect(text.startsWith("HTTP/1.1 408")).toBe(true)
-  expect(closes(parse(text).head)).toBe(true)
+  const { text, closed } = await trickle(sock, post("/api/pair"), { now: true })
+  // A write racing the close can fail with EPIPE and drop the 408 before it is read: only the close is certain.
+  expect(text === "" || text.startsWith("HTTP/1.1 408")).toBe(true)
   expect(closed).toBe(true)
   await settles(calls[0])
 })
@@ -202,6 +203,7 @@ test("a body that stops arriving is 408", async () => {
   conn.send(`${post("/api/pair")}{"code":`)
   const r = await conn.response({ timeout: 3000 })
   expect(r.status).toBe(408)
+  expect(closes(r.head)).toBe(true)
   expect(await conn.closed({ timeout: 3000 })).toBe(true)
   await settles(calls[0])
   expect(ran).toEqual([])
@@ -265,58 +267,69 @@ test.each([
 })
 
 test("the security headers replace a routes own", async () => {
-  const inners: Inner[] = [
-    (_req, res) => {
-      res.writeHead(200, { "x-frame-options": "SAMEORIGIN", "Content-Security-Policy": "default-src *" }).end("{}")
+  const cases: { inner: Inner; cookies?: string[] }[] = [
+    {
+      inner: (_req, res) => {
+        res.writeHead(200, { "x-frame-options": "SAMEORIGIN", "Content-Security-Policy": "default-src *" }).end("{}")
+      },
     },
-    (_req, res) => {
-      res.setHeader("X-Frame-Options", "SAMEORIGIN")
-      res.end()
+    {
+      inner: (_req, res) => {
+        res.setHeader("X-Frame-Options", "SAMEORIGIN")
+        res.end()
+      },
     },
     // The array forms of writeHead's headers; a name given twice keeps both values.
-    (_req, res) => {
-      res.writeHead(200, ["X-Frame-Options", "SAMEORIGIN", "Set-Cookie", "a=1", "Set-Cookie", "b=2"]).end()
+    {
+      inner: (_req, res) => {
+        res.writeHead(200, ["X-Frame-Options", "SAMEORIGIN", "Set-Cookie", "a=1", "Set-Cookie", "b=2"]).end()
+      },
+      cookies: ["a=1", "b=2"],
     },
-    (_req, res) => {
-      res
-        .writeHead(200, [
+    // A pair's value may be an array: each item stays its own header line.
+    {
+      inner: (_req, res) => {
+        const pairs = [
           ["X-Frame-Options", "SAMEORIGIN"],
-          ["Set-Cookie", "a=1"],
-          ["Set-Cookie", "b=2"],
-        ])
-        .end()
+          ["Set-Cookie", ["a=1", "b=2"]],
+          ["Set-Cookie", "c=3"],
+        ]
+        res.writeHead(200, pairs as unknown as OutgoingHttpHeader[]).end()
+      },
+      cookies: ["a=1", "b=2", "c=3"],
     },
   ]
-  for (const [i, inner] of inners.entries()) {
+  for (const { inner, cookies } of cases) {
     const { sock } = await guarded(inner)
     const r = parse((await raw(sock, message("GET", "/", { origin: null }))).text)
     expect(r.status).toBe(200)
     expectSecurityHeaders(r.head)
-    expect(values(r.head, "content-security-policy")).toEqual([CSP])
-    if (i >= 2) expect(values(r.head, "set-cookie")).toEqual(["a=1", "b=2"])
+    if (cookies) expect(values(r.head, "set-cookie")).toEqual(cookies)
   }
 })
 
 test("a streamed response passes through unbuffered", async () => {
-  let finished = false
+  const seen: string[] = []
   const { sock } = await guarded(async (_req, res) => {
     res.writeHead(200, { "content-type": "text/event-stream" })
     for (let i = 0; i < 3; i++) {
       res.write(`data: ${i}\n\n`)
-      await new Promise((resolve) => setTimeout(resolve, 10))
+      // The next chunk waits for the client to read this one: behind a guard that buffers, it never does, the wait
+      // throws, and the guard drops the connection.
+      await waitFor(() => seen.includes(String(i)), { timeout: 3000, what: `the client to read chunk ${i}` })
     }
-    finished = true
     res.end()
   })
-  const early: boolean[] = []
+  let text = ""
   const socket = net.connect(sock)
   onTestFinished(() => socket.destroy())
   socket.on("data", (data: Buffer) => {
-    for (const _ of data.toString().matchAll(/data: \d/g)) early.push(!finished)
+    text += data.toString()
+    seen.splice(0, seen.length, ...[...text.matchAll(/data: (\d)/g)].map((m) => m[1]!))
   })
   socket.write(message("GET", "/api/stream", { origin: null }))
   await new Promise((resolve) => socket.on("close", resolve))
-  expect(early).toEqual([true, true, true])
+  expect(seen).toEqual(["0", "1", "2"])
 })
 
 type Branch = {
@@ -437,11 +450,15 @@ const BRANCHES: Branch[] = [
 
 test.each(BRANCHES)("the guard checks each refusal branch [$name]", async (c) => {
   const { inner, ran } = echo()
-  const { sock } = await guarded(inner, { port: c.port === undefined ? PORT : c.port, devOrigins: c.devOrigins })
+  const { sock } = await guarded(inner, { port: c.port, devOrigins: c.devOrigins })
   const { method = "GET", target = "/api/health", host, origin, headers, body } = c
   const r = parse((await raw(sock, message(method, target, { host, origin, headers, body }))).text)
   expect(r.status).toBe(c.status)
   if (c.error) expect(JSON.parse(r.body).error).toBe(c.error)
+  if (c.status !== 200) {
+    expectSecurityHeaders(r.head)
+    expect(closes(r.head)).toBe(true)
+  }
   expect(ran).toHaveLength(c.status === 200 ? 1 : 0)
 })
 
