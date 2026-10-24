@@ -4,15 +4,18 @@ import http, { type IncomingHttpHeaders } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { AnswerRequest, LoginRequest, SetPasswordRequest } from "@opencorp/protocol"
 import { z } from "zod"
 import {
   HttpError,
   LIMITS,
   type Limits,
+  MAX_BODY,
   type RequestInfo,
   type Route,
   createServer,
   logLine,
+  readBody,
   requestListener,
 } from "../../src/daemon/http.ts"
 import {
@@ -628,8 +631,10 @@ describe("server", () => {
   test(
     "a stalled head is cut with 408",
     async () => {
-      const { sock } = await serve([people], { limits: SHORT })
-      // The status line tells this deadline from the runtime's own cut at about 12 s, which sends nothing.
+      // requestTimeout is out of reach, so the 408 is headersTimeout's.
+      const { sock } = await serve([people], { limits: { ...SHORT, requestTimeout: 20_000 } })
+      // The status line tells this deadline from the runtime's own close of a never-finished head at about 12 s,
+      // which sends no status line.
       const got = await raw(sock, "GET / HTTP/1.1\r\nHost: x\r\n", { until: "line", timeout: 9000 })
       expect(got.text).toStartWith("HTTP/1.1 408")
     },
@@ -674,5 +679,239 @@ describe("server", () => {
     expect(logLine("INFO", "opencorp.hq.login", "sign-in for @ngocbh throttled", at)).toBe(
       "2026-10-23T01:02:03.004Z INFO opencorp.hq.login: sign-in for @ngocbh throttled",
     )
+  })
+})
+
+/** The body test routes; `answered()` counts runs of the answer handler (Python's "the question is answered"). */
+function bodyRoutes(...extra: Route<Ctx>[]): { routes: Route<Ctx>[]; answered: () => number } {
+  let answered = 0
+  const routes: Route<Ctx>[] = [
+    {
+      method: "POST",
+      path: "/questions/:id/answer",
+      body: AnswerRequest,
+      guard: (_, p) => {
+        if (p.id !== "q1") throw new HttpError(404, "not_found", `no question ${p.id}`)
+      },
+      reply: z.strictObject({ answer: z.unknown() }),
+      handler: (_, __, body) => {
+        answered++
+        return { answer: (body as AnswerRequest).answer }
+      },
+    },
+    { method: "PUT", path: "/people/:handle/password", body: SetPasswordRequest, handler: () => ({ ok: true }) },
+    { method: "POST", path: "/login", body: LoginRequest, handler: () => ({ ok: true }) },
+    { method: "GET", path: "/people", handler: () => [] },
+    {
+      method: "POST",
+      path: "/guarded",
+      body: z.unknown(),
+      guard: () => {
+        throw new HttpError(403, "forbidden", "no")
+      },
+      handler: () => ({}),
+    },
+    ...extra,
+  ]
+  return { routes, answered: () => answered }
+}
+
+/** Serves the body test routes plus `extra`. */
+async function serveBodies(extra: Route<Ctx>[] = [], options: Parameters<typeof serve>[1] = {}) {
+  const { routes, answered } = bodyRoutes(...extra)
+  return { ...(await serve(routes, options)), answered }
+}
+
+const answerBody = (text: string) => `{"answer": "${text}", "answer_kind": "text"}`
+
+/** An answer body of exactly `size` bytes. */
+const answerOfSize = (size: number) => answerBody("x".repeat(size - answerBody("").length))
+
+/** `count` chunks of 64 KiB. */
+async function* chunksOf64k(count: number): AsyncGenerator<Buffer> {
+  for (let i = 0; i < count; i++) yield Buffer.alloc(64 * 1024, "x")
+}
+
+const ANSWER = "/questions/q1/answer"
+
+describe("bodies", () => {
+  test("a body at the cap is read", async () => {
+    const { sock, answered } = await serveBodies()
+    const body = answerOfSize(MAX_BODY)
+    expect(Buffer.byteLength(body)).toBe(MAX_BODY)
+    const r = await request(sock, "POST", ANSWER, { body })
+    expect(r.status).toBe(200)
+    expect((r.json() as { answer: string }).answer.length).toBeGreaterThan(MAX_BODY - 100)
+    expect(answered()).toBe(1)
+  })
+
+  test("a body over the cap is 413", async () => {
+    const { sock, answered } = await serveBodies()
+    const r = await request(sock, "POST", ANSWER, { body: answerOfSize(MAX_BODY + 1) })
+    expect(r.status).toBe(413)
+    expect(r.text).toBe('{"error":"body_too_large","message":"request body is over 1048576 bytes"}')
+    expect(answered()).toBe(0)
+  })
+
+  test("a too large content length is refused before reading", async () => {
+    const { sock, answered } = await serveBodies()
+    const got = await raw(sock, `POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: 67108864\r\n\r\n`, {
+      until: "close",
+    })
+    const res = parse(got.text)
+    expect(got.text).toStartWith("HTTP/1.1 413")
+    expect(JSON.parse(res.body)).toEqual({ error: "body_too_large", message: "request body is over 1048576 bytes" })
+    expect(got.closed).toBe(true)
+    expect(answered()).toBe(0)
+  })
+
+  test("a chunked body stops being read past the cap", async () => {
+    let pulled = 0
+    async function* chunks(): AsyncGenerator<Buffer> {
+      for (let i = 0; i < (64 * MAX_BODY) / 65536; i++) {
+        pulled++
+        yield Buffer.alloc(65536, "x")
+      }
+    }
+    const err = await readBody(Object.assign(chunks(), { headers: {} })).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(HttpError)
+    expect([(err as HttpError).status, (err as HttpError).code]).toEqual([413, "body_too_large"])
+    expect(pulled).toBeLessThanOrEqual(MAX_BODY / 65536 + 1)
+  })
+
+  test("deeply nested json is 422", async () => {
+    const { sock } = await serveBodies()
+    const r = await request(sock, "POST", ANSWER, { body: "[".repeat(100_000) + "]".repeat(100_000) })
+    expect([r.status, (r.json() as { error: string }).error]).toEqual([422, "invalid_body"])
+  })
+
+  test("over the cap on a real socket leaves the client working", async () => {
+    const { sock } = await serveBodies()
+    for (const content of [{ body: Buffer.alloc(4 * MAX_BODY, "x") }, { chunks: chunksOf64k(64) }]) {
+      const r = await request(sock, "POST", ANSWER, content)
+      expect([r.status, (r.json() as { error: string }).error]).toEqual([413, "body_too_large"])
+      expect((await request(sock, "GET", "/people")).status).toBe(200)
+    }
+  })
+
+  // A 422 never echoes the body: a password or key sent there would come back in the response.
+
+  test("a short password is 422 without the password", async () => {
+    const { sock } = await serveBodies()
+    const r = await request(sock, "PUT", "/people/ngocbh/password", { body: JSON.stringify({ password: "Zq7xWv" }) })
+    const got = r.json() as { error: string; message: string }
+    expect([r.status, got.error]).toEqual([422, "invalid_body"])
+    expect(r.text).not.toContain("Zq7xWv")
+    expect(got.message).toContain("password")
+  })
+
+  test("an extra key is 422 without its name", async () => {
+    const { sock } = await serveBodies()
+    const body = JSON.stringify({ password: "long-enough-password", [SENTINEL]: 1 })
+    const r = await request(sock, "PUT", "/people/ngocbh/password", { body })
+    const got = r.json() as { error: string; message: string }
+    expect([r.status, got.error]).toEqual([422, "invalid_body"])
+    expect(r.text).not.toContain(SENTINEL)
+    expect(got.message).toContain("an extra field")
+  })
+
+  test("a bad login body is 422 without its values or extra keys", async () => {
+    const { sock } = await serveBodies()
+    const body = JSON.stringify({
+      handle: "ngocbh",
+      password: [SENTINEL],
+      device: "laptop",
+      token_sha256: "0".repeat(64),
+      [SENTINEL]: SENTINEL,
+    })
+    const r = await request(sock, "POST", "/login", { body })
+    expect([r.status, (r.json() as { error: string }).error]).toEqual([422, "invalid_body"])
+    expect(r.text).not.toContain(SENTINEL)
+  })
+
+  test("errors name neither a literal nor a union tag input", async () => {
+    const Cat = z.strictObject({ type: z.literal("cat") })
+    const Dog = z.strictObject({ type: z.literal("dog") })
+    const Pets = z.strictObject({ colour: z.enum(["red", "blue"]), pet: z.discriminatedUnion("type", [Cat, Dog]) })
+    const pets: Route<Ctx> = { method: "POST", path: "/pets", body: Pets, handler: () => ({}) }
+    const { sock } = await serveBodies([pets])
+    const body = JSON.stringify({ colour: SENTINEL, pet: { type: SENTINEL } })
+    const r = await request(sock, "POST", "/pets", { body })
+    expect(r.status).toBe(422)
+    expect(r.text).not.toContain(SENTINEL)
+    const message = (r.json() as { message: string }).message
+    expect(message).toBe("colour: isn't an allowed value; pet: isn't an allowed value")
+  })
+
+  test("a body that isnt json is 422", async () => {
+    const { sock } = await serveBodies()
+    const r = await request(sock, "POST", ANSWER, { body: "{" + SENTINEL })
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "the body isn't JSON" }])
+  })
+
+  test("json nested 64 deep is read and 65 deep is 422", async () => {
+    const any: Route<Ctx> = { method: "POST", path: "/any", body: z.unknown(), handler: () => ({ ok: true }) }
+    const { sock } = await serveBodies([any])
+    const nested = (depth: number, inner = "") => "[".repeat(depth) + inner + "]".repeat(depth)
+    expect((await request(sock, "POST", "/any", { body: nested(64) })).status).toBe(200)
+    const r = await request(sock, "POST", "/any", { body: nested(65) })
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "the body is nested too deeply" }])
+    // Brackets in a string, after an escaped quote, don't count: this is 64 deep.
+    const inString = nested(63, JSON.stringify(['"' + "[".repeat(100)]))
+    expect((await request(sock, "POST", "/any", { body: inString })).status).toBe(200)
+  })
+
+  test("the guard runs before any body byte is read", async () => {
+    const { sock } = await serveBodies()
+    const got = await raw(sock, "POST /guarded HTTP/1.1\r\nhost: office\r\ncontent-length: 10\r\n\r\n", {
+      until: "close",
+    })
+    const res = parse(got.text)
+    expect([res.status, JSON.parse(res.body)]).toEqual([403, { error: "forbidden", message: "no" }])
+    expect(res.head.toLowerCase()).toContain("\r\nconnection: close")
+    expect(got.closed).toBe(true)
+  })
+
+  test("a body that isnt utf 8 is 422", async () => {
+    const { sock } = await serveBodies()
+    const r = await request(sock, "POST", ANSWER, { body: Buffer.from([0xff, 0xfe]) })
+    expect([r.status, r.json()]).toEqual([422, { error: "invalid_body", message: "the body isn't JSON" }])
+  })
+
+  test(
+    "a stalled body is cut with 408",
+    async () => {
+      const lines: string[] = []
+      const { sock, settled, answered } = await serveBodies([], { limits: SHORT, log: (line) => lines.push(line) })
+      const got = await raw(sock, `POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: 10\r\n\r\nabc`, {
+        until: "line",
+        timeout: 9000,
+      })
+      expect(got.text).toStartWith("HTTP/1.1 408")
+      await waitFor(() => settled() === 1, { timeout: 10_000, what: "the pipeline to settle" })
+      expect(answered()).toBe(0)
+      expect(lines).toEqual([])
+    },
+    15_000,
+  )
+
+  test("an unread body closes the connection and a read one keeps it", async () => {
+    const ping: Route<Ctx> = { method: "POST", path: "/ping", handler: () => ({ ok: true }) }
+    const { sock } = await serveBodies([ping])
+    const unread = await Conn.open(sock)
+    unread.send("POST /ping HTTP/1.1\r\nhost: office\r\ncontent-length: 5\r\n\r\nhello")
+    const first = await unread.response()
+    expect(first.status).toBe(200)
+    expect(first.head.toLowerCase()).toContain("\r\nconnection: close")
+    expect(await unread.closed()).toBe(true)
+
+    const read = await Conn.open(sock)
+    const body = answerBody("yes")
+    read.send(`POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: ${Buffer.byteLength(body)}\r\n\r\n${body}`)
+    const second = await read.response()
+    expect(second.status).toBe(200)
+    expect(second.head.toLowerCase()).not.toContain("connection: close")
+    read.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
+    expect((await read.response()).status).toBe(200)
   })
 })

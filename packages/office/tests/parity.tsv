@@ -38,7 +38,7 @@ daemon/test_app.py	open	—	split: O2-1 → O2-2	O2-2
 daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
 daemon/test_bus.py	open	—	—	O2-2
 daemon/test_extensions.py	open	—	—	O2-4
-daemon/test_http.py	open	—	—	O2-1
+daemon/test_http.py	ported	packages/office/tests/daemon/http.test.ts	a test route table with zod bodies stands in for the routes (rule 1)	O2-1
 daemon/test_main.py	open	—	split: O2-1 → O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
 daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	packages/office/tests/daemon/http.test.ts::the socket mode leaves the process umask as it found it	node:http binds and listens in one call; the umask is narrowed to 0177 for that one synchronous call and restored, and the private 0700 temp folder is the real guard (design §2.3)	O2-1
 daemon/test_main.py::test_the_office_server_has_websockets_off	changed	packages/office/tests/daemon/http.test.ts::the office server has no upgrade listener	no uvicorn ws setting: no upgrade listener is attached, so an upgrade is plain HTTP (design §2.3)	O2-1
@@ -296,6 +296,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
 —	new	packages/office/tests/daemon/http.test.ts::a 500 logs only the error type	design §2.3, §6 rule 13: a 500 logs the error type only	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a body that isnt utf 8 is 422	design §5.4: the body is UTF-8 JSON; json.loads also took UTF-16/32, which is refused now	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a decoded slash or dot dot in a param is a 404	design §2.3: params decoded once; a decoded / or .. is a 404	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a get route can refuse head	design §2.3: HEAD /events refused (Python events.py)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a log line is the time level logger and message	design §2.3: office.log line format	O2-1
@@ -303,12 +304,16 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::a reply is parsed so its defaults are filled	design §2.3, §5.4: reply.parse fills defaults as model_dump did	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a reply that fails its schema is a 500 that leaks nothing	design §2.3, §6 rule 13, O0-6 handoff: a ZodError never reaches a reply or log	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a slow reply is not cut by the request timeout	design §2.3: requestTimeout doesn't cut slow replies	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a stalled body is cut with 408	D16: the runtime enforces the body deadline (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a stalled head is cut with 408	D16: the runtime enforces the head deadline (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a wildcard param is decoded once	design §2.3: *cwd params get the same care	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an http error is its status code and message	design §2.3: HttpError is Python's HTTPError	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::an unread body closes the connection and a read one keeps it	design §6.4: Connection: close on unread bodies	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::connections past max connections are closed	design §6.4: the runtime enforces maxConnections	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::head on a get route answers without a body	design §2.3: GET routes answer HEAD, as Starlette's did	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::json nested 64 deep is read and 65 deep is 422	P6 (D36): JSON depth ≤ 64	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the context runs before routing	design §2.3: DeviceTokens before routing, as Python's middleware order	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
 —	new	packages/office/tests/perm/redaction.test.ts::a key named __proto__ stays a plain key	design §6.3: object keys scrubbed; a JS object needs an own key for __proto__	O1-12
