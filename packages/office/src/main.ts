@@ -1,6 +1,6 @@
 /**
  * The office's entry: the first argument picks the mode. `packages/cli/src/main.ts` hands its
- * internal modes (`__worker`, `__fs-helper`) here before it loads anything else.
+ * internal modes (`__worker`, `__fs-helper`) and `daemon` here before it loads anything else.
  */
 
 /** A mode's entry point: takes the arguments after the mode, resolves to an exit code. */
@@ -12,8 +12,14 @@ function notBuilt(mode: string): number {
   return 1
 }
 
-/** The office daemon, one per home. */
-export const daemonMain: ModeMain = async () => notBuilt("daemon")
+/** The office daemon, one per home. It exits as soon as `main` returns, so a live handle (a git child, a timer)
+ *  can't keep an old daemon running after it released the lock, and at once on a crash. */
+export const daemonMain: ModeMain = async (argv) => {
+  // A daemon started from a shell will re-exec itself here, into the office's env and cwd.
+  const daemon = await import("./daemon/main.ts")
+  daemon.exitOnCrash()
+  process.exit(await daemon.main(argv))
+}
 /** One yian run in its own process, talking to the daemon over fd 3. Its env is a frozen snapshot of this
  *  process's, taken before any worker module loads, so nothing those modules do to `process.env` reaches the run's
  *  settings. */

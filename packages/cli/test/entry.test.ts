@@ -253,7 +253,7 @@ test("the entry has no shebang, is not executable, and its first statement dispa
   expect(text.split("\n")[0]!.startsWith("#!")).toBe(false)
   expect(fs.statSync(ENTRY).mode & 0o111).toBe(0)
   expect(code(text).slice(0, 2)).toEqual([
-    'const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker")',
+    'const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker" || process.argv[2] === "daemon")',
     'if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2))',
   ])
 })
@@ -335,6 +335,26 @@ test(
       }
       expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
     }
+  },
+  60_000,
+)
+
+test(
+  "opencorp daemon reaches the office daemon mode",
+  () => {
+    fs.rmSync(path.join(proj, "MARKER"), { force: true })
+    const home = fs.mkdtempSync(path.join(tmp, "home-"))
+    const result = spawnSync(WRAPPER, ["daemon", "--home", home], {
+      cwd: proj,
+      env: { HOME: home, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
+      input: "",
+      encoding: "utf8",
+      timeout: 20_000,
+    })
+    expect(result.error).toBeUndefined()
+    expect(result.stderr).toContain("no company repo at")
+    expect(result.status).toBe(1)
+    expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
   },
   60_000,
 )

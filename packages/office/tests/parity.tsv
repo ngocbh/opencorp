@@ -93,9 +93,16 @@ daemon/test_extensions.py::test_a_module_without_register_is_an_error	dropped	�
 daemon/test_extensions.py::test_register_is_called_in_name_order	changed	packages/office/tests/daemon/extensions.test.ts::register is called in list order	D23: an explicit list registers in its own order; there is no discovery, so no name order or skipped _ names	O2-4
 daemon/test_extensions.py::test_the_default_package_is_opencorp_extensions	changed	packages/office/tests/daemon/extensions.test.ts::the default list is the explicit extensions list	D23: the default is the EXTENSIONS list, not a package to scan	O2-4
 daemon/test_http.py	ported	packages/office/tests/daemon/http.test.ts	a test route table with zod bodies stands in for the routes (rule 1)	O2-1
-daemon/test_main.py	open	—	split: O2-1 → O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
+daemon/test_main.py	open	—	split: O2-1 → O2-5 → O2-10 → O3-14 → O4a-4 → O4a-6	O4a-6
+daemon/test_main.py::test_a_failing_stop_hook_does_not_stop_the_others	changed	packages/office/tests/daemon/main.test.ts::a failing stop hook does not stop the others	design §6 rule 13: the start failure and the stop failure are logged by type and frames, never message	O2-5
+daemon/test_main.py::test_failing_start_hook_exits_1_and_cleans_up	changed	packages/office/tests/daemon/main.test.ts::failing start hook exits 1 and cleans up	design §2.3: no uvicorn app; the office's own start fails, so the message is "the office failed to start" and the error is logged by type and frames (§6 rule 13)	O2-5
+daemon/test_main.py::test_office_logging_leaves_the_opencorp_logger_as_it_found_it	dropped	—	design §2.3: no process-wide logger; the daemon passes one log function to each service	O2-5
+daemon/test_main.py::test_office_logging_sends_opencorp_info_lines_to_stderr_like_uvicorn	changed	packages/office/tests/daemon/main.test.ts::office logging sends opencorp info lines to stderr in the office format	design §2.3: office.log lines are <ISO time> <LEVEL> <logger>: <message>; no debug level	O2-5
+daemon/test_main.py::test_office_logging_twice_writes_each_line_once	dropped	—	design §2.3: no process-wide logger, so no handler to add twice	O2-5
 daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	packages/office/tests/daemon/http.test.ts::the socket mode leaves the process umask as it found it	node:http binds and listens in one call; the umask is narrowed to 0177 for that one synchronous call and restored, and the private 0700 temp folder is the real guard (design §2.3)	O2-1
+daemon/test_main.py::test_the_daemons_info_lines_reach_its_log_in_uvicorns_format	changed	packages/office/tests/daemon/main.test.ts::the daemons info lines reach its log in the office format	design §2.3 log format: the office serving line is <ISO time> INFO opencorp.daemon.main: <message>; the HQ pairing line comes with O2-10	O2-5
 daemon/test_main.py::test_the_office_server_has_websockets_off	changed	packages/office/tests/daemon/http.test.ts::the office server has no upgrade listener	no uvicorn ws setting: no upgrade listener is attached, so an upgrade is plain HTTP (design §2.3)	O2-1
+daemon/test_main.py::test_the_soft_fd_limit_is_raised_to_4096_within_the_hard_one	dropped	—	design §2.3 Open files: no setrlimit in Node or Bun; the service files raise the limit (§9.3)	O2-5
 daemon/test_main.py::test_the_tcp_socket_reuses_addresses_but_never_shares_the_port	changed	packages/office/tests/daemon/http.test.ts::the tcp socket listens on loopback and never shares the port	node:net has no getsockopt: a second listener asking for port sharing gets EADDRINUSE, and the TIME_WAIT test shows address reuse (design §2.3)	O2-1
 daemon/test_routes_connections.py	open	—	split: O2-21 → O3-5	O3-5
 daemon/test_routes_costs.py	ported	packages/office/tests/daemon/routes_costs.test.ts	—	O2-6
@@ -366,6 +373,7 @@ worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses steers and interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted	O3-3
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
 worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	packages/office/tests/worker/steering.test.ts::an interrupt waits for its node to start	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted	O3-3
+—	new	packages/cli/test/entry.test.ts::opencorp daemon reaches the office daemon mode	§2.1: the CLI hands daemon to the office before it loads anything else	O2-5
 —	new	packages/cli/test/entry.test.ts::opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::plain bun from a folder holding .env shows the planted identity	§2.7 (control for the binary checks)	O2-26
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
@@ -520,6 +528,20 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/daemon/main.test.ts::a home that cannot be resolved exits 1	design §6.5 realpath: a home that can't be resolved (ELOOP, EACCES) is a start error, not a crash	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a home that does not exist yet resolves through its real parent	Python's non-strict Path.resolve() (design §6.5 realpath): the nearest existing ancestor is resolved	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a lock file that is not private is refused	design §2.3, §6 rule 6: the lock file follows yian's private rules (Y4)	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a pidfile left by a dead office is taken over	design §2.3: the lock, not the pidfile, says who runs	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a pidfile that is a hard link or loose is made private or refused	design §6 rule 6: the pidfile is a private regular file	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a signal during the start stops the office once it has started	design §2.3: SIGINT, SIGTERM and SIGHUP stop cleanly, their handlers installed before the start	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a symlinked office dir stops the daemon start [%s]	design §2.3, §6 rule 6: the office dir is checked through main(), as Python's test_a_symlinked_office_dir_is_refused did	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::bad arguments exit 2	argparse's exit 2 for bad arguments, kept	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::the crash report names the error type and its frames never its message	design §6 rule 13: the crash marker logs the error type and stack frames, never the message	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::the office holds the company snapshots and the secret store	design §2.3: typed Office fields replace Python's extras	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::the stop waits for running handlers but not for ever	Python's 5 s graceful wait (uvicorn timeout_graceful_shutdown)	O2-5
 —	new	packages/office/tests/daemon/routes_costs.test.ts::since keeps milliseconds and python iso forms	design §5 (fixed-width Timestamp); the TS parser is narrower than fromisoformat (no week dates, basic form or other separators), so its accepted forms are pinned; also refused: mixed basic forms, a space before the offset, fractional hours or minutes, offset seconds, offset minutes 60, an empty fraction	O2-6
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.8 rule 3: codex is looked up as shutil.which does	O3-10

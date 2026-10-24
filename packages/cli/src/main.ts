@@ -1,10 +1,10 @@
 // `opencorp`: the OpenCorp command line. Each command lives in its own file under commands/ and
 // is loaded only when it runs, so `opencorp doctor` never loads the TUI.
 //
-// The internal modes come first and load only the office: a sandboxed __fs-helper or a __worker
-// never loads a command or the TUI. ESM runs static imports before any statement, so this file
-// has none (test/entry.test.ts checks).
-const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker")
+// The internal modes come first and load only the office: a sandboxed __fs-helper, a __worker or
+// the daemon never loads a command or the TUI. ESM runs static imports before any statement, so
+// this file has none (test/entry.test.ts checks).
+const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker" || process.argv[2] === "daemon")
 if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2))
 
 // In the compiled binary (its bundle's URL has no `.ts`), OpenTUI loads its native library and
