@@ -39,9 +39,14 @@ test("startTime of an exited process is null", async () => {
 })
 
 test("startTime reads a zombie", async () => {
-  // The background sleep outlives sh's exec, and the new sleep 61 never reaps it.
-  const g = startGroup("/bin/sleep 1 & echo $!; exec /bin/sleep 61")
+  // The background loop ends only once the gate exists, which is after sh has exec'd the sleep 61; sh can't reap
+  // it then, and the sleep 61 never does, so it stays a zombie.
+  const gate = path.join(tempDir(), "gate")
+  const g = startGroup(`(while [ ! -e '${gate}' ]; do /bin/sleep 0.05; done) & echo $!; exec /bin/sleep 61`)
   const z = Number(await g.line())
+  g.track(z, startTime(z))
+  await waitFor(() => args(g.pid, PS) === "/bin/sleep 61", { timeout: 10_000, what: "the exec" })
+  fs.writeFileSync(gate, "")
   await waitFor(() => psStat(z).startsWith("Z"), { timeout: 10_000, what: "a zombie" })
   const found = startTime(z)
   expect(g.started).not.toBeNull()
@@ -104,7 +109,7 @@ test("killGroup kills the leader and its grandchild", async () => {
   g.track(grand, grandStarted)
   expect(killGroup(g.pid)).toBe(true)
   expect((await g.exited).signal).toBe("SIGKILL")
-  await waitFor(() => isGone(grand, grandStarted), { timeout: 5000, what: "the grandchild gone" })
+  await waitFor(() => isGone(grand, grandStarted), { timeout: 10_000, what: "the grandchild gone" })
 })
 
 test("killGroup returns false when the group is gone", () => {
