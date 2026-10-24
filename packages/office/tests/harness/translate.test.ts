@@ -165,9 +165,9 @@ test("a steer mid stream leaves the streaming text in its message", () => {
   expect(shape(events)).toEqual([["assistant", ["Hello there"]], ["user", ["stop at 5"]],
     ["assistant", ["Stopping at 5."]]])
   const [first, , third] = fold(events)
-  for (const e of events) {
-    if (e.type === "delta") expect(e.messageId).toBe(e.partId === first!.parts[0]!.id ? first!.id : third!.id)
-  }
+  const deltas = events.flatMap((e) => e.type === "delta" ? [[e.partId, e.messageId] as const] : [])
+  expect(new Set(deltas.filter(([p]) => p === first!.parts[0]!.id).map(([, m]) => m))).toEqual(new Set([first!.id]))
+  expect(new Set(deltas.filter(([p]) => p === third!.parts[0]!.id).map(([, m]) => m))).toEqual(new Set([third!.id]))
 })
 
 test("a steer mid stream then an interrupt keeps the text whole and marks after the steer", () => {
@@ -285,6 +285,7 @@ test("an mcp call names server and tool", () => {
   expect(part.tool).toBe(MCP_TOOL)
   expect(part.input).toEqual({ server: "docs", tool: "search", arguments: { q: "launchd" } })
   expect(part.output).toContain("3 hits")
+  expect(part.output).toBe('[{"type": "text", "text": "3 hits"}]')
 })
 
 test("a steer while a command runs completes its part in place", () => {

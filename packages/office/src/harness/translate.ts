@@ -24,6 +24,8 @@ export const REQUEST = "codex.request"
 export const TOOL_ITEMS: ReadonlyMap<string, string> = new Map([
   ["commandExecution", COMMAND], ["fileChange", FILE_CHANGE], ["mcpToolCall", MCP_TOOL],
 ])
+/** A tool part's states. */
+type ToolState = ToolPart["state"]
 /** The part state of each Codex item status; any other status is still running. */
 const STATES: ReadonlyMap<string, ToolState> = new Map([
   ["inProgress", "running"], ["completed", "completed"], ["failed", "error"], ["declined", "error"],
@@ -215,7 +217,7 @@ export class Translator {
 
   /** `change` with its path, and where it moved to, relative to the session's cwd. */
   private relativeChange(change: Obj): Obj {
-    const to = moved(change)
+    const to = movedTo(change)
     const kind = truthy(to) ? { ...change.kind, move_path: relative(to!, this.cwd) } : change.kind ?? null
     return { ...change, path: relative(change.path, this.cwd), kind }
   }
@@ -231,9 +233,6 @@ export class Translator {
     })
   }
 }
-
-/** A tool part's states. */
-type ToolState = ToolPart["state"]
 
 /** One session's messages and parts, as live events.
  *
@@ -352,17 +351,19 @@ class Live {
   }
 }
 
-function kind(change: Obj): string | null {
+/** A change's kind (add, delete, update), or null. */
+function changeType(change: Obj): string | null {
   return (truthy(change.kind) ? change.kind : {}).type ?? null
 }
 
-function moved(change: Obj): string | null {
+/** Where a change moved the file to, or null. */
+function movedTo(change: Obj): string | null {
   return (truthy(change.kind) ? change.kind : {}).move_path ?? null
 }
 
 /** A change's path, with where it moved to: `a.py → b.py`. */
-function named(change: Obj): string {
-  return truthy(moved(change)) ? `${change.path} → ${moved(change)}` : change.path
+function changeName(change: Obj): string {
+  return truthy(movedTo(change)) ? `${change.path} → ${movedTo(change)}` : change.path
 }
 
 /** A tool item's part fields: tool, input, output, error. */
@@ -374,8 +375,8 @@ function view(item: Obj): [string, Obj, unknown, string | null] {
       cap(item.aggregatedOutput), error]
   }
   if (type === "fileChange") {
-    const changes = (item.changes ?? []).map((c: Obj) => ({ path: c.path, kind: kind(c),
-      ...(truthy(moved(c)) ? { move_path: moved(c) } : {}), diff: cap(c.diff) }))
+    const changes = (item.changes ?? []).map((c: Obj) => ({ path: c.path, kind: changeType(c),
+      ...(truthy(movedTo(c)) ? { move_path: movedTo(c) } : {}), diff: cap(c.diff) }))
     return [FILE_CHANGE, { changes }, "", error]
   }
   const result = item.result, failure = item.error
