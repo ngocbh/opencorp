@@ -25,6 +25,7 @@ function readPid(file: string): number | null {
   const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
   let text: string
   try {
+    // O_NONBLOCK: a FIFO planted at the path can't hang the start.
     const fd = fs.openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
     try {
       const buffer = Buffer.alloc(32)
@@ -41,8 +42,7 @@ function readPid(file: string): number | null {
 /** The home's single-daemon lock (yian's lock on `office/office.lock`, held for the daemon's life) and
  *  the pidfile beside it, which names the holder. */
 export class PidFile {
-  #lock: FileLock | undefined
-  #fd: number | undefined
+  #held: { lock: FileLock; fd: number } | undefined
 
   constructor(
     readonly path: string,
@@ -74,20 +74,28 @@ export class PidFile {
       if (code === "ELOOP" || code === "EMLINK") throw new OfficeStartError(`the pidfile ${this.path} is a symlink`)
       throw new OfficeStartError(`can't open the pidfile ${this.path}: ${messageOf(error)}`)
     }
-    fs.ftruncateSync(fd, 0)
-    fs.writeSync(fd, `${process.pid}\n`)
-    this.#fd = fd
-    this.#lock = lock
+    try {
+      fs.ftruncateSync(fd, 0)
+      fs.writeSync(fd, `${process.pid}\n`)
+    } catch (error) {
+      fs.closeSync(fd)
+      lock.release()
+      throw new OfficeStartError(`can't write the pidfile ${this.path}: ${messageOf(error)}`)
+    }
+    this.#held = { lock, fd }
   }
 
   /** Removes the pidfile and releases the lock; harmless when not held. */
   release(): void {
-    if (this.#lock === undefined) return
-    fs.closeSync(this.#fd!)
-    // Removed while the lock is still ours, so it can't remove a newer daemon's pidfile.
-    fs.rmSync(this.path, { force: true })
-    this.#lock.release()
-    this.#lock = undefined
-    this.#fd = undefined
+    const held = this.#held
+    if (held === undefined) return
+    try {
+      fs.closeSync(held.fd)
+      // Removed while the lock is still ours, so it can't remove a newer daemon's pidfile.
+      fs.rmSync(this.path, { force: true })
+    } finally {
+      held.lock.release()
+      this.#held = undefined
+    }
   }
 }

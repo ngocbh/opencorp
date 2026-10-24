@@ -2,7 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { isLocked } from "@ngocbh/yian/platform"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { AlreadyRunning, PidFile } from "../../src/daemon/main.ts"
 import { OfficeStartError } from "../../src/daemon/sockets.ts"
 import { tempDir } from "../helpers.ts"
@@ -15,15 +15,22 @@ function paths(): { dir: string; pid: string; lock: string } {
   return { dir, pid: path.join(dir, "office.pid"), lock: path.join(dir, "office.lock") }
 }
 
+/** A `PidFile` released when the test finishes, so a failed assertion can't leave the lock or fd held. */
+function pidFile(pid: string, lock: string): PidFile {
+  const file = new PidFile(pid, lock)
+  onTestFinished(() => file.release())
+  return file
+}
+
 test("second pidfile lock is refused", async () => {
   const { pid, lock } = paths()
-  const first = new PidFile(pid, lock)
+  const first = pidFile(pid, lock)
   await first.acquire()
-  const error = await new PidFile(pid, lock).acquire().catch((e: unknown) => e)
+  const error = await pidFile(pid, lock).acquire().catch((e: unknown) => e)
   expect(error).toBeInstanceOf(AlreadyRunning)
   expect((error as AlreadyRunning).pid).toBe(process.pid)
   first.release()
-  const again = new PidFile(pid, lock)
+  const again = pidFile(pid, lock)
   await again.acquire()
   again.release()
 })
@@ -33,7 +40,7 @@ test("a symlinked pidfile is refused and its target untouched", async () => {
   const victim = path.join(dir, "victim.txt")
   fs.writeFileSync(victim, "precious\n")
   fs.symlinkSync(victim, pid)
-  const error = await new PidFile(pid, lock).acquire().catch((e: unknown) => e)
+  const error = await pidFile(pid, lock).acquire().catch((e: unknown) => e)
   expect(error).toBeInstanceOf(OfficeStartError)
   expect((error as Error).message).toMatch(/symlink/)
   expect(fs.readFileSync(victim, "utf8")).toBe("precious\n")
@@ -42,7 +49,7 @@ test("a symlinked pidfile is refused and its target untouched", async () => {
 
 test("release removes the pidfile and frees the lock", async () => {
   const { pid, lock } = paths()
-  const file = new PidFile(pid, lock)
+  const file = pidFile(pid, lock)
   await file.acquire()
   expect(fs.readFileSync(pid, "utf8")).toBe(`${process.pid}\n`)
   expect(fs.statSync(pid).mode & 0o777).toBe(0o600)
@@ -55,7 +62,7 @@ test("release removes the pidfile and frees the lock", async () => {
 test("a pidfile left by a dead office is taken over", async () => {
   const { pid, lock } = paths()
   fs.writeFileSync(pid, "99999999\n", { mode: 0o600 })
-  const file = new PidFile(pid, lock)
+  const file = pidFile(pid, lock)
   await file.acquire()
   expect(fs.readFileSync(pid, "utf8")).toBe(`${process.pid}\n`)
   file.release()
@@ -65,7 +72,7 @@ test("a lock file that is not private is refused", async () => {
   const { pid, lock } = paths()
   fs.writeFileSync(lock, "")
   fs.chmodSync(lock, 0o644)
-  const error = await new PidFile(pid, lock).acquire().catch((e: unknown) => e)
+  const error = await pidFile(pid, lock).acquire().catch((e: unknown) => e)
   expect(error).toBeInstanceOf(OfficeStartError)
   expect(error).not.toBeInstanceOf(AlreadyRunning)
   expect((error as Error).message).toContain(lock)
