@@ -101,8 +101,12 @@ install/test_service.py	open	—	—	O2-12
 install/test_systemd.py	open	—	—	O2-12
 perm/test_frames.py	open	—	—	O3-4
 perm/test_monitor.py	open	—	split: O1-13 → O3-2	O3-2
-perm/test_office.py	open	—	—	O1-13
-perm/test_redaction.py	open	—	split: O1-12 → O1-13	O1-13
+perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/office/tests/perm/monitor.test.ts::where matches type as well as value	D15: 1 equals 1.0 (JSON numbers are one type; a bigint equals the same number); true, "1" and [1] still differ	O1-13
+perm/test_office.py	ported	packages/office/tests/perm/office.test.ts	—	O1-13
+perm/test_redaction.py	ported	packages/office/tests/perm/redaction.test.ts	—	O1-13
+perm/test_redaction.py::test_a_non_json_result_comes_back_as_plain_json	changed	packages/office/tests/perm/redaction.test.ts::a non json result comes back as plain json	design §6.3 (JSON first, unknown values as text): a JS Set goes to JSON as an array; Python's json had no set and wrote its text	O1-13
+perm/test_redaction.py::test_a_result_that_is_not_json_is_an_audited_error	changed	packages/office/tests/perm/redaction.test.ts::a result that is not json is an audited error	design §6.3: the monitor throws a TypeError for a cycle, as JS names a failed JSON conversion (Python's json raised ValueError)	O1-13
+perm/test_redaction.py::test_an_interrupt_inside_a_kind_is_audited_then_raised	changed	packages/office/tests/perm/redaction.test.ts::an interrupt inside a kind is audited then raised	design §6.3 (an interrupt is audited and rethrown): in JS the interrupt is an AbortError; there is no KeyboardInterrupt	O1-13
 perm/test_workspace_audit.py	open	—	—	O2-22a
 profile/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 profile/test_feedback.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
@@ -329,10 +333,19 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/rpc.test.ts::a message whose method isnt a string is skipped	security rule 13, design §7.2: a malformed Codex line is logged and skipped	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
+—	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::a hole in a result array is null	design §6.3: the result goes through JSON; a JS array hole is null, as JSON.stringify writes it	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::a kind or tool named after an object method is not a tool	design §6.3: tools of unknown kinds are never listed (Python dict lookups; JS objects need own-key lookups)	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::a proto key in a result stays a plain key	design §6.3: the result goes through JSON before redaction; a JS copy needs own keys for __proto__	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::a secret changed between two calls is read on the next	design §6.3 and §6 rule 1: secrets are read per call, never kept	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::a shared value in a result is not a cycle	design §6.3: the result goes through JSON (Python's json allows a shared, non-cyclic value)	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::integer arguments above 2^53 are audited as text	design §6.3 (audit rows): a frame's ints are bigint; the row stores safe ones as numbers, larger ones as their digits	O1-13
+—	new	packages/office/tests/perm/monitor.test.ts::non json arguments are audited as text	design §6.3: audit args go through JSON first, as Python's _audit_args (bytes as text, then redacted)	O1-13
 —	new	packages/office/tests/perm/redaction.test.ts::a key named __proto__ stays a plain key	design §6.3: object keys scrubbed; a JS object needs an own key for __proto__	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret holding regex characters is scrubbed only as written	design §6.3: each form matched as text (Python's re.escape, hand-written here)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret in base64 is scrubbed in either alphabet	design §6.3: base64 in both alphabets (Python's vector has no - or _)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret recased with a dotted or dotless i is scrubbed	design §6.3: each form case-insensitively, as Python's re treats i, I, İ, ı	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::an interrupt message is scrubbed before it is rethrown	design §6.3 and §6 rule 1: the rethrown abort carries only the redacted reason, never the kind's own message	O1-13
 —	new	packages/office/tests/perm/redaction.test.ts::audit args longer than the cap are cut to it	design §6.3: audit args capped at 2,000 characters (Python covers it only through Monitor.call)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::casefold matches python on every code point	design §6.3 and §1.4: hand-written casefold, Python 3.12 as the oracle	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::every escaped form of a secret with quotes backslashes and non ascii is scrubbed	design §6.3: JSON, repr and URL forms (Python covers them only through Monitor.call)	O1-12

@@ -225,7 +225,7 @@ function scrubAll(value: unknown, keys: Set<string>, needles: Needles): unknown 
 }
 
 /** Python's `json.dumps(value, ensure_ascii=False, default=str)` of a redacted value. */
-function pyJson(value: unknown): string {
+export function pyJson(value: unknown): string {
   if (typeof value === "string") return jsonDumps(value, false)
   if (value === true) return "true"
   if (value === false) return "false"
@@ -242,7 +242,8 @@ function pyJson(value: unknown): string {
 /** `args` redacted, or, when their JSON (as Python writes it) is longer than DETAIL_CHARS, that JSON cut to fit. */
 export function auditArgs(args: Record<string, unknown>, keys: Iterable<string>, values: Iterable<string>):
   Record<string, unknown> {
-  // Python round-trips args through JSON first; here they come from a frame, already JSON plus the codec's kinds.
+  // Python round-trips args through JSON first; callers pass JSON data plus the codec's kinds (the monitor puts a
+  // call's args through JSON first).
   const redacted = redact(args, keys, values) as Record<string, unknown>
   const text = pyJson(redacted)
   return text.length <= DETAIL_CHARS ? redacted : { truncated: text.slice(0, DETAIL_CHARS) }
