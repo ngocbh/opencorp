@@ -1,10 +1,10 @@
 /** The office's one Bun-specific module, and the lints that keep Bun APIs and self-spawns inside it. */
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { expect, setDefaultTimeout, test } from "bun:test"
-import { embedded, selfCommand, selfSpawnEnv, threadEntry } from "../src/platform.ts"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { embedded, listAllPids, sandboxCheck, selfCommand, selfSpawnEnv, threadEntry } from "../src/platform.ts"
 import { tempDir } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -167,6 +167,21 @@ test("embedded reads the bytes of the file a file import names", () => {
   const file = path.join(tempDir(), "x.bin")
   fs.writeFileSync(file, bytes)
   expect(embedded(file)).toEqual(bytes)
+})
+
+test.skipIf(process.platform !== "darwin")("listAllPids includes this process and a child", () => {
+  const child = spawn("sleep", ["30"], { stdio: "ignore" })
+  onTestFinished(() => {
+    child.kill("SIGKILL")
+  })
+  const pids = listAllPids()
+  expect(pids).toContain(process.pid)
+  expect(pids).toContain(child.pid!)
+})
+
+test.skipIf(process.platform !== "darwin")("sandboxCheck answers for this process", () => {
+  // 1 under a sandboxed parent (Claude Code's), 0 elsewhere; -1 would mean the call failed (library or symbol not loaded).
+  expect([0, 1]).toContain(sandboxCheck(process.pid, null))
 })
 
 /** Every JS or TS file under the office's src, as paths relative to it. */

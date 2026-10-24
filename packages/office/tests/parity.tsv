@@ -142,11 +142,13 @@ runs/test_reason_cut.py	open	—	—	O4b-7
 runs/test_records.py	open	—	—	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
-sandbox/test_escape.py	open	—	—	O1-10
-sandbox/test_escapees.py	open	—	—	O1-10
+sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts, shell stand-ins and Bun for WorkspaceTools and the interpreter	O1-10
+sandbox/test_escape.py::test_macos_other_process_environ_is_hidden	changed	packages/office/tests/sandbox/escape.test.ts::macos other process environ is readable	§6.1: Seatbelt doesn't gate KERN_PROCARGS2; the Python xfail pinned as the known leak	O1-10
+sandbox/test_escapees.py	ported	packages/office/tests/sandbox/escapees.test.ts	—	O1-10
 sandbox/test_fileops.py	open	—	—	O1-11
 sandbox/test_policy.py	ported	packages/office/tests/sandbox/policy.test.ts	the two pre-rename home cases dropped (D24)	O1-9
-sandbox/test_run.py	open	—	—	O1-10
+sandbox/test_run.py	ported	packages/office/tests/sandbox/run.test.ts	setsid bound 3 s → 10 s: the 2 s reader grace can't tell a missed sweep apart; gone() carries the test	O1-10
+sandbox/test_run.py::test_group_is_killed_before_the_leader_is_reaped	changed	packages/office/tests/sandbox/run.test.ts::on timeout the leader is killed before it is reaped	D12: kill before awaiting; both paths tested	O1-10
 sandbox/test_seatbelt.py	ported	packages/office/tests/sandbox/seatbelt.test.ts	—	O1-9
 sandbox/test_workspace_tools.py	open	—	—	O2-22a
 store/test_bookkeeping.py	ported	packages/office/tests/store/bookkeeping.test.ts	—	O1-2
@@ -302,10 +304,14 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/perm/redaction.test.ts::repr matches python on every code point	design §6.3 and §1.4: hand-written repr, Python 3.12 as the oracle	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::strip and splitlines follow python whitespace and line breaks	design §6.3: the stripped value and its lines as Python splits them	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::values under secret keys are redacted at any depth	design §6.3: arguments named after the asset's secret keys (Python covers it only through Monitor.call)	O1-12
+—	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
+—	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the compiled helper is bound read only before the root is remounted	§2.5, O0-10 P7	O1-9
+—	new	packages/office/tests/sandbox/escapees.test.ts::a process under the canary profile is found and killed	§6.6	O1-10
+—	new	packages/office/tests/sandbox/escapees.test.ts::sandboxCheck tells the canary pair apart	D17	O1-10
 —	new	packages/office/tests/sandbox/policy.test.ts::a folder beside the office paths is fine	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a policy rebuilt with a helper keeps its office paths and checks	§2.5, §6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a relative office path refuses every workspace	§6.1 (fail closed)	O1-9
@@ -315,6 +321,12 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains the office install is refused	§6.1, D35	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::office paths are compared resolved	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::the policy keeps the office and helper paths resolved	§6.1	O1-9
+—	new	packages/office/tests/sandbox/run.test.ts::a call that cannot start rejects at once	§6.1: any error kills and cleans up	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::a sandbox refusal is labelled	D18	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::a throwing tracking hook still kills the call	§6.1: any error kills and cleans up	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::stdin is ignored unless given	§6.1	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::the group is killed after a leader that exits by itself	D12: the documented window	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::the tracking hook sees the leader while it runs and is cleaned up after the kill	§6.6: call rows recorded through the hook	O1-10
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::a shell profile equals the Python profile byte for byte	§6.1 golden strings	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::a shell profile has no helper rule	§2.5 helper rules only in the helper's profile	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::the checkout helper profile adds only the helper rules and lists the entry folder	§2.5, O0-11	O1-9
