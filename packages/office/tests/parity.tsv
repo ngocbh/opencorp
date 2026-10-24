@@ -719,8 +719,10 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/sandbox/policy.test.ts::office paths are compared resolved	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::the policy keeps the office and helper paths resolved	§6.1	O1-9
 —	new	packages/office/tests/sandbox/run.test.ts::a call that cannot start rejects at once	§6.1: any error kills and cleans up	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::a checkout helper call leaves no transpiled copy under HOME	design §2.5 (helper transpiler cache, settled 2026-10-24)	O2-22a
 —	new	packages/office/tests/sandbox/run.test.ts::a sandbox refusal is labelled	D18	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::a throwing tracking hook still kills the call	§6.1: any error kills and cleans up	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::scrubbed env is pinned and only the checkout helper adds the transpiler cache switch	design §2.5 (helper transpiler cache, settled 2026-10-24)	O2-22a
 —	new	packages/office/tests/sandbox/run.test.ts::stdin is ignored unless given	§6.1	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::the group is killed after a leader that exits by itself	D12: the documented window	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::the helper is refused inside the office home	§2.5	O1-11

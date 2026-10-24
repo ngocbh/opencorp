@@ -47,9 +47,10 @@ export interface Result {
   refused: boolean
 }
 
-/** Returns the whole environment of a sandboxed call; nothing is inherited. */
+/** Returns the whole environment of a sandboxed call; nothing is inherited; the checkout helper also turns
+ *  off Bun's transpiler cache. */
 export function scrubbedEnv(policy: SandboxPolicy): Record<string, string> {
-  return {
+  const env: Record<string, string> = {
     PATH: SAFE_PATH,
     HOME: policy.tmpdir,
     TMPDIR: policy.tmpdir,
@@ -58,6 +59,9 @@ export function scrubbedEnv(policy: SandboxPolicy): Record<string, string> {
     // The host's /etc/gitconfig is unreadable in the sandbox, and git treats that as fatal.
     GIT_CONFIG_NOSYSTEM: "1",
   }
+  // Bun would cache the helper's transpiled code under HOME, which sandboxed calls can write.
+  if (policy.helper !== undefined && "bun" in policy.helper) env.BUN_RUNTIME_TRANSPILER_CACHE_PATH = "0"
+  return env
 }
 
 /** Returns the host argv that runs `argv` under `policy` on `platform`.
