@@ -42,6 +42,55 @@ export interface WorkedFolder {
 /** A stored session, defaults filled. */
 export type SessionRecord = z.output<typeof Session>
 
+/** The longest reason a run shows. */
+export const REASON_CHARS = 200
+/** The longest reason a run keeps. */
+export const REASON_KEPT = 256
+
+/** `reason` cut to `limit` characters, ending in "…" when cut. */
+export function cutReason(reason: string, limit = REASON_CHARS): string {
+  // A string has at least as many UTF-16 units as characters, so a short one needs no split.
+  if (reason.length <= limit) return reason
+  // By code point, so a cut never splits a surrogate pair.
+  const chars = Array.from(reason)
+  return chars.length <= limit ? reason : chars.slice(0, limit - 1).join("") + "…"
+}
+
+/** A run as the office keeps it: who drove it, what it ran, the connection, model and config hash that decide
+ *  resume or a fresh run, the run it replaced, and the end the office decided (if any). */
+export interface RunRow {
+  runId: string
+  sessionId: string
+  driver: string
+  flow: string
+  flowPath: string
+  connection: string | null
+  model: string | null
+  configSha256: string | null
+  endReason: string | null
+  endedAt: string | null
+  replacesRunId: string | null
+  createdAt: string
+}
+
+/** The run in a `runs` row. */
+function runRow(r: SqliteRow): RunRow {
+  return {
+    runId: r.run_id as string,
+    sessionId: r.session_id as string,
+    driver: r.driver as string,
+    flow: r.flow as string,
+    flowPath: r.flow_path as string,
+    connection: r.connection as string | null,
+    model: r.model as string | null,
+    configSha256: r.config_sha256 as string | null,
+    endReason: r.end_reason as string | null,
+    endedAt: r.ended_at as string | null,
+    replacesRunId: r.replaces_run_id as string | null,
+    createdAt: r.created_at as string,
+  }
+}
+
 /** An entity table: its protocol schema and how its fields map to columns. */
 interface Table<S extends z.ZodObject> {
   name: string
@@ -215,7 +264,8 @@ export class Tx {
   /** Validates and records an Event (new ULID, now()); listeners get it after the outermost commit. */
   emit(type: Event["type"], subjectId: string, data: Record<string, unknown>): Event {
     this.checkOpen()
-    const input = { id: newId(), type, at: now(), subject_id: subjectId, data }
+    // A copy, so a listener that keeps the event never sees the caller's later changes to its record.
+    const input = { id: newId(), type, at: now(), subject_id: subjectId, data: structuredClone(data) }
     const result = Event.safeParse(input)
     if (!result.success) throw new StoreError(`bad event: ${validationMessage(Event, result.error, input)}`)
     this.events.push(result.data)
@@ -647,6 +697,96 @@ export class Store {
       .prepare("SELECT cwd, last_at FROM worked_folders WHERE person = ? ORDER BY last_at DESC, cwd LIMIT ?")
       .all(person, limit)
       .map((r) => ({ cwd: r.cwd as string, lastAt: r.last_at as string }))
+  }
+
+  // Runs: the office's own facts, no events (yian's run log holds the rest).
+
+  /** Inserts a launched run with no end; an unknown session → NotFound, a repeated run id → DuplicateKey. */
+  addRun(row: Omit<RunRow, "endReason" | "endedAt">): RunRow {
+    const run: RunRow = { ...row, endReason: null, endedAt: null }
+    this.transaction((tx) =>
+      tx.insert("runs", {
+        run_id: run.runId,
+        session_id: run.sessionId,
+        driver: run.driver,
+        flow: run.flow,
+        flow_path: run.flowPath,
+        connection: run.connection,
+        model: run.model,
+        config_sha256: run.configSha256,
+        end_reason: null,
+        ended_at: null,
+        replaces_run_id: run.replacesRunId,
+        created_at: run.createdAt,
+      }),
+    )
+    return run
+  }
+
+  /** Records the connection, model and config hash a run was started on (set at spawn). */
+  setRunConfig(
+    runId: string,
+    config: { connection: string | null; model: string | null; configSha256: string | null },
+  ): void {
+    this.transaction((tx) =>
+      tx.run(
+        "UPDATE runs SET connection = ?, model = ?, config_sha256 = ? WHERE run_id = ?",
+        config.connection,
+        config.model,
+        config.configSha256,
+        runId,
+      ),
+    )
+  }
+
+  /** Writes the office's end reason (cut to REASON_KEPT; ended now or at `at`) unless the run has one; returns
+   *  whether it wrote. */
+  endRun(runId: string, reason: string, at?: string): boolean {
+    const row = this.transaction((tx) =>
+      tx.get(
+        "UPDATE runs SET end_reason = ?, ended_at = ? WHERE run_id = ? AND end_reason IS NULL RETURNING run_id",
+        cutReason(reason, REASON_KEPT),
+        at ?? now(),
+        runId,
+      ),
+    )
+    return row !== undefined
+  }
+
+  /** Gives each listed run that has a row and no end reason the end reason `reason` and no end time; returns
+   *  the ids it wrote, in run-id order. The caller picks the runs (yian's index knows which ended). */
+  sweepRuns(runIds: Iterable<string>, reason: string): string[] {
+    const ids = [...new Set(runIds)].sort()
+    const sql = "UPDATE runs SET end_reason = ? WHERE run_id = ? AND end_reason IS NULL RETURNING run_id"
+    return this.transaction((tx) => ids.filter((runId) => tx.get(sql, reason, runId) !== undefined))
+  }
+
+  /** The run's row, or undefined. */
+  getRun(runId: string): RunRow | undefined {
+    const row = this.db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId)
+    return row && runRow(row)
+  }
+
+  /** The rows of those of `runIds` that have one, by run id. */
+  getRuns(runIds: Iterable<string>): Map<string, RunRow> {
+    // One JSON parameter rather than a `?` per id: a long list would pass SQLite's variable limit.
+    const rows = this.db
+      .prepare("SELECT * FROM runs WHERE run_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...runIds]))
+    return new Map(rows.map((r) => [r.run_id as string, runRow(r)]))
+  }
+
+  /** A session's rows, oldest first. */
+  runsOfSession(sessionId: string): RunRow[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at, run_id")
+      .all(sessionId)
+      .map(runRow)
+  }
+
+  /** The summed price of a run's model calls. */
+  runUsageUsd(runId: string): number {
+    return this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE run_id = ?").get(runId)!.usd as number
   }
 
   // Audit, usage, workers: office bookkeeping, no events.

@@ -32,12 +32,16 @@ test("add session run appends and emits", () => {
   expect(store.sessionForRun("nope")).toBeUndefined()
   const event = events.at(-1)!
   expect([event.type, event.data.run_ids]).toEqual(["session.updated", ["run-1", "run-2"]])
+  // The event a listener keeps shares nothing with the record the caller got.
+  got.run_ids.push("run-3")
+  expect(event.data.run_ids).toEqual(["run-1", "run-2"])
 })
 
 test("a run belongs to one session", () => {
   const store = openStore()
   const a = store.createSession(session())
   const b = store.createSession(session())
+  expect(thrown(() => store.createSession(b))).toBeInstanceOf(DuplicateKey)
   store.addSessionRun(a.id, "run-1")
   expect(thrown(() => store.addSessionRun(b.id, "run-1"))).toBeInstanceOf(DuplicateKey)
   expect(thrown(() => store.addSessionRun(NO_SESSION, "run-9"))).toBeInstanceOf(NotFound)
