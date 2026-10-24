@@ -3,9 +3,11 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
-import { MarkdownVersionMismatch } from "@ngocbh/yian"
+import { loadFlow, type MarkdownStore, MarkdownVersionMismatch, ProfileMemory, runFlow } from "@ngocbh/yian"
 import { CompanyGit, CompanyGitError, type LockedGit } from "../../src/company/git.ts"
 import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore } from "../../src/profile/store.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { company, git, recordingGit } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
 
@@ -259,6 +261,20 @@ test("writes leave pinned worktrees alone", async () => {
   expect(read(pin)).toBe(MINH)
 })
 
+test("profile memory restores a snapshot after a later write", async () => {
+  const { store } = setup()
+  const asStore: MarkdownStore = store
+  const memory = new ProfileMemory(asStore, { llmConfig: LLM_CONFIG })
+  const session = await memory.openRun()
+  const recorded = session.snapshot
+  session.close()
+  await store.write("# Minh\nlater\n", { baseVersion: (await store.read())[1] })
+  const restored = await memory.openRun({ snapshot: recorded })
+  expect(restored.snapshot).toEqual(recorded)
+  expect(restored.recall()).toBe(MINH)
+  restored.close()
+})
+
 test("write keeps the file mode", async () => {
   const { root, store } = setup()
   fs.chmodSync(path.join(root, PROFILE), 0o644)
@@ -297,6 +313,49 @@ test("commit ids are per profile", async () => {
   const error = await rejection(boss.committed("a b"))
   expect(error).toBeInstanceOf(RangeError)
   expect((error as Error).message).toMatch(/commit_id/)
+})
+
+/** One agent under the profile memory: yian's chat flow for profile integration. */
+const CHAT = `id: chat
+name: chat
+long_term_memory: profile
+input:
+  message: !str
+nodes:
+  reply:
+    kind: agent
+    input:
+      message: \${input.message}
+    prompt: \${message}
+    output: str
+output: \${reply.output}
+`
+
+test("profile memory commit is a git commit with run and commit id", async () => {
+  const { root, store } = setup()
+  const fake = await fakeLlm()
+  const env = (name: string) => fake.env()[name]
+  fake.script(
+    { content: "Hello." },
+    { content: '{"input_feedback":{},"self_feedback":[],"variable_feedback":{}}' },
+    { content: "<profile>\n# Minh\nTerse.\n</profile>" },
+  )
+  // The learner builds its model from ProfileMemory's own env, not the run's.
+  const memory = new ProfileMemory(store, { llmConfig: LLM_CONFIG, env })
+  const result = await runFlow(
+    await loadFlow(CHAT),
+    { message: "hi" },
+    { llmConfig: LLM_CONFIG, env, memory: new Map([["profile", memory]]), learnable: true, runId: "run-1" },
+  )
+  expect(result.status).toBe("succeeded")
+  const outcome = await result.backward("Be terse.")
+  expect(outcome.failure).toBeNull()
+  expect(outcome.status).toBe("succeeded")
+  expect((await store.read())[0]).toBe("# Minh\nTerse.\n")
+  const body = git(root, "log", "-1", "--format=%B")
+  const match = /^profile\(@minh\): from feedback on run run-1\n\nCommit-Id: (\S+)$/.exec(body)
+  expect(match).not.toBeNull()
+  expect(await store.committed(match![1]!)).toBe((await store.read())[1])
 })
 
 // Failed commits

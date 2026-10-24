@@ -226,7 +226,14 @@ profile/test_learning_manager.py	deferred: learning	—	learning is redesigned o
 profile/test_learning_mismatch.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 profile/test_learning_recovery.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 profile/test_manager.py	open	—	—	O4a-9
-profile/test_store.py	open	—	—	O2-23
+profile/test_store.py	ported	packages/office/tests/profile/store.test.ts	—	O2-23
+profile/test_store.py::test_bad_commit_id_is_a_value_error	changed	packages/office/tests/profile/store.test.ts::bad commit id is a range error [%s]	Y3: yian's MarkdownStore contract throws RangeError (design §3 yian table); NUL and lone-surrogate ids refused too, since the id reaches git's argv	O2-23
+profile/test_store.py::test_git_failure_is_an_os_error	changed	packages/office/tests/profile/store.test.ts::git failure is a system error	Y3: yian's MarkdownStore contract: a Node system error (code EIO) when storage can't be reached (design §3 yian table)	O2-23
+profile/test_store.py::test_non_utf8_profile_is_a_value_error	changed	packages/office/tests/profile/store.test.ts::non utf8 profile is a range error	Y3: yian's MarkdownStore contract throws RangeError for text it can't decode (design §3 yian table)	O2-23
+profile/test_store.py::test_profile_memory_commit_is_a_git_commit_with_run_and_commit_id	changed	packages/office/tests/profile/store.test.ts::profile memory commit is a git commit with run and commit id	Y3: LearnContext isn't exported, so the commit goes through runFlow and RunResult.backward; the commit id comes from yian	O2-23
+profile/test_store.py::test_two_threads_with_one_base_one_wins	changed	packages/office/tests/profile/store.test.ts::two concurrent writes with one base one wins	one thread in Bun: two concurrent writes through one CompanyGit lock (O1-6)	O2-23
+profile/test_store.py::test_unknown_version_raises_lookup_error	changed	packages/office/tests/profile/store.test.ts::unknown version raises a range error [%s]	Y3: yian's MarkdownStore contract throws RangeError for an unknown version (design §3 yian table)	O2-23
+profile/test_store.py::test_write_turns_a_git_failure_into_an_os_error	changed	packages/office/tests/profile/store.test.ts::write turns a git failure into a system error	Y3: yian's MarkdownStore contract: a Node system error (code EIO) when storage can't be reached (design §3 yian table)	O2-23
 protocol/test_codegen.py	ported	packages/protocol/test/schemas.test.ts	behaviour tests ported onto zod (D6)	O0-6
 protocol/test_codegen.py::test_generated_models_are_current	dropped	—	no codegen (D6)	O0-6
 protocol/test_codegen.py::test_ids_and_enums_are_plain_str	dropped	—	pydantic-only; TS strings are plain (D6)	O0-6
@@ -660,6 +667,9 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::selfCommand, helperCommand, threadEntry and embedded work in a compiled binary	O0-4 handoff; a probe stands in for the real binary until O3-3/O4b-6	O2-26
 —	new	packages/office/tests/platform.test.ts::selfSpawnEnv drops a name a spawn cant pass as given	design §6.5: the spawn filter drops the names a spawn can't pass as given, as Provider.env refuses them	O2-19
+—	new	packages/office/tests/profile/store.test.ts::a byte order mark is kept	design §3 yian table: text round-trips to its blob id; TextDecoder drops a BOM unless told not to, where Python's decode kept it	O2-23
+—	new	packages/office/tests/profile/store.test.ts::a lone surrogate is a range error and writes nothing	design §3 yian table: Buffer.from replaces a lone surrogate, where Python's encode refused it	O2-23
+—	new	packages/office/tests/profile/store.test.ts::python whitespace collapses and blanks like python	design §6 rule 12: the subject collapses Python's whitespace set, which JS \s and trim() don't match	O2-23
 —	new	packages/office/tests/questions/ask.test.ts::a malformed request is refused without its values	O0-6 and design §6 rule 7: no raw ZodError and no request values in an error	O3-8a
 —	new	packages/office/tests/questions/ask.test.ts::a repeated question id is refused	a DuplicateKey that isnt a re-asked node is the caller's error (Python failed on None.id)	O3-8a
 —	new	packages/office/tests/questions/ask.test.ts::a work item that cannot be cancelled is logged by its error name	design §6: logs carry an error's type only	O3-8a
