@@ -751,8 +751,8 @@ test.each(RECORDED)("each recorded agent messages deltas add up to its completed
   }
 })
 
-// The key spike.json records its sessions under.
-test.skipIf(!SPIKE.S3.detail.scenarios.steer.ok)(
+const STEER_RECORDED = SPIKE.S3.detail.scenarios.steer.ok  // S3: the key spike.json records its sessions under
+test.skipIf(!STEER_RECORDED)(
   "the recorded steer keeps the running command in the message it started in", () => {
     const got = replay("steer")
     const roles = got.messages.map((m) => m.role)

@@ -23,7 +23,7 @@ export const FILE_CHANGE = "codex.file_change"
 export const MCP_TOOL = "codex.mcp_tool_call"
 export const REQUEST = "codex.request"
 /** The tool name of each Codex item type that becomes a tool part. */
-export const TOOL_ITEMS: ReadonlyMap<string, string> = new Map([
+const TOOL_ITEMS: ReadonlyMap<string, string> = new Map([
   ["commandExecution", COMMAND], ["fileChange", FILE_CHANGE], ["mcpToolCall", MCP_TOOL],
 ])
 /** A tool part's states. */
@@ -36,7 +36,7 @@ const STATES: ReadonlyMap<string, ToolState> = new Map([
 export const INTERRUPTED_TEXT = "\n\n[interrupted]"
 
 /** `text` cut to `OUTPUT_MAX_CHARS` code points with a marker; Codex keeps the whole of it. */
-export function cap(text: string | null | undefined): string {
+function cap(text: string | null | undefined): string {
   const whole = text || ""
   if (whole.length <= OUTPUT_MAX_CHARS) return whole
   let points = 0
@@ -112,7 +112,7 @@ export class Translator {
   private readonly live: Live
   private readonly streamed = new Map<string, string>()  // agent message item id -> the text its deltas streamed so far
   private readonly items = new Map<string, Obj>()  // tool item id -> its latest item, for cards and decisions
-  private readonly approvals = new Map<string, Obj>()  // tool part id -> the decision on it and who made it
+  private readonly approvals = new Map<string, { decision: string; by: string | null }>()  // tool part id -> the decision on it and who made it
   private readonly segments = new Map<string, string[]>()  // turn id -> the node of each of its messages
   private readonly nodes = new Map<string, string>()  // item or request part id -> the node of the message it started in
   private readonly shown = new Map<string, string>()  // turn id -> the last error message shown for it
@@ -247,14 +247,15 @@ export class Translator {
   decided(issued: Issued, decision: string, by: string | null): void {
     const turn = issued.runId
     if (this.finished.includes(turn) && !turn.startsWith(TURNLESS)) return  // its messages are closed
-    this.approvals.set(issued.callId, { decision, by })
+    const approval = { decision, by }
+    this.approvals.set(issued.callId, approval)
     if (this.items.has(issued.callId)) {
       this.put(turn, issued.callId)
       return
     }
     // A request part whose item starts later is replaced in place: both use the item id as the call id.
     this.live.tool(this.node(turn, issued.callId), issued.callId, REQUEST, { state: "completed",
-      input: { kind: issued.card.kind, summary: issued.card.question, approval: this.approvals.get(issued.callId) } })
+      input: { kind: issued.card.kind, summary: issued.card.question, approval } })
     // No turn/completed will close this message, so close it now.
     if (turn.startsWith(TURNLESS)) this.finish(turn, false)
   }
@@ -519,7 +520,7 @@ export const REPLY_SCHEMAS: Readonly<Record<string, string>> = {
   "mcpServer/elicitation/request": "McpServerElicitationRequestResponse",
 }
 /** The question id prefix Codex gives an MCP tool-call approval. */
-export const MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
+const MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
 /** Run id prefix of a request with no turn (`codex-<app-server pid>-<id made per app-server>`). */
 export const TURNLESS = "codex-"
 
