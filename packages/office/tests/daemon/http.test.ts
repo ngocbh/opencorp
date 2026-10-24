@@ -25,6 +25,7 @@ import {
   makeOfficeDir,
   removeStaleSocket,
 } from "../../src/daemon/sockets.ts"
+import { NotFound } from "../../src/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -565,6 +566,20 @@ describe("routes", () => {
     expect(ran).toBe(false)
   })
 
+  test("a store not found is 404 not found", async () => {
+    const missing: Route<Ctx> = {
+      method: "GET",
+      path: "/questions/:id",
+      handler: () => {
+        throw new NotFound("no question q9")
+      },
+    }
+    const { sock } = await serve([missing])
+    const r = await request(sock, "GET", "/questions/q9")
+    expect(r.status).toBe(404)
+    expect(r.text).toBe('{"error":"not_found","message":"no question q9"}')
+  })
+
   test("the request signal aborts when the client goes away", async () => {
     let started = false
     let aborted = false
@@ -741,7 +756,7 @@ describe("bodies", () => {
     expect(Buffer.byteLength(body)).toBe(MAX_BODY)
     const r = await request(sock, "POST", ANSWER, { body })
     expect(r.status).toBe(200)
-    expect((r.json() as { answer: string }).answer.length).toBeGreaterThan(MAX_BODY - 100)
+    expect((r.json() as { answer: string }).answer.length).toBe(MAX_BODY - answerBody("").length)
     expect(answered()).toBe(1)
   })
 
@@ -859,6 +874,10 @@ describe("bodies", () => {
     // Brackets in a string, after an escaped quote, don't count: this is 64 deep.
     const inString = nested(63, JSON.stringify(['"' + "[".repeat(100)]))
     expect((await request(sock, "POST", "/any", { body: inString })).status).toBe(200)
+    // A string ending in an escaped backslash closes at the next quote; the brackets in the string after it
+    // don't count either.
+    const backslash = nested(63, JSON.stringify(["\\", "[".repeat(100)]))
+    expect((await request(sock, "POST", "/any", { body: backslash })).status).toBe(200)
   })
 
   test("the guard runs before any body byte is read", async () => {

@@ -306,6 +306,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::a slow reply is not cut by the request timeout	design §2.3: requestTimeout doesn't cut slow replies	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a stalled body is cut with 408	D16: the runtime enforces the body deadline (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a stalled head is cut with 408	D16: the runtime enforces the head deadline (checked by a test)	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a store not found is 404 not found	design §2.3: the store's NotFound is 404 not_found, as Python's handler	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a wildcard param is decoded once	design §2.3: *cwd params get the same care	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an http error is its status code and message	design §2.3: HttpError is Python's HTTPError	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an unread body closes the connection and a read one keeps it	design §6.4: Connection: close on unread bodies	O2-1

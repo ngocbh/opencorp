@@ -8,6 +8,7 @@ import http, {
 } from "node:http"
 import { type ErrorCode, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
+import { NotFound } from "../store/store.ts"
 
 /** A route's path params, decoded. */
 export type Params = Record<string, string>
@@ -187,10 +188,9 @@ function nextUnlessAborted<T>(it: AsyncIterator<T>, signal?: AbortSignal): Promi
 }
 
 /** The request body. Throws `HttpError` 413 once it passes `MAX_BODY`, reading no further, and 400 when it ends
- *  early: the stream fails or `req.complete` is false at its end (the client went away, or the request deadline
- *  cut it), or `signal` aborts (the client left, or the runtime's 408 closed the request). */
+ *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). */
 export async function readBody(
-  req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders; complete?: boolean },
+  req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders },
   signal?: AbortSignal,
 ): Promise<Buffer> {
   const length = req.headers["content-length"]
@@ -215,7 +215,6 @@ export async function readBody(
     if (size > MAX_BODY) throw tooLarge()
     parts.push(chunk)
   }
-  if (req.complete === false) throw endedEarly()
   return Buffer.concat(parts)
 }
 
@@ -334,6 +333,8 @@ export function requestListener<C>(
       reply(200, text, unread)
     } catch (error) {
       if (error instanceof HttpError) return reply(error.status, apiError(error.code, error.message), unread)
+      // Store messages name ids, never values.
+      if (error instanceof NotFound) return reply(404, apiError("not_found", error.message), unread)
       // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered
       // nor logged.
       if (controller.signal.aborted) return
