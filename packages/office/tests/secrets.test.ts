@@ -112,6 +112,10 @@ test.each(["", "short", "1234567", "  abc   \n"])("short values are refused with
   expect((error as Error).message).toMatch(/at least 8 characters/)
   if (value.trim()) expect((error as Error).message).not.toContain(value.trim())
   expect(fs.existsSync(path.join(root, "token"))).toBe(false)
+  // A swapped call whose value looks like a valid name must not show it either.
+  const swapped = await new SecretStore(root).set("abcdef0123456789abcdef", "token").catch((e: unknown) => e)
+  expect(swapped).toBeInstanceOf(InvalidSecretError)
+  expect((swapped as Error).message).not.toContain("abcdef0123456789abcdef")
 })
 
 test("eight characters are enough", async () => {
@@ -216,6 +220,12 @@ test("a symlinked root is refused and its target left alone", async () => {
   fs.chmodSync(target, 0o755)
   for (const call of [() => store.set("token", "first-value"), () => store.get("token"), () => store.delete("token")]) {
     const error = await call().catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(PrivateFileError)
+    expect((error as Error).message).toMatch(/symlink/)
+  }
+  // A trailing `/` or `/.` would make lstat follow the symlink.
+  for (const tail of ["/", "/."]) {
+    const error = await new SecretStore(path.join(tmp, "s") + tail).set("token", "first-value").catch((e: unknown) => e)
     expect(error).toBeInstanceOf(PrivateFileError)
     expect((error as Error).message).toMatch(/symlink/)
   }
@@ -412,25 +422,30 @@ test.each(NOT_PRIVATE_FOLDERS)("the private file calls refuse a folder that is n
   } else {
     fs.chmodSync(real, 0o755)
   }
-  const error = await call(path.join(folder, "f")).catch((e: unknown) => e)
-  expect(error).toBeInstanceOf(PrivateFileError)
-  expect((error as Error).message).toMatch(kind === "symlink" ? /symlink/ : /0700/)
+  // A `/.` tail would make lstat follow the symlink.
+  const files = kind === "symlink" ? [path.join(folder, "f"), `${folder}/./f`] : [path.join(folder, "f")]
+  for (const file of files) {
+    const error = await call(file).catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(PrivateFileError)
+    expect((error as Error).message).toMatch(kind === "symlink" ? /symlink/ : /0700/)
+  }
   expect(fs.readdirSync(real)).toEqual([])
 })
 
 test("the private file calls refuse the folders lock file", async () => {
   const tmp = tempDir()
-  const lockPath = path.join(tmp, ".lock")
-  for (const call of [() => writePrivate(lockPath, "x"), () => readPrivate(lockPath)]) {
-    const error = await call().catch((e: unknown) => e)
-    expect(error).toBeInstanceOf(PrivateFileError)
-    expect((error as Error).message).toMatch(/lock file/)
+  // macOS's default file system ignores case, so these all name `.lock` there; U+212A is KELVIN SIGN.
+  for (const name of [".lock", ".LOCK", ".loc\u212A"]) {
+    const file = path.join(tmp, name)
+    for (const call of [() => writePrivate(file, "junk-junk"), () => readPrivate(file)]) {
+      const error = await call().catch((e: unknown) => e)
+      expect(error).toBeInstanceOf(PrivateFileError)
+      expect((error as Error).message).toMatch(/lock file/)
+    }
   }
+  // Nothing was written and the lock was never taken; a wrongly written `.LOCK` would show here.
+  expect(fs.readdirSync(tmp)).toEqual([])
   expectUnlocked(tmp)
-  if (fs.existsSync(lockPath)) {
-    expect(fs.lstatSync(lockPath).isFile()).toBe(true)
-    expect(fs.statSync(lockPath).size).toBe(0)
-  }
 })
 
 const LOCKED_CALLS = [
@@ -446,15 +461,9 @@ test.each(LOCKED_CALLS)("every call waits for the folders lock [%s]", async (_sh
   await writePrivate(path.join(root, "f"), "x")
   const lock = lockFile(path.join(root, ".lock"), { private: true })
   let settled = false
-  const pending = call(store).then(
-    () => {
-      settled = true
-    },
-    (error: unknown) => {
-      settled = true
-      throw error
-    },
-  )
+  const pending = call(store).finally(() => {
+    settled = true
+  })
   // Marks the rejection handled, so a failed expectation below doesn't leave it unhandled; `await pending`
   // still throws it.
   pending.catch(() => {})

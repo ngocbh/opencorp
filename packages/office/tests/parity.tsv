@@ -262,7 +262,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/secrets.test.ts::every call waits for the folders lock	§5.3, D13: every read and write holds the folder's lock	O1-1
 —	new	packages/office/tests/secrets.test.ts::read private of a missing file is an enoent error	§5.3: callers tell a missing file from a refused one	O1-1
 —	new	packages/office/tests/secrets.test.ts::read private refuses a symlink, a directory, a file open to others and a file of another user	§6 rule 6	O1-1
-—	new	packages/office/tests/secrets.test.ts::read private returns the bytes of a private file	§5.3	O1-1
+—	new	packages/office/tests/secrets.test.ts::read private returns the bytes of a private file	§5.3: readPrivate returns raw bytes, and a 0400 file is private too	O1-1
 —	new	packages/office/tests/secrets.test.ts::set and write private fsync the temp file before renaming it	§6 rule 6	O1-1
 —	new	packages/office/tests/secrets.test.ts::the private file calls refuse a folder that is not private	§5.3: every private file's folder is checked	O1-1
 —	new	packages/office/tests/secrets.test.ts::the private file calls refuse the folders lock file	§5.3, D13: the lock file is never read or replaced	O1-1

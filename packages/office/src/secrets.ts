@@ -64,8 +64,9 @@ function lockFolder(dir: string): Promise<FileLock> {
 function refuseLockFile(file: string): void {
   // Reading the lock file would open, then close, a descriptor on the lock's inode, which drops the
   // POSIX lock this call holds (see yian's note inside `lockFile`); writing it would rename a new inode over
-  // the lock.
-  if (path.basename(file) === ".lock") throw new PrivateFileError(`'${file}' is the folder's lock file`)
+  // the lock. macOS's default file system ignores case, so `.LOCK` (or `.loc` + KELVIN SIGN, which
+  // lowercases to `k`) names the same file.
+  if (path.basename(file).toLowerCase() === ".lock") throw new PrivateFileError(`'${file}' is the folder's lock file`)
 }
 
 /** Replaces `<dir>/<name>` with `data` as a 0600 file, atomically; a symlink there is replaced, not followed.
@@ -97,6 +98,8 @@ function replaceFile(dir: string, name: string, data: string | Uint8Array): void
  *  when the folder is missing, and yian's `FileLockError` when the folder's lock can't be taken (a 30 s wait
  *  for another holder, or a `.lock` that isn't private). */
 export async function writePrivate(file: string, data: string | Uint8Array): Promise<void> {
+  // Resolved so a `/.` tail can't make lstat follow a symlinked folder.
+  file = path.resolve(file)
   refuseLockFile(file)
   const dir = path.dirname(file)
   checkFolder(dir, "folder")
@@ -111,6 +114,8 @@ export async function writePrivate(file: string, data: string | Uint8Array): Pro
  *  open to others, or can't be opened, and yian's `FileLockError` when the folder's lock can't be taken (a
  *  30 s wait for another holder, or a `.lock` that isn't private). */
 export async function readPrivate(file: string): Promise<Buffer> {
+  // Resolved so a `/.` tail can't make lstat follow a symlinked folder.
+  file = path.resolve(file)
   refuseLockFile(file)
   const dir = path.dirname(file)
   checkFolder(dir, "folder")
@@ -148,7 +153,8 @@ export class SecretStore {
   readonly root: string
 
   constructor(root: string) {
-    this.root = root
+    // Resolved so a trailing `/` or `/.` can't make lstat follow a symlinked root.
+    this.root = path.resolve(root)
   }
 
   /** The secret `name`. Rejects with `SecretNotSetError` when no secret has that name, `InvalidSecretError`
@@ -157,7 +163,7 @@ export class SecretStore {
    *  taken (a 30 s wait for another holder, or a `.lock` that isn't private). */
   async get(name: string): Promise<string> {
     checkName(name)
-    this.openRoot(name)
+    this.checkRoot(name)
     using _lock = await lockFolder(this.root)
     const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
     let fd: number
@@ -197,7 +203,7 @@ export class SecretStore {
   async set(name: string, value: string): Promise<void> {
     checkName(name)
     if (trimmedLength(value) < MIN_VALUE_CHARS) {
-      throw new InvalidSecretError(`secret '${name}' must be at least ${MIN_VALUE_CHARS} characters`)
+      throw new InvalidSecretError(`secret value must be at least ${MIN_VALUE_CHARS} characters`)
     }
     fs.mkdirSync(path.dirname(this.root), { recursive: true })
     try {
@@ -218,7 +224,7 @@ export class SecretStore {
    *  for another holder, or a `.lock` that isn't private). */
   async delete(name: string): Promise<void> {
     checkName(name)
-    this.openRoot(name)
+    this.checkRoot(name)
     using _lock = await lockFolder(this.root)
     try {
       fs.unlinkSync(path.join(this.root, name))
@@ -239,7 +245,7 @@ export class SecretStore {
   }
 
   /** Checks the root for a call on the secret `name`; a missing root means the secret is not set. */
-  private openRoot(name: string): void {
+  private checkRoot(name: string): void {
     try {
       checkFolder(this.root, "secret store")
     } catch (error) {
@@ -251,7 +257,8 @@ export class SecretStore {
 
 function checkName(name: string): void {
   if (typeof name !== "string" || !NAME.test(name)) {
-    // The name isn't echoed: a caller who swapped name and value would put the secret in the message.
+    // Neither this message nor set's too-short one echoes its argument: a caller who swapped name and value
+    // would put the secret in the message.
     throw new InvalidSecretError(`secret name must match ${NAME.source}`)
   }
 }
