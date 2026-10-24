@@ -5,7 +5,7 @@ import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { CompanyGit, CompanyGitError, type CompanyGitOptions } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
-import { company, git, gitEnv, writeRepo } from "./helpers.ts"
+import { company, git, gitEnv, gitInput, writeRepo } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -208,6 +208,117 @@ test("a locked section calling a locking method throws instead of deadlocking", 
   expect(git(company, "log", "--format=%s").split("\n").slice(0, 2)).toEqual(["c", "a"])
 })
 
+test("pin is frozen at its commit", async () => {
+  const { company, g } = setup()
+  const commit = await g.head()
+  const pinned = await g.pin(commit)
+  fs.writeFileSync(path.join(company, PROFILE), "# changed\n")
+  await g.commit([PROFILE], "profile(@minh): test")
+  expect(fs.readFileSync(path.join(pinned, PROFILE), "utf8")).toBe("# Minh, Engineer\n")
+  expect(await g.pin(commit)).toBe(pinned) // cached
+})
+
+test("pin is read only", async () => {
+  const { g } = setup()
+  const mode = fs.statSync(path.join(await g.pin(await g.head()), "shared/flows/chat.yaml")).mode
+  expect(mode & 0o222).toBe(0)
+})
+
+test("pin keys by full sha", async () => {
+  const { g } = setup()
+  const head = await g.head()
+  expect(path.basename(await g.pin("HEAD"))).toBe(head)
+  expect(path.basename(await g.pin("main"))).toBe(head)
+})
+
+test("pin unknown commit raises", async () => {
+  const { g } = setup()
+  await expect(g.pin("0".repeat(40))).rejects.toThrow(RangeError)
+})
+
+test("pin rebuilds a deleted dir", async () => {
+  const { g } = setup()
+  const pinned = await g.pin("HEAD")
+  fs.rmSync(pinned, { recursive: true, force: true })
+  expect(fs.statSync(path.join(await g.pin("HEAD"), PROFILE)).isFile()).toBe(true)
+})
+
+test("pin rebuilds a dir without marker", async () => {
+  const { g } = setup()
+  let pinned = await g.pin("HEAD")
+  fs.unlinkSync(path.join(pinned, ".opencorp-pin"))
+  fs.chmodSync(path.join(pinned, PROFILE), 0o644) // as if the crash came before chmod
+  pinned = await g.pin("HEAD")
+  expect(fs.statSync(path.join(pinned, PROFILE)).mode & 0o200).toBe(0)
+})
+
+test("pin leaves symlink targets alone", async () => {
+  const { tmp, company, g } = setup()
+  const outside = path.join(tmp, "outside.txt")
+  fs.writeFileSync(outside, "mine\n")
+  fs.symlinkSync(outside, path.join(company, "link.txt"))
+  await g.commit(["link.txt"], "add link")
+  await g.pin("HEAD")
+  expect(fs.statSync(outside).mode & 0o200).not.toBe(0)
+})
+
+test("pin leaves files under a symlinked folder alone and survives a symlink loop", async () => {
+  const { tmp, company, g } = setup()
+  const outside = path.join(tmp, "outside")
+  fs.mkdirSync(outside)
+  fs.writeFileSync(path.join(outside, "f.txt"), "mine\n", { mode: 0o644 })
+  fs.symlinkSync(outside, path.join(company, "linkdir"))
+  fs.symlinkSync(".", path.join(company, "loop"))
+  await g.commit(["linkdir", "loop"], "links")
+  const pinned = await g.pin("HEAD")
+  expect(fs.lstatSync(path.join(pinned, "linkdir")).isSymbolicLink()).toBe(true)
+  expect(fs.lstatSync(path.join(pinned, "loop")).isSymbolicLink()).toBe(true)
+  expect(fs.statSync(path.join(outside, "f.txt")).mode & 0o200).not.toBe(0)
+  expect(fs.statSync(path.join(pinned, PROFILE)).mode & 0o222).toBe(0)
+})
+
+test("hand edit is committed with handle", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, PROFILE), "# Minh\nlikes tests\n")
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@minh): hand edit")
+  expect(git(company, "status", "--porcelain")).toBe("")
+})
+
+test("other dirty files stay dirty", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  expect(await g.commitHandEdits()).toEqual([])
+  expect(git(company, "status", "--porcelain")).toBe("M groups/eng.yaml")
+})
+
+test("new profile is committed", async () => {
+  const { company, g } = setup()
+  fs.mkdirSync(path.join(company, "people/ava"))
+  fs.writeFileSync(path.join(company, "people/ava/person.yaml"), "handle: ava\n")
+  fs.writeFileSync(path.join(company, "people/ava/profile.md"), "# Ava\n")
+  expect(await g.commitHandEdits()).toEqual(["people/ava/profile.md"])
+  expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@ava): hand edit")
+  expect(git(company, "status", "--porcelain")).toBe("?? people/ava/person.yaml")
+})
+
+test("deleted profile is committed", async () => {
+  const { company, g } = setup()
+  fs.unlinkSync(path.join(company, PROFILE))
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@minh): hand edit")
+  expect(git(company, "status", "--porcelain")).toBe("")
+})
+
+test("staged rename commits both paths", async () => {
+  const { company, g } = setup()
+  git(company, "mv", PROFILE, "people/ngocbh/profile.md")
+  expect(await g.commitHandEdits()).toEqual([PROFILE, "people/ngocbh/profile.md"])
+  expect(git(company, "status", "--porcelain")).toBe("")
+  expect(await g.blobId(PROFILE)).toBeNull()
+  expect(await g.blobId("people/ngocbh/profile.md")).not.toBeNull()
+})
+
 test("git dir in the environment is ignored", async () => {
   const other = writeRepo(path.join(tempDir(), "other"), { "x.txt": "x\n" })
   const { company, g } = setup({ env: { ...process.env, GIT_DIR: path.join(other, ".git"), GIT_WORK_TREE: other } })
@@ -249,12 +360,51 @@ test("repo signing config is ignored", async () => {
   expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
 })
 
+/** A `name` hook in `repo` that refuses whatever it is run for. */
+function failingHook(repo: string, name: string) {
+  fs.mkdirSync(path.join(repo, ".git/hooks"), { recursive: true })
+  fs.writeFileSync(path.join(repo, ".git/hooks", name), "#!/bin/sh\necho refused >&2\nexit 1\n", { mode: 0o755 })
+}
+
+test("repo hooks do not run", async () => {
+  const { company, g } = setup()
+  for (const name of ["pre-commit", "commit-msg", "post-checkout"]) failingHook(company, name)
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  await g.commit([PROFILE], "edit")
+  expect(git(company, "log", "-1", "--format=%s")).toBe("edit")
+  expect(fs.readFileSync(path.join(await g.pin("HEAD"), PROFILE), "utf8")).toBe("# edited\n")
+})
+
 test("git failure carries stderr", async () => {
   const { tmp, g } = setup()
   fs.writeFileSync(path.join(tmp, "outside.txt"), "x\n")
   const error = await g.commit(["../outside.txt"], "edit").catch((e: unknown) => e)
   expect(error).toBeInstanceOf(CompanyGitError)
   expect((error as Error).message).toMatch(/outside repository/)
+})
+
+test("worktree rename commits both paths", async () => {
+  const { company, g } = setup()
+  fs.mkdirSync(path.join(company, "people/ava"))
+  fs.renameSync(path.join(company, PROFILE), path.join(company, "people/ava/profile.md"))
+  git(company, "add", "-N", "people/ava/profile.md") // status now reports " R new\0old"
+  expect(await g.commitHandEdits()).toEqual(["people/ava/profile.md", PROFILE])
+  expect(git(company, "status", "--porcelain")).toBe("")
+  expect(await g.blobId(PROFILE)).toBeNull()
+  expect(await g.blobId("people/ava/profile.md")).not.toBeNull()
+})
+
+test("glob characters in paths are literal", async () => {
+  const { company, g } = setup()
+  const odd = "people/[mn]inh/profile.md"
+  fs.mkdirSync(path.join(company, "people/[mn]inh"))
+  fs.writeFileSync(path.join(company, odd), "# odd\n")
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  await g.commit([odd], "odd")
+  expect(git(company, "show", "--name-only", "--format=", "HEAD")).toBe(odd)
+  expect(git(company, "status", "--porcelain")).toBe(`M ${PROFILE}`)
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "show", "--name-only", "--format=", "HEAD")).toBe(PROFILE)
 })
 
 test("commit of no paths is a no op", async () => {
@@ -277,6 +427,40 @@ test("broken symlink is committed not deleted", async () => {
   fs.symlinkSync("elsewhere", link)
   await g.commit(["link"], "move link")
   expect(git(company, "cat-file", "-p", "HEAD:link")).toBe("elsewhere")
+})
+
+test("non utf8 paths round trip", async () => {
+  const { company, g } = setup()
+  const odd = "people/b\udcffd/profile.md" // the byte 0xff, surrogate-escaped; APFS cannot hold it
+  const blob = git(company, "hash-object", "-w", PROFILE)
+  const entry = [Buffer.from(`100644 ${blob}\t`), Buffer.from("people/b\xffd/profile.md", "latin1"), Buffer.from("\n")]
+  gitInput(company, Buffer.concat(entry), "update-index", "--add", "--index-info")
+  git(company, "commit", "-q", "-m", "odd path")
+  expect(await g.commitHandEdits()).toEqual([odd]) // absent from disk, so a deletion
+  expect(await g.blobId(odd)).toBeNull()
+  // quotePath prints the name as "people/b\377d/profile.md", so it is gone if no line holds people/b
+  expect(git(company, "ls-tree", "-r", "--name-only", "HEAD")).not.toContain("people/b")
+  expect(git(company, "status", "--porcelain")).toBe("")
+})
+
+test("handle falls back to id on non utf8 person", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, "people/minh/person.yaml"), Buffer.from("handle: m\xffinh\n", "latin1"))
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "log", "-1", "--format=%s")).toBe("profile(@minh): hand edit")
+})
+
+test("unrelated staged file stays staged", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, "groups/eng.yaml"), GROUP)
+  git(company, "add", "groups/eng.yaml")
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  await g.commit([PROFILE], "edit")
+  fs.writeFileSync(path.join(company, PROFILE), "# edited again\n")
+  expect(await g.commitHandEdits()).toEqual([PROFILE])
+  expect(git(company, "log", "-2", "--name-only", "--format=").split(/\s+/)).toEqual([PROFILE, PROFILE])
+  expect(git(company, "status", "--porcelain")).toBe("M  groups/eng.yaml")
 })
 
 test("read blob returns exact bytes", async () => {
@@ -318,4 +502,13 @@ test("unstage keeps the working file", async () => {
   await g.unstage([PROFILE])
   expect(git(company, "status", "--porcelain")).toBe("M people/minh/profile.md")
   expect(fs.readFileSync(path.join(company, PROFILE), "utf8")).toBe("# staged\n")
+})
+
+test("a hand made directory name cannot forge a trailer", async () => {
+  const { company, g } = setup()
+  const rel = "people/m\n\nCommit-Id: c-1/profile.md"
+  fs.mkdirSync(path.dirname(path.join(company, rel)))
+  fs.writeFileSync(path.join(company, rel), "# M\n")
+  expect(await g.commitHandEdits()).toEqual([rel])
+  expect(git(company, "log", "-1", "--format=%B").trim()).toBe("profile(@m Commit-Id: c-1): hand edit")
 })

@@ -27,6 +27,9 @@ const FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
 // Every line boundary `splitlines` knows, so a trailer matches as a whole line however the message breaks.
 const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 
+// The whitespace Python's str.split() splits on, so a newline in a folder name can't start a trailer line.
+const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
+
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 
 /** Whether `value` is a full hex commit id (sha-1 or sha-256), as opposed to any other rev expression. */
@@ -115,6 +118,8 @@ export class CompanyGitError extends Error {
 export interface LockedGit {
   /** Stages `paths` and commits them; returns the new HEAD, or HEAD unchanged if nothing changed. */
   commit(paths: string[], message: string): Promise<string>
+  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. */
+  commitHandEdits(): Promise<string[]>
 }
 
 export interface CompanyGitOptions {
@@ -142,7 +147,10 @@ export class CompanyGit {
   readonly #git: string
   readonly #env: Record<string, string>
   #queue: Promise<unknown> = Promise.resolve()
-  readonly #held: LockedGit = { commit: (paths, message) => this.#commit(paths, message) }
+  readonly #writer: LockedGit = {
+    commit: (paths, message) => this.#commit(paths, message),
+    commitHandEdits: () => this.#commitHandEdits(),
+  }
 
   constructor(root: string, worktrees: string, options: CompanyGitOptions = {}) {
     this.root = root
@@ -191,8 +199,7 @@ export class CompanyGit {
    * The lock isn't reentrant: a locking method called inside a section (`commit`, `locked`) rejects
    * instead of waiting for a lock its own caller holds. Write through the `LockedGit` passed to `fn`;
    * it is valid only while `fn`'s promise is pending, and its calls must be awaited one at a time. A
-   * write started detached inside a section that is still running there rejects too, rather than
-   * waiting.
+   * write started without `await` inside a section also rejects if it runs before the section ends.
    */
   locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
     const current = holder.getStore()
@@ -203,7 +210,7 @@ export class CompanyGit {
       const token = { git: this, held: true }
       return holder.run(token, async () => {
         try {
-          return await fn(this.#held)
+          return await fn(this.#writer)
         } finally {
           token.held = false
         }
@@ -317,7 +324,8 @@ export class CompanyGit {
     const present = new Set<string>()
     for (const p of paths) {
       // lstat: a tracked symlink whose target is gone is still present.
-      const stat = await fs.promises.lstat(encodePath(path.join(this.root, p))).catch(() => null)
+      // Not `path.join`: the runtime's path functions turn a lone surrogate into U+FFFD.
+      const stat = await fs.promises.lstat(encodePath(`${this.root}/${p}`)).catch(() => null)
       if (stat) present.add(p)
     }
     if (present.size) await this.#run(["add", ...FROM_STDIN], { input: literal([...present]) })
@@ -329,8 +337,9 @@ export class CompanyGit {
     // `git commit` exits 1 on an empty commit; callers rely on a no-op write succeeding. `git diff` takes
     // no pathspecs on stdin, so the staged paths are matched here.
     const out = await this.#run(["diff", "--cached", "--name-only", "-z", "--no-renames"])
-    const staged = decodePath(out.stdout).split("\0").filter(Boolean)
-    const wanted = paths.map((p) => path.posix.normalize(p).replace(/\/+$/, ""))
+    // Compared as latin1, one char per byte, so `normalize` sees no lone surrogates to replace.
+    const staged = out.stdout.toString("latin1").split("\0").filter(Boolean)
+    const wanted = paths.map((p) => path.posix.normalize(encodePath(p).toString("latin1")).replace(/\/+$/, ""))
     const touched = staged.some((s) => wanted.some((w) => w === "." || s === w || s.startsWith(`${w}/`)))
     if (!touched) return this.head()
     await this.#run(["commit", "-q", "-m", message, ...FROM_STDIN], { input: literal(paths) })
@@ -341,5 +350,79 @@ export class CompanyGit {
   async unstage(paths: string[]): Promise<void> {
     // `git reset` with no pathspec would reset the whole index
     if (paths.length) await this.#run(["reset", "-q", ...FROM_STDIN], { input: literal(paths) })
+  }
+
+  /**
+   * A read-only worktree for `commit`, keyed by full sha, created if needed; a RangeError if `commit` is
+   * unknown.
+   *
+   * The marker file is written last, so a dir without it (a crash mid-setup, or a half-deleted dir) is
+   * rebuilt from scratch. Only files are made read-only, so `git worktree remove --force` and a
+   * recursive `rm` still work on a pin.
+   */
+  async pin(commit: string): Promise<string> {
+    const sha = await this.resolve(commit)
+    const dir = path.join(this.worktrees, sha)
+    await this.locked(() => this.#pin(sha, dir))
+    return dir
+  }
+
+  /** `pin` with the lock held. */
+  async #pin(sha: string, dir: string): Promise<void> {
+    const marker = path.join(dir, PIN_MARKER)
+    if ((await fs.promises.stat(marker).catch(() => null))?.isFile()) return
+    await fs.promises.rm(dir, { recursive: true, force: true })
+    await this.#run(["worktree", "prune"]) // drop the registration of a removed dir
+    await fs.promises.mkdir(this.worktrees, { recursive: true })
+    await this.#run(["worktree", "add", "--detach", dir, sha])
+    await readOnly(Buffer.from(dir))
+    await fs.promises.writeFile(marker, sha + "\n")
+  }
+
+  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths.
+   *
+   *  `--porcelain -z` entries are `XY path`. A rename or copy, staged (X) or in the worktree (Y, after
+   *  `git add -N`), is followed by a second field, its original path; a rename's original is committed
+   *  too (as a deletion). */
+  commitHandEdits(): Promise<string[]> {
+    return this.locked((git) => git.commitHandEdits())
+  }
+
+  /** `commitHandEdits` with the lock held. */
+  async #commitHandEdits(): Promise<string[]> {
+    // --untracked-files=all lists a new profile inside a wholly untracked people/<new>/.
+    const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", PROFILES])
+    const fields = decodePath(out.stdout).split("\0")
+    const found = new Set<string>()
+    for (let i = 0; i < fields.length; ) {
+      const entry = fields[i++]!
+      if (!entry) continue
+      found.add(entry.slice(3))
+      const xy = entry.slice(0, 2)
+      if (xy.includes("R") || xy.includes("C")) {
+        if (xy.includes("R")) found.add(fields[i]!)
+        i++
+      }
+    }
+    const paths = [...found].sort()
+    for (const rel of paths) {
+      // The directory is the handle; one line, so a hand-made name can't add a trailer.
+      const handle = path.posix.basename(path.posix.dirname(rel)).split(WHITESPACE).filter(Boolean).join(" ")
+      await this.#commit([rel], `profile(@${handle}): hand edit`)
+    }
+    return paths
+  }
+}
+
+/** Clears the write bits of every regular file under `dir` except a `.git` file, walking real directories
+ *  only, so symlinks and whatever they point at, inside the pin or outside it, are left alone. */
+async function readOnly(dir: Buffer): Promise<void> {
+  // Buffer names keep bytes that aren't UTF-8. Not `withFileTypes`: the runtime's dirents for Buffer
+  // names have no name.
+  for (const name of await fs.promises.readdir(dir, { encoding: "buffer" })) {
+    const p = Buffer.concat([dir, Buffer.from("/"), name])
+    const st = await fs.promises.lstat(p)
+    if (st.isDirectory()) await readOnly(p)
+    else if (st.isFile() && name.toString() !== ".git") await fs.promises.chmod(p, st.mode & 0o7777 & ~WRITE)
   }
 }
