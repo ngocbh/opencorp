@@ -36,16 +36,20 @@ export const providerSchema = z.strictObject({
   prices: z.record(z.string(), priceSchema).default(() => ({})),
 })
 
-/** Why `env` can't be a worker's env, or undefined: the first credential-like or runtime name, else the first
- *  URL with credentials in it. */
+/** Why `env` can't be a worker's env, or undefined: the first name a spawn can't pass as given, credential-like
+ *  or runtime name, else the first value holding a NUL or URL with credentials in it. */
 function envProblem(env: Record<string, string>): string | undefined {
   for (const name of Object.keys(env)) {
+    // A spawn joins name and value as `name=value`, so a name holding `=` would set another variable.
+    if (name === "" || name.includes("=") || name.includes("\0")) return "an env name isn't a variable name"
     if (CREDENTIAL_NAME.test(name.toUpperCase()))
       return `${shown(name)} looks like a credential; put the model key in llm_config.api_key`
     if (unsafeEnvName(name))
       return `${shown(name)} changes how the worker's runtime or loader starts; it can't be set in env`
   }
   for (const [name, value] of Object.entries(env)) {
+    // A spawn refuses a NUL with an error that echoes the value.
+    if (value.includes("\0")) return `${shown(name)} holds a NUL character`
     if (USERINFO.test(value.replace(LEADING_SPACE, "")))
       return (
         `${shown(name)} is a URL with credentials in it; keep credentials out of env ` +
@@ -61,9 +65,9 @@ function envProblem(env: Record<string, string>): string | undefined {
  * The model key goes in `llm_config.api_key`: it travels only in a worker's start frame and lives only in the
  * worker's memory (yian keeps credential keys out of the run log and manifest). `env` is for settings that
  * aren't secret (`VLLM_BASE_URL`, proxy and CA settings); it becomes the worker's env, which other processes of
- * the same user can read, so a credential-like name, a URL with credentials, and a name that changes how the
- * runtime or loader starts are refused. `llm_config` null means yian's defaults (and its own auth store).
- * `toJSON` and `inspect` leave `llm_config` out.
+ * the same user can read, so a credential-like name, a URL with credentials, a name that changes how the
+ * runtime or loader starts, and a name or value a spawn can't pass as given are refused. `llm_config` null means
+ * yian's defaults (and its own auth store). `toJSON` and `inspect` leave `llm_config` out.
  */
 export class Provider {
   readonly llm_config: LlmConfig | null

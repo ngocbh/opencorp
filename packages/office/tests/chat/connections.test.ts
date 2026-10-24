@@ -373,6 +373,14 @@ test("a connection cannot set the auth file", async () => {
   )
   expect(error).toBeInstanceOf(ProviderError)
   expect((error as Error).message).toMatch(/YIAN_AUTH_FILE/)
+  const joined = await raised(() =>
+    ConnectionFile.parse({
+      method: "subscription",
+      llm_config: { provider: "openai" },
+      env: { "YIAN_AUTH_FILE=/tmp/a": "x" },
+    }),
+  )
+  expect(joined).toBeInstanceOf(ProviderError)
 })
 
 test("office may still set the auth file", async () => {

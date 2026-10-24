@@ -195,6 +195,17 @@ test.each([
   expect(error.message).toContain(name)
 })
 
+test.each([
+  ["NODE_OPTIONS=--require=/tmp/x.js", ""],
+  [`OPENAI_API_KEY=${SENTINEL}`, ""],
+  ["", "x"],
+  ["A\0B", "x"],
+  ["HTTPS_PROXY", `http://p\0${SENTINEL}`],
+])("an env name or value a spawn cant pass is refused [%s]", async (name, value) => {
+  const error = await refusal(write(path.join(tempDir(), "provider.json"), { env: { [name]: value } }))
+  expectNoneOf(error, SENTINEL, "--require")
+})
+
 test("runtime settings that arent loader variables are kept", async () => {
   // BUNDLE_PATH sits just outside the BUN_ prefix.
   const kept = { NODE_ENV: "production", BUNDLE_PATH: "/b", NODE_EXTRA_CA_CERTS: "/etc/ssl/ca.pem" }
