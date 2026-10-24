@@ -16,6 +16,7 @@ export const DEADLINE_MS = 8_000
 /** How long a listing is used before the connection is listed again, in ms. */
 export const FRESH_MS = 300_000
 
+/** The fixed reason a listing that ran out of time gives; yian uses the same words. */
 export const TIMED_OUT = "timed out"
 
 /** The last Azure OpenAI API version whose data plane lists a resource's deployments with only its key. */

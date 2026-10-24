@@ -235,9 +235,13 @@ test("a failure that isnt a refusal isnt refused", async () => {
   expect(got.models).toEqual([{ id: "gpt-5", name: null }])
 })
 
-test.each(["can't reach host", "invalid response", TIMED_OUT])(
+test.each([
+  ["cant reach host", "can't reach host"],
+  ["invalid response", "invalid response"],
+  ["timed out", TIMED_OUT],
+] as const)(
   "a request that fails says why in composers words [%s]",
-  async (problem) => {
+  async (_, problem) => {
     if (problem === TIMED_OUT) {
       // Only yian's own timeout can answer: no deadline race, and a host that accepts and never answers.
       let server: http.Server | undefined
@@ -316,9 +320,13 @@ test("a redirect from azure is not followed", async () => {
   }
 })
 
-test.each(["the reply isn't a deployment list", TIMED_OUT, "can't reach 127.0.0.1"])(
+test.each([
+  ["not a deployment list", "the reply isn't a deployment list"],
+  ["timed out", TIMED_OUT],
+  ["cant reach", "can't reach 127.0.0.1"],
+] as const)(
   "azure deployments through the default sender says why [%s]",
-  async (problem) => {
+  async (_, problem) => {
     let server: http.Server | undefined
     try {
       const started = await serve((_, res) => {
