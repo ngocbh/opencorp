@@ -103,9 +103,10 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 //   prompt, steer, interrupt, end, continue, cost-cap and model;
 // - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
 //   carried/dismiss.
-// GET /health, GET /whoami and the device routes weren't in Python's table.
+// GET /health, GET /office, GET /whoami and the device routes weren't in Python's table.
 const TABLE: [string, string, string, unknown][] = [
   ["GET", "/health", "/health", null],
+  ["GET", "/office", "/office", null],
   ["GET", "/whoami", "/whoami", null],
   ["POST", "/people/:handle/devices", "/people/ngocbh/devices", { name: "mac", token_sha256: "a".repeat(64) }],
   ["DELETE", "/people/:handle/devices/:name", "/people/ngocbh/devices/pc", null],

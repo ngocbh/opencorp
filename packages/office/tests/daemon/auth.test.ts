@@ -3,11 +3,13 @@ import fs from "node:fs"
 import http from "node:http"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { OfficeInfo } from "@opencorp/protocol"
+import { VERSION } from "@opencorp/protocol/version"
 import { parse as parseYaml } from "yaml"
 import { z } from "zod"
 import { checkPassword, hashPassword } from "../../src/auth/passwords.ts"
 import { newToken, tokenSha256 } from "../../src/auth/tokens.ts"
-import { actingPerson } from "../../src/daemon/auth.ts"
+import { OPEN, actingPerson } from "../../src/daemon/auth.ts"
 import type { Route } from "../../src/daemon/http.ts"
 import type { RequestContext } from "../../src/daemon/office.ts"
 import { git } from "../company/helpers.ts"
@@ -253,6 +255,31 @@ test("without a ceo a tokenless request has no person to act as", async () => {
   expect((await request(sock, "GET", "/health")).status).toBe(200)
 })
 
+test("get office answers pid home started at and version", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const r = await request(sock, "GET", "/office")
+  expect(r.status).toBe(200)
+  expect(r.json()).toEqual({
+    pid: process.pid,
+    home: office.paths.home,
+    started_at: office.startedAt,
+    version: VERSION,
+  })
+  expect(OfficeInfo.parse(r.json())).toEqual(r.json() as OfficeInfo)
+})
+
+test("get office needs a token once tokens are needed", async () => {
+  const office = makeOffice()
+  const { sock } = await served(office, { tokens: true })
+  const token = newToken()
+  giveDevice(office.paths.company, "ngocbh", "mac", token)
+  const r = await request(sock, "GET", "/office")
+  expect([r.status, r.json()]).toEqual([401, UNAUTHENTICATED])
+  expect((await request(sock, "GET", "/office", { headers: bearer(token) })).status).toBe(200)
+  expect(OPEN.has("GET /office")).toBe(false)
+})
+
 // Device routes.
 
 function device(name: string, token: string): { name: string; token_sha256: string } {
@@ -328,8 +355,8 @@ test("subjects never carry a hash", async () => {
   const { sock } = await served(office, { tokens: true })
   const company = office.paths.company
   const token = newToken()
-  await send(sock, "POST", "/people/ngocbh/devices", device("mac", token))
-  await request(sock, "DELETE", "/people/ngocbh/devices/mac", { headers: bearer(token) })
+  expect((await send(sock, "POST", "/people/ngocbh/devices", device("mac", token))).status).toBe(200)
+  expect((await request(sock, "DELETE", "/people/ngocbh/devices/mac", { headers: bearer(token) })).status).toBe(200)
   const log = git(company, "log", "--format=%B")
   expect(log).not.toContain(tokenSha256(token))
   expect(log).not.toContain(token)

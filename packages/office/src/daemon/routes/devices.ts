@@ -4,9 +4,11 @@ import {
   AddDeviceRequest,
   DeviceName,
   LoginRequest,
+  OfficeInfo,
   Person as PersonSchema,
   SetPasswordRequest,
 } from "@opencorp/protocol"
+import { VERSION } from "@opencorp/protocol/version"
 import type { z } from "zod"
 import { DeviceRefused, addDevice, login, removeDevice, setPassword } from "../../auth/devices.ts"
 import { actingPerson } from "../auth.ts"
@@ -35,6 +37,17 @@ async function refusable(change: Promise<Person>): Promise<Person> {
 export const ROUTES: readonly Route<RequestContext>[] = [
   // `{"ok": true}`, exactly: the office is answering. Served without a token.
   { method: "GET", path: "/health", handler: () => ({ ok: true }) },
+  // The office's pid, home, start time and version, behind the token check. Served on `office.sock` only, never on
+  // HQ's allowlist; `/health` stays `{"ok": true}` because the home path must not be on an unauthenticated route.
+  {
+    method: "GET",
+    path: "/office",
+    reply: OfficeInfo,
+    handler: (ctx): OfficeInfo => {
+      actingPerson(ctx)
+      return { pid: process.pid, home: ctx.office.paths.home, started_at: ctx.office.startedAt, version: VERSION }
+    },
+  },
   { method: "GET", path: "/whoami", handler: whoami },
   // Adds a device to a human's `person.yaml` and commits it; the person afterwards.
   {
