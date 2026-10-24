@@ -79,8 +79,9 @@ export function killGroup(pgid: number): boolean {
 }
 
 /** The command line of `pid` as `ps -ww -o args=` prints it (argv joined by spaces, so callers match on word
- *  pairs such as `--home <realpath>`), or null when there is no such process or `ps` isn't an absolute path.
- *  `ps` is resolved by the caller; it runs with only `LC_ALL=C.UTF-8`, so non-ASCII prints as UTF-8. */
+ *  pairs such as `--home <realpath>`), or null when it can't be read (no such process, `ps` failed or timed out,
+ *  `ps` isn't an absolute path, or an id that isn't a pid). `ps` is resolved by the caller; it runs with only
+ *  `LC_ALL=C.UTF-8`, so non-ASCII prints as UTF-8. */
 export function args(pid: number, ps: string): string | null {
   if (!path.isAbsolute(ps) || !isPid(pid)) return null
   let out: string
@@ -92,7 +93,8 @@ export function args(pid: number, ps: string): string | null {
       timeout: 5000,
     })
   } catch {
-    // ps exits 1 when there is no such process.
+    // No such process (ps exits 1) and any ps failure both read as unknown; callers treat null as not ours, so
+    // nothing is signalled.
     return null
   }
   const line = out.endsWith("\n") ? out.slice(0, -1) : out
