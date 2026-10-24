@@ -10,7 +10,7 @@ import { escapeHtml, resolve, serveApp } from "../../src/hq/static.ts"
 import { CHECKOUT } from "../../src/hq/version.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import { parse, raw } from "../daemon/helpers.ts"
-import { dist } from "./helpers.ts"
+import { dist, values } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -42,15 +42,6 @@ function message(method: string, target: string, headers: string[] = [], body?: 
 /** Sends one raw request and parses the whole response. */
 async function fetchRaw(sock: string, method: string, target: string, headers: string[] = [], body?: string) {
   return parse((await raw(sock, message(method, target, headers, body))).text)
-}
-
-/** The values of header `name` in a raw response head. */
-function values(head: string, name: string): string[] {
-  return head
-    .split("\r\n")
-    .slice(1)
-    .filter((line) => line.toLowerCase().startsWith(`${name}:`))
-    .map((line) => line.slice(name.length + 1).trim())
 }
 
 const value = (head: string, name: string) => values(head, name)[0]

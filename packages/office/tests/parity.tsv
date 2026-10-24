@@ -167,9 +167,10 @@ hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
 hq/test_events.py	open	—	—	O2-10
-hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
+hq/test_guard.py	ported	packages/office/tests/hq/guard.test.ts	—	O2-9
 hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers); the trickling client may lose Bun's 408 to its own write, so this test checks the close and the guard's settled promise, and `a body that stops arriving is 408` checks the 408 and `connection: close`	O2-7
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
+hq/test_guard.py::test_a_websocket_scope_is_closed_without_reaching_the_app	changed	packages/office/tests/hq/guard.test.ts::a websocket upgrade is served as plain http	design §2.3: no upgrade listener, so an upgrade is plain HTTP through the guard and the HQ app, with no websocket scope to close; O2-10's test_servers.py::test_a_websocket_upgrade_is_served_as_plain_http_on_hq pins it on the listener	O2-9
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
 hq/test_login.py	ported	packages/office/tests/hq/login.test.ts	—	O2-9
 hq/test_login.py::test_a_check_whose_request_went_away_still_holds_its_slot	changed	packages/office/tests/hq/login.test.ts::a check whose request went away still holds its slot	design §3.3: promises can't be cancelled, so a caller that leaves can't stop the check; the slot frees when the scrypt promise settles (pinned by Busy while two held checks run, and running back to 0); checked on Logins with a stand-in sessions object	O2-8

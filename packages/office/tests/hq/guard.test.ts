@@ -1,51 +1,35 @@
 /** The guard every HQ request passes before routing. */
-import fs from "node:fs"
-import type { IncomingMessage, OutgoingHttpHeader, ServerResponse } from "node:http"
+import type { IncomingMessage, OutgoingHttpHeader } from "node:http"
 import net from "node:net"
-import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { z } from "zod"
-import { LIMITS, type Limits, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
-import { listenUnix } from "../../src/daemon/sockets.ts"
-import { HEADERS, type Inner, MAX_API_BODY, hqGuard, requestPath } from "../../src/hq/guard.ts"
-import { shortDir, waitFor } from "../helpers.ts"
-import { Conn, parse, raw } from "../daemon/helpers.ts"
+import { LIMITS, type Limits, type Route, requestListener } from "../../src/daemon/http.ts"
+import { type Inner, MAX_API_BODY, requestPath } from "../../src/hq/guard.ts"
+import { waitFor } from "../helpers.ts"
+import { Conn, makeOffice, parse, raw } from "../daemon/helpers.ts"
+import {
+  type Call,
+  HOST,
+  JSON_TYPE,
+  type Message,
+  ORIGIN,
+  PORT,
+  closes,
+  expectSecurityHeaders,
+  guarded,
+  hqClient,
+  makeHq,
+  message,
+  post,
+  trickle,
+  values,
+  web,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const PORT = 49380
-const HOST = `127.0.0.1:${PORT}`
-const ORIGIN = `http://${HOST}`
 /** The limits of the tests that wait for the runtime's 408. */
 const SHORT: Limits = { ...LIMITS, connectionsCheckingInterval: 100, headersTimeout: 500, requestTimeout: 500 }
-
-/** One request the guard's listener got: whether its promise settled, and its response. */
-type Call = { settled: boolean; res: ServerResponse }
-
-/** Serves `inner` behind the guard on a unix socket until the current test finishes. */
-async function guarded(
-  inner: Inner,
-  { port = PORT, devOrigins, limits }: { port?: number | null; devOrigins?: string[]; limits?: Limits } = {},
-): Promise<{ sock: string; calls: Call[] }> {
-  const guard = hqGuard(inner, { port, devOrigins })
-  const calls: Call[] = []
-  const server = createServer((req, res) => {
-    const call: Call = { settled: false, res }
-    calls.push(call)
-    void guard(req, res).then(() => {
-      call.settled = true
-    })
-  }, limits)
-  const sock = path.join(shortDir(), "s")
-  onTestFinished(async () => {
-    // As tests/daemon/helpers.ts's `serve`: on Bun, closeAllConnections also stops the listener.
-    server.closeAllConnections()
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    fs.rmSync(sock, { force: true })
-  })
-  await listenUnix(server, sock)
-  return { sock, calls }
-}
 
 /** An inner that records the targets it served and answers with the body's length and whether it got one. */
 function echo(): { inner: Inner; ran: string[] } {
@@ -58,85 +42,6 @@ function echo(): { inner: Inner; ran: string[] } {
   }
   return { inner, ran }
 }
-
-type Message = {
-  host?: string | null
-  origin?: string | null
-  headers?: string[]
-  body?: string
-  /** Asks the server to close the connection after its reply (the default), so `raw` reads to the end. */
-  close?: boolean
-}
-
-/** A raw HTTP/1.1 request; `body` is sent with its Content-Length. */
-function message(
-  method: string,
-  target: string,
-  { host = HOST, origin = ORIGIN, headers = [], body, close = true }: Message = {},
-): string {
-  const lines = [`${method} ${target} HTTP/1.1`]
-  if (host !== null) lines.push(`Host: ${host}`)
-  if (origin !== null) lines.push(`Origin: ${origin}`)
-  lines.push(...headers)
-  if (body !== undefined) lines.push(`Content-Length: ${Buffer.byteLength(body)}`)
-  if (close) lines.push("Connection: close")
-  return `${lines.join("\r\n")}\r\n\r\n${body ?? ""}`
-}
-
-const JSON_TYPE = "Content-Type: application/json"
-
-/** The values of header `name` in a raw response head. */
-function values(head: string, name: string): string[] {
-  return head
-    .split("\r\n")
-    .slice(1)
-    .filter((line) => line.toLowerCase().startsWith(`${name}:`))
-    .map((line) => line.slice(name.length + 1).trim())
-}
-
-/** Expects `head` to carry each of HQ's headers exactly once, with HQ's value. */
-function expectSecurityHeaders(head: string): void {
-  for (const [name, value] of Object.entries(HEADERS)) expect(values(head, name)).toEqual([value])
-}
-
-const closes = (head: string) => values(head, "connection").some((v) => v.toLowerCase() === "close")
-
-/** Sends `head`, then a byte every 100 ms: from the start with `now`, else once a reply's head has arrived, so
- *  the reply is read before a write can fail with EPIPE. What came back and whether the server closed in 4 s. */
-function trickle(sock: string, head: string, { now = false } = {}): Promise<{ text: string; closed: boolean }> {
-  return new Promise((resolve) => {
-    const socket = net.connect(sock)
-    let text = ""
-    let timer: ReturnType<typeof setInterval> | undefined
-    const finish = (closed: boolean) => {
-      clearInterval(timer)
-      clearTimeout(deadline)
-      socket.destroy()
-      resolve({ text, closed })
-    }
-    const start = () => {
-      timer ??= setInterval(() => {
-        if (socket.writable) socket.write("x")
-      }, 100)
-    }
-    const deadline = setTimeout(() => finish(false), 4000)
-    socket.on("connect", () => {
-      socket.write(head)
-      if (now) start()
-    })
-    socket.on("data", (data: Buffer) => {
-      text += data.toString()
-      if (text.includes("\r\n\r\n")) start()
-    })
-    socket.on("end", () => finish(true))
-    socket.on("close", () => finish(true))
-    socket.on("error", () => finish(true))
-  })
-}
-
-/** A POST head from the app's own page that promises a `length`-byte JSON body. */
-const post = (target: string, { host = HOST, length = 1000 } = {}) =>
-  message("POST", target, { host, headers: [JSON_TYPE, `Content-Length: ${length}`], close: false })
 
 /** Resolves once `call` settles, or fails after 3 s. */
 async function settles(call: Call | undefined): Promise<void> {
@@ -638,4 +543,188 @@ test("an expect 100 continue write gets 100 only after the checks", async () => 
     expect((await c.response()).status).toBe(status)
   }
   expect(ran).toHaveLength(1)
+})
+
+/** HQ attached to a started office of its own. */
+const newHq = () => makeHq(makeOffice())
+
+/** The `error` of a JSON reply. */
+const error = (r: { json(): unknown }) => (r.json() as { error: string }).error
+
+test.each([`127.0.0.1:${PORT + 1}`, `evil.example:${PORT}`, `[::1]:${PORT}`, "127.0.0.1", `127.0.0.1.:${PORT}`, ""])(
+  "tcp takes only 127 0 0 1 and the bound port [%s]",
+  async (host) => {
+    const r = await (await hqClient(await newHq(), { host })).get("/api/health")
+    expect([r.status, error(r)]).toEqual([403, "host_not_allowed"])
+  },
+)
+
+test("tcp takes 127 0 0 1 on the bound port", async () => {
+  expect((await (await hqClient(await newHq())).get("/api/health")).status).toBe(200)
+})
+
+test("hq sock takes any loopback port but no hostname", async () => {
+  const hq = await newHq()
+  expect((await (await hqClient(hq, { port: null, host: "127.0.0.1:5555" })).get("/api/health")).status).toBe(200)
+  expect((await (await hqClient(hq, { port: null, host: "rebind.example:5555" })).get("/api/health")).status).toBe(
+    403,
+  )
+})
+
+test("a localhost document request redirects to 127 0 0 1 keeping path and query", async () => {
+  const c = await hqClient(await newHq(), { host: `localhost:${PORT}` })
+  let r = await c.get("/pair?x=1")
+  expect([r.status, r.headers.location]).toEqual([307, `http://127.0.0.1:${PORT}/pair?x=1`])
+  r = await c.get("/people/a%2Fb", { headers: { "sec-fetch-dest": "document" } })
+  expect([r.status, r.headers.location]).toEqual([307, `http://127.0.0.1:${PORT}/people/a%2Fb`])
+})
+
+test.each([
+  ["GET /api/health", "GET", "/api/health", null, `localhost:${PORT}`],
+  ["GET /assets/a.js script", "GET", "/assets/a.js", "script", `localhost:${PORT}`],
+  ["POST /pair", "POST", "/pair", null, `localhost:${PORT}`],
+  ["GET /pair on another port", "GET", "/pair", null, `localhost:${PORT + 1}`],
+] as const)("any other localhost request is 403 [%s]", async (_label, method, path, dest, host) => {
+  const headers: Record<string, string> = dest ? { "sec-fetch-dest": dest } : {}
+  const r = await (await hqClient(await newHq(), { host, headers })).request(method, path)
+  expect([r.status, error(r)]).toEqual([403, "host_not_allowed"])
+})
+
+test.each([
+  ["same-site", 403],
+  ["cross-site", 403],
+  ["same-origin", 200],
+  ["none", 200],
+] as const)("fetch metadata on api [%s]", async (site, status) => {
+  const r = await (await hqClient(await newHq(), { headers: { "sec-fetch-site": site } })).get("/api/health")
+  expect(r.status).toBe(status)
+  if (status !== 200) expect(error(r)).toBe("cross_site")
+})
+
+test("fetch metadata doesnt gate the apps pages", async () => {
+  const c = await hqClient(await newHq(), { headers: { "sec-fetch-site": "cross-site" } })
+  expect((await c.get("/")).status).not.toBe(403)
+})
+
+test.each(["http://127.0.0.1:3000", "http://localhost:49380", "null", `https://127.0.0.1:${PORT}`])(
+  "an api request with a foreign origin is 403 even a read [%s]",
+  async (origin) => {
+    const r = await (await hqClient(await newHq(), { headers: { origin } })).get("/api/health")
+    expect([r.status, error(r)]).toEqual([403, "origin_not_allowed"])
+  },
+)
+
+test("a read with no origin or its own passes", async () => {
+  const hq = await newHq()
+  expect((await (await hqClient(hq)).get("/api/health")).status).toBe(200)
+  expect((await (await hqClient(hq, { headers: { origin: ORIGIN } })).get("/api/health")).status).toBe(200)
+})
+
+test("on hq sock the origin must match the forwarded port", async () => {
+  const hq = await newHq()
+  const client = (origin: string) => hqClient(hq, { port: null, host: "127.0.0.1:5555", headers: { origin } })
+  expect((await (await client("http://127.0.0.1:5555")).get("/api/health")).status).toBe(200)
+  expect((await (await client("http://127.0.0.1:5556")).get("/api/health")).status).toBe(403)
+})
+
+test("a write without an origin is 403", async () => {
+  const r = await (await hqClient(await newHq())).post("/api/pair", { code: "x" })
+  expect([r.status, error(r)]).toEqual([403, "origin_not_allowed"])
+})
+
+test("a dev origin passes", async () => {
+  const hq = await newHq()
+  hq.config = { ...hq.config, devOrigins: ["http://localhost:5173"] }
+  const c = await hqClient(hq, { headers: { origin: "http://localhost:5173" } })
+  expect((await c.post("/api/nope", {})).status).toBe(401) // past the guard, to the session check
+})
+
+test.each(["text/plain", "application/x-www-form-urlencoded", "multipart/form-data", null])(
+  "a write that isnt json is 415 [%s]",
+  async (kind) => {
+    const headers: Record<string, string> = kind ? { "content-type": kind } : {}
+    const r = await (await web(await newHq())).request("POST", "/api/pair", { body: '{"code":"x"}', headers })
+    expect([r.status, error(r)]).toEqual([415, "json_required"])
+  },
+)
+
+test("a body less write with the json type passes", async () => {
+  const c = await web(await newHq())
+  const r = await c.post("/api/nope", undefined, { headers: { "content-type": "application/json; charset=utf-8" } })
+  expect(r.status).toBe(401) // past the guard, to the session check
+})
+
+test("the guard refuses in order host then fetch metadata then origin then json", async () => {
+  const hq = await newHq()
+  const text = { body: "x", headers: { "content-type": "text/plain" } }
+  const refused = async (opts: Parameters<typeof hqClient>[1]) =>
+    error(await (await hqClient(hq, opts)).request("POST", "/api/pair", text))
+  expect(await refused({ host: "evil.example:49380", headers: { origin: "http://evil.example:49380" } })).toBe(
+    "host_not_allowed",
+  )
+  expect(await refused({ headers: { origin: ORIGIN, "sec-fetch-site": "cross-site" } })).toBe("cross_site")
+  expect(await refused({ headers: { origin: "http://127.0.0.1:3000" } })).toBe("origin_not_allowed")
+})
+
+test("a write over 16 kib is 413 with or without a length", async () => {
+  const c = await web(await newHq())
+  const big = Buffer.from(JSON.stringify({ code: "x".repeat(17000) }))
+  const headers = { "content-type": "application/json" }
+  let r = await c.request("POST", "/api/pair", { body: big, headers })
+  expect([r.status, error(r)]).toEqual([413, "too_large"])
+  async function* chunks() {
+    yield big.subarray(0, 9000)
+    yield big.subarray(9000)
+  }
+  r = await c.request("POST", "/api/pair", { chunks: chunks(), headers })
+  expect([r.status, error(r)]).toEqual([413, "too_large"])
+})
+
+test.each(["/api/health", "/api/nope", "/missing.js", "/"])(
+  "every response carries the security headers [%s]",
+  async (path) => {
+    const r = await (await web(await newHq())).get(path)
+    expect(String(r.headers["content-security-policy"]).startsWith("default-src 'none'; script-src 'self'")).toBe(
+      true,
+    )
+    const { headers } = r
+    expect([
+      headers["x-frame-options"],
+      headers["x-content-type-options"],
+      headers["referrer-policy"],
+      headers["cross-origin-opener-policy"],
+    ]).toEqual(["DENY", "nosniff", "no-referrer", "same-origin"])
+  },
+)
+
+test("a refusal and a redirect carry them too", async () => {
+  const hq = await newHq()
+  expect((await (await hqClient(hq, { host: "evil.example:49380" })).get("/")).headers).toHaveProperty(
+    "content-security-policy",
+  )
+  const r = await (await hqClient(hq, { host: `localhost:${PORT}` })).get("/")
+  expect([r.status, r.headers["x-frame-options"]]).toEqual([307, "DENY"])
+})
+
+test("a 500 carries them too", async () => {
+  const hq = await newHq()
+  hq.health = () => {
+    throw new Error("boom")
+  }
+  const r = await (await hqClient(hq)).get("/api/health")
+  expect([r.status, r.headers["x-frame-options"]]).toEqual([500, "DENY"])
+})
+
+test("a websocket upgrade is served as plain http", async () => {
+  const c = await hqClient(await newHq())
+  const upgrade = [
+    "Connection: Upgrade",
+    "Upgrade: websocket",
+    "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    "Sec-WebSocket-Version: 13",
+  ]
+  const opts = { origin: null, headers: upgrade, close: false }
+  const r = parse((await raw(c.sock, message("GET", "/api/health", opts), { until: "head" })).text)
+  expect(r.status).toBe(200)
+  expectSecurityHeaders(r.head)
 })

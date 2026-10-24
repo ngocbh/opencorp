@@ -3,13 +3,14 @@
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import type { ServerResponse } from "node:http"
 import { expect, onTestFinished } from "bun:test"
-import { LIMITS, createServer } from "../../src/daemon/http.ts"
+import { LIMITS, type Limits, createServer } from "../../src/daemon/http.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { createHqApp } from "../../src/hq/api.ts"
 import { type Hq, attach } from "../../src/hq/core.ts"
-import { BODY_TIMEOUT } from "../../src/hq/guard.ts"
+import { BODY_TIMEOUT, HEADERS, type Inner, hqGuard } from "../../src/hq/guard.ts"
 import { shortDir } from "../helpers.ts"
 import { CEO, type Reply, request } from "../daemon/helpers.ts"
 
@@ -162,3 +163,111 @@ export function freePort(): Promise<number> {
     })
   })
 }
+
+/** One request the guard's listener got: whether its promise settled, and its response. */
+export type Call = { settled: boolean; res: ServerResponse }
+
+/** Serves `inner` behind the guard on a unix socket until the current test finishes. */
+export async function guarded(
+  inner: Inner,
+  { port = PORT, devOrigins, limits }: { port?: number | null; devOrigins?: string[]; limits?: Limits } = {},
+): Promise<{ sock: string; calls: Call[] }> {
+  const guard = hqGuard(inner, { port, devOrigins })
+  const calls: Call[] = []
+  const server = createServer((req, res) => {
+    const call: Call = { settled: false, res }
+    calls.push(call)
+    void guard(req, res).then(() => {
+      call.settled = true
+    })
+  }, limits)
+  const sock = path.join(shortDir(), "s")
+  onTestFinished(async () => {
+    // As tests/daemon/helpers.ts's `serve`: on Bun, closeAllConnections also stops the listener.
+    server.closeAllConnections()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+    fs.rmSync(sock, { force: true })
+  })
+  await listenUnix(server, sock)
+  return { sock, calls }
+}
+
+export type Message = {
+  host?: string | null
+  origin?: string | null
+  headers?: string[]
+  body?: string
+  /** Asks the server to close the connection after its reply (the default), so `raw` reads to the end. */
+  close?: boolean
+}
+
+/** A raw HTTP/1.1 request; `body` is sent with its Content-Length. */
+export function message(
+  method: string,
+  target: string,
+  { host = HOST, origin = ORIGIN, headers = [], body, close = true }: Message = {},
+): string {
+  const lines = [`${method} ${target} HTTP/1.1`]
+  if (host !== null) lines.push(`Host: ${host}`)
+  if (origin !== null) lines.push(`Origin: ${origin}`)
+  lines.push(...headers)
+  if (body !== undefined) lines.push(`Content-Length: ${Buffer.byteLength(body)}`)
+  if (close) lines.push("Connection: close")
+  return `${lines.join("\r\n")}\r\n\r\n${body ?? ""}`
+}
+
+export const JSON_TYPE = "Content-Type: application/json"
+
+/** The values of header `name` in a raw response head. */
+export function values(head: string, name: string): string[] {
+  return head
+    .split("\r\n")
+    .slice(1)
+    .filter((line) => line.toLowerCase().startsWith(`${name}:`))
+    .map((line) => line.slice(name.length + 1).trim())
+}
+
+/** Expects `head` to carry each of HQ's headers exactly once, with HQ's value. */
+export function expectSecurityHeaders(head: string): void {
+  for (const [name, value] of Object.entries(HEADERS)) expect(values(head, name)).toEqual([value])
+}
+
+/** Whether a raw response head asks to close the connection. */
+export const closes = (head: string) => values(head, "connection").some((v) => v.toLowerCase() === "close")
+
+/** Sends `head`, then a byte every 100 ms: from the start with `now`, else once a reply's head has arrived, so
+ *  the reply is read before a write can fail with EPIPE. What came back and whether the server closed in 4 s. */
+export function trickle(sock: string, head: string, { now = false } = {}): Promise<{ text: string; closed: boolean }> {
+  return new Promise((resolve) => {
+    const socket = net.connect(sock)
+    let text = ""
+    let timer: ReturnType<typeof setInterval> | undefined
+    const finish = (closed: boolean) => {
+      clearInterval(timer)
+      clearTimeout(deadline)
+      socket.destroy()
+      resolve({ text, closed })
+    }
+    const start = () => {
+      timer ??= setInterval(() => {
+        if (socket.writable) socket.write("x")
+      }, 100)
+    }
+    const deadline = setTimeout(() => finish(false), 4000)
+    socket.on("connect", () => {
+      socket.write(head)
+      if (now) start()
+    })
+    socket.on("data", (data: Buffer) => {
+      text += data.toString()
+      if (text.includes("\r\n\r\n")) start()
+    })
+    socket.on("end", () => finish(true))
+    socket.on("close", () => finish(true))
+    socket.on("error", () => finish(true))
+  })
+}
+
+/** A POST head from the app's own page that promises a `length`-byte JSON body. */
+export const post = (target: string, { host = HOST, length = 1000 } = {}) =>
+  message("POST", target, { host, headers: [JSON_TYPE, `Content-Length: ${length}`], close: false })
