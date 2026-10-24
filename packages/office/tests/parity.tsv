@@ -253,6 +253,7 @@ worker/test_resume.py	open	—	—	O4a-2
 worker/test_rpc.py	open	—	—	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
+—	new	packages/office/tests/auth/passwords.test.ts::a hash past the cost bounds checks nothing even when it matches [%s]	design §6.4: each cost bound refuses a hash on its own	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a hash with an impossible base64 length checks nothing [%s]	design §6.4	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a password is counted in characters	design §6.4 (passwords as Python's): Python's len counts code points	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a password that isnt well formed checks nothing	design §6.4 (passwords as Python's): Python's encode refuses lone surrogates	O1-14

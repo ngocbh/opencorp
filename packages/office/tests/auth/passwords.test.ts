@@ -88,6 +88,28 @@ test.each([["salt"], ["key"]] as const)(
   },
 )
 
+// Python's rows past the bounds also fail on scrypt's memory cap; these match and fit in it, so only the bound
+// refuses them.
+test.each([["p"], ["ln"]] as const)(
+  "a hash past the cost bounds checks nothing even when it matches [%s]",
+  async (bound) => {
+    const salt = Buffer.from("0123456789abcdef")
+    let phc: string
+    if (bound === "p") {
+      const key = crypto.scryptSync("anything", salt, 32, { N: 2 ** 10, r: 8, p: 5, maxmem: 64 * 1024 * 1024 })
+      phc = `$scrypt$ln=10,r=8,p=5$${b64(salt)}$${b64(key)}`
+    } else {
+      // Made once with crypto.scryptSync("anything", salt, 32, { N: 2 ** 18, r: 2, p: 1, maxmem: 256 MiB });
+      // BoringSSL refuses r=1 at that N, and ln=18 is too slow to recompute here.
+      phc = "$scrypt$ln=18,r=2,p=1$MDEyMzQ1Njc4OWFiY2RlZg$g+NhJ3owhqp3c6rwJWHnnaxr0l/Tuwdnh6noudCVUW0"
+    }
+    const match = PHC.exec(phc)!
+    const ln = Number(match[1]), r = Number(match[2]), p = Number(match[3])
+    expect(128 * r * (2 ** ln + p + 2)).toBeLessThanOrEqual(256 * 1024 * 1024)
+    expect(await checkPassword("anything", phc)).toBe(false)
+  },
+)
+
 test("a password is counted in characters", () => {
   expect(passwordProblem("🔒".repeat(11))).toBe(`use at least ${MIN_LENGTH} characters`)
   expect(passwordProblem("🔒".repeat(12))).toBeNull()
@@ -104,4 +126,10 @@ test("a password that isnt well formed checks nothing", async () => {
   const phc = await hashPassword("\uFFFD".repeat(12))
   expect(await checkPassword("\uD800" + "\uFFFD".repeat(11), phc)).toBe(false)
   expect(passwordProblem("\uD800".repeat(12))).toBe("use a password that is valid text")
+  const refused = await hashPassword("\uD800".repeat(12)).then(
+    () => null,
+    (error: unknown) => error,
+  )
+  expect(refused).toBeInstanceOf(TypeError)
+  expect((refused as TypeError).message).toBe("a password must be valid text")
 })

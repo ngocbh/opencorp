@@ -41,8 +41,11 @@ export function passwordProblem(password: string): string | null {
   return null
 }
 
-/** A new salted hash of `password`; takes about a tenth of a second. */
+/** A new salted hash of `password`; takes about a tenth of a second. Throws a `TypeError` if `password` isn't
+ *  well-formed text. */
 export async function hashPassword(password: string): Promise<string> {
+  // Python's encode refuses a lone surrogate; UTF-8 encoding here would turn it into U+FFFD.
+  if (!password.isWellFormed()) throw new TypeError("a password must be valid text")
   const salt = crypto.randomBytes(16)
   return `$scrypt$ln=${LN},r=${R},p=${P}$${b64(salt)}$${b64(await scrypt(password, salt, LN, R, P, 32))}`
 }
@@ -53,7 +56,7 @@ export async function checkPassword(password: string, phc: string | null | undef
   if (!password.isWellFormed()) return false
   const match = PHC.exec(phc ?? "")
   if (match === null) return false
-  const [ln, r, p] = [match[1], match[2], match[3]].map(Number) as [number, number, number]
+  const ln = Number(match[1]), r = Number(match[2]), p = Number(match[3])
   // The memory Python's OpenSSL asks for; Bun's BoringSSL needs 128·r bytes less, so Python's bound holds.
   if (ln < 1 || ln > MAX_LN || p < 1 || p > MAX_P || r < 1 || 128 * r * (2 ** ln + p + 2) > MAX_MEMORY) return false
   const [saltText, wantText] = [match[4]!, match[5]!]
