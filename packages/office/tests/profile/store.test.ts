@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { MarkdownVersionMismatch } from "@ngocbh/yian"
-import { CompanyGit } from "../../src/company/git.ts"
+import { CompanyGit, CompanyGitError, type LockedGit } from "../../src/company/git.ts"
 import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore } from "../../src/profile/store.ts"
 import { company, git, recordingGit } from "../company/helpers.ts"
 import { tempDir } from "../helpers.ts"
@@ -293,4 +293,121 @@ test("commit ids are per profile", async () => {
   const boss = new GitProfileStore(g, "ngocbh")
   await minh.write("# Minh\nv1\n", { baseVersion: (await minh.read())[1], provenance: { commit_id: "c-1" } })
   expect(await boss.committed("c-1")).toBeNull()
+})
+
+// Failed commits
+
+/** A `CompanyGit` whose commit stages the paths, then fails as a stale index.lock would. */
+class FailingCommitGit extends CompanyGit {
+  override locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
+    return super.locked((locked) =>
+      fn({
+        ...locked,
+        commit: async (paths) => {
+          git(this.root, "add", "--", ...paths)
+          throw new CompanyGitError("git commit exited 128: fatal: Unable to create '.git/index.lock'")
+        },
+      }),
+    )
+  }
+}
+
+test("a failed commit restores the profile", async () => {
+  const { dir, root, store } = setup()
+  const base = (await store.read())[1]
+  const failing = new GitProfileStore(new FailingCommitGit(root, path.join(dir, "worktrees")), "minh")
+  const error = await rejection(failing.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } }))
+  expect(error).toMatchObject({ code: "EIO" })
+  expect((error as Error).message).toMatch(/index.lock/)
+  expect(read(root)).toBe(MINH)
+  expect(git(root, "status", "--porcelain")).toBe("")
+  expect(await store.committed("c-1")).toBeNull()
+  expect(await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })).toBe(
+    blobId(bytes("# Minh\nv1\n")),
+  )
+  expect(await store.committed("c-1")).toBe(blobId(bytes("# Minh\nv1\n")))
+})
+
+test("a failed commit removes a new profile", async () => {
+  const { dir, root, store } = setup()
+  git(root, "rm", "-q", PROFILE)
+  git(root, "commit", "-q", "-m", "drop")
+  const failing = new GitProfileStore(new FailingCommitGit(root, path.join(dir, "worktrees")), "minh")
+  const error = await rejection(failing.write("# Minh\n", { baseVersion: EMPTY_BLOB }))
+  expect(error).toMatchObject({ code: "EIO" })
+  expect((error as Error).message).toMatch(/index.lock/)
+  expect(fs.existsSync(path.join(root, PROFILE))).toBe(false)
+  expect(git(root, "status", "--porcelain")).toBe("")
+  expect(await store.committed("c-1")).toBeNull()
+  expect(await store.write("# Minh\n", { baseVersion: EMPTY_BLOB })).toBe(blobId(bytes("# Minh\n")))
+})
+
+test("a forged handle cannot add a commit id", async () => {
+  const { root, store } = setup()
+  const person = path.join(root, "people/minh/person.yaml")
+  fs.writeFileSync(
+    person,
+    fs.readFileSync(person, "utf8").replace("handle: minh", 'handle: "minh\\n\\nCommit-Id: forged\\n"'),
+  )
+  await store.write("# Minh\nv1\n", { baseVersion: (await store.read())[1] })
+  expect(git(root, "log", "-1", "--format=%B")).toBe("profile(@minh): write")
+  expect(await store.committed("forged")).toBeNull()
+})
+
+test("a hand edit just before the replace is kept", async () => {
+  const { root, g } = setup()
+  /** Edits the profile by hand after the first hand-edit check, before the file is replaced. */
+  class HandEditing extends GitProfileStore {
+    protected override target(): string {
+      fs.writeFileSync(path.join(root, PROFILE), "# Minh\nby hand\n")
+      return super.target()
+    }
+  }
+  const store = new HandEditing(g, "minh")
+  const base = (await store.read())[1]
+  const error = await rejection(store.write("# Minh\nby model\n", { baseVersion: base }))
+  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
+  expect((error as MarkdownVersionMismatch).current).toBe(blobId(bytes("# Minh\nby hand\n")))
+  expect(read(root)).toBe("# Minh\nby hand\n")
+  expect(subject(root)).toBe("profile(@minh): hand edit")
+})
+
+test("bytes git normalizes are not a hand edit", async () => {
+  const { root, g, store } = setup()
+  fs.writeFileSync(path.join(root, ".gitattributes"), "*.md text\n")
+  await g.locked((locked) => locked.commit([".gitattributes"], "normalize line endings"))
+  fs.writeFileSync(path.join(root, PROFILE), MINH.replaceAll("\n", "\r\n")) // same blob once normalized
+  const base = (await store.read())[1]
+  expect(base).toBe(blobId(bytes(MINH)))
+  expect(await store.write("# Minh\nv1\n", { baseVersion: base })).toBe(blobId(bytes("# Minh\nv1\n")))
+})
+
+test("write turns a git failure into a system error", async () => {
+  const dir = tempDir()
+  fs.mkdirSync(path.join(dir, "not-a-repo"))
+  const store = new GitProfileStore(new CompanyGit(path.join(dir, "not-a-repo"), path.join(dir, "worktrees")), "minh")
+  const error = await rejection(store.write("# Minh\n", { baseVersion: EMPTY_BLOB }))
+  expect(error).toBeInstanceOf(Error)
+  expect(error).toMatchObject({ code: "EIO", syscall: "write" })
+  expect((error as Error).message).toMatch(/exited/)
+})
+
+test("write refuses a symlinked person directory", async () => {
+  const { dir, root, g } = setup()
+  const outside = path.join(dir, "outside")
+  fs.renameSync(path.join(root, "people/minh"), outside)
+  fs.symlinkSync(outside, path.join(root, "people/minh"))
+  const error = await rejection(new GitProfileStore(g, "minh").write("pwned\n", { baseVersion: blobId(bytes(MINH)) }))
+  expect(error).not.toBeInstanceOf(MarkdownVersionMismatch)
+  expect(error instanceof RangeError || typeof (error as { code?: unknown } | null)?.code === "string").toBe(true)
+  expect(fs.readFileSync(path.join(outside, "profile.md"), "utf8")).toBe(MINH)
+})
+
+test("a lone surrogate is a range error and writes nothing", async () => {
+  const { root, store } = setup()
+  const base = (await store.read())[1]
+  const head = git(root, "rev-parse", "HEAD")
+  await expect(store.write("# Minh\ud800\n", { baseVersion: base })).rejects.toThrow(RangeError)
+  expect(read(root)).toBe(MINH)
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
 })

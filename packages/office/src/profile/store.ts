@@ -155,6 +155,9 @@ export class GitProfileStore implements MarkdownStore {
     try {
       await locked.commit([this.path], message)
     } catch (error) {
+      // Left on disk, the text would be committed later as a hand edit without its Commit-Id, and a
+      // retry of this write would get a mismatch.
+      await this.#restore(target, previous, current)
       throw error
     }
     return await this.#current()
@@ -214,6 +217,18 @@ export class GitProfileStore implements MarkdownStore {
         // the write's error is the one to report
       }
       throw error
+    }
+  }
+
+  /** Puts back the profile a failed commit left on disk, and unstages it; best effort, never throws. */
+  async #restore(target: string, previous: Uint8Array | null, current: string): Promise<void> {
+    try {
+      if ((await this.#current()) !== current) return // the commit landed before the failure; keep it
+      if (previous === null) fs.rmSync(target, { force: true })
+      else this.#put(target, previous)
+      await this.git.unstage([this.path])
+    } catch {
+      // the caller needs the commit's error, not this one
     }
   }
 
