@@ -1,9 +1,17 @@
 /** Listing the models a connection offers (Python's `tests/chat/test_models.py`). */
 import { once } from "node:events"
+import fs from "node:fs"
 import http from "node:http"
 import type { AddressInfo } from "node:net"
+import path from "node:path"
 import { expect, test } from "bun:test"
-import { type AuthRequest, type AuthRequestOptions, HttpResponse } from "@ngocbh/yian/llm_clients"
+import {
+  type AuthRequest,
+  type AuthRequestOptions,
+  AuthStore,
+  HttpResponse,
+  OAuthCredentials,
+} from "@ngocbh/yian/llm_clients"
 import { ModelList } from "@opencorp/protocol"
 import { ConnectionFile } from "../../src/chat/connections.ts"
 import {
@@ -14,6 +22,7 @@ import {
   providerModels,
   TIMED_OUT,
 } from "../../src/chat/models.ts"
+import { tempDir } from "../helpers.ts"
 
 const SENTINEL = "sk-sentinel-3c9e10b7a2f4"
 const ANTHROPIC_KEY = "sk-ant-sentinel-a7d93c10e5b2"
@@ -293,6 +302,140 @@ test.each([
   const unnamed = await listModels(bare, "other", { request: request.send })
   expect([unnamed.models, unnamed.listed]).toEqual([[], false])
   expect(request.calls()).toBe(0)
+})
+
+// Subscriptions.
+
+const ACCESS = "fake-access-1e7b40c9"
+const REFRESH = "fake-refresh-9d3f62a1"
+const NEW_ACCESS = "fake-access-new-5c08e2b7"
+
+// Bigint priorities, as yian's decoder gives them.
+const CATALOG = new HttpResponse(200, {
+  models: [
+    { slug: "gpt-5.5-codex", visibility: "list", priority: 2n },
+    { slug: "gpt-5.5", visibility: "list", priority: 1n },
+    { slug: "hidden", visibility: "hide", priority: 0n },
+  ],
+})
+
+const subscription = (model = "gpt-5.5") =>
+  ConnectionFile.parse({ method: "subscription", llm_config: { provider: "openai", model } })
+
+/** A sign-in saved in `dir` (made 0700), with fake tokens expiring in `expiresInS` seconds; returns its file. */
+async function signedIn(dir: string, expiresInS = 3600): Promise<string> {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
+  const auth = path.join(dir, "chatgpt.auth.json")
+  const creds = new OAuthCredentials({
+    accessToken: ACCESS,
+    refreshToken: REFRESH,
+    expiresAt: Date.now() / 1000 + expiresInS,
+    accountId: "account-test",
+  })
+  await new AuthStore(auth).save("openai", creds, "gpt-5.5")
+  return auth
+}
+
+/** An HTTP sender (`send`) answering each call with the next of `responses`, recording each call. */
+class Replies {
+  readonly calls: [method: string, url: string, options: AuthRequestOptions][] = []
+
+  constructor(readonly responses: HttpResponse[]) {}
+
+  readonly send: AuthRequest = async (method, url, options) => {
+    this.calls.push([method, url, options])
+    return this.responses.shift()!
+  }
+}
+
+test("subscription models are listed through its auth file", async () => {
+  const auth = await signedIn(path.join(tempDir(), "connections"))
+  const fake = new FakeRequest(CATALOG)
+  const got = await listModels(subscription(), "chatgpt", { deadlineMs: 6000, request: fake.send, authFile: auth })
+  expect([got.listed, got.error, got.models.map((m) => m.id)]).toEqual([true, null, ["gpt-5.5", "gpt-5.5-codex"]])
+  expect(fake.calls).toHaveLength(1)
+  const [[method, url, options]] = fake.calls as [[string, string, AuthRequestOptions]]
+  expect([method, url.split("?")[0]]).toEqual(["GET", "https://chatgpt.com/backend-api/codex/models"])
+  expect(options.headers["Authorization"]).toBe(`Bearer ${ACCESS}`)
+  expect(options.timeoutMs).toBeLessThanOrEqual(6000)
+})
+
+test("an expiring sign in is refreshed and each request gets the time left", async () => {
+  // Inside yian's refresh margin.
+  const auth = await signedIn(path.join(tempDir(), "connections"), 10)
+  const replies = new Replies([new HttpResponse(200, { access_token: NEW_ACCESS, expires_in: 3600n }), CATALOG])
+  const send: AuthRequest = async (method, url, options) => {
+    const reply = await replies.send(method, url, options)
+    if (url.endsWith("/oauth/token")) await Bun.sleep(300)
+    return reply
+  }
+  const got = await listModels(subscription(), "chatgpt", { deadlineMs: 6000, request: send, authFile: auth })
+  expect([got.listed, got.error]).toEqual([true, null])
+  expect(replies.calls).toHaveLength(2)
+  const [[, refreshUrl, refresh], [, , listing]] = replies.calls as [
+    [string, string, AuthRequestOptions],
+    [string, string, AuthRequestOptions],
+  ]
+  expect(refreshUrl).toBe("https://auth.openai.com/oauth/token")
+  expect(refresh.form?.["refresh_token"]).toBe(REFRESH)
+  expect(listing.headers["Authorization"]).toBe(`Bearer ${NEW_ACCESS}`)
+  expect(refresh.timeoutMs).toBeLessThanOrEqual(6000)
+  // The listing gets only what the refresh left.
+  expect(refresh.timeoutMs - listing.timeoutMs).toBeGreaterThanOrEqual(300)
+  expect(refresh.timeoutMs - listing.timeoutMs).toBeLessThan(6000)
+  // Yian saved the refreshed sign-in where runs read it.
+  expect(fs.readFileSync(auth, "utf8")).toContain(NEW_ACCESS)
+})
+
+test.each([
+  ["401", 401, true],
+  ["500", 500, false],
+] as const)("a subscription that cant be listed says the status never a token [%s]", async (_, status, refused) => {
+  const auth = await signedIn(path.join(tempDir(), "connections"))
+  const lines: string[] = []
+  const log = (line: string) => void lines.push(line)
+  const fake = new FakeRequest(new HttpResponse(status, { error: `bad token ${ACCESS} ${REFRESH}` }))
+  const got = await listModels(subscription(), "chatgpt", { request: fake.send, authFile: auth, log })
+  expect([got.listed, got.refused, got.models]).toEqual([false, refused, [{ id: "gpt-5.5", name: null }]])
+  expect(got.error?.endsWith(`(HTTP ${status})`)).toBe(true)
+  for (const text of [JSON.stringify(got), lines.join("\n")]) {
+    expect(text).not.toContain(ACCESS)
+    expect(text).not.toContain(REFRESH)
+  }
+})
+
+test("a subscription without its sign in offers its own model", async () => {
+  const request = never()
+  const dir = path.join(tempDir(), "connections")
+  fs.mkdirSync(dir, { mode: 0o700 })
+  const got = await listModels(subscription(), "chatgpt", {
+    request: request.send,
+    authFile: path.join(dir, "gone.auth.json"),
+  })
+  expect([got.listed, got.error, got.models]).toEqual([false, "no sign-in", [{ id: "gpt-5.5", name: null }]])
+  expect(request.calls()).toBe(0)
+})
+
+test("listing returns by the deadline", async () => {
+  let release = () => {}
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const cap = setTimeout(release, 30_000)
+  const send: AuthRequest = async () => {
+    await released
+    return deploymentsReply()
+  }
+  const start = performance.now()
+  let got: Awaited<ReturnType<typeof listModels>>
+  try {
+    got = await listModels(azure(), "azure", { deadlineMs: 500, request: send })
+  } finally {
+    release()
+    clearTimeout(cap)
+  }
+  expect(performance.now() - start).toBeLessThan(2000)
+  expect([got.error, got.listed, got.models]).toEqual([TIMED_OUT, false, [{ id: "gpt-5.4", name: null }]])
 })
 
 test("a redirect from azure is not followed", async () => {

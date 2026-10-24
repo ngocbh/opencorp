@@ -1,9 +1,13 @@
 /** The models each connection offers, listed from its provider. */
 import {
+  AuthError,
   type AuthRequest,
+  AuthStore,
   ModelListError as HostListError,
   HttpResponse,
   listModels as hostModels,
+  OAuthCredentials,
+  OpenAIAuth,
 } from "@ngocbh/yian/llm_clients"
 import type { ModelList } from "@opencorp/protocol"
 import type { z } from "zod"
@@ -172,6 +176,39 @@ export async function providerModels(
   return provider === "openai" && baseUrl === null ? textModels(ids) : [...ids]
 }
 
+/**
+ * The models the ChatGPT subscription signed in at `authFile` offers, in its order, refreshing a sign-in about to
+ * expire first; each request gets what is left of `timeoutMs`. `request` stands in for yian's sender.
+ *
+ * Throws `ModelListError`: they couldn't be listed.
+ */
+export async function subscriptionModels(
+  authFile: string,
+  options: { timeoutMs: number; request?: AuthRequest },
+): Promise<string[]> {
+  const { timeoutMs, request } = options
+  const end = performance.now() + timeoutMs
+  const auth = () => {
+    const remaining = end - performance.now()
+    if (remaining <= 0) throw new ModelListError(TIMED_OUT)
+    return new OpenAIAuth({ request, requestTimeoutMs: remaining })
+  }
+  const store = new AuthStore(authFile)
+  try {
+    const selection = store.selection("openai")
+    if (selection === null) throw new ModelListError("no sign-in")
+    const credentials = await store.credentials("openai", selection.credentialId, {
+      refresh: (old) => auth().refresh(old),
+    })
+    if (!(credentials instanceof OAuthCredentials)) throw new TypeError("not a subscription sign-in")
+    return [...(await auth().subscriptionModels(credentials))]
+  } catch (error) {
+    // Yian's messages are status-only and safe to show.
+    if (error instanceof AuthError) throw new ModelListError(error.message, error.status)
+    throw error
+  }
+}
+
 /** Whether the host a connection with `llm` and `env` runs on is known, and its base URL (null: the provider's
  *  own). */
 function runsHost(llm: LlmConfig, env: Readonly<Record<string, string>>): [boolean, unknown] {
@@ -204,6 +241,7 @@ async function listed(
   name: string,
   timeoutMs: number,
   request: AuthRequest | undefined,
+  authFile: string | null,
   log: (line: string) => void,
 ): Promise<Listing> {
   const llm = conn.llm_config ?? {}
@@ -212,7 +250,9 @@ async function listed(
   let ids: string[]
   try {
     const [known, baseUrl] = runsHost(llm, conn.env)
-    if (typeof key === "string" && providerLabel(llm) === "azure" && baseUrl) {
+    if (authFile !== null) {
+      ids = await subscriptionModels(authFile, { timeoutMs, request })
+    } else if (typeof key === "string" && providerLabel(llm) === "azure" && baseUrl) {
       ids = await azureDeployments(baseUrl as string, key, { timeoutMs, request })
     } else if (!provider || !known || !(typeof key === "string" || KEYLESS.includes(provider as string))) {
       // A connection's env can't hold a key, so a key not in llm_config is one its runs don't have either.
@@ -257,6 +297,7 @@ export interface ListOptions {
 /**
  * The models connection `name` (`conn`) offers, within `deadlineMs`.
  *
+ * A subscription is listed through its sign-in at `authFile`; without one, it offers only its configured model.
  * Azure is listed by its deployments, and any other provider by yian's listing of the host its runs go to, with
  * the key they use; a listed connection offers its configured model first if its host doesn't list it. A
  * connection whose provider has no listing, whose runs need a key it doesn't hold, or whose runs an environment
@@ -264,7 +305,7 @@ export interface ListOptions {
  * `error` giving the HTTP status or another reason, never the key.
  */
 export async function listModels(conn: Provider, name: string, options: ListOptions = {}): Promise<Listing> {
-  const { deadlineMs = DEADLINE_MS, request, log = console.error } = options
+  const { deadlineMs = DEADLINE_MS, request, authFile = null, log = console.error } = options
   let timer: ReturnType<typeof setTimeout> | undefined
   // A listing past the deadline is left to finish, not aborted: stopping a subscription mid-refresh could drop a
   // token OpenAI has already rotated.
@@ -272,7 +313,7 @@ export async function listModels(conn: Provider, name: string, options: ListOpti
     timer = setTimeout(() => resolve(ownModels(conn, name, TIMED_OUT)), deadlineMs)
   })
   try {
-    return await Promise.race([listed(conn, name, deadlineMs, request, log), late])
+    return await Promise.race([listed(conn, name, deadlineMs, request, authFile, log), late])
   } finally {
     clearTimeout(timer)
   }
