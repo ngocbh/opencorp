@@ -7,7 +7,7 @@ import { type HireRequest, type HireResponse, Person as PersonSchema } from "@op
 import { z } from "zod"
 import { errno, outsideRoot, resolvePath } from "../company/flows.ts"
 import { writeYaml } from "../company/flow_yaml.ts"
-import type { CompanyGit } from "../company/git.ts"
+import { type CompanyGit, CompanyGitError } from "../company/git.ts"
 import { repoIssue, type RepoIssue } from "../company/issues.ts"
 import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -53,9 +53,9 @@ export class Hiring {
     readonly maxPreviews = 100,
   ) {}
 
-  /** Preview `request`. */
+  /** Preview `request`, or with `confirm` commit its preview; throw `HireRefused` if a confirm can't. */
   hire(request: Request): Promise<HireResult> {
-    return this.preview(request)
+    return request.confirm ? this.confirm(request) : this.preview(request)
   }
 
   /** The person, diff, and lint issues the hire would make; nothing is written. Only issues the hire brings
@@ -67,6 +67,67 @@ export class Hiring {
     this.#previews.set(request.handle, form(request))
     while (this.#previews.size > this.maxPreviews) this.#previews.delete(this.#previews.keys().next().value!)
     return { person, diff: diff(files), issues, commit: null }
+  }
+
+  /** Write and commit the previewed hire, unless its fields changed or it brings a lint error. */
+  async confirm(request: Request): Promise<HireResult> {
+    const previewed = this.#previews.get(request.handle)
+    if (!previewed || !isDeepStrictEqual(previewed, form(request))) {
+      const changed = "the hire changed since its preview (or was never previewed); preview it again"
+      throw new HireRefused("lint_failed", changed)
+    }
+    const [person, files, issues, commit] = await this.git.locked(async (locked) => {
+      await locked.commitHandEdits()
+      const [person, files, issues] = await this.#draft(request)
+      const error = issues.find((issue) => issue.severity === "error")
+      if (error) throw new HireRefused("lint_failed", error.message)
+      const head = await this.git.head()
+      const people = path.join(this.git.root, "people")
+      fs.mkdirSync(people, { recursive: true })
+      // A link swapped in since the draft would send the write outside the repo.
+      if (fs.realpathSync(people) !== path.join(fs.realpathSync(this.git.root), "people")) {
+        const outside = `people/${person.handle}/person.yaml would be written outside the company repo`
+        throw new HireRefused("lint_failed", outside)
+      }
+      // Not recursive: it fails on anything already there, a link included, so the undo only removes a
+      // folder this hire made.
+      fs.mkdirSync(path.join(people, person.handle))
+      try {
+        for (const [rel, text] of Object.entries(files)) {
+          const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW
+          const fd = fs.openSync(path.join(this.git.root, rel), flags, 0o644)
+          try {
+            fs.writeFileSync(fd, text)
+          } finally {
+            fs.closeSync(fd)
+          }
+        }
+        const commit = await locked.commit(Object.keys(files), subject(person))
+        return [person, files, issues, commit] as const
+      } catch (failure) {
+        // Left on disk, the profile would be committed later as a hand edit.
+        await this.#undo(request.handle, Object.keys(files), head)
+        throw failure
+      }
+    })
+    this.#previews.delete(request.handle)
+    return { person, diff: diff(files), issues, commit }
+  }
+
+  /** Remove the files a failed hire commit left, and unstage them; best effort. */
+  async #undo(handle: string, paths: string[], head: string): Promise<void> {
+    try {
+      if ((await this.git.head()) !== head) return // the commit landed before the failure; keep it
+      try {
+        fs.rmSync(path.join(this.git.root, "people", handle), { recursive: true, force: true })
+      } catch (error) {
+        if (errno(error) === undefined) throw error
+      }
+      await this.git.unstage(paths)
+    } catch (error) {
+      // The caller needs the commit's error, not this one.
+      if (!(error instanceof CompanyGitError) && errno(error) === undefined) throw error
+    }
   }
 
   async #draft(request: Request): Promise<[Person, Record<string, string>, RepoIssue[]]> {
@@ -92,7 +153,7 @@ export class Hiring {
       for (const [rel, text] of Object.entries(files)) {
         // A symlink in the repo (people/ itself, say) could point the write elsewhere.
         const target = resolvePath(path.join(scratch, rel))
-        if (outsideRoot(root, target)) {
+        if (outsideRoot(root, target) || danglingLink(scratch, path.dirname(rel))) {
           const outside = `${rel} would be written outside the company repo`
           return [person, files, [repoIssue(rel, "person.outside_repo", outside)]]
         }
@@ -114,6 +175,39 @@ export class Hiring {
       fs.rmSync(tmp, { recursive: true, force: true })
     }
   }
+}
+
+/**
+ * Whether a folder on `rel`'s path under `root` is a symlink that doesn't resolve. A link out of the repo by a
+ * relative path (`people -> ../shared-people`) dangles in the scratch copy, and `resolvePath` doesn't follow a
+ * dangling link, so it would look inside the repo.
+ */
+function danglingLink(root: string, rel: string): boolean {
+  let dir = root
+  for (const part of rel.split("/")) {
+    dir = path.join(dir, part)
+    try {
+      if (!fs.lstatSync(dir).isSymbolicLink()) continue
+    } catch (error) {
+      if (errno(error) === undefined) throw error
+      return false // nothing there, so no link further down either
+    }
+    try {
+      fs.realpathSync(dir)
+    } catch (error) {
+      if (errno(error) === undefined) throw error
+      return true
+    }
+  }
+  return false
+}
+
+/** Python's `str.split()` whitespace. */
+const SPACES = /[\t-\r\x1c-\x20\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
+
+function subject(person: Person): string {
+  // One line: a newline in the name or title could forge a Commit-Id trailer.
+  return `hire(@${person.handle}): ${person.name}, ${person.title}`.split(SPACES).filter(Boolean).join(" ")
 }
 
 function form(request: Request): string[] {

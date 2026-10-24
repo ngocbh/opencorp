@@ -33,7 +33,7 @@ chat/test_connections.py::test_remove_waits_for_composer_to_let_go_of_the_sign_i
 chat/test_connections.py::test_write_run_record_creates_runs_dir	dropped	—	D4, design §5.1: the run record is the store's runs row, not a file	O2-19
 chat/test_cost.py	open	—	—	O3-8b
 chat/test_harness.py	open	—	—	O4a-4
-chat/test_hire.py	open	—	—	O2-24
+chat/test_hire.py	ported	packages/office/tests/chat/hire.test.ts	—	O2-24
 chat/test_hooks.py	open	—	—	O3-8b
 chat/test_identity.py	open	—	—	O3-8b
 chat/test_logins.py	open	—	—	O2-20
@@ -302,6 +302,8 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/chat/connections.test.ts::a connection file has the python layout and a python file reads	design §10.4 (R2 m9): test_run_logs.py writes connections through the Python code	O2-19
 —	new	packages/office/tests/chat/hire.test.ts::a hires person file is laid out as python wrote it	design §3.2 (mirror): init (O2-17) and hire write the same files as the Python office	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a hostile title reads back as itself and adds no key	design §6.9: the person file decides kind and password_hash; titles may come from an LLM (O2-17)	O2-24
+—	new	packages/office/tests/chat/hire.test.ts::a people folder swapped for a link after the draft is never written through	design §6.4 (O1-14 handoff): a person write never goes through a symlinked folder	O2-24
+—	new	packages/office/tests/chat/hire.test.ts::a relative people link out of the repo counts as outside the repo	design §6 path guard: Python's non-strict realpath followed a link that dangles in the scratch copy	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::issue messages name the company repo not the scratch copy	O1-8 handoff (yian #1051): absolute CODE-root paths would name the scratch copy	O2-24
 —	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
