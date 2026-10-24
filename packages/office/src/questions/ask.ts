@@ -163,6 +163,9 @@ export class Answers {
 
   async #answered(qid: string, workItem: WorkItemRecord | undefined, signal?: AbortSignal): Promise<QuestionRecord> {
     let current = await this.#settled(qid, signal)
+    // Checked again here, in the same step as the consume: the signal may have aborted while #settled's result
+    // was on its way, and an aborted call never consumes an answer that already landed.
+    signal?.throwIfAborted()
     if (current.status === "stale") {
       if (workItem) this.#cancel(qid, workItem)
       throw new QuestionExpired(`question ${qid} expired before it was answered`)
@@ -189,7 +192,7 @@ export class Answers {
       wakes.add(wake)
       signal?.addEventListener("abort", wake)
       try {
-        // Checked before the read, so an aborted call never consumes an answer that already landed.
+        // Checked first, so an abort ends the wait.
         signal?.throwIfAborted()
         const current = this.#question(qid)
         if (current.status !== "open") return current

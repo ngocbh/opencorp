@@ -222,6 +222,7 @@ protocol/test_now.py	ported	packages/protocol/test/time.test.ts	§5.4	O0-6
 protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schemas (D6, §5.4)	O0-6
 protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
 questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
+questions/test_ask.py::test_an_answer_from_another_process_is_found_by_polling	dropped	—	design §3.3: only the daemon writes the store; the 30 s poll goes and waiters wake on its after-commit events	O3-8a
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9	O4a-9
 questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
 questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
@@ -618,6 +619,14 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::selfCommand, helperCommand, threadEntry and embedded work in a compiled binary	O0-4 handoff; a probe stands in for the real binary until O3-3/O4b-6	O2-26
 —	new	packages/office/tests/platform.test.ts::selfSpawnEnv drops a name a spawn cant pass as given	design §6.5: the spawn filter drops the names a spawn can't pass as given, as Provider.env refuses them	O2-19
+—	new	packages/office/tests/questions/ask.test.ts::a malformed request is refused without its values	O0-6 and design §6 rule 7: no raw ZodError and no request values in an error	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::a repeated question id is refused	a DuplicateKey that isnt a re-asked node is the caller's error (Python failed on None.id)	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::a work item that cannot be cancelled is logged by its error name	design §6: logs carry an error's type only	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::an aborted ask rejects and leaves its question and work item	design §3.3 (tool calls race their AbortSignal; a raced ask drops its waiter); DeepSeek's ask(signal)	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::an answer that lands just before the abort is left answered	design §3.3 (a raced ask drops its waiter); an answer no one receives stays answered	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::an ask whose signal is already aborted stores nothing	design §3.3 (tool calls race their AbortSignal)	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::carried returns the expired questions discussion or nothing	Answers.carried had no Python test (design §3.2 API)	O3-8a
+—	new	packages/office/tests/questions/ask.test.ts::waiters that stop leave no listeners	design §3.3: a promise per waiter, removed with its abort listener when it stops waiting	O3-8a
 —	new	packages/office/tests/questions/checker.test.ts::answer keys on the prototype are not answers	design §6: prototype safety for answers (own-key lookups; records built with own keys)	O3-7
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9

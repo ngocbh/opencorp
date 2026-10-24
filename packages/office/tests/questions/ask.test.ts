@@ -1,5 +1,5 @@
 /** The office side of a run's ask_user: the handler, and storing then waiting for answers. */
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, onTestFinished, spyOn, test } from "bun:test"
 import { Question } from "@opencorp/protocol"
 import { Answers, AnswersClosed, QuestionExpired, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import {
@@ -359,4 +359,86 @@ test("carried returns the expired questions discussion or nothing", () => {
   expect(answers.carried(question(sid, { carried_from: earlier.id }))).toEqual([{ role: "user", text: "before" }])
   expect(answers.carried(question(sid, { carried_from: newId() }))).toEqual([])
   expect(answers.carried(question(sid))).toEqual([])
+})
+
+test("an aborted ask rejects and leaves its question and work item", async () => {
+  const { store, sid, answers } = setup()
+  const item = workItem({ kind: "question" })
+  const q = question(sid, { work_item_id: item.id })
+  const controller = new AbortController()
+  const { done, out } = asking(answers, q, { workItem: item, signal: controller.signal })
+  await tick()
+  expect(out).toEqual({})
+  controller.abort(new Error("the call stopped"))
+  await done
+  expect(out.error).toBe(controller.signal.reason)
+  expect(store.getQuestion(q.id)!.status).toBe("open")
+  expect(store.getWorkItem(item.id)!.status).toBe("open")
+  expect(answers.waiting).toBe(0)
+  store.answerQuestion(q.id, "pg", "text")
+  await tick()
+  expect(store.getQuestion(q.id)!.status).toBe("answered")
+})
+
+test("an ask whose signal is already aborted stores nothing", async () => {
+  const { store, sid, answers } = setup()
+  const item = workItem({ kind: "question" })
+  const signal = AbortSignal.abort(new Error("the call stopped"))
+  await expect(answers.ask(question(sid, { work_item_id: item.id }), { workItem: item, signal })).rejects.toBe(
+    signal.reason,
+  )
+  expect(store.listQuestions({ sessionId: sid })).toEqual([])
+  expect(store.getWorkItem(item.id)).toBeUndefined()
+  expect(answers.waiting).toBe(0)
+})
+
+test("an answer that lands just before the abort is left answered", async () => {
+  const { store, sid, answers } = setup()
+  // The abort comes in the same synchronous block as the answer, or a microtask after it: after ask has read the
+  // answer but before it marks it consumed.
+  const aborts: ((abort: () => void) => void)[] = [(abort) => abort(), (abort) => queueMicrotask(abort)]
+  for (const later of aborts) {
+    const item = workItem({ kind: "question" })
+    const q = question(sid, { work_item_id: item.id })
+    const controller = new AbortController()
+    const { done, out } = asking(answers, q, { workItem: item, signal: controller.signal })
+    await tick()
+    store.answerQuestion(q.id, "pg", "text")
+    later(() => controller.abort(new Error("the call stopped")))
+    await done
+    expect(out.error).toBe(controller.signal.reason)
+    expect(store.getQuestion(q.id)!.status).toBe("answered")
+    expect(store.getWorkItem(item.id)!.status).toBe("open")
+    expect(answers.waiting).toBe(0)
+  }
+})
+
+test("waiters that stop leave no listeners", async () => {
+  const { store, sid, answers } = setup()
+  const controller = new AbortController()
+  const { signal } = controller
+  const added = spyOn(signal, "addEventListener")
+  const removed = spyOn(signal, "removeEventListener")
+  const answered = Array.from({ length: 50 }, () => question(sid))
+  const runs = answered.map((q) => asking(answers, q, { signal }))
+  await tick()
+  for (const q of answered) store.answerQuestion(q.id, "pg", "text")
+  await Promise.all(runs.map((r) => r.done))
+  expect(runs.every((r) => r.out.result?.status === "consumed")).toBe(true)
+  const aborted = Array.from({ length: 50 }, () => asking(answers, question(sid), { signal }))
+  await tick()
+  controller.abort(new Error("the call stopped"))
+  await Promise.all(aborted.map((r) => r.done))
+  expect(aborted.every((r) => r.out.error === signal.reason)).toBe(true)
+  const counts = (calls: unknown[][]) => {
+    const found = new Map<unknown, number>()
+    for (const call of calls) found.set(call[1], (found.get(call[1]) ?? 0) + 1)
+    return found
+  }
+  const adds = counts(added.mock.calls)
+  const removes = counts(removed.mock.calls)
+  expect(added.mock.calls.length).toBeGreaterThan(0)
+  expect(removes.size).toBe(adds.size)
+  for (const [listener, n] of adds) expect(removes.get(listener)).toBe(n)
+  expect(answers.waiting).toBe(0)
 })
