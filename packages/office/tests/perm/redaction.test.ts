@@ -15,10 +15,9 @@ const CONN = "conn-key-5f3a9c1e7b2d4a60"
 const URLISH = "a b/c+key-0123"
 const QUOTED = 'qu"ote-secret-99'
 
-/** Python's base64.b64encode (or urlsafe_b64encode, padding kept) of the text's UTF-8. */
-function b64(text: string, urlsafe = false): string {
-  const coded = Buffer.from(text, "utf8").toString("base64")
-  return urlsafe ? coded.replaceAll("+", "-").replaceAll("/", "_") : coded
+/** Python's base64.b64encode of the text's UTF-8. */
+function b64(text: string): string {
+  return Buffer.from(text, "utf8").toString("base64")
 }
 
 /** Python's base64.encodebytes: base64 in lines of 76 characters, each ending in "\n". */
@@ -64,7 +63,9 @@ const ENCODED: [string, string, string][] = [
   ["basic user", "Basic " + b64("user:" + CONN), b64("user:" + CONN).slice(8, -4)],
   ["basic u", "Basic " + b64("u:" + CONN), b64("u:" + CONN).slice(4, -4)],
   ["basic ab", "Basic " + b64("ab:" + CONN), b64("ab:" + CONN).slice(4, -4)],
-  ["urlsafe base64", b64("??" + CONN + ">>", true), b64("??" + CONN + ">>", true).slice(4, -4)],
+  // Python's base64.urlsafe_b64encode(f"??{CONN}>>".encode())
+  ["urlsafe base64", "Pz9jb25uLWtleS01ZjNhOWMxZTdiMmQ0YTYwPj4=",
+    "Pz9jb25uLWtleS01ZjNhOWMxZTdiMmQ0YTYwPj4=".slice(4, -4)],
   ["upper case", CONN.toUpperCase(), CONN.toUpperCase()],
   ["mixed case", "Conn-Key-5F3A9c1e7b2d4a60", "5F3A9c1e7b2d4a60"],
   // quote_plus(URLISH)
@@ -79,8 +80,7 @@ const ENCODED: [string, string, string][] = [
   ["json twice unicode", String.raw`"{\"k\": \"qu\\\"ote-secret-99\"}"`, "ote-secret-99"],
 ]
 
-test.each(ENCODED)("encoded and recased forms of a secret are scrubbed [%s]", (label, text, gone) => {
-  if (label === "urlsafe base64") expect(text).toBe("Pz9jb25uLWtleS01ZjNhOWMxZTdiMmQ0YTYwPj4=")  // Python's value
+test.each(ENCODED)("encoded and recased forms of a secret are scrubbed [%s]", (_label, text, gone) => {
   const out = redact(`said: ${text}.`, [], [CONN, URLISH, QUOTED])
   expect(out.includes("[redacted]")).toBe(true)
   expect(out.includes(gone)).toBe(false)
@@ -97,13 +97,13 @@ test.each([0, 50, 56, 300])("a secret in base64 wrapped at 76 columns is scrubbe
     const joined = lines.join("").replaceAll("\r", "")
     expect(joined.includes(core)).toBe(false)
     // No regex state is carried from one call to the next.
-    expect(redact("attachment:\n" + wrapped, [], [CONN]) === out).toBe(true)
+    expect(redact("attachment:\n" + wrapped, [], [CONN])).toBe(out)
   }
 })
 
 test("wrapped base64 without a secret is kept", () => {
   const text = encodebytes("z".repeat(400))
-  expect(redact(text, [], [CONN]) === text).toBe(true)
+  expect(redact(text, [], [CONN])).toBe(text)
 })
 
 test("encoded forms dont scrub ordinary text", () => {
@@ -199,7 +199,6 @@ test("a secret holding regex characters is scrubbed only as written", () => {
   expect(redact("a.cdefghij aXcdefghij", [], ["a.cdefghij"])).toBe("[redacted] aXcdefghij")
   expect(redact("ab*cdefghij abbcdefghij acdefghij", [], ["ab*cdefghij"])).toBe("[redacted] abbcdefghij acdefghij")
 })
-
 
 /** Every code point but the surrogates, in order: the input Python's digests were taken over. */
 const EVERY = (() => {

@@ -27,7 +27,7 @@ export function redact(value: string, keys: Iterable<string>, values: Iterable<s
 export function redact(value: unknown, keys: Iterable<string>, values: Iterable<string>): unknown
 export function redact(value: unknown, keys: Iterable<string>, values: Iterable<string>): unknown {
   // A Set once, so a one-shot iterable isn't drained by the first lookup.
-  return scrub(value, new Set(keys), needles(values))
+  return scrub(value, new Set(keys), buildNeedles(values))
 }
 
 /** The text casefolded and with the URL-safe base64 alphabet folded into the standard one, for the quick tests. */
@@ -68,7 +68,7 @@ type Needles = {
   joins: boolean
 }
 
-function needles(values: Iterable<string>): Needles {
+function buildNeedles(values: Iterable<string>): Needles {
   const plain = new Set<string>()
   const whole = new Set<string>()
   for (const value of values) {
@@ -76,21 +76,24 @@ function needles(values: Iterable<string>): Needles {
       whole.add(text)
       plain.add(text)
     }
-    for (const line of splitLines(value)) if ([...strip(line)].length >= SECRET_LINE_CHARS) plain.add(strip(line))
+    for (const line of splitLines(value)) {
+      const stripped = strip(line)
+      if ([...stripped].length >= SECRET_LINE_CHARS) plain.add(stripped)
+    }
   }
-  const texts = new Set<string>()
+  const variants = new Set<string>()
   for (const needle of plain) {
     for (const once of [jsonDumps(needle).slice(1, -1), jsonDumps(needle, false).slice(1, -1)]) {
-      for (const text of [once, jsonDumps(once).slice(1, -1), jsonDumps(once, false).slice(1, -1)]) texts.add(text)
+      for (const text of [once, jsonDumps(once).slice(1, -1), jsonDumps(once, false).slice(1, -1)]) variants.add(text)
     }
     for (const text of [needle, repr(needle).slice(1, -1), quote(needle, ""), quote(needle), quotePlus(needle)]) {
-      texts.add(text)
+      variants.add(text)
     }
   }
   const cores = new Set<string>()
   for (const value of whole) for (const core of base64Cores(value)) cores.add(core)
   const found: Form[] = []
-  for (const text of texts) {
+  for (const text of variants) {
     if (text) found.push({ text, quick: fold(text), pattern: new RegExp(caseBlind(text), "giu") })
   }
   for (const core of cores) {
@@ -98,11 +101,15 @@ function needles(values: Iterable<string>): Needles {
     const pattern = new RegExp(core.replace(/[+/]/g, (c) => (c === "+" ? "[+\\-]" : "[/_]")), "g")
     found.push({ text: core, quick: fold(core), pattern })
   }
-  // Stable, so a text that is also a core keeps its case-blind form first, as Python's dict order does.
-  found.sort((a, b) => [...b.text].length - [...a.text].length || comparePoints(a.text, b.text))
-  const quick = found.map((form) => form.quick)
-  const shortest = found.length === 0 ? 0 : found.reduce((min, form) => Math.min(min, form.text.length), Infinity)
-  return { forms: found, quick, cores, shortest, joins: !quick.some((q) => q.includes("\0")) }
+  // Code points once per form, not per comparison. Stable, so a text that is also a core keeps its case-blind form
+  // first, as Python's dict order does.
+  const forms = found
+    .map((form) => ({ form, points: Array.from(form.text, (ch) => ch.codePointAt(0)!) }))
+    .sort((a, b) => b.points.length - a.points.length || comparePoints(a.points, b.points))
+    .map(({ form }) => form)
+  const quick = forms.map((form) => form.quick)
+  const shortest = forms.length === 0 ? 0 : forms.reduce((min, form) => Math.min(min, form.text.length), Infinity)
+  return { forms, quick, cores, shortest, joins: !quick.some((q) => q.includes("\0")) }
 }
 
 /** `text` as a regex source matching it in any letter case (with flags `iu`). */
@@ -115,9 +122,7 @@ function caseBlind(text: string): string {
 
 /** Python's string order, by code point: JS `<` compares UTF-16 units, which puts U+E000 to U+FFFF after astral
  *  characters. */
-function comparePoints(a: string, b: string): number {
-  const x = Array.from(a, (ch) => ch.codePointAt(0)!)
-  const y = Array.from(b, (ch) => ch.codePointAt(0)!)
+function comparePoints(x: number[], y: number[]): number {
   for (let i = 0; i < x.length && i < y.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!
   return x.length - y.length
 }
