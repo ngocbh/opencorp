@@ -235,21 +235,27 @@ export class CompanyGit {
     return out.code === 0 ? out.stdout : null
   }
 
-  /** The bytes of each blob in `blobIds` that the clone has, by id, read in one git call. */
+  /** The bytes of each blob in `blobIds` that the clone has, by id, read in one git call; rejects with
+   *  `CompanyGitError` when git stops before it has answered every id. */
   async readBlobs(blobIds: string[]): Promise<Map<string, Buffer>> {
     const ids = [...new Set(blobIds)].filter((id) => BLOB_ID.test(id))
     const found = new Map<string, Buffer>()
     if (!ids.length) return found
     const input = Buffer.from(ids.map((id) => `${id}\n`).join(""))
-    const out = (await this.#run(["cat-file", "--batch"], { check: false, input })).stdout
+    // The exit code is ignored, as Python did: complete output is enough.
+    const { code, stdout: out, stderr } = await this.#run(["cat-file", "--batch"], { check: false, input })
+    // Output that ends early (a broken or locked clone) fails, as Python's `index` and `int` raised.
+    const stopped = () => new CompanyGitError(`git cat-file --batch exited ${code}: ${stderr.toString().trim()}`)
     let at = 0
     for (const id of ids) {
       const end = out.indexOf(0x0a, at)
-      if (end < 0) break // git stopped early
+      if (end < 0) throw stopped()
       const header = out.subarray(at, end).toString().split(" ")
       at = end + 1
       if (header.length < 3) continue // "<id> missing"
+      if (!/^\d+$/.test(header[2]!)) throw stopped()
       const size = Number(header[2])
+      if (at + size > out.length) throw stopped()
       if (header[1] === "blob") found.set(id, out.subarray(at, at + size))
       at += size + 1
     }

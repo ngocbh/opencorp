@@ -154,6 +154,12 @@ test("read blobs reads several at once and skips what it cant", async () => {
     ]),
   )
   expect(await g.readBlobs([])).toEqual(new Map())
+  // A broken clone that stops before every header is read fails, as Python's `out.index` raised
+  const broken = path.join(tempDir(), "git")
+  fs.writeFileSync(broken, "#!/bin/sh\necho broken >&2\nexit 1\n", { mode: 0o755 })
+  const failing = new CompanyGit(company, path.join(tempDir(), "worktrees"), { git: broken })
+  await expect(failing.readBlobs([profile])).rejects.toThrow(CompanyGitError)
+  await expect(failing.readBlobs([profile])).rejects.toThrow(/broken/)
 })
 
 test("commit with no change returns head", async () => {
