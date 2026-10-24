@@ -1,6 +1,6 @@
 /** Repo issues, and company files read as YAML into issues instead of exceptions. */
 import { expect, test } from "bun:test"
-import { Group, Person, RepoIssue as RepoIssueSchema } from "@opencorp/protocol"
+import { Asset, Company, Group, Person, RepoIssue as RepoIssueSchema } from "@opencorp/protocol"
 import { parseFile, type RepoIssue, repoIssue } from "../../src/company/issues.ts"
 
 const bytes = (text: string) => new TextEncoder().encode(text)
@@ -101,4 +101,92 @@ test("yes stays text in a company file", () => {
   const { value, issues } = parse(PERSON.replace("title: Engineer", "title: yes"))
   expect(issues).toEqual([])
   expect(value?.title).toBe("yes")
+})
+
+const ASSET_PATH = "assets/a.yaml"
+
+/** An asset file whose one grant has `where` written as the YAML text `where`, parsed with its issues. */
+function parseAsset(where: string) {
+  const issues: RepoIssue[] = []
+  const text = `id: a\nkind: k\ntools: {x: {}}\ngrants:\n  - {who: minh, can: [x], where: ${where}}\n`
+  const value = parseFile(ASSET_PATH, bytes(text), Asset, issues)
+  return { value, issues }
+}
+
+test("a proto key at any depth is a schema issue", () => {
+  const people: [string, string][] = [
+    [PERSON + "__proto__: hunter2\n", "file: has a key named __proto__"],
+    [PERSON.replace("title: Engineer", "title: {__proto__: hunter2}"), "title: has a key named __proto__"],
+    [PERSON + "groups:\n  - {a: [{__proto__: 1}]}\n", "groups: has a key named __proto__"],
+  ]
+  for (const [text, message] of people) {
+    const { value, issues } = parse(text)
+    expect(value).toBeNull()
+    expect(issues).toEqual([repoIssue(PATH, "repo.schema", message)])
+  }
+  const wheres = [
+    "{__proto__: [hunter2]}",
+    '{"__proto__": [x]}',
+    String.raw`{"\x5f_proto__": [x]}`,
+    "{!!str __proto__: [x]}",
+    "{a: [&k __proto__], *k : [x]}",
+    "{<<: {__proto__: [x]}}",
+  ]
+  for (const where of wheres) {
+    const { value, issues } = parseAsset(where)
+    expect(value).toBeNull()
+    expect(issues).toEqual([repoIssue(ASSET_PATH, "repo.schema", "grants: has a key named __proto__")])
+  }
+  const groupIssues: RepoIssue[] = []
+  expect(parseFile("groups/eng.yaml", bytes("id: eng\nname: {__proto__: x}\n"), Group, groupIssues)).toBeNull()
+  expect(groupIssues).toEqual([repoIssue("groups/eng.yaml", "repo.schema", "name: has a key named __proto__")])
+  const companyIssues: RepoIssue[] = []
+  const company = bytes("name: Acme\nceo: minh\ndefaults: {__proto__: {}}\n")
+  expect(parseFile("company.yaml", company, Company, companyIssues)).toBeNull()
+  expect(companyIssues).toEqual([repoIssue("company.yaml", "repo.schema", "defaults: has a key named __proto__")])
+})
+
+test("an integer outside the safe range is a schema issue", () => {
+  const people: [string, string][] = [
+    [PERSON.replace("title: Engineer", "title: 9007199254740993"), "title: has an integer too large to read exactly"],
+    [PERSON + "extra: 9007199254740993\n", "an extra field: has an integer too large to read exactly"],
+    [PERSON + "constructor: 9007199254740993\n", "an extra field: has an integer too large to read exactly"],
+  ]
+  for (const [text, message] of people) {
+    const { value, issues } = parse(text)
+    expect(value).toBeNull()
+    expect(issues).toEqual([repoIssue(PATH, "repo.schema", message)])
+  }
+  const wheres = [
+    "{nodes: [9007199254740993]}",
+    "{nodes: [-9007199254740993]}",
+    "{nodes: [0x20000000000001]}",
+    "{nodes: [!!int 9007199254740993]}",
+    "{nodes: [0o400000000000000001]}",
+    "{nodes: [9007199254740992]}",
+    "{a: [&n 9007199254740993], b: [*n]}",
+  ]
+  for (const where of wheres) {
+    const { value, issues } = parseAsset(where)
+    expect(value).toBeNull()
+    expect(issues).toEqual([
+      repoIssue(ASSET_PATH, "repo.schema", "grants: has an integer too large to read exactly"),
+    ])
+  }
+})
+
+test("one issue names the first problem only", () => {
+  const { value, issues } = parse(PERSON.replace("title: Engineer", "title: 9007199254740993") + "__proto__: x\n")
+  expect(value).toBeNull()
+  expect(issues).toEqual([repoIssue(PATH, "repo.schema", "title: has an integer too large to read exactly")])
+})
+
+test("safe integers and ordinary keys are unaffected", () => {
+  const { value, issues } = parseAsset(
+    "{nodes: [9007199254740991, -9007199254740991, 9007199254740993.0], constructor: [1], prototype: [2]}",
+  )
+  expect(issues).toEqual([])
+  const where = value!.grants[0]!.where!
+  expect(Object.keys(where)).toEqual(["nodes", "constructor", "prototype"])
+  expect(where.nodes!.every((n) => typeof n === "number")).toBe(true)
 })

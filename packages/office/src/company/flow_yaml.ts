@@ -226,7 +226,7 @@ class Reader {
       // Two written keys repeat when they read as one value. Yian compares key text, a stricter rule (it
       // also refuses `1` beside `"1"`); both are safe. Keys written as aliases never repeat.
       if (!isAlias(pair.key)) {
-        // An int key is a bigint now, so an integer-valued float key must compare as one.
+        // Int keys are bigints (intAsBigInt), so an integer-valued float key compares as one: 1 and 1.0 repeat.
         const id = typeof key.value === "number" && Number.isInteger(key.value) ? BigInt(key.value) : key.value
         if (seen.has(id)) throw new YamlError(invalid(this.text, at))
         seen.add(id)
