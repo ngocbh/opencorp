@@ -529,6 +529,10 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/translate.test.ts::a reasoning item with an empty summary writes nothing	translate.py:166,241,339: Python's truthiness kept	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
+—	new	packages/office/tests/hq/auth.test.ts::only the first cookie header counts	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
+—	new	packages/office/tests/hq/auth.test.ts::the open requests and the app need no session	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
+—	new	packages/office/tests/hq/auth.test.ts::the session check reads the cookie named for the host port	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
+—	new	packages/office/tests/hq/auth.test.ts::without a live session the api is 401 sign in required	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/config.test.ts::a problem never quotes the files values	design §6, rule 13: no parser text or file values in a problem	O2-7
 —	new	packages/office/tests/hq/config.test.ts::app dir expands the home folder	design §6.4 (HQ settings): Node has no getpwnam, so only ~, ~/… and ~<me> expand; another ~name is refused	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::a 404 from the pipeline carries the headers and keeps the connection	design §6.4, rule 7: the pipeline behind the guard, given the read body, keeps the connection open	O2-7
