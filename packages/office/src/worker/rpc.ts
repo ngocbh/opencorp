@@ -46,36 +46,61 @@ export class RemoteError extends Error {
   }
 }
 
-/** Numbered requests over a channel, on the worker side; a reader loop hands replies to `deliver`. */
+/** Numbered requests over a channel, on the worker side; a reader loop hands replies to `deliver`. In the worker
+ *  process the process exits when its channel closes; in process, the reader calls `close`. */
 export class Rpc {
   #lastId = 0
-  readonly #waiting = new Map<number, (reply: Frame) => void>()
+  readonly #waiting = new Map<number, { resolve: (reply: Frame) => void; reject: (error: unknown) => void }>()
+  #closed: { error: unknown } | undefined
 
   constructor(readonly channel: Channel) {}
 
   /** Sends a `type` request frame with `fields` and resolves to its reply; rejects with `RemoteError` for an error
-   *  reply, or with the send's own error. A request already sent when the channel closes never settles: the worker
-   *  exits when its channel closes. */
-  async request(type: RequestType, fields: Frame = {}): Promise<Frame> {
+   *  reply, with the send's own error, with `signal.reason` once `signal` aborts (a later reply is dropped), or
+   *  with the error `close` was given. */
+  async request(type: RequestType, fields: Frame = {}, { signal }: { signal?: AbortSignal } = {}): Promise<Frame> {
+    if (this.#closed) throw this.#closed.error
+    if (signal?.aborted) throw signal.reason
     const id = ++this.#lastId
+    let onAbort: (() => void) | undefined
     let reply: Frame
     try {
       // Registered before the send, so a reply that arrives at once finds its waiter.
-      const replied = new Promise<Frame>((resolve) => this.#waiting.set(id, resolve))
+      const replied = new Promise<Frame>((resolve, reject) => {
+        this.#waiting.set(id, { resolve, reject })
+        if (signal) {
+          onAbort = () => {
+            this.#waiting.delete(id)
+            reject(signal.reason)
+          }
+          signal.addEventListener("abort", onAbort, { once: true })
+        }
+      })
+      // Observed at once: an abort while the send is pending, or after it failed, must not be unhandled.
+      replied.catch(() => {})
       await this.channel.send({ ...fields, type, id })
       reply = await replied
     } finally {
       this.#waiting.delete(id)
+      if (onAbort) signal?.removeEventListener("abort", onAbort)
     }
     if (Object.hasOwn(reply, "error")) throw new RemoteError(reply)
     return reply
   }
 
+  /** Rejects every pending request with `error`, and every later one. */
+  close(error: unknown): void {
+    this.#closed ??= { error }
+    const waiting = [...this.#waiting.values()]
+    this.#waiting.clear()
+    for (const { reject } of waiting) reject(error)
+  }
+
   /** Completes the request `frame` answers; `false` if none is waiting. */
   deliver(frame: Frame): boolean {
-    const resolve = typeof frame.id === "number" ? this.#waiting.get(frame.id) : undefined
-    if (resolve === undefined) return false
-    resolve(frame)
+    const waiter = typeof frame.id === "number" ? this.#waiting.get(frame.id) : undefined
+    if (waiter === undefined) return false
+    waiter.resolve(frame)
     return true
   }
 }
@@ -137,6 +162,7 @@ export function modelFromSchema(
  * unchanged; Yian checks a call against it, then `modelFromSchema` fills the defaults.
  *
  * An error reply throws `ReportedToolError` (`error: <message>`), which an AGENT's model reads as the call's result.
+ * The request ends when the call's signal aborts, as it does when the run stops.
  */
 export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionTool {
   return tool({
@@ -145,9 +171,9 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
     parameters: modelFromSchema(`${spec.name}_args`, spec.parameters),
     // The job's schema already checked that the parameters are a JSON object.
     parametersJsonSchema: spec.parameters as JsonObject,
-    execute: async (args) => {
+    execute: async (args, ctx) => {
       try {
-        const reply = await rpc.request("tool_call", { group, name: spec.name, args })
+        const reply = await rpc.request("tool_call", { group, name: spec.name, args }, { signal: ctx.signal })
         return reply.result ?? null
       } catch (error) {
         if (isInstance(error, RemoteError)) throw new ReportedToolError(`error: ${error.message}`)
@@ -157,9 +183,10 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
   })
 }
 
-/** Yian's `ask_user` handler, answered by the office through an `ask_user` request with the six `ASK_KEYS`. */
+/** Yian's `ask_user` handler, answered by the office through an `ask_user` request with the six `ASK_KEYS`; the
+ *  request ends when the call's signal aborts, as it does when the run stops. */
 export function askUserStub(rpc: Rpc): AskUserHandler {
-  return async ({ question, questions, answerSchema, title, nodeId, options }) => {
+  return async ({ question, questions, answerSchema, title, nodeId, options }, ctx) => {
     const request = {
       question: question ?? null,
       questions: questions ?? null,
@@ -169,7 +196,7 @@ export function askUserStub(rpc: Rpc): AskUserHandler {
       options: options ?? null,
     }
     try {
-      return (await rpc.request("ask_user", { request })).answer ?? null
+      return (await rpc.request("ask_user", { request }, { signal: ctx.signal })).answer ?? null
     } catch (error) {
       if (isInstance(error, RemoteError)) throw new Error(`ask_user failed: ${error.message}`)
       throw error
@@ -200,7 +227,7 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   stream(worker: W, frame: Frame): void
   /** Steer messages the run did not read before `nodeId` finished. */
   steerLeft(worker: W, nodeId: string, texts: string[]): void
-  /** The job finished: `status`, `run_id`, `output`, `failure`, `backward`. */
+  /** The job finished: `status`, `run_id`, `output`, `failure`. */
   result(worker: W, frame: Frame): void
   /** The job threw before it could finish. */
   error(worker: W, frame: Frame): void

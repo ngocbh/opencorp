@@ -123,7 +123,7 @@ async function runJob(
   const log = runLogPath(runs, job.run_id)
   const onEvent: EventHook = (event) => {
     const name = event.type
-    const data = event.toJSON() as Record<string, unknown>
+    const data: Record<string, unknown> = { ...event.toJSON() }
     let id: string | null = null
     let texts: string[] = []
     if (event.type === "NodeSucceeded" || event.type === "NodeSkipped" || event.type === "NodeFailed") {
@@ -157,8 +157,8 @@ async function runJob(
 }
 
 /**
- * Routes office frames until the channel closes or a frame can't be read; then, unless the job has finished, stops
- * the run and calls `exit(EXIT_ORPHANED)`. Never rejects.
+ * Routes office frames until the channel closes or a frame can't be read; then rejects pending and later requests
+ * and, unless the job has finished, stops the run and calls `exit(EXIT_ORPHANED)`. Never rejects.
  */
 async function readFrames(
   channel: Channel,
@@ -195,6 +195,8 @@ async function readFrames(
       process.stderr.write(`opencorp __worker: bad office frame (${errorName(error)})\n`)
     }
   }
+  // Store requests take no signal; in process, they end here.
+  rpc.close(new ChannelClosed())
   if (!state.finished) {
     // So an in-process run stops too; in the worker process `exit` ends everything first.
     stopper.abort(new Error("the office closed the channel"))

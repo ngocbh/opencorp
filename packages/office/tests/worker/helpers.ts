@@ -6,7 +6,7 @@ import { onTestFinished } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
-import { serve, type WorkerEnv } from "../../src/worker/main.ts"
+import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
   type AskRequest,
   BaseHandlers,
@@ -267,16 +267,18 @@ export interface TestWorker extends JobWorker {
   stop(): Promise<boolean>
   /** Closes the office end; the worker exits 3 if its job has not finished. */
   closeChannel(): void
-  /** The exit code once `handlers.exited` has run; `null` if that takes longer than `ms`. */
+  /** The exit code once `handlers.exited` has run; `null` if that takes longer than `ms`. Rethrows the first error
+   *  a notification handler threw, or the office read loop met. */
   wait(ms?: number): Promise<number | null>
 }
 
 /**
  * Runs `job` in an in-process worker (`serve` over a channel pair) and reads its frames as the office's worker does:
  * requests are answered by `handlers` without waiting, notifications go to the handler of that name, and after
- * `result` or `error` the office stops sending. Once the office read loop has ended and the worker's code is known,
- * the office end closes and `handlers.exited` runs. At test end the office end closes and the test fails if `serve`
- * hasn't returned within 10 s.
+ * `result` or `error` the office stops sending. A throwing notification handler doesn't end the read loop; `wait`
+ * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
+ * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
+ * the test fails if `serve` hasn't returned within 10 s.
  */
 export async function inProcessWorker(
   job: Job,
@@ -288,7 +290,16 @@ export async function inProcessWorker(
   // Resolving twice does nothing, so the first of `exit` and the return value wins.
   const code = new Promise<number>((resolve) => (settle = resolve))
   const served = serve(workerSide, { env, linger, exit: settle })
-  served.then(settle, () => {})
+  served.then(settle, () => settle(EXIT_FAILED))
+  let failure: { error: unknown } | undefined
+  // A handler's error is kept, never thrown into the read loop or left unobserved.
+  const notify = (call: () => void) => {
+    try {
+      call()
+    } catch (error) {
+      failure ??= { error }
+    }
+  }
   const send = async (frame: Frame): Promise<boolean> => {
     try {
       await office.send(frame)
@@ -309,6 +320,7 @@ export async function inProcessWorker(
       const timedOut = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))
       const result = await Promise.race([finished, timedOut])
       clearTimeout(timer)
+      if (failure) throw failure.error
       return result
     },
   }
@@ -320,15 +332,17 @@ export async function inProcessWorker(
         if (isRequest(kind)) {
           void replyTo(office, frame, handlers, worker)
         } else if (kind === "steer_left") {
-          handlers.steerLeft(worker, frame.node_id as string, frame.texts as string[])
+          notify(() => handlers.steerLeft(worker, frame.node_id as string, frame.texts as string[]))
         } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
-          handlers[kind](worker, frame)
+          notify(() => handlers[kind](worker, frame))
           // The run is over: later steers fail here, and the worker, having answered the ones already sent, sees the
           // end of stream and returns.
           if (kind === "result" || kind === "error") office.closeSend()
         }
       }
-    } catch {}
+    } catch (error) {
+      if (!(error instanceof ChannelClosed)) failure ??= { error }
+    }
   }
   // Not closed when the code settles: late steer_left frames may still be buffered. Both waits are bounded, since
   // `serve` always closes the worker's channel on its way out.
@@ -336,7 +350,7 @@ export async function inProcessWorker(
     await readLoop()
     const returncode = await code
     office.close()
-    handlers.exited(worker, returncode)
+    notify(() => handlers.exited(worker, returncode))
     return returncode
   })()
   onTestFinished(async () => {

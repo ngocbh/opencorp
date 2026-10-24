@@ -1,9 +1,10 @@
 /** Worker requests: the office answers each with its handlers, checked against the job, with value-free errors. */
-import { expect, test } from "bun:test"
+import { PassThrough } from "node:stream"
+import { expect, onTestFinished, test } from "bun:test"
 import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
 import { isReportedToolError, ToolSet } from "@ngocbh/yian/tools"
 import { z } from "zod"
-import { ChannelClosed, FrameTooLarge, type Channel, type Frame } from "../../src/worker/channel.ts"
+import { Channel, ChannelClosed, FrameTooLarge, type Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, toolSpec } from "../../src/worker/job.ts"
 import {
   answerRequest,
@@ -17,8 +18,10 @@ import {
   RemoteError,
   remoteTool,
   replyTo,
+  Rpc,
   type RpcLog,
 } from "../../src/worker/rpc.ts"
+import { waitFor } from "../helpers.ts"
 import { officeEnd, workerFor } from "./helpers.ts"
 
 /** A tool taking string `properties`, all required, that runs `call`. */
@@ -625,4 +628,61 @@ test("object arguments keep a proto key", async () => {
   expect(seen).toHaveLength(1)
   expect(Object.keys(seen[0] as object)).toEqual(["__proto__", "a"])
   expect(Object.getPrototypeOf(seen[0])).toBe(Object.prototype)
+})
+
+/** An `Rpc` over a channel nobody answers, whose transport takes each write `delay` ms later; `writes()` counts the
+ *  writes taken. The channel closes when the test finishes. */
+function unanswered(delay = 0): { rpc: Rpc; writes: () => number } {
+  const readable = new PassThrough()
+  let writes = 0
+  const channel = new Channel({
+    readable,
+    write: () =>
+      new Promise<void>((resolve) =>
+        setTimeout(() => {
+          writes++
+          resolve()
+        }, delay),
+      ),
+    endWrite: () => {},
+    destroy: () => readable.destroy(),
+  })
+  onTestFinished(() => channel.close())
+  return { rpc: new Rpc(channel), writes: () => writes }
+}
+
+test("a request ends when its signal aborts", async () => {
+  const reason = new Error("the office stopped the run")
+  const sent = unanswered()
+  const stop = new AbortController()
+  const asked = rejection(sent.rpc.request("tool_call", { group: "g" }, { signal: stop.signal }))
+  await waitFor(() => sent.writes() === 1, { timeout: 5000, what: "the request to be sent" })
+  stop.abort(reason)
+  expect(await asked).toBe(reason)
+  expect(sent.rpc.deliver({ type: "tool_result", id: 1, result: "late" })).toBe(false)
+
+  // Aborted while the send is still pending: the reply promise already has a handler, so nothing is unhandled.
+  const slow = unanswered(20)
+  const early = new AbortController()
+  const during = rejection(slow.rpc.request("tool_call", {}, { signal: early.signal }))
+  early.abort(reason)
+  expect(slow.writes()).toBe(0)
+  expect(await during).toBe(reason)
+  // An already aborted signal sends nothing.
+  expect(await rejection(slow.rpc.request("tool_call", {}, { signal: early.signal }))).toBe(reason)
+  await Bun.sleep(50)
+  expect(slow.writes()).toBe(1)
+})
+
+test("a closed rpc rejects pending and later requests", async () => {
+  const sent = unanswered()
+  const first = rejection(sent.rpc.request("tool_call", { group: "g" }))
+  const second = rejection(sent.rpc.request("ask_user", { request: {} }))
+  await waitFor(() => sent.writes() === 2, { timeout: 5000, what: "both requests to be sent" })
+  const closed = new ChannelClosed()
+  sent.rpc.close(closed)
+  expect(await first).toBe(closed)
+  expect(await second).toBe(closed)
+  expect(await rejection(sent.rpc.request("store_read", { store: "profile" }))).toBe(closed)
+  expect(sent.writes()).toBe(2)
 })

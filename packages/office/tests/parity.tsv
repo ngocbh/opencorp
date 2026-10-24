@@ -729,16 +729,25 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/office/tests/worker/main.test.ts::a frame other than start is an error	design §2.4 step 1	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a reserved tool name is refused before any model call	yian #1062 reserved names	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a resume job is refused until the worker can resume	plan: the resume path is O4a-2's; §6 rule 1 (frames-only traceback)	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a reused run id is refused	design §2.4 (#1000 part 1, S5)	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a stop frame stops a run waiting on a question	P1, design §2.4	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a stop frame stops the run	P1, design §2.4	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a waiting run ends normally with its status	yian #1064/#1073 coordination note	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker exits 3 when the office closes before the start frame	design §2.4 step 6	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a worker exits 3 when the office closes during the run	design §2.4 step 6	O3-3
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
 —	new	packages/office/tests/worker/remote_store.test.ts::a closed channel is a system error	Y3: the MarkdownStore contract's classes	O3-2
 —	new	packages/office/tests/worker/remote_store.test.ts::an invalid reply is a range error	Y3: the MarkdownStore contract's classes	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a closed rpc rejects pending and later requests	design §2.4: an in-process worker's requests end with its channel	O3-3
 —	new	packages/office/tests/worker/rpc.test.ts::a forged frame through the channel is refused	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a forged store request for a store the job was not given is refused	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a forged tool call for a group the job was not given is refused	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a malformed field is failed without its value	§6 rule 1	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a model written $v key reaches the office tool	design §2.4 (settled $v escape)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::a reply that cannot be sent becomes a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a request ends when its signal aborts	P1: a stop ends a node waiting on the office	O3-3
 —	new	packages/office/tests/worker/rpc.test.ts::a thrown non error value is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2

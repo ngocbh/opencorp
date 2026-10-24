@@ -23,6 +23,9 @@ const ESCAPE =
   "id: escape\nname: escape\nuses:\n  echo: ../../echo\nnodes:\n  reply:\n    kind: call\n    call: echo\n" +
   "    input:\n      text: hi\noutput: ${reply.output}\n"
 
+/** The parts of a chat request these tests read. */
+type ChatRequest = { tools: { function: { name: string } }[]; messages: unknown }
+
 /** A fresh temp root holding the worker tests' pin and an empty runs folder. */
 function base(): { root: string; pin: string; runs: string } {
   const root = tempDir()
@@ -44,10 +47,10 @@ test("office tool groups run in the office", async () => {
   const job = makeJob(base(), "flows/tools.yaml", { groups: groupSpecs(tools) })
   const rec = await run(job, new Recorder({ tools }), { env: fake.env() })
   expect(rec.outcome?.output).toBe("Done.")
-  const [first, second] = fake.requests() as [Record<string, any>, Record<string, any>]
-  expect(first.tools.map((t: Record<string, any>) => t.function.name)).toEqual(["shout"])
+  const [first, second] = fake.requests() as [ChatRequest, ChatRequest]
+  expect(first.tools.map((t) => t.function.name)).toEqual(["shout"])
   expect(JSON.stringify(second.messages)).toContain("HI")
-  const toolEvents = rec.frames.filter((f) => f.name === "ToolCallFinished").map((f) => f.data as Record<string, any>)
+  const toolEvents = rec.frames.filter((f) => f.name === "ToolCallFinished").map((f) => f.data as { name: string })
   expect(toolEvents.map((e) => e.name)).toEqual(["shout"])
 })
 

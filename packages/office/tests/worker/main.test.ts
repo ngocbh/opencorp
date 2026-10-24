@@ -1,13 +1,49 @@
-/** The worker's frame loop: the start frame, closing frames, steers after the last frame, and the linger. */
+/** The worker's frame loop: the start frame, closing frames, steers after the last frame, the linger, and how a run
+ *  ends: waiting, stopped, orphaned or refused. */
+import fs from "node:fs"
 import path from "node:path"
+import { inspectRun } from "@ngocbh/yian/run"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
+import { groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, report } from "../../src/worker/main.ts"
+import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
+import { fakeLlm } from "../chat/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { channelPair, makeJob, startWorker, writePin } from "./helpers.ts"
+import {
+  channelPair,
+  inProcessWorker,
+  makeJob,
+  Recorder,
+  run,
+  startWorker,
+  type TestWorker,
+  writeFiles,
+  writePin,
+} from "./helpers.ts"
 
 setDefaultTimeout(30_000)
+
+// A run whose one node sleeps an hour, so it quiesces as waiting.
+const NAP =
+  "id: nap\nname: nap\nnodes:\n  nap:\n    kind: tool\n    tool_id: sleep\n    input:\n      for: 1h\n" +
+  "output: ${nap.output}\n"
+const STOPPED = "Error: the office stopped the run"
+
+const shout: OfficeTool = {
+  description: "Return text in capitals.",
+  parameters: { type: "object", required: ["text"], properties: { text: { type: "string" } } },
+  call: ({ text }) => String(text).toUpperCase(),
+}
+
+/** A recorder whose questions are never answered. */
+class Unanswered extends Recorder {
+  override askUser(_worker: TestWorker, request: AskRequest): unknown {
+    this.asked.push(request)
+    return new Promise(() => {})
+  }
+}
 
 /** A fresh pin and runs folder for a job. */
 function base(): { pin: string; runs: string } {
@@ -85,4 +121,94 @@ test("a frame other than start is an error", async () => {
   const frame = await office.recv()
   expect(frame.type).toBe("error")
   expect(frame.message).toBe("TypeError: expected a start frame")
+})
+
+test("a waiting run ends normally with its status", async () => {
+  const fake = await fakeLlm()
+  const where = base()
+  writeFiles(where.pin, { "flows/nap.yaml": NAP })
+  const rec = await run(makeJob(where, "flows/nap.yaml", { inputs: {} }), new Recorder(), { env: fake.env() })
+  expect(rec.order).toEqual(["result"])
+  expect(rec.outcome?.status).toBe("waiting")
+  expect(rec.returncode).toBe(EXIT_OK)
+  expect(fake.requests()).toEqual([])
+})
+
+test("a stop frame stops the run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "hi", hold: true })
+  const job = makeJob(base())
+  const rec = new Recorder()
+  const worker = await inProcessWorker(job, rec, { env: fake.env() })
+  await fake.waitForRequests(1)
+  expect(await worker.stop()).toBe(true)
+  expect(await worker.wait()).toBe(EXIT_FAILED)
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toContain(STOPPED)
+  expect(inspectRun(job.log).status).toBe("stopped")
+  fake.release()
+})
+
+test("a stop frame stops a run waiting on a question", async () => {
+  const fake = await fakeLlm()
+  const job = makeJob(base(), "flows/chat.yaml", { inputs: {} })
+  const rec = new Unanswered()
+  const worker = await inProcessWorker(job, rec, { env: fake.env() })
+  await waitFor(() => rec.asked.length === 1, { timeout: 10_000, what: "the question" })
+  expect(await worker.stop()).toBe(true)
+  expect(await worker.wait()).toBe(EXIT_FAILED)
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toContain(STOPPED)
+  expect(inspectRun(job.log).status).toBe("stopped")
+})
+
+test("a reused run id is refused", async () => {
+  const fake = await fakeLlm()
+  const where = base()
+  fs.mkdirSync(path.join(where.runs, "r1"), { recursive: true })
+  const rec = await run(makeJob(where), new Recorder(), { env: fake.env() })
+  expect(rec.outcome?.type).toBe("error")
+  expect(String(rec.outcome?.message)).toContain("EEXIST")
+  expect(rec.returncode).toBe(EXIT_FAILED)
+  expect(fake.requests()).toEqual([])
+})
+
+test("a worker exits 3 when the office closes during the run", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "hi", hold: true })
+  const worker = await inProcessWorker(makeJob(base()), new Recorder(), { env: fake.env() })
+  await fake.waitForRequests(1)
+  worker.closeChannel()
+  expect(await worker.wait()).toBe(EXIT_ORPHANED)
+  fake.release()
+})
+
+test("a resume job is refused until the worker can resume", async () => {
+  const fake = await fakeLlm()
+  const rec = await run(makeJob(base(), "flows/echo.yaml", { kind: "resume" }), new Recorder(), { env: fake.env() })
+  expect(rec.outcome?.type).toBe("error")
+  const message = "Error: this worker can't resume a run yet"
+  expect(rec.outcome?.message).toBe(message)
+  const traceback = String(rec.outcome?.traceback)
+  expect(traceback).not.toBe("")
+  expect(traceback).not.toContain("resume a run yet")
+  for (const line of traceback.split("\n")) expect(line).toMatch(/^\s+at /)
+  expect(rec.returncode).toBe(EXIT_FAILED)
+  expect(fake.requests()).toEqual([])
+})
+
+test("a reserved tool name is refused before any model call", async () => {
+  const cases: [string, Partial<JobInput>, string][] = [
+    ["flows/tools.yaml", { groups: groupSpecs({ toolbox: { take: shout } }) }, "RangeError: "],
+    ["flows/echo.yaml", { groups: groupSpecs({ sleep: { shout } }) }, "RangeError: "],
+    ["flows/echo.yaml", { groups: groupSpecs({ ask: { shout } }) }, "TypeError: pass the ask handler once"],
+  ]
+  for (const [flow, over, start] of cases) {
+    const fake = await fakeLlm()
+    const rec = await run(makeJob(base(), flow, over), new Recorder(), { env: fake.env() })
+    expect(rec.outcome?.type).toBe("error")
+    expect(String(rec.outcome?.message)).toStartWith(start)
+    expect(rec.returncode).toBe(EXIT_FAILED)
+    expect(fake.requests()).toEqual([])
+  }
 })
