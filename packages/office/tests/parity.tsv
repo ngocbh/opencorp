@@ -555,7 +555,9 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/worker/codec.test.ts::NaN round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::a bigint round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::a forged tag is refused	design §2.4: the office value codec	O3-1
-—	new	packages/office/tests/worker/codec.test.ts::a plain object with a $v key is refused	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::a proto key in a decoded record stays a plain key	design §2.4, §6 rule 9: decode never sets a prototype	O3-2
+—	new	packages/office/tests/worker/codec.test.ts::a record with a $v key round trips	design §2.4 (settled 2026-10-23): a $v record is escaped as {"$v": "record", "value": …}, not refused	O3-2
+—	new	packages/office/tests/worker/codec.test.ts::a value with no json form is refused	design §2.4: the office value codec	O3-2
 —	new	packages/office/tests/worker/codec.test.ts::negative Infinity round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::nested values round trip	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::text that is not json is refused with a fixed message	design §2.4: the office value codec; §6 rule 1	O3-1
