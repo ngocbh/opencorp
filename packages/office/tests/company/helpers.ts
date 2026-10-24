@@ -1,5 +1,5 @@
 /** Build throwaway company repos for tests (Python's `tests/company/conftest.py`). */
-import { spawnSync, type SpawnSyncOptions } from "node:child_process"
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -48,8 +48,8 @@ export function gitEnv(base: Record<string, string | undefined> = process.env): 
 }
 
 /** Runs git in `root` as `t <t@t>` with no hooks and no excludes or attributes files outside the
- *  repo; returns stdout trimmed and throws on a failure. */
-function run(root: string, args: string[], options: SpawnSyncOptions): string {
+ *  repo, with `input` on stdin (else stdin ignored); returns stdout trimmed and throws on a failure. */
+function run(root: string, args: string[], input?: Uint8Array): string {
   const result = spawnSync(
     "git",
     [
@@ -61,21 +61,23 @@ function run(root: string, args: string[], options: SpawnSyncOptions): string {
       "-c", "core.attributesFile=/dev/null",
       ...args,
     ],
-    { ...options, env: gitEnv(), encoding: "utf8" },
+    { input, stdio: [input ? "pipe" : "ignore", "pipe", "pipe"], env: gitEnv(), encoding: "utf8" },
   )
   if (result.error) throw new Error(`git ${args.join(" ")} failed: ${result.error.message}`)
-  if (result.status !== 0) throw new Error(`git ${args.join(" ")} exited ${result.status}: ${result.stderr}`)
-  return String(result.stdout).trim()
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} exited ${result.status ?? result.signal}: ${result.stderr}`)
+  }
+  return result.stdout.trim()
 }
 
 /** Runs git in `root` with stdin ignored; returns stdout trimmed. */
 export function git(root: string, ...args: string[]): string {
-  return run(root, args, { stdio: ["ignore", "pipe", "pipe"] })
+  return run(root, args)
 }
 
 /** Runs git in `root` with `input` on stdin, for paths that argv can't carry; returns stdout trimmed. */
 export function gitInput(root: string, input: Uint8Array, ...args: string[]): string {
-  return run(root, args, { input, stdio: ["pipe", "pipe", "pipe"] })
+  return run(root, args, input)
 }
 
 /** The files of the base test company, by repo path; objects are written as YAML. */
