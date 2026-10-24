@@ -81,12 +81,15 @@ test("an end reason rolls back with its transaction", () => {
 test("the sweep gives the listed runs its reason and no end time", () => {
   const store = openStore()
   const s = store.createSession(session())
-  const [kept, swept, done] = [0, 1, 2].map(() => store.addRun(launch(s))) as [RunRow, RunRow, RunRow]
+  const [kept, swept, also, done] = [0, 1, 2, 3].map(() => store.addRun(launch(s))) as [RunRow, RunRow, RunRow, RunRow]
   store.endRun(done.runId, "finished", T)
   const events = recordEvents(store)
-  expect(store.sweepRuns([swept.runId, done.runId, "nope"], "the office stopped")).toEqual([swept.runId])
-  const got = store.getRun(swept.runId)!
-  expect([got.endReason, got.endedAt]).toEqual(["the office stopped", null])
+  const ids = store.sweepRuns([also.runId, swept.runId, done.runId, "nope"], "the office stopped")
+  expect(ids).toEqual([swept.runId, also.runId].sort())
+  for (const runId of [swept.runId, also.runId]) {
+    const got = store.getRun(runId)!
+    expect([got.endReason, got.endedAt]).toEqual(["the office stopped", null])
+  }
   expect(store.getRun(done.runId)).toEqual({ ...done, endReason: "finished", endedAt: T })
   expect(store.getRun(kept.runId)).toEqual(kept)
   expect(store.getRun("nope")).toBeUndefined()
@@ -113,7 +116,7 @@ test("a runs usage is summed from its model calls", () => {
 })
 
 test("long id lists are read in one statement", () => {
-  // A plain `IN (?, …)` list of this size throws on Bun's SQLite (too many SQL variables).
+  // A plain `IN (?, …)` list of this size throws on Bun's SQLite.
   const store = openStore()
   const s = store.createSession(session())
   const a = store.addRun(launch(s))

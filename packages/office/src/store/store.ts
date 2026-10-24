@@ -11,7 +11,7 @@ import {
   type SqliteRow,
   type SqliteStatement,
 } from "@ngocbh/yian/platform"
-import { Event, Session, now, validationMessage } from "@opencorp/protocol"
+import { CostReport, Event, Session, now, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
 import { migrate } from "./migrate.ts"
 
@@ -758,7 +758,11 @@ export class Store {
   sweepRuns(runIds: Iterable<string>, reason: string): string[] {
     const ids = [...new Set(runIds)].sort()
     const sql = "UPDATE runs SET end_reason = ? WHERE run_id = ? AND end_reason IS NULL RETURNING run_id"
-    return this.transaction((tx) => ids.filter((runId) => tx.get(sql, reason, runId) !== undefined))
+    return this.transaction((tx) => {
+      const written: string[] = []
+      for (const runId of ids) if (tx.get(sql, reason, runId) !== undefined) written.push(runId)
+      return written
+    })
   }
 
   /** The run's row, or undefined. */
@@ -891,6 +895,35 @@ export class Store {
   sessionUsageUsd(sessionId: string): number {
     const row = this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE session_id = ?").get(sessionId)
     return row!.usd as number
+  }
+
+  /** Spend per person since `since` (a Timestamp): priced usage, and harness sessions updated since then.
+   *
+   *  Only composer sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
+   *  counted instead. `unpriced_sessions` counts harness sessions whose `updated_at` is at or after `since`,
+   *  which any update moves (a status change, a rename), so a counted session may not have spent anything since
+   *  then. Every session kind counts: all of it is real spend. */
+  costsSince(since: string): z.output<typeof CostReport> {
+    const usd = new Map<string, number>()
+    const count = new Map<string, number>()
+    const priced = this.db
+      .prepare(
+        "SELECT s.person, SUM(u.usd) AS usd FROM usage u JOIN sessions s ON s.id = u.session_id " +
+          "WHERE u.at >= ? GROUP BY s.person",
+      )
+      .all(since)
+    for (const r of priced) usd.set(r.person as string, r.usd as number)
+    const unpriced = this.db
+      .prepare(
+        "SELECT person, COUNT(*) AS n FROM sessions WHERE harness != 'composer' AND updated_at >= ? GROUP BY person",
+      )
+      .all(since)
+    for (const r of unpriced) count.set(r.person as string, r.n as number)
+    const people: z.output<typeof CostReport>["people"] = {}
+    for (const person of [...new Set([...usd.keys(), ...count.keys()])].sort()) {
+      people[person] = { usd: usd.get(person) ?? 0, unpriced_sessions: count.get(person) ?? 0 }
+    }
+    return { since, people }
   }
 
   /** Records the process under `key`, replacing any earlier record for the key (which keeps its place). */
