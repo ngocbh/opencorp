@@ -20,10 +20,10 @@ export type Card = {
 /** An answer to a harness card: one of its offered labels, or its pages' values. */
 export type CardAnswer = { kind: "option" | "text"; answer: unknown }
 
-/** One external agent harness: Codex now; Claude Code and OpenCode later.
+/** One external agent harness: Codex now; Claude Code and other coding harnesses later.
  *
  *  No option an adapter offers may persist a permission past the session (Codex's exec-policy amendments and MCP
- *  "don't ask again", Claude Code's "always allow", OpenCode's equivalents are never offered), and an answer that
+ *  "don't ask again", Claude Code's "always allow" and other harnesses' equivalents are never offered), and an answer that
  *  isn't one of the card's offered labels is refused. */
 export interface HarnessAdapter {
   /** The harness's name, as `Session.harness`. */
