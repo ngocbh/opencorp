@@ -247,14 +247,37 @@ export class Connections {
     })
   }
 
-  /** office/connections, made 0700 (yian's auth store refuses a directory others can open). */
+  /** office/connections, made 0700 (yian's auth store refuses a directory others can open). Throws `ProviderError`
+   *  when it is a symlink, not a directory, another user's or unreadable, before any mode change. */
   ensureDir(): string {
     try {
       fs.mkdirSync(this.dir, { mode: 0o700 })
     } catch (error) {
       if (errnoCode(error) !== "EEXIST") throw error
     }
-    fs.chmodSync(this.dir, 0o700) // the umask may have narrowed it, or it was made by hand
+    const { O_RDONLY, O_DIRECTORY, O_NOFOLLOW } = fs.constants
+    let fd: number
+    try {
+      // Through the fd: a chmod by path would follow a symlink planted there and change its target's mode.
+      fd = fs.openSync(this.dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+    } catch (error) {
+      const code = errnoCode(error)
+      // A symlink or a file gives ENOTDIR (O_DIRECTORY is checked first), else ELOOP; FreeBSD says EMLINK.
+      if (code === "ENOTDIR" || code === "ELOOP" || code === "EMLINK") {
+        throw new ProviderError(`${this.dir} must be a directory, not a symlink`)
+      }
+      // A folder of this user that it can't read: refused with a fix, not repaired through a path.
+      if (code === "EACCES") throw new ProviderError(`can't open ${this.dir}; make it mode 0700`)
+      throw error
+    }
+    try {
+      const st = fs.fstatSync(fd)
+      if (!st.isDirectory()) throw new ProviderError(`${this.dir} must be a directory, not a symlink`)
+      if (st.uid !== process.geteuid!()) throw new ProviderError(`${this.dir} belongs to another user`)
+      fs.fchmodSync(fd, 0o700) // the umask may have narrowed it, or it was made by hand
+    } finally {
+      fs.closeSync(fd)
+    }
     return this.dir
   }
 

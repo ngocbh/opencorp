@@ -332,6 +332,57 @@ test("ensure dir fixes a loose directory", async () => {
   expect(mode(path.join(office, "connections"))).toBe(0o700)
 })
 
+test("a symlinked connections folder is refused and its target keeps its mode", async () => {
+  const root = tempDir()
+  const c = new Connections(await officeDir(root))
+  const target = path.join(root, "target")
+  fs.mkdirSync(target)
+  fs.chmodSync(target, 0o755)
+  fs.symlinkSync(target, c.dir)
+  expect(() => c.ensureDir()).toThrow(ProviderError)
+  expect(mode(target)).toBe(0o755)
+  for (const call of [() => c.put("azure", apiKey({ baseUrl: azureBaseUrl("acme") })), () => c.setDefault("office")]) {
+    const error = (await raised(call)) as Error
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(error.message).toContain(c.dir)
+    expect(error.message).not.toContain(SENTINEL)
+    expect(mode(target)).toBe(0o755)
+    expect(fs.readdirSync(target)).toEqual([])
+  }
+  const error = (await raised(() => c.ensureDir())) as Error
+  expect(error.message).toContain(c.dir)
+  expect(error.message).not.toContain(SENTINEL)
+})
+
+test("a connections path that is a file or a dangling symlink is refused", async () => {
+  const root = tempDir()
+  const c = new Connections(await officeDir(root))
+  fs.writeFileSync(c.dir, "")
+  fs.chmodSync(c.dir, 0o644)
+  expect(() => c.ensureDir()).toThrow(ProviderError)
+  expect(mode(c.dir)).toBe(0o644)
+  fs.unlinkSync(c.dir)
+  const missing = path.join(root, "missing")
+  fs.symlinkSync(missing, c.dir)
+  expect(() => c.ensureDir()).toThrow(ProviderError)
+  expect(fs.existsSync(missing)).toBe(false)
+})
+
+test.skipIf(process.geteuid?.() === 0)("a connections folder this user cannot read is a provider error", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  fs.mkdirSync(c.dir)
+  fs.chmodSync(c.dir, 0o300)
+  try {
+    const error = (await raised(() => c.ensureDir())) as Error
+    expect(error).toBeInstanceOf(ProviderError)
+    expect(error.message).toContain(c.dir)
+    expect(error.message).not.toContain("EACCES")
+    expect(mode(c.dir)).toBe(0o300)
+  } finally {
+    fs.chmodSync(c.dir, 0o700)
+  }
+})
+
 test.each(["_removed.json", "_default.json"])("a symlinked or loose list is refused [%s]", async (name) => {
   const root = tempDir()
   const c = new Connections(await officeDir(root))
