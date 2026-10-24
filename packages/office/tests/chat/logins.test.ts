@@ -12,7 +12,14 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import type { Scheduler } from "@ngocbh/yian/platform"
 import { AUTH_FILE_ENV, Connections } from "../../src/chat/connections.ts"
-import { FORGET_MS, LoginNotFound, Logins, type LoginsOptions, type LoginView } from "../../src/chat/logins.ts"
+import {
+  FORGET_MS,
+  LoginNotFound,
+  Logins,
+  LoginsClosed,
+  type LoginsOptions,
+  type LoginView,
+} from "../../src/chat/logins.ts"
 import { ProviderError } from "../../src/chat/provider.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { tempDir, waitFor } from "../helpers.ts"
@@ -269,6 +276,42 @@ test("cancel stops the poll and saves nothing", async () => {
   }
 })
 
+test.each(["the listing", "the save"])("a cancel after the code is approved saves nothing [%s]", async (heldAt) => {
+  const conns = await connections()
+  const gate = release()
+  let reached = false
+  const hold = async () => {
+    reached = true
+    await gate.promise
+  }
+  if (heldAt === "the save") {
+    const add = conns.add.bind(conns)
+    conns.add = async (...args) => {
+      await hold()
+      return add(...args)
+    }
+  }
+  const catalog = async () => {
+    await hold()
+    return CATALOG
+  }
+  // stopWaitMs is short so cancel returns while the sign-in is held.
+  const http = new HTTP([USERCODE, APPROVED, TOKENS, heldAt === "the listing" ? catalog : CATALOG])
+  const logins = make(conns, http, { stopWaitMs: 50 })
+  try {
+    const login = await logins.start({ by: "ngocbh" })
+    await waitFor(() => reached, { what: heldAt })
+    await logins.cancel(login.id, { by: "ngocbh" })
+    gate.open()
+    await until(logins, login.id, "cancelled")
+    expect(await conns.names()).toEqual(["office"])
+    expect(fs.existsSync(conns.authFile("chatgpt"))).toBe(false)
+  } finally {
+    gate.open()
+    await logins.closeAll()
+  }
+})
+
 test("a sign in lists the models of every connection again", async () => {
   const conns = await connections()
   let names: string[] | undefined
@@ -336,6 +379,72 @@ test("a finished login is forgotten after ten minutes", async () => {
     // an open sign-in is kept while it waits
     expect(logins.get(stillOpen.id, { by: "ngocbh" }).state).toBe("waiting")
   } finally {
+    await logins.closeAll()
+  }
+})
+
+test("close all cancels every open sign in", async () => {
+  const conns = await connections()
+  const logins = make(conns, new HTTP([], waiting))
+  try {
+    const ids = [(await logins.start({ by: "ngocbh" })).id, (await logins.start({ by: "ava" })).id]
+    await logins.closeAll()
+    expect([logins.get(ids[0]!, { by: "ngocbh" }).state, logins.get(ids[1]!, { by: "ava" }).state]).toEqual([
+      "cancelled",
+      "cancelled",
+    ])
+    expect(await conns.names()).toEqual(["office"])
+  } finally {
+    await logins.closeAll()
+  }
+})
+
+test("close all waits for every sign in at once and refuses new ones", async () => {
+  const conns = await connections()
+  const gate = release()
+  let reached = 0
+  // A request rejects at once on a cancel, so each run is held in add instead, where it is deaf to one.
+  const add = conns.add.bind(conns)
+  conns.add = async (...args) => {
+    reached += 1
+    await gate.promise
+    return add(...args)
+  }
+  // Each sign-in gets its own replies: one shared queue would hand the concurrent sign-ins each other's.
+  const logins = new Logins(conns, {
+    auth: ({ signal }) => new OpenAIAuth({ request: new HTTP(FLOW).request, scheduler: testScheduler(), signal }),
+    log: collect,
+    startWaitMs: 50,
+    stopWaitMs: 500,
+  })
+  try {
+    const ids: string[] = []
+    for (let i = 0; i < 3; i++) ids.push((await logins.start({ by: "ngocbh" })).id)
+    await waitFor(() => reached === 3, { what: "every sign-in in add" })
+    const began = performance.now()
+    await logins.closeAll()
+    expect(performance.now() - began).toBeLessThan(1_000) // one wait for them all, not one each
+    await expect(logins.start({ by: "ngocbh" })).rejects.toBeInstanceOf(LoginsClosed)
+    gate.open()
+    for (const id of ids) await until(logins, id, "cancelled")
+    expect(await conns.names()).toEqual(["office"])
+  } finally {
+    gate.open()
+    await logins.closeAll()
+  }
+})
+
+test("a sign in that shows no code in time still returns waiting", async () => {
+  const conns = await connections()
+  const gate = release()
+  const logins = make(conns, new HTTP([held(USERCODE, gate.promise)], waiting), { startWaitMs: 100 })
+  try {
+    const login = await logins.start({ by: "ngocbh" })
+    expect([login.state, login.url, login.user_code]).toEqual(["waiting", null, null])
+    gate.open()
+    await waitFor(() => logins.get(login.id, { by: "ngocbh" }).user_code === "ABCD-EFGH", { what: "the code" })
+  } finally {
+    gate.open()
     await logins.closeAll()
   }
 })

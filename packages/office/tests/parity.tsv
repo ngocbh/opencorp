@@ -37,8 +37,9 @@ chat/test_hire.py	ported	packages/office/tests/chat/hire.test.ts	—	O2-24
 chat/test_hooks.py	ported	packages/office/tests/chat/hooks.test.ts	—	O3-8b
 chat/test_hooks.py::test_a_failing_callback_is_logged_and_the_rest_still_run	changed	packages/office/tests/chat/hooks.test.ts::a failing callback is logged and the rest still run	design §6 rules 1 and 13: the log line names the hook and the error type, never the message; notifications return nothing (P13), so the results part runs on a check	O3-8b
 chat/test_identity.py	ported	packages/office/tests/chat/identity.test.ts	—	O3-8b
-chat/test_logins.py	open	—	—	O2-20
+chat/test_logins.py	ported	packages/office/tests/chat/logins.test.ts	—	O2-20
 chat/test_logins.py::test_cancel_stops_the_poll_and_saves_nothing	changed	packages/office/tests/chat/logins.test.ts::cancel stops the poll and saves nothing	design §3.3: no thread per sign-in, so "it polls no more" is the request count staying put	O2-20
+chat/test_logins.py::test_close_all_waits_for_every_sign_in_at_once_and_refuses_new_ones	changed	packages/office/tests/chat/logins.test.ts::close all waits for every sign in at once and refuses new ones	design §3.3: a request rejects on abort (yian's untilStopped), so the runs are held in a deaf add instead	O2-20
 chat/test_logins.py::test_the_sign_in_is_saved_before_the_connection	changed	packages/office/tests/chat/logins.test.ts::the sign in is saved before the connection	design §3.3 (O2-19): add writes through the private #put, so the failed write is injected after signIn	O2-20
 chat/test_models.py	ported	packages/office/tests/chat/models.test.ts	—	O2-20
 chat/test_models.py::test_a_host_that_times_out_in_composer_makes_offers_time_out	changed	packages/office/tests/chat/models.test.ts::a host that times out in composer makes offers time out	Y1: yian's transport ProviderError isn't public, so the timeout comes from a local server that never answers	O2-20
