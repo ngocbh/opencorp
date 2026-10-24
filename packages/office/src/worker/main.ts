@@ -259,7 +259,8 @@ export function isOfficeChannel(fd: number): boolean {
 /**
  * The `__worker` mode: serves the one job the office sends on fd 3, then exits with the code. Exits
  * `EXIT_ORPHANED` at once when fd 3 isn't a socket: Bun keeps a pipe of its own at fd 3 when the parent passes
- * none, so an open fd 3 alone doesn't mean an office is there.
+ * none, so an open fd 3 alone doesn't mean an office is there. An fstat error other than EBADF is thrown on purpose:
+ * it means a broken process, not a missing channel.
  */
 export async function main(_argv: string[], env: WorkerEnv): Promise<never> {
   if (!isOfficeChannel(3)) {

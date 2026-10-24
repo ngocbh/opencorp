@@ -2,8 +2,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, te
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import http from "node:http"
+import type net from "node:net"
 import os from "node:os"
 import path from "node:path"
+import type { Readable } from "node:stream"
 import { fileURLToPath } from "node:url"
 
 setDefaultTimeout(30_000)
@@ -370,6 +372,38 @@ function killGroup(pid: number) {
   }
 }
 
+/** The start time `ps` shows for `pid`, "" once it is gone: with the pid it names one process, since pids are
+ *  reused. */
+function lstart(pid: number): string {
+  const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    env: { PATH: "/usr/bin:/bin" },
+    encoding: "utf8",
+    timeout: 5000,
+  })
+  return ps.status === 0 ? ps.stdout.trim() : ""
+}
+
+/** `value` as one worker frame: a 4-byte big-endian length, then the UTF-8 JSON. */
+function frame(value: unknown): Buffer {
+  const body = Buffer.from(JSON.stringify(value))
+  const header = Buffer.alloc(4)
+  header.writeUInt32BE(body.length)
+  return Buffer.concat([header, body])
+}
+
+/** Calls `onFrame` with each frame read from `stream`, parsed; tags such as a bigint's stay as written. */
+function readFrames(stream: Readable, onFrame: (frame: Record<string, unknown>) => void) {
+  let buffered = Buffer.alloc(0)
+  stream.on("data", (chunk: Buffer) => {
+    buffered = Buffer.concat([buffered, chunk])
+    while (buffered.length >= 4 && buffered.length >= 4 + buffered.readUInt32BE(0)) {
+      const end = 4 + buffered.readUInt32BE(0)
+      onFrame(JSON.parse(buffered.subarray(4, end).toString("utf8")) as Record<string, unknown>)
+      buffered = buffered.subarray(end)
+    }
+  })
+}
+
 /**
  * Runs `argv` in its own process group (`groups` gets its pid, for cleanup) and resolves to its exit and output
  * once it closes. After `limit` ms its group is killed and the run rejects with what it printed. Stdin stays open
@@ -435,6 +469,8 @@ describe("the built binary", () => {
   let bin = ""
   let home = ""
   const groups = new Set<number>()
+  // Group leaders spawned outside runDetached, each with its start time.
+  const leaders: { pid: number; started: string }[] = []
   const cleanups: (() => void | Promise<void>)[] = []
   const pkg = JSON.parse(fs.readFileSync(path.join(CLI, "package.json"), "utf8")) as { version: string; license: string }
   const description = "OpenCorp: run a company of AI employees on your machine"
@@ -461,14 +497,21 @@ describe("the built binary", () => {
     if (warm.code !== 0) throw new Error(`the binary's --help exited ${warm.code}:\n${warm.stdout}\n${warm.stderr}`)
   }, 960_000)
 
+  /** Kills each leader's group while its pid still names the process that was spawned. */
+  const killLeaders = () => {
+    for (const { pid, started } of leaders.splice(0)) if (started !== "" && lstart(pid) === started) killGroup(pid)
+  }
+
   afterEach(async () => {
     for (const pid of groups) killGroup(pid)
     groups.clear()
+    killLeaders()
     for (const cleanup of cleanups.splice(0)) await cleanup()
   })
 
   afterAll(() => {
     for (const pid of groups) killGroup(pid)
+    killLeaders()
     fs.rmSync(built, { recursive: true, force: true })
   })
 
@@ -624,15 +667,86 @@ describe("the built binary", () => {
     }
   }, 300_000)
 
-  test("the binary runs the fs helper in its compiled form and reaches the worker stub", async () => {
+  test("the binary runs the fs helper in its compiled form", async () => {
     const empty = fs.mkdtempSync(path.join(built, "empty-"))
     const helper = await runBuilt([bin, "__fs-helper"], { cwd: empty, input: '{"op":"list","path":"."}' })
     expect(helper.stdout, helper.stderr).toBe('{"ok": true, "output": "(empty)"}')
     expect(helper.code).toBe(0)
-    const worker = await runBuilt([bin, "__worker"])
-    expect(worker.stderr).toContain("no office channel on fd 3")
-    expect(worker.code).toBe(3)
   }, 150_000)
+
+  test("the built binary worker runs a company CODE node that imports a sibling file", async () => {
+    const pin = path.join(built, "pin")
+    const files = {
+      "flows/flow.yaml":
+        "id: compiled\nname: compiled\ninput:\n  n: !int\nnodes:\n  double:\n    kind: code\n" +
+        '    input: {n: "${input.n}"}\n    output: int\n    code: |\n      const two: number = 2\n' +
+        "      return inputs.n * two\n  triple:\n    kind: code\n" +
+        '    input: {n: "${double.output}"}\n    output: int\n    code: ./helpers.ts:triple\n' +
+        "output: ${triple.output}\n",
+      "flows/helpers.ts":
+        'import { three } from "./lib.ts"\n' +
+        "export function triple(inputs: { n: number }): number {\n  return inputs.n * three\n}\n",
+      "flows/lib.ts": "export const three: number = 3\n",
+    }
+    for (const [rel, text] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(pin, rel)), { recursive: true })
+      fs.writeFileSync(path.join(pin, rel), text)
+    }
+    const runs = path.join(built, "runs")
+    fs.mkdirSync(runs)
+    const tmpdir = freshTmp()
+    const child = spawn(bin, ["__worker"], {
+      cwd: fs.mkdtempSync(path.join(built, "cwd-")),
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir },
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe", "pipe"],
+    })
+    if (child.pid === undefined) throw new Error("the worker did not start")
+    leaders.push({ pid: child.pid, started: lstart(child.pid) })
+    let stderr = ""
+    child.stderr!.setEncoding("utf8").on("data", (text: string) => (stderr += text))
+    child.stdout!.resume()
+    // `exit` can come before the last of stderr is read.
+    const stderrEnded = new Promise<void>((resolve) => child.stderr!.once("close", () => resolve()))
+    const exited = new Promise<number | null>((resolve) => {
+      child.once("exit", (code) => void stderrEnded.then(() => resolve(code)))
+    })
+    const office = child.stdio[3] as net.Socket
+    // A write to a worker that already died fails; its exit is reported below instead.
+    office.on("error", () => {})
+    cleanups.push(() => void office.destroy())
+    const last = new Promise<Record<string, unknown>>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no result within 60 s:\n${stderr}`)), 60_000)
+      readFrames(office, (frame) => {
+        if (frame.type !== "result" && frame.type !== "error") return
+        clearTimeout(timer)
+        resolve(frame)
+      })
+      void exited.then((code) => {
+        clearTimeout(timer)
+        reject(new Error(`the worker exited ${code} before its result:\n${stderr}`))
+      })
+    })
+    const job = {
+      kind: "chat",
+      session_id: "s1",
+      run_id: "r1",
+      person: "minh",
+      pin,
+      flow: "flows/flow.yaml",
+      log: path.join(runs, "r1/log.jsonl"),
+      inputs: { n: 2 },
+    }
+    office.write(frame({ type: "start", job }))
+    const result = await last
+    expect(result.type, `${result.message}\n${stderr}`).toBe("result")
+    expect(result.status, stderr).toBe("succeeded")
+    // The worker's codec writes a bigint as a tag.
+    expect(result.output).toEqual(typeof result.output === "number" ? 12 : { $v: "bigint", s: "12" })
+    office.end()
+    expect(await exited, stderr).toBe(0)
+    expect(stderr).not.toContain("Cannot find module")
+  }, 120_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
     const result = await runTui(bin)

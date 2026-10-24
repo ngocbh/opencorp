@@ -1,16 +1,17 @@
 /** The worker's frame loop: the start frame, closing frames, steers after the last frame, the linger, and how a run
  *  ends: waiting, stopped, orphaned or refused. */
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { inspectRun } from "@ngocbh/yian/run"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, type JobInput } from "../../src/worker/job.ts"
-import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, report } from "../../src/worker/main.ts"
+import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report } from "../../src/worker/main.ts"
 import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { tempDir, waitFor } from "../helpers.ts"
+import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import {
   base,
   channelPair,
@@ -264,4 +265,32 @@ test("a worker process with no channel on fd 3 exits 3", async () => {
   const { exited, stderr } = spawnWorker({ cwd: tempDir(), channel: false })
   expect(await exited).toEqual({ code: EXIT_ORPHANED, signal: null })
   expect(stderr()).toContain("no office channel on fd 3")
+})
+
+test("the office channel must be a socket on fd 3", async () => {
+  const file = path.join(tempDir(), "f")
+  const closed = fs.openSync(file, "w")
+  fs.closeSync(closed)
+  expect(isOfficeChannel(closed)).toBe(false)
+  // An open fd that isn't a socket isn't the channel either: Bun keeps a pipe of its own at fd 3 when the parent
+  // passes none.
+  const regular = fs.openSync(file, "r")
+  try {
+    expect(isOfficeChannel(regular)).toBe(false)
+  } finally {
+    fs.closeSync(regular)
+  }
+  const where = path.join(shortDir(), "s")
+  const server = net.createServer()
+  await new Promise<void>((resolve) => server.listen(where, resolve))
+  const socket = net.createConnection(where)
+  try {
+    await new Promise<void>((resolve, reject) => socket.once("connect", resolve).once("error", reject))
+    // Bun's net socket shows its fd only on the internal handle.
+    const fd = (socket as unknown as { _handle: { fd: number } })._handle.fd
+    expect(isOfficeChannel(fd)).toBe(true)
+  } finally {
+    socket.destroy()
+    server.close()
+  }
 })

@@ -371,9 +371,10 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::the binary loads the TUI assets from beside it and extracts nothing to TMPDIR	O0-10 P4	O2-26
-—	new	packages/cli/test/entry.test.ts::the binary runs the fs helper in its compiled form and reaches the worker stub	§2.5, O1-11	O2-26
+—	new	packages/cli/test/entry.test.ts::the binary runs the fs helper in its compiled form	§2.5, O1-11	O2-26
 —	new	packages/cli/test/entry.test.ts::the build refuses to replace a folder it did not write	§2.7 (the build only replaces its own output)	O2-26
 —	new	packages/cli/test/entry.test.ts::the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset	§2.7, O0-10 P4	O2-26
+—	new	packages/cli/test/entry.test.ts::the built binary worker runs a company CODE node that imports a sibling file	§2.7, O0-10 P2	O3-3
 —	new	packages/cli/test/entry.test.ts::the entry sets the TUI asset root only in the compiled binary	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
 —	new	packages/cli/test/entry.test.ts::the npm shim finds the platform package in the npm nested, npm and bun hoisted, and pnpm layouts	§2.7, O0-10 P5	O2-26
@@ -742,6 +743,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/worker/main.test.ts::a worker process exits 3 when the office closes the channel	design §2.4 step 6	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker process runs a job and exits 0	design §2.4, O3-1 handoff (process.exit)	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker process with no channel on fd 3 exits 3	design §2.4; Bun keeps a pipe at fd 3	O3-3
+—	new	packages/office/tests/worker/main.test.ts::the office channel must be a socket on fd 3	design §2.4; Bun keeps a pipe at fd 3	O3-3
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
 —	new	packages/office/tests/worker/remote_store.test.ts::a closed channel is a system error	Y3: the MarkdownStore contract's classes	O3-2
 —	new	packages/office/tests/worker/remote_store.test.ts::an invalid reply is a range error	Y3: the MarkdownStore contract's classes	O3-2
