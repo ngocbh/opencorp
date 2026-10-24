@@ -192,8 +192,8 @@ class Conn {
     return true
   }
 
-  /** The next whole response; `closed` is true if the peer ends the connection right after it. */
-  async response({ timeout = 9000 } = {}): Promise<{ status: number; head: string; body: string; closed: boolean }> {
+  /** The next whole response, as soon as it is all read. */
+  async response({ timeout = 9000 } = {}): Promise<{ status: number; head: string; body: string }> {
     const deadline = performance.now() + timeout
     if (!(await this.until(() => this.buf.includes("\r\n\r\n"), deadline))) throw new Error("no response head")
     const at = this.buf.indexOf("\r\n\r\n")
@@ -202,8 +202,12 @@ class Conn {
     if (!(await this.until(() => this.buf.length >= end, deadline))) throw new Error("short response body")
     const body = this.buf.subarray(at + 4, end).toString()
     this.buf = this.buf.subarray(end)
-    await this.until(() => this.ended, Math.min(deadline, performance.now() + 500))
-    return { status: Number(head.split(" ")[1]), head, body, closed: this.ended }
+    return { status: Number(head.split(" ")[1]), head, body }
+  }
+
+  /** Whether the peer ends or resets the connection (or already has) within `timeout`. */
+  closed({ timeout = 9000 } = {}): Promise<boolean> {
+    return this.until(() => this.ended, performance.now() + timeout)
   }
 }
 
@@ -415,7 +419,7 @@ describe("routes", () => {
     const r = await conn.response()
     expect(r.status).toBe(500)
     expect(r.head.toLowerCase()).toContain("\r\nconnection: close")
-    expect(r.closed).toBe(true)
+    expect(await conn.closed()).toBe(true)
     expect((await request(sock, "GET", "/people")).status).toBe(200)
   })
 
@@ -459,9 +463,7 @@ describe("routes", () => {
     const r = await request(sock, "GET", "/nope")
     expect(r.status).toBe(401)
     expect(r.json()).toEqual({ error: "unauthenticated", message: "who are you" })
-    const got = await raw(sock, "POST /people HTTP/1.1\r\nhost: office\r\ncontent-length: 5\r\n\r\nhello", {
-      until: "close",
-    })
+    const got = await raw(sock, "POST /people HTTP/1.1\r\nhost: office\r\ncontent-length: 5\r\n\r\nhello")
     const res = parse(got.text)
     expect(res.status).toBe(401)
     expect(res.head.toLowerCase()).toContain("\r\nconnection: close")
@@ -571,12 +573,14 @@ describe("routes", () => {
         return {}
       },
     }
-    const { sock, settled } = await serve([slow])
+    const lines: string[] = []
+    const { sock, settled } = await serve([slow], { log: (line) => lines.push(line) })
     const conn = await Conn.open(sock)
     conn.send("GET /slow HTTP/1.1\r\nhost: office\r\n\r\n")
     await waitFor(() => started, { timeout: 9000, what: "the handler to start" })
     conn.socket.destroy()
     await waitFor(() => aborted, { timeout: 9000, what: "the signal to abort" })
     await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toEqual([]) // an abort is no 500 and logs nothing
   })
 })

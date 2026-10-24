@@ -62,8 +62,9 @@ export class HttpError extends Error {
   }
 }
 
-/** Writes a JSON reply unless the response is already closed; no body for HEAD. A failed write is dropped: the
- *  client left, or the runtime answered first (its own 408). */
+/** Writes a JSON reply unless the response is already closed; no body for HEAD. A failed write destroys the
+ *  response, so it never hangs: the client left, the runtime answered first (its own 408), or the status or
+ *  headers are invalid. */
 function send(res: ServerResponse, status: number, text: string, headers: Record<string, string>): void {
   if (res.destroyed || res.socket?.destroyed) return
   try {
@@ -73,7 +74,14 @@ function send(res: ServerResponse, status: number, text: string, headers: Record
       ...headers,
     })
     res.end(res.req.method === "HEAD" ? undefined : text)
-  } catch {}
+  } catch {
+    res.destroy()
+  }
+}
+
+/** An `ApiError` JSON body. */
+function apiError(code: ErrorCode, message: string): string {
+  return JSON.stringify({ error: code, message })
 }
 
 /** Sends an `ApiError` JSON body (Python's `error`); no body for HEAD; ignored when the response is closed. */
@@ -84,7 +92,7 @@ export function sendError(
   message: string,
   headers: Record<string, string> = {},
 ): void {
-  send(res, status, JSON.stringify({ error: code, message }), headers)
+  send(res, status, apiError(code, message), headers)
 }
 
 type Segment = { kind: "literal"; text: string } | { kind: "param"; name: string }
@@ -149,9 +157,9 @@ const ABSOLUTE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*/
  *  socket when a proxy is set. It isn't parsed with `URL`, which would normalize dot segments and escapes. */
 function originForm(target: string): string {
   if (target.startsWith("/")) return target
-  const scheme = ABSOLUTE.exec(target)
-  if (!scheme) return target
-  const rest = target.slice(scheme[0].length)
+  const prefix = ABSOLUTE.exec(target)
+  if (!prefix) return target
+  const rest = target.slice(prefix[0].length)
   return rest === "" || rest.startsWith("?") ? `/${rest}` : rest
 }
 
@@ -161,8 +169,8 @@ function hasBody(req: IncomingMessage): boolean {
   return "transfer-encoding" in req.headers || (length !== undefined && length !== "0")
 }
 
-/** The returned listener's promise settles once the request is answered; it never rejects (node ignores it,
- *  tests await it). */
+/** A `node:http` listener that serves `routes` through `options`' hooks; its promise settles once the request is
+ *  answered and never rejects (node ignores it, tests await it). */
 export function requestListener<C>(
   routes: readonly Route<C>[],
   options: PipelineOptions<C>,
@@ -173,6 +181,10 @@ export function requestListener<C>(
     res.on("close", () => {
       if (!res.writableFinished) controller.abort()
     })
+    // The client can leave while a hook, guard or handler awaits; then nothing is sent. `send` checks the rest.
+    const reply = (status: number, text: string, headers: Record<string, string>) => {
+      if (!controller.signal.aborted) send(res, status, text, headers)
+    }
     const method = req.method ?? "GET"
     // No route reads its body yet, so a body is always left unread, and the connection can't be reused: what
     // follows on it would start inside that body.
@@ -191,22 +203,24 @@ export function requestListener<C>(
       } catch {} // a malformed escape matches no route
       let params: Params | undefined
       const allowed = new Set<string>()
-      for (const pattern of decoded ? patterns : []) {
-        const found = match(pattern, decoded!)
-        if (!found) continue
-        const r = pattern.route
-        const head = r.method === "GET" && r.head !== false
-        allowed.add(r.method)
-        if (head) allowed.add("HEAD")
-        if (!route && (r.method === method || (method === "HEAD" && head))) {
-          route = r
-          params = found
+      if (decoded)
+        for (const pattern of patterns) {
+          const found = match(pattern, decoded)
+          if (!found) continue
+          const r = pattern.route
+          const head = r.method === "GET" && r.head !== false
+          allowed.add(r.method)
+          if (head) allowed.add("HEAD")
+          if (!route && (r.method === method || (method === "HEAD" && head))) {
+            route = r
+            params = found
+          }
         }
-      }
       if (!route) {
-        if (allowed.size === 0) return sendError(res, 404, "no_route", `no route ${method} ${path}`, unread)
+        if (allowed.size === 0) return reply(404, apiError("no_route", `no route ${method} ${path}`), unread)
         const allow = [...allowed].sort().join(", ")
-        return sendError(res, 405, "method_not_allowed", `${method} is not allowed on ${path}`, { allow, ...unread })
+        const message = `${method} is not allowed on ${path}`
+        return reply(405, apiError("method_not_allowed", message), { allow, ...unread })
       }
 
       await route.guard?.(ctx, params!)
@@ -215,20 +229,16 @@ export function requestListener<C>(
       const value = await route.handler(ctx, params!, undefined)
       const text = JSON.stringify(route.reply ? route.reply.parse(value) : value) as string | undefined
       if (text === undefined) throw new TypeError("the handler returned no JSON value")
-      if (!controller.signal.aborted) send(res, 200, text, unread)
+      reply(200, text, unread)
     } catch (error) {
+      if (error instanceof HttpError) return reply(error.status, apiError(error.code, error.message), unread)
+      reply(500, apiError("internal_error", "internal error"), { connection: "close" })
+      // After the reply, and guarded: a throwing log hook must neither leave the client waiting nor reject.
       try {
-        if (error instanceof HttpError) {
-          if (!controller.signal.aborted) sendError(res, error.status, error.code, error.message, unread)
-          return
-        }
         // The type only: a message (or a settable `.name`) can quote a secret or a request's input.
         const type = error instanceof Error ? error.constructor.name : typeof error
         const where = `${method} ${route?.path ?? "(no route)"}`
         options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${type}`))
-        if (res.headersSent) res.destroy()
-        else if (!controller.signal.aborted)
-          sendError(res, 500, "internal_error", "internal error", { connection: "close" })
       } catch {}
     }
   }
@@ -253,7 +263,7 @@ export const LIMITS: Limits = {
 /** An HTTP server for `listener` with `limits`; it has no idle socket timeout (`requestTimeout` bounds a
  *  request) and no upgrade listener. */
 export function createServer(listener: RequestListener, limits: Limits = LIMITS): http.Server {
-  const server = http.createServer({ ...limits }, listener)
+  const server = http.createServer(limits, listener)
   server.timeout = 0
   return server
 }
