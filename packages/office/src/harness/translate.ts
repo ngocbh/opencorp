@@ -254,7 +254,7 @@ export class Translator {
         const item = this.items.get(params.itemId) ?? {}
         const command = truthy(params.command) ? params.command : truthy(item.command) ? item.command : "?"
         const cwd = truthy(params.cwd) ? params.cwd : item.cwd
-        title = COMMAND_TITLES.get(params.kind) ?? COMMAND_TITLES.get("command")!
+        title = COMMAND_TITLES.get(params.kind) ?? RUN_TITLE
         text = `$ ${command}\nin ${pyStr(cwd)}`
         const permissions = pruned(params.additionalPermissions)
         if (truthy(permissions)) text += `\nand asks for ${pyJson(permissions, true)}`
@@ -268,8 +268,9 @@ export class Translator {
         return `${changeName(c)} (${pyStr(changeType(c))}, +${added}/-${removed})`
       }).join("\n")
       if (truthy(params.grantRoot)) text += `\nand write access under ${params.grantRoot} for this session`
-      return approval("file_change", params, asked, "Codex wants to change files", text || "(no diff yet)",
-        offered(params.availableDecisions, APPROVE))
+      // Codex 0.162.1 sends no list here, so all four show; the filter applies once it does.
+      return approval("file_change", params, asked, "Codex wants to change files",
+        truthy(text) ? text : "(no diff yet)", offered(params.availableDecisions, APPROVE))
     }
     if (method === "item/permissions/requestApproval") {
       const wanted = Object.fromEntries(Object.entries(params.permissions).filter(([, v]) => v != null))
@@ -478,8 +479,9 @@ type Options = readonly (readonly [string, string])[]
 
 const APPROVE: Options = [["Approve", "accept"], ["Approve for this session", "acceptForSession"],
   ["Deny so Codex continues", "decline"], ["Deny and stop", "cancel"]]
+const RUN_TITLE = "Codex wants to run a command"
 const COMMAND_TITLES: ReadonlyMap<unknown, string> = new Map([
-  ["command", "Codex wants to run a command"], ["writeStdin", "Codex wants to send input to a running command"],
+  ["command", RUN_TITLE], ["writeStdin", "Codex wants to send input to a running command"],
 ])
 const PERMISSIONS: Options = [["Approve for this turn", "turn"], ["Approve for this session", "session"],
   ["Deny", "decline"]]
@@ -514,10 +516,11 @@ function choice(options: Options, result: (decision: string) => Record<string, u
   }
 }
 
-/** The options whose decisions Codex lists; all of them when it lists none (a missing or null list). */
+/** The options whose decisions Codex lists. All of them when Codex sends no list (missing or null); none for an
+ *  empty list. */
 function offered(available: unknown[] | null | undefined, options: Options): Options {
-  // Persistent decisions are objects (amendments) and write the owner's Codex config: never offered.
   if (available == null) return options
+  // Persistent decisions are objects (amendments) and write the owner's Codex config: never offered.
   const names = new Set(available.filter((d) => typeof d === "string"))
   return options.filter(([, d]) => names.has(d))
 }
