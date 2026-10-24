@@ -39,8 +39,8 @@ const NOTIFICATIONS = new Set<string>(["questionStored", "runStarted", "runFinis
 type AnyFn = (...args: unknown[]) => unknown
 
 /**
- * The harness's extension points: one list of callbacks per hook, which extensions append to in the explicit
- * extension list. A callback that throws is logged by its error's type and skipped; the rest still run.
+ * The harness's extension points: one list of callbacks per hook, which extensions append to when they register
+ * (the explicit extension list). A callback that throws is logged by its error's type and skipped; the rest still run.
  *
  * Checks run inline in the session actor, so they must be quick and synchronous (an async check's promise would read
  * as a refusal) and must never call back into it. Notifications may be async; they are awaited one by one, in order.
@@ -95,9 +95,15 @@ export class Hooks {
   }
 
   #failed(name: string, fn: AnyFn, error: unknown): void {
+    // A `name` getter can throw, and a non-string name must not become log text.
+    let label = "anonymous"
+    try {
+      const fnName: unknown = fn.name
+      if (typeof fnName === "string" && fnName !== "") label = fnName
+    } catch {}
     // The type only: an error's message or stack could quote a secret.
     try {
-      this.#log(`${name} callback ${fn.name || "anonymous"} failed: ${errorName(error)}`)
+      this.#log(`${name} callback ${label} failed: ${errorName(error)}`)
     } catch {}
   }
 }

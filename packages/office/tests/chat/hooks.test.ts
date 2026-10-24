@@ -38,6 +38,16 @@ test("a failing callback is logged and the rest still run", async () => {
     "answerCheck callback explode failed: RangeError",
   ])
   for (const line of lines) expect(line).not.toContain("sentinel-msg")
+
+  const nameless = (): never => explode()
+  Object.defineProperty(nameless, "name", {
+    get() {
+      throw new Error("x")
+    },
+  })
+  hooks.promptCheck.push(nameless)
+  hooks.fire("promptCheck", S, "hi")
+  expect(lines.at(-1)).toBe("promptCheck callback anonymous failed: RangeError")
 })
 
 test("fire returns results for answer checks", () => {
