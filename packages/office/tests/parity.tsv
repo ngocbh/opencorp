@@ -272,6 +272,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/auth/passwords.test.ts::a password that isnt well formed checks nothing	design §6.4 (passwords as Python's): Python's encode refuses lone surrogates	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::the dummy hash checks nothing	P4 (D36)	O1-14
 —	new	packages/office/tests/auth/tokens.test.ts::a person file in the wrong folder lets no one in	design §6.4: the roster reads people as the loader does	O1-14
+—	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	design §5.3: a private file is read as strict UTF-8 JSON, never repaired	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19

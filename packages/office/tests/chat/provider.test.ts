@@ -137,6 +137,7 @@ test.each(
 )("an extra field is never named [%s]", async (_label, data) => {
   const error = await refusal(write(path.join(tempDir(), "provider.json"), data))
   expect(error.message).toMatch(/an extra field/)
+  expect(error.message).toMatch(/is not allowed/)
   expectNoneOf(error, SENTINEL, "api_key")
 })
 
@@ -174,7 +175,7 @@ test.each(['{"env": {"KEY": 12345678}, "llm_config": "sk-secret-value"}', "sk-se
 test.each(
   [
     ["a bom", "\ufeff{}"],
-    ["bad utf 8", Buffer.from([0x7b, 0xff, 0x7d])],
+    ["bad utf 8", Buffer.from('{"env": {"A": "\xff"}}', "latin1")],
   ] as const,
 )("a bom or bad utf 8 is not valid json [%s]", async (_label, data) => {
   const error = await refusal(write(path.join(tempDir(), "provider.json"), data))

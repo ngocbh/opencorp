@@ -155,7 +155,7 @@ export async function loadProvider<P extends Provider>(
   }
   let data: unknown
   try {
-    // Invalid UTF-8 or a leading BOM is "not valid JSON", never silently repaired.
+    // Invalid UTF-8 or a leading BOM is "not valid JSON", never silently repaired (stricter than Python).
     data = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes))
   } catch {
     // JSON.parse's message quotes the bad input, which may be a key.
