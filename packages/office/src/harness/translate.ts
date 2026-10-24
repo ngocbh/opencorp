@@ -243,6 +243,22 @@ export class Translator {
     return { ...change, path: relative(change.path, this.cwd), kind }
   }
 
+  /** Writes a card's decision onto its tool part: the item's part, or a request part of its own. */
+  decided(issued: Issued, decision: string, by: string | null): void {
+    const turn = issued.runId
+    if (this.finished.includes(turn) && !turn.startsWith(TURNLESS)) return  // its messages are closed
+    this.approvals.set(issued.callId, { decision, by })
+    if (this.items.has(issued.callId)) {
+      this.put(turn, issued.callId)
+      return
+    }
+    // A request part whose item starts later is replaced in place: both use the item id as the call id.
+    this.live.tool(this.node(turn, issued.callId), issued.callId, REQUEST, { state: "completed",
+      input: { kind: issued.card.kind, summary: issued.card.question, approval: this.approvals.get(issued.callId) } })
+    // No turn/completed will close this message, so close it now.
+    if (turn.startsWith(TURNLESS)) this.finish(turn, false)
+  }
+
   /** The card for a server request; `Unserved` for a method that isn't one. */
   card(method: string, params: Obj, asked: Asked): Issued {
     if (method === "item/commandExecution/requestApproval") {

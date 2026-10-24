@@ -5,7 +5,7 @@ import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
 import { changeCounts, COMMAND, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative,
-  REPLY_SCHEMAS, SERVED, Translator, Unserved } from "../../src/harness/translate.ts"
+  REPLY_SCHEMAS, REQUEST, SERVED, Translator, Unserved } from "../../src/harness/translate.ts"
 import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,
   fileChangeApproval, fill, formElicitation, mcpApproval, mcpApprovalQuestion, networkApproval, permissionsApproval,
   question, urlElicitation, userInput } from "../../src/testing/fake_codex.ts"
@@ -14,6 +14,7 @@ const FIXTURES = new URL("../fixtures/codex/", import.meta.url)
 /** The recorded sessions' names, without `.jsonl`, sorted. */
 const RECORDED = fs.readdirSync(new URL("sessions/", FIXTURES)).filter((name) => name.endsWith(".jsonl"))
   .map((name) => name.slice(0, -".jsonl".length)).sort()
+const SPIKE = JSON.parse(fs.readFileSync(new URL("spike.json", FIXTURES), "utf8"))
 
 // Python's Draft7Validator checks no `format`.
 const ajv = new Ajv({ strict: false, validateFormats: false })
@@ -591,6 +592,69 @@ test("a typed form answer that isnt a number makes no reply", () => {
     { action: "accept", content: { points: 3, weight: 2.5 } }, "accept"])
 })
 
+// --- decisions on tool parts --------------------------------------------------------------
+
+test("a decision written after a steer lands on the items own part", () => {
+  const { t, events } = tr()
+  feed(t, [commandStarted("c1", "touch a")])
+  const c = card(t, commandApproval(1, "c1", "touch a"))
+  t.user("also b", "ngocbh")
+  const [, decision] = c.reply("Approve")
+  t.decided(c, decision, "ngocbh")
+  feed(t, [command("c1", "touch a")[1]!])
+  t.turnCompleted("turn_1", "completed", null)
+  expect(shape(events)).toEqual([["assistant", [[COMMAND, "completed"]]], ["user", ["also b"]]])
+  const tools = parts(events).flatMap((p) => p.type === "tool" ? [p] : [])
+  expect(tools.map((p) => p.input.approval)).toEqual([{ decision: "accept", by: "ngocbh" }])
+})
+
+test("a decision on a request with no item is a part of its own", () => {
+  const { t, events } = tr()
+  const c = card(t, mcpApproval(5, "docs", "search"))
+  t.decided(c, "accept", "ngocbh")
+  t.turnCompleted("turn_1", "completed", null)
+  const [part, ...rest] = parts(events)
+  expect(rest).toEqual([])
+  if (part?.type !== "tool") throw new Error("not a tool part")
+  expect([part.tool, part.input.approval]).toEqual([REQUEST, { decision: "accept", by: "ngocbh" }])
+})
+
+test("a request part is replaced in place when its item shows up", () => {
+  const { t, events } = tr()
+  const c = card(t, fileChangeApproval(2, "f1"))  // asked before Codex sent the item
+  t.decided(c, "accept", "ngocbh")
+  feed(t, fileChange("f1", "notes.md", "hi\n"))
+  t.turnCompleted("turn_1", "completed", null)
+  const [part, ...rest] = parts(events)
+  expect(rest).toEqual([])
+  if (part?.type !== "tool") throw new Error("not a tool part")
+  expect([part.tool, part.state, (part.input.approval as Msg).by]).toEqual([FILE_CHANGE, "completed", "ngocbh"])
+})
+
+test("a decision on a request with no turn closes its message", () => {
+  // No turn/completed ever names a turnless request's run, so a later message mustn't find its node open.
+  const { t, events } = tr()
+  const c = card(t, urlElicitation(8, "gh", "Sign in", "https://e.com/l"), "codex-1")
+  t.decided(c, "accept", "ngocbh")
+  t.user("thanks", "ngocbh")
+  expect(t["live"].isSteered("codex-1")).toBe(false)
+  feed(t, agentMessage("m1", "Signed in."))
+  t.turnCompleted("turn_1", "completed", null)
+  expect(shape(events)).toEqual([["assistant", [[REQUEST, "completed"]]], ["user", ["thanks"]],
+    ["assistant", ["Signed in."]]])
+})
+
+test("a decision after its turn ended writes nothing", () => {
+  // The turn's messages are closed: writing would open a new one below whatever came after.
+  const { t, events } = tr()
+  feed(t, [commandStarted("c1", "touch a")])
+  const c = card(t, commandApproval(1, "c1", "touch a"))
+  t.turnCompleted("turn_1", "interrupted", null)
+  const before = shape(events)
+  t.decided(c, "accept", "ngocbh")
+  expect(shape(events)).toEqual(before)
+})
+
 // --- the pinned schema -------------------------------------------------------------------
 
 test("every server request in the pinned schema is served or refused", () => {
@@ -623,6 +687,46 @@ test("every reply a card makes matches codexs response schema", () => {
 
 // --- the recorded real sessions ----------------------------------------------------------
 
+/** Feeds one recorded session to a translator as the session would: each message the owner sent (every
+ *  `turn/start`) as a user message, and Codex's messages; returns what the owner would see. Its cwd is the spike's
+ *  scratch repo as the recordings name it. */
+function replay(name: string): { messages: Msg[]; cards: Msg[] } {
+  const events: HarnessEvent[] = []
+  const t = new Translator(SID, "/work/spike/ws", (e) => events.push(e))
+  const cards: Msg[] = []
+  const lines = fs.readFileSync(new URL(`sessions/${name}.jsonl`, FIXTURES), "utf8").split("\n").filter((line) => line)
+  for (const line of lines) {
+    const entry: Msg = JSON.parse(line)
+    const msg: Msg = entry.msg
+    if (entry.dir === "out") {
+      if (msg.method === "turn/start") {  // a new turn or a steer: the office writes both the same way
+        t.user(msg.params.input.map((i: Msg) => i.text ?? "").join(""), "owner")
+      }
+      continue
+    }
+    if (!("method" in msg)) continue
+    if ("id" in msg && SERVED.has(msg.method)) {
+      const params = msg.params
+      const c = t.card(msg.method, params, { runId: params.turnId || "codex-0", nodeId: String(msg.id) })
+      cards.push({ kind: c.card.kind, title: c.card.title, question: c.card.question, options: c.card.options,
+        pages: (c.card.questions ?? []).map((p) => p.header) })
+    } else if (msg.method === "turn/completed") {
+      const turn = msg.params.turn
+      t.turnCompleted(turn.id, turn.status, turn.error ?? null)
+    } else {
+      t.notification(msg.method, msg.params)
+    }
+  }
+  const messages = fold(events).map((m) => ({ role: m.role, author: m.author,
+    parts: m.parts.map((p) => Object.fromEntries(Object.entries(p).filter(([k]) => k !== "id" && k !== "call_id"))) }))
+  return { messages, cards }
+}
+
+test.each(RECORDED)("recorded sessions translate as their golden files [%s]", (name) => {
+  const golden = JSON.parse(fs.readFileSync(new URL(`golden/${name}.json`, FIXTURES), "utf8"))
+  expect(replay(name)).toEqual(golden)
+})
+
 test("the recordings include the core scenarios", () => {
   const core = ["plain", "command-approve", "command-decline", "file-change", "interrupt", "steer", "resume"]
   for (const scenario of core) expect(RECORDED.includes(scenario), scenario).toBe(true)
@@ -646,3 +750,14 @@ test.each(RECORDED)("each recorded agent messages deltas add up to its completed
     expect(text).toBe(texts.get(id)!)
   }
 })
+
+// The key spike.json records its sessions under.
+test.skipIf(!SPIKE.S3.detail.scenarios.steer.ok)(
+  "the recorded steer keeps the running command in the message it started in", () => {
+    const got = replay("steer")
+    const roles = got.messages.map((m) => m.role)
+    expect(roles.slice(0, 3)).toEqual(["user", "assistant", "user"])  // the steer comes after the command's message
+    const commands = got.messages[1]!.parts.filter((p: Msg) => p.tool === COMMAND)
+    expect(commands.map((p: Msg) => p.state)).toEqual(["completed"])
+    expect(roles.slice(3)).toContain("assistant")  // what Codex did after reading the steer follows it
+  })
