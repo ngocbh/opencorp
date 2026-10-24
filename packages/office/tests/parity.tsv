@@ -138,7 +138,7 @@ install/test_provider_setup.py	open	—	—	O2-14
 install/test_service.py	open	—	—	O2-12
 install/test_systemd.py	open	—	—	O2-12
 perm/test_frames.py	open	—	—	O3-4
-perm/test_monitor.py	open	—	split: O1-13 → O3-2	O3-2
+perm/test_monitor.py	ported	packages/office/tests/perm/monitor.test.ts	—	O3-2
 perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/office/tests/perm/monitor.test.ts::where matches type as well as value	D15: 1 equals 1.0 (JSON numbers are one type; a bigint equals the same number); true, "1" and [1] still differ	O1-13
 perm/test_office.py	ported	packages/office/tests/perm/office.test.ts	—	O1-13
 perm/test_redaction.py	ported	packages/office/tests/perm/redaction.test.ts	—	O1-13
@@ -286,9 +286,19 @@ worker/test_job.py::test_tool_spec_of_a_function	changed	packages/office/tests/w
 worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2
 worker/test_main.py	open	—	—	O3-3
 worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
-worker/test_remote_store.py	open	—	—	O3-2
+worker/test_remote_store.py	ported	packages/office/tests/worker/remote_store.test.ts	—	O3-2
+worker/test_remote_store.py::test_an_undecodable_document_is_a_value_error	changed	packages/office/tests/worker/remote_store.test.ts::an undecodable document is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2
+worker/test_remote_store.py::test_an_unknown_version_is_a_lookup_error	changed	packages/office/tests/worker/remote_store.test.ts::an unknown version is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2
+worker/test_remote_store.py::test_any_other_failure_is_an_os_error	changed	packages/office/tests/worker/remote_store.test.ts::any other failure is a system error	Y3: a Node system error (code EIO), as profile memory expects	O3-2
+worker/test_remote_store.py::test_it_is_a_markdown_store	changed	packages/office/tests/worker/remote_store.test.ts::it is a markdown store	TS interfaces have no runtime check: the type checker and the method shape	O3-2
+worker/test_remote_store.py::test_provenance_arrives_as_json	changed	packages/office/tests/worker/remote_store.test.ts::provenance arrives as json	design §2.4: TS values have no tuple or Path; bigints arrive whole	O3-2
 worker/test_resume.py	open	—	—	O4a-2
-worker/test_rpc.py	open	—	—	O3-2
+worker/test_rpc.py	ported	packages/office/tests/worker/rpc.test.ts	—	O3-2
+worker/test_rpc.py::test_a_failed_request_logs_its_exception_type_at_info_and_the_traceback_only_at_debug	changed	packages/office/tests/worker/rpc.test.ts::a failed request logs only its exception type	§6 rule 13: one INFO line with the error type; no debug traceback	O3-2
+worker/test_rpc.py::test_a_remote_tool_sends_validated_args_with_defaults	changed	packages/office/tests/worker/rpc.test.ts::a remote tool sends validated args with defaults	design §1.4: yian's JSON Schema check refuses a missing required argument (RangeError), not pydantic	O3-2
+worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	packages/office/tests/worker/rpc.test.ts::an office tool error is the tool result	design §2.4: an error reply throws ReportedToolError; the AGENT loop gives the model its message as the result	O3-2
+worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
+worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
 —	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
@@ -555,7 +565,9 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/worker/codec.test.ts::NaN round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::a bigint round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::a forged tag is refused	design §2.4: the office value codec	O3-1
-—	new	packages/office/tests/worker/codec.test.ts::a plain object with a $v key is refused	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::a proto key in a decoded record stays a plain key	design §2.4, §6 rule 9: decode never sets a prototype	O3-2
+—	new	packages/office/tests/worker/codec.test.ts::a record with a $v key round trips	design §2.4 (settled 2026-10-23): a $v record is escaped as {"$v": "record", "value": …}, not refused	O3-2
+—	new	packages/office/tests/worker/codec.test.ts::a value with no json form is refused	design §2.4: the office value codec	O3-2
 —	new	packages/office/tests/worker/codec.test.ts::negative Infinity round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::nested values round trip	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::text that is not json is refused with a fixed message	design §2.4: the office value codec; §6 rule 1	O3-1
@@ -563,6 +575,21 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
+—	new	packages/office/tests/worker/remote_store.test.ts::a closed channel is a system error	Y3: the MarkdownStore contract's classes	O3-2
+—	new	packages/office/tests/worker/remote_store.test.ts::an invalid reply is a range error	Y3: the MarkdownStore contract's classes	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a forged frame through the channel is refused	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a forged store request for a store the job was not given is refused	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a forged tool call for a group the job was not given is refused	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a malformed field is failed without its value	§6 rule 1	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a model written $v key reaches the office tool	design §2.4 (settled $v escape)	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a reply that cannot be sent becomes a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a thrown non error value is a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::bigint arguments reach the office tool	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
 —	new	packages/protocol/test/errors.test.ts::422 text never holds an input value or an unknown key	§5.4, §6 rule 7	O0-6
 —	new	packages/protocol/test/errors.test.ts::every code a client branches on is a protocol error code	§5.4	O0-6

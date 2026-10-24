@@ -1,4 +1,4 @@
-/** The worker value codec: tagged bigint, NaN and infinities round trip; plain $v records and forged tags are refused. */
+/** The worker value codec: bigint, NaN, infinities and $v records round trip; forged tags are refused. */
 import { expect, test } from "bun:test"
 import { decode, encode } from "../../src/worker/codec.ts"
 
@@ -39,16 +39,30 @@ test("nested values round trip", () => {
   expect(inner[1].deep[1].big).toBe(-(2n ** 65n))
 })
 
-test("a plain object with a $v key is refused", () => {
-  const vKey = { toJSON: () => ({ $v: "inf" }) }
-  for (const value of [{ a: [{ $v: "bigint", s: "1" }] }, { $v: 1 }, [vKey]]) {
-    expect(() => encode(value)).toThrow(TypeError)
-    expect(() => encode(value)).toThrow(new TypeError("a record with a $v key can't be sent"))
-  }
+test("a record with a $v key round trips", () => {
+  const shared = { $v: 1 }
+  const cases: [unknown, unknown][] = [
+    [{ $v: 1 }, { $v: 1 }],
+    [{ a: [{ $v: "bigint", s: "1" }] }, { a: [{ $v: "bigint", s: "1" }] }],
+    [{ $v: "record", value: { $v: 1 } }, { $v: "record", value: { $v: 1 } }],
+    [{ $v: { $v: 2n ** 70n } }, { $v: { $v: 2n ** 70n } }],
+    [{ $v: "nan" }, { $v: "nan" }],
+    [[{ toJSON: () => ({ $v: "inf" }) }], [{ $v: "inf" }]],
+    [{ $v: undefined, a: 1 }, { a: 1 }],
+    [{ a: shared, b: shared }, { a: { $v: 1 }, b: { $v: 1 } }],
+  ]
+  for (const [value, json] of cases) expect(decode(encode(value))).toStrictEqual(json)
+  expect(encode({ $v: 1 })).toBe('{"$v":"record","value":{"$v":1}}')
+})
+
+test("a value with no json form is refused", () => {
   for (const value of [undefined, () => 1]) {
     expect(() => encode(value)).toThrow(TypeError)
     expect(() => encode(value)).toThrow(new TypeError("a value with no JSON form can't be sent"))
   }
+  const cycle: Record<string, unknown> = { $v: 1 }
+  cycle.self = cycle
+  expect(() => encode(cycle)).toThrow(TypeError)
 })
 
 test("a forged tag is refused", () => {
@@ -60,11 +74,28 @@ test("a forged tag is refused", () => {
     '{"$v":"bigint","s":"-0"}',
     '{"$v":"nan","s":"1"}',
     '[{"a":{"$v":"inf","x":null}}]',
+    '{"$v":"record"}',
+    '{"$v":"record","value":1}',
+    '{"$v":"record","value":[]}',
+    '{"$v":"record","value":null}',
+    '{"$v":"record","value":{},"x":1}',
   ]
   for (const text of forged) {
     expect(() => decode(text)).toThrow(TypeError)
     expect(() => decode(text)).toThrow(new TypeError("a frame holds a $v record that isn't a tag"))
   }
+})
+
+test("a proto key in a decoded record stays a plain key", () => {
+  const back = decode('{"__proto__": {"$v": "nan"}, "a": {"$v": "record", "value": {"__proto__": 1}}}') as {
+    a: object
+  }
+  expect(Object.keys(back)).toEqual(["__proto__", "a"])
+  expect(Object.getOwnPropertyDescriptor(back, "__proto__")?.value).toBeNaN()
+  expect(Object.keys(back.a)).toEqual(["__proto__"])
+  expect(Object.getOwnPropertyDescriptor(back.a, "__proto__")?.value).toBe(1)
+  expect(Object.getPrototypeOf(back)).toBe(Object.prototype)
+  expect(Object.getPrototypeOf(back.a)).toBe(Object.prototype)
 })
 
 test("text that is not json is refused with a fixed message", () => {
