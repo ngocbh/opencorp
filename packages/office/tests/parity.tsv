@@ -162,7 +162,7 @@ store/test_questions.py	open	—	—	O1-4
 store/test_runs.py	open	—	—	O1-3
 store/test_sessions.py	open	—	—	O1-3
 store/test_work_items.py	open	—	—	O1-4
-test_old_name.py	dropped	—	a repo grep whose allowed users are legacy.py and its tests; legacy.py goes (D24, D4)	O0-9
+test_old_name.py	dropped	—	a repo grep for the old name, kept for legacy.py's move, which goes; no migration (D24, D4)	O0-9
 test_packaging.py	dropped	—	the PyPI sdist and wheel; the office ships as a compiled binary (D25), tested by O2-26	O0-9
 test_secrets.py	open	—	—	O1-1
 test_smoke.py	ported	packages/office/tests/smoke.test.ts	the office package imports next to yian	O0-4

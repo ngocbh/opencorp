@@ -63,11 +63,16 @@ function words(name: string): string {
 
 // The reader's regex: a test call starts its line (after indentation), so a commented-out `// test(` or
 // `x.it(`/`RE.test(` gives no name; the lazy argument group is allowed only after .each/.if/.skipIf/.todoIf.
-// Names must be string literals. A test inside a multi-line `/* */` block or under `describe.skip` still
-// counts: stripping block comments would break on strings like "src/**/*.ts", so review catches those.
+// Names must be string literals. A test-shaped line inside a multi-line `/* */` block or a template string
+// still counts: stripping those would break on strings like "src/**/*.ts", so review catches them.
+// Known limits: `"a " + b` reads as "a"; after `test.each(X)(nonLiteral, …)` the lazy group runs to the next call.
 const TEST_CALL =
   /^[ \t]*(?:test|it)((?:\.(?:skip|only|todo|concurrent|serial|failing))*)(?:\.(each|if|skipIf|todoIf)\([\s\S]*?\)(?=\())?\(\s*(["'`])((?:(?!\3)[^\\]|\\.)*)\3/gm
 // Groups: 1 the plain modifiers, 2 the argument modifier (todoIf doesn't count), 3 the quote, 4 the name.
+
+// A test under `describe.skip`/`describe.todo` never runs, so a file holding one is refused; the reader
+// doesn't track blocks. `describe.if`, `describe.skipIf` and `describe.each` stay allowed.
+const SKIPPED_DESCRIBE = /^[ \t]*describe(?:\.\w+)*\.(?:skip|todo)\b/m
 
 /** The tests in TS source text, read statically. `counts` is false for `.skip`, `.todo`, `.failing`
  *  and `.todoIf(…)`: a test that never runs, or passes only by failing, ports nothing. */
@@ -83,6 +88,11 @@ const tsCache = new Map<string, { name: string; counts: boolean }[]>()
 function tsTests(file: string): { name: string; counts: boolean }[] {
   if (!tsCache.has(file)) tsCache.set(file, testsIn(fs.readFileSync(path.join(ROOT, file), "utf8")))
   return tsCache.get(file)!
+}
+
+/** `file` (repo-relative) holds a `describe.skip` or `describe.todo` block. */
+function skipsDescribe(file: string): boolean {
+  return SKIPPED_DESCRIBE.test(fs.readFileSync(path.join(ROOT, file), "utf8"))
 }
 
 /** How `name` (words) stands in `file`: "counts", "skipped", or "missing". */
@@ -148,6 +158,16 @@ test("every row is true", () => {
     '/* test("a b") */',
   ]
   for (const text of ignored) expect(testsIn(text)).toEqual([])
+  for (const text of ['describe.skip("x", () => {})', '  describe.todo("x")', 'describe.only.skip("x", () => {})'])
+    expect(SKIPPED_DESCRIBE.test(text)).toBe(true)
+  const notSkipped = [
+    'describe("x", () => {})',
+    'describe.if(ok)("x", () => {})',
+    'describe.skipIf(ok)("x", () => {})',
+    'describe.each([1])("x %d", () => {})',
+    '// describe.skip("x", () => {})',
+  ]
+  for (const text of notSkipped) expect(SKIPPED_DESCRIBE.test(text)).toBe(false)
 
   const ids = pythonIds()
   const idsOf = new Map<string, string[]>()
@@ -162,7 +182,17 @@ test("every row is true", () => {
       problems.push(`line ${row.line}: ${claimant} and ${other} both claim ${key}`)
     else claims.set(key, claimant)
   }
-  const exists = (file: string) => fs.existsSync(path.join(ROOT, file)) && fs.statSync(path.join(ROOT, file)).isFile()
+  // On disk as spelled: on macOS a case variant also exists, and with a symlinked spelling it would be a second
+  // name for one test, dodging the double claim. ROOT is resolved too, as it may sit under a symlink (/tmp).
+  const realRoot = fs.realpathSync.native(ROOT)
+  const exists = (file: string) => {
+    try {
+      const real = fs.realpathSync.native(path.join(ROOT, file))
+      return real === path.join(realRoot, file) && fs.statSync(real).isFile()
+    } catch {
+      return false
+    }
+  }
 
   rows.forEach((row, i) => {
     const say = (what: string) => problems.push(`line ${row.line}: ${what}`)
@@ -175,6 +205,7 @@ test("every row is true", () => {
       say(`${row.python} has another row`)
     if (!ITEM.test(row.item)) say(`item ${row.item} is not a plan item`)
     if (!STATUSES.has(row.status)) return say(`status ${row.status} is unknown`)
+    if (row.reason === NONE && row.status !== "open" && row.status !== "ported") say("needs a reason")
     const kind = row.python === NONE ? "new" : row.python.includes("::") ? "id" : "file"
     const allowed =
       kind === "new" ? row.status === "new" : (kind === "id" ? ID_STATUSES : FILE_STATUSES).has(row.status)
@@ -190,6 +221,7 @@ test("every row is true", () => {
         return say(`ts ${row.ts} is not distinct .test.ts paths`)
       const missing = files.filter((f) => !exists(f))
       if (missing.length) return say(`${missing.join(", ")} does not exist`)
+      for (const f of files) if (skipsDescribe(f)) say(`${f} has a skipped describe block`)
       const used = new Set<string>()
       const own = new Set(rows.filter((r) => r.python.startsWith(`${row.python}::`)).map((r) => r.python))
       const bases = new Set(
@@ -214,6 +246,7 @@ test("every row is true", () => {
       if (cut < 0 || !isTestPath(file) || !row.ts.slice(cut + 2))
         return say(`ts ${row.ts} is not <path>.test.ts::<test name>`)
       if (!exists(file)) return say(`${file} does not exist`)
+      if (skipsDescribe(file)) say(`${file} has a skipped describe block`)
       const name = words(row.ts.slice(cut + 2))
       const found = lookup(file, name)
       if (found !== "counts")
