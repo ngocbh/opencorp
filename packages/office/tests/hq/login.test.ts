@@ -31,7 +31,7 @@ function setPassword(company: string, handle: string, hash: string): void {
 
 /** An office with HQ and a `web` client; the CEO has `PASSWORD` (Python's `web` and `with_password`). */
 async function withPassword({ logs }: { logs?: string[] } = {}) {
-  const office = makeOffice()
+  const office = makeOffice({ log: (line) => logs?.push(line) })
   const hq = await makeHq(office, { logs })
   setPassword(office.paths.company, CEO, await hashPassword(PASSWORD))
   return { office, hq, client: await web(hq) }
