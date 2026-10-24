@@ -132,3 +132,12 @@ test("a burst overflows a full queue before a waiting reader runs", async () => 
   expect(sub.dropped).toBe(true)
   expect(bus.subscriberCount).toBe(0)
 })
+
+test("a second reader while one waits is refused", async () => {
+  const bus = new Bus()
+  const sub = bus.subscribe()
+  const first = sub.next(5000)
+  await expect(sub.next(5000)).rejects.toThrow("a subscription has one reader at a time")
+  bus.publishLive(live(S1, "a"))
+  expect(text(await first)).toBe("a")
+})

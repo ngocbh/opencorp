@@ -19,6 +19,7 @@ export class Subscription {
   readonly #queue: (Item | null)[] = []
   #done = false
   #dropped = false
+  #reading = false
   #wake: (() => void) | null = null
 
   constructor(remove: (sub: Subscription) => void, session: string | null, types: ReadonlySet<string> | null) {
@@ -49,25 +50,31 @@ export class Subscription {
 
   /** The next item, `PING` after `timeoutMs` idle, or null once ended (and forever after). One reader at a time. */
   async next(timeoutMs: number): Promise<Item | typeof PING | null> {
+    if (this.#reading) throw new Error("a subscription has one reader at a time")
     if (this.#done) return null
-    if (this.#wake !== null) throw new Error("a subscription has one reader at a time")
-    if (this.#queue.length === 0) {
-      const woken = await new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => {
-          this.#wake = null
-          resolve(false)
-        }, timeoutMs)
-        this.#wake = () => {
-          clearTimeout(timer)
-          this.#wake = null
-          resolve(true)
-        }
-      })
-      if (!woken) return PING
+    this.#reading = true
+    try {
+      if (this.#queue.length === 0) {
+        const woken = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => {
+            this.#wake = null
+            resolve(false)
+          }, timeoutMs)
+          this.#wake = () => {
+            clearTimeout(timer)
+            this.#wake = null
+            resolve(true)
+          }
+        })
+        if (!woken) return PING
+      }
+      // Never empty here: a wake follows a push, and no other reader can take that item first.
+      const item = this.#queue.shift()!
+      if (item === null) this.#done = true
+      return item
+    } finally {
+      this.#reading = false
     }
-    const item = this.#queue.shift() ?? null
-    if (item === null) this.#done = true
-    return item
   }
 
   /** Stop receiving items. A waiting `next()` is not woken; it returns `PING` at its timeout. */

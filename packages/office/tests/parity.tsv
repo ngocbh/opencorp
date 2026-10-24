@@ -369,6 +369,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
 —	new	packages/office/tests/daemon/bus.test.ts::a burst overflows a full queue before a waiting reader runs	design §2.3: a reader is woken after the fan-out, as asyncio's queue	O2-2
+—	new	packages/office/tests/daemon/bus.test.ts::a second reader while one waits is refused	design §2.3: one stream reads each subscription	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a 500 logs only the error type	design §2.3, §6 rule 13: a 500 logs the error type only	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a body that isnt utf 8 is 422	design §5.4: the body is UTF-8 JSON; json.loads also took UTF-16/32, which is refused now	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a decoded slash or dot dot in a param is a 404	design §2.3: params decoded once; a decoded / or .. is a 404	O2-1
