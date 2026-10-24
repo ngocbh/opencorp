@@ -2,9 +2,12 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
+import { tool, ToolSet } from "@ngocbh/yian/tools"
 import { stringify } from "yaml"
 import type { Monitor } from "../../src/perm/monitor.ts"
 import { DETAIL_CHARS } from "../../src/perm/redact.ts"
+import { groupSpecs } from "../../src/worker/job.ts"
+import { BaseHandlers, type JsonObject } from "../../src/worker/rpc.ts"
 import { person } from "../company/helpers.ts"
 import { KINDS, TOKEN, cluster, makeMonitor, setFile } from "./helpers.ts"
 
@@ -211,6 +214,24 @@ test("toolbox tools carry the kind schema and audit the run", async () => {
   expect(JSON.stringify(toolbox.fake__echo!.parameters)).toBe(JSON.stringify(golden.toolbox[0].parameters))
   expect(await toolbox.fake__echo!.call({ text: "hi" })).toBe("hi")
   expect(store.listAudit().map((r) => [r.runId, r.sessionId])).toEqual([["r1", "s1"]])
+})
+
+test("tools plug into group specs base handlers and toolset", async () => {
+  const { monitor, store } = await makeMonitor({
+    "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["submit_job"] }]),
+  })
+  const toolbox = monitor.tools("minh", { runId: "r1", sessionId: "s1" })
+  const [submit, echo] = groupSpecs({ toolbox }).toolbox!.sort((a, b) => a.name.localeCompare(b.name))
+  expect([submit!.name, submit!.description]).toEqual(["cluster_a__submit_job", "Submit a job."])
+  expect(submit!.parameters.required).toEqual(["job"])
+  expect(echo!.parameters.properties).toEqual({ text: { type: "string" } })
+  const handlers = new BaseHandlers({ tools: { toolbox } })
+  expect(await handlers.toolCall(null, "toolbox", "fake__echo", { text: "hi" })).toBe("hi")
+  const tools = Object.entries(toolbox).map(([name, t]) =>
+    tool({ name, description: t.description, parameters: t.parameters as JsonObject, execute: (args) => t.call(args) }),
+  )
+  expect(new ToolSet({ toolbox: tools }).groups).toEqual(["toolbox"])
+  expect(store.listAudit().map((r) => r.sessionId)).toEqual(["s1"])
 })
 
 test("an unreadable secret file is an audited error", async () => {

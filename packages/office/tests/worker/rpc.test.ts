@@ -431,9 +431,9 @@ async function rejection(promise: Promise<unknown>): Promise<unknown> {
 
 test("a remote tool runs in the office", async () => {
   const rpc = await officeEnd(new BaseHandlers({ tools: { toolbox: { shout } } }))
-  const tool = remoteTool(rpc, "toolbox", toolSpec("shout", shout))
-  expect([tool.name, tool.description]).toEqual(["shout", "Return text in capitals."])
-  expect(await new ToolSet({ toolbox: [tool] }).invoke("shout", { text: "hi" })).toBe("HI")
+  const remote = remoteTool(rpc, "toolbox", toolSpec("shout", shout))
+  expect([remote.name, remote.description]).toEqual(["shout", "Return text in capitals."])
+  expect(await new ToolSet({ toolbox: [remote] }).invoke("shout", { text: "hi" })).toBe("HI")
 })
 
 test("a remote tool sends validated args with defaults", async () => {
@@ -459,7 +459,7 @@ test("a remote tool sends validated args with defaults", async () => {
   expect(await tools.invoke("read_file", { path: "a.txt", limit: 3 })).toBe("ok")
   const error = await rejection(tools.invoke("read_file", { offset: 1 }))
   expect(error).toBeInstanceOf(RangeError)
-  expect(String((error as Error).message)).toContain("path")
+  expect((error as Error).message).toContain("path")
   expect(seen).toEqual([["a.txt", 0, 3]])
 })
 
@@ -603,16 +603,16 @@ test("a reply that cannot be sent becomes a failed reply", async () => {
 })
 
 test("bigint arguments reach the office tool", async () => {
-  const { seen, tool } = taking("n", { type: "integer" })
-  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take: tool } } }))
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", tool))] }).invoke("take", { n: 2n ** 64n })
+  const { seen, tool: take } = taking("n", { type: "integer" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take } } }))
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { n: 2n ** 64n })
   expect(seen).toEqual([2n ** 64n])
 })
 
 test("a model written $v key reaches the office tool", async () => {
-  const { seen, tool } = taking("payload", { type: "object" })
-  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take: tool } } }))
+  const { seen, tool: take } = taking("payload", { type: "object" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take } } }))
   const payload = { $v: "x", value: 1 }
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", tool))] }).invoke("take", { payload })
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { payload })
   expect(seen).toEqual([payload])
 })
