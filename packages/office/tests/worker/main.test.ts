@@ -77,8 +77,8 @@ test("after its last frame a worker answers steers until the office closes", asy
   const { office, out } = await startWorker()
   await office.send(badStart())
   expect((await office.recv()).type).toBe("error")
-  await office.send({ type: "steer", node_id: "reply", text: "too late" })
-  expect(await office.recv()).toEqual({ type: "steer_left", node_id: "reply", texts: ["too late"] })
+  await office.send({ type: "steer", inbox: "steers", text: "too late" })
+  expect(await office.recv()).toEqual({ type: "steer_left", inbox: "steers", texts: ["too late"] })
   expect(out.code).toBeUndefined()
   office.closeSend()
   await waitFor(() => out.code !== undefined, { timeout: 5000, what: "the worker to return" })
@@ -95,7 +95,7 @@ test("a worker stops waiting for the office after a while", async () => {
 
 test("a result too large to send becomes an error", async () => {
   const { office, worker } = await channelPair({ maxFrame: 2000 })
-  const left = { type: "steer_left", node_id: "reply", texts: ["x"] }
+  const left = { type: "steer_left", inbox: "steers", texts: ["x"] }
   const code = await report(worker, [left, { type: "result", output: "x".repeat(5000) }], EXIT_OK)
   expect(code).toBe(EXIT_FAILED)
   expect(await office.recv()).toEqual(left)
@@ -114,7 +114,7 @@ test("a worker exits 3 when the office closes before the start frame", async () 
 
 test("a frame other than start is an error", async () => {
   const { office } = await startWorker()
-  await office.send({ type: "steer", node_id: "x", text: "y" })
+  await office.send({ type: "steer", inbox: "steers", text: "y" })
   const frame = await office.recv()
   expect(frame.type).toBe("error")
   expect(frame.message).toBe("TypeError: expected a start frame")
@@ -230,7 +230,6 @@ test("a reserved tool name is refused before any model call", async () => {
       { groups: groupSpecs({ sleep: { shout } }) },
       'RangeError: tools["sleep"]: the name is reserved by yian',
     ],
-    ["flows/echo.yaml", { groups: groupSpecs({ ask: { shout } }) }, "TypeError: pass the ask handler once"],
   ]
   for (const [flow, over, start] of cases) {
     const fake = await fakeLlm()

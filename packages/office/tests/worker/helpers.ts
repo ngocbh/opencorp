@@ -25,10 +25,10 @@ import { CHAT } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
- *  flow. */
-export function agentFlow(name: string, { node = "", top = "" } = {}): string {
+ *  flow, `inputs` to its inputs. */
+export function agentFlow(name: string, { node = "", top = "", inputs = "" } = {}): string {
   return (
-    `id: ${name}\nname: ${name}\n${top}input:\n  message: !str\nnodes:\n  reply:\n    kind: agent\n` +
+    `id: ${name}\nname: ${name}\n${top}input:\n${inputs}  message: !str\nnodes:\n  reply:\n    kind: agent\n` +
     `${node}    input:\n      message: \${input.message}\n    output: str\n` +
     `    prompt: "\${message}"\noutput: \${reply.output}\n`
   )
@@ -38,7 +38,10 @@ export function agentFlow(name: string, { node = "", top = "" } = {}): string {
 export const ECHO = agentFlow("echo")
 export const ASK = agentFlow("ask", { node: "    tools: [ask_user]\n" })
 export const TOOLS = agentFlow("tools", { node: "    tools: [toolbox]\n" })
-export const STEERABLE = agentFlow("steerable", { node: "    tools: [toolbox]\n    steerable: true\n" })
+export const STEERABLE = agentFlow("steerable", {
+  inputs: "  steers: !Inbox(str)\n",
+  node: "    tools: [toolbox]\n    steer_inbox: \${input.steers}\n",
+})
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
 
@@ -213,6 +216,7 @@ export class Recorder extends BaseHandlers {
   readonly frames: Frame[] = []
   readonly asked: AskRequest[] = []
   readonly answers: unknown[]
+  /** Each `steer_left` frame's inbox and texts. */
   readonly left: [string, string[]][] = []
   /** The types of the `steer_left`, `result` and `error` frames, in order. */
   readonly order: string[] = []
@@ -235,8 +239,8 @@ export class Recorder extends BaseHandlers {
     this.frames.push(frame)
   }
 
-  override steerLeft(_worker: unknown, nodeId: string, texts: string[]): void {
-    this.left.push([nodeId, texts])
+  override steerLeft(_worker: unknown, inbox: string, texts: string[]): void {
+    this.left.push([inbox, texts])
     this.order.push("steer_left")
   }
 
@@ -268,8 +272,8 @@ export class Recorder extends BaseHandlers {
 
 /** The office's handle on an in-process worker, as handlers receive it. */
 export interface TestWorker extends JobWorker {
-  /** Sends a steer for `nodeId`; false if the channel is closed. */
-  steer(nodeId: string, text: string): Promise<boolean>
+  /** Sends a steer to the run's `inbox`; false if the channel is closed. */
+  steer(inbox: string, text: string): Promise<boolean>
   /** Sends an interrupt for `nodeId`; false if the channel is closed. */
   interrupt(nodeId: string): Promise<boolean>
   /** Sends a stop; false if the channel is closed. */
@@ -320,7 +324,7 @@ export async function inProcessWorker(
   }
   const worker: TestWorker = {
     job,
-    steer: (nodeId, text) => send({ type: "steer", node_id: nodeId, text }),
+    steer: (inbox, text) => send({ type: "steer", inbox, text }),
     interrupt: (nodeId) => send({ type: "interrupt", node_id: nodeId }),
     stop: () => send({ type: "stop" }),
     closeChannel: () => office.close(),
@@ -341,7 +345,7 @@ export async function inProcessWorker(
         if (isRequest(kind)) {
           void replyTo(office, frame, handlers, worker)
         } else if (kind === "steer_left") {
-          notify(() => handlers.steerLeft(worker, frame.node_id as string, frame.texts as string[]))
+          notify(() => handlers.steerLeft(worker, frame.inbox as string, frame.texts as string[]))
         } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
           notify(() => handlers[kind](worker, frame))
           // The run is over: later steers fail here, and the worker, having answered the ones already sent, sees the

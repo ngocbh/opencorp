@@ -1,68 +1,56 @@
-/** The steering inbox (queued steers, interrupts as a per-node signal, finished nodes and close), and steering
- *  through a run. */
+/** Interrupts (a per-node signal, finished nodes and close), and steering through a run's steer inbox. */
+import fs from "node:fs"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
-import { Inbox } from "../../src/worker/inbox.ts"
-import type { JobInput } from "../../src/worker/job.ts"
+import { Interrupts } from "../../src/worker/inbox.ts"
+import type { Job, JobInput } from "../../src/worker/job.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { waitFor } from "../helpers.ts"
 import { base, inProcessWorker, makeJob, Recorder, run, type TestWorker } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-test("steers queue until drained", () => {
-  const inbox = new Inbox()
-  expect(inbox.steer("reply", "one") && inbox.steer("reply", "two")).toBe(true)
-  expect(inbox.drain("reply")).toEqual(["one", "two"])
-  expect(inbox.drain("reply")).toEqual([])
+test("a finished node refuses interrupts", () => {
+  const interrupts = new Interrupts()
+  expect(interrupts.interrupt("reply") && interrupts.interruptSignal("reply").aborted).toBe(true)
+  interrupts.finish("reply")
+  expect(interrupts.interruptSignal("reply").aborted).toBe(false)
+  expect(interrupts.interrupt("reply")).toBe(false)
 })
 
-test("a finished node refuses steers and interrupts", () => {
-  const inbox = new Inbox()
-  inbox.steer("reply", "unread")
-  expect(inbox.interrupt("reply") && inbox.interruptSignal("reply").aborted).toBe(true)
-  expect(inbox.finish("reply")).toEqual(["unread"])
-  expect(inbox.interruptSignal("reply").aborted).toBe(false)
-  expect(inbox.steer("reply", "late") || inbox.interrupt("reply")).toBe(false)
-  expect(inbox.drain("reply")).toEqual([])
-})
-
-test("close refuses new steers and returns every queued one", () => {
-  const inbox = new Inbox()
-  inbox.steer("a", "1")
-  inbox.steer("loop#1/b", "2")
-  inbox.finish("a")
-  inbox.steer("never-ran", "3")
-  expect(Object.fromEntries(inbox.close())).toEqual({ "loop#1/b": ["2"], "never-ran": ["3"] })
-  expect(inbox.steer("c", "late") || inbox.interrupt("c")).toBe(false)
-  expect(Object.fromEntries(inbox.close())).toEqual({})
+test("close refuses new interrupts", () => {
+  const interrupts = new Interrupts()
+  const signal = interrupts.interruptSignal("loop#1/b")
+  interrupts.close()
+  expect(interrupts.interrupt("loop#1/b") || interrupts.interrupt("never-ran")).toBe(false)
+  expect(signal.aborted).toBe(false)
 })
 
 test("an interrupt waits for its node to start", () => {
-  const inbox = new Inbox()
-  expect(inbox.interrupt("later") && inbox.interruptSignal("later").aborted).toBe(true)
+  const interrupts = new Interrupts()
+  expect(interrupts.interrupt("later") && interrupts.interruptSignal("later").aborted).toBe(true)
 })
 
 test("a node is cut once it reads its interrupt", () => {
-  const inbox = new Inbox()
-  expect(inbox.interrupt("reply") && !inbox.cut("reply")).toBe(true)
-  expect(inbox.interruptSignal("reply").aborted && inbox.cut("reply")).toBe(true)
-  inbox.finish("reply")
-  expect(inbox.cut("reply")).toBe(false)
+  const interrupts = new Interrupts()
+  expect(interrupts.interrupt("reply") && !interrupts.cut("reply")).toBe(true)
+  expect(interrupts.interruptSignal("reply").aborted && interrupts.cut("reply")).toBe(true)
+  interrupts.finish("reply")
+  expect(interrupts.cut("reply")).toBe(false)
 })
 
 test("an interrupt aborts the signal a running node already took", () => {
-  const inbox = new Inbox()
-  const signal = inbox.interruptSignal("reply")
-  expect(signal.aborted || inbox.cut("reply")).toBe(false)
-  expect(inbox.interrupt("reply")).toBe(true)
-  expect(signal.aborted && inbox.cut("reply")).toBe(true)
+  const interrupts = new Interrupts()
+  const signal = interrupts.interruptSignal("reply")
+  expect(signal.aborted || interrupts.cut("reply")).toBe(false)
+  expect(interrupts.interrupt("reply")).toBe(true)
+  expect(signal.aborted && interrupts.cut("reply")).toBe(true)
 })
 
 test("after close a node gets a signal that never aborts", () => {
-  const inbox = new Inbox()
-  inbox.close()
-  expect(inbox.interruptSignal("x").aborted || inbox.interrupt("x")).toBe(false)
+  const interrupts = new Interrupts()
+  interrupts.close()
+  expect(interrupts.interruptSignal("x").aborted || interrupts.interrupt("x")).toBe(false)
 })
 
 const TOOL_THEN_DONE: ScriptedReply[] = [
@@ -70,13 +58,14 @@ const TOOL_THEN_DONE: ScriptedReply[] = [
   { content: "Done." },
 ]
 
-/** Runs `shout`, and during the call steers or interrupts the running node. */
+/** Runs `shout`, and during the call steers or interrupts the running node; with `until`, the call returns once
+ *  `until()` holds. */
 class Steering extends Recorder {
   constructor(
     readonly action: (worker: TestWorker) => unknown,
-    options: ConstructorParameters<typeof Recorder>[0] = {},
+    readonly until?: () => boolean,
   ) {
-    super(options)
+    super()
   }
 
   override async toolCall(
@@ -88,6 +77,7 @@ class Steering extends Recorder {
     // Not awaited: the office channel writes in call order, so the worker reads this frame before the reply and
     // the node sees it before the tool returns. A failed send shows in what the test checks, so it is not kept.
     Promise.resolve(this.action(worker)).catch(() => {})
+    if (this.until) await waitFor(this.until, { timeout: 10_000, what: "the tool's condition" })
     return String(args.text).toUpperCase()
   }
 }
@@ -100,15 +90,34 @@ function specGroups(): JobInput["groups"] {
   }
 }
 
+/** The payloads of `job`'s run log records of `kind`, in order. */
+function logPayloads(job: Job, kind: string): Record<string, unknown>[] {
+  return fs
+    .readFileSync(job.log, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind: string; payload: Record<string, unknown> })
+    .filter((record) => record.kind === kind)
+    .map((record) => record.payload)
+}
+
+/** The `steer` steps the run log of `job` records, as `[node id, step]`. */
+function steerSteps(job: Job): [unknown, Record<string, unknown>][] {
+  return logPayloads(job, "node_step")
+    .map((payload) => [payload.node_id, payload.step as Record<string, unknown>] as [unknown, Record<string, unknown>])
+    .filter(([, step]) => step.kind === "steer")
+}
+
 test("a steer reaches the next model call", async () => {
   const fake = await fakeLlm()
   fake.script(...TOOL_THEN_DONE)
-  const handlers = new Steering((w) => w.steer("reply", "Also mention Rome."))
+  const handlers = new Steering((w) => w.steer("steers", "Also mention Rome."))
   const job = makeJob(base(), "flows/steerable.yaml", { groups: specGroups() })
   const rec = await run(job, handlers, { env: fake.env() })
   expect(rec.outcome?.output).toBe("Done.")
   expect(rec.left).toEqual([])
   expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("Also mention Rome.")
+  expect(steerSteps(job).map(([nodeId, step]) => [nodeId, step.inbox])).toEqual([["reply", "steers"]])
   const succeeded = rec.frames.filter((f) => f.name === "NodeSucceeded")
   expect(succeeded.every((f) => !Object.hasOwn(f.data as object, "interrupted"))).toBe(true)
 })
@@ -127,39 +136,35 @@ test("an interrupt returns the text so far", async () => {
   expect(ended[0]!.interrupted).toBe(true)
 })
 
-test("a steer the node never reads comes back", async () => {
+test("a steer the node never reads stays in the inbox", async () => {
   const fake = await fakeLlm()
-  fake.script(...TOOL_THEN_DONE)
-  const handlers = new Steering((w) => w.steer("reply", "Also mention Rome."))
-  const job = makeJob(base(), "flows/tools.yaml", { groups: specGroups() })
-  const rec = await run(job, handlers, { env: fake.env() })
-  expect(rec.outcome?.output).toBe("Done.")
-  expect(rec.left).toEqual([["reply", ["Also mention Rome."]]])
-  expect(JSON.stringify(fake.requests()[1]!.messages)).not.toContain("Rome")
-})
-
-test("a steer for a finished node comes back at once", async () => {
-  const fake = await fakeLlm()
-  fake.script({ content: "hello", hold: true })
-  const rec = new Recorder({ answers: ["hi"] })
-  const worker = await inProcessWorker(makeJob(base(), "flows/chat.yaml", { inputs: {} }), rec, { env: fake.env() })
+  fake.script({ content: "Done.", hold: true })
+  const rec = new Recorder()
+  const job = makeJob(base(), "flows/steerable.yaml", { groups: specGroups() })
+  const worker = await inProcessWorker(job, rec, { env: fake.env() })
   await fake.waitForRequests(1, 30_000)
-  // Dropped: the node is done.
-  expect(await worker.interrupt("ask")).toBe(true)
-  expect(await worker.steer("ask", "late")).toBe(true)
-  await waitFor(() => rec.left.length > 0, { timeout: 10_000, what: "the steer to come back" })
-  expect(rec.left).toEqual([["ask", ["late"]]])
+  expect(await worker.steer("steers", "late")).toBe(true)
+  const sent = () => logPayloads(job, "pool_commit").some((payload) => payload.value === "late")
+  await waitFor(sent, { timeout: 10_000, what: "the log to hold the send" })
   fake.release()
   expect(await worker.wait()).toBe(0)
-  expect(rec.outcome?.output).toBe("hello")
+  expect(rec.outcome?.output).toBe("Done.")
+  expect(rec.left).toEqual([])
+  expect(fake.requests().length).toBe(1)
+  expect(steerSteps(job)).toEqual([])
 })
 
-test("a steer for a node that never ran comes back before the result", async () => {
+test("a steer yian refuses comes back at once", async () => {
   const fake = await fakeLlm()
   fake.script(...TOOL_THEN_DONE)
-  const handlers = new Steering((w) => w.steer("nowhere", "Hello?"))
+  const refused = JSON.stringify([["nowhere", ["Hello?"]]])
+  const handlers: Steering = new Steering(
+    (w) => w.steer("nowhere", "Hello?"),
+    () => JSON.stringify(handlers.left) === refused,
+  )
   const job = makeJob(base(), "flows/steerable.yaml", { groups: specGroups() })
   const rec = await run(job, handlers, { env: fake.env() })
+  expect(rec.outcome?.status).toBe("succeeded")
   expect(rec.left).toEqual([["nowhere", ["Hello?"]]])
   expect(rec.order).toEqual(["steer_left", "result"])
 })
@@ -172,15 +177,17 @@ test("a steer sent as the run ends is applied or returned", async () => {
   const worker = await inProcessWorker(job, handlers, { env: fake.env() })
   const sent: string[] = []
   // steer() turns false once the office has read the result and closed its side (or the test end closed it).
-  while (await worker.steer("reply", `<s${sent.length}>`)) {
+  while (await worker.steer("steers", `<s${sent.length}>`)) {
     sent.push(`<s${sent.length}>`)
     await Bun.sleep(1)
   }
   expect(await worker.wait()).toBe(0)
   expect(handlers.outcome?.type).toBe("result")
   const applied = JSON.stringify(fake.requests().map((r) => r.messages))
+  const logged = fs.readFileSync(job.log, "utf8")
   const returned = handlers.left.flatMap(([, texts]) => texts)
   expect(sent.length).toBeGreaterThan(0)
   expect(returned.length).toBe(new Set(returned).size)
-  expect(sent.filter((text) => !applied.includes(text) && !returned.includes(text))).toEqual([])
+  const lost = sent.filter((text) => !applied.includes(text) && !logged.includes(text) && !returned.includes(text))
+  expect(lost).toEqual([])
 })

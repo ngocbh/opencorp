@@ -225,8 +225,8 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   event(worker: W, frame: Frame): void
   /** A Yian stream chunk's fields. */
   stream(worker: W, frame: Frame): void
-  /** Steer messages the run did not read before `nodeId` finished. */
-  steerLeft(worker: W, nodeId: string, texts: string[]): void
+  /** Steers yian refused for `inbox` (the run ended or hadn't started, or no such inbox). */
+  steerLeft(worker: W, inbox: string, texts: string[]): void
   /** The job finished: `status`, `run_id`, `output`, `failure`. */
   result(worker: W, frame: Frame): void
   /** The job threw before it could finish. */
@@ -273,7 +273,7 @@ export class BaseHandlers implements WorkerHandlers {
 
   stream(_worker: unknown, _frame: Frame): void {}
 
-  steerLeft(_worker: unknown, _nodeId: string, _texts: string[]): void {}
+  steerLeft(_worker: unknown, _inbox: string, _texts: string[]): void {}
 
   result(_worker: unknown, _frame: Frame): void {}
 
