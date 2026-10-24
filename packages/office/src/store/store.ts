@@ -201,6 +201,20 @@ function parseJson(table: string, name: string, text: string): unknown {
   }
 }
 
+/** `value` as JSON text for column `name` of `table`; throws `StoreError` if it can't be stored as JSON. */
+function jsonText(table: string, name: string, value: unknown): string {
+  let text: string | undefined
+  try {
+    text = JSON.stringify(value)
+  } catch {
+    // The serializer's or a toJSON's message could quote the value, which could hold a secret.
+    throw new StoreError(`${table}: ${name} can't be stored as JSON`)
+  }
+  // A function, a symbol or a toJSON returning undefined gives undefined, which would bind as SQL NULL.
+  if (text === undefined) throw new StoreError(`${table}: ${name} can't be stored as JSON`)
+  return text
+}
+
 /** Puts the database in WAL mode, unless it already is. Switching needs an exclusive lock: when several
  *  processes open a new database at once, SQLite can report it busy without calling the busy handler, so
  *  this retries with backoff for up to `timeoutMs`. */
@@ -606,7 +620,7 @@ export class Store {
     const cols: Record<string, SqliteParam> = {}
     for (const [name, value] of Object.entries(result.data as Record<string, unknown>)) {
       if (table.derived.has(name)) continue
-      if (table.json.has(name)) cols[name] = value === null ? null : JSON.stringify(value)
+      if (table.json.has(name)) cols[name] = value === null ? null : jsonText(table.name, name, value)
       else if (table.bools.has(name)) cols[name] = value ? 1 : 0
       else cols[name] = value as SqliteParam
     }
@@ -995,7 +1009,7 @@ export class Store {
     const cols = this.#columns(QUESTIONS, question)
     // SQL NULL means "not answered"; an answered question stores its answer as JSON, which may be the text
     // `null`. An open or stale question keeps no answer fields.
-    if (ANSWERED.has(question.status)) cols.answer = JSON.stringify(question.answer ?? null)
+    if (ANSWERED.has(question.status)) cols.answer = jsonText(QUESTIONS.name, "answer", question.answer ?? null)
     else Object.assign(cols, { answer: null, answer_kind: null, answered_by: null })
     return cols
   }

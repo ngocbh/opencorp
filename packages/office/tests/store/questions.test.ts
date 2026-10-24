@@ -209,3 +209,15 @@ test("questions are read by a long run id list in one statement", () => {
   ids.push("run-2", "run-1")
   expect(store.listQuestions({ runId: ids }).map((q) => q.id)).toEqual(made.map((q) => q.id))
 })
+
+test("an answer that isnt json is refused", () => {
+  const { store, sid } = withSession()
+  const q = store.addQuestion(question(sid))
+  const events = recordEvents(store)
+  for (const answer of [{ k: 1n }, () => "x"]) {
+    expect(thrown(() => store.answerQuestion(q.id, answer, "text"))).toBeInstanceOf(StoreError)
+    expect(store.getQuestion(q.id)!.status).toBe("open")
+    expect(rawAnswer(store, q.id)).toBeNull()
+  }
+  expect(events.filter((e) => e.type === "question.updated")).toEqual([])
+})
