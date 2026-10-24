@@ -15,6 +15,7 @@ const FAKE = fileURLToPath(new URL("../../src/testing/fake_codex.ts", import.met
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 const CHUNK = (1 << 20) + 7
 
+/** A JSON object from the wire: `any`, since the assertions read whatever the client or the fake sent. */
 type Msg = Record<string, any>
 
 /** What a `JsonRpc` told its handlers, in order. */
@@ -322,6 +323,35 @@ test(
 )
 
 test(
+  "a kill or closed handler that throws still fails the pending requests",
+  async () => {
+    const errors = unhandled()
+    const server = new Server({
+      kill: () => {
+        throw Object.assign(new Error("kill ESRCH secret"), { code: "ESRCH" })
+      },
+      onClosed: () => {
+        throw new Error("closed secret")
+      },
+    })
+    const failed = rejection(server.rpc.request("initialize", {}, { timeout: 5000 }))
+    await writeInChunks(server.out, Buffer.alloc(MAX_LINE + 1, "x"))
+    const error = await failed
+    expect(error).toBeInstanceOf(RpcClosed)
+    expect(error.message).toBe("the app-server sent a line over the 16 MiB limit")
+    await sleep(50)
+    expect(errors).toEqual([])
+    expect([server.spy.killed, server.spy.closed]).toEqual([1, 1])
+    expect(server.spy.logs).toEqual([
+      "codex: a line over the 16 MiB limit; stopping the app-server",
+      "codex: stopping the app-server failed (Error)",
+      "codex: the closed handler failed (Error)",
+    ])
+  },
+  BIG_TIMEOUT,
+)
+
+test(
   "a line of exactly 16 MiB is read and one byte more is not",
   async () => {
     const server = new Server()
@@ -399,12 +429,13 @@ test(
     const server = new Server()
     server.inbox.destroy(Object.assign(new Error("EPIPE"), { code: "EPIPE" }))
     await turn()
+    // Each call starts only once the one before it settled, so a failed assertion leaves no rejection behind.
     for (const call of [
-      server.rpc.request("initialize", {}, { timeout: 5000 }),
-      server.rpc.notify("initialized"),
-      server.rpc.reply(0, {}),
+      () => server.rpc.request("initialize", {}, { timeout: 5000 }),
+      () => server.rpc.notify("initialized"),
+      () => server.rpc.reply(0, {}),
     ]) {
-      const error = await rejection(call)
+      const error = await rejection(call())
       expect(error).toBeInstanceOf(RpcClosed)
       expect(error.message).toBe("the app-server's stdin is closed (EPIPE)")
     }
@@ -454,6 +485,36 @@ test(
       "codex: the item/commandExecution/requestApproval handler failed (Error)",
       "codex: couldn't answer item/commandExecution/requestApproval: the app-server's stdin is closed",
     ])
+    await server.close()
+  },
+  TIMEOUT,
+)
+
+test(
+  "a message whose method isnt a string is skipped",
+  async () => {
+    const errors = unhandled()
+    const seen: unknown[] = []
+    const server = new Server({
+      onNotification: (method) => {
+        seen.push(method)
+        if (method !== "after") throw new Error("a bug in a handler")
+      },
+      onRequest: (_id, method) => {
+        seen.push(method)
+        throw new Error("a bug in a handler")
+      },
+    })
+    const lines = ['{"method": {"toString": 1}}', '{"id": 0, "method": {"toString": 1}, "params": {}}']
+    for (const line of lines) server.write(line)
+    server.write({ method: "after", params: {} })
+    await waitFor(() => seen.includes("after"), { timeout: 5000, what: "the notification after the bad lines" })
+    await sleep(50)
+    expect(seen).toEqual(["after"])
+    expect(errors).toEqual([])
+    expect(server.spy.logs).toEqual(
+      lines.map((line) => `codex: a line that isn't a JSON-RPC message: ${JSON.stringify(line)}`),
+    )
     await server.close()
   },
   TIMEOUT,

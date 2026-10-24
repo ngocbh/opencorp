@@ -14,6 +14,7 @@ const FAKE = fileURLToPath(new URL("../../src/testing/fake_codex.ts", import.met
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 const SCHEMA = fileURLToPath(new URL("../fixtures/codex/schema/", import.meta.url))
 
+/** A JSON object from the wire: `any`, since the assertions read whatever the fake sent. */
 type Msg = Record<string, any>
 
 // Python's Draft7Validator checks no `format`.

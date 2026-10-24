@@ -224,6 +224,8 @@ export class Fake {
       else if ("spawn" in step) {
         // Codex gives a command its own pipes, so it never holds the app-server's stdout open.
         const child = spawn("sleep", [String(step.spawn)], { stdio: "ignore" })
+        // Without a listener a failed spawn would crash the whole fake; Python lost only the turn thread.
+        child.on("error", () => {})
         child.unref()
         this.writeLog({ dir: "spawn", pid: child.pid })
       } else if ("exit" in step) return this.die(step.exit)

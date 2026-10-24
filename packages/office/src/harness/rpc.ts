@@ -63,8 +63,9 @@ function nameOf(error: unknown): string {
  *  `onNotification(method, params)` and `onRequest(id, method, params)` run in arrival order and must hand work off
  *  rather than block: a human-paced approval would stall every event. A handler that throws is logged and the reading
  *  goes on; a request whose handler threw is answered with a JSON-RPC internal error (-32603). Lines that aren't JSON
- *  objects are logged, cut to 200 characters, and skipped. A line over `MAX_LINE` bytes is a protocol failure: the
+ *  objects, or whose `method` isn't a string, are logged, cut to 200 characters, and skipped. A line over `MAX_LINE` bytes is a protocol failure: the
  *  reading stops, `kill()` runs, pending requests fail. `onClosed()` runs once, when stdout ends or on that failure.
+ *  A `kill` or `onClosed` that throws is logged by the error's name, and the pending requests still fail.
  *
  *  Writes resolve once the stream took the bytes and reject with `RpcClosed` when stdin is broken. A small write to an
  *  app-server that closed its stdin can still succeed (the bytes sit in the pipe buffer): such a request is settled
@@ -81,6 +82,7 @@ export class JsonRpc {
   #chunks: Buffer[] = []
   #size = 0
 
+  /** `stdout` must stay in binary mode (never `setEncoding` it), since lines are split and capped as bytes. */
   constructor(stdin: Writable, stdout: Readable, handlers: RpcHandlers) {
     this.#in = stdin
     this.#out = stdout
@@ -190,7 +192,7 @@ export class JsonRpc {
     this.#closed = true
     if (this.#size > 0) this.#takeLine()
     this.#failAll((method) => new RpcClosed(`the app-server closed before answering ${method}`))
-    this.#handlers.onClosed()
+    this.#runOnClosed()
   }
 
   #overCap(): void {
@@ -205,9 +207,23 @@ export class JsonRpc {
     out.on("error", () => {})
     out.destroy()
     this.#log("codex: a line over the 16 MiB limit; stopping the app-server")
-    this.#handlers.kill()
+    // A throw here would escape the stream callback as an uncaught exception and leave the requests pending.
+    try {
+      this.#handlers.kill()
+    } catch (error) {
+      this.#log(`codex: stopping the app-server failed (${nameOf(error)})`)
+    }
     this.#failAll(() => new RpcClosed(OVER_CAP))
-    this.#handlers.onClosed()
+    this.#runOnClosed()
+  }
+
+  /** Calls `onClosed`, logging a throw by the error's name, since it runs inside a stream callback. */
+  #runOnClosed(): void {
+    try {
+      this.#handlers.onClosed()
+    } catch (error) {
+      this.#log(`codex: the closed handler failed (${nameOf(error)})`)
+    }
   }
 
   #failAll(error: (method: string) => Error): void {
@@ -226,21 +242,26 @@ export class JsonRpc {
     } catch {
       msg = undefined
     }
+    const shown = () => JSON.stringify((text ?? UTF8_LOOSE.decode(bytes)).slice(0, 200))
     if (msg === null || typeof msg !== "object" || Array.isArray(msg)) {
-      const shown = (text ?? UTF8_LOOSE.decode(bytes)).slice(0, 200)
-      this.#log(`codex: a line that isn't a JSON object: ${JSON.stringify(shown)}`)
+      this.#log(`codex: a line that isn't a JSON object: ${shown()}`)
       return
     }
     const m = msg as Msg
     if (Object.hasOwn(m, "method")) {
-      const method = m.method as string
+      const method = m.method
+      // Logging a method that isn't a string, as the failure logs below would, can throw.
+      if (typeof method !== "string") {
+        this.#log(`codex: a line that isn't a JSON-RPC message: ${shown()}`)
+        return
+      }
       const params = m.params || {}
       if (Object.hasOwn(m, "id")) this.#handleRequest(m.id, method, params)
       else
         try {
           this.#handlers.onNotification(method, params)
         } catch (error) {
-          this.#log(`codex: the ${String(method).slice(0, 200)} handler failed (${nameOf(error)})`)
+          this.#log(`codex: the ${method.slice(0, 200)} handler failed (${nameOf(error)})`)
         }
       return
     }
@@ -251,7 +272,7 @@ export class JsonRpc {
     try {
       this.#handlers.onRequest(id, method, params)
     } catch (error) {
-      const shown = String(method).slice(0, 200)
+      const shown = method.slice(0, 200)
       this.#log(`codex: the ${shown} handler failed (${nameOf(error)})`)
       // Codex would wait for this answer forever.
       this.replyError(id, -32603, `the office couldn't handle ${method}`).catch(() =>
