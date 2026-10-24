@@ -14,6 +14,8 @@ const ESCAPED_FORMS = ["pa\\ss\"w\u00f6rd-123", "pa\\\\ss\\\"w\\u00f6rd-123", "p
 const CONN = "conn-key-5f3a9c1e7b2d4a60"
 const URLISH = "a b/c+key-0123"
 const QUOTED = 'qu"ote-secret-99'
+/** Python's base64.urlsafe_b64encode(f"??{CONN}>>".encode()). */
+const URLSAFE = "Pz9jb25uLWtleS01ZjNhOWMxZTdiMmQ0YTYwPj4="
 
 /** Python's base64.b64encode of the text's UTF-8. */
 function b64(text: string): string {
@@ -64,8 +66,7 @@ const ENCODED: [string, string, string][] = [
   ["basic u", "Basic " + b64("u:" + CONN), b64("u:" + CONN).slice(4, -4)],
   ["basic ab", "Basic " + b64("ab:" + CONN), b64("ab:" + CONN).slice(4, -4)],
   // Python's base64.urlsafe_b64encode(f"??{CONN}>>".encode())
-  ["urlsafe base64", "Pz9jb25uLWtleS01ZjNhOWMxZTdiMmQ0YTYwPj4=",
-    "Pz9jb25uLWtleS01ZjNhOWMxZTdiMmQ0YTYwPj4=".slice(4, -4)],
+  ["urlsafe base64", URLSAFE, URLSAFE.slice(4, -4)],
   ["upper case", CONN.toUpperCase(), CONN.toUpperCase()],
   ["mixed case", "Conn-Key-5F3A9c1e7b2d4a60", "5F3A9c1e7b2d4a60"],
   // quote_plus(URLISH)
@@ -198,6 +199,16 @@ test("a secret holding regex characters is scrubbed only as written", () => {
   expect(redact("X A.B*C+D?E^F$G(H)I[J]K{L}M|N/O\\P-Q y", [], [special])).toBe("X [redacted] y")
   expect(redact("a.cdefghij aXcdefghij", [], ["a.cdefghij"])).toBe("[redacted] aXcdefghij")
   expect(redact("ab*cdefghij abbcdefghij acdefghij", [], ["ab*cdefghij"])).toBe("[redacted] abbcdefghij acdefghij")
+})
+
+test("a secret in base64 is scrubbed in either alphabet", () => {
+  // Python's own url-safe vector holds no "-" or "_", so this pins the alphabet folding; the secret's base64 core
+  // holds "+" and "/". Values are Python 3.12's results.
+  const secret = "key~~~~>>>>??"
+  // base64.urlsafe_b64encode(b"u:" + secret)
+  expect(redact("Basic dTprZXl-fn5-Pj4-Pj8_.", [], [secret])).toBe("Basic dTp[redacted].")
+  // base64.b64encode(b"u:" + secret)
+  expect(redact("Basic dTprZXl+fn5+Pj4+Pj8/.", [], [secret])).toBe("Basic dTp[redacted].")
 })
 
 /** Every code point but the surrogates, in order: the input Python's digests were taken over. */
