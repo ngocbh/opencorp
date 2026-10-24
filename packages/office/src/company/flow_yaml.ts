@@ -51,14 +51,22 @@ function read(text: string, flowTags: boolean): unknown {
   // eemeli's own repeated-key check scans every earlier key of a mapping per key (quadratic), so
   // `convert` checks repeats instead. `resolveKnownTags: false` keeps a YAML 1.1 type such as
   // `!!timestamp` or `!!set` a plain node with its tag and a warning, never a Date, bytes or a Set.
-  const document = parseDocument(text, {
-    version: "1.2",
-    schema: "core",
-    merge: false,
-    resolveKnownTags: false,
-    prettyErrors: false,
-    uniqueKeys: false,
-  })
+  let document
+  try {
+    document = parseDocument(text, {
+      version: "1.2",
+      schema: "core",
+      merge: false,
+      resolveKnownTags: false,
+      prettyErrors: false,
+      uniqueKeys: false,
+    })
+  } catch (error) {
+    // eemeli catches a stack overflow only while composing collections; its parser also recurses
+    // once per block level a single dedent closes, and that overflow escapes as a RangeError.
+    if (error instanceof RangeError) throw new YamlError(TOO_DEEP)
+    throw error
+  }
   // An error's `message` quotes the source line, so only its code and position are used. The
   // library's errors are not in source order.
   const error = first(document.errors)

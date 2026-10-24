@@ -80,9 +80,11 @@ test("a non utf8 file is unreadable", () => {
 })
 
 test("a deeply nested file is unreadable", () => {
-  const { value, issues } = parse("[".repeat(100_000))
-  expect(value).toBeNull()
-  expect(issues).toEqual([repoIssue(PATH, "repo.unreadable", "is nested too deeply to read")])
+  for (const text of ["[".repeat(100_000), "- ".repeat(7_000) + "x\n- y\n", "? ".repeat(10_000) + "x\n: y\n"]) {
+    const { value, issues } = parse(text)
+    expect(value).toBeNull()
+    expect(issues).toEqual([repoIssue(PATH, "repo.unreadable", "is nested too deeply to read")])
+  }
 })
 
 test("a file that isnt a mapping is a schema issue", () => {

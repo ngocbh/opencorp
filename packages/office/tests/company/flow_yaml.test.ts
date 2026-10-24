@@ -138,6 +138,11 @@ describe("aliases, the node cap and nesting", () => {
     expect(value).toEqual([])
     expect(refusal(() => readYaml("[".repeat(100_000) + "]".repeat(100_000)))).toBe(TOO_DEEP)
     expect(refusal(() => readFlow("[".repeat(100_000)))).toBe(TOO_DEEP)
+    // One dedent closing thousands of block levels overflows the parser itself, not the composer.
+    for (const text of ["- ".repeat(7_000) + "x\n- y\n", "? ".repeat(10_000) + "x\n: y\n"]) {
+      expect(refusal(() => readYaml(text))).toBe(TOO_DEEP)
+      expect(refusal(() => readFlow(text))).toBe(TOO_DEEP)
+    }
     // Nesting counts the expanded tree: 102 levels written, 202 once the alias is followed.
     const aliased = `[&x ${nested(101)}, ${"[".repeat(100)}*x${"]".repeat(100)}]`
     expect(refusal(() => readYaml(aliased))).toBe(TOO_DEEP)
