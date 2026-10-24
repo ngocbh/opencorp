@@ -33,6 +33,7 @@ export const ERROR_CODES = [
   "not_implemented",
   "origin_not_allowed",
   "pair_code_invalid",
+  "password_changed",
   "sign_in_required",
   "stale_commit",
   "stopping",

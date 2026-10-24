@@ -165,10 +165,12 @@ hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickl
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
 hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
+hq/test_login.py::test_a_check_whose_request_went_away_still_holds_its_slot	changed	packages/office/tests/hq/login.test.ts::a check whose request went away still holds its slot	design §3.3: promises can't be cancelled, so a caller that leaves can't stop the check; the slot frees when the scrypt promise settles (pinned by Busy while two held checks run, and running back to 0); checked on Logins with a stand-in sessions object	O2-8
 hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
 hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
 hq/test_servers.py	open	—	—	O2-10
-hq/test_sessions.py	open	—	—	O2-8
+hq/test_sessions.py	ported	packages/office/tests/hq/sessions.test.ts	—	O2-8
+hq/test_sessions.py::test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row	changed	packages/office/tests/hq/sessions.test.ts::a revoke marks the entry a check made while it read the row	design §3.3: the TS store is synchronous, so a revoke's row read can't interleave with a check; the test checks that a revoke marks, never replaces or drops, the entry a check made	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10
 hq/test_source.py	open	—	—	O2-9
 hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
@@ -527,6 +529,10 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/translate.test.ts::a reasoning item with an empty summary writes nothing	translate.py:166,241,339: Python's truthiness kept	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
+—	new	packages/office/tests/hq/auth.test.ts::only the first cookie header counts	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
+—	new	packages/office/tests/hq/auth.test.ts::the open requests and the app need no session	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
+—	new	packages/office/tests/hq/auth.test.ts::the session check reads the cookie named for the host port	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
+—	new	packages/office/tests/hq/auth.test.ts::without a live session the api is 401 sign in required	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/config.test.ts::a problem never quotes the files values	design §6, rule 13: no parser text or file values in a problem	O2-7
 —	new	packages/office/tests/hq/config.test.ts::app dir expands the home folder	design §6.4 (HQ settings): Node has no getpwnam, so only ~, ~/… and ~<me> expand; another ~name is refused	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::a 404 from the pipeline carries the headers and keeps the connection	design §6.4, rule 7: the pipeline behind the guard, given the read body, keeps the connection open	O2-7
@@ -541,8 +547,14 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/guard.test.ts::the first origin header counts	design §6.4, rule 7: header() reads the first raw value; node:http would join repeated values	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard checks each refusal branch [$name]	design §6.4, rule 7: each Host, Fetch Metadata, Origin and JSON refusal against a stand-in, without the HQ app	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
+—	new	packages/office/tests/hq/login.test.ts::a check that errors gives its slot back and counts no failure	design §6.4, rule 8: the two-check limit never leaks a slot when the hash read or the check fails	O2-8
+—	new	packages/office/tests/hq/login.test.ts::a throttled pair is refused before the password is checked	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
+—	new	packages/office/tests/hq/login.test.ts::an unknown handle is checked against the dummy hash and fails	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
+—	new	packages/office/tests/hq/login.test.ts::the right password returns the fingerprint of its hash and clears the failures	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/pairing.test.ts::its inspect and json show no key or code	design §6, rule 1: inspect and JSON show the office dir and a count, never a code or its sha256 key	O2-7
 —	new	packages/office/tests/hq/pairing.test.ts::remove leftovers deletes redirect and temp files only	design §6, rule 6: a crashed office's redirect and writePrivate temp files go; the folder lock and other files stay	O2-7
+—	new	packages/office/tests/hq/sessions.test.ts::a failed fingerprint load is tried again	design §3.3: a cached load is a plain promise; a rejected one is dropped so the next check loads again, as Python retried a failed future	O2-8
+—	new	packages/office/tests/hq/sessions.test.ts::its inspect and json show no secret or fingerprint	design §6.4, rule 1: the in-memory sessions hold fingerprints; inspect and JSON show a count only	O2-8
 —	new	packages/office/tests/hq/static.test.ts::a client that leaves mid file leaves no file open	design §6 static rules: the file is streamed through stream.pipeline, which closes the fd when the client leaves	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a fifo in app dir is never opened	design §6.4: resolve takes only regular files, so a FIFO is a 404 and is never opened	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a file served behind the guard carries the security headers	design §6, rule 7: a streamed file's head goes out through an explicit writeHead, so the guard adds HQ's headers	O2-7
