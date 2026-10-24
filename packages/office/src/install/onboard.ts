@@ -113,7 +113,7 @@ export function withDefaultModel(provider: Provider): Provider {
 }
 
 /** The deployments at the Azure OpenAI resource whose v1 endpoint is `baseUrl` that are ready and not embedding
- *  models, in Azure's order; `request` stands in for the office's sender. Throws `OnboardError` when they
+ *  models, in Azure's order; `request` stands in for the HTTP sender. Throws `OnboardError` when they
  *  couldn't be listed; the message never holds the key. */
 export async function azureDeployments(
   baseUrl: string,
@@ -129,7 +129,7 @@ export async function azureDeployments(
 }
 
 /** The models provider `name` lists for `key` (an empty key sends none), sorted; none when it has no listing.
- *  `request` stands in for yian's sender. Throws `OnboardError` when they couldn't be listed; the message never
+ *  `request` stands in for the HTTP sender. Throws `OnboardError` when they couldn't be listed; the message never
  *  holds the key. */
 export async function providerModels(
   name: string,
@@ -151,10 +151,7 @@ export interface Listers {
 }
 
 /** The listers that ask the providers. */
-export const LISTERS: Listers = {
-  azureDeployments: (baseUrl, key) => azureDeployments(baseUrl, key),
-  providerModels: (name, key) => providerModels(name, key),
-}
+export const LISTERS: Listers = { azureDeployments, providerModels }
 
 /** Why a provider's model doesn't answer, or null when it does. */
 export type ModelCheck = (provider: Provider) => Promise<string | null>
@@ -218,6 +215,7 @@ async function saveProvider(office: string, provider: Provider): Promise<void> {
   try {
     await loadProvider(file, Provider.parse, { missingOk: false })
   } catch (error) {
+    if (error instanceof FileLockError) throw new OnboardError(`can't read ${file}: ${error.message}`)
     if (error instanceof ProviderError) throw new OnboardError(error.message)
     throw error
   }
@@ -257,9 +255,8 @@ function lexists(file: string): boolean {
  * as it was.
  */
 export async function ensureProvider(office: string, prompter: Prompter, options: ProviderOptions): Promise<boolean> {
-  const { stdin, ...asking } = options
   const file = setupConnectionFile(office)
-  if (stdin === undefined) {
+  if (options.stdin === undefined) {
     if (lexists(file)) {
       const again = "fix it or remove it and run `opencorp onboard` again"
       try {
@@ -278,13 +275,15 @@ export async function ensureProvider(office: string, prompter: Prompter, options
         prompter.say(`${file}: ${error.message}; set up the model again.`)
       }
     }
-    await askProvider(office, prompter, asking)
+    await askProvider(office, prompter, options)
     return true
   }
+  // Outside the try: a read error is the stream's, not bad JSON.
+  const bytes = await buffer(options.stdin)
   let data: unknown
   try {
     // A leading BOM is refused, as Python's json.loads refuses it.
-    data = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(await buffer(stdin)))
+    data = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes))
   } catch {
     // JSON.parse's message quotes the bad input, which may be a key.
     throw new OnboardError("the provider on stdin is not valid JSON")

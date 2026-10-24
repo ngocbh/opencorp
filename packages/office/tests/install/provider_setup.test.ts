@@ -452,7 +452,7 @@ afterEach(() => {
 
 /** A fresh office folder, removed after the test. */
 function newOffice(): string {
-  const office = mkdtempSync(join(tmpdir(), "o2-14-"))
+  const office = mkdtempSync(join(tmpdir(), "opencorp-onboard-"))
   offices.push(office)
   return office
 }
@@ -610,6 +610,8 @@ test("a key pasted as a field name is not echoed", async () => {
     { llm_config: { model: 1, api_key: KEY } },
     { llm_config: { provider: "openai", api_key: "sk-other-1234567890", headers: { [KEY]: "bad\nvalue" } } },
     { llm_config: { provider: "anthropic", api_key: "sk-other-1234567890", anthropic: { metadata: { [KEY]: 1 } } } },
+    // A lone surrogate, as JSON.parse can produce.
+    { llm_config: { provider: "openai", model: "\ud800" } },
   ]
   for (const data of inputs) {
     const error = await rejection(ensure(office, new Script(), { stdin: stdin(data) }))
@@ -670,6 +672,15 @@ test("stdin that isnt json is refused without echo", async () => {
   expect(error).toBeInstanceOf(OnboardError)
   expect(error.message).toContain("not valid JSON")
   expect(error.message).not.toContain(KEY)
+  // A read error is the stream's own, not bad JSON.
+  const failing = new Readable({
+    read() {
+      this.destroy(Object.assign(new Error("EIO"), { code: "EIO" }))
+    },
+  })
+  const readError = await rejection(ensure(office, new Script(), { stdin: failing }))
+  expect(readError).not.toBeInstanceOf(OnboardError)
+  expect((readError as NodeJS.ErrnoException).code).toBe("EIO")
 })
 
 test("an existing provider is kept and nothing is asked", async () => {
@@ -730,6 +741,7 @@ test("a symlink where the provider goes is refused", async () => {
   symlinkSync(join(office, "elsewhere"), file(office))
   const error = await rejection(ensure(office, new Script(["openai", "", ""])))
   expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("office.json")
   expect(existsSync(join(office, "elsewhere"))).toBe(false)
 })
 
