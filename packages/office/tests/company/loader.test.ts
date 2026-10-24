@@ -92,3 +92,9 @@ test("a file that cant be read is unreadable without its path or text", () => {
     expect(issue.message).not.toContain("leak")
   }
 })
+
+test("a person file named in another case is not a person file", () => {
+  const repo = loadRepo(makeCompany({ "people/zed/PERSON.yaml": person("minh", { handle: "zed" }) }))
+  expect(repo.people.has("zed")).toBe(false)
+  expect(repo.errors.filter((issue) => issue.path.startsWith("people/zed/"))).toEqual([])
+})

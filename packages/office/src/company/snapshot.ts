@@ -10,6 +10,7 @@ import type { CompanyGit } from "./git.ts"
 import { parseFile, type RepoIssue, repoIssue } from "./issues.ts"
 import { blankSecrets } from "./secret_keys.ts"
 
+type Company = z.output<typeof CompanySchema>
 type CompanyView = z.output<typeof CompanyViewSchema>
 type Person = z.output<typeof PersonSchema>
 type Group = z.output<typeof GroupSchema>
@@ -43,7 +44,7 @@ export async function loadCompanyAt(git: CompanyGit, sha: string): Promise<Compa
   // A blob git didn't return (a folder named company.yaml) reads as an empty file, so it's a schema issue.
   const bytes = (id: string) => data.get(id) ?? new Uint8Array()
   const issues: RepoIssue[] = []
-  let company = null
+  let company: Company | null = null
   if (companyBlob === null) {
     issues.push(repoIssue("company.yaml", "repo.unreadable", "company.yaml is missing"))
   } else {
@@ -85,8 +86,11 @@ export class CompanySnapshots {
   static readonly KEEP = 4
   readonly #done = new Map<string, CompanyView>()
   readonly #loading = new Map<string, Promise<CompanyView>>()
+  readonly git: CompanyGit
 
-  constructor(readonly git: CompanyGit) {}
+  constructor(git: CompanyGit) {
+    this.git = git
+  }
 
   /** The company at `sha`. */
   at(sha: string): Promise<CompanyView> {

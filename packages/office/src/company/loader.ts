@@ -35,15 +35,6 @@ function list(dir: string): string[] {
   }
 }
 
-/** Whether `test` returns true without throwing. */
-function holds(test: () => boolean): boolean {
-  try {
-    return test()
-  } catch {
-    return false
-  }
-}
-
 /** The file at repo path `rel` parsed by `schema`; a problem is recorded in `errors` and gives null. */
 function parse<S extends z.ZodObject>(root: string, rel: string, schema: S, errors: RepoIssue[]): z.output<S> | null {
   let data: Uint8Array
@@ -92,10 +83,9 @@ export function loadRepo(root: string): CompanyRepo {
   const company = parse(root, "company.yaml", CompanySchema, errors)
   const people = new Map<string, Person>()
   for (const folder of list(path.join(root, "people"))) {
-    const dir = path.join(root, "people", folder)
-    // statSync follows a symlinked folder, as a glob does; lstatSync also lists a dangling person.yaml.
-    const listed = holds(() => fs.statSync(dir).isDirectory() && !!fs.lstatSync(path.join(dir, "person.yaml")))
-    if (!listed) continue
+    // A listing matches the name exactly where a lookup may ignore case (macOS), as the glob and git do. It
+    // follows a symlinked folder, gives nothing for a file and keeps a dangling person.yaml link.
+    if (!list(path.join(root, "people", folder)).includes("person.yaml")) continue
     const rel = `people/${folder}/person.yaml`
     const person = parse(root, rel, PersonSchema, errors)
     if (person === null) continue
