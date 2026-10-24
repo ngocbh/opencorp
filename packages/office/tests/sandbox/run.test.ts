@@ -5,7 +5,7 @@ import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
+import type { Helper, SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { helperCommand } from "../../src/platform.ts"
 import {
   command,
@@ -13,11 +13,12 @@ import {
   refusal,
   run,
   type RunOptions,
+  SAFE_PATH,
   SandboxUnavailable,
   scrubbedEnv,
 } from "../../src/sandbox/run.ts"
 import { tempDir, waitFor } from "../helpers.ts"
-import { envInChild, gone, makePolicy, sandboxAvailable } from "./helpers.ts"
+import { envInChild, gone, goldenPolicy, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -292,3 +293,26 @@ test("the helper is refused inside the office home", () => {
   const { argv, helper } = helperCommand()
   expect(fsHelper(tempDir())).toEqual({ argv, helper })
 })
+
+test("scrubbed env is pinned and only the checkout helper adds the transpiler cache switch", () => {
+  const tmp = "/private/tmp/call"
+  const fixed = { PATH: SAFE_PATH, HOME: tmp, TMPDIR: tmp, LANG: "en_US.UTF-8", TERM: "dumb", GIT_CONFIG_NOSYSTEM: "1" }
+  const policy = (helper?: Helper) =>
+    goldenPolicy({ workspace: "/w", writable: true, network: false, tmpdir: tmp, helper })
+  expect(scrubbedEnv(policy())).toEqual(fixed)
+  expect(scrubbedEnv(policy({ binary: "/opt/opencorp/bin/opencorp" }))).toEqual(fixed)
+  const checkout = scrubbedEnv(policy({ bun: "/opt/bun", entry: "/c/packages/office/src/sandbox/fs_helper.ts" }))
+  expect(checkout).toEqual({ ...fixed, BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0" })
+  expect(Object.keys(checkout)).toEqual([...Object.keys(fixed), "BUN_RUNTIME_TRANSPILER_CACHE_PATH"])
+})
+
+test.skipIf(!sandboxAvailable() || "binary" in helperCommand().helper)(
+  "a checkout helper call leaves no transpiled copy under HOME",
+  async () => {
+    const { make, tmp } = makePolicy()
+    await helperTool(make(), { op: "list", path: "." })
+    // Bun caches transpiled code under HOME: Library/Caches/bun on macOS, .cache/bun on Linux.
+    const entries = fs.readdirSync(tmp, { recursive: true }).map(String)
+    expect(entries.filter((entry) => entry.includes("bun"))).toEqual([])
+  },
+)
