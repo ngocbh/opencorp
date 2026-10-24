@@ -2,7 +2,7 @@
 import path from "node:path"
 import type { z } from "zod"
 import { onTestFinished } from "bun:test"
-import { Event, WorkItem, now } from "@opencorp/protocol"
+import { Event, Session, WorkItem, now } from "@opencorp/protocol"
 import { Store, newId, type StoreOptions } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 
@@ -24,6 +24,28 @@ export function workItem(over?: Partial<WorkItem>): z.output<typeof WorkItem> {
     kind: "task",
     status: "open",
     requester: "ngocbh",
+    created_at: t,
+    updated_at: t,
+    ...over,
+  })
+}
+
+/** A git commit id for fixtures. */
+export const COMMIT = "a".repeat(40)
+
+/** A Session with Python's defaults (`session` in conftest): minh, composer, office "mac", cwd "/w/app", COMMIT,
+ *  idle, main, now() times, overridden by `over`; parsed, so defaults are filled. */
+export function session(over?: Partial<Session>): z.output<typeof Session> {
+  const t = now()
+  return Session.parse({
+    id: newId(),
+    person: "minh",
+    harness: "composer",
+    office: "mac",
+    cwd: "/w/app",
+    repo_commit: COMMIT,
+    status: "idle",
+    kind: "main",
     created_at: t,
     updated_at: t,
     ...over,
