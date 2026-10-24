@@ -90,10 +90,10 @@ function listening(server: net.Server, start: () => void): Promise<void> {
 /** Makes `server` listen on a unix socket at `socketPath` with mode 0600; throws `OfficeStartError` if it can't.
  *
  *  The socket is bound in a private 0700 temp folder next to `socketPath`, so nobody can connect before its mode
- *  is set, then renamed into place. The caller runs `removeStaleSocket` first, and removes `socketPath` after
- *  `server.close()`: close doesn't unlink a renamed socket. A crash before the cleanup leaves a `.sXXXXXX`
- *  folder beside `socketPath`. After a successful call `server.address()` still names the removed temp path,
- *  so callers use `socketPath`, not `server.address()`. */
+ *  is set, then hard-linked into place, which fails if anything is at `socketPath`. The caller runs
+ *  `removeStaleSocket` first, and removes `socketPath` after `server.close()`: close doesn't unlink a linked
+ *  socket. A crash before the cleanup leaves a `.sXXXXXX` folder beside `socketPath`. After a successful call
+ *  `server.address()` still names the removed temp path, so callers use `socketPath`, not `server.address()`. */
 export async function listenUnix(server: net.Server, socketPath: string): Promise<void> {
   checkSocketPath(socketPath)
   let tmp: string
@@ -122,7 +122,8 @@ export async function listenUnix(server: net.Server, socketPath: string): Promis
         }
       })
       fs.chmodSync(temp, 0o600)
-      fs.renameSync(temp, socketPath)
+      // A link, unlike a rename, never replaces what appeared at socketPath after the stale check.
+      fs.linkSync(temp, socketPath)
     } catch (error) {
       if (server.listening) server.close()
       throw new OfficeStartError(`can't listen on ${socketPath}: ${messageOf(error)}`)

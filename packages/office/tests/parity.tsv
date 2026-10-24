@@ -42,7 +42,7 @@ daemon/test_http.py	ported	packages/office/tests/daemon/http.test.ts	a test rout
 daemon/test_main.py	open	—	split: O2-1 → O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
 daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	packages/office/tests/daemon/http.test.ts::the socket mode leaves the process umask as it found it	node:http binds and listens in one call; the umask is narrowed to 0177 for that one synchronous call and restored, and the private 0700 temp folder is the real guard (design §2.3)	O2-1
 daemon/test_main.py::test_the_office_server_has_websockets_off	changed	packages/office/tests/daemon/http.test.ts::the office server has no upgrade listener	no uvicorn ws setting: no upgrade listener is attached, so an upgrade is plain HTTP (design §2.3)	O2-1
-daemon/test_main.py::test_the_tcp_socket_reuses_addresses_but_never_shares_the_port	changed	packages/office/tests/daemon/http.test.ts::the tcp socket listens on loopback and never shares the port	node:net has no getsockopt: a second listener gets EADDRINUSE, and the TIME_WAIT test shows address reuse (design §2.3)	O2-1
+daemon/test_main.py::test_the_tcp_socket_reuses_addresses_but_never_shares_the_port	changed	packages/office/tests/daemon/http.test.ts::the tcp socket listens on loopback and never shares the port	node:net has no getsockopt: a second listener asking for port sharing gets EADDRINUSE, and the TIME_WAIT test shows address reuse (design §2.3)	O2-1
 daemon/test_routes_connections.py	open	—	split: O2-21 → O3-5	O3-5
 daemon/test_routes_costs.py	open	—	—	O2-6
 daemon/test_routes_events.py	open	—	split: O2-2 → O4a-7b	O4a-7b
@@ -304,11 +304,13 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::a reply is parsed so its defaults are filled	design §2.3, §5.4: reply.parse fills defaults as model_dump did	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a reply that fails its schema is a 500 that leaks nothing	design §2.3, §6 rule 13, O0-6 handoff: a ZodError never reaches a reply or log	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a slow reply is not cut by the request timeout	design §2.3: requestTimeout doesn't cut slow replies	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a socket path taken after the stale check is refused	design §2.3: the socket is linked into place, so anything at its path is refused, as Python's bind did	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a stalled body is cut with 408	D16: the runtime enforces the body deadline (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a stalled head is cut with 408	D16: the runtime enforces the head deadline (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a store not found is 404 not found	design §2.3: the store's NotFound is 404 not_found, as Python's handler	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a wildcard param is decoded once	design §2.3: *cwd params get the same care	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an http error is its status code and message	design §2.3: HttpError is Python's HTTPError	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::an idle keep alive connection is closed after the keep alive timeout	D16: the runtime enforces keepAliveTimeout (checked by a test)	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an unread body closes the connection and a read one keeps it	design §6.4: Connection: close on unread bodies	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::connections past max connections are closed	design §6.4: the runtime enforces maxConnections	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::head on a get route answers without a body	design §2.3: GET routes answer HEAD, as Starlette's did	O2-1

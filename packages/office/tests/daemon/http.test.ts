@@ -337,11 +337,28 @@ describe("sockets", () => {
     expect(() => fs.lstatSync(sock)).not.toThrow()
   })
 
+  test("a socket path taken after the stale check is refused", async () => {
+    const dir = shortDir()
+    const sock = path.join(dir, "s.sock")
+    fs.writeFileSync(sock, "mine")
+    const err = await listenUnix(server(), sock).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(OfficeStartError)
+    expect((err as Error).message).toMatch(/can't listen/)
+    expect(fs.readFileSync(sock, "utf8")).toBe("mine")
+    expect(fs.readdirSync(dir)).toEqual(["s.sock"]) // no .s temp folder is left
+  })
+
   test("the tcp socket listens on loopback and never shares the port", async () => {
     const first = server()
     const port = await listenTcp(first, 0)
     expect((first.address() as net.AddressInfo).address).toBe("127.0.0.1")
-    const err = await listenTcp(server(), port).catch((e: unknown) => e)
+    // The second listener asks for port sharing, which works only if the first one set SO_REUSEPORT too.
+    const second = server()
+    const err = await new Promise<void>((resolve, reject) => {
+      second.once("listening", resolve)
+      second.once("error", reject)
+      second.listen({ host: "127.0.0.1", port, reusePort: true })
+    }).catch((e: unknown) => e)
     expect((err as NodeJS.ErrnoException).code).toBe("EADDRINUSE")
   })
 
@@ -670,6 +687,18 @@ describe("server", () => {
       const { sock } = await serve([slow], { limits: SHORT })
       const r = await exchange(sock, "GET", "/slow")
       expect([r.status, JSON.parse(r.body)]).toEqual([200, { ok: true }])
+    },
+    15_000,
+  )
+
+  test(
+    "an idle keep alive connection is closed after the keep alive timeout",
+    async () => {
+      const { sock } = await serve([people], { limits: { ...SHORT, keepAliveTimeout: 1000 } })
+      const conn = await Conn.open(sock)
+      conn.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
+      expect((await conn.response()).status).toBe(200)
+      expect(await conn.closed({ timeout: 8000 })).toBe(true)
     },
     15_000,
   )
