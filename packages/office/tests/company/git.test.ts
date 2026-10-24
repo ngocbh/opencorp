@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { stamp } from "@opencorp/protocol"
 import { CompanyGit, CompanyGitError, type CompanyGitOptions } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
 import { company, git, gitEnv, gitInput, writeRepo } from "./helpers.ts"
@@ -136,6 +137,23 @@ test("read head with no commit is a value error", async () => {
   const dir = tempDir()
   git(dir, "init", "-q", "-b", "main")
   await expect(new CompanyGit(dir, path.join(dir, "wt")).readHead()).rejects.toThrow(RangeError)
+})
+
+test("files lists blobs under a folder at a commit", async () => {
+  const { company, g } = setup()
+  const head = await g.head()
+  fs.mkdirSync(path.join(company, "people/ava"))
+  fs.writeFileSync(path.join(company, "people/ava/person.yaml"), "handle: ava\n")
+  await g.commit(["people/ava/person.yaml"], "add ava")
+  const atHead = await g.files("people", head)
+  expect([...atHead.keys()].sort()).toEqual([
+    "people/minh/person.yaml",
+    "people/minh/profile.md",
+    "people/ngocbh/person.yaml",
+  ])
+  expect(atHead.get(PROFILE)).toBe((await g.blobId(PROFILE))!)
+  expect((await g.files("people")).has("people/ava/person.yaml")).toBe(true)
+  expect(await g.files("nowhere")).toEqual(new Map())
 })
 
 test("read blobs reads several at once and skips what it cant", async () => {
@@ -511,4 +529,86 @@ test("a hand made directory name cannot forge a trailer", async () => {
   fs.writeFileSync(path.join(company, rel), "# M\n")
   expect(await g.commitHandEdits()).toEqual([rel])
   expect(git(company, "log", "-1", "--format=%B").trim()).toBe("profile(@m Commit-Id: c-1): hand edit")
+})
+
+/** The entries of the tree at `commit` (default HEAD), by path. */
+async function entries(g: CompanyGit, commit?: string) {
+  return new Map((await g.listTree(commit ?? (await g.head()))).map((entry) => [entry.path, entry]))
+}
+
+test("list tree lists every entry with its kind blob and size", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, "run.sh"), "echo hi\n")
+  fs.chmodSync(path.join(company, "run.sh"), 0o755)
+  fs.symlinkSync("people/minh/profile.md", path.join(company, "link"))
+  await g.commit(["run.sh", "link"], "more kinds")
+  git(company, "update-index", "--add", "--cacheinfo", `160000,${await g.head()},vendor/lib`)
+  git(company, "commit", "-q", "-m", "a submodule")
+  const found = await entries(g)
+  expect([found.get("people")!.type, found.get("people")!.size]).toEqual(["folder", null])
+  expect([found.get("people/minh")!.type, found.get(PROFILE)!.type]).toEqual(["folder", "file"])
+  expect(found.get(PROFILE)!.size).toBe("# Minh, Engineer\n".length)
+  expect(found.get(PROFILE)!.blob).toBe((await g.blobId(PROFILE))!)
+  expect([found.get("run.sh")!.type, found.get("link")!.type]).toEqual(["file", "symlink"])
+  expect(found.get("link")!.size).toBe("people/minh/profile.md".length)
+  expect([found.get("vendor/lib")!.type, found.get("vendor/lib")!.size]).toEqual(["submodule", null])
+})
+
+test("list tree is at the commit not the working tree or index", async () => {
+  const { company, g } = setup()
+  const head = await g.head()
+  fs.writeFileSync(path.join(company, PROFILE), "# staged\n")
+  git(company, "add", PROFILE)
+  fs.writeFileSync(path.join(company, "new.md"), "x\n")
+  const found = await entries(g, head)
+  expect(found.has("new.md")).toBe(false)
+  expect(found.get(PROFILE)!.blob).not.toBe(git(company, "rev-parse", `:${PROFILE}`))
+})
+
+test("list tree keeps non utf8 names as surrogates", async () => {
+  const { company, g } = setup()
+  const blob = git(company, "hash-object", "-w", PROFILE)
+  const names = [
+    Buffer.from("b\xffd.md", "latin1"),
+    Buffer.concat([Buffer.of(0xc3, 0xa9, 0xed, 0xa0, 0x80, 0xff), Buffer.from(".md")]),
+  ]
+  const lines = names.flatMap((name) => [Buffer.from(`100644 ${blob}\t`), name, Buffer.from("\n")])
+  gitInput(company, Buffer.concat(lines), "update-index", "--add", "--index-info")
+  git(company, "commit", "-q", "-m", "odd path")
+  const found = await entries(g)
+  expect(found.has("b\udcffd.md")).toBe(true)
+  // a UTF-8 e-acute stays text; the encoded surrogate ed a0 80 is not UTF-8, so each of its bytes is escaped
+  expect(found.has("é\udced\udca0\udc80\udcff.md")).toBe(true)
+})
+
+test.each(["HEAD", "HEAD~1", "main", "-x", "0".repeat(39), "HEAD:company.yaml", ":/init"])(
+  "list tree and commit info take only a full hex id [%s]",
+  async (ref) => {
+    const { g } = setup()
+    await expect(g.listTree(ref)).rejects.toThrow(RangeError)
+    await expect(g.commitInfo(ref)).rejects.toThrow(RangeError)
+  },
+)
+
+test("commit info never shows a signature", async () => {
+  // Repo-local config still applies, and log.showSignature would put gpg's output into the format.
+  const recording = recordingGit(tempDir())
+  const { company, g } = setup({ git: recording.git })
+  git(company, "config", "log.showSignature", "true")
+  const head = git(company, "rev-parse", "HEAD")
+  expect((await g.commitInfo(head)).subject).toBe("init")
+  const calls = recording.calls()
+  expect(calls).toHaveLength(1)
+  expect(calls[0]!.args).toContain("--no-show-signature")
+})
+
+test("commit info has the subject author name and time", async () => {
+  const { company, g } = setup()
+  fs.writeFileSync(path.join(company, PROFILE), "# edited\n")
+  const sha = await g.commit([PROFILE], "edit the profile\n\nA body line.")
+  const info = await g.commitInfo(sha)
+  expect([info.id, info.subject, info.author]).toEqual([sha, "edit the profile", "OpenCorp office"])
+  const ct = Number(git(company, "log", "-1", "--format=%ct", sha))
+  expect(info.time).toBe(stamp(new Date(ct * 1000)))
+  expect(JSON.stringify(info)).not.toContain("@")
 })

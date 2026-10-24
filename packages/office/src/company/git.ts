@@ -4,6 +4,7 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { type CommitInfo, stamp } from "@opencorp/protocol"
 import { selfSpawnEnv } from "../platform.ts"
 
 const IDENTITY = ["-c", "user.name=OpenCorp office", "-c", "user.email=office@opencorp.local"]
@@ -31,6 +32,17 @@ const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+// Bad bytes become U+FFFD, so text that wasn't UTF-8 can still go into JSON.
+const UTF8_REPLACING = new TextDecoder("utf-8", { ignoreBOM: true })
+
+/** One entry of a commit's tree: its repo path, kind, object id and blob size (null for a folder or
+ *  submodule). `path` is surrogateescape-decoded, so a name that isn't UTF-8 holds lone surrogates. */
+export interface TreeEntry {
+  readonly path: string
+  readonly type: "folder" | "file" | "symlink" | "submodule"
+  readonly blob: string
+  readonly size: number | null
+}
 
 /** Whether `value` is a full hex commit id (sha-1 or sha-256), as opposed to any other rev expression. */
 export function isCommitId(value: unknown): value is string {
@@ -91,6 +103,28 @@ function encodePath(text: string): Buffer {
   }
   parts.push(Buffer.from(text.slice(start)))
   return Buffer.concat(parts)
+}
+
+/** `out` split at each NUL byte. */
+function splitNul(out: Buffer): Buffer[] {
+  const parts = []
+  let at = 0
+  for (let end = out.indexOf(0); end >= 0; end = out.indexOf(0, at)) {
+    parts.push(out.subarray(at, end))
+    at = end + 1
+  }
+  parts.push(out.subarray(at))
+  return parts
+}
+
+/** The info fields and path of each entry of `git ls-tree -z` output (`<info>\t<path>`, NUL-terminated). */
+function lsTreeEntries(out: Buffer): { info: string[]; path: string }[] {
+  return splitNul(out)
+    .filter((entry) => entry.length)
+    .map((entry) => {
+      const tab = entry.indexOf(0x09)
+      return { info: entry.subarray(0, tab).toString().trim().split(/\s+/), path: decodePath(entry.subarray(tab + 1)) }
+    })
 }
 
 /** Pathspecs that match `paths` exactly, with no glob expansion, as NUL-terminated entries for `FROM_STDIN`. */
@@ -261,6 +295,43 @@ export class CompanyGit {
     return out.stdout.toString().trim() || null
   }
 
+  /** The blob id of every file under `folder` at `commit`, by repo path. */
+  async files(folder: string, commit = "HEAD"): Promise<Map<string, string>> {
+    const out = await this.#run(["ls-tree", "-r", "-z", "--full-tree", commit, "--", `:(literal)${folder}`])
+    const found = new Map<string, string>()
+    for (const entry of lsTreeEntries(out.stdout)) {
+      if (entry.info[1] === "blob") found.set(entry.path, entry.info[2]!)
+    }
+    return found
+  }
+
+  /** Every entry of the tree at `commit` (a full hex id), folders included; modes other than a folder, a
+   *  file, a symlink or a submodule are left out. */
+  async listTree(commit: string): Promise<TreeEntry[]> {
+    const out = await this.#run(["ls-tree", "-r", "-t", "-z", "-l", "--full-tree", fullId(commit)])
+    const found: TreeEntry[] = []
+    for (const entry of lsTreeEntries(out.stdout)) {
+      const [mode, , blob, size] = entry.info
+      const type = KINDS[mode!]
+      if (type) found.push({ path: entry.path, type, blob: blob!, size: /^\d+$/.test(size!) ? Number(size) : null })
+    }
+    return found
+  }
+
+  /** The subject, author name (never the email) and commit time of `commit` (a full hex id). */
+  async commitInfo(commit: string): Promise<CommitInfo> {
+    // --no-show-signature: a repo's log.showSignature would put gpg's output before the format.
+    const format = ["log", "-1", "--no-show-signature", "--format=%H%x00%s%x00%an%x00%ct"]
+    const out = await this.#run([...format, fullId(commit)])
+    const [sha, subject, author, ct] = splitNul(out.stdout)
+    return {
+      id: sha!.toString(),
+      subject: UTF8_REPLACING.decode(subject),
+      author: UTF8_REPLACING.decode(author),
+      time: stamp(new Date(Number(ct!.toString().trim()) * 1000)),
+    }
+  }
+
   /** The bytes of blob `blobId` (40 lowercase hex), or null if the clone has no such blob. */
   async readBlob(blobId: string): Promise<Buffer | null> {
     if (!BLOB_ID.test(blobId)) return null // keep rev expressions such as HEAD:<path> away from git
@@ -379,11 +450,7 @@ export class CompanyGit {
     await fs.promises.writeFile(marker, sha + "\n")
   }
 
-  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths.
-   *
-   *  `--porcelain -z` entries are `XY path`. A rename or copy, staged (X) or in the worktree (Y, after
-   *  `git add -N`), is followed by a second field, its original path; a rename's original is committed
-   *  too (as a deletion). */
+  /** Commits each changed, new, or deleted `people/<handle>/profile.md` on its own; returns their paths. */
   commitHandEdits(): Promise<string[]> {
     return this.locked((git) => git.commitHandEdits())
   }
@@ -394,6 +461,9 @@ export class CompanyGit {
     const out = await this.#run(["status", "--porcelain", "-z", "--untracked-files=all", "--", PROFILES])
     const fields = decodePath(out.stdout).split("\0")
     const found = new Set<string>()
+    // `--porcelain -z` entries are `XY path`. A rename or copy, staged (X) or in the worktree (Y, after
+    // `git add -N`), is followed by a second field, its original path; a rename's original is committed
+    // too (as a deletion).
     for (let i = 0; i < fields.length; ) {
       const entry = fields[i++]!
       if (!entry) continue
@@ -414,8 +484,8 @@ export class CompanyGit {
   }
 }
 
-/** Clears the write bits of every regular file under `dir` except a `.git` file, walking real directories
- *  only, so symlinks and whatever they point at, inside the pin or outside it, are left alone. */
+/** Clears the write bits of every regular file under `dir` except a `.git` file. It never follows a symlink,
+ *  so nothing outside the pin is changed. */
 async function readOnly(dir: Buffer): Promise<void> {
   // Buffer names keep bytes that aren't UTF-8. Not `withFileTypes`: the runtime's dirents for Buffer
   // names have no name.
