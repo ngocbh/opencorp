@@ -557,8 +557,33 @@ test("an answer that isnt an offered option makes no reply", () => {
   for (const answer of ["Always allow", "toString", null, 1, ["Approve"]]) refused(option, answer)
   const page = card(t, userInput(4, "u1", [question("token", "Token", "Paste it", { secret: true })]))
   for (const answer of [{ Tokn: "x" }, { constructor: "x" }, "dev"]) refused(page, answer)
-  const form = card(t, formElicitation(9, "jira", "Ticket", { points: { type: "integer" } }))
-  refused(form, { constructor: "x" })
+  const env = card(t, userInput(5, "u2", [question("env", "Env", "Where?", { options: ["prod", "dev"] })]))
+  for (const answer of [{ Env: "staging" }, { Env: ["prod", "staging"] }, new Date(), new Map()]) refused(env, answer)
+  const form = card(t, formElicitation(9, "jira", "Ticket", { points: { type: "integer" },
+    priority: { type: "string", enum: ["low", "high"] }, urgent: { type: "boolean" } }))
+  for (const answer of [{ constructor: "x" }, { priority: "zzz" }, { urgent: "maybe" }, new Date(), new Map()]) {
+    refused(form, answer)
+  }
+})
+
+test("a typed form answer that isnt a number makes no reply", () => {
+  const { t } = tr()
+  const form = card(t, formElicitation(9, "jira", "Ticket", { points: { type: "integer" },
+    weight: { type: "number" } }))
+  const refused = (answer: Record<string, unknown>) => {
+    let thrown: unknown
+    try {
+      form.reply(answer)
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(RangeError)
+    expect((thrown as Error).message).toBe("the answer isn't a number")
+  }
+  for (const points of ["x", "1.5", "12345678901234567890", "Infinity", "0x10", ""]) refused({ points })
+  for (const weight of ["x", "Infinity", "0x10", ""]) refused({ weight })
+  expect(form.reply({ points: " 3 ", weight: "2.5" })).toEqual([
+    { action: "accept", content: { points: 3, weight: 2.5 } }, "accept"])
 })
 
 // --- the pinned schema -------------------------------------------------------------------

@@ -295,7 +295,7 @@ export class Translator {
         const options = MCP.filter(([x]) => labels.includes(x))
         return issue("mcp_tool", params.itemId, asked, { title: mcp.header, question: mcp.question,
           options: options.map(([x]) => x) },
-        choice(options, (d) => ({ answers: Object.fromEntries([[mcp.id, { answers: [label(options, d)] }]]) })))
+        choice(options, (_d, label) => ({ answers: Object.fromEntries([[mcp.id, { answers: [label] }]]) })))
       }
       return pages(params, asked, questions)
     }
@@ -556,6 +556,7 @@ function approval(kind: Card["kind"], params: Obj, asked: Asked, title: string, 
 function pages(params: Obj, asked: Asked, questions: Obj[]): Issued {
   if (questions.length > MAX_PAGES) throw new Unserved("item/tool/requestUserInput with more than four questions")
   const headers = new Map<string, string>()  // page header -> Codex question id
+  const enums = new Map<string, string[]>()  // page header -> its options, for a page that takes only them
   const shown: QuestionPage[] = [], schema: AnswerField[] = []
   for (const q of questions) {
     let header: string = truthy(q.header) ? q.header : q.id
@@ -565,7 +566,9 @@ function pages(params: Obj, asked: Asked, questions: Obj[]): Issued {
       description: truthy(o.description) ? o.description : "" }))
     shown.push({ question: q.question, header, options, secret: truthy(q.isSecret) })
     if (truthy(options) && !truthy(q.isOther)) {
-      schema.push({ name: header, type: "str", required: true, enum: options.map((o: Obj) => o.label) })
+      const labels: string[] = options.map((o: Obj) => o.label)
+      enums.set(header, labels)
+      schema.push({ name: header, type: "str", required: true, enum: labels })
     }
   }
   return issue("question", params.itemId, asked, { title: "Codex asks", question: questions[0]?.question,
@@ -574,7 +577,12 @@ function pages(params: Obj, asked: Asked, questions: Obj[]): Issued {
     const answers = Object.entries(answer).map(([h, v]) => {
       const id = headers.get(h)
       if (id === undefined) throw new RangeError(NOT_AN_OPTION)
-      return [id, { answers: Array.isArray(v) ? v : [v] }]
+      const values: unknown[] = Array.isArray(v) ? v : [v]
+      const labels = enums.get(h)
+      if (labels !== undefined && !values.every((x) => labels.includes(x as string))) {
+        throw new RangeError(NOT_AN_OPTION)
+      }
+      return [id, { answers: values }]
     })
     return [{ answers: Object.fromEntries(answers) }, "answer"]
   })
@@ -594,6 +602,7 @@ function elicitation(params: Obj, asked: Asked, title: string): Issued {
     choice(options, (d) => ({ action: d })))
   }
   const fields = new Map<string, Obj>(Object.entries(props))
+  const choices = new Map<string, string[]>()  // field -> the labels it takes only
   // A reply must hold every field, typed as the schema says: a form a card can't answer in full is refused.
   if (fields.size > MAX_PAGES) throw new Unserved("mcpServer/elicitation/request with more than four fields")
   if ([...fields.values()].some((spec) => spec.type === "array" || Object.hasOwn(spec, "oneOf")
@@ -603,6 +612,7 @@ function elicitation(params: Obj, asked: Asked, title: string): Issued {
   const shown: QuestionPage[] = [], schema: AnswerField[] = []
   for (const [name, spec] of fields) {
     const labels: string[] = truthy(spec.enum) ? spec.enum : spec.type === "boolean" ? ["Yes", "No"] : []
+    if (truthy(labels)) choices.set(name, labels)
     shown.push({ question: truthy(spec.description) ? spec.description : truthy(spec.title) ? spec.title : name,
       header: name, options: labels.map((x) => ({ label: x })) })
     const number = NUMBERS.get(spec.type)
@@ -617,7 +627,10 @@ function elicitation(params: Obj, asked: Asked, title: string): Issued {
     if (!isPlain(answer)) throw new RangeError(NOT_AN_OPTION)
     const content = Object.entries(answer).map(([k, v]) => {
       const spec = fields.get(k)
-      if (spec === undefined) throw new RangeError(NOT_AN_OPTION)
+      const labels = choices.get(k)
+      if (spec === undefined || (labels !== undefined && !labels.includes(v as string))) {
+        throw new RangeError(NOT_AN_OPTION)
+      }
       return [k, typed(spec, v)]
     })
     return [{ action: "accept", content: Object.fromEntries(content) }, "accept"]
@@ -625,12 +638,13 @@ function elicitation(params: Obj, asked: Asked, title: string): Issued {
 }
 
 /** A reply made from the decision of the picked label; a label the card doesn't hold makes none. */
-function choice(options: Options, result: (decision: string) => Record<string, unknown>): Issued["reply"] {
+function choice(options: Options, result: (decision: string, label: string) => Record<string, unknown>):
+  Issued["reply"] {
   const mapping = new Map<unknown, string>(options)
   return (answer) => {
     const decision = mapping.get(answer)
     if (decision === undefined) throw new RangeError(NOT_AN_OPTION)
-    return [result(decision), decision]
+    return [result(decision, answer as string), decision]
   }
 }
 
@@ -647,13 +661,11 @@ function withReason(text: string, params: Obj): string {
   return truthy(params.reason) ? `${text}\n${params.reason}` : text
 }
 
+/** A plain record: an object that is neither null, an array, nor a class instance such as a Date or a Map. */
 function isPlain(value: unknown): value is Obj {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-}
-
-/** The label of `decision` among `options`. */
-function label(options: Options, decision: string): string {
-  return options.find(([, d]) => d === decision)![0]
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
 }
 
 /** A typed form answer as the elicitation's schema wants it. */
@@ -665,10 +677,11 @@ function typed(spec: Obj, value: unknown): unknown {
   if (kind === "integer") {
     if (typeof value === "number") n = Math.trunc(value)
     else if (typeof value === "string" && /^\s*[-+]?\d+\s*$/.test(value)) n = Number(value)
+    if (!Number.isSafeInteger(n)) throw new RangeError(NOT_A_NUMBER)
   } else if (typeof value === "number") {
     n = value
-  } else if (typeof value === "string" && value.trim() !== "") {
-    n = Number(value)
+  } else if (typeof value === "string" && /^\s*[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?\s*$/.test(value)) {
+    n = Number(value)  // decimal only: Number() would also take "0x10", "Infinity" and ""
   }
   if (!Number.isFinite(n)) throw new RangeError(NOT_A_NUMBER)
   return n
