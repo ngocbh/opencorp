@@ -1,5 +1,6 @@
 /** How onboarding talks to the owner: the errors it stops with and the prompter it asks through. */
 import type { Readable, Writable } from "node:stream"
+import { type CommonOptions, isCancel, password, select, text } from "@clack/prompts"
 import { repr, strip } from "../perm/redact.ts"
 
 /** Onboarding stopped; the message says why and what to do. It never contains a key. */
@@ -178,7 +179,6 @@ export class TtyPrompter implements Prompter {
   async choose(question: string, options: readonly string[], defaultAnswer = "", typed = false): Promise<string> {
     const preset = this.preset.get(question)
     if (preset !== undefined) return preset
-    if (options.length === 0) throw new Error("a choice needs at least one option")
     if (!this.interactive) return defaultAnswer
     if (!typed) return this.pick(question, options, defaultAnswer)
     // A list on the terminal can't take text, so a last choice asks for it.
@@ -191,6 +191,8 @@ export class TtyPrompter implements Prompter {
 
   /** One of `options` picked from a list, `defaultAnswer` for an empty answer. */
   private async pick(question: string, options: readonly string[], defaultAnswer: string): Promise<string> {
+    // Here, not in choose: without anyone to ask any list gives its default, and a typed list is never empty.
+    if (options.length === 0) throw new Error("a choice needs at least one option")
     if (this.drawn()) return this.drawnPick(question, options, defaultAnswer)
     options.forEach((option, i) => this.say(`  ${i + 1}. ${option}`))
     for (let i = 0; i < TRIES; i++) {
@@ -222,16 +224,50 @@ export class TtyPrompter implements Prompter {
     this.output.write(`\n${header}\n${line}\n`)
   }
 
-  private async drawnAsk(_question: string, _defaultAnswer: string): Promise<string> {
-    throw new Error("not drawn yet")
+  /** The answer `run` gets from a clack prompt on this terminal. A cancel (Ctrl-C) throws `KeyboardInterrupt`;
+   *  input that ends or fails first is closed input. */
+  private async clack(question: string, run: (common: CommonOptions) => ReturnType<typeof text>): Promise<string> {
+    const input = this.input
+    // clack never notices its input ending and would wait for ever; aborting makes it cancel.
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    input.on("end", abort)
+    input.on("close", abort)
+    // Also keeps an error on the input (EIO once the terminal is gone) from crashing the process.
+    input.on("error", abort)
+    if (input.readableEnded || input.destroyed) abort()
+    try {
+      const value = await run({ input, output: this.output, signal: controller.signal, withGuide: false })
+      if (isCancel(value)) throw controller.signal.aborted ? closedInput(question) : new KeyboardInterrupt()
+      return value
+    } finally {
+      input.off("end", abort)
+      input.off("close", abort)
+      input.off("error", abort)
+    }
   }
 
-  private async drawnPick(_question: string, _options: readonly string[], _defaultAnswer: string): Promise<string> {
-    throw new Error("not drawn yet")
+  private async drawnAsk(question: string, defaultAnswer: string): Promise<string> {
+    const answer = await this.clack(question, (common) =>
+      text({ ...common, message: question, placeholder: defaultAnswer, defaultValue: defaultAnswer }),
+    )
+    return strip(answer) || defaultAnswer
   }
 
-  private async drawnSecret(_question: string): Promise<string> {
-    throw new Error("not drawn yet")
+  private async drawnPick(question: string, options: readonly string[], defaultAnswer: string): Promise<string> {
+    return this.clack(question, (common) =>
+      select({
+        ...common,
+        message: question,
+        options: options.map((o) => ({ value: o, label: o })),
+        // A default that isn't an option starts the list at the top.
+        ...(options.includes(defaultAnswer) ? { initialValue: defaultAnswer } : {}),
+      }),
+    )
+  }
+
+  private async drawnSecret(question: string): Promise<string> {
+    return strip(await this.clack(question, (common) => password({ ...common, message: question })))
   }
 }
 

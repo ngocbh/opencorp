@@ -1,12 +1,21 @@
 /** Setting up the model provider, and the terminal prompter that asks for it. */
 import { PassThrough, Readable, Writable } from "node:stream"
 import { expect, test } from "bun:test"
-import { NoTerminal, OnboardError, TRIES, TYPE_OWN, TtyPrompter, readLine } from "../../src/install/prompts.ts"
+import {
+  KeyboardInterrupt,
+  NoTerminal,
+  OnboardError,
+  TRIES,
+  TYPE_OWN,
+  TtyPrompter,
+  readLine,
+} from "../../src/install/prompts.ts"
 
 const KEY = "sk-ant-test-0123456789"
 
 const DOWN = "\x1b[B"
 const ENTER = "\r"
+const CTRL_C = "\x03"
 
 /** A writable that keeps what is written; `tty` makes it look like a terminal 80 by 24. */
 function collector(tty: boolean): { stream: Writable; text: () => string } {
@@ -32,6 +41,17 @@ function fakeTerminal(): { input: PassThrough; output: Writable; drawn: () => st
 function pipe(text: string): { input: Readable; output: Writable; printed: () => string } {
   const { stream, text: printed } = collector(false)
   return { input: Readable.from([text]), output: stream, printed }
+}
+
+/** Types `keys` once `drawn()` shows `question`: keys typed ahead for a prompt that isn't up yet can be lost. */
+async function typeWhenAsked(
+  terminal: { input: PassThrough; drawn: () => string },
+  question: string,
+  keys: string,
+): Promise<void> {
+  for (let i = 0; i < 400 && !terminal.drawn().includes(question); i++)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  terminal.input.write(keys)
 }
 
 /** What `promise` rejects with. */
@@ -201,4 +221,85 @@ test("a dumb terminal gets a numbered list", async () => {
 test("an empty no color leaves colour on", () => {
   const { input, output } = fakeTerminal()
   expect(new TtyPrompter({ input, output, env: { TERM: "xterm-256color", NO_COLOR: "" } }).color).toBe(true)
+})
+
+test("a list on a terminal is picked with the arrow keys", async () => {
+  const { input, output } = fakeTerminal()
+  input.write(DOWN + ENTER)
+  expect(await new TtyPrompter({ input, output, env: {} }).choose("Q", ["a", "b", "c"])).toBe("b")
+})
+
+test("a list on a terminal starts at its default", async () => {
+  const { input, output } = fakeTerminal()
+  input.write(ENTER)
+  expect(await new TtyPrompter({ input, output, env: {} }).choose("Q", ["a", "b", "c"], "c")).toBe("c")
+})
+
+test("a default that isnt an option starts the list at the top", async () => {
+  const { input, output } = fakeTerminal()
+  input.write(ENTER)
+  expect(await new TtyPrompter({ input, output, env: {} }).choose("Q", ["a", "b"], "zzz")).toBe("a")
+})
+
+test.each([
+  ["typed", "Acme" + ENTER, "", "Acme"],
+  ["default", ENTER, "Mine", "Mine"],
+])("a question on a terminal takes typed text or its default [%s]", async (_case, typed, answer, expected) => {
+  const { input, output } = fakeTerminal()
+  input.write(typed)
+  expect(await new TtyPrompter({ input, output, env: {} }).ask("Q", answer)).toBe(expected)
+})
+
+const calls: [string, (p: TtyPrompter) => Promise<string>][] = [
+  ["choose", (p) => p.choose("Q", ["a"])],
+  ["ask", (p) => p.ask("Q")],
+]
+
+test.each(calls)("ctrl c on a terminal is a keyboard interrupt [%s]", async (_case, call) => {
+  const { input, output } = fakeTerminal()
+  input.write(CTRL_C)
+  const error = await rejection(call(new TtyPrompter({ input, output, env: {} })))
+  expect(error).toBeInstanceOf(KeyboardInterrupt)
+  expect(error).not.toBeInstanceOf(OnboardError)
+})
+
+test.each(calls)("closed input on a terminal is an onboard error [%s]", async (_case, call) => {
+  const { input, output } = fakeTerminal()
+  input.end()
+  const error = await rejection(call(new TtyPrompter({ input, output, env: {} })))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toBe("no answer to 'Q' (stdin closed)")
+})
+
+test("on a terminal a secret is read masked by clack", async () => {
+  const { input, output, drawn } = fakeTerminal()
+  input.write(KEY + ENTER)
+  expect(await new TtyPrompter({ input, output, env: {} }).secret("anthropic API key")).toBe(KEY)
+  expect(drawn()).toContain("anthropic API key")
+  expect(drawn()).not.toContain(KEY)
+})
+
+test("a secret on a dumb terminal is still read masked", async () => {
+  const { input, output, drawn } = fakeTerminal()
+  input.write(KEY + ENTER)
+  expect(await new TtyPrompter({ input, output, env: { TERM: "dumb" } }).secret("anthropic API key")).toBe(KEY)
+  expect(drawn()).toContain("anthropic API key")
+  expect(drawn()).not.toContain(KEY)
+})
+
+test("a clack prompt and a line read share one input", async () => {
+  const terminal = fakeTerminal()
+  const { input, output } = terminal
+  const prompter = new TtyPrompter({ input, output, env: {} })
+  input.write("first line\n")
+  expect(await readLine(input)).toBe("first line")
+  const picked = prompter.choose("Q", ["a", "b"])
+  await typeWhenAsked(terminal, "Q", DOWN + ENTER)
+  expect(await picked).toBe("b")
+
+  const asked = prompter.ask("Name")
+  await typeWhenAsked(terminal, "Name", "Acme" + ENTER)
+  expect(await asked).toBe("Acme")
+  input.write("last line\n")
+  expect(await readLine(input)).toBe("last line")
 })
