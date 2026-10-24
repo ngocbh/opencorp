@@ -31,8 +31,8 @@ export function pickSkills(pin: string, handle: string, names: string[]): Map<st
   return new Map(names.filter((name) => found.has(name)).map((name) => [name, found.get(name)!]))
 }
 
-/** Yian's `tools`: each office group as remote tools, plus the question stub under `ask` (yian's ask slot, which
- *  serves the agent tool `ask_user` and the TOOL `ask`). */
+/** Yian's `tools`: each office group as remote tools, plus the question stub under yian's `ask` slot, which serves
+ *  the agent tool `ask_user` and a flow's `ask` node. */
 export function jobTools(job: Job, rpc: Rpc) {
   return {
     ...Object.fromEntries(
@@ -67,11 +67,11 @@ interface WorkerState {
 /**
  * Runs the job the office sends on `channel`; returns the exit code.
  *
- * A steer is forwarded to yian's steer inbox of the run; only a steer yian refuses comes back, as `steer_left`. The
- * last frame is `result` (or `error`). After it the worker answers steers with `steer_left` until the office closes
- * its side (or `linger` ms pass), so a steer the office sent as the run ended is never lost. If the office closes
- * the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer a question or read
- * the result.
+ * A steer is forwarded to yian's steer inbox of the run; a steer yian refuses or fails to take comes back, as
+ * `steer_left`. The last frame is `result` (or `error`). After it the worker answers steers with `steer_left` until
+ * the office closes its side (or `linger` ms pass), so a steer the office sent as the run ended is never lost. If the
+ * office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer a
+ * question or read the result.
  */
 export async function serve(
   channel: Channel,

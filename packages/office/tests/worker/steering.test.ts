@@ -184,10 +184,16 @@ test("a steer sent as the run ends is applied or returned", async () => {
   expect(await worker.wait()).toBe(0)
   expect(handlers.outcome?.type).toBe("result")
   const applied = JSON.stringify(fake.requests().map((r) => r.messages))
-  const logged = fs.readFileSync(job.log, "utf8")
+  const committed = new Set(
+    logPayloads(job, "pool_commit")
+      .filter((payload) => payload.key === "__start__.steers")
+      .map((payload) => payload.value),
+  )
   const returned = handlers.left.flatMap(([, texts]) => texts)
   expect(sent.length).toBeGreaterThan(0)
   expect(returned.length).toBe(new Set(returned).size)
-  const lost = sent.filter((text) => !applied.includes(text) && !logged.includes(text) && !returned.includes(text))
+  // A refusal appends nothing, so a returned steer was never committed.
+  expect(returned.filter((text) => committed.has(text))).toEqual([])
+  const lost = sent.filter((text) => !applied.includes(text) && !committed.has(text) && !returned.includes(text))
   expect(lost).toEqual([])
 })

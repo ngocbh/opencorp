@@ -225,7 +225,8 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   event(worker: W, frame: Frame): void
   /** A Yian stream chunk's fields. */
   stream(worker: W, frame: Frame): void
-  /** Steers yian refused for `inbox` (the run ended or hadn't started, or no such inbox). */
+  /** Steers yian refused for `inbox` (the run ended or hadn't started, or no such inbox) or could not take (one may
+   *  then also be in the log). */
   steerLeft(worker: W, inbox: string, texts: string[]): void
   /** The job finished: `status`, `run_id`, `output`, `failure`. */
   result(worker: W, frame: Frame): void

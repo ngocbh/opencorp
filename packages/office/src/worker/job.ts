@@ -47,7 +47,7 @@ export const Job = z.strictObject({
     .record(z.string(), z.array(ToolSpec))
     .refine(
       (groups) => !Object.hasOwn(groups, "ask") && !Object.hasOwn(groups, "ask_user"),
-      "ask and ask_user are the worker's own tool, not groups",
+      "ask and ask_user are the worker's own tools, not groups",
     )
     .default(() => ({})),
   memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
