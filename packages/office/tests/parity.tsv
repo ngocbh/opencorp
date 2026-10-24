@@ -39,7 +39,9 @@ daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
 daemon/test_bus.py	open	—	—	O2-2
 daemon/test_extensions.py	open	—	—	O2-4
 daemon/test_http.py	open	—	—	O2-1
-daemon/test_main.py	open	—	split: O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
+daemon/test_main.py	open	—	split: O2-1 → O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
+daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	packages/office/tests/daemon/http.test.ts::the socket mode leaves the process umask as it found it	node:http binds and listens in one call; the umask is narrowed to 0177 for that one synchronous call and restored, and the private 0700 temp folder is the real guard (design §2.3)	O2-1
+daemon/test_main.py::test_the_tcp_socket_reuses_addresses_but_never_shares_the_port	changed	packages/office/tests/daemon/http.test.ts::the tcp socket listens on loopback and never shares the port	node:net has no getsockopt: a second listener gets EADDRINUSE, and the TIME_WAIT test shows address reuse (design §2.3)	O2-1
 daemon/test_routes_connections.py	open	—	split: O2-21 → O3-5	O3-5
 daemon/test_routes_costs.py	open	—	—	O2-6
 daemon/test_routes_events.py	open	—	split: O2-2 → O4a-7b	O4a-7b
