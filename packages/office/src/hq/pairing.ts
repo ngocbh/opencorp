@@ -4,6 +4,7 @@
 import { createHash, randomBytes } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
+import { inspect } from "node:util"
 import { logLine } from "../daemon/http.ts"
 import { writePrivate } from "../secrets.ts"
 import { escapeHtml } from "./static.ts"
@@ -40,8 +41,7 @@ export class PairCodes {
   readonly #clock: () => Date
   readonly #log: (line: string) => void
   // A Map keeps insertion order, so its first key is the oldest code.
-  readonly #pending = new Map<string, Pending>()
-  readonly #timers = new Set<ReturnType<typeof setTimeout>>()
+  readonly #pending = new Map<string, { pending: Pending; timer: ReturnType<typeof setTimeout> }>()
 
   constructor(
     officeDir: string,
@@ -72,13 +72,10 @@ export class PairCodes {
     this.sweep()
     while (this.#pending.size >= MAX_PENDING) this.#drop(this.#pending.keys().next().value!)
     const expiresAt = new Date(this.#clock().getTime() + TTL)
-    this.#pending.set(key(code), { handle, issuer, expiresAt, file })
-    const timer = setTimeout(() => {
-      this.#timers.delete(timer)
-      this.sweep()
-    }, TTL + 1000)
+    // A second past expiry, so the sweep sees the code as expired.
+    const timer = setTimeout(() => this.sweep(), TTL + 1000)
     timer.unref()
-    this.#timers.add(timer)
+    this.#pending.set(key(code), { pending: { handle, issuer, expiresAt, file }, timer })
     // Never the code.
     this.#log(logLine("INFO", "opencorp.hq.pairing", `pairing code minted for @${handle} by @${issuer}`))
     return { code, expiresAt, file }
@@ -87,23 +84,18 @@ export class PairCodes {
   /** Spends `code`: who it signs in as, or null if it's wrong, used or expired. */
   redeem(code: string): Pending | null {
     this.sweep()
-    const k = key(code)
-    const pending = this.#pending.get(k) ?? null
-    if (pending !== null) this.#drop(k)
-    return pending
+    return this.#drop(key(code))
   }
 
   /** Forgets expired codes and deletes their files. */
   sweep(): void {
     const now = this.#clock().getTime()
-    for (const [k, p] of this.#pending) if (p.expiresAt.getTime() <= now) this.#drop(k)
+    for (const [k, { pending }] of this.#pending) if (pending.expiresAt.getTime() <= now) this.#drop(k)
   }
 
   /** Forgets every code, deletes the files and clears the timers (the office is stopping). */
   close(): void {
     for (const k of this.#pending.keys()) this.#drop(k)
-    for (const timer of this.#timers) clearTimeout(timer)
-    this.#timers.clear()
   }
 
   /** Deletes redirect files, and their temporary files, that a crashed office left in the office dir. */
@@ -126,13 +118,17 @@ export class PairCodes {
   }
 
   /** Shows the office dir and how many codes wait, never a code or its key. */
-  [Symbol.for("nodejs.util.inspect.custom")](): { officeDir: string; pending: number } {
+  [inspect.custom](): { officeDir: string; pending: number } {
     return this.toJSON()
   }
 
-  #drop(k: string): void {
-    const pending = this.#pending.get(k)
+  /** Forgets the code with key `k`, deletes its file and clears its timer; what it was, or null if none. */
+  #drop(k: string): Pending | null {
+    const entry = this.#pending.get(k)
+    if (entry === undefined) return null
     this.#pending.delete(k)
-    if (pending?.file) fs.rmSync(pending.file, { force: true })
+    clearTimeout(entry.timer)
+    if (entry.pending.file) fs.rmSync(entry.pending.file, { force: true })
+    return entry.pending
   }
 }

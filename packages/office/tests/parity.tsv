@@ -126,7 +126,7 @@ hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
 hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
 hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
-hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; writePrivate is async (O1-1)	O2-7
+hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
 hq/test_servers.py	open	—	—	O2-10
 hq/test_sessions.py	open	—	—	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10

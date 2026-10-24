@@ -15,7 +15,7 @@ class Clock {
   call = (): Date => this.now
 }
 
-const URL = (code: string): string => "http://127.0.0.1:49380/pair#" + code
+const pairUrl = (code: string): string => "http://127.0.0.1:49380/pair#" + code
 
 /** Codes in `dir` with `clock`, logging into `lines`; closed when the current test finishes. */
 function pairCodes(dir: string, clock = new Clock(), lines: string[] = []): PairCodes {
@@ -24,7 +24,7 @@ function pairCodes(dir: string, clock = new Clock(), lines: string[] = []): Pair
   return codes
 }
 
-const MINT = { issuer: "ngocbh", url: URL, openFile: false }
+const MINT = { issuer: "ngocbh", url: pairUrl, openFile: false }
 
 test("a code is 128 bits and works once", async () => {
   const codes = pairCodes(tempDir())
@@ -46,7 +46,7 @@ test("a code expires after five minutes and its file goes", async () => {
   const file = minted.file!
   expect(path.dirname(file)).toBe(dir)
   expect(fs.statSync(file).mode & 0o777).toBe(0o600)
-  expect(fs.readFileSync(file, "utf8")).toContain(URL(minted.code))
+  expect(fs.readFileSync(file, "utf8")).toContain(pairUrl(minted.code))
   clock.now = new Date(T0.getTime() + TTL)
   codes.sweep()
   expect(fs.existsSync(file)).toBe(false)
@@ -76,7 +76,7 @@ test("at most 16 pending and the oldest goes first", async () => {
   for (let i = 0; i < MAX_PENDING; i++) rest.push(await codes.mint("ngocbh", MINT))
   expect(codes.redeem(first.code)).toBeNull()
   expect(fs.existsSync(first.file!)).toBe(false)
-  expect(rest.every((m) => codes.redeem(m.code) !== null)).toBe(true)
+  for (const m of rest) expect(codes.redeem(m.code)).not.toBeNull()
 })
 
 test("many wrong codes never block the right one", async () => {
@@ -103,7 +103,7 @@ test("a code is never logged", async () => {
   codes.redeem(minted.code)
   codes.redeem(minted.code)
   const text = lines.join("\n")
-  expect(text).toContain("pairing code")
+  expect(text).toContain("pairing code minted for @ngocbh by @ngocbh")
   expect(text).not.toContain(minted.code)
 })
 
