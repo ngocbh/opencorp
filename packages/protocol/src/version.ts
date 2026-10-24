@@ -3,6 +3,9 @@ import { z } from "zod"
 import cli from "../../cli/package.json" with { type: "json" }
 import * as S from "./schemas"
 
+/** The release version, from packages/cli/package.json. */
+export const VERSION: string = cli.version
+
 /** `value` with every `description` keyword removed; a property named `description` stays. */
 function withoutDescriptions(value: unknown, inProperties = false): unknown {
   if (Array.isArray(value)) return value.map((item) => withoutDescriptions(item))
@@ -31,5 +34,5 @@ export function schemaKey(schemas: Record<string, z.ZodType>): string {
 export function apiId(): string {
   const schemas: Record<string, z.ZodType> = {}
   for (const [name, value] of Object.entries(S)) if (value instanceof z.ZodType) schemas[name] = value
-  return `${cli.version}+${schemaKey(schemas)}`
+  return `${VERSION}+${schemaKey(schemas)}`
 }

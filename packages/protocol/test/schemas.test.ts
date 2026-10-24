@@ -27,7 +27,7 @@ const NAMES = [
   "AddDeviceRequest", "LoginRequest", "SetPasswordRequest", "Connection", "ConnectionList", "ModelOption",
   "ModelList", "SetModelRequest", "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest",
   "ConnectionLogin", "SetupPrompt", "SetupAsk", "SetupChoose", "SetupSecret", "SetupSay", "SetupStep",
-  "SetupAnswer",
+  "SetupAnswer", "OfficeInfo",
 ]
 
 /** The zod schema exported under `name`. */
@@ -126,7 +126,7 @@ const BODIES = [
   "AddConnectionRequest", "SetDefaultConnectionRequest", "StartLoginRequest", "ConnectionLogin", "CompanyView",
   "CostReport", "Health", "HqStatus", "PairCodeRequest", "PairCode", "PairRequest", "BrowserSession",
   "HqLoginRequest", "CompanyTree", "CompanyFile", "RunPage", "RunDetail", "RunNodePage", "RunEventPage",
-  "RunEvent",
+  "RunEvent", "OfficeInfo",
 ]
 
 test("every route body has a fixture", () => {

@@ -1,6 +1,6 @@
 // Protocol schemas: people.
 import { z } from "zod"
-import { DeviceName, GitId, Handle, Id, PasswordHash, TokenHash } from "./common"
+import { DeviceName, GitId, Handle, Id, PasswordHash, Timestamp, TokenHash } from "./common"
 import { HarnessPolicy, RepoIssue, Routine, Sop } from "./company"
 
 /** A device a human uses opencorp from: requests carrying the token whose hash this is act as that person. */
@@ -87,3 +87,14 @@ export const SetPasswordRequest = z.strictObject({
   password: z.string().min(8),
 })
 export type SetPasswordRequest = z.input<typeof SetPasswordRequest>
+
+/** The reply of GET /office on the office socket (never on HQ): the running daemon's process id, OpenCorp
+ *  home, start time and release version, for `doctor` and `stop`. Needs a device token once tokens are
+ *  enforced. */
+export const OfficeInfo = z.strictObject({
+  pid: z.int().min(1),
+  home: z.string().min(1),
+  started_at: Timestamp,
+  version: z.string().min(1),
+})
+export type OfficeInfo = z.input<typeof OfficeInfo>

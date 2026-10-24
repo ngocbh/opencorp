@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test"
 import { z } from "zod"
 import cli from "../../cli/package.json" with { type: "json" }
-import { apiId, schemaKey } from "@opencorp/protocol/version"
+import { apiId, schemaKey, VERSION } from "@opencorp/protocol/version"
 
 test("the key is the version and the schema hash", () => {
   const id = apiId()
-  expect(id.startsWith(`${cli.version}+`)).toBe(true)
-  expect(id.slice(cli.version.length + 1)).toMatch(/^[0-9a-f]{12}$/u)
+  expect(VERSION).toBe(cli.version)
+  expect(id.startsWith(`${VERSION}+`)).toBe(true)
+  expect(id.slice(VERSION.length + 1)).toMatch(/^[0-9a-f]{12}$/u)
 })
 
 test("a docs only change keeps the key", () => {

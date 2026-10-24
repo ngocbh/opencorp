@@ -2,6 +2,7 @@
  *
  *  The company repo lists only each token's sha256, which can't be reversed into the token. */
 import { createHash, randomBytes } from "node:crypto"
+import type { ErrorCode } from "@opencorp/protocol"
 import type { Roster } from "./roster.ts"
 
 /** What every device token starts with. */
@@ -14,7 +15,7 @@ export class AuthError extends Error {
   override name = "AuthError"
 
   constructor(
-    readonly code: string,
+    readonly code: ErrorCode,
     message: string,
   ) {
     super(message)
