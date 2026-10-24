@@ -1,12 +1,23 @@
 /**
- * Reads company files and flows as YAML 1.2 under the rules TS yian reads flows by: the core schema
- * (`yes`, `on` and dates are text, `0755` is decimal), `<<` merge keys in PyYAML's order, repeated keys
- * refused, and a cap on nesting and on the nodes aliases expand to. Company files and flows are repo
- * content agents write, so reading is linear in the text plus the node cap, never overflows the stack,
- * and refuses bad input only with a `YamlError` whose fixed message names a line, never the text: a
- * company file can hold a password hash.
+ * Reads company files and flows, and writes company files (`writeYaml`), as YAML 1.2 under the rules TS
+ * yian reads flows by: the core schema (`yes`, `on` and dates are text, `0755` is decimal), `<<` merge
+ * keys in PyYAML's order, repeated keys refused, and a cap on nesting and on the nodes aliases expand to.
+ * Company files and flows are repo content agents write, so reading is linear in the text plus the node
+ * cap, never overflows the stack, and refuses bad input only with a `YamlError` whose fixed message names
+ * a line, never the text: a company file can hold a password hash.
  */
-import { type Alias, isAlias, isMap, isScalar, isSeq, type Node, parseDocument, type Scalar, type YAMLMap } from "yaml"
+import {
+  type Alias,
+  isAlias,
+  isMap,
+  isScalar,
+  isSeq,
+  type Node,
+  parseDocument,
+  type Scalar,
+  stringify,
+  type YAMLMap,
+} from "yaml"
 
 /**
  * Why a YAML text can't be read: fixed text plus a line number, never the text itself (a company file
@@ -34,6 +45,12 @@ const BAD_MERGE = "has a merge key whose value isn't a mapping or a list of mapp
  */
 export function readYaml(text: string): unknown {
   return read(text, false)
+}
+
+/** A company file's text for `value`, as `readYaml` reads it back: keys in order, long text on one line and
+ *  no anchors. */
+export function writeYaml(value: unknown): string {
+  return stringify(value, { version: "1.2", lineWidth: 0, aliasDuplicateObjects: false })
 }
 
 /**

@@ -4,7 +4,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { describe, expect, test } from "bun:test"
 import { loadFlow } from "@ngocbh/yian"
-import { MAX_NESTING, readFlow, readYaml, YamlError } from "../../src/company/flow_yaml.ts"
+import { MAX_NESTING, readFlow, readYaml, writeYaml, YamlError } from "../../src/company/flow_yaml.ts"
 import { tempDir } from "../helpers.ts"
 
 const SRC = fileURLToPath(new URL("../../src", import.meta.url))
@@ -218,6 +218,27 @@ describe("tags, keys and merges", () => {
     // A repeat through an alias key, or of the same text from a different value, reads with the later value.
     expect(readYaml("- &k a\n- {*k : 1, *k : 2}\n")).toEqual(["a", { a: 2 }])
     expect(readYaml('{"1": a, 1: b}')).toEqual({ 1: "b" })
+  })
+})
+
+describe("writing company files", () => {
+  test("write yaml reads back as the same data and keeps key order", () => {
+    const device = { name: "mac", token_sha256: "a".repeat(64) }
+    const data = {
+      handle: "ngocbh",
+      name: "Hong Ngoc Bui",
+      kind: "human",
+      manager: null,
+      notes: ["yes", "0755", "null", "2026-01-01", "x: y", ""],
+      password_hash: "$scrypt$ln=16,r=8,p=1$" + "s".repeat(22) + "$" + "h".repeat(43),
+      devices: [device, device],
+    }
+    const text = writeYaml(data)
+    expect(readYaml(text)).toEqual(data)
+    expect(Object.keys(readYaml(text) as object)).toEqual(Object.keys(data))
+    // No anchors for the repeated object, and the long hash stays on one line.
+    expect(text).not.toContain("&")
+    expect(text).toContain(`password_hash: ${data.password_hash}\n`)
   })
 })
 
