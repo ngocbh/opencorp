@@ -57,7 +57,7 @@ chat/test_turns.py	ported	packages/office/tests/chat/turns.test.ts	—	O3-8b
 chat/test_turns.py::test_turn_path_strips_each_occurrence_suffix[chat~1-chat~1]	changed	packages/office/tests/chat/turns.test.ts::turn path strips each occurrence suffix	design §3.2: turns.ts matches through yian's staticPathOf, which also drops a LOOP driver clone's ~k (TS yian ids: body L#k/…, driver L~k)	O3-8b
 chat/test_waiting.py	open	—	—	O4a-3
 chat/test_wake.py	open	—	—	O4a-3
-company/test_draft.py	open	—	—	O2-16b
+company/test_draft.py	ported	packages/office/tests/company/draft.test.ts	—	O2-16b
 company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
 company/test_lint.py	ported	packages/office/tests/company/lint.test.ts	—	O2-16a
