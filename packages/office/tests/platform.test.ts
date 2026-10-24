@@ -234,7 +234,7 @@ test("no Bun or bun: API outside platform.ts", () => {
 // name from PATH (BUN_MODULE refuses only a bare "bun" literal) or a name built at run time; review catches
 // those.
 const SELF =
-  /\b(?:execPath|argv0|execve)\b|process\.argv\s*(?:\[\s*0\s*\]|\.at\s*\(\s*0\s*\))|\[[^\]]*\]\s*=\s*process\.argv\b|\bfork\s*\(|\{[^}]*\bfork\b[^}]*\}/
+  /\b(?:execPath|argv0|execve)\b|process\.argv\s*(?:\[\s*0\s*\]|\.at\s*\(\s*0\s*\))|\[[^\]]*\]\s*=\s*process\.argv\b|\bfork\s*\(|\{[^}]*(?<![\w-])fork\b[^}]*\}/
 
 test("no spawn of process.execPath outside platform.ts", () => {
   for (const sample of [
@@ -251,7 +251,14 @@ test("no spawn of process.execPath outside platform.ts", () => {
     'import { fork as f } from "node:child_process"',
   ])
     expect(sample).toMatch(SELF)
-  for (const sample of ["process.argv[2]", "process.argv.slice(2)", "selfCommand()", "forked(x)", "forkSession(id)"])
+  for (const sample of [
+    "process.argv[2]",
+    "process.argv.slice(2)",
+    "selfCommand()",
+    "forked(x)",
+    "forkSession(id)",
+    `{ "(allow process-exec process-fork)" }`,
+  ])
     expect(sample).not.toMatch(SELF)
   expect(source("platform.ts")).toMatch(SELF)
   for (const name of sourceFiles()) {
