@@ -75,7 +75,13 @@ test("answer request error codes", async () => {
     throw new Error("")
   })
   const handlers = new BaseHandlers({ tools: { g: { lookup, empty } }, stores: { profile } })
-  const worker = workerFor(handlers)
+  // The job grants a store and a tool the handlers lack, so BaseHandlers itself refuses them.
+  const granted = groupSpecs(handlers.tools)
+  const missing = { name: "missing", description: "", parameters: { type: "object", properties: {} } }
+  const worker = workerFor(handlers, {
+    memory: { profile: { store: "profile" }, other: { store: "other" } },
+    groups: { ...granted, g: [...granted.g!, missing] },
+  })
   expect(await answerRequest({ ...READ, version: "v0" }, handlers, worker)).toEqual({
     type: "store_reply",
     id: 1,
@@ -93,6 +99,8 @@ test("answer request error codes", async () => {
   })
   const other = await answerRequest({ ...READ, store: "other" }, handlers, worker)
   expect([other.error, other.message]).toEqual(["unavailable", "no store named 'other'"])
+  const absent = await answerRequest(call("missing"), handlers, worker)
+  expect([absent.error, absent.message]).toEqual(["failed", "no tool 'missing' in group 'g'"])
   const blank = await answerRequest(call("empty"), handlers, worker)
   expect([blank.error, blank.message]).toEqual(["failed", "Error"])
 })
@@ -234,6 +242,15 @@ test("object method names are never tools or stores", async () => {
   for (const type of ["toString", "__proto__", "constructor"]) expect(isRequest(type)).toBe(false)
   expect(isRequest("tool_call")).toBe(true)
   await expect(answerRequest({ type: "toString", id: 1 }, handlers, worker)).rejects.toThrow(TypeError)
+  // BaseHandlers' own lookups, without the job check in front of them.
+  const bare = new BaseHandlers({ tools: { toolbox: {} } })
+  await expect(bare.toolCall(null, "toolbox", "constructor", {})).rejects.toThrow(
+    "no tool 'constructor' in group 'toolbox'",
+  )
+  await expect(bare.toolCall(null, "__proto__", "constructor", {})).rejects.toThrow(
+    "no tool 'constructor' in group '__proto__'",
+  )
+  expect(() => new BaseHandlers().storeRead(null, "toString", null)).toThrow("no store named 'toString'")
 })
 
 test("ask user passes the handler only the six keys", async () => {
