@@ -1,10 +1,11 @@
 /** The office side of a run's ask_user: the handler, and storing then waiting for answers. */
 import { expect, onTestFinished, test } from "bun:test"
 import { Question } from "@opencorp/protocol"
-import { Answers, QuestionExpired, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
+import { Answers, AnswersClosed, QuestionExpired, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import {
   DuplicateKey,
   NotFound,
+  Store,
   StoreError,
   newId,
   type QuestionRecord,
@@ -243,6 +244,59 @@ test("an answer that lands between the check and the wait still wakes ask", asyn
   await done
   expect(out.result!.answer).toBe("pg")
   expect(answers.waiting).toBe(0)
+})
+
+test("close wakes every waiting ask", async () => {
+  const { sid, answers } = setup()
+  const waiting = [asking(answers, question(sid)), asking(answers, question(sid))]
+  await tick()
+  answers.close()
+  await Promise.all(waiting.map((w) => w.done))
+  for (const { out } of waiting) expect(out.error).toBeInstanceOf(AnswersClosed)
+  expect(answers.waiting).toBe(0)
+})
+
+test("ask after close raises and stores nothing", async () => {
+  const { store, sid, answers } = setup()
+  answers.close()
+  await expect(answers.ask(question(sid))).rejects.toBeInstanceOf(AnswersClosed)
+  expect(store.listQuestions({ sessionId: sid })).toEqual([])
+})
+
+test("close leaves the open question and its work item as they are", async () => {
+  const { store, sid, answers } = setup()
+  const item = workItem({ kind: "question" })
+  const q = question(sid, { work_item_id: item.id })
+  const { done, out } = asking(answers, q, { workItem: item })
+  await tick()
+  answers.close()
+  await done
+  // Stopping the office is not the question expiring: the run resumes after a restart.
+  expect(out.error).toBeInstanceOf(AnswersClosed)
+  expect(store.getQuestion(q.id)!.status).toBe("open")
+  expect(store.getWorkItem(item.id)!.status).toBe("open")
+})
+
+test("an answer committed just before close is returned", async () => {
+  const { store, sid, answers } = setup()
+  const item = workItem({ kind: "question" })
+  const q = question(sid, { work_item_id: item.id })
+  const { done, out } = asking(answers, q, { workItem: item })
+  await tick()
+  // Answered through another connection, so no event wakes the waiter before close does.
+  const other = new Store(store.path)
+  try {
+    other.answerQuestion(q.id, "pg", "text")
+  } finally {
+    other.close()
+  }
+  await tick()
+  expect(out).toEqual({})
+  answers.close()
+  await done
+  expect(out.result!.answer).toBe("pg")
+  expect(out.result!.status).toBe("consumed")
+  expect(store.getWorkItem(item.id)!.status).toBe("open")
 })
 
 test("a store error after the answer does not cancel the work item", async () => {

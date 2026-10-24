@@ -104,10 +104,18 @@ export class Answers {
     return this.#waiting.size
   }
 
-  /** Stop listening to the store; any later `ask` throws `AnswersClosed`. */
+  /**
+   * Stop listening to the store and wake every waiting `ask`.
+   *
+   * A waiter whose answer already landed returns it; one whose question is still open throws `AnswersClosed` and
+   * leaves the question and its work item as they are, since stopping the office is not the question expiring. Any
+   * later `ask` throws `AnswersClosed`. The waiters re-read the store a microtask later, so let them settle before
+   * closing the store.
+   */
   close(): void {
     this.#remove()
     this.#closed = true
+    for (const wakes of [...this.#waiting.values()]) for (const wake of [...wakes]) wake()
   }
 
   /**
