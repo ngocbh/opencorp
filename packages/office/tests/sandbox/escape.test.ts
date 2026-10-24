@@ -5,10 +5,11 @@ import net from "node:net"
 import os from "node:os"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
+import { helperCommand } from "../../src/platform.ts"
+import { helperFiles, type SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { run } from "../../src/sandbox/run.ts"
 import { shortDir } from "../helpers.ts"
-import { envInChild, gone, makePolicy, sandboxAvailable } from "./helpers.ts"
+import { envInChild, gone, helperTool, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -100,31 +101,38 @@ function connectCode(target: string | number): string {
 
 test.skipIf(!sandboxAvailable()).each(DECOYS)("cannot read owner or office files [%s]", async (rel) => {
   const home = office()
+  const target = path.join(home, rel)
   const policy = makePolicy().make()
-  // `cat` stands in for both the shell call and the read_file tool.
-  const read = await shell(policy, `cat ${path.join(home, rel)}`)
+  const read = await shell(policy, `cat ${target}`)
   expect(read.output).not.toContain("decoy")
-  expect(read.exit, `${path.join(home, rel)}: ${read.output}`).not.toBe(0)
-  // The search tool's stand-in.
-  expect((await shell(policy, `grep -r decoy ${home}`)).output).not.toContain("decoy")
+  expect(read.exit, `${target}: ${read.output}`).not.toBe(0)
+  // The read_file and search tools, as the helper runs them under its profile.
+  const file = await helperTool(policy, { op: "read_file", path: target })
+  expect(JSON.stringify(file)).not.toContain("decoy")
+  expect(file.ok, `${target}: ${JSON.stringify(file)}`).toBe(false)
+  const found = await helperTool(policy, { op: "search", pattern: "decoy", path: home })
+  expect(JSON.stringify(found)).not.toContain("decoy")
 })
 
 test.skipIf(!sandboxAvailable())("cannot list the real home", async () => {
-  // `bunPolicy()`, so Linux has a read-only mount under home (Bun's) for the check below to allow.
-  const policy = bunPolicy()
+  const policy = makePolicy().make()
   const home = fs.realpathSync(os.homedir())
-  // The list_dir tool's stand-in; a trailing `/` marks a folder, as in Python's listing.
-  const listing = await shell(policy, `ls -Ap ${home}`)
+  // The list_dir tool, as the helper runs it under its profile.
+  const listing = await helperTool(policy, { op: "list", path: home })
   if (ON_MAC) {
-    expect(listing.exit, `${home}: ${listing.output}`).not.toBe(0)
+    expect(listing.ok, `${home}: ${JSON.stringify(listing)}`).toBe(false)
   } else {
-    // bwrap creates the home folders of mounted read-only paths (such as `.bun/`) as mount
-    // points, so those entries, and only those, may show.
+    // bwrap creates the home folders of mounted paths (the read-only ones, and the helper's own
+    // files such as Bun under `.bun/`) as mount points, so those entries, and only those, may show.
+    const mounted = [...policy.readOnly, ...helperFiles(helperCommand().helper)]
     const allowed = new Set(
-      policy.readOnly.filter((p) => p.startsWith(home + "/")).map((p) => p.slice(home.length + 1).split("/")[0] + "/"),
+      mounted.filter((p) => p.startsWith(home + "/")).map((p) => p.slice(home.length + 1).split("/")[0] + "/"),
     )
-    const entries = listing.stdout.split("\n").filter((line) => line !== "")
-    expect(listing.exit !== 0 || entries.every((entry) => allowed.has(entry)), listing.output).toBe(true)
+    const ok =
+      !listing.ok ||
+      listing.output === "(empty)" ||
+      listing.output.split("\n").every((entry) => allowed.has(entry))
+    expect(ok, JSON.stringify(listing)).toBe(true)
   }
 })
 
@@ -150,16 +158,15 @@ test.skipIf(!sandboxAvailable())("cannot write outside the workspace", async () 
     path.join(shortDir(), "outside.txt"),
     path.join(home, ".ssh/authorized_keys"),
   ]) {
-    // The write_file tool's stand-in, then the shell call.
-    const printf = await shell(policy, `printf x > ${target}`)
-    expect(printf.exit, `${target}: ${printf.output}`).not.toBe(0)
+    const write = await helperTool(policy, { op: "write_file", path: target, content: "x" })
+    expect(write.ok, `${target}: ${JSON.stringify(write)}`).toBe(false)
     const echo = await shell(policy, `echo x > ${target}`)
     expect(echo.exit, `${target}: ${echo.output}`).not.toBe(0)
     expect(fs.existsSync(target), target).toBe(false)
   }
   const escape = path.join(path.dirname(ws), "escape.txt")
-  const relative = await shell(policy, "printf x > ../escape.txt")
-  expect(relative.exit, `${escape}: ${relative.output}`).not.toBe(0)
+  const relative = await helperTool(policy, { op: "write_file", path: "../escape.txt", content: "x" })
+  expect(relative.ok, `${escape}: ${JSON.stringify(relative)}`).toBe(false)
   expect(fs.existsSync(escape), escape).toBe(false)
 })
 
@@ -168,19 +175,18 @@ test.skipIf(!sandboxAvailable())("git hooks and config are read only", async () 
   fs.mkdirSync(path.join(ws, ".git/hooks"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git/config"), "[core]\n")
   const policy = make()
-  const hook = await shell(policy, "printf evil > .git/hooks/pre-commit")
-  expect(hook.exit, `.git/hooks/pre-commit: ${hook.output}`).not.toBe(0)
-  // The edit_file tool's stand-in: the whole file rewritten.
-  const config = await shell(policy, "printf '[core]\\nhooksPath=x\\n' > .git/config")
-  expect(config.exit, `.git/config: ${config.output}`).not.toBe(0)
+  const hook = await helperTool(policy, { op: "write_file", path: ".git/hooks/pre-commit", content: "evil" })
+  expect(hook.ok, `.git/hooks/pre-commit: ${JSON.stringify(hook)}`).toBe(false)
+  const config = await helperTool(policy, { op: "edit_file", path: ".git/config", old: "[core]", new: "[core]\nhooksPath=x" })
+  expect(config.ok, `.git/config: ${JSON.stringify(config)}`).toBe(false)
   // Renaming .git away (to plant a new hooks dir and rename it back) is denied too.
   const rename = await shell(policy, "mv .git .git2")
   expect(rename.exit, `.git: ${rename.output}`).not.toBe(0)
   expect(fs.existsSync(path.join(ws, ".git/hooks/pre-commit"))).toBe(false)
   expect(fs.readFileSync(path.join(ws, ".git/config"), "utf8")).toBe("[core]\n")
   // The rest of .git stays writable, so git itself works.
-  const head = await shell(policy, "printf 'ref: refs/heads/main\\n' > .git/HEAD")
-  expect(head.exit, `.git/HEAD: ${head.output}`).toBe(0)
+  const head = await helperTool(policy, { op: "write_file", path: ".git/HEAD", content: "ref: refs/heads/main\n" })
+  expect(head, `.git/HEAD: ${JSON.stringify(head)}`).toEqual({ ok: true, output: "wrote 21 bytes to .git/HEAD" })
   expect(fs.readFileSync(path.join(ws, ".git/HEAD"), "utf8")).toBe("ref: refs/heads/main\n")
 })
 
