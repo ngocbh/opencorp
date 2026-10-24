@@ -23,9 +23,10 @@ chat/test_turns.py	open	—	—	O3-8b
 chat/test_waiting.py	open	—	—	O4a-3
 chat/test_wake.py	open	—	—	O4a-3
 company/test_draft.py	open	—	—	O2-16b
-company/test_flows.py	open	—	—	O1-8
+company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
 company/test_lint.py	open	—	split: O1-8 → O2-16a	O2-16a
+company/test_lint.py::test_unexpected_flow_error_names_its_type	changed	packages/office/tests/company/lint.test.ts::unexpected flow error names its type	design §10.1: ESM modules cant be monkeypatched; a natural TypeError (a non-UTF-8 flow) stands in	O1-8
 company/test_loader.py	ported	packages/office/tests/company/loader.test.ts	—	O1-7
 company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O1-5
 company/test_secret_keys.py	ported	packages/office/tests/company/secret_keys.test.ts	—	O1-5
@@ -266,6 +267,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/flow_yaml.test.ts::only flow_yaml imports yaml	design §9.5: flow_yaml.ts is the only module importing yaml	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::readFlow and yian agree on system.paths	design §9.5, §6 rule 10: the yian-agreement test	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::yes no on and off are text and dates stay text	D8, design §9.5: YAML 1.2 core readings	O1-5
+—	new	packages/office/tests/company/flows.test.ts::a flow named with two leading dots inside the repo loads	Python's is_relative_to compares path components	O1-8
 —	new	packages/office/tests/company/git.test.ts::a locked section calling a locking method throws instead of deadlocking	design §3.3: the non-reentrant mutex	O1-6
 —	new	packages/office/tests/company/git.test.ts::a path holding a nul or starting with a slash is refused before git runs	design §6.9, rule 12: literal pathspecs (paths travel NUL-separated on stdin)	O1-6
 —	new	packages/office/tests/company/git.test.ts::pin leaves files under a symlinked folder alone and survives a symlink loop	plan.md O1-6 (pinned read-only worktrees): a pin never changes files outside it	O1-6
@@ -279,6 +281,11 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/issues.test.ts::an undefined alias is unreadable	design §6: a malformed company file is an issue, never an exception	O1-5
 —	new	packages/office/tests/company/issues.test.ts::malformed yaml is unreadable with its line only	design §5.4, §6 rule 1: path-only messages	O1-5
 —	new	packages/office/tests/company/issues.test.ts::yes stays text in a company file	D8: YAML 1.2 for company files	O1-5
+—	new	packages/office/tests/company/lint.test.ts::a child flow symlinked out of the repo is outside the repo	design §6 rule 10: uses: stays confined	O1-8
+—	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo in a child flow is a lint error	design §6 rule 10, Y6a: every nested load is confined	O1-8
+—	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo is a lint error	design §6 rule 10, Y6a: CODE references stay inside the repo	O1-8
+—	new	packages/office/tests/company/lint.test.ts::a file in a skills folder is skipped	Python's is_file/is_dir never raise on odd paths	O1-8
+—	new	packages/office/tests/company/lint.test.ts::a symlinked code file pointing out of the repo is a lint error	design §6 rule 10, Y6a: symlinks resolved	O1-8
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
