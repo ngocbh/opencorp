@@ -603,25 +603,25 @@ test("a reply that cannot be sent becomes a failed reply", async () => {
 })
 
 test("bigint arguments reach the office tool", async () => {
-  const { seen, tool: take } = taking("n", { type: "integer" })
-  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take } } }))
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { n: 2n ** 64n })
+  const { seen, tool: receive } = taking("n", { type: "integer" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { receive } } }))
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] }).invoke("receive", { n: 2n ** 64n })
   expect(seen).toEqual([2n ** 64n])
 })
 
 test("a model written $v key reaches the office tool", async () => {
-  const { seen, tool: take } = taking("payload", { type: "object" })
-  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take } } }))
+  const { seen, tool: receive } = taking("payload", { type: "object" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { receive } } }))
   const payload = { $v: "x", value: 1 }
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { payload })
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] }).invoke("receive", { payload })
   expect(seen).toEqual([payload])
 })
 
 test("object arguments keep a proto key", async () => {
-  const { seen, tool: take } = taking("obj", { type: "object" })
-  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take } } }))
+  const { seen, tool: receive } = taking("obj", { type: "object" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { receive } } }))
   const obj = JSON.parse('{"__proto__": {"x": 1}, "a": 2}')
-  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { obj })
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("receive", receive))] }).invoke("receive", { obj })
   expect(seen).toHaveLength(1)
   expect(Object.keys(seen[0] as object)).toEqual(["__proto__", "a"])
   expect(Object.getPrototypeOf(seen[0])).toBe(Object.prototype)

@@ -7,6 +7,14 @@
 const internal = import.meta.main && (process.argv[2] === "__fs-helper" || process.argv[2] === "__worker")
 if (internal) process.exitCode = await (await import("@opencorp/office")).officeMain(process.argv.slice(2))
 
+// In the compiled binary (its bundle's URL has no `.ts`), OpenTUI loads its native library and
+// assets from the install, never from a copy Bun would extract to a predictable $TMPDIR path that
+// any same-user process could swap before it is loaded.
+if (!internal && !import.meta.url.endsWith(".ts")) {
+  const { dirname, join } = await import("node:path")
+  process.env.OTUI_ASSET_ROOT = join(dirname(process.execPath), "..", "assets")
+}
+
 /** A command's entry point: takes the arguments after its name, resolves to an exit code. */
 export type CommandRun = (argv: string[]) => Promise<number>
 

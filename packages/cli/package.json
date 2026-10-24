@@ -8,10 +8,12 @@
     "opencorp": "bin/opencorp"
   },
   "scripts": {
+    "build": "bun --no-env-file --config=/dev/null script/build.ts",
     "test": "bun test",
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@ngocbh/yian": "workspace:*",
     "@opencorp/client": "workspace:*",
     "@opencorp/office": "workspace:*",
     "@opencorp/protocol": "workspace:*",
