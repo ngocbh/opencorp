@@ -1,9 +1,6 @@
 /** Steer and interrupt requests for a worker's running nodes. */
 import type { Steering } from "@ngocbh/yian/run"
 
-// Handed to a finished node or after close, so a late interrupt can't reach it.
-const NEVER = new AbortController().signal
-
 /**
  * Yian's `Steering` inbox, fed by the office's `steer` and `interrupt` frames.
  *
@@ -17,8 +14,8 @@ const NEVER = new AbortController().signal
  */
 export class Inbox implements Steering {
   #queued = new Map<string, string[]>()
-  #stops = new Map<string, AbortController>()
-  // Nodes that took their signal; one taken and aborted was cut short by yian.
+  #controllers = new Map<string, AbortController>()
+  // Nodes that took their signal; one taken and aborted was asked to stop before or while it ran.
   #taken = new Set<string>()
   #finished = new Set<string>()
   #closed = false
@@ -48,20 +45,25 @@ export class Inbox implements Steering {
 
   /** The signal aborted when `nodeId` is asked to stop; one that never aborts once it finished or the inbox closed. */
   interruptSignal(nodeId: string): AbortSignal {
-    if (this.#refuses(nodeId)) return NEVER
+    // A fresh one each call, so listeners never pile up on one shared signal.
+    if (this.#refuses(nodeId)) return new AbortController().signal
     this.#taken.add(nodeId)
     return this.#controller(nodeId).signal
   }
 
-  /** Whether `nodeId` took its interrupt signal and it is aborted, and so stopped short of its full reply. */
+  /**
+   * Whether `nodeId` was asked to stop after it took its signal (an interrupt sent before or while it
+   * ran); yian may still have finished the reply first, since it checks the signal only between model
+   * calls, and a resumed run's replay ignores it.
+   */
   cut(nodeId: string): boolean {
-    return this.#taken.has(nodeId) && this.#stops.get(nodeId)?.signal.aborted === true
+    return this.#taken.has(nodeId) && this.#controllers.get(nodeId)?.signal.aborted === true
   }
 
   /** Mark `nodeId` finished; return the steers it never read. */
   finish(nodeId: string): string[] {
     this.#finished.add(nodeId)
-    this.#stops.delete(nodeId)
+    this.#controllers.delete(nodeId)
     this.#taken.delete(nodeId)
     return this.drain(nodeId)
   }
@@ -69,7 +71,7 @@ export class Inbox implements Steering {
   /** Refuse every later steer and interrupt; remove and return every queued steer, by node id. */
   close(): Map<string, string[]> {
     this.#closed = true
-    this.#stops.clear()
+    this.#controllers.clear()
     this.#taken.clear()
     const queued = this.#queued
     this.#queued = new Map()
@@ -81,10 +83,10 @@ export class Inbox implements Steering {
   }
 
   #controller(nodeId: string): AbortController {
-    let controller = this.#stops.get(nodeId)
+    let controller = this.#controllers.get(nodeId)
     if (!controller) {
       controller = new AbortController()
-      this.#stops.set(nodeId, controller)
+      this.#controllers.set(nodeId, controller)
     }
     return controller
   }

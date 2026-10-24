@@ -42,3 +42,17 @@ test("a node is cut once it reads its interrupt", () => {
   inbox.finish("reply")
   expect(inbox.cut("reply")).toBe(false)
 })
+
+test("an interrupt aborts the signal a running node already took", () => {
+  const inbox = new Inbox()
+  const signal = inbox.interruptSignal("reply")
+  expect(signal.aborted || inbox.cut("reply")).toBe(false)
+  expect(inbox.interrupt("reply")).toBe(true)
+  expect(signal.aborted && inbox.cut("reply")).toBe(true)
+})
+
+test("after close a node gets a signal that never aborts", () => {
+  const inbox = new Inbox()
+  inbox.close()
+  expect(inbox.interruptSignal("x").aborted || inbox.interrupt("x")).toBe(false)
+})

@@ -742,6 +742,8 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/steering.test.ts::after close a node gets a signal that never aborts	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
+—	new	packages/office/tests/worker/steering.test.ts::an interrupt aborts the signal a running node already took	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
 —	new	packages/protocol/test/errors.test.ts::422 text never holds an input value or an unknown key	§5.4, §6 rule 7	O0-6
 —	new	packages/protocol/test/errors.test.ts::every code a client branches on is a protocol error code	§5.4	O0-6
