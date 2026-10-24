@@ -119,12 +119,12 @@ export function validationErrors(error: z.ZodError): string {
       issue.code === "unrecognized_keys"
         ? "is not allowed"
         : issue.code === "custom"
-        ? issue.message
-        : issue.code === "invalid_type"
-          ? `expected ${issue.expected}`
-          : issue.code === "too_small"
-            ? `must be at least ${issue.minimum}`
-            : "is not valid"
+          ? issue.message
+          : issue.code === "invalid_type"
+            ? `expected ${issue.expected}`
+            : issue.code === "too_small"
+              ? `must be at least ${issue.minimum}`
+              : "is not valid"
     const locs = issue.code === "unrecognized_keys" ? issue.keys.map(() => [...loc, "an extra field"]) : [loc]
     for (const l of locs) lines.push(`${l.join(".") || "provider"}: ${phrase}`)
   }
