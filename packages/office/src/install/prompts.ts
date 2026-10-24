@@ -1,6 +1,6 @@
 /** How onboarding talks to the owner: the errors it stops with and the prompter it asks through. */
-import type { Readable } from "node:stream"
-import { repr } from "../perm/redact.ts"
+import type { Readable, Writable } from "node:stream"
+import { repr, strip } from "../perm/redact.ts"
 
 /** Onboarding stopped; the message says why and what to do. It never contains a key. */
 export class OnboardError extends Error {
@@ -99,4 +99,143 @@ export function readLine(input: Readable): Promise<string | undefined> {
     input.on("close", onEnd)
     input.on("error", onError)
   })
+}
+
+/** Whether `stream` is a terminal. */
+function isTTY(stream: Readable | Writable): boolean {
+  return (stream as { isTTY?: boolean }).isTTY === true
+}
+
+/** Where a `TtyPrompter` asks, and what it knows without asking. */
+export interface TtyOptions {
+  /** Answers by question text, taken without asking; empty ones are dropped. */
+  preset?: Record<string, string>
+  /** Whether there's someone to ask (default true). */
+  interactive?: boolean
+  /** Where answers come from (default `process.stdin`). */
+  input?: Readable
+  /** Where questions go (default `process.stdout`). */
+  output?: Writable
+  /** The environment whose `TERM` and `NO_COLOR` decide how questions look (default `process.env`), read once. */
+  env?: Record<string, string | undefined>
+}
+
+/**
+ * Asks on the terminal; a secret is read masked, so it is never echoed.
+ *
+ * `preset` answers questions by their text without asking (from command-line flags); with `interactive` false,
+ * every other question takes its default. When input and output are both terminals, a list is picked with the
+ * arrow keys; otherwise it is numbered, and a line picks from it. A typed list ends with `TYPE_OWN`, which asks
+ * for the answer; an empty one is the default.
+ */
+export class TtyPrompter implements Prompter {
+  readonly interactive: boolean
+  readonly dumb: boolean
+  readonly color: boolean
+  private readonly preset: Map<string, string>
+  private readonly input: Readable
+  private readonly output: Writable
+
+  constructor(options: TtyOptions = {}) {
+    // A Map, so a question such as "constructor" never finds an inherited property.
+    this.preset = new Map(Object.entries(options.preset ?? {}).filter(([, v]) => v))
+    this.interactive = options.interactive ?? true
+    this.input = options.input ?? process.stdin
+    this.output = options.output ?? process.stdout
+    // Read now: the init flow runs its questions in an environment without these.
+    const env = options.env ?? process.env
+    this.dumb = env.TERM === "dumb"
+    this.color = !env.NO_COLOR && !this.dumb
+  }
+
+  /** Whether to colour what is printed: colour is on and it goes to a terminal. */
+  private styled(): boolean {
+    return this.color && isTTY(this.output)
+  }
+
+  /** Whether to draw questions on the terminal rather than ask line by line. */
+  private drawn(): boolean {
+    // A dumb terminal can't move the cursor to redraw a list.
+    return this.interactive && isTTY(this.input) && isTTY(this.output) && !this.dumb
+  }
+
+  /** A line typed after `shown`, stripped. */
+  private async line(question: string, shown: string): Promise<string> {
+    this.output.write(shown)
+    const line = await readLine(this.input)
+    if (line === undefined) throw closedInput(question)
+    return strip(line)
+  }
+
+  async ask(question: string, defaultAnswer = ""): Promise<string> {
+    const preset = this.preset.get(question)
+    if (preset !== undefined) return preset
+    if (!this.interactive) return defaultAnswer
+    if (this.drawn()) return this.drawnAsk(question, defaultAnswer)
+    return (await this.line(question, shown(question, defaultAnswer))) || defaultAnswer
+  }
+
+  async choose(question: string, options: readonly string[], defaultAnswer = "", typed = false): Promise<string> {
+    const preset = this.preset.get(question)
+    if (preset !== undefined) return preset
+    if (options.length === 0) throw new Error("a choice needs at least one option")
+    if (!this.interactive) return defaultAnswer
+    if (!typed) return this.pick(question, options, defaultAnswer)
+    // A list on the terminal can't take text, so a last choice asks for it.
+    const own = options.includes(defaultAnswer) ? "" : defaultAnswer
+    const picked = await this.pick(question, [...options, TYPE_OWN], own ? TYPE_OWN : defaultAnswer)
+    if (picked !== TYPE_OWN) return picked
+    // An empty typed answer is the default, as on the JSON path, so a deployment is never saved empty.
+    return (await this.ask(question, own)) || defaultAnswer
+  }
+
+  /** One of `options` picked from a list, `defaultAnswer` for an empty answer. */
+  private async pick(question: string, options: readonly string[], defaultAnswer: string): Promise<string> {
+    if (this.drawn()) return this.drawnPick(question, options, defaultAnswer)
+    options.forEach((option, i) => this.say(`  ${i + 1}. ${option}`))
+    for (let i = 0; i < TRIES; i++) {
+      const line = await this.line(question, shown(question, defaultAnswer))
+      // An option is taken before a number, so an option that is a number picks itself.
+      if (options.includes(line)) return line
+      const number = /^[0-9]+$/.test(line) ? Number(line) : 0
+      if (number >= 1 && number <= options.length) return options[number - 1]!
+      if (!line) return defaultAnswer
+      this.say(`That doesn't work: choose 1 to ${options.length}`)
+    }
+    throw new OnboardError(`no usable answer to ${repr(question)}`)
+  }
+
+  async secret(question: string): Promise<string> {
+    // Without a terminal on both sides the answer would be read or shown in the clear; the input stays unread.
+    if (!this.interactive || !isTTY(this.input) || !isTTY(this.output))
+      throw new NoTerminal(`there is no terminal to read ${repr(question)} without echo`)
+    return this.drawnSecret(question)
+  }
+
+  say(text: string): void {
+    this.output.write(text + "\n")
+  }
+
+  step(number: number, total: number, title: string, why: string): void {
+    let [header, line] = stepLines(number, total, title, why)
+    if (this.styled()) [header, line] = [`\x1b[1;36m${header}\x1b[0m`, `\x1b[90m${line}\x1b[0m`]
+    this.output.write(`\n${header}\n${line}\n`)
+  }
+
+  private async drawnAsk(_question: string, _defaultAnswer: string): Promise<string> {
+    throw new Error("not drawn yet")
+  }
+
+  private async drawnPick(_question: string, _options: readonly string[], _defaultAnswer: string): Promise<string> {
+    throw new Error("not drawn yet")
+  }
+
+  private async drawnSecret(_question: string): Promise<string> {
+    throw new Error("not drawn yet")
+  }
+}
+
+/** A line-by-line question as shown: `Q [default]: `, or `Q: ` without a default. */
+function shown(question: string, defaultAnswer: string): string {
+  return defaultAnswer ? `${question} [${defaultAnswer}]: ` : `${question}: `
 }

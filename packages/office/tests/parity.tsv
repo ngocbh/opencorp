@@ -190,6 +190,7 @@ install/test_main.py	open	—	—	O2-13b
 install/test_offboard.py	open	—	—	O2-18b
 install/test_onboard.py	open	—	—	O2-15
 install/test_provider_setup.py	open	—	—	O2-14
+install/test_provider_setup.py::test_a_list_is_coloured_unless_no_color_was_set	dropped	—	design §9.1: clack draws lists through node:util styleText, which takes NO_COLOR, FORCE_COLOR and the TTY from the process, not the prompter's env; the prompter's own codes keep the NO_COLOR tests	O2-13a
 install/test_service.py	open	—	—	O2-12
 install/test_systemd.py	open	—	—	O2-12
 perm/test_frames.py	open	—	—	O3-4
@@ -582,6 +583,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/install/proc.test.ts::stopProcess kills a process that ignores SIGTERM after the timeout	design §9.4: polling kills	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::stopProcess leaves a process with another start time alone	design §9.4: start time re-checked before each signal	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::stopProcess refuses ids that are not another process without signalling	design §6.6: kill(0), kill(-1) and the office itself never signalled	O2-11a
+—	new	packages/office/tests/install/provider_setup.test.ts::a secret needs a terminal on stdout too	design §9.1: refused when stdin or stdout isn't a TTY	O2-13a
 —	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where holds an integer past the safe range grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where key is proto grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
