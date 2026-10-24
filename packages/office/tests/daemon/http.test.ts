@@ -570,7 +570,7 @@ describe("routes", () => {
         started = true
         await new Promise((resolve) => ctx.signal.addEventListener("abort", resolve))
         aborted = true
-        return {}
+        throw ctx.signal.reason
       },
     }
     const lines: string[] = []

@@ -181,7 +181,8 @@ export function requestListener<C>(
     res.on("close", () => {
       if (!res.writableFinished) controller.abort()
     })
-    // The client can leave while a hook, guard or handler awaits; then nothing is sent. `send` checks the rest.
+    // The client can leave while a hook, guard or handler awaits; then nothing is sent. `send` also skips a
+    // response that is already destroyed.
     const reply = (status: number, text: string, headers: Record<string, string>) => {
       if (!controller.signal.aborted) send(res, status, text, headers)
     }
@@ -232,6 +233,9 @@ export function requestListener<C>(
       reply(200, text, unread)
     } catch (error) {
       if (error instanceof HttpError) return reply(error.status, apiError(error.code, error.message), unread)
+      // The client left, so a handler that honours `ctx.signal` and rejects (an AbortError) is neither answered
+      // nor logged.
+      if (controller.signal.aborted) return
       reply(500, apiError("internal_error", "internal error"), { connection: "close" })
       // After the reply, and guarded: a throwing log hook must neither leave the client waiting nor reject.
       try {
