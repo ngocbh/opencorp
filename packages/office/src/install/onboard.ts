@@ -13,11 +13,12 @@ import {
   ValidationError,
 } from "@ngocbh/yian/llm_clients"
 import { FileLockError } from "@ngocbh/yian/platform"
-import { Connections } from "../chat/connections.ts"
+import { azureBaseUrl, Connections } from "../chat/connections.ts"
 import * as models from "../chat/models.ts"
 import { loadProvider, Provider, ProviderError } from "../chat/provider.ts"
+import { repr } from "../perm/redact.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
-import { OnboardError, type Prompter } from "./prompts.ts"
+import { NoTerminal, OnboardError, type Prompter, TRIES } from "./prompts.ts"
 
 /** What to do when a home has no company. */
 export const SET_UP = "run `opencorp init` to create one, or `opencorp onboard --from URL` to join one"
@@ -153,8 +154,203 @@ export interface Listers {
 /** The listers that ask the providers. */
 export const LISTERS: Listers = { azureDeployments, providerModels }
 
+/** Asks `question` until `problem` finds nothing wrong with the answer, at most `TRIES` times; with `options`, the
+ *  owner picks the answer from them. Throws `OnboardError` when no answer worked. */
+export async function askUntil(
+  prompter: Prompter,
+  question: string,
+  defaultAnswer: string,
+  problem: (answer: string) => string | null,
+  options: readonly string[] = [],
+): Promise<string> {
+  for (let i = 0; i < TRIES; i++) {
+    const answer =
+      options.length > 0
+        ? await prompter.choose(question, options, defaultAnswer)
+        : await prompter.ask(question, defaultAnswer)
+    const why = problem(answer)
+    if (why === null) return answer
+    prompter.say(`That doesn't work: ${why}`)
+  }
+  throw new OnboardError(`no usable answer to ${repr(question)}`)
+}
+
+/** The deployment to use at the resource whose v1 endpoint is `baseUrl`, picked from its list when it can be
+ *  listed, `last` for an empty answer. */
+export async function askDeployment(
+  prompter: Prompter,
+  baseUrl: string,
+  key: string,
+  last: string,
+  listers: Listers,
+): Promise<string> {
+  let deployments: string[]
+  try {
+    deployments = await listers.azureDeployments(baseUrl, key)
+  } catch (error) {
+    if (!(error instanceof OnboardError)) throw error
+    prompter.say(`Couldn't list the deployments (${error.message}); type the name instead.`)
+    deployments = []
+  }
+  if (deployments.length > 0) {
+    return (await prompter.choose("Deployment", deployments, last || deployments[0], true)).trim()
+  }
+  const name = await askUntil(prompter, "Deployment name", last, (m) =>
+    m.trim() ? null : "type the deployment's name",
+  )
+  return name.trim()
+}
+
+/** Why `answer` doesn't name an Azure OpenAI endpoint, or null when it does. */
+function azureProblem(answer: string): string | null {
+  try {
+    new LLMConfig({ provider: "openai", base_url: azureBaseUrl(answer), api_key: "-" })
+  } catch (error) {
+    if (!(error instanceof RangeError)) throw error
+    return "give the resource name, or its endpoint like https://<resource>.openai.azure.com"
+  }
+  return null
+}
+
+/** The key for provider `name`, read without echo; empty only when not `required`, and `last` for an empty answer
+ *  when there is one. */
+async function askKey(prompter: Prompter, name: string, required: boolean, last = ""): Promise<string> {
+  let question: string
+  if (last) question = `${name} API key (empty keeps the one you just typed; not shown)`
+  else if (required) question = `${name} API key (not shown)`
+  else question = `${name} API key (empty to use \`yian auth ${name}\`; not shown)`
+  for (let i = 0; i < TRIES; i++) {
+    let key: string
+    try {
+      key = (await prompter.secret(question)) || last
+    } catch (error) {
+      if (!(error instanceof NoTerminal)) throw error
+      throw new OnboardError(
+        "there is no terminal to read the key without echo; pass the provider with --provider-stdin instead",
+      )
+    }
+    if (key || !required) return key
+    prompter.say(`That doesn't work: ${name} needs a key`)
+  }
+  throw new OnboardError(`no usable answer to ${repr(question)}`)
+}
+
+/** The model for provider `name`, picked from those it lists for `key` when it can be listed, `last` for an empty
+ *  answer; empty, without a key, for the model of yian's own login. */
+export async function askModel(
+  prompter: Prompter,
+  name: string,
+  last: string,
+  key: string,
+  listers: Listers,
+): Promise<string> {
+  if (!key && !models.KEYLESS.includes(name)) {
+    // The runs use yian's own login, which saved its model and which the listing can't use.
+    const login = `the model \`yian auth ${name}\` saved`
+    const picked = await prompter.choose("Model", [login], last || login, true)
+    return picked === login ? "" : picked
+  }
+  let listed: string[] = []
+  if (prompter.interactive) {
+    try {
+      listed = await listers.providerModels(name, key)
+    } catch (error) {
+      if (!(error instanceof OnboardError)) throw error
+      prompter.say(`Couldn't list the models (${error.message}).`)
+    }
+  }
+  const fallback = Object.hasOwn(models.DEFAULT_MODELS, name) ? models.DEFAULT_MODELS[name] : undefined
+  if (key && fallback) {
+    const first = `${fallback} (the default)`
+    // Typing a name picks another model; the one typed last time is the answer for nothing.
+    const picked = await prompter.choose("Model", [first, ...listed.filter((m) => m !== fallback)], last || first, true)
+    return picked === first ? fallback : picked
+  }
+  if (listed.length > 0) return prompter.choose("Model", listed, last || listed[0], true)
+  return askUntil(prompter, `Model name (${name} has no default model)`, last, (m) =>
+    m.trim() ? null : "type the model's name",
+  )
+}
+
+/** The provider the owner gives, each question defaulting to its answer in `last`, which gets these answers. */
+async function askProviderData(prompter: Prompter, last: Answers, listers: Listers): Promise<unknown> {
+  const choices = SUPPORTED_LLM_PROVIDERS.join(", ")
+  const name = await askUntil(
+    prompter,
+    "Model provider",
+    last.provider ?? "anthropic",
+    (n) => ((SUPPORTED_LLM_PROVIDERS as readonly string[]).includes(n) ? null : `choose one of: ${choices}`),
+    SUPPORTED_LLM_PROVIDERS,
+  )
+  if (name !== last.provider) {
+    // A key goes only to the provider it was typed for.
+    for (const field of Object.keys(last)) delete last[field as keyof Answers]
+    last.provider = name
+  }
+  if (name === "azure") {
+    // Yian's azure client reads its endpoint from variables the office doesn't have; a resource's v1 endpoint takes
+    // the openai client with the key and the deployment as the model.
+    const question = "Azure OpenAI endpoint or resource name"
+    last.endpoint = await askUntil(prompter, question, last.endpoint ?? "", azureProblem)
+    last.key = await askKey(prompter, name, true, last.key ?? "")
+    const baseUrl = azureBaseUrl(last.endpoint)
+    last.model = await askDeployment(prompter, baseUrl, last.key, last.model ?? "", listers)
+    return { llm_config: { provider: "openai", base_url: baseUrl, api_key: last.key, model: last.model } }
+  }
+  const llm: Record<string, string> = { provider: name }
+  last.key = await askKey(prompter, name, false, last.key ?? "")
+  if (last.key) llm.api_key = last.key
+  else prompter.say(`No key saved; runs will use yian's own login (\`yian auth ${name}\`).`)
+  last.model = (await askModel(prompter, name, last.model ?? "", last.key, listers)).trim()
+  if (last.model) llm.model = last.model
+  return { llm_config: llm }
+}
+
+/** What to do when the model doesn't answer. */
+export const TRY_AGAIN = "Try again"
+export const SET_UP_AGAIN = "Set up the model again"
+
 /** Why a provider's model doesn't answer, or null when it does. */
 export type ModelCheck = (provider: Provider) => Promise<string | null>
+
+/** Tells the owner why the model failed and asks what to do; resolves whether they want to set it up again. */
+export async function modelFailed(prompter: Prompter, problem: string): Promise<boolean> {
+  prompter.say(problem.slice(0, 1).toUpperCase() + problem.slice(1))
+  return (await prompter.choose("What now?", [TRY_AGAIN, SET_UP_AGAIN], TRY_AGAIN)) === SET_UP_AGAIN
+}
+
+/** Whether `provider`'s model answers, checking again for as long as the owner chooses to try again. */
+async function answers(prompter: Prompter, provider: Provider, checkModel: ModelCheck): Promise<boolean> {
+  for (;;) {
+    prompter.say("Checking that the model answers...")
+    const problem = await checkModel(provider)
+    if (problem === null) return true
+    if (!prompter.interactive) throw new OnboardError(`the model didn't answer: ${problem}`)
+    if (await modelFailed(prompter, `the model didn't answer: ${problem}`)) return false
+  }
+}
+
+/** Asks for a provider until yian takes it and its model answers `checkModel`, starting from the answers in
+ *  `last`; only Ctrl-C or the input ending stops it. */
+async function workingProvider(
+  prompter: Prompter,
+  checkModel: ModelCheck | undefined,
+  last: Answers,
+  listers: Listers,
+): Promise<Provider> {
+  for (;;) {
+    const data = await askProviderData(prompter, last, listers)
+    let provider: Provider
+    try {
+      provider = checkProvider(data)
+    } catch (error) {
+      if (!(error instanceof OnboardError) || !prompter.interactive) throw error
+      prompter.say(`That doesn't work: ${error.message}`)
+      continue
+    }
+    if (checkModel === undefined || (await answers(prompter, provider, checkModel))) return provider
+  }
+}
 
 /** The owner's last answers while setting up the model, so asking again starts where they left off. */
 export interface Answers {
@@ -225,11 +421,11 @@ async function saveProvider(office: string, provider: Provider): Promise<void> {
  *  connection. Each question defaults to its answer in `last`, which gets the new answers. Throws `OnboardError`
  *  when there's no one to ask or the file can't be written; the message never holds the key. */
 export async function askProvider(
-  _office: string,
-  _prompter: Prompter,
-  _options: Omit<ProviderOptions, "stdin">,
+  office: string,
+  prompter: Prompter,
+  options: Omit<ProviderOptions, "stdin">,
 ): Promise<void> {
-  throw new OnboardError("there's no provider to set up")
+  await saveProvider(office, await workingProvider(prompter, options.checkModel, options.last ?? {}, options.listers))
 }
 
 /** Whether `file` exists, a symlink included; a parent that is a file counts as missing (Python's `lexists`). */

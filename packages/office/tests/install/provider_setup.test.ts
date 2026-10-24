@@ -16,15 +16,21 @@ import { join } from "node:path"
 import { PassThrough, Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
 import { afterEach, expect, test } from "bun:test"
-import { type AuthRequest, HttpResponse } from "@ngocbh/yian/llm_clients"
+import { type AuthRequest, HttpResponse, SUPPORTED_LLM_PROVIDERS } from "@ngocbh/yian/llm_clients"
+import { Connections } from "../../src/chat/connections.ts"
 import { loadProvider, Provider } from "../../src/chat/provider.ts"
 import {
+  askDeployment,
+  askModel,
   azureDeployments,
   ensureProvider,
   type Listers,
+  type ModelCheck,
   type ProviderOptions,
   providerModels,
+  SET_UP_AGAIN,
   setupConnectionFile,
+  TRY_AGAIN,
 } from "../../src/install/onboard.ts"
 import {
   KeyboardInterrupt,
@@ -43,6 +49,7 @@ const KEY = "sk-ant-test-0123456789"
 
 const OFFICE = fileURLToPath(new URL("../..", import.meta.url))
 const PROMPTS = fileURLToPath(new URL("../../src/install/prompts.ts", import.meta.url))
+const ONBOARD = fileURLToPath(new URL("../../src/install/onboard.ts", import.meta.url))
 
 const DOWN = "\x1b[B"
 const ENTER = "\r"
@@ -802,4 +809,425 @@ test("the script prompter records the same step lines", () => {
   ask.step(1, 4, "Company", "Why.")
   expect(ask.seen).toEqual(stepLines(1, 4, "Company", "Why."))
   expect(ask.seen).toEqual(["Step 1 of 4: Company", "Why."])
+})
+
+/** `askModel` with `NO_LISTING` unless a test gives listers. */
+function askModelWith(prompter: Prompter, name: string, last = "", key = "", listers = NO_LISTING): Promise<string> {
+  return askModel(prompter, name, last, key, listers)
+}
+
+/** `askDeployment` with `NO_LISTING` unless a test gives listers. */
+function askDeploymentWith(
+  prompter: Prompter,
+  baseUrl: string,
+  key: string,
+  last: string,
+  listers = NO_LISTING,
+): Promise<string> {
+  return askDeployment(prompter, baseUrl, key, last, listers)
+}
+
+/** Listers whose deployments are `deployments` and which list no models. */
+const deploymentsListed = (deployments: () => Promise<string[]>): Listers => ({ ...NO_LISTING, azureDeployments: deployments })
+
+/** Listers whose models are `models` and which list no deployments. */
+const modelsListed = (models: (name: string, key: string) => Promise<string[]>): Listers => ({
+  ...NO_LISTING,
+  providerModels: models,
+})
+
+/** A model check that finds each of `problems` in turn (null: the model answered), recording what it checked. */
+function answers(...problems: (string | null)[]): ModelCheck & { checked: unknown[] } {
+  const checked: unknown[] = []
+  const left = [...problems]
+  const check = async (provider: Provider) => {
+    checked.push(provider.llm_config)
+    const problem = left.shift()
+    if (problem === undefined) throw new Error("no problem left")
+    return problem
+  }
+  return Object.assign(check, { checked })
+}
+
+test("the key is asked without echo and written private", async () => {
+  const office = newOffice()
+  const ask = new Script(["", KEY, "claude-opus-4-1"])
+  expect(await ensure(office, ask)).toBe(true)
+  expect(mode(file(office))).toBe(0o600)
+  expect(read(office)).toEqual({ llm_config: { provider: "anthropic", api_key: KEY, model: "claude-opus-4-1" } })
+  expect((await saved(office))?.api_key).toBe(KEY)
+  for (const line of ask.seen) expect(line).not.toContain(KEY)
+  expect(listing(office)).toEqual([".lock", "office.json"]) // no temp file left behind
+  expect(ask.seen).toEqual([
+    "Model provider",
+    "anthropic API key (empty to use `yian auth anthropic`; not shown)",
+    "Model",
+  ])
+  expect(ask.offered).toEqual([[...SUPPORTED_LLM_PROVIDERS], ["claude-sonnet-4-5 (the default)"]])
+  expect(ask.typed).toEqual([false, true])
+})
+
+test("no key and no model name means the model yians login saved", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["openai", "", "  "]))
+  expect(read(office)).toEqual({ llm_config: { provider: "openai" } })
+})
+
+test("picking the default saves its name", async () => {
+  // Yian has no default model, so the file names it.
+  const office = newOffice()
+  await ensure(office, new Script(["openai", KEY, "1"]))
+  expect(read(office)).toEqual({ llm_config: { provider: "openai", api_key: KEY, model: "gpt-5.5" } })
+})
+
+test("a provider without a default model asks for one until it has it", async () => {
+  const office = newOffice()
+  const ask = new Script(["google", KEY, "", "gemini-2.5-pro"])
+  await ensure(office, ask)
+  expect(read(office)).toEqual({ llm_config: { provider: "google", api_key: KEY, model: "gemini-2.5-pro" } })
+  expect(ask.offered).toEqual([[...SUPPORTED_LLM_PROVIDERS]])
+  expect(ask.seen.filter((line) => line === "Model name (google has no default model)")).toHaveLength(2)
+  expect(ask.seen).toContain("That doesn't work: type the model's name")
+})
+
+test.each([
+  "acme",
+  "acme.openai.azure.com",
+  "https://acme.openai.azure.com/",
+  " https://acme.openai.azure.com/openai/v1/ ",
+])("azure is saved as openai on the resources v1 endpoint [%s]", async (endpoint) => {
+  const office = newOffice()
+  const ask = new Script(["azure", endpoint, KEY, "gpt-5-4-prod"])
+  expect(await ensure(office, ask)).toBe(true)
+  expect(read(office)).toEqual({
+    llm_config: {
+      provider: "openai",
+      base_url: "https://acme.openai.azure.com/openai/v1/",
+      api_key: KEY,
+      model: "gpt-5-4-prod",
+    },
+  })
+  expect(ask.seen).toEqual([
+    "Model provider",
+    "Azure OpenAI endpoint or resource name",
+    "azure API key (not shown)",
+    "Deployment name",
+  ])
+})
+
+test("azure offers the resources deployments", async () => {
+  const office = newOffice()
+  const seen: [string, string][] = []
+  const listers: Listers = {
+    ...NO_LISTING,
+    azureDeployments: async (baseUrl, key) => {
+      seen.push([baseUrl, key])
+      return ["gpt-5.4", "o3"]
+    },
+  }
+  const ask = new Script(["azure", "acme", KEY, "2"])
+  await ensure(office, ask, { listers })
+  expect((await saved(office))?.model).toBe("o3")
+  expect(seen).toEqual([["https://acme.openai.azure.com/openai/v1/", KEY]])
+  expect(ask.offered).toContainEqual(["gpt-5.4", "o3"])
+  expect(ask.typed).toContain(true)
+})
+
+test("azure takes a typed deployment too", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["azure", "acme", KEY, "my-deployment"]), {
+    listers: deploymentsListed(async () => ["gpt-5.4"]),
+  })
+  expect((await saved(office))?.model).toBe("my-deployment")
+})
+
+test("a model typed before is the answer for nothing", async () => {
+  let ask = new Script([""])
+  expect(await askModelWith(ask, "anthropic", "claude-opus-4-1", SENTINEL)).toBe("claude-opus-4-1")
+  expect(ask.offered).toEqual([["claude-sonnet-4-5 (the default)"]])
+  expect(ask.typed).toEqual([true])
+  ask = new Script([""])
+  expect(await askModelWith(ask, "anthropic", "claude-opus-4-1")).toBe("claude-opus-4-1")
+  expect(ask.offered).toEqual([["the model `yian auth anthropic` saved"]])
+})
+
+test("a deployment typed before is the answer for nothing", async () => {
+  const ask = new Script([""])
+  const url = "https://acme.openai.azure.com/openai/v1/"
+  expect(await askDeploymentWith(ask, url, KEY, "mine", deploymentsListed(async () => ["gpt-5.4"]))).toBe("mine")
+  expect(ask.offered).toEqual([["gpt-5.4"]])
+  expect(ask.typed).toEqual([true])
+})
+
+test("an empty typed deployment on the terminal is never saved empty", async () => {
+  // Pick "Type my own answer" (3), then type nothing.
+  const { input, output } = pipe("3\n\n")
+  const url = "https://acme.openai.azure.com/openai/v1/"
+  const prompter = new TtyPrompter({ input, output, env: {} })
+  const listers = deploymentsListed(async () => ["gpt-5.4", "o3"])
+  expect(await askDeploymentWith(prompter, url, KEY, "", listers)).toBe("gpt-5.4")
+})
+
+test("azure asks for the name when it cant list the deployments", async () => {
+  const office = newOffice()
+  const listers = deploymentsListed(async () => {
+    throw new OnboardError("HTTP 401")
+  })
+  const ask = new Script(["azure", "acme", KEY, "gpt-5-4-prod"])
+  await ensure(office, ask, { listers })
+  expect((await saved(office))?.model).toBe("gpt-5-4-prod")
+  expect(ask.seen.slice(-2)).toEqual([
+    "Couldn't list the deployments (HTTP 401); type the name instead.",
+    "Deployment name",
+  ])
+})
+
+test("setting azure up again defaults to the last deployment", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["azure", "acme", KEY, "2", "2", "", "", "", ""]), {
+    listers: deploymentsListed(async () => ["gpt-5.4", "o3"]),
+    checkModel: answers("Error code: 429", null),
+  })
+  expect((await saved(office))?.model).toBe("o3")
+})
+
+test("a provider offers the models it lists for the key", async () => {
+  const office = newOffice()
+  const seen: [string, string][] = []
+  const listers = modelsListed(async (name, key) => {
+    seen.push([name, key])
+    return ["claude-opus-4-1", "claude-sonnet-4-5"]
+  })
+  const ask = new Script(["anthropic", SENTINEL, "2"])
+  await ensure(office, ask, { listers })
+  expect((read(office) as { llm_config: unknown }).llm_config).toEqual({
+    provider: "anthropic",
+    api_key: SENTINEL,
+    model: "claude-opus-4-1",
+  })
+  expect(seen).toEqual([["anthropic", SENTINEL]])
+  expect(ask.offered.at(-1)).toEqual(["claude-sonnet-4-5 (the default)", "claude-opus-4-1"])
+  expect(ask.typed.at(-1)).toBe(true)
+  for (const line of ask.seen) expect(line).not.toContain(SENTINEL)
+})
+
+test("a provider without a default offers its models and takes a typed one", async () => {
+  const listers = modelsListed(async () => ["gemini-2.5-flash", "gemini-2.5-pro"])
+  const office = newOffice()
+  const ask = new Script(["google", SENTINEL, ""])
+  await ensure(office, ask, { listers })
+  expect((await saved(office))?.model).toBe("gemini-2.5-flash")
+  expect(ask.offered.at(-1)).toEqual(["gemini-2.5-flash", "gemini-2.5-pro"])
+  expect(ask.typed.at(-1)).toBe(true)
+  expect(await askModelWith(new Script(["gemini-3-pro"]), "google", "", SENTINEL, listers)).toBe("gemini-3-pro")
+})
+
+test("a listing that fails falls back to typing the model", async () => {
+  const listers = modelsListed(async () => {
+    throw new OnboardError("HTTP 401")
+  })
+  const office = newOffice()
+  const ask = new Script(["google", SENTINEL, "gemini-2.5-pro"])
+  await ensure(office, ask, { listers })
+  expect((await saved(office))?.model).toBe("gemini-2.5-pro")
+  expect(ask.seen.slice(-2)).toEqual(["Couldn't list the models (HTTP 401).", "Model name (google has no default model)"])
+})
+
+test("nothing is listed without a key or someone to ask", async () => {
+  const never: Listers = {
+    azureDeployments: async () => {
+      throw new Error("nothing to list with")
+    },
+    providerModels: async () => {
+      throw new Error("nothing to list with")
+    },
+  }
+  await ensure(newOffice(), new Script(["anthropic", "", ""]), { listers: never })
+  const ask = new Script([""], { interactive: false })
+  expect(await askModelWith(ask, "anthropic", "", SENTINEL, never)).toBe("claude-sonnet-4-5")
+})
+
+test("azure needs a key and a usable endpoint", async () => {
+  const office = newOffice()
+  const ask = new Script(["azure", "http://acme.example.com", "acme", "", KEY, "dep"])
+  await ensure(office, ask)
+  expect((await saved(office))?.api_key).toBe(KEY)
+  expect(ask.seen.filter((line) => line === "Azure OpenAI endpoint or resource name")).toHaveLength(2)
+  expect(ask.seen.filter((line) => line === "azure API key (not shown)")).toHaveLength(2)
+  expect(ask.seen).toContain("That doesn't work: azure needs a key")
+})
+
+test("an existing provider that cant be used is asked again on a terminal", async () => {
+  const office = newOffice()
+  place(office, JSON.stringify({ llm_config: { provider: "azure", api_key: KEY } }))
+  const ask = new Script(["openai", "", ""])
+  expect(await ensure(office, ask)).toBe(true)
+  expect(read(office)).toEqual({ llm_config: { provider: "openai" } })
+  expect(ask.seen[0]).toBe(
+    `${file(office)}: llm_config.model is missing, and azure has no default model; set up the model again.`,
+  )
+  for (const line of ask.seen) expect(line).not.toContain(KEY)
+})
+
+test("no key means composers own login", async () => {
+  const office = newOffice()
+  const ask = new Script(["openai", "", ""])
+  await ensure(office, ask)
+  expect(read(office)).toEqual({ llm_config: { provider: "openai" } })
+  expect(ask.seen.some((line) => line.includes("yian auth"))).toBe(true)
+  expect(ask.offered.at(-1)).toEqual(["the model `yian auth openai` saved"])
+  expect(ask.typed.at(-1)).toBe(true)
+})
+
+test("no key takes a typed model too", async () => {
+  const office = newOffice()
+  await ensure(office, new Script(["google", "", "gemini-2.5-pro"]))
+  expect(read(office)).toEqual({ llm_config: { provider: "google", model: "gemini-2.5-pro" } })
+})
+
+test("a keyless provider without a key offers its models", async () => {
+  const office = newOffice()
+  const ask = new Script(["ollama", "", ""])
+  await ensure(office, ask, { listers: modelsListed(async () => ["llama3", "qwen3"]) })
+  expect(read(office)).toEqual({ llm_config: { provider: "ollama", model: "llama3" } })
+  expect(ask.offered.at(-1)).toEqual(["llama3", "qwen3"])
+})
+
+// No test changes process.env, so the key sits in a child's environment.
+test("a key in the environment is never read", async () => {
+  const office = newOffice()
+  const code = [
+    `import { ensureProvider } from ${JSON.stringify(ONBOARD)}`,
+    'const answers = ["anthropic", "", ""]',
+    "const next = (answer = \"\") => answers.shift() || answer",
+    "const prompter = {",
+    "  interactive: true,",
+    "  ask: async (_q, answer) => next(answer),",
+    "  choose: async (_q, _options, answer) => next(answer),",
+    "  secret: async () => next(),",
+    "  say: () => {},",
+    "  step: () => {},",
+    "}",
+    "const listers = { azureDeployments: async () => [], providerModels: async () => [] }",
+    "await ensureProvider(process.argv.at(-1), prompter, { listers })",
+  ].join("\n")
+  const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code, office], {
+    cwd: OFFICE,
+    env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: KEY },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  try {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), 20_000)))
+    const status = await Promise.race([child.exited, timeout])
+    clearTimeout(timer)
+    expect(status, await new Response(child.stderr).text()).toBe(0)
+    const text = readFileSync(file(office), "utf8")
+    expect(text).not.toContain(KEY)
+    expect(Object.hasOwn((JSON.parse(text) as { llm_config: object }).llm_config, "api_key")).toBe(false)
+  } finally {
+    child.kill("SIGKILL")
+  }
+}, 30_000)
+
+test("an unknown provider preset gives up", async () => {
+  const office = newOffice()
+  const { input } = pipe("")
+  const { stream, text } = collector(false)
+  const prompter = new TtyPrompter({ preset: { "Model provider": "antrhopic" }, input, output: stream, env: {} })
+  const error = await rejection(ensure(office, prompter))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("no usable answer to 'Model provider'")
+  expect(text()).toContain(`That doesn't work: choose one of: ${SUPPORTED_LLM_PROVIDERS.join(", ")}\n`)
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test("a key asked for without a terminal says to pass the provider on stdin", async () => {
+  const office = newOffice()
+  const { input, output } = pipe(KEY + "\n")
+  const prompter = new TtyPrompter({ preset: { "Model provider": "anthropic" }, interactive: false, input, output, env: {} })
+  const error = await rejection(ensure(office, prompter))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error).not.toBeInstanceOf(NoTerminal)
+  expect(error.message).toContain("--provider-stdin")
+  expect(error.message).not.toContain(KEY)
+})
+
+test("the provider is saved only once the model answers", async () => {
+  const office = newOffice()
+  const check = answers(null)
+  const ask = new Script(["openai", KEY, ""])
+  expect(await ensure(office, ask, { checkModel: check })).toBe(true)
+  expect(check.checked).toEqual([{ provider: "openai", api_key: KEY, model: "gpt-5.5" }])
+  expect(ask.seen.at(-1)).toBe("Checking that the model answers...")
+  expect(await saved(office)).toEqual({ provider: "openai", api_key: KEY, model: "gpt-5.5" })
+})
+
+test("trying again checks the same answers and nothing is saved until it works", async () => {
+  const office = newOffice()
+  const problems = ["Connection error", "Connection error", null]
+  const check = async () => {
+    expect(existsSync(file(office))).toBe(false)
+    return problems.shift() ?? null
+  }
+  const ask = new Script(["openai", KEY, "", "", "1"])
+  await ensure(office, ask, { checkModel: check })
+  expect(ask.seen.filter((line) => line === "The model didn't answer: Connection error")).toHaveLength(2)
+  expect(ask.offered.slice(-2)).toEqual([
+    [TRY_AGAIN, SET_UP_AGAIN],
+    [TRY_AGAIN, SET_UP_AGAIN],
+  ])
+  expect(await saved(office)).toEqual({ provider: "openai", api_key: KEY, model: "gpt-5.5" })
+})
+
+test("setting up again starts from the last answers and keeps the key", async () => {
+  const office = newOffice()
+  const check = answers("Error code: 404 - DeploymentNotFound", null)
+  const ask = new Script(["azure", "acme", KEY, "gpt-5-4", "2", "", "", "", "gpt-5-4-prod"])
+  await ensure(office, ask, { checkModel: check })
+  expect(await saved(office)).toEqual({
+    provider: "openai",
+    base_url: "https://acme.openai.azure.com/openai/v1/",
+    api_key: KEY,
+    model: "gpt-5-4-prod",
+  })
+  expect(ask.seen).toContain("azure API key (empty keeps the one you just typed; not shown)")
+  for (const line of ask.seen) expect(line).not.toContain(KEY)
+})
+
+test("picking the default when setting up again drops the typed model", async () => {
+  const office = newOffice()
+  // Typed, then the default; the third round's empty answers keep the default.
+  const ask = new Script(["openai", "", "gpt-x", "2", "", "", "1", "2", "", "", ""])
+  await ensure(office, ask, { checkModel: answers("Error code: 404", "Error code: 404", null) })
+  expect(await saved(office)).toEqual({ provider: "openai" })
+})
+
+test("a model that never answers is never saved", async () => {
+  const office = newOffice()
+  const ask = new Script(["openai", KEY, "", "1", "1"])
+  // The script ran out: only the owner can stop asking, with Ctrl-C.
+  const error = await rejection(ensure(office, ask, { checkModel: async () => "Connection error" }))
+  expect(error.message).toBe("the script ran out of answers")
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test("a key is never kept for another provider", async () => {
+  const office = newOffice()
+  const check = answers("Error code: 401", null)
+  const ask = new Script(["azure", "acme", KEY, "gpt-5-4", "2", "openai", "", "1"])
+  await ensure(office, ask, { checkModel: check })
+  expect(await saved(office)).toEqual({ provider: "openai" })
+  expect(ask.seen).toContain("openai API key (empty to use `yian auth openai`; not shown)")
+})
+
+test("the setup connection is made 0700 and read as the office connection", async () => {
+  const office = newOffice()
+  expect(existsSync(join(office, "connections"))).toBe(false)
+  await ensure(office, new Script(), { stdin: stdin({ llm_config: { provider: "anthropic", api_key: KEY } }) })
+  expect(mode(join(office, "connections"))).toBe(0o700)
+  expect(mode(file(office))).toBe(0o600)
+  expect(Object.hasOwn(read(office) as object, "method")).toBe(false)
+  expect((await new Connections(office).get("office")).llm_config?.api_key).toBe(KEY)
 })
