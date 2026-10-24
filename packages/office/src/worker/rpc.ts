@@ -461,7 +461,7 @@ function failed(kind: RequestType, error: unknown, log: RpcLog): Frame {
 const NAME = /^[A-Za-z_$][\w$]{0,63}$/
 
 /** A thrown value's name for a log line; never throws (a getter or a revoked `Proxy` can). */
-function errorName(error: unknown): string {
+export function errorName(error: unknown): string {
   try {
     if (!(error instanceof Error)) return typeof error
     const name: unknown = error.name
@@ -472,7 +472,7 @@ function errorName(error: unknown): string {
 }
 
 /** A thrown value's message for a reply; never throws. `String(value)` can, so another non-`Error` gets fixed text. */
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   if (typeof error === "string") return error
   try {
     if (!(error instanceof Error)) return "a non-Error value was thrown"

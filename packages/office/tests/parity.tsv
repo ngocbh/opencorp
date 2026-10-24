@@ -343,7 +343,8 @@ worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/work
 worker/test_job.py::test_tool_spec_of_a_base_tool_uses_the_given_name	changed	packages/office/tests/worker/job.test.ts::tool spec uses the given name	D20: explicit schemas, no langchain tools	O3-1
 worker/test_job.py::test_tool_spec_of_a_function	changed	packages/office/tests/worker/job.test.ts::tool spec takes the description and parameters the tool declares	D20: explicit schemas, no introspection	O3-1
 worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2
-worker/test_main.py	open	—	—	O3-3
+worker/test_main.py	ported	packages/office/tests/worker/main.test.ts	—	O3-3
+worker/test_main.py::test_after_its_last_frame_a_worker_answers_steers_until_the_office_closes	changed	packages/office/tests/worker/main.test.ts::after its last frame a worker answers steers until the office closes	O0-10 P1: Bun passes no fd past stdio to children; the inheritable-fd assert goes, O3-1's grandchild test keeps the rule	O3-3
 worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
 worker/test_remote_store.py	ported	packages/office/tests/worker/remote_store.test.ts	—	O3-2
 worker/test_remote_store.py::test_an_undecodable_document_is_a_value_error	changed	packages/office/tests/worker/remote_store.test.ts::an undecodable document is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2
@@ -726,6 +727,8 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/worker/fake_llm.test.ts::closing releases held replies and ends open connections	O2-1 handoff: node:http stop order; servers close per test	O2-24
 —	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
+—	new	packages/office/tests/worker/main.test.ts::a frame other than start is an error	design §2.4 step 1	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a worker exits 3 when the office closes before the start frame	design §2.4 step 6	O3-3
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
 —	new	packages/office/tests/worker/remote_store.test.ts::a closed channel is a system error	Y3: the MarkdownStore contract's classes	O3-2
 —	new	packages/office/tests/worker/remote_store.test.ts::an invalid reply is a range error	Y3: the MarkdownStore contract's classes	O3-2

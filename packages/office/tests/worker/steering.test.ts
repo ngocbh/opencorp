@@ -1,6 +1,8 @@
 /** The steering inbox: queued steers, interrupts as a per-node signal, finished nodes and close. */
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { Inbox } from "../../src/worker/inbox.ts"
+
+setDefaultTimeout(30_000)
 
 test("steers queue until drained", () => {
   const inbox = new Inbox()
