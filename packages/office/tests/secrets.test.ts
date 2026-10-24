@@ -297,6 +297,7 @@ test("read private refuses a fifo without waiting for a writer", async () => {
   // A blocked open would take about 3 s, until the bounded writer frees it.
   expect(performance.now() - start).toBeLessThan(2_000)
   expect(error).toBeInstanceOf(PrivateFileError)
+  expect((error as Error).message).toMatch(/must be a regular file/)
 })
 
 test("write private makes a 0600 file and replaces a symlink without following it", async () => {
@@ -333,12 +334,13 @@ test("read private returns the bytes of a private file", async () => {
 test("read private refuses a symlink, a directory, a file open to others and a file of another user", async () => {
   const tmp = tempDir()
   const target = path.join(tmp, "target")
-  fs.writeFileSync(target, "private-bytes", { mode: 0o600 })
+  fs.writeFileSync(target, "private-bytes")
   fs.chmodSync(target, 0o600)
   fs.symlinkSync(target, path.join(tmp, "link"))
   const symlinked = await readPrivate(path.join(tmp, "link")).catch((e: unknown) => e)
   expect(symlinked).toBeInstanceOf(PrivateFileError)
   expect((symlinked as Error).message).toMatch(/can't open/)
+  expect((symlinked as Error).message).not.toContain("private-bytes")
 
   fs.mkdirSync(path.join(tmp, "dir"))
   const open = path.join(tmp, "open")
@@ -348,6 +350,7 @@ test("read private refuses a symlink, a directory, a file open to others and a f
     const error = await readPrivate(path.join(tmp, name)).catch((e: unknown) => e)
     expect(error).toBeInstanceOf(PrivateFileError)
     expect((error as Error).message).toMatch(/must be a regular file private to its owner/)
+    expect((error as Error).message).not.toContain("readable-bytes")
   }
   expectUnlocked(tmp)
 
@@ -360,6 +363,7 @@ test("read private refuses a symlink, a directory, a file open to others and a f
   const theirs = await readPrivate(target).catch((e: unknown) => e)
   expect(theirs).toBeInstanceOf(PrivateFileError)
   expect((theirs as Error).message).toMatch(/must be a regular file private to its owner/)
+  expect((theirs as Error).message).not.toContain("private-bytes")
 })
 
 test("set and write private fsync the temp file before renaming it", async () => {
@@ -414,6 +418,21 @@ test.each(NOT_PRIVATE_FOLDERS)("the private file calls refuse a folder that is n
   expect(fs.readdirSync(real)).toEqual([])
 })
 
+test("the private file calls refuse the folders lock file", async () => {
+  const tmp = tempDir()
+  const lockPath = path.join(tmp, ".lock")
+  for (const call of [() => writePrivate(lockPath, "x"), () => readPrivate(lockPath)]) {
+    const error = await call().catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(PrivateFileError)
+    expect((error as Error).message).toMatch(/lock file/)
+  }
+  expectUnlocked(tmp)
+  if (fs.existsSync(lockPath)) {
+    expect(fs.lstatSync(lockPath).isFile()).toBe(true)
+    expect(fs.statSync(lockPath).size).toBe(0)
+  }
+})
+
 const LOCKED_CALLS = [
   ["set", (store: SecretStore) => store.set("token", "second-value")],
   ["get", (store: SecretStore) => store.get("token")],
@@ -436,6 +455,9 @@ test.each(LOCKED_CALLS)("every call waits for the folders lock [%s]", async (_sh
       throw error
     },
   )
+  // Marks the rejection handled, so a failed expectation below doesn't leave it unhandled; `await pending`
+  // still throws it.
+  pending.catch(() => {})
   try {
     await new Promise((resolve) => setTimeout(resolve, 250))
     expect(settled).toBe(false)

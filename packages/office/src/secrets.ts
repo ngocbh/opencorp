@@ -60,6 +60,14 @@ function lockFolder(dir: string): Promise<FileLock> {
   return waitForLock(path.join(dir, ".lock"), { private: true, timeoutMs: LOCK_TIMEOUT_MS })
 }
 
+/** Throws `PrivateFileError` when `file` is its folder's lock file, `.lock`. */
+function refuseLockFile(file: string): void {
+  // Reading the lock file would open, then close, a descriptor on the lock's inode, which drops the
+  // POSIX lock this call holds (see yian's note inside `lockFile`); writing it would rename a new inode over
+  // the lock.
+  if (path.basename(file) === ".lock") throw new PrivateFileError(`'${file}' is the folder's lock file`)
+}
+
 /** Replaces `<dir>/<name>` with `data` as a 0600 file, atomically; a symlink there is replaced, not followed.
  *  The caller holds the folder's lock. */
 function replaceFile(dir: string, name: string, data: string | Uint8Array): void {
@@ -84,10 +92,12 @@ function replaceFile(dir: string, name: string, data: string | Uint8Array): void
 }
 
 /** Replaces `file` with `data` as a 0600 file, atomically, under its folder's lock; a symlink at `file` is
- *  replaced, not followed. Rejects with `PrivateFileError` when the folder is not a private directory of this
- *  user, the `ENOENT` error when it is missing, and yian's `FileLockError` when the folder's lock can't be
- *  taken (a 30 s wait for another holder, or a `.lock` that isn't private). */
+ *  replaced, not followed. The name `.lock` is reserved for the folder's lock. Rejects with `PrivateFileError`
+ *  when `file` is named `.lock` or the folder is not a private directory of this user, the `ENOENT` error
+ *  when the folder is missing, and yian's `FileLockError` when the folder's lock can't be taken (a 30 s wait
+ *  for another holder, or a `.lock` that isn't private). */
 export async function writePrivate(file: string, data: string | Uint8Array): Promise<void> {
+  refuseLockFile(file)
   const dir = path.dirname(file)
   checkFolder(dir, "folder")
   using _lock = await lockFolder(dir)
@@ -95,11 +105,13 @@ export async function writePrivate(file: string, data: string | Uint8Array): Pro
 }
 
 /** The contents of `file`, read under its folder's lock; the file must be a regular file of this user that
- *  others can't read or write. Rejects with the `ENOENT` error when the file or its folder is missing,
- *  `PrivateFileError` when the folder is not a private directory of this user or the file is a symlink, not a
- *  regular file, another user's, open to others, or can't be opened, and yian's `FileLockError` when the
- *  folder's lock can't be taken (a 30 s wait for another holder, or a `.lock` that isn't private). */
+ *  others can't read or write. The name `.lock` is reserved for the folder's lock. Rejects with the `ENOENT`
+ *  error when the file or its folder is missing, `PrivateFileError` when `file` is named `.lock`, the folder
+ *  is not a private directory of this user, or the file is a symlink, not a regular file, another user's,
+ *  open to others, or can't be opened, and yian's `FileLockError` when the folder's lock can't be taken (a
+ *  30 s wait for another holder, or a `.lock` that isn't private). */
 export async function readPrivate(file: string): Promise<Buffer> {
+  refuseLockFile(file)
   const dir = path.dirname(file)
   checkFolder(dir, "folder")
   using _lock = await lockFolder(dir)
