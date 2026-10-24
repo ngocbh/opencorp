@@ -117,7 +117,7 @@ harness/test_waiting.py	open	—	—	O3-14
 hq/test_api.py	open	—	split: O2-9 → O4b-7	O4b-7
 hq/test_app_fixture.py	open	—	—	O2-7
 hq/test_auth.py	open	—	—	O2-9
-hq/test_config.py	open	—	—	O2-7
+hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
 hq/test_events.py	open	—	—	O2-10
 hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
@@ -128,7 +128,7 @@ hq/test_sessions.py	open	—	—	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10
 hq/test_source.py	open	—	—	O2-9
 hq/test_static.py	open	—	—	O2-7
-hq/test_status.py	open	—	—	O2-7
+hq/test_status.py	ported	packages/office/tests/hq/status.test.ts	—	O2-7
 hq/test_version.py	open	—	—	O2-7
 install/test_doctor.py	open	—	—	O2-18a
 install/test_fallback.py	open	—	—	O2-12
@@ -467,6 +467,9 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/harness/rpc.test.ts::a message whose method isnt a string is skipped	security rule 13, design §7.2: a malformed Codex line is logged and skipped	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a request handler that raises when stdin is broken leaves the connection reading	design §6.8 rule 6 and §7.2: a failed answer to Codex never crashes the office	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a write to an app server that closed its stdin fails as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10
+—	new	packages/office/tests/hq/config.test.ts::a problem never quotes the files values	design §6, rule 13: no parser text or file values in a problem	O2-7
+—	new	packages/office/tests/hq/config.test.ts::app dir expands the home folder	decision 6: Node has no getpwnam, so only ~, ~/… and ~<me> expand	O2-7
+—	new	packages/office/tests/hq/version.test.ts::build json that is a fifo is invalid without blocking	design §6: build.json is opened O_NONBLOCK and fstat-checked, so a FIFO never blocks	O2-7
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
