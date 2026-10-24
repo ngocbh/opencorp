@@ -191,7 +191,8 @@ install/test_fallback.py	open	—	—	O2-12
 install/test_init.py	open	—	—	O2-17
 install/test_interview.py	open	—	—	O2-17
 install/test_json_prompts.py	ported	packages/office/tests/install/json_prompts.test.ts	—	O2-13a
-install/test_launch.py	open	—	—	O2-11b
+install/test_launch.py	ported	packages/office/tests/install/launch.test.ts,packages/office/tests/install/tools.test.ts	—	O2-11b
+install/test_launch.py::test_repo_is_this_checkout	changed	packages/office/tests/install/tools.test.ts::repo is this checkout	design §6.1 (no REPO: the install path, the checkout root in a checkout)	O2-11b
 install/test_launch.py::test_the_launch_command_is_the_daemons_with_absolute_paths	changed	packages/office/tests/install/launch.test.ts::the launch command is the daemons with absolute paths	design §9.3 (selfCommand() + daemon --home H, cwd the office dir)	O2-11b
 install/test_launchd.py	open	—	—	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
@@ -669,6 +670,11 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/provider_setup.test.ts::a secret on a dumb terminal is still read masked	design §9.1: clack's password() on any TTY; the key stays masked	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::on a real dumb terminal a numbered list after a secret gets its answer	design §9.1: Bun's tty stream stops feeding a paused reader once clack has used it, so line reads flow	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::the setup connection is made 0700 and read as the office connection	P3: the setup connection is office/connections/office.json	O2-14
+—	new	packages/office/tests/install/tools.test.ts::a compiled binary installs as its package and its shim package	design §6.1 (install refused, RS C3)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::each tool is resolved on the daemon path to its realpath	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::relative entries directories and files that cant run are skipped	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::the codex override is a path or a name on the path	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
+—	new	packages/office/tests/install/tools.test.ts::the workspace guards refuse a tool folder a path entry and the install	design §6.1 (tools pinned to absolute paths, R2 I5; install refused, RS C3)	O2-11b
 —	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where holds an integer past the safe range grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where key is proto grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15

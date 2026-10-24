@@ -52,7 +52,7 @@ export function helperFiles(helper: Helper): string[] {
  * existing part with no `\` then gets its on-disk spelling (case, firmlinks). Throws if a link's
  * target is not valid UTF-8.
  */
-function real(p: string): string {
+export function realPath(p: string): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
   // path the profile names must be resolved the same way. The walk uses only lstat
   // and readlink on the raw string: path.resolve and realpathSync drop `..` before
@@ -124,33 +124,33 @@ function within(child: string, parent: string): boolean {
   return parent === "/" || child === parent || child.startsWith(parent + "/")
 }
 
-/** Whether `path` is `dir` or lies inside it, both resolved as the OS resolves them (see `real`). */
+/** Whether `path` is `dir` or lies inside it, both resolved as the OS resolves them (see `realPath`). */
 export function isInside(path: string, dir: string): boolean {
-  return within(real(path), real(dir))
+  return within(realPath(path), realPath(dir))
 }
 
 /** `entries` with each absolute one resolved; relative ones are kept as given (they refuse every workspace). */
 function realEntries(entries: readonly string[] | undefined): string[] {
-  return (entries ?? []).map((e) => (path.isAbsolute(e) ? real(e) : e))
+  return (entries ?? []).map((e) => (path.isAbsolute(e) ? realPath(e) : e))
 }
 
 /** Throws `UnsafeWorkspace` if `workspace` is `/`, contains the home directory, is or lies inside a
  *  sensitive home path (`SENSITIVE_HOME_PATHS`), contains or lies inside the office install, contains
  *  a program the office runs or a folder on its PATH, or if any office path is relative. */
 export function checkWorkspace(workspace: string, office: OfficePaths = {}): void {
-  const ws = real(workspace)
-  const home = real(office.home ?? os.homedir())
+  const ws = realPath(workspace)
+  const home = realPath(office.home ?? os.homedir())
   if (ws === "/" || within(home, ws)) {
     throw new UnsafeWorkspace(`workspace ${ws} contains the home directory ${home}; use a project folder`)
   }
   for (const rel of SENSITIVE_HOME_PATHS) {
-    const sensitive = real(path.join(home, rel))
+    const sensitive = realPath(path.join(home, rel))
     if (within(ws, sensitive)) {
       throw new UnsafeWorkspace(`workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`)
     }
   }
   const resolvedEntry = (entry: string, kind: string): string => {
-    if (path.isAbsolute(entry)) return real(entry)
+    if (path.isAbsolute(entry)) return realPath(entry)
     throw new UnsafeWorkspace(
       `workspace ${ws} is refused: the office's ${kind} has a relative entry ${JSON.stringify(entry)}; use absolute paths`,
     )
@@ -216,17 +216,17 @@ export class SandboxPolicy {
     this.writable = init.writable
     this.network = init.network
     this.tmpdir = existingDir("tmpdir", init.tmpdir)
-    this.readOnly = (init.readOnly ?? []).map((p) => real(p))
+    this.readOnly = (init.readOnly ?? []).map((p) => realPath(p))
     const helper = init.helper
     this.helper =
       helper === undefined
         ? undefined
         : "binary" in helper
-          ? { binary: real(helper.binary) }
-          : { bun: real(helper.bun), entry: real(helper.entry) }
+          ? { binary: realPath(helper.binary) }
+          : { bun: realPath(helper.bun), entry: realPath(helper.entry) }
     const office = init.office ?? {}
     this.office = {
-      home: real(office.home ?? os.homedir()),
+      home: realPath(office.home ?? os.homedir()),
       install: realEntries(office.install),
       tools: realEntries(office.tools),
       path: realEntries(office.path),
@@ -243,7 +243,7 @@ export class SandboxPolicy {
 
 /** `p` resolved; throws if it is not an existing directory. */
 function existingDir(name: string, p: string): string {
-  const resolved = real(p)
+  const resolved = realPath(p)
   // Any failed stat (missing, a file in the path, a link loop) means no directory.
   let isDir = false
   try {
