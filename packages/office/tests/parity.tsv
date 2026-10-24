@@ -277,6 +277,18 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
+—	new	packages/office/tests/perm/redaction.test.ts::a key named __proto__ stays a plain key	design §6.3: object keys scrubbed; a JS object needs an own key for __proto__	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::a secret holding regex characters is scrubbed only as written	design §6.3: each form matched as text (Python's re.escape, hand-written here)	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::a secret in base64 is scrubbed in either alphabet	design §6.3: base64 in both alphabets (Python's vector has no - or _)	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::a secret recased with a dotted or dotless i is scrubbed	design §6.3: each form case-insensitively, as Python's re treats i, I, İ, ı	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::audit args longer than the cap are cut to it	design §6.3: audit args capped at 2,000 characters (Python covers it only through Monitor.call)	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::casefold matches python on every code point	design §6.3 and §1.4: hand-written casefold, Python 3.12 as the oracle	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::every escaped form of a secret with quotes backslashes and non ascii is scrubbed	design §6.3: JSON, repr and URL forms (Python covers them only through Monitor.call)	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::json dumps matches python on every code point	design §6.3: JSON-escaped forms as Python writes them, Python 3.12 as the oracle	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::quote and quote plus match python on every code point	design §6.3 and §1.4: hand-written quote, Python 3.12 as the oracle	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::repr matches python on every code point	design §6.3 and §1.4: hand-written repr, Python 3.12 as the oracle	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::strip and splitlines follow python whitespace and line breaks	design §6.3: the stripped value and its lines as Python splits them	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::values under secret keys are redacted at any depth	design §6.3: arguments named after the asset's secret keys (Python covers it only through Monitor.call)	O1-12
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
