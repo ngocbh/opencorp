@@ -102,7 +102,7 @@ install/test_systemd.py	open	—	—	O2-12
 perm/test_frames.py	open	—	—	O3-4
 perm/test_monitor.py	open	—	split: O1-13 → O3-2	O3-2
 perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/office/tests/perm/monitor.test.ts::where matches type as well as value	D15: 1 equals 1.0 (JSON numbers are one type; a bigint equals the same number); true, "1" and [1] still differ	O1-13
-perm/test_office.py	open	—	—	O1-13
+perm/test_office.py	ported	packages/office/tests/perm/office.test.ts	—	O1-13
 perm/test_redaction.py	open	—	split: O1-12 → O1-13	O1-13
 perm/test_workspace_audit.py	open	—	—	O2-22a
 profile/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
