@@ -30,6 +30,151 @@ const SIGNATURES: Record<ToolName, readonly (readonly [string] | readonly [strin
   shell: [["command"], ["timeout", null]],
 }
 
+/** Forwards one workspace call (`WorkspaceTools.call`'s output, or anything shaped like it). */
+export type WorkspaceCall = (
+  name: string,
+  args: Record<string, unknown>,
+  options?: { signal?: AbortSignal },
+) => Promise<string>
+
+/** A model-facing workspace tool: its description and JSON Schema, and a call that forwards. */
+export interface WorkspaceTool {
+  readonly description: string
+  readonly parameters: Record<string, unknown>
+  call(args: Record<string, unknown>, options?: { signal?: AbortSignal }): Promise<string>
+}
+
+const READ_FILE =
+  "Read a text file in the workspace.\n\n`path` is relative to the workspace. `offset` is the first line to return\n" +
+  "(0-based) and `limit` the number of lines; omit both for the whole file."
+const WRITE_FILE =
+  "Create or overwrite a file in the workspace with `content`.\n\n" +
+  "Parent directories are created. `path` is relative to the workspace."
+const EDIT_FILE =
+  "Replace the exact text `old` with `new` in a workspace file.\n\n" +
+  "`old` must appear exactly once, unless `replace_all` is true; include enough\nsurrounding text to make it unique."
+const LIST = "List a workspace directory; subdirectories end with `/`."
+const SEARCH =
+  "Search workspace files for a Python regex; returns `file:line:text` lines.\n\n" +
+  "`path` limits the search to a file or directory. `glob` (such as `*.py`) filters\n" +
+  "file names. `.git` and binary files are skipped."
+const SHELL =
+  "Run a `/bin/sh` command in the workspace and return its output and exit status.\n\n" +
+  "The command runs in a sandbox: only the workspace and a private temp directory\n" +
+  "are available, the network may be off, and anything it starts is stopped when\n" +
+  "it returns. `timeout` is in seconds (default 120, at most 600). Output over\n" +
+  "64 KB keeps only its start and end."
+
+// Each tool's description and JSON Schema, as the Python office's pydantic wrote them (key order included):
+// the saved copy in tests/fixtures/tool_specs.json is checked against these.
+const SPECS: Record<ToolName, { description: string; parameters: Record<string, unknown> }> = {
+  read_file: {
+    description: READ_FILE,
+    parameters: {
+      description: READ_FILE,
+      properties: {
+        path: { title: "Path", type: "string" },
+        offset: { default: 0, title: "Offset", type: "integer" },
+        limit: { anyOf: [{ type: "integer" }, { type: "null" }], default: null, title: "Limit" },
+      },
+      required: ["path"],
+      title: "read_file",
+      type: "object",
+    },
+  },
+  write_file: {
+    description: WRITE_FILE,
+    parameters: {
+      description: WRITE_FILE,
+      properties: {
+        path: { title: "Path", type: "string" },
+        content: { title: "Content", type: "string" },
+      },
+      required: ["path", "content"],
+      title: "write_file",
+      type: "object",
+    },
+  },
+  edit_file: {
+    description: EDIT_FILE,
+    parameters: {
+      description: EDIT_FILE,
+      properties: {
+        path: { title: "Path", type: "string" },
+        old: { title: "Old", type: "string" },
+        new: { title: "New", type: "string" },
+        replace_all: { default: false, title: "Replace All", type: "boolean" },
+      },
+      required: ["path", "old", "new"],
+      title: "edit_file",
+      type: "object",
+    },
+  },
+  list: {
+    description: LIST,
+    parameters: {
+      description: LIST,
+      properties: {
+        path: { default: ".", title: "Path", type: "string" },
+      },
+      title: "list",
+      type: "object",
+    },
+  },
+  search: {
+    description: SEARCH,
+    parameters: {
+      description: SEARCH,
+      properties: {
+        pattern: { title: "Pattern", type: "string" },
+        path: { default: ".", title: "Path", type: "string" },
+        glob: { anyOf: [{ type: "string" }, { type: "null" }], default: null, title: "Glob" },
+      },
+      required: ["pattern"],
+      title: "search",
+      type: "object",
+    },
+  },
+  shell: {
+    description: SHELL,
+    parameters: {
+      description: SHELL,
+      properties: {
+        command: { title: "Command", type: "string" },
+        timeout: { anyOf: [{ type: "number" }, { type: "null" }], default: null, title: "Timeout" },
+      },
+      required: ["command"],
+      title: "shell",
+      type: "object",
+    },
+  },
+}
+
+/** The model-facing workspace tools, keyed by tool name in `TOOL_NAMES` order, for a run's `workspace` group.
+ *
+ *  Each tool's `call(args, options)` forwards `call(name, filled, options)` and returns its result: `filled` holds
+ *  every parameter in signature order (the given value, else its default; a missing required one stays missing),
+ *  then any other keys of `args`, which `WorkspaceTools` reports. */
+export function workspaceToolFunctions(call: WorkspaceCall): Record<string, WorkspaceTool> {
+  return Object.fromEntries(
+    TOOL_NAMES.map((name) => [name, { ...SPECS[name], call: (args, options) => call(name, fill(name, args), options) }]),
+  )
+}
+
+/** `args` with `tool`'s defaults filled, its parameters first in signature order, then any other keys. */
+function fill(tool: ToolName, args: Record<string, unknown>): Record<string, unknown> {
+  const params = SIGNATURES[tool]
+  const known = new Set(params.map(([key]) => key))
+  const entries: [string, unknown][] = []
+  for (const [key, ...rest] of params) {
+    if (Object.hasOwn(args, key)) entries.push([key, args[key]])
+    else if (rest.length > 0) entries.push([key, rest[0]])
+  }
+  for (const [key, value] of Object.entries(args)) if (!known.has(key)) entries.push([key, value])
+  // fromEntries makes every key an own property, `__proto__` included, so an extra key is never lost.
+  return Object.fromEntries(entries)
+}
+
 /** What one workspace call did, for the audit log.
  *
  *  `exit` is the call's exit status, or `null` when it was killed (timeout or interrupt); `duration` is in

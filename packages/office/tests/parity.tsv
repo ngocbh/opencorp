@@ -275,7 +275,7 @@ sandbox/test_policy.py	ported	packages/office/tests/sandbox/policy.test.ts	the t
 sandbox/test_run.py	ported	packages/office/tests/sandbox/run.test.ts	setsid bound 3 s → 10 s: the 2 s reader grace can't tell a missed sweep apart; gone() carries the test	O1-10
 sandbox/test_run.py::test_group_is_killed_before_the_leader_is_reaped	changed	packages/office/tests/sandbox/run.test.ts::on timeout the leader is killed before it is reaped	D12: kill before awaiting; both paths tested	O1-10
 sandbox/test_seatbelt.py	ported	packages/office/tests/sandbox/seatbelt.test.ts	—	O1-9
-sandbox/test_workspace_tools.py	open	—	—	O2-22a
+sandbox/test_workspace_tools.py	ported	packages/office/tests/sandbox/workspace_tools.test.ts	—	O2-22a
 store/test_bookkeeping.py	ported	packages/office/tests/store/bookkeeping.test.ts	—	O1-2
 store/test_bookkeeping.py::test_usage_rows_and_total	changed	packages/office/tests/store/bookkeeping.test.ts::usage rows and total	usage is money only; tokens are in yian's run index (§5.1)	O1-2
 store/test_close.py::test_a_closed_store_refuses_reads_and_writes_on_every_thread	changed	packages/office/tests/store/close.test.ts::a closed store refuses reads and writes	one sync connection, no threads; the error is StoreError, not ProgrammingError (§3.3)	O1-2
@@ -736,6 +736,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/sandbox/workspace_tools.test.ts::a running call is recorded in workers until it ends	design §6.6 (call:<id> rows)	O2-22a
 —	new	packages/office/tests/sandbox/workspace_tools.test.ts::shell arguments of the wrong type come back as text	plan decision 4 (narrows Python: a non-string argv would throw in spawn)	O2-22a
 —	new	packages/office/tests/sandbox/workspace_tools.test.ts::shell calls run without the helper profile and env	design §2.5, security rule 4 (helper-only profile rules and env)	O2-22a
+—	new	packages/office/tests/sandbox/workspace_tools.test.ts::the workspace tool specs equal the saved copy	D20	O2-22a
 —	new	packages/office/tests/secrets.test.ts::a folder of another user is refused	§6 rule 6: the folder is owned by the effective uid	O1-1
 —	new	packages/office/tests/secrets.test.ts::a lock file open to others is refused	§5.3, D13: the folder's lock file is private	O1-1
 —	new	packages/office/tests/secrets.test.ts::every call waits for the folders lock	§5.3, D13: every read and write holds the folder's lock	O1-1
