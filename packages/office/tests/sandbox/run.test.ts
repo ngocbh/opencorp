@@ -3,16 +3,14 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { command, refusal, run, type RunOptions, SandboxUnavailable, scrubbedEnv } from "../../src/sandbox/run.ts"
-import { tempDir, waitFor } from "../helpers.ts"
-import { gone, makePolicy, sandboxAvailable } from "./helpers.ts"
+import { waitFor } from "../helpers.ts"
+import { envInChild, gone, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
-const SRC = fileURLToPath(new URL("../../src/sandbox/", import.meta.url))
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 function sh(policy: SandboxPolicy, script: string, options?: RunOptions) {
@@ -51,22 +49,7 @@ test.skipIf(!sandboxAvailable())("stdin is passed", async () => {
 test.skipIf(!sandboxAvailable())("environment is scrubbed", () => {
   const { ws, tmp, make } = makePolicy()
   // The secret is set in a child's env, since a test never changes its own.
-  const script = path.join(tempDir(), "child.ts")
-  fs.writeFileSync(
-    script,
-    [
-      `import { SandboxPolicy } from "${pathToFileURL(path.join(SRC, "policy.ts")).href}"`,
-      `import { run } from "${pathToFileURL(path.join(SRC, "run.ts")).href}"`,
-      `const policy = new SandboxPolicy({ workspace: ${JSON.stringify(ws)}, writable: true, network: false, tmpdir: ${JSON.stringify(tmp)} })`,
-      `process.stdout.write((await run(policy, ["env"])).stdout)`,
-      "",
-    ].join("\n"),
-  )
-  const child = spawnSync(process.execPath, [...BUN_FLAGS, script], {
-    env: { ...process.env, OPENCORP_TEST_SECRET: "s3cr3t-value" },
-    encoding: "utf8",
-    timeout: 30_000,
-  })
+  const child = envInChild(ws, tmp, { OPENCORP_TEST_SECRET: "s3cr3t-value" })
   expect(child.stderr).toBe("")
   expect(child.status).toBe(0)
   const out = child.stdout

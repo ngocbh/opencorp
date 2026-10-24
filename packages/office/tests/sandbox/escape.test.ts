@@ -4,23 +4,21 @@ import fs from "node:fs"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { run } from "../../src/sandbox/run.ts"
-import { shortDir, tempDir } from "../helpers.ts"
-import { gone, makePolicy, sandboxAvailable } from "./helpers.ts"
+import { shortDir } from "../helpers.ts"
+import { envInChild, gone, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
 const ON_MAC = process.platform === "darwin"
-const ON_LINUX = process.platform.startsWith("linux")
-const SRC = fileURLToPath(new URL("../../src/sandbox/", import.meta.url))
+const ON_LINUX = process.platform === "linux"
 const BUN = fs.realpathSync(process.execPath)
 const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 function sh(policy: SandboxPolicy, script: string) {
-  return run(policy, ["/bin/sh", "-c", script])
+  return run(policy, ["/bin/sh", "-c", script], { timeout: 20 })
 }
 
 /** Runs `script` in the sandbox and returns its output and its exit status as the shell itself
@@ -34,9 +32,9 @@ async function shell(policy: SandboxPolicy, script: string) {
   return { stdout: stdout.slice(0, trailer.index), output, exit: Number(trailer[1]) }
 }
 
-/** Runs `code` with Bun in the sandbox (Python's `py`); Bun is exposed read-only. */
+/** Runs `code` with Bun in the sandbox (Python's `py`); `policy` must expose Bun (see `bunPolicy`). */
 async function bun(policy: SandboxPolicy, code: string): Promise<string> {
-  const result = await run(policy, [BUN, ...BUN_FLAGS, "-e", code])
+  const result = await run(policy, [BUN, ...BUN_FLAGS, "-e", code], { timeout: 20 })
   return result.stdout.toString() + result.stderr.toString()
 }
 
@@ -71,7 +69,11 @@ function office(): string {
  *  connection open until then: a reset would make the client print `REFUSED` though it connected. */
 async function listen(address: string | { host: string; port: number }): Promise<net.Server> {
   const held: net.Socket[] = []
-  const server = net.createServer((socket) => void held.push(socket))
+  const server = net.createServer((socket) => {
+    // A held socket can still error (a reset when the client exits); unhandled, that would throw.
+    socket.on("error", () => {})
+    held.push(socket)
+  })
   onTestFinished(() => {
     for (const socket of held) socket.destroy()
     server.close()
@@ -85,12 +87,12 @@ async function listen(address: string | { host: string; port: number }): Promise
 }
 
 /** Bun code that connects to `target` (a unix socket path, or a TCP port on 127.0.0.1) and prints
- *  `CONNECTED`, or `REFUSED` on an error or after 5 s (Python's `settimeout(5)`). */
+ *  `CONNECTED`, or `REFUSED` on an error or after 5 s whatever the socket's state (Python's `settimeout(5)`). */
 function connectCode(target: string | number): string {
   const args = typeof target === "string" ? JSON.stringify(target) : `${target}, "127.0.0.1"`
   return [
     `const s = require("node:net").connect(${args})`,
-    `s.setTimeout(5000, () => { console.log("REFUSED timeout"); process.exit(0) })`,
+    `setTimeout(() => { console.log("REFUSED timeout"); process.exit(0) }, 5000)`,
     `s.on("connect", () => { console.log("CONNECTED"); process.exit(0) })`,
     `s.on("error", (e) => { console.log("REFUSED", e.message); process.exit(0) })`,
   ].join("\n")
@@ -102,18 +104,19 @@ test.skipIf(!sandboxAvailable()).each(DECOYS)("cannot read owner or office files
   // `cat` stands in for both the shell call and the read_file tool.
   const read = await shell(policy, `cat ${path.join(home, rel)}`)
   expect(read.output).not.toContain("decoy")
-  expect(read.exit).not.toBe(0)
+  expect(read.exit, `${path.join(home, rel)}: ${read.output}`).not.toBe(0)
   // The search tool's stand-in.
   expect((await shell(policy, `grep -r decoy ${home}`)).output).not.toContain("decoy")
 })
 
 test.skipIf(!sandboxAvailable())("cannot list the real home", async () => {
+  // `bunPolicy()`, so Linux has a read-only mount under home (Bun's) for the check below to allow.
   const policy = bunPolicy()
   const home = fs.realpathSync(os.homedir())
   // The list_dir tool's stand-in; a trailing `/` marks a folder, as in Python's listing.
   const listing = await shell(policy, `ls -Ap ${home}`)
   if (ON_MAC) {
-    expect(listing.exit).not.toBe(0)
+    expect(listing.exit, `${home}: ${listing.output}`).not.toBe(0)
   } else {
     // bwrap creates the home folders of mounted read-only paths (such as `.bun/`) as mount
     // points, so those entries, and only those, may show.
@@ -148,12 +151,16 @@ test.skipIf(!sandboxAvailable())("cannot write outside the workspace", async () 
     path.join(home, ".ssh/authorized_keys"),
   ]) {
     // The write_file tool's stand-in, then the shell call.
-    expect((await shell(policy, `printf x > ${target}`)).exit).not.toBe(0)
-    expect((await shell(policy, `echo x > ${target}`)).exit).not.toBe(0)
-    expect(fs.existsSync(target)).toBe(false)
+    const printf = await shell(policy, `printf x > ${target}`)
+    expect(printf.exit, `${target}: ${printf.output}`).not.toBe(0)
+    const echo = await shell(policy, `echo x > ${target}`)
+    expect(echo.exit, `${target}: ${echo.output}`).not.toBe(0)
+    expect(fs.existsSync(target), target).toBe(false)
   }
-  expect((await shell(policy, "printf x > ../escape.txt")).exit).not.toBe(0)
-  expect(fs.existsSync(path.join(path.dirname(ws), "escape.txt"))).toBe(false)
+  const escape = path.join(path.dirname(ws), "escape.txt")
+  const relative = await shell(policy, "printf x > ../escape.txt")
+  expect(relative.exit, `${escape}: ${relative.output}`).not.toBe(0)
+  expect(fs.existsSync(escape), escape).toBe(false)
 })
 
 test.skipIf(!sandboxAvailable())("git hooks and config are read only", async () => {
@@ -161,15 +168,19 @@ test.skipIf(!sandboxAvailable())("git hooks and config are read only", async () 
   fs.mkdirSync(path.join(ws, ".git/hooks"), { recursive: true })
   fs.writeFileSync(path.join(ws, ".git/config"), "[core]\n")
   const policy = make()
-  expect((await shell(policy, "printf evil > .git/hooks/pre-commit")).exit).not.toBe(0)
+  const hook = await shell(policy, "printf evil > .git/hooks/pre-commit")
+  expect(hook.exit, `.git/hooks/pre-commit: ${hook.output}`).not.toBe(0)
   // The edit_file tool's stand-in: the whole file rewritten.
-  expect((await shell(policy, "printf '[core]\\nhooksPath=x\\n' > .git/config")).exit).not.toBe(0)
+  const config = await shell(policy, "printf '[core]\\nhooksPath=x\\n' > .git/config")
+  expect(config.exit, `.git/config: ${config.output}`).not.toBe(0)
   // Renaming .git away (to plant a new hooks dir and rename it back) is denied too.
-  expect((await shell(policy, "mv .git .git2")).exit).not.toBe(0)
+  const rename = await shell(policy, "mv .git .git2")
+  expect(rename.exit, `.git: ${rename.output}`).not.toBe(0)
   expect(fs.existsSync(path.join(ws, ".git/hooks/pre-commit"))).toBe(false)
   expect(fs.readFileSync(path.join(ws, ".git/config"), "utf8")).toBe("[core]\n")
   // The rest of .git stays writable, so git itself works.
-  expect((await shell(policy, "printf 'ref: refs/heads/main\\n' > .git/HEAD")).exit).toBe(0)
+  const head = await shell(policy, "printf 'ref: refs/heads/main\\n' > .git/HEAD")
+  expect(head.exit, `.git/HEAD: ${head.output}`).toBe(0)
   expect(fs.readFileSync(path.join(ws, ".git/HEAD"), "utf8")).toBe("ref: refs/heads/main\n")
 })
 
@@ -202,22 +213,7 @@ test.skipIf(!sandboxAvailable())("background process is dead after the call", as
 test.skipIf(!sandboxAvailable())("no environment secrets", () => {
   const { ws, tmp } = makePolicy()
   // The secret is set in a child's env, since a test never changes its own.
-  const script = path.join(tempDir(), "child.ts")
-  fs.writeFileSync(
-    script,
-    [
-      `import { SandboxPolicy } from "${pathToFileURL(path.join(SRC, "policy.ts")).href}"`,
-      `import { run } from "${pathToFileURL(path.join(SRC, "run.ts")).href}"`,
-      `const policy = new SandboxPolicy({ workspace: ${JSON.stringify(ws)}, writable: true, network: false, tmpdir: ${JSON.stringify(tmp)} })`,
-      `process.stdout.write((await run(policy, ["env"])).stdout)`,
-      "",
-    ].join("\n"),
-  )
-  const child = spawnSync(process.execPath, [...BUN_FLAGS, script], {
-    env: { ...process.env, OPENCORP_API_KEY: "sk-office-secret" },
-    encoding: "utf8",
-    timeout: 30_000,
-  })
+  const child = envInChild(ws, tmp, { OPENCORP_API_KEY: "sk-office-secret" })
   expect(child.stderr).toBe("")
   expect(child.status).toBe(0)
   expect(child.stdout).toContain(`HOME=${tmp}\n`)
@@ -230,7 +226,7 @@ test.skipIf(!sandboxAvailable())("no environment secrets", () => {
  *  binary's environment from every reader, so the macOS test could not see the marker at all. */
 function secretProcess() {
   const marker = "sk-proc-" + Math.random().toString(16).slice(2, 10)
-  const proc = spawn(process.execPath, [...BUN_FLAGS, "-e", "setTimeout(() => {}, 60000)"], {
+  const proc = spawn(BUN, [...BUN_FLAGS, "-e", "setTimeout(() => {}, 60000)"], {
     env: { PATH: "/usr/bin:/bin", OFFICE_SECRET: marker },
     stdio: "ignore",
   })
@@ -264,13 +260,18 @@ test.skipIf(!ON_MAC || !sandboxAvailable())("macos other process environ is read
   expect(await bun(bunPolicy(), code)).toContain(marker)
 })
 
+const LAUNCHD_LABEL = "dev.opencorp.sandbox-test"
+
 test.skipIf(!ON_MAC || !sandboxAvailable())("macos launch services and launchd are unreachable", async () => {
   const policy = makePolicy().make()
   const marker = path.join(shortDir(), "escaped")
-  const submit = await shell(policy, `launchctl submit -l dev.opencorp.sandbox-test -- /usr/bin/touch ${marker}`)
+  // Removed however the test ends, so a job that did get submitted never outlives it.
+  onTestFinished(() => void spawnSync("launchctl", ["remove", LAUNCHD_LABEL]))
+  const submit = await shell(policy, `launchctl submit -l ${LAUNCHD_LABEL} -- /usr/bin/touch ${marker}`)
   await Bun.sleep(1_000)
-  spawnSync("launchctl", ["remove", "dev.opencorp.sandbox-test"])
   expect(fs.existsSync(marker), submit.output).toBe(false)
-  expect((await shell(policy, "/usr/bin/open -g -a Finder")).exit).not.toBe(0)
-  expect((await shell(policy, "echo x | /usr/bin/pbcopy")).exit).not.toBe(0)
+  const open = await shell(policy, "/usr/bin/open -g -a Finder")
+  expect(open.exit, `open: ${open.output}`).not.toBe(0)
+  const pbcopy = await shell(policy, "echo x | /usr/bin/pbcopy")
+  expect(pbcopy.exit, `pbcopy: ${pbcopy.output}`).not.toBe(0)
 })

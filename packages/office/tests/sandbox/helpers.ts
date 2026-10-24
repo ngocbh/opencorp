@@ -1,11 +1,14 @@
 /** Sandbox test helpers (Python's sandbox conftest fixtures). */
-import { spawnSync } from "node:child_process"
+import { type SpawnSyncReturns, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { type Helper, type OfficePaths, SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { command, scrubbedEnv } from "../../src/sandbox/run.ts"
 import { tempDir } from "../helpers.ts"
+
+const SRC = fileURLToPath(new URL("../../src/sandbox/", import.meta.url))
 
 /** A fresh `ws` and `tmp` under one temp dir (removed after the test), and `make`, which builds policies over them. */
 export function makePolicy(): {
@@ -113,4 +116,26 @@ export async function gone(marker: string): Promise<boolean> {
     }
     await new Promise((resolve) => setTimeout(resolve, 100))
   }
+}
+
+/** Runs `env` in the sandbox (a writable workspace `ws`, no network, tmpdir `tmp`) from a Bun child whose
+ *  environment is this process's plus `env`, and returns the child: its stdout is the sandboxed `env`
+ *  output. A test sets secrets this way because it never changes its own environment. */
+export function envInChild(ws: string, tmp: string, env: Record<string, string>): SpawnSyncReturns<string> {
+  const script = path.join(tempDir(), "child.ts")
+  fs.writeFileSync(
+    script,
+    [
+      `import { SandboxPolicy } from "${pathToFileURL(path.join(SRC, "policy.ts")).href}"`,
+      `import { run } from "${pathToFileURL(path.join(SRC, "run.ts")).href}"`,
+      `const policy = new SandboxPolicy({ workspace: ${JSON.stringify(ws)}, writable: true, network: false, tmpdir: ${JSON.stringify(tmp)} })`,
+      `process.stdout.write((await run(policy, ["env"], { timeout: 20 })).stdout)`,
+      "",
+    ].join("\n"),
+  )
+  return spawnSync(process.execPath, ["--no-install", "--no-env-file", "--config=/dev/null", script], {
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    timeout: 30_000,
+  })
 }
