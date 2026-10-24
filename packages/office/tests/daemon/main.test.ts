@@ -21,7 +21,7 @@ import {
 import { OfficePaths } from "../../src/daemon/office.ts"
 import { OfficeStartError, listenUnix } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
-import { sameProcess, startTime } from "../../src/install/proc.ts"
+import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
 import { company } from "../company/helpers.ts"
@@ -381,12 +381,15 @@ test("the office holds the company snapshots and the secret store", () => {
   expect(office.paths.lock).toBe(path.join(office.paths.home, "office", "office.lock"))
 })
 
+/** How a process exited. */
+type Exit = { code: number | null; signal: NodeJS.Signals | null }
+
 /** A daemon process a test started, leading its own process group. */
 interface Daemon {
   child: ChildProcess
   pid: number
   /** Resolves with the exit code and signal once it exits. */
-  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
+  exited: Promise<Exit>
 }
 
 /** Every daemon this file started, with its home and the start time read right after the spawn. */
@@ -394,14 +397,7 @@ const launched: { home: string; pid: number; started: number | null }[] = []
 
 /** SIGKILLs the group of `d` if its leader still has its recorded start time; never by name or pattern. */
 function killDaemon(d: { pid: number; started: number | null }): void {
-  if (d.started === null || !sameProcess(d.pid, d.started)) return
-  try {
-    process.kill(-d.pid, "SIGKILL")
-  } catch (error) {
-    // ESRCH: the group is gone. EPERM: macOS refuses to signal a group of only zombies.
-    const code = (error as NodeJS.ErrnoException).code
-    if (code !== "ESRCH" && code !== "EPERM") throw error
-  }
+  if (d.started !== null && sameProcess(d.pid, d.started)) killGroup(d.pid)
 }
 
 // Runs when `bun test` exits normally or through process.exit, not when the runner is killed by a signal.
@@ -409,7 +405,12 @@ process.once("exit", () => {
   for (const d of launched) killDaemon(d)
 })
 
-afterAll(() => {
+afterAll(async () => {
+  // Under load a just-killed process can take a moment to show as gone.
+  await waitFor(() => launched.every((d) => isGone(d.pid, d.started)), {
+    timeout: 15_000,
+    what: "every test daemon gone",
+  })
   expect(launched.filter((d) => !isGone(d.pid, d.started))).toEqual([])
 })
 
@@ -426,12 +427,12 @@ function daemonHome(): string {
 
 /** Runs `argv` detached (its own group) in `<home>/office` with the self-spawn env and HOME set to `home`, its
  *  output in `<home>/daemon.log`, and records it for the cleanup. */
-function launch(home: string, [bin, ...args]: string[]): Daemon {
+function launch(home: string, [bin, ...args]: [string, ...string[]]): Daemon {
   // A file: an unread pipe fills up and blocks the daemon's writes.
   const fd = fs.openSync(path.join(home, "daemon.log"), "w")
   let child: ChildProcess
   try {
-    child = spawn(bin!, args, {
+    child = spawn(bin, args, {
       cwd: path.join(home, "office"),
       env: selfSpawnEnv({ ...process.env, HOME: home }),
       detached: true,
@@ -446,15 +447,19 @@ function launch(home: string, [bin, ...args]: string[]): Daemon {
     throw new Error(`can't start ${bin}`)
   }
   const pid = child.pid
-  launched.push({ home, pid, started: startTime(pid) })
-  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
-    child.on("exit", (code, signal) => resolve({ code, signal })),
-  )
+  const exited = new Promise<Exit>((resolve) => child.on("exit", (code, signal) => resolve({ code, signal })))
+  const started = startTime(pid)
+  if (started === null && child.exitCode === null) {
+    // Without a start time the cleanup could not tell it from a reused pid, so it must not run on.
+    child.kill("SIGKILL")
+    throw new Error(`can't read the start time of ${bin} (pid ${pid})`)
+  }
+  launched.push({ home, pid, started })
   return { child, pid, exited }
 }
 
 /** The argv of `opencorp daemon --home <home>`. */
-function daemonCommand(home: string): string[] {
+function daemonCommand(home: string): [string, ...string[]] {
   const [bin, ...pre] = selfCommand()
   return [bin, ...pre, "daemon", "--home", home]
 }
@@ -472,17 +477,20 @@ function daemonLog(home: string): string {
  *  half-up daemon can't hang the poll. */
 function healthy(sock: string): Promise<boolean> {
   return new Promise((resolve) => {
+    const done = (ok: boolean) => {
+      clearTimeout(timer)
+      resolve(ok)
+    }
     const req = http.get({ socketPath: sock, path: "/health", agent: false }, (res) => {
       let text = ""
       res.setEncoding("utf8")
       res.on("data", (part: string) => (text += part))
-      res.on("error", () => resolve(false))
+      res.on("error", () => done(false))
       res.on("end", () => {
-        clearTimeout(timer)
         try {
-          resolve(res.statusCode === 200 && Bun.deepEquals(JSON.parse(text), { ok: true }))
+          done(res.statusCode === 200 && Bun.deepEquals(JSON.parse(text), { ok: true }))
         } catch {
-          resolve(false)
+          done(false)
         }
       })
     })
@@ -490,10 +498,7 @@ function healthy(sock: string): Promise<boolean> {
       req.destroy()
       resolve(false)
     }, 2000)
-    req.on("error", () => {
-      clearTimeout(timer)
-      resolve(false)
-    })
+    req.on("error", () => done(false))
   })
 }
 
@@ -510,11 +515,7 @@ async function waitUntilServing(home: string, d: Daemon): Promise<void> {
 }
 
 /** How `d` exited, waiting up to `ms`; fails with the log of `home` if it is still running then. */
-async function exitWithin(
-  home: string,
-  d: Daemon,
-  ms: number,
-): Promise<{ code: number | null; signal: string | null }> {
+async function exitWithin(home: string, d: Daemon, ms: number): Promise<Exit> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const late = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new Error(`still running after ${ms} ms:\n${daemonLog(home)}`)), ms)
@@ -528,7 +529,7 @@ async function exitWithin(
 
 /** Sends `signal` to the daemon and checks it exits 0 within 15 s. */
 async function stopDaemon(home: string, d: Daemon, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
-  process.kill(d.pid, signal)
+  if (!d.child.kill(signal)) throw new Error(`daemon already exited:\n${daemonLog(home)}`)
   expect(await exitWithin(home, d, 15_000), daemonLog(home)).toEqual({ code: 0, signal: null })
 }
 
@@ -542,7 +543,7 @@ test(
     expect(fs.statSync(paths.socket).mode & 0o777).toBe(0o600)
     expect(fs.readFileSync(paths.pidfile, "utf8")).toBe(`${d.pid}\n`)
     const [bin, ...args] = daemonCommand(dir)
-    const second = spawnSync(bin!, args, {
+    const second = spawnSync(bin, args, {
       cwd: paths.office,
       env: selfSpawnEnv({ ...process.env, HOME: dir }),
       encoding: "utf8",
@@ -580,7 +581,6 @@ test(
     const dir = daemonHome()
     const paths = new OfficePaths(dir)
     const left = net.createServer()
-    onTestFinished(() => void left.close())
     await listenUnix(left, paths.socket)
     left.close() // close leaves the file, as a crash does
     expect(fs.lstatSync(paths.socket).isSocket()).toBe(true)
