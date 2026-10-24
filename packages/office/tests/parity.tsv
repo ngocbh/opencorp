@@ -216,7 +216,7 @@ perm/test_redaction.py	ported	packages/office/tests/perm/redaction.test.ts	—	O
 perm/test_redaction.py::test_a_non_json_result_comes_back_as_plain_json	changed	packages/office/tests/perm/redaction.test.ts::a non json result comes back as plain json	design §6.3 (JSON first, unknown values as text): a JS Set goes to JSON as an array; Python's json had no set and wrote its text	O1-13
 perm/test_redaction.py::test_a_result_that_is_not_json_is_an_audited_error	changed	packages/office/tests/perm/redaction.test.ts::a result that is not json is an audited error	design §6.3: the monitor throws a TypeError for a cycle, as JS names a failed JSON conversion (Python's json raised ValueError)	O1-13
 perm/test_redaction.py::test_an_interrupt_inside_a_kind_is_audited_then_raised	changed	packages/office/tests/perm/redaction.test.ts::an interrupt inside a kind is audited then raised	design §6.3 (an interrupt is audited and rethrown): in JS the interrupt is an AbortError; there is no KeyboardInterrupt	O1-13
-perm/test_workspace_audit.py	open	—	—	O2-22a
+perm/test_workspace_audit.py	ported	packages/office/tests/perm/workspace_audit.test.ts	—	O2-22a
 profile/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 profile/test_feedback.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 profile/test_learning_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
@@ -663,6 +663,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/perm/redaction.test.ts::repr matches python on every code point	design §6.3 and §1.4: hand-written repr, Python 3.12 as the oracle	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::strip and splitlines follow python whitespace and line breaks	design §6.3: the stripped value and its lines as Python splits them	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::values under secret keys are redacted at any depth	design §6.3: arguments named after the asset's secret keys (Python covers it only through Monitor.call)	O1-12
+—	new	packages/office/tests/perm/workspace_audit.test.ts::killed reasons and raised details are capped	security rule 13 and design §6.3 (audit caps); plan decision 9	O2-22a
 —	new	packages/office/tests/platform.test.ts::helperCommand in a checkout runs fs_helper.ts with the no-autoload flags	§2.5 checkout form, 2026-10-23 design fix	O1-11
 —	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::procStartTime reads a running child and is null for an exited one	§2.2, O0-10 P6	O2-11a

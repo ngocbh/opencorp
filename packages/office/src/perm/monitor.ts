@@ -6,10 +6,14 @@ import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { assetToolName } from "../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
-import { auditArgs, DETAIL_CHARS, pyJson, redact, repr } from "./redact.ts"
+import type { WorkspaceCall, WorkspaceTools } from "../tools/workspace.ts"
+import { auditArgs, DETAIL_CHARS, pyJson, redact, repr, splitLines, strip } from "./redact.ts"
 
 type Asset = z.output<typeof AssetSchema>
 type Grant = z.output<typeof GrantSchema>
+
+/** Characters of a killed workspace call's reason kept in its audit row. */
+export const REASON_CHARS = 200
 
 /** A failure the monitor words itself, shown to the model as `error: <message>`. */
 class MonitorError extends Error {
@@ -130,6 +134,53 @@ export class Monitor {
     }
     audit("ok", detail)
     return result
+  }
+
+  /**
+   * A `call(name, args)` for `workspaceToolFunctions` that audits each workspace call.
+   *
+   * The row's outcome is `ok` for exit 0 and `error` otherwise. A call with no exit status (timed out,
+   * interrupted, or bad arguments) has the reason from its output in the detail. A call that rejects is recorded
+   * as `error` and its error thrown again.
+   */
+  workspace(
+    tools: Pick<WorkspaceTools, "call">,
+    person: string,
+    runId: string | null,
+    { sessionId = null }: { sessionId?: string | null } = {},
+  ): WorkspaceCall {
+    return async (name, args, options) => {
+      let outcome
+      try {
+        outcome = await tools.call(name, args, options)
+      } catch (error) {
+        this.store.recordAudit({
+          person,
+          kind: "workspace",
+          tool: name,
+          args: {},
+          outcome: "error",
+          sessionId,
+          runId,
+          detail: reasonOf(error).slice(0, DETAIL_CHARS),
+        })
+        throw error
+      }
+      const a = outcome.audit
+      let detail = `exit=${a.exit ?? "None"} duration=${a.duration.toFixed(3)}s`
+      if (a.exit === null) detail += `: ${[...lastLine(outcome.output)].slice(0, REASON_CHARS).join("")}`
+      this.store.recordAudit({
+        person,
+        kind: "workspace",
+        tool: a.tool,
+        args: { summary: a.argsSummary },
+        outcome: a.exit === 0 ? "ok" : "error",
+        sessionId,
+        runId,
+        detail,
+      })
+      return outcome.output
+    }
   }
 
   async #secret(name: string): Promise<string> {
@@ -264,6 +315,14 @@ function toJson(value: unknown, path: Set<object> = new Set()): unknown {
   } finally {
     path.delete(value)
   }
+}
+
+/** The last line of `text` that isn't blank, stripped, or "". */
+export function lastLine(text: string): string {
+  // A killed shell call ends its output with "[timed out after Ns]" or "[interrupted]";
+  // a file tool's or a bad-arguments reply is one line.
+  for (const line of splitLines(text).reverse()) if (strip(line)) return strip(line)
+  return ""
 }
 
 /** Audit args the store can write as JSON: a bigint (a frame's int) is a number when it is a safe integer, else

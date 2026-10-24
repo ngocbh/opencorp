@@ -4,6 +4,7 @@ import { pyJson, repr, strip } from "../perm/redact.ts"
 import { SandboxPolicy } from "../sandbox/policy.ts"
 import { fsHelper, type Result, run } from "../sandbox/run.ts"
 import { newId, type Store } from "../store/store.ts"
+import type { ToolContext } from "./context.ts"
 
 export const TOOL_NAMES = ["read_file", "write_file", "edit_file", "list", "search", "shell"] as const
 /** The workspace tools that only read: all a read-only run is offered. */
@@ -162,6 +163,17 @@ export function workspaceToolFunctions(call: WorkspaceCall): Record<string, Work
       { ...SPECS[name], call: (args, options) => call(name, fill(name, args), options) },
     ]),
   )
+}
+
+/** The `workspace` group, each call audited by `ctx.monitor`: every tool, or `READ_TOOLS` when `ctx.readOnly`.
+ *
+ *  None without a monitor, workspace and session. */
+export function tools(ctx: ToolContext): Record<string, WorkspaceTool> {
+  if (!ctx.monitor || !ctx.workspace || !ctx.session) return {}
+  const calls = workspaceToolFunctions(
+    ctx.monitor.workspace(ctx.workspace, ctx.session.person, ctx.runId ?? null, { sessionId: ctx.session.id }),
+  )
+  return ctx.readOnly ? Object.fromEntries(READ_TOOLS.map((name) => [name, calls[name]!])) : calls
 }
 
 /** `args` with `tool`'s defaults filled, its parameters first in signature order, then any other keys. */
