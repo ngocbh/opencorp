@@ -1,16 +1,43 @@
 /** Setting up the model provider, and the terminal prompter that asks for it. */
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { PassThrough, Readable, Writable } from "node:stream"
 import { fileURLToPath } from "node:url"
-import { expect, test } from "bun:test"
+import { afterEach, expect, test } from "bun:test"
+import { type AuthRequest, HttpResponse } from "@ngocbh/yian/llm_clients"
+import { loadProvider, Provider } from "../../src/chat/provider.ts"
+import {
+  azureDeployments,
+  ensureProvider,
+  type Listers,
+  type ProviderOptions,
+  providerModels,
+  setupConnectionFile,
+} from "../../src/install/onboard.ts"
 import {
   KeyboardInterrupt,
   NoTerminal,
   OnboardError,
+  type Prompter,
+  stepLines,
   TRIES,
   TYPE_OWN,
   TtyPrompter,
   readLine,
 } from "../../src/install/prompts.ts"
+import { repr } from "../../src/perm/redact.ts"
 
 const KEY = "sk-ant-test-0123456789"
 
@@ -348,3 +375,419 @@ test("on a real dumb terminal a numbered list after a secret gets its answer", a
     child.terminal!.close()
   }
 }, 30_000)
+
+const SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
+
+/** A prompter that answers from a list and records everything it was asked or told. */
+class Script implements Prompter {
+  readonly answers: string[]
+  readonly interactive: boolean
+  readonly seen: string[] = []
+  /** The options of each `choose`, in order. */
+  readonly offered: string[][] = []
+  /** Whether each `choose` took a typed answer, in order. */
+  readonly typed: boolean[] = []
+
+  constructor(answers: string[] = [], { interactive = true }: { interactive?: boolean } = {}) {
+    this.answers = [...answers]
+    this.interactive = interactive
+  }
+
+  private next(): string {
+    const answer = this.answers.shift()
+    if (answer === undefined) throw new Error("the script ran out of answers")
+    return answer
+  }
+
+  async ask(question: string, defaultAnswer = ""): Promise<string> {
+    this.seen.push(question)
+    return this.next() || defaultAnswer
+  }
+
+  /** The default for an empty answer, an option given exactly, the option a number picks (from 1), or with
+   *  `typed` any other text. */
+  async choose(question: string, options: readonly string[], defaultAnswer = "", typed = false): Promise<string> {
+    this.seen.push(question)
+    this.offered.push([...options])
+    this.typed.push(typed)
+    const answer = this.next()
+    if (!answer) return defaultAnswer
+    if (options.includes(answer)) return answer
+    const number = /^[0-9]+$/.test(answer) ? Number(answer) : 0
+    if (number >= 1 && number <= options.length) return options[number - 1]!
+    if (typed) return answer
+    throw new Error(`${repr(answer)} isn't an answer to ${repr(question)}; the options are [${options.map(repr).join(", ")}]`)
+  }
+
+  async secret(question: string): Promise<string> {
+    this.seen.push(question)
+    return this.next()
+  }
+
+  say(text: string): void {
+    this.seen.push(text)
+  }
+
+  step(number: number, total: number, title: string, why: string): void {
+    this.seen.push(...stepLines(number, total, title, why))
+  }
+}
+
+/** Listers that list nothing, so no test reaches a provider: the model or deployment is typed. */
+const NO_LISTING: Listers = {
+  azureDeployments: async () => [],
+  providerModels: async () => [],
+}
+
+/** `ensureProvider` with `NO_LISTING` unless `options` gives listers. */
+function ensure(office: string, prompter: Prompter, options: Partial<ProviderOptions> = {}): Promise<boolean> {
+  return ensureProvider(office, prompter, { listers: NO_LISTING, ...options })
+}
+
+const offices: string[] = []
+
+afterEach(() => {
+  for (const office of offices.splice(0)) rmSync(office, { recursive: true, force: true })
+})
+
+/** A fresh office folder, removed after the test. */
+function newOffice(): string {
+  const office = mkdtempSync(join(tmpdir(), "o2-14-"))
+  offices.push(office)
+  return office
+}
+
+const file = (office: string): string => setupConnectionFile(office)
+
+/** Writes `text` as the office's setup connection with `mode`, in a 0700 connections folder. */
+function place(office: string, text: string, mode = 0o600): void {
+  mkdirSync(join(office, "connections"), { mode: 0o700, recursive: true })
+  chmodSync(join(office, "connections"), 0o700)
+  writeFileSync(file(office), text)
+  chmodSync(file(office), mode)
+}
+
+const mode = (path: string): number => lstatSync(path).mode & 0o777
+
+const stdin = (value: unknown): Readable => Readable.from([typeof value === "string" ? value : JSON.stringify(value)])
+
+const read = (office: string): unknown => JSON.parse(readFileSync(file(office), "utf8"))
+
+const listing = (office: string): string[] => readdirSync(join(office, "connections")).sort()
+
+const saved = async (office: string) => (await loadProvider(file(office), Provider.parse, { missingOk: false })).llm_config
+
+/** A sender that records each request and answers with the next of `replies`. */
+function fakeRequest(replies: HttpResponse[]): AuthRequest & { calls: { method: string; url: string; options: { headers: Record<string, string>; timeoutMs: number } }[] } {
+  const calls: { method: string; url: string; options: { headers: Record<string, string>; timeoutMs: number } }[] = []
+  const request = async (method: string, url: string, options: { headers: Record<string, string>; timeoutMs: number }) => {
+    calls.push({ method, url, options })
+    const reply = replies.shift()
+    if (reply === undefined) throw new Error("no reply left")
+    return reply
+  }
+  return Object.assign(request, { calls })
+}
+
+test("a script is interactive unless told otherwise", () => {
+  expect(new Script(["x"]).interactive).toBe(true)
+  expect(new Script([], { interactive: false }).interactive).toBe(false)
+})
+
+test("a provider on stdin with a key and no model is saved with the default", async () => {
+  const office = newOffice()
+  const data = { llm_config: { provider: "anthropic", api_key: KEY } }
+  expect(await ensure(office, new Script(), { stdin: stdin(data) })).toBe(true)
+  expect((read(office) as { llm_config: { model: string } }).llm_config.model).toBe("claude-sonnet-4-5")
+})
+
+test("an existing provider with a key and no model gets the default written", async () => {
+  const office = newOffice()
+  place(office, JSON.stringify({ llm_config: { provider: "openai", api_key: KEY } }))
+  expect(await ensure(office, new Script([], { interactive: false }))).toBe(true)
+  expect(read(office)).toEqual({ llm_config: { provider: "openai", api_key: KEY, model: "gpt-5.5" } })
+  expect(mode(file(office))).toBe(0o600)
+  expect(await ensure(office, new Script([], { interactive: false }))).toBe(false)
+})
+
+test("azure deployments waits fifteen seconds and says why it cant list them", async () => {
+  const request = fakeRequest([
+    new HttpResponse(200, { data: [{ id: "gpt-5.4", model: "gpt-5.4", status: "succeeded" }] }),
+    new HttpResponse(401, {}),
+  ])
+  const baseUrl = "https://acme.openai.azure.com/openai/v1/"
+  expect(await azureDeployments(baseUrl, KEY, { request })).toEqual(["gpt-5.4"])
+  const error = await rejection(azureDeployments(baseUrl, KEY, { request }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/^HTTP 401$/)
+  expect(request.calls).toHaveLength(2)
+  for (const call of request.calls) {
+    expect(call.method).toBe("GET")
+    expect(call.url).toBe("https://acme.openai.azure.com/openai/deployments?api-version=2022-12-01")
+    expect(call.options.headers["api-key"]).toBe(KEY)
+    expect(call.options.timeoutMs).toBe(15_000)
+  }
+})
+
+test("provider models waits fifteen seconds and says why it cant list them", async () => {
+  const request = fakeRequest([
+    new HttpResponse(200, { data: [{ id: "claude-sonnet-4-5" }], has_more: false }),
+    new HttpResponse(401, {}),
+  ])
+  expect(await providerModels("anthropic", SENTINEL, { request })).toEqual(["claude-sonnet-4-5"])
+  expect(await providerModels("azure", SENTINEL, { request })).toEqual([])
+  expect(request.calls).toHaveLength(1)
+  const error = await rejection(providerModels("anthropic", SENTINEL, { request }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/^HTTP 401$/)
+  expect(request.calls).toHaveLength(2)
+  for (const call of request.calls) {
+    expect(call.url).toBe("https://api.anthropic.com/v1/models?limit=1000")
+    expect(call.options.headers["x-api-key"]).toBe(SENTINEL)
+    expect(call.options.timeoutMs).toBeGreaterThan(14_000)
+    expect(call.options.timeoutMs).toBeLessThanOrEqual(15_000)
+  }
+})
+
+test.each(["azure", "google"])("a provider with no model and no default is refused [%s]", async (name) => {
+  const office = newOffice()
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin({ llm_config: { provider: name, api_key: KEY } }) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain(`llm_config.model is missing, and ${name} has no default model`)
+  expect(error.message).not.toContain(KEY)
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test.each(["google", "ollama"])(
+  "a provider with no key and no model takes the model yians login saved [%s]",
+  async (name) => {
+    const office = newOffice()
+    const data = { llm_config: { provider: name } }
+    expect(await ensure(office, new Script(), { stdin: stdin(data) })).toBe(true)
+    expect(read(office)).toEqual(data)
+  },
+)
+
+test("an endpoint of ones own with no model is refused", async () => {
+  const office = newOffice()
+  const llm = { provider: "openai", base_url: "https://gateway.example.com/v1", api_key: KEY }
+  let error = await rejection(ensure(office, new Script(), { stdin: stdin({ llm_config: llm }) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/^llm_config\.model is missing, and an endpoint of your own has no default model$/)
+  expect(existsSync(file(office))).toBe(false)
+  place(office, JSON.stringify({ llm_config: llm }))
+  error = await rejection(ensure(office, new Script([], { interactive: false })))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("an endpoint of your own has no default model; fix it or remove it")
+})
+
+test("an existing provider that cant be used is an error without a terminal", async () => {
+  const office = newOffice()
+  const text = JSON.stringify({ llm_config: { provider: "azure", api_key: KEY } })
+  place(office, text)
+  const error = await rejection(ensure(office, new Script([], { interactive: false })))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("has no default model; fix it or remove it")
+  expect(error.message).not.toContain(KEY)
+  expect(readFileSync(file(office), "utf8")).toBe(text)
+})
+
+test("a misspelled setting is refused without echoing the key", async () => {
+  const office = newOffice()
+  const data = { llm_config: { provider: "anthropic", api_key: KEY, temprature: 1 } }
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin(data) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("an extra field; the fields are provider, model")
+  expect(error.message).not.toContain(KEY)
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test("a key pasted as a field name is not echoed", async () => {
+  const office = newOffice()
+  const inputs = [
+    { llm_config: { provider: "anthropic", [KEY]: 1 } },
+    { [KEY]: 1 },
+    { llm_config: { model: 1, api_key: KEY } },
+    { llm_config: { provider: "openai", api_key: "sk-other-1234567890", headers: { [KEY]: "bad\nvalue" } } },
+    { llm_config: { provider: "anthropic", api_key: "sk-other-1234567890", anthropic: { metadata: { [KEY]: 1 } } } },
+  ]
+  for (const data of inputs) {
+    const error = await rejection(ensure(office, new Script(), { stdin: stdin(data) }))
+    expect(error).toBeInstanceOf(OnboardError)
+    expect(error.message).not.toContain(KEY)
+  }
+})
+
+test("a key needs a provider", async () => {
+  const office = newOffice()
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin({ llm_config: { api_key: KEY } }) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("needs llm_config.provider")
+  expect(error.message).not.toContain(KEY)
+})
+
+test("a base url beside the key is saved", async () => {
+  const office = newOffice()
+  const llm = { provider: "openai", model: "gpt-5.4", base_url: "https://acme.openai.azure.com/openai/v1/", api_key: KEY }
+  expect(await ensure(office, new Script(), { stdin: stdin({ llm_config: llm }) })).toBe(true)
+  expect(await saved(office)).toEqual(llm)
+  expect(mode(file(office))).toBe(0o600)
+})
+
+test.each([
+  ["http", { provider: "openai", base_url: "http://gateway.example.com/v1", api_key: KEY }, "must use https"],
+  ["no key", { provider: "openai", base_url: "https://gateway.example.com/v1" }, "base_url needs llm_config.api_key"],
+  [
+    "ollama",
+    { provider: "ollama", base_url: "https://gateway.example.com/v1", api_key: KEY, model: "llama3" },
+    "ollama does not take llm_config.base_url",
+  ],
+  [
+    "userinfo",
+    { provider: "openai", base_url: "https://user:pw-0123456789@gateway.example.com/v1", api_key: KEY },
+    "base_url",
+  ],
+] as const)("a base url composer refuses is refused without echoing it or the key [%s]", async (_case, llm, expected) => {
+  const office = newOffice()
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin({ llm_config: llm }) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain(expected)
+  for (const value of [KEY, "gateway.example.com", "pw-0123456789"]) expect(error.message).not.toContain(value)
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test("a credential in env is refused without its value", async () => {
+  const office = newOffice()
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin({ env: { ANTHROPIC_API_KEY: KEY } }) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("ANTHROPIC_API_KEY")
+  expect(error.message).not.toContain(KEY)
+})
+
+test("stdin that isnt json is refused without echo", async () => {
+  const office = newOffice()
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin(`{"llm_config": ${KEY}`) }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("not valid JSON")
+  expect(error.message).not.toContain(KEY)
+})
+
+test("an existing provider is kept and nothing is asked", async () => {
+  const office = newOffice()
+  place(office, '{"llm_config": {"provider": "openai"}}\n')
+  const before = lstatSync(file(office)).mtimeMs
+  const ask = new Script()
+  expect(await ensure(office, ask)).toBe(false)
+  expect(lstatSync(file(office)).mtimeMs).toBe(before)
+  expect(ask.seen).toEqual([])
+})
+
+test("a provider on stdin replaces an existing one", async () => {
+  const office = newOffice()
+  const old = "sk-ant-old-key-9f8e7d6c5b4a"
+  await ensure(office, new Script(), { stdin: stdin({ llm_config: { provider: "anthropic", api_key: old } }) })
+  const ask = new Script()
+  expect(await ensure(office, ask, { stdin: stdin({ llm_config: { provider: "anthropic", api_key: KEY } }) })).toBe(true)
+  expect((await saved(office))?.api_key).toBe(KEY)
+  expect(readFileSync(file(office), "utf8")).not.toContain(old)
+  expect(mode(file(office))).toBe(0o600)
+  expect(listing(office)).toEqual([".lock", "office.json"])
+  expect(ask.seen).toEqual([])
+})
+
+test("a bad provider on stdin leaves the existing one", async () => {
+  const office = newOffice()
+  place(office, '{"llm_config": {"provider": "openai"}}\n')
+  const error = await rejection(ensure(office, new Script(), { stdin: stdin("{") }))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("not valid JSON")
+  expect(readFileSync(file(office), "utf8")).toBe('{"llm_config": {"provider": "openai"}}\n')
+})
+
+test("an existing provider others can read is an error and left alone", async () => {
+  const office = newOffice()
+  place(office, "{}\n", 0o644)
+  const error = await rejection(ensure(office, new Script()))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("0600")
+  expect(readFileSync(file(office), "utf8")).toBe("{}\n")
+  expect(mode(file(office))).toBe(0o644)
+})
+
+test("an existing provider composer wont take is an error without the key", async () => {
+  const office = newOffice()
+  place(office, JSON.stringify({ llm_config: { provider: "anthropic", api_key: KEY, temprature: 1 } }))
+  const error = await rejection(ensure(office, new Script([], { interactive: false })))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("an extra field; the fields are provider, model")
+  expect(error.message).not.toContain(KEY)
+})
+
+test("a symlink where the provider goes is refused", async () => {
+  const office = newOffice()
+  mkdirSync(join(office, "connections"), { mode: 0o700 })
+  chmodSync(join(office, "connections"), 0o700)
+  symlinkSync(join(office, "elsewhere"), file(office))
+  const error = await rejection(ensure(office, new Script(["openai", "", ""])))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(existsSync(join(office, "elsewhere"))).toBe(false)
+})
+
+test("a directory where the provider goes is an onboard error", async () => {
+  const office = newOffice()
+  mkdirSync(file(office), { recursive: true })
+  chmodSync(join(office, "connections"), 0o700)
+  let error = await rejection(
+    ensure(office, new Script(), { stdin: stdin({ llm_config: { provider: "anthropic", api_key: KEY } }) }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("office.json")
+  expect(error.message).not.toContain(KEY)
+  expect(listing(office)).toEqual([".lock", "office.json"]) // no temp file left
+  error = await rejection(ensure(office, new Script()))
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toContain("office.json")
+})
+
+test("without a terminal a model that doesnt answer is an error", async () => {
+  const office = newOffice()
+  const error = await rejection(
+    ensure(office, new Script([], { interactive: false }), {
+      stdin: stdin({ llm_config: { provider: "openai", api_key: KEY } }),
+      checkModel: async () => "Connection error",
+    }),
+  )
+  expect(error).toBeInstanceOf(OnboardError)
+  expect(error.message).toMatch(/^the model didn't answer: Connection error$/)
+  expect(existsSync(file(office))).toBe(false)
+})
+
+test("the script prompter takes typed text only for a typed list", async () => {
+  const ask = new Script(["my-model"])
+  expect(await ask.choose("Model", ["a"], "", true)).toBe("my-model")
+  expect(ask.typed).toEqual([true])
+  expect((await rejection(new Script(["my-model"]).choose("Model", ["a"]))).message).toContain("'my-model' isn't an answer")
+})
+
+test("the script prompter picks by option number or default", async () => {
+  const ask = new Script(["", "b", "1", "2"])
+  const picked: string[] = []
+  for (let i = 0; i < 4; i++) picked.push(await ask.choose("Q", ["a", "b"], "x"))
+  expect(picked).toEqual(["x", "b", "a", "b"])
+  expect(ask.seen).toEqual(["Q", "Q", "Q", "Q"])
+  expect(ask.offered).toEqual([["a", "b"], ["a", "b"], ["a", "b"], ["a", "b"]])
+})
+
+test("the script prompter fails on an answer that isnt an option", async () => {
+  expect((await rejection(new Script(["c"]).choose("Q", ["a", "b"]))).message).toBe(
+    "'c' isn't an answer to 'Q'; the options are ['a', 'b']",
+  )
+  expect((await rejection(new Script(["3"]).choose("Q", ["a", "b"]))).message).toContain("'3' isn't")
+})
+
+test("the script prompter records the same step lines", () => {
+  const ask = new Script()
+  ask.step(1, 4, "Company", "Why.")
+  expect(ask.seen).toEqual(stepLines(1, 4, "Company", "Why."))
+  expect(ask.seen).toEqual(["Step 1 of 4: Company", "Why."])
+})
