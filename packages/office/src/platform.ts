@@ -3,7 +3,7 @@
  * Bun-only behaviours elsewhere that no lint can see (unix-socket fetch, file imports). The office
  * spawns its own code only through `selfCommand()`, with `selfSpawnEnv()` and an office-controlled cwd.
  */
-import { dlopen, FFIType, ptr, read, type Pointer } from "bun:ffi"
+import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import fs from "node:fs"
 import os from "node:os"
 import { fileURLToPath } from "node:url"
@@ -85,16 +85,16 @@ function loadSandbox(): Sandbox {
   if (process.arch === "arm64") {
     const { symbols } = dlopen(lib, { sandbox_check: { args: [I, P, I, L, L, L, L, L, P], returns: I } })
     check = (pid, operation, filter, path) =>
-      symbols.sandbox_check(pid, cPtr(operation), filter, 0n, 0n, 0n, 0n, 0n, cPtr(path))
+      symbols.sandbox_check(pid, operation, filter, 0n, 0n, 0n, 0n, 0n, path)
   } else if (process.arch === "x64") {
     const { symbols } = dlopen(lib, { sandbox_check: { args: [I, P, I, P], returns: I } })
-    check = (pid, operation, filter, path) => symbols.sandbox_check(pid, cPtr(operation), filter, cPtr(path))
+    check = (pid, operation, filter, path) => symbols.sandbox_check(pid, operation, filter, path)
   } else {
     throw new Error(`sandbox_check has no call form for ${process.arch}`)
   }
   const libc = dlopen("/usr/lib/libSystem.B.dylib", { dlsym: { args: [P, P], returns: P } })
   // RTLD_DEFAULT: search every loaded image.
-  const found = libc.symbols.dlsym(-2 as unknown as Pointer, ptr(cString("SANDBOX_CHECK_NO_REPORT")))
+  const found = libc.symbols.dlsym(-2 as unknown as Pointer, cString("SANDBOX_CHECK_NO_REPORT"))
   // Keeps the denied checks out of the system log.
   const noReport = found ? read.i32(found, 0) : 0
   sandbox = { check, pathFilter: SANDBOX_FILTER_PATH | noReport }
@@ -104,11 +104,6 @@ function loadSandbox(): Sandbox {
 /** `text` as a NUL-terminated C string. */
 function cString(text: string): Buffer {
   return Buffer.from(`${text}\0`)
-}
-
-/** A pointer to `buffer`, or null. */
-function cPtr(buffer: Buffer | null): Pointer | null {
-  return buffer ? ptr(buffer) : null
 }
 
 /** libsystem_sandbox's `sandbox_check`: 0 allowed, 1 denied, -1 error. With `operation` and `path`:
@@ -123,7 +118,7 @@ export function sandboxCheck(pid: number, operation: string | null, path?: strin
 }
 
 /** libproc's `proc_listallpids`, opened once. */
-let procListAllPids: ((buffer: Pointer | null, bytes: number) => number) | undefined
+let procListAllPids: ((buffer: Int32Array | null, bytes: number) => number) | undefined
 
 /** Every pid on the machine (libproc `proc_listallpids`). */
 export function listAllPids(): number[] {
@@ -134,7 +129,7 @@ export function listAllPids(): number[] {
   const count = procListAllPids(null, 0)
   if (count < 0) throw new Error("proc_listallpids failed")
   const pids = new Int32Array(count + 64)
-  const got = procListAllPids(ptr(pids), pids.byteLength)
+  const got = procListAllPids(pids, pids.byteLength)
   if (got < 0) throw new Error("proc_listallpids failed")
   return Array.from(pids.subarray(0, got))
 }

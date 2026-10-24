@@ -180,7 +180,7 @@ test.skipIf(process.platform !== "darwin")("listAllPids includes this process an
 })
 
 test.skipIf(process.platform !== "darwin")("sandboxCheck answers for this process", () => {
-  // 1 under a sandboxed parent (Claude Code's), 0 elsewhere; -1 would mean the call form is wrong.
+  // 1 under a sandboxed parent (Claude Code's), 0 elsewhere; -1 would mean the call failed (library or symbol not loaded).
   expect([0, 1]).toContain(sandboxCheck(process.pid, null))
 })
 

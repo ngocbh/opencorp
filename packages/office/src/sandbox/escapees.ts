@@ -69,10 +69,10 @@ export function killEscaped(canary: Canary): number[] {
   const me = process.pid
   const found: number[] = []
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const new_ = listAllPids().filter((pid) => pid !== me && !found.includes(pid) && inCall(pid))
-    if (new_.length === 0) break
-    for (const pid of new_) signal(pid, "SIGSTOP")
-    found.push(...new_)
+    const fresh = listAllPids().filter((pid) => pid !== me && !found.includes(pid) && inCall(pid))
+    if (fresh.length === 0) break
+    for (const pid of fresh) signal(pid, "SIGSTOP")
+    found.push(...fresh)
   }
   for (const pid of found) signal(pid, "SIGKILL")
   return found

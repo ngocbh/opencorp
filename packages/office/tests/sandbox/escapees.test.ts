@@ -10,10 +10,13 @@ const macOnly = test.skipIf(process.platform !== "darwin")
 
 macOnly("canary directories exist until closed", () => {
   const canary = new Canary()
-  expect(fs.statSync(canary.allowed).isDirectory() && fs.statSync(canary.denied).isDirectory()).toBe(true)
-  expect(path.dirname(canary.allowed)).toBe(canary.root)
-  expect(path.dirname(canary.denied)).toBe(canary.root)
-  canary.close()
+  try {
+    expect(fs.statSync(canary.allowed).isDirectory() && fs.statSync(canary.denied).isDirectory()).toBe(true)
+    expect(path.dirname(canary.allowed)).toBe(canary.root)
+    expect(path.dirname(canary.denied)).toBe(canary.root)
+  } finally {
+    canary.close()
+  }
   expect(fs.existsSync(canary.root)).toBe(false)
 })
 
