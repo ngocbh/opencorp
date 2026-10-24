@@ -134,7 +134,7 @@ runs/test_list.py	open	—	—	O4b-7
 runs/test_live.py	open	—	—	O4b-2
 runs/test_nodes.py	open	—	—	O4b-5
 runs/test_notify.py	open	—	—	O4b-7
-runs/test_outcome_names.py	open	—	—	O3-1
+runs/test_outcome_names.py	ported	packages/office/tests/runs/outcome_names.test.ts	—	O3-1
 runs/test_outcomes.py	open	—	—	O4a-4
 runs/test_reader.py	open	—	—	O4b-5
 runs/test_reason_cut.py	open	—	—	O4b-7
@@ -222,9 +222,14 @@ tools/company/test_draft.py	open	—	—	O2-16b
 tools/company/test_work.py	open	—	—	O2-22b
 tools/test_build.py	open	—	—	O2-22b
 tools/test_work_items.py	open	—	—	O2-22a
-worker/test_channel.py	open	—	—	O3-1
+worker/test_channel.py	ported	packages/office/tests/worker/channel.test.ts,packages/office/tests/worker/codec.test.ts	—	O3-1
+worker/test_channel.py::test_jsonable_unpacks_observer_values	changed	packages/office/tests/worker/codec.test.ts::observer values are sent as their JSON form	design §2.4: the office codec replaces jsonable; TS values have no dataclass, enum, pydantic or Path kinds	O3-1
 worker/test_fake_llm.py	open	—	split: O2-24 → O2-20	O2-20
 worker/test_job.py	open	—	split: O3-1 → O2-22b	O2-22b
+worker/test_job.py::test_a_job_round_trips_through_json	changed	packages/office/tests/worker/job.test.ts::a job round trips through json	design §2.4: no session memory (#1001), env (R2 m5) or feedback (D32)	O3-1
+worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5)	O3-1
+worker/test_job.py::test_tool_spec_of_a_base_tool_uses_the_given_name	changed	packages/office/tests/worker/job.test.ts::tool spec uses the given name	D20: explicit schemas, no langchain tools	O3-1
+worker/test_job.py::test_tool_spec_of_a_function	changed	packages/office/tests/worker/job.test.ts::tool spec takes the description and parameters the tool declares	D20: explicit schemas, no introspection	O3-1
 worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2
 worker/test_main.py	open	—	—	O3-3
 worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
@@ -309,6 +314,26 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
+—	new	packages/office/tests/worker/channel.test.ts::a broken transport closes the channel with a fixed message	design §2.4, §6 rule 1	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a channel shows no frame bytes when inspected	design §2.4: buffered bytes can hold the start frame's provider key	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a frame that is not json is refused with a fixed message	design §2.4, §6 rule 1	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a grandchild of the worker does not hold the channel open	design §2.4; O0-10 P1: no setCloexec, the regression test stays	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a worker close stops its queued sends	design §2.4: queued frames stop at close() or a failed write, as Python shutdown does	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::a worker send after the office closed the channel raises channel closed	design §2.4	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::frames buffered before a reset still arrive	design §2.4: frames already received are never dropped	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::frames sent just before the worker exits still arrive	design §2.4	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::the worker end carries 20 MiB frames over fd 3 under backpressure	design §2.4: the Bun-version fd 3 test	O3-1
+—	new	packages/office/tests/worker/channel.test.ts::the worker end still sends after the office closes its sending side	design §2.4: late steer_left after closeSend	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::Infinity round trips	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::NaN round trips	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::a bigint round trips	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::a forged tag is refused	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::a plain object with a $v key is refused	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::negative Infinity round trips	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::nested values round trip	design §2.4: the office value codec	O3-1
+—	new	packages/office/tests/worker/codec.test.ts::text that is not json is refused with a fixed message	design §2.4: the office value codec; §6 rule 1	O3-1
+—	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
+—	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
 —	new	packages/protocol/test/errors.test.ts::422 text never holds an input value or an unknown key	§5.4, §6 rule 7	O0-6
 —	new	packages/protocol/test/errors.test.ts::every code a client branches on is a protocol error code	§5.4	O0-6
