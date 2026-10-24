@@ -39,8 +39,8 @@ export function authenticate(
   roster: Roster,
 ): readonly [handle: string, device: string] {
   if (header == null) throw new AuthError("unauthenticated", "this office needs a device token; run `opencorp login`")
-  // JS trim() and Python's strip() differ on a few control characters and U+FEFF; that can't matter,
-  // as the token regex is ASCII.
+  // JS trim() also strips U+FEFF, which a latin1-decoded header can't hold; Python's strip() also strips
+  // U+0085 and U+001C-U+001F, which TS then refuses, the safe direction.
   const match = BEARER.exec(header.trim())
   if (match === null || !TOKEN.test(match[1]!)) {
     throw new AuthError("bad_token", "the Authorization header isn't `Bearer <device token>`")

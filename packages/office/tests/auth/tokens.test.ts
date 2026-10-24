@@ -162,7 +162,8 @@ test("a person file in the wrong folder lets no one in", async () => {
   const misplaced = newToken()
   const nested = newToken()
   const ava = path.join(root, "people/ava/person.yaml")
-  const extra = path.join(root, "people/ngocbh/extra/person.yaml")
+  // "x" sorts after "person.yaml", so the nested file would replace the real one were it read.
+  const extra = path.join(root, "people/ngocbh/x/person.yaml")
   fs.mkdirSync(path.dirname(ava), { recursive: true })
   fs.mkdirSync(path.dirname(extra), { recursive: true })
   const device = (name: string, token: string) => [{ name, token_sha256: tokenSha256(token) }]
