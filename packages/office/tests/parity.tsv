@@ -163,7 +163,7 @@ harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_i
 harness/test_waiting.py	open	—	—	O3-14
 hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
-hq/test_auth.py	open	—	—	O2-9
+hq/test_auth.py	ported	packages/office/tests/hq/auth.test.ts	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
 hq/test_core.py	open	—	—	O2-10
 hq/test_events.py	open	—	—	O2-10
@@ -171,7 +171,7 @@ hq/test_guard.py	open	—	split: O2-7 → O2-9	O2-9
 hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickles	changed	packages/office/tests/hq/guard.test.ts::a 408 closes the connection while the client still trickles	D16, design §6.4: the 408 is the listener's requestTimeout, written by Bun (no JSON, no HQ headers); the trickling client may lose Bun's 408 to its own write, so this test checks the close and the guard's settled promise, and `a body that stops arriving is 408` checks the 408 and `connection: close`	O2-7
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
-hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
+hq/test_login.py	ported	packages/office/tests/hq/login.test.ts	—	O2-9
 hq/test_login.py::test_a_check_whose_request_went_away_still_holds_its_slot	changed	packages/office/tests/hq/login.test.ts::a check whose request went away still holds its slot	design §3.3: promises can't be cancelled, so a caller that leaves can't stop the check; the slot frees when the scrypt promise settles (pinned by Busy while two held checks run, and running back to 0); checked on Logins with a stand-in sessions object	O2-8
 hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
 hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
@@ -590,6 +590,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
 —	new	packages/office/tests/hq/login.test.ts::a check that errors gives its slot back and counts no failure	design §6.4, rule 8: the two-check limit never leaks a slot when the hash read or the check fails	O2-8
 —	new	packages/office/tests/hq/login.test.ts::a throttled pair is refused before the password is checked	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
+—	new	packages/office/tests/hq/login.test.ts::an encoded login path is the open login route	design §6.4: the session check and the router both judge the decoded path (O2-8); a path only the session check decodes reaches no handler	O2-9
 —	new	packages/office/tests/hq/login.test.ts::an unknown handle is checked against the dummy hash and fails	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/login.test.ts::the right password returns the fingerprint of its hash and clears the failures	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/pairing.test.ts::its inspect and json show no key or code	design §6, rule 1: inspect and JSON show the office dir and a count, never a code or its sha256 key	O2-7

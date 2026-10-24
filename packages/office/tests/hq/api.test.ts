@@ -49,7 +49,13 @@ test("company is the head snapshot without devices", async () => {
   fs.writeFileSync(file, stringify(data))
   git(office.paths.company, "commit", "-qam", "a device")
   const r = await client.get("/api/company")
-  const body = r.json() as { sha: string; company: { ceo: string }; people: PersonBody[]; groups: { id: string }[] }
+  const body = r.json() as {
+    sha: string
+    company: { ceo: string }
+    people: PersonBody[]
+    groups: { id: string }[]
+    issues: unknown[]
+  }
   expect(r.status).toBe(200)
   expect(body.sha).toBe(await office.git.head())
   expect(body.company.ceo).toBe(CEO)
@@ -58,7 +64,7 @@ test("company is the head snapshot without devices", async () => {
     expect(p.password_hash).toBeNull()
   }
   expect(body.groups.map((g) => g.id)).toEqual(["eng"])
-  expect((body as unknown as Body).issues).toEqual([])
+  expect(body.issues).toEqual([])
 })
 
 test("company strips devices and password hashes whatever the snapshot holds", async () => {

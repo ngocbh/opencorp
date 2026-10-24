@@ -9,6 +9,7 @@ import {
   CostReport,
   type ErrorCode,
   Health,
+  HqLoginRequest,
   PairRequest,
   Person,
   WorkItem,
@@ -16,7 +17,7 @@ import {
 import type { z } from "zod"
 import { blankSecrets } from "../company/secret_keys.ts"
 import { SourceError } from "../company/source.ts"
-import { HttpError, RawReply, type RequestInfo, type Route, requestListener } from "../daemon/http.ts"
+import { HttpError, RawReply, type RequestInfo, type Route, logLine, requestListener } from "../daemon/http.ts"
 import type { RequestContext } from "../daemon/office.ts"
 import { costs } from "../daemon/routes/costs.ts"
 import { whoami } from "../daemon/routes/devices.ts"
@@ -24,6 +25,8 @@ import { getWorkItem } from "../daemon/routes/work_items.ts"
 import { browserAuth, cookieName, cookieValue } from "./auth.ts"
 import type { Hq } from "./core.ts"
 import { hqGuard, isApi, requestPath } from "./guard.ts"
+import { BadCredentials, Busy, Throttled } from "./login.ts"
+import type { Who } from "./sessions.ts"
 import { serveApp } from "./static.ts"
 
 /** What an HQ route sees: the socket's context plus HQ, the raw request, and the browser session. */
@@ -48,6 +51,14 @@ function setCookie(req: IncomingMessage, value: string, maxAge = MAX_AGE): strin
 /** `session` as the reply, with the cookie carrying `value`. */
 function sessionReply(req: IncomingMessage, session: BrowserSessionType, value: string): RawReply {
   return new RawReply(200, { "set-cookie": setCookie(req, value) }, JSON.stringify(BrowserSession.parse(session)))
+}
+
+/** The one answer to every failed sign-in, so nobody can tell which handles exist. */
+export const BAD_CREDENTIALS = "wrong handle or password"
+
+/** A JSON error reply the handler shapes itself, with `headers` added. */
+function errorReply(status: number, code: ErrorCode, message: string, headers: Record<string, string> = {}): RawReply {
+  return new RawReply(status, headers, JSON.stringify({ error: code, message }))
 }
 
 /** The last `name` in the query, as Starlette's `query_params.get`; undefined when absent. */
@@ -128,6 +139,64 @@ export const ROUTES: readonly Route<HqContext>[] = [
       const [session, value] = await hq.sessions.issue(pending.handle, { issuedBy: pending.issuer, label })
       if (old) await hq.sessions.revoke(old.id) // pairing again replaces this browser's session
       return sessionReply(req, session, value)
+    },
+  },
+  // Signs this browser in with a human's handle and password. Open without a session. The session is the one
+  // pairing issues, with `via` "login"; the password is never logged.
+  {
+    method: "POST",
+    path: "/api/login",
+    body: HqLoginRequest,
+    handler: async ({ hq, req }, _params, body) => {
+      const { handle, password, label } = body as z.output<typeof HqLoginRequest>
+      // HQ listens only on 127.0.0.1 and hq.sock, so the peer is in practice always 127.0.0.1 or "" (hq.sock): the
+      // throttle keyed on it is per handle. Anyone who reaches HQ can lock a handle's password sign-in for a while,
+      // which is why `opencorp pair` never goes through it and stays the way in.
+      const peer = req.socket.remoteAddress ?? ""
+      const who = `@${handle} from ${peer || "hq.sock"}`
+      const info = (message: string) => hq.log(logLine("INFO", "opencorp.hq.api", message))
+      let old: Who | null
+      let issued: [BrowserSessionType, string]
+      try {
+        const checked = await hq.logins.check(peer, handle, password)
+        // Only a session the cookie really proves is replaced; a forged or stale cookie revokes nothing.
+        old = await hq.sessions.check(cookieValue(req))
+        try {
+          issued = await hq.sessions.issue(handle, { issuedBy: handle, label, via: "login", checked })
+        } catch (e) {
+          // HEAD moved since the check.
+          if (e instanceof HttpError && (e.code === "not_a_human" || e.code === "password_changed"))
+            throw new BadCredentials()
+          throw e
+        }
+      } catch (e) {
+        if (e instanceof BadCredentials) {
+          info(`sign-in for ${who} failed`)
+          return errorReply(401, "bad_credentials", BAD_CREDENTIALS)
+        }
+        if (e instanceof Throttled) {
+          // Once per lock: a client retrying in a loop mustn't flood the log.
+          if (e.first) info(`sign-in for ${who} throttled for ${e.retryAfter} s`)
+          const minutes = Math.ceil(e.retryAfter / 60)
+          const wait = `wait ${minutes} minute${minutes === 1 ? "" : "s"}`
+          const message = `too many tries; ${wait}, or run \`opencorp pair\` on the office machine`
+          return errorReply(429, "too_many_attempts", message, { "retry-after": String(e.retryAfter) })
+        }
+        if (e instanceof Busy) return errorReply(503, "busy", "the office is busy; try again", { "retry-after": "1" })
+        throw e
+      }
+      if (old) await hq.sessions.revoke(old.id) // signing in again replaces this browser's session
+      info(`sign-in for ${who} ok`)
+      return sessionReply(req, ...issued)
+    },
+  },
+  // Ends this browser's session.
+  {
+    method: "POST",
+    path: "/api/logout",
+    handler: async ({ hq, req, session }) => {
+      await hq.sessions.revoke(session!)
+      return new RawReply(200, { "set-cookie": setCookie(req, "", 0) }, JSON.stringify({ ok: true }))
     },
   },
   // Any method, so a wrong method under /api is 404, never 405, as Starlette's catch-all route was.

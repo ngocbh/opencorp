@@ -1,13 +1,191 @@
 /** Signing a browser in with a handle and password: the throttle, the dummy hash, and two checks at a time. */
-import { expect, test } from "bun:test"
+import fs from "node:fs"
+import path from "node:path"
+import { expect, setDefaultTimeout, test } from "bun:test"
+import { parse, stringify } from "yaml"
 import { checkPassword, DUMMY_HASH, hashPassword } from "../../src/auth/passwords.ts"
+import type { Hq } from "../../src/hq/core.ts"
 import { BadCredentials, Busy, CHECKS, LIMIT, Logins, MAX_KEYS, Throttle, Throttled } from "../../src/hq/login.ts"
 import { passwordFp } from "../../src/hq/sessions.ts"
+import { git } from "../company/helpers.ts"
+import { CEO, type Reply, makeOffice } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
+import { type HqClient, ORIGIN, PORT, hqClient, makeHq, pairCode, web } from "./helpers.ts"
+
+setDefaultTimeout(30_000)
 
 const PASSWORD = "correct horse battery"
 // A synthetic PHC string: never hashed, the injected check compares it as text.
 const PHC = "$scrypt$ln=16,r=8,p=1$c3ludGhldGljIHNhbHQ$c3ludGhldGljIGhhc2ggb2YgdGhlIHBhc3N3b3Jk"
+
+type Body = Record<string, unknown>
+type Check = (password: string, phc: string) => Promise<boolean>
+
+/** Commits `hash` as `handle`'s password hash in `company`. */
+function setPassword(company: string, handle: string, hash: string): void {
+  const file = path.join(company, "people", handle, "person.yaml")
+  const data = { ...(parse(fs.readFileSync(file, "utf8")) as Body), password_hash: hash }
+  fs.writeFileSync(file, stringify(data))
+  git(company, "commit", "-qam", `password for ${handle}`)
+}
+
+/** An office with HQ and a `web` client; the CEO has `PASSWORD` (Python's `web` and `with_password`). */
+async function withPassword({ logs }: { logs?: string[] } = {}) {
+  const office = makeOffice()
+  const hq = await makeHq(office, { logs })
+  setPassword(office.paths.company, CEO, await hashPassword(PASSWORD))
+  return { office, hq, client: await web(hq) }
+}
+
+function login(client: HqClient, handle = CEO, password = PASSWORD, extra: Body = {}): Promise<Reply> {
+  return client.post("/api/login", { handle, password, ...extra })
+}
+
+/** Replaces `hq.logins` with one whose password check calls `check`; returns a setter for that check, so a test
+ *  can change it without resetting the throttle or the slots. */
+function delegating(hq: Hq, check: Check): (next: Check) => void {
+  let current = check
+  hq.logins = new Logins(hq.sessions, { checkPassword: (pw, phc) => current(pw, phc) })
+  return (next) => {
+    current = next
+  }
+}
+
+/** Password checks without scrypt's cost: the throttle tests make many (Python's `fast_checks`). */
+const fast: Check = async (pw, phc) => pw === PASSWORD && phc !== DUMMY_HASH
+
+/** The message part of each log line in `lines`. */
+function messages(lines: string[]): string[] {
+  return lines.map((line) => line.slice(line.indexOf(": ") + 2))
+}
+
+const BAD = { error: "bad_credentials", message: "wrong handle or password" }
+
+test("the right password signs in", async () => {
+  const { client } = await withPassword()
+  const r = await login(client, CEO, PASSWORD, { label: "Firefox on Linux" })
+  const body = r.json() as Body
+  expect(r.status).toBe(200)
+  expect(body).toMatchObject({ person: CEO, via: "login", issued_by: CEO, label: "Firefox on Linux" })
+  expect(body).not.toHaveProperty("secret_sha256")
+  expect((await client.get("/api/whoami")).json()).toEqual({ person: CEO, device: body.name })
+})
+
+test("the cookie is the one pairing sets", async () => {
+  const { client } = await withPassword()
+  const cookie = (await login(client)).headers["set-cookie"]![0]!
+  expect(cookie.startsWith(`opencorp_hq_${PORT}=`)).toBe(true)
+  for (const part of ["HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=2592000"]) expect(cookie).toContain(part)
+  expect(cookie).not.toContain("Secure")
+})
+
+test("without a session the 401 names both ways to sign in", async () => {
+  const message = ((await (await web(await makeHq(makeOffice()))).get("/api/whoami")).json() as Body).message
+  expect(message).toContain("handle and password")
+  expect(message).toContain("`opencorp pair`")
+})
+
+test("a wrong password is 401 bad credentials", async () => {
+  const { client } = await withPassword()
+  const r = await login(client, CEO, "not the password")
+  expect([r.status, r.json()]).toEqual([401, BAD])
+  expect(r.headers).not.toHaveProperty("set-cookie")
+  expect((await client.get("/api/whoami")).status).toBe(401)
+})
+
+test("without an origin the guard refuses", async () => {
+  const { hq } = await withPassword()
+  const r = await login(await hqClient(hq))
+  expect([r.status, (r.json() as Body).error]).toEqual([403, "origin_not_allowed"])
+})
+
+test("only post api login skips the session check", async () => {
+  const { client } = await withPassword()
+  expect((await client.get("/api/login")).status).toBe(401)
+  for (const target of ["/api/login/", "/api/login/x", "/api/loginx"]) {
+    const r = await client.post(target, { handle: CEO, password: PASSWORD })
+    expect([r.status, (r.json() as Body).error, target]).toEqual([401, "sign_in_required", target])
+  }
+})
+
+test("a bad body is 422 and doesnt quote the password", async () => {
+  const { client } = await withPassword()
+  for (const body of [
+    { handle: CEO, password: PASSWORD, extra: PASSWORD },
+    { handle: "Not A Handle", password: PASSWORD },
+  ]) {
+    const r = await client.post("/api/login", body)
+    expect(r.status).toBe(422)
+    expect(r.text).not.toContain(PASSWORD)
+  }
+})
+
+test("signing in again revokes the old session", async () => {
+  const { office, client } = await withPassword()
+  const first = ((await login(client)).json() as Body).id as string
+  const second = ((await login(client)).json() as Body).id as string
+  expect(office.store.getHqSession(first)).toBeUndefined()
+  expect(office.store.getHqSession(second)).toBeDefined()
+})
+
+test("signing in with a cookie that proves nothing revokes nothing", async () => {
+  const { office, hq, client } = await withPassword()
+  const [other] = await hq.sessions.issue(CEO, { issuedBy: CEO, label: null })
+  client.cookies.set(`opencorp_hq_${PORT}`, `${other.id}.forged`)
+  expect((await login(client)).status).toBe(200)
+  expect(office.store.getHqSession(other.id)).toBeDefined()
+})
+
+test("a password change ends a signed in session", async () => {
+  const { office, client } = await withPassword()
+  expect((await login(client)).status).toBe(200)
+  setPassword(office.paths.company, CEO, await hashPassword("a different password"))
+  expect((await client.get("/api/whoami")).status).toBe(401)
+})
+
+test("the password is never logged", async () => {
+  const lines: string[] = []
+  const { client } = await withPassword({ logs: lines })
+  await login(client, CEO, "a wrong guess here")
+  const r = await login(client)
+  const secret = r.headers["set-cookie"]![0]!.split("=")[1]!.split(";")[0]!.split(".")[1]!
+  const text = lines.join("\n")
+  for (const leak of [PASSWORD, "a wrong guess here", secret]) expect(text).not.toContain(leak)
+  expect(messages(lines)).toContain("sign-in for @ngocbh from 127.0.0.1 failed")
+  expect(messages(lines)).toContain("sign-in for @ngocbh from 127.0.0.1 ok")
+})
+
+test.each(["wrong password", "unknown handle", "agent", "human without a password"])(
+  "every failure is the same 401 [%s]",
+  async (kase) => {
+    const office = makeOffice()
+    const client = await web(await makeHq(office))
+    if (kase !== "human without a password") setPassword(office.paths.company, CEO, await hashPassword(PASSWORD))
+    // A hash on an agent signs nobody in.
+    if (kase === "agent") setPassword(office.paths.company, "minh", await hashPassword(PASSWORD))
+    const [handle, password] = {
+      "wrong password": [CEO, "not the password"],
+      "unknown handle": ["nobody", PASSWORD],
+      agent: ["minh", PASSWORD],
+      "human without a password": [CEO, PASSWORD],
+    }[kase]!
+    const r = await login(client, handle, password)
+    expect([r.status, r.json()]).toEqual([401, BAD])
+    expect(r.headers).not.toHaveProperty("set-cookie")
+  },
+)
+
+test.each(["nobody", "minh", CEO])("a handle without a password still costs a full check [%s]", async (handle) => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  const checked: string[] = []
+  delegating(hq, (pw, phc) => {
+    checked.push(phc)
+    return checkPassword(pw, phc)
+  })
+  expect((await login(client, handle)).status).toBe(401)
+  expect(checked).toEqual([DUMMY_HASH])
+})
 
 /** A clock the test moves by setting `now`, in seconds. */
 function clockAt(): { now: number; call: () => number } {
@@ -219,4 +397,133 @@ test("the right password returns the fingerprint of its hash and clears the fail
   for (let i = 0; i < 4; i++)
     expect(await rejection(logins.check("p", "ngocbh", "a wrong guess"))).toBeInstanceOf(BadCredentials)
   expect(logins.throttle.wait(["p", "ngocbh"])).toBeNull()
+})
+
+test("five failures give 429 with retry after even for the right password", async () => {
+  const { hq, client } = await withPassword()
+  delegating(hq, fast)
+  for (let i = 0; i < 5; i++) expect((await login(client, CEO, "a wrong guess")).status).toBe(401)
+  const r = await login(client)
+  const body = r.json() as Body
+  expect([r.status, body.error, r.headers["retry-after"]]).toEqual([429, "too_many_attempts", "60"])
+  expect(r.headers["content-type"]).toBe("application/json")
+  expect(body.message).toContain("opencorp pair")
+  expect(r.headers).not.toHaveProperty("set-cookie")
+})
+
+test("a throttled handle leaves other handles and peers alone", async () => {
+  const { hq, client } = await withPassword()
+  delegating(hq, fast)
+  for (let i = 0; i < 5; i++) await login(client, CEO, "a wrong guess")
+  expect((await login(client, "minh", "a wrong guess")).status).toBe(401)
+  const other = await hqClient(hq, { peer: "127.0.0.2", headers: { origin: ORIGIN } })
+  expect((await login(other)).status).toBe(200)
+})
+
+test("pairing still works while a handle is throttled", async () => {
+  const { hq, client } = await withPassword()
+  delegating(hq, fast)
+  for (let i = 0; i < 6; i++) await login(client, CEO, "a wrong guess")
+  expect((await client.post("/api/pair", { code: await pairCode(hq) })).status).toBe(200)
+})
+
+test("a success clears the count", async () => {
+  const { hq, client } = await withPassword()
+  delegating(hq, fast)
+  for (let i = 0; i < 4; i++) await login(client, CEO, "a wrong guess")
+  expect((await login(client)).status).toBe(200)
+  for (let i = 0; i < 4; i++) expect((await login(client, CEO, "a wrong guess")).status).toBe(401)
+})
+
+test("two checks at a time and a third is 503 busy at once", async () => {
+  const { hq, client } = await withPassword()
+  const entered: string[] = []
+  let release!: () => void
+  const released = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const set = delegating(hq, async (_pw, phc) => {
+    entered.push(phc)
+    await released
+    return false
+  })
+  const first = [0, 1].map(() => login(client, CEO, "a wrong guess"))
+  try {
+    await waitFor(() => entered.length === 2, { timeout: 5000, what: "two checks" })
+    const r = await login(client)
+    expect([r.status, (r.json() as Body).error, entered.length]).toEqual([503, "busy", 2])
+  } finally {
+    release()
+  }
+  expect((await Promise.all(first)).map((r) => r.status)).toEqual([401, 401])
+  set(async (pw) => pw === PASSWORD)
+  expect((await login(client)).status).toBe(200) // the busy answer counted no failure, and the slots came back
+})
+
+test("a throttled pair is logged once per lock", async () => {
+  const lines: string[] = []
+  const { hq, client } = await withPassword({ logs: lines })
+  delegating(hq, fast)
+  const clock = { now: 1000 }
+  // After the replacement, so the clock lands on the live Logins.
+  hq.logins.throttle.clock = () => clock.now
+  for (let i = 0; i < 5; i++) await login(client, CEO, "a wrong guess")
+  for (let i = 0; i < 3; i++) expect((await login(client)).status).toBe(429)
+  clock.now += 60
+  await login(client, CEO, "a wrong guess") // locks it again, for twice as long
+  for (let i = 0; i < 2; i++) expect((await login(client)).status).toBe(429)
+  expect(messages(lines).filter((m) => m.includes("throttled"))).toEqual([
+    "sign-in for @ngocbh from 127.0.0.1 throttled for 60 s",
+    "sign-in for @ngocbh from 127.0.0.1 throttled for 120 s",
+  ])
+})
+
+test("on hq sock the peer is logged as hq sock", async () => {
+  const lines: string[] = []
+  const { hq } = await withPassword({ logs: lines })
+  const host = "127.0.0.1:5555"
+  const client = await hqClient(hq, { port: null, host, peer: null, headers: { origin: `http://${host}` } })
+  expect((await login(client, CEO, "a wrong guess")).status).toBe(401)
+  expect(messages(lines)).toContain("sign-in for @ngocbh from hq.sock failed")
+})
+
+test("a password changed during the check is the same 401", async () => {
+  const lines: string[] = []
+  const { office, hq, client } = await withPassword({ logs: lines })
+  delegating(hq, async (pw, phc) => {
+    const matched = await checkPassword(pw, phc)
+    setPassword(office.paths.company, CEO, await hashPassword("changed meanwhile"))
+    return matched
+  })
+  const r = await login(client)
+  expect([r.status, (r.json() as Body).error]).toEqual([401, "bad_credentials"])
+  expect(r.headers).not.toHaveProperty("set-cookie")
+  expect(office.store.listHqSessions()).toEqual([])
+  expect(messages(lines)).toContain("sign-in for @ngocbh from 127.0.0.1 failed")
+})
+
+test("a throttled request never checks the password", async () => {
+  const { hq, client } = await withPassword()
+  const set = delegating(hq, fast)
+  for (let i = 0; i < 5; i++) await login(client, CEO, "a wrong guess")
+  const checked: string[] = []
+  set(async (_pw, phc) => {
+    checked.push(phc)
+    return true
+  })
+  expect((await login(client)).status).toBe(429)
+  expect(checked).toEqual([])
+})
+
+test("an encoded login path is the open login route", async () => {
+  const { office, hq, client } = await withPassword()
+  const r = await client.post("/api/%6cogin", { handle: CEO, password: PASSWORD })
+  expect([r.status, (r.json() as Body).via]).toEqual([200, "login"])
+  expect(r.headers["set-cookie"]).toHaveLength(1)
+  // Only the session check decodes %2F as a slash: it lets the request through as POST /api/login, and the router,
+  // which splits on the raw slashes first, matches no route.
+  const miss = await (await web(hq)).post("/api%2Flogin", { handle: CEO, password: PASSWORD })
+  expect([miss.status, (miss.json() as Body).error]).toEqual([404, "no_route"])
+  expect(miss.headers).not.toHaveProperty("set-cookie")
+  expect(office.store.listHqSessions()).toHaveLength(1)
 })
