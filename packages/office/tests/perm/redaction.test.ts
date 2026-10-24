@@ -151,6 +151,7 @@ test.each(Object.keys(LEAKS).sort())("no form of a secret reaches the result or 
   const text = JSON.stringify(got)
   expect(text).toContain("[redacted]")
   expect(leaked(text)).toBe(false)
+  // As Python also checks str(got): the raw string holds forms that JSON.stringify would escape.
   if (typeof got === "string") expect(leaked(got)).toBe(false)
   const rows = store.listAudit()
   expect(rows).toHaveLength(1)
@@ -177,19 +178,22 @@ test("a kinds own key error is named by its type", async () => {
 
 test("an interrupt inside a kind is audited then raised", async () => {
   const { monitor, store } = await leakyMonitor()
-  const thrown = (mode: string) => monitor.call("minh", "r1", "vault__leak", { mode }).then(() => null, (e) => e)
-  expect((await thrown("interrupt"))?.name).toBe("AbortError")
+  await expect(monitor.call("minh", "r1", "vault__leak", { mode: "interrupt" })).rejects.toMatchObject({ name: "AbortError" })
   const rows = store.listAudit()
   expect(rows).toHaveLength(1)
   expect([rows[0]!.outcome, rows[0]!.detail]).toEqual(["error", "AbortError"])
+})
 
-  const error = await thrown("interrupt_secret")
-  expect(error?.name).toBe("AbortError")
+test("an interrupt message is scrubbed before it is rethrown", async () => {
+  const { monitor, store } = await leakyMonitor()
+  const error = (await monitor.call("minh", "r1", "vault__leak", { mode: "interrupt_secret" }).catch((e: unknown) => e)) as DOMException
+  expect(error).toBeInstanceOf(DOMException)
+  expect(error.name).toBe("AbortError")
   expect(error.message).toContain("[redacted]")
   expect(error.message).not.toContain(TOKEN)
-  const again = store.listAudit()
-  expect(again).toHaveLength(2)
-  expect(leaked(JSON.stringify(again))).toBe(false)
+  const rows = store.listAudit()
+  expect(rows).toHaveLength(1)
+  expect(leaked(JSON.stringify(rows))).toBe(false)
 })
 
 /** [label, text, a piece of the secret's form that must be gone]. */

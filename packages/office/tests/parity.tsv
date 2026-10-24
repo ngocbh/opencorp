@@ -105,7 +105,7 @@ perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/
 perm/test_office.py	ported	packages/office/tests/perm/office.test.ts	—	O1-13
 perm/test_redaction.py	ported	packages/office/tests/perm/redaction.test.ts	—	O1-13
 perm/test_redaction.py::test_a_non_json_result_comes_back_as_plain_json	changed	packages/office/tests/perm/redaction.test.ts::a non json result comes back as plain json	design §6.3 (JSON first, unknown values as text): a JS Set goes to JSON as an array; Python's json had no set and wrote its text	O1-13
-perm/test_redaction.py::test_a_result_that_is_not_json_is_an_audited_error	changed	packages/office/tests/perm/redaction.test.ts::a result that is not json is an audited error	design §6.3: a cycle is a TypeError, as JSON.stringify names it in JS (Python's json raised ValueError)	O1-13
+perm/test_redaction.py::test_a_result_that_is_not_json_is_an_audited_error	changed	packages/office/tests/perm/redaction.test.ts::a result that is not json is an audited error	design §6.3: the monitor throws a TypeError for a cycle, as JS names a failed JSON conversion (Python's json raised ValueError)	O1-13
 perm/test_redaction.py::test_an_interrupt_inside_a_kind_is_audited_then_raised	changed	packages/office/tests/perm/redaction.test.ts::an interrupt inside a kind is audited then raised	design §6.3 (an interrupt is audited and rethrown): in JS the interrupt is an AbortError; there is no KeyboardInterrupt	O1-13
 perm/test_workspace_audit.py	open	—	—	O2-22a
 profile/test_debrief.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
@@ -345,6 +345,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/perm/redaction.test.ts::a secret holding regex characters is scrubbed only as written	design §6.3: each form matched as text (Python's re.escape, hand-written here)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret in base64 is scrubbed in either alphabet	design §6.3: base64 in both alphabets (Python's vector has no - or _)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret recased with a dotted or dotless i is scrubbed	design §6.3: each form case-insensitively, as Python's re treats i, I, İ, ı	O1-12
+—	new	packages/office/tests/perm/redaction.test.ts::an interrupt message is scrubbed before it is rethrown	design §6.3 and §6 rule 1: the rethrown abort carries only the redacted reason, never the kind's own message	O1-13
 —	new	packages/office/tests/perm/redaction.test.ts::audit args longer than the cap are cut to it	design §6.3: audit args capped at 2,000 characters (Python covers it only through Monitor.call)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::casefold matches python on every code point	design §6.3 and §1.4: hand-written casefold, Python 3.12 as the oracle	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::every escaped form of a secret with quotes backslashes and non ascii is scrubbed	design §6.3: JSON, repr and URL forms (Python covers them only through Monitor.call)	O1-12
