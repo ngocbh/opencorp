@@ -172,6 +172,17 @@ test("the entry and the office entry have no static imports, which would load be
   }
 })
 
+test("the fs helper imports only node builtins", () => {
+  // The helper runs inside the sandbox, where nothing but the runtime's own builtins is there to load.
+  const transpiler = new Bun.Transpiler({ loader: "ts" })
+  const imports = (text: string) => transpiler.scanImports(text).map((entry) => entry.path)
+  for (const sample of ['import "x"', 'export * from "x"', 'require("x")']) expect(imports(sample)).toEqual(["x"])
+  const helper = fs.readFileSync(path.join(CHECKOUT, "packages/office/src/sandbox/fs_helper.ts"), "utf8")
+  const found = imports(helper)
+  expect(found.length).toBeGreaterThan(0)
+  expect(found.filter((name) => !name.startsWith("node:"))).toEqual([])
+})
+
 test(
   "opencorp __worker and __fs-helper reach the office's modes",
   () => {

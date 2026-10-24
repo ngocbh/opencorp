@@ -4,6 +4,7 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { helperCommand } from "../../src/platform.ts"
 import { type Helper, type OfficePaths, SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { command, scrubbedEnv } from "../../src/sandbox/run.ts"
 import { tempDir } from "../helpers.ts"
@@ -138,4 +139,30 @@ export function envInChild(ws: string, tmp: string, env: Record<string, string>)
     encoding: "utf8",
     timeout: 30_000,
   })
+}
+
+/** Runs one `__fs-helper` request (unsandboxed) in `ws`: stdin is the request as JSON, or `request` itself
+ *  when it is a string (for stdin that isn't JSON); env is `PATH`, `HOME` (`ws`) and `env`. `reply` is the
+ *  parsed stdout, or undefined when stdout isn't JSON. */
+export function helperOp(
+  ws: string,
+  request: object | string,
+  env: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string; reply: unknown } {
+  const [file, ...args] = helperCommand().argv
+  const result = spawnSync(file, args, {
+    cwd: ws,
+    env: { PATH: "/usr/bin:/bin", HOME: ws, ...env },
+    input: typeof request === "string" ? request : JSON.stringify(request),
+    encoding: "utf8",
+    timeout: 20_000,
+  })
+  if (result.error) throw result.error
+  let reply: unknown
+  try {
+    reply = JSON.parse(result.stdout)
+  } catch {
+    reply = undefined
+  }
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, reply }
 }
