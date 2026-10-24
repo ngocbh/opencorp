@@ -4,14 +4,17 @@ import http, { type IncomingHttpHeaders } from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { onTestFinished } from "bun:test"
+import { parse as parseYaml, stringify } from "yaml"
+import { tokenSha256 } from "../../src/auth/tokens.ts"
 import { CompanyGit } from "../../src/company/git.ts"
+import { DeviceTokens } from "../../src/daemon/auth.ts"
 import { Bus } from "../../src/daemon/bus.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { Office, OfficePaths, type RequestContext } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { Store } from "../../src/store/store.ts"
-import { company } from "../company/helpers.ts"
+import { company, git } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 
 /** The base company's CEO. */
@@ -74,26 +77,66 @@ export async function serve<C>(
 }
 
 /**
- * Starts `office` and serves the office's routes on a unix socket, every request acting as the CEO from no device
- * (Python's `served`). `pingMs` sets the event stream's idle ping; `log` gets the pipeline's log lines.
+ * Starts `office` and serves the office's routes, then `extra`, on a unix socket (Python's `served`). With `tokens`,
+ * each request's context comes from `DeviceTokens` (the token check, enforcement once a human lists a device);
+ * without, every request acts as the CEO from no device. `pingMs` sets the event stream's idle ping; `log` gets the
+ * pipeline's log lines.
  *
  * When the test finishes, `makeOffice`'s cleanup runs first: it stops the office, which ends open event streams;
  * then `serve`'s closes the server.
  */
 export async function served(
   office: Office,
-  { pingMs, log }: { pingMs?: number; log?: (line: string) => void } = {},
+  {
+    pingMs,
+    log,
+    tokens = false,
+    extra = [],
+  }: {
+    pingMs?: number
+    log?: (line: string) => void
+    /** Check device tokens as the office does, rather than act as the CEO. */
+    tokens?: boolean
+    /** Stand-in routes served after the office's own. */
+    extra?: readonly Route<RequestContext>[]
+  } = {},
 ): Promise<{ sock: string; server: http.Server }> {
   await office.start()
-  const context = (info: RequestInfo): RequestContext => ({
-    office,
-    person: CEO,
-    device: null,
-    signal: info.signal,
-    query: info.query,
-  })
-  const { sock, server } = await serve(allRoutes({ pingMs }), { context, log })
+  const context = tokens
+    ? new DeviceTokens(office).context
+    : (info: RequestInfo): RequestContext => ({
+        office,
+        person: CEO,
+        device: null,
+        signal: info.signal,
+        query: info.query,
+      })
+  const { sock, server } = await serve([...allRoutes({ pingMs }), ...extra], { context, log })
   return { sock, server }
+}
+
+/** An `Authorization` header carrying `token`. */
+export function bearer(token: string): Record<string, string> {
+  return { authorization: `Bearer ${token}` }
+}
+
+/** Commits a new human `handle` reporting to the CEO, in the company repo at `company`. */
+export function addHuman(company: string, handle: string): void {
+  const file = path.join(company, "people", handle, "person.yaml")
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const name = handle.charAt(0).toUpperCase() + handle.slice(1)
+  fs.writeFileSync(file, stringify({ handle, name, kind: "human", title: "R", manager: CEO }))
+  git(company, "add", "-A")
+  git(company, "commit", "-qm", `hire ${handle}`)
+}
+
+/** Commits a device `name` with `token`'s hash for `handle`, as a hand edit of the repo at `company` would. */
+export function giveDevice(company: string, handle: string, name: string, token: string): void {
+  const file = path.join(company, "people", handle, "person.yaml")
+  const data = parseYaml(fs.readFileSync(file, "utf8")) as { devices?: unknown[] }
+  data.devices = [...(data.devices ?? []), { name, token_sha256: tokenSha256(token) }]
+  fs.writeFileSync(file, stringify(data))
+  git(company, "commit", "-qam", `device for ${handle}`)
 }
 
 export type Reply = { status: number; headers: IncomingHttpHeaders; text: string; json(): unknown }

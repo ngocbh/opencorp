@@ -1,5 +1,6 @@
 /** The office object and its paths: what the routes and services share. */
 import path from "node:path"
+import { now } from "@opencorp/protocol"
 import type { CompanyGit } from "../company/git.ts"
 import type { Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
@@ -46,7 +47,9 @@ export interface WorkerPool {
  *  and the request's abort signal and query. */
 export interface RequestContext {
   office: Office
-  person: string
+  /** The handle the request acts as; null on the open requests and for a tokenless request while HEAD names no
+   *  CEO. Routes that need one call `actingPerson`. */
+  person: string | null
   device: string | null
   signal: AbortSignal
   query: URLSearchParams
@@ -59,6 +62,8 @@ export class Office {
   readonly git: CompanyGit
   readonly bus: Bus
   workers: WorkerPool | undefined
+  /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
+  readonly startedAt: string = now()
   /** Run in order by `start`, each awaited. */
   readonly onStart: (() => unknown)[] = []
   /** Run in reverse order by `stop`, each awaited. */

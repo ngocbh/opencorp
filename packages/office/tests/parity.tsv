@@ -77,7 +77,7 @@ daemon/test_app.py::test_every_table_route_is_served[POST-/feedback-body28]	defe
 daemon/test_app.py::test_every_table_route_is_served[POST-/profile-proposals/01JA1H0000000000000000000A/apply-None]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
 daemon/test_app.py::test_every_table_route_is_served[POST-/profiles/minh/manager-body25]	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O2-2
 daemon/test_app.py::test_lifespan_starts_and_stops_the_office	dropped	—	design §2.3: no app lifespan; daemon/main.ts calls start and stop around serving (O2-5, test_main.py)	O2-2
-daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
+daemon/test_auth.py	open	—	split: O2-3 → O2-11b; O2-3's tests are in packages/office/tests/daemon/auth.test.ts	O2-11b
 daemon/test_bus.py	ported	packages/office/tests/daemon/bus.test.ts	—	O2-2
 daemon/test_bus.py::test_publish_and_close_racing_a_closing_loop_are_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_bus.py::test_publish_before_attach_is_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
@@ -400,6 +400,11 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
 —	new	packages/office/tests/company_template/writer.test.ts::every template flow loads and lints on ts yian	design §9.2: template flows load and lint on TS yian	O2-16a
 —	new	packages/office/tests/company_template/writer.test.ts::the template names every file in its folder	design §2.7: the template is embedded file by file, so the table must match the folder	O2-16a
+—	new	packages/office/tests/daemon/auth.test.ts::a device name that cannot exist is 404 and changes nothing	design §6.4: path device names are checked with DeviceName (O1-14 handoff), so an odd name never reaches a reply or git; checked before the person, so such a name on another's or an agent's handle is 404 where Python gave 403 or 422	O2-3
+—	new	packages/office/tests/daemon/auth.test.ts::an encoded open path still needs a token	design §6.4: the OPEN set is matched on the raw path before routing, so an encoded spelling needs a token (stricter than Python, O2-1)	O2-3
+—	new	packages/office/tests/daemon/auth.test.ts::get office answers pid home started at and version	P14 (D36), design §9.4: an authenticated office-info route on office.sock	O2-3
+—	new	packages/office/tests/daemon/auth.test.ts::get office needs a token once tokens are needed	P14 (D36), design §9.4: GET /office is not open; /health stays {"ok": true}	O2-3
+—	new	packages/office/tests/daemon/auth.test.ts::without a ceo a tokenless request has no person to act as	design §6.4: Python's acting_person 401; RequestContext.person is nullable	O2-3
 —	new	packages/office/tests/daemon/bus.test.ts::a burst overflows a full queue before a waiting reader runs	design §2.3: a reader is woken after the fan-out, as asyncio's queue	O2-2
 —	new	packages/office/tests/daemon/bus.test.ts::a second reader while one waits is refused	design §2.3: one stream reads each subscription	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a 500 logs only the error type	design §2.3, §6 rule 13: a 500 logs the error type only	O2-1

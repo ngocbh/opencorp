@@ -1,7 +1,13 @@
 /** Changing a human's devices and password in their `person.yaml`, one commit each. */
 import fs from "node:fs"
 import path from "node:path"
-import { type Device, type LoginRequest, Person as PersonSchema, validationMessage } from "@opencorp/protocol"
+import {
+  type Device,
+  type ErrorCode,
+  type LoginRequest,
+  Person as PersonSchema,
+  validationMessage,
+} from "@opencorp/protocol"
 import type { z } from "zod"
 import { readYaml, writeYaml, YamlError } from "../company/flow_yaml.ts"
 import type { CompanyGit, LockedGit } from "../company/git.ts"
@@ -16,7 +22,7 @@ export class DeviceRefused extends Error {
 
   constructor(
     readonly status: number,
-    readonly code: string,
+    readonly code: ErrorCode,
     message: string,
   ) {
     super(message)

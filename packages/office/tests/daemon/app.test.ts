@@ -103,7 +103,16 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 //   prompt, steer, interrupt, end, continue, cost-cap and model;
 // - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
 //   carried/dismiss.
-const TABLE: [string, string, string, unknown][] = []
+// GET /health, GET /office, GET /whoami and the device routes weren't in Python's table.
+const TABLE: [string, string, string, unknown][] = [
+  ["GET", "/health", "/health", null],
+  ["GET", "/office", "/office", null],
+  ["GET", "/whoami", "/whoami", null],
+  ["POST", "/people/:handle/devices", "/people/ngocbh/devices", { name: "mac", token_sha256: "a".repeat(64) }],
+  ["DELETE", "/people/:handle/devices/:name", "/people/ngocbh/devices/pc", null],
+  ["POST", "/login", "/login", { handle: "ngocbh", password: "x", device: "mac", token_sha256: "b".repeat(64) }],
+  ["PUT", "/people/:handle/password", "/people/ngocbh/password", { password: "a-long-enough-password" }],
+]
 
 test("every table route is served", async () => {
   const listed = new Set([...STREAMS, ...TABLE].map(([method, pattern]) => `${method} ${pattern}`))
