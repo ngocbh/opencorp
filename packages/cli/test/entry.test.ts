@@ -324,12 +324,13 @@ test(
       })
       expect(result.error).toBeUndefined()
       if (mode === "__worker") {
-        expect(result.stderr).toContain("opencorp __worker: not built yet")
+        expect(result.stderr).toContain("no office channel on fd 3")
         expect(result.stdout).toBe("")
+        expect(result.status).toBe(3)
       } else {
         expect(result.stdout, result.stderr).toBe('{"ok": false, "error": "request is not JSON"}')
+        expect(result.status).toBe(1)
       }
-      expect(result.status).toBe(1)
       expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
     }
   },
@@ -629,8 +630,8 @@ describe("the built binary", () => {
     expect(helper.stdout, helper.stderr).toBe('{"ok": true, "output": "(empty)"}')
     expect(helper.code).toBe(0)
     const worker = await runBuilt([bin, "__worker"])
-    expect(worker.stderr).toContain("opencorp __worker: not built yet")
-    expect(worker.code).toBe(1)
+    expect(worker.stderr).toContain("no office channel on fd 3")
+    expect(worker.code).toBe(3)
   }, 150_000)
 
   test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {

@@ -8,7 +8,7 @@ import { pickSkills } from "../../src/worker/main.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { tempDir } from "../helpers.ts"
-import { makeJob, Recorder, run, writeFiles, writePin } from "./helpers.ts"
+import { base, lastFrame, makeJob, Recorder, run, spawnWorker, writeFiles } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -23,14 +23,13 @@ const ESCAPE =
   "id: escape\nname: escape\nuses:\n  echo: ../../echo\nnodes:\n  reply:\n    kind: call\n    call: echo\n" +
   "    input:\n      text: hi\noutput: ${reply.output}\n"
 
+// A flow whose one CODE node returns PLANTED from the worker's live environment, which the node shares.
+const PLANTED =
+  "id: planted\nname: planted\nnodes:\n  peek:\n    kind: code\n    output: Optional(str)\n" +
+  '    code: "return process.env.PLANTED ?? null"\noutput: ${peek.output}\n'
+
 /** The parts of a chat request these tests read. */
 type ChatRequest = { tools: { function: { name: string } }[]; messages: unknown }
-
-/** A fresh temp root holding the worker tests' pin and an empty runs folder. */
-function base(): { root: string; pin: string; runs: string } {
-  const root = tempDir()
-  return { root, pin: writePin(path.join(root, "pin")), runs: path.join(root, "runs") }
-}
 
 test("office tool groups run in the office", async () => {
   const fake = await fakeLlm()
@@ -107,4 +106,33 @@ test("profile memory reads through the office", async () => {
   const handlers = new Recorder({ stores: { "minh-profile": new FileMarkdownStore(profile) } })
   expect((await run(job, handlers, { env: fake.env() })).outcome?.status).toBe("succeeded")
   expect(JSON.stringify(fake.requests()[0]!.messages)).toContain("Prefers terse answers.")
+})
+
+test("a planted env file or bunfig preload in the worker cwd is not loaded", async () => {
+  const fake = await fakeLlm()
+  /** Runs the planted flow in a worker process in `cwd` with `env` added; returns its last frame and exit. */
+  const peek = async (cwd: string, env: Record<string, string>) => {
+    const where = base()
+    writeFiles(where.pin, { "flows/planted.yaml": PLANTED })
+    const { office, exited } = spawnWorker({ cwd, env: { ...fake.env(), ...env } })
+    await office!.send({ type: "start", job: makeJob(where, "flows/planted.yaml", { inputs: {} }) })
+    const frame = await lastFrame(office!)
+    office!.closeSend()
+    return { frame, exit: await exited }
+  }
+  // The control: PLANTED in the worker's environment does reach the node.
+  const control = await peek(tempDir(), { PLANTED: "from the env" })
+  expect(control.frame.output, String(control.frame.message)).toBe("from the env")
+  const cwd = writeFiles(tempDir(), {
+    ".env": "PLANTED=1\n",
+    "bunfig.toml": 'preload = ["./evil.ts"]\n',
+    "evil.ts": 'import { writeFileSync } from "node:fs"\nwriteFileSync("MARKER", "")\n',
+  })
+  const { frame, exit } = await peek(cwd, {})
+  expect(frame.type, String(frame.message)).toBe("result")
+  expect(frame.status).toBe("succeeded")
+  expect(frame.output).toBeNull()
+  expect(exit).toEqual({ code: 0, signal: null })
+  expect(fs.existsSync(path.join(cwd, "MARKER"))).toBe(false)
+  expect(fake.requests()).toEqual([])
 })

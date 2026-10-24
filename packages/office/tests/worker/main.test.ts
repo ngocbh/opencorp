@@ -12,15 +12,17 @@ import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import {
+  base,
   channelPair,
   inProcessWorker,
+  lastFrame,
   makeJob,
   Recorder,
   run,
+  spawnWorker,
   startWorker,
   type TestWorker,
   writeFiles,
-  writePin,
 } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -43,12 +45,6 @@ class Unanswered extends Recorder {
     this.asked.push(request)
     return new Promise(() => {})
   }
-}
-
-/** A fresh pin and runs folder for a job. */
-function base(): { pin: string; runs: string } {
-  const root = tempDir()
-  return { pin: writePin(path.join(root, "pin")), runs: path.join(root, "runs") }
 }
 
 /** A start frame whose job lacks `run_id`, as with an office and worker of different versions. */
@@ -220,7 +216,8 @@ test("a resume job is refused until the worker can resume", async () => {
 })
 
 test("a reserved tool name is refused before any model call", async () => {
-  // Yian names a reserved tool "a reserved name", and a reserved group key "reserved by yian".
+  // The two reserved-name messages differ in wording: yian checks a group's tool names and a group's key in
+  // different places.
   const cases: [string, Partial<JobInput>, string][] = [
     [
       "flows/tools.yaml",
@@ -242,4 +239,29 @@ test("a reserved tool name is refused before any model call", async () => {
     expect(rec.returncode).toBe(EXIT_FAILED)
     expect(fake.requests()).toEqual([])
   }
+})
+
+test("a worker process runs a job and exits 0", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Hello from the worker." })
+  const { office, exited } = spawnWorker({ cwd: tempDir(), env: fake.env() })
+  await office!.send({ type: "start", job: makeJob(base()) })
+  const frame = await lastFrame(office!)
+  expect(frame.type, String(frame.message)).toBe("result")
+  expect(frame.status).toBe("succeeded")
+  expect(frame.output).toBe("Hello from the worker.")
+  office!.closeSend()
+  expect(await exited).toEqual({ code: EXIT_OK, signal: null })
+})
+
+test("a worker process exits 3 when the office closes the channel", async () => {
+  const { office, exited } = spawnWorker({ cwd: tempDir() })
+  office!.close()
+  expect(await exited).toEqual({ code: EXIT_ORPHANED, signal: null })
+})
+
+test("a worker process with no channel on fd 3 exits 3", async () => {
+  const { exited, stderr } = spawnWorker({ cwd: tempDir(), channel: false })
+  expect(await exited).toEqual({ code: EXIT_ORPHANED, signal: null })
+  expect(stderr()).toContain("no office channel on fd 3")
 })

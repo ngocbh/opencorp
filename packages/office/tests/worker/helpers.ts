@@ -1,8 +1,11 @@
 /** The worker tests' helpers (Python's tests/worker/conftest.py). */
+import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { onTestFinished } from "bun:test"
+import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
+import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
@@ -19,7 +22,7 @@ import {
   type WorkerHandlers,
 } from "../../src/worker/rpc.ts"
 import { CHAT } from "../company/helpers.ts"
-import { shortDir } from "../helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
  *  flow. */
@@ -139,6 +142,12 @@ export function workerFor(handlers: WorkerHandlers, over: Partial<JobInput> = {}
     ...over,
   })
   return { job }
+}
+
+/** A fresh temp root holding the worker tests' pin and an empty runs folder. */
+export function base(): { root: string; pin: string; runs: string } {
+  const root = tempDir()
+  return { root, pin: writePin(path.join(root, "pin")), runs: path.join(root, "runs") }
 }
 
 /** A chat job running `flow` from `base.pin`, logging to `<base.runs>/<run_id>/log.jsonl`; `over` replaces fields. */
@@ -374,4 +383,62 @@ export async function run<H extends WorkerHandlers<TestWorker>>(
   const worker = await inProcessWorker(job, handlers, { env })
   if ((await worker.wait(timeout)) === null) throw new Error("the worker did not exit")
   return handlers
+}
+
+/** A worker process's exit: its code, or the signal that ended it; `error` when it couldn't be spawned. */
+export interface WorkerExit {
+  code: number | null
+  signal: NodeJS.Signals | null
+  error?: Error
+}
+
+/**
+ * Starts `opencorp __worker` as the office does: through `selfCommand()`, leading its own process group, in `cwd`,
+ * with only `PATH`, `HOME` and `TMPDIR` of this process's env plus `env`. With `channel`, the office's end of the
+ * socket at the child's fd 3 is `office`; without, fd 3 is left to Bun. At test end the office end closes and the
+ * group is killed if its leader is still the process that started (pid and start time).
+ */
+export function spawnWorker({
+  cwd,
+  env = {},
+  channel = true,
+}: {
+  cwd: string
+  env?: Record<string, string>
+  channel?: boolean
+}): { office: Channel | undefined; pid: number; exited: Promise<WorkerExit>; stderr: () => string } {
+  const [command, ...args] = selfCommand()
+  const child = spawn(command, [...args, "__worker"], {
+    cwd,
+    env: selfSpawnEnv({ PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...env }),
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe", channel ? "pipe" : "ignore"],
+  })
+  let err = ""
+  child.stderr!.setEncoding("utf8").on("data", (text: string) => (err += text))
+  child.stdout!.resume()
+  // Settles after stderr ends too, since `exit` can come before the last of it is read.
+  const stderrEnded = new Promise<void>((resolve) => child.stderr!.once("close", () => resolve()))
+  const exited = new Promise<WorkerExit>((resolve) => {
+    child.once("exit", (code, signal) => void stderrEnded.then(() => resolve({ code, signal })))
+    // A spawn failure emits `error` and no `exit`; settling here fails the test instead of the runner.
+    child.once("error", (error) => resolve({ code: null, signal: null, error }))
+  })
+  if (child.pid === undefined) throw new Error("spawnWorker: spawn failed")
+  const pid = child.pid
+  const started = startTime(pid)
+  const office = channel ? socketChannel(child.stdio[3] as net.Socket) : undefined
+  onTestFinished(() => {
+    office?.close()
+    if (started !== null && sameProcess(pid, started)) killGroup(pid)
+  })
+  return { office, pid, exited, stderr: () => err }
+}
+
+/** Reads `office`'s frames until a `result` or `error`; returns that frame. */
+export async function lastFrame(office: Channel): Promise<Frame> {
+  for (;;) {
+    const frame = await office.recv()
+    if (frame.type === "result" || frame.type === "error") return frame
+  }
 }

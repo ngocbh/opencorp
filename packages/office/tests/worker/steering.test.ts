@@ -1,13 +1,12 @@
 /** The steering inbox (queued steers, interrupts as a per-node signal, finished nodes and close), and steering
  *  through a run. */
-import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import type { ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { Inbox } from "../../src/worker/inbox.ts"
 import type { JobInput } from "../../src/worker/job.ts"
 import { fakeLlm } from "../chat/helpers.ts"
-import { tempDir, waitFor } from "../helpers.ts"
-import { inProcessWorker, makeJob, Recorder, run, type TestWorker, writePin } from "./helpers.ts"
+import { waitFor } from "../helpers.ts"
+import { base, inProcessWorker, makeJob, Recorder, run, type TestWorker } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -99,12 +98,6 @@ function specGroups(): JobInput["groups"] {
       { name: "shout", parameters: { type: "object", required: ["text"], properties: { text: { type: "string" } } } },
     ],
   }
-}
-
-/** A fresh pin and runs folder for a job. */
-function base(): { pin: string; runs: string } {
-  const root = tempDir()
-  return { pin: writePin(path.join(root, "pin")), runs: path.join(root, "runs") }
 }
 
 test("a steer reaches the next model call", async () => {

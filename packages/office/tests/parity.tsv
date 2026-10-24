@@ -344,6 +344,7 @@ worker/test_job.py::test_tool_spec_of_a_base_tool_uses_the_given_name	changed	pa
 worker/test_job.py::test_tool_spec_of_a_function	changed	packages/office/tests/worker/job.test.ts::tool spec takes the description and parameters the tool declares	D20: explicit schemas, no introspection	O3-1
 worker/test_job_loading.py	open	—	split: O3-3 → O4a-2	O4a-2
 worker/test_job_loading.py::test_a_missing_group_fails_before_any_model_call	changed	packages/office/tests/worker/job_loading.test.ts::a missing group fails before any model call	design §4.1: yian TS refuses the grant with a RangeError	O3-3
+worker/test_job_loading.py::test_a_planted_json_module_is_not_imported	changed	packages/office/tests/worker/job_loading.test.ts::a planted env file or bunfig preload in the worker cwd is not loaded	§6 rule 2: the TS worker's cwd risk is Bun's .env/bunfig, not a Python module	O3-3
 worker/test_main.py	ported	packages/office/tests/worker/main.test.ts	—	O3-3
 worker/test_main.py::test_after_its_last_frame_a_worker_answers_steers_until_the_office_closes	changed	packages/office/tests/worker/main.test.ts::after its last frame a worker answers steers until the office closes	O0-10 P1: Bun passes no fd past stdio to children; the inheritable-fd assert goes, O3-1's grandchild test keeps the rule	O3-3
 worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
@@ -738,6 +739,9 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/worker/main.test.ts::a waiting run ends normally with its status	yian #1064/#1073 coordination note	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker exits 3 when the office closes before the start frame	design §2.4 step 6	O3-3
 —	new	packages/office/tests/worker/main.test.ts::a worker exits 3 when the office closes during the run	design §2.4 step 6	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a worker process exits 3 when the office closes the channel	design §2.4 step 6	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a worker process runs a job and exits 0	design §2.4, O3-1 handoff (process.exit)	O3-3
+—	new	packages/office/tests/worker/main.test.ts::a worker process with no channel on fd 3 exits 3	design §2.4; Bun keeps a pipe at fd 3	O3-3
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
 —	new	packages/office/tests/worker/remote_store.test.ts::a closed channel is a system error	Y3: the MarkdownStore contract's classes	O3-2
 —	new	packages/office/tests/worker/remote_store.test.ts::an invalid reply is a range error	Y3: the MarkdownStore contract's classes	O3-2

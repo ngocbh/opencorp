@@ -1,10 +1,11 @@
 /** The run worker: read one job from the office, run it with Yian, report, exit. */
+import fs from "node:fs"
 import path from "node:path"
 import { ProfileMemory, runFlow } from "@ngocbh/yian"
 import { type EventHook, runLogPath } from "@ngocbh/yian/run"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { loadConfined } from "../company/flows.ts"
-import { type Channel, ChannelClosed, type Frame, FrameTooLarge } from "./channel.ts"
+import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Inbox } from "./inbox.ts"
 import { type Job, parseJob } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
@@ -243,4 +244,29 @@ function stackFrames(error: unknown): string {
     // A getter or a revoked Proxy can throw.
     return ""
   }
+}
+
+/** Whether `fd` is a socket, as the office's channel is; false when `fd` isn't open. */
+export function isOfficeChannel(fd: number): boolean {
+  try {
+    return fs.fstatSync(fd).isSocket()
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "EBADF") return false
+    throw error
+  }
+}
+
+/**
+ * The `__worker` mode: serves the one job the office sends on fd 3, then exits with the code. Exits
+ * `EXIT_ORPHANED` at once when fd 3 isn't a socket: Bun keeps a pipe of its own at fd 3 when the parent passes
+ * none, so an open fd 3 alone doesn't mean an office is there.
+ */
+export async function main(_argv: string[], env: WorkerEnv): Promise<never> {
+  if (!isOfficeChannel(3)) {
+    process.stderr.write("opencorp __worker: no office channel on fd 3\n")
+    process.exit(EXIT_ORPHANED)
+  }
+  // `process.exit`, not a return: a read blocked on fd 3 would keep the event loop alive.
+  const code = await serve(fdChannel(3), { env, exit: (c) => process.exit(c) })
+  process.exit(code)
 }
