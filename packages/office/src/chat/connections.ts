@@ -1,4 +1,5 @@
 /** This office's model connections: office/connections/office.json (`office`) and office/connections/<name>.json. */
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
@@ -27,6 +28,22 @@ export class ConnectionGone extends ProviderError {
 /** A name that can't name a connection: malformed or reserved. */
 export class BadConnectionName extends RangeError {
   override name = "BadConnectionName"
+}
+
+/** A run's connection is gone, or no longer gives the endpoint, key or config the run had. */
+export class RunMoved extends ProviderError {
+  override name = "RunMoved"
+}
+
+/** A run's connection, `connection`, is there but can't be read or used now, which may pass. */
+export class ConnectionUnusable extends RunMoved {
+  override name = "ConnectionUnusable"
+  readonly connection: string
+
+  constructor(message: string, connection: string) {
+    super(message)
+    this.connection = connection
+  }
 }
 
 type Method = "api_key" | "subscription"
@@ -70,6 +87,15 @@ export class ConnectionFile extends Provider {
     const { llm_config, env, prices } = provider
     return new ConnectionFile({ llm_config, env, prices }, "api_key")
   }
+}
+
+/** What a run was started on: its connection and model, and a hash of what they gave it; the values
+ *  `Store.setRunConfig` keeps in the run's row. */
+export type RunRecord = {
+  connection: string
+  model: string | null
+  /** For resume: the whole config without its key, plus the key's sha256 (`configHash`). */
+  configSha256: string
 }
 
 export interface ConnectionsOptions {
@@ -334,11 +360,38 @@ export class Connections {
     return Provider.parse({ llm_config: llm, env, prices: conn.prices })
   }
 
+  /** The provider to resume run `runId` on, which was started with `record`. Rejects with `RunMoved` when the
+   *  run's connection is gone, can't be used (`ConnectionUnusable`), or no longer gives what the run had; the
+   *  message says why. */
+  async forRun(record: RunRecord, runId: string): Promise<Provider> {
+    const name = record.connection
+    if (name !== OFFICE && (!NAME.test(name) || RESERVED.has(name))) {
+      throw new RunMoved(`run ${runId}'s record names no connection`)
+    }
+    const provider = await this.#forRun(name, record.model)
+    if (configHash(provider) !== record.configSha256) {
+      throw new RunMoved(`connection '${name}' changed since run ${runId}`)
+    }
+    return provider
+  }
+
   /** Runs `body` after every queued body before it, failed or not. */
   #queued<T>(body: () => Promise<T>): Promise<T> {
     const run = this.#tail.then(() => body())
     this.#tail = run.catch(() => undefined)
     return run
+  }
+
+  /** `resolve(name, model)`, with each reason it can't be used as a `RunMoved`, without a cause. */
+  async #forRun(name: string, model: string | null): Promise<Provider> {
+    try {
+      return await this.resolve(name, model)
+    } catch (error) {
+      if (error instanceof ConnectionGone) throw new RunMoved(`connection '${name}' was removed`)
+      // A ProviderError's message is value-free, so it is the only part of the error carried over.
+      if (error instanceof ProviderError) throw new ConnectionUnusable(error.message, name)
+      throw error
+    }
   }
 
   async #put(name: string, conn: ConnectionFile): Promise<void> {
@@ -445,6 +498,42 @@ function isFile(file: string): boolean {
   } catch {
     return false
   }
+}
+
+/** The sha256 hex of `provider`'s key, as yian identifies keys; null without one. */
+export function keyId(provider: Provider): string | null {
+  const key = provider.llm_config?.api_key
+  return typeof key === "string" ? createHash("sha256").update(key, "utf8").digest("hex") : null
+}
+
+/** `value` as compact JSON with every object's keys sorted, so equal values always give the same text. */
+function sortedJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(sortedJson).join(",")}]`
+  if (typeof value === "object" && value !== null) {
+    const fields = value as Record<string, unknown>
+    return `{${Object.keys(fields)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${sortedJson(fields[k])}`)
+      .join(",")}}`
+  }
+  return JSON.stringify(value)
+}
+
+/** A hash of everything a run gets from `provider`: its config without the key, env, and the key's hash. */
+export function configHash(provider: Provider): string {
+  let llm = provider.llm_config
+  if (llm !== null) {
+    const { api_key: _, ...rest } = llm
+    llm = rest
+  }
+  const text = sortedJson({ llm_config: llm, env: provider.env, key: keyId(provider) })
+  return createHash("sha256").update(text, "utf8").digest("hex")
+}
+
+/** The values a run started on `connection` and `model`, which give it `provider`, keeps: no key, only its hash
+ *  inside `configSha256`. */
+export function runRecord(connection: string, model: string | null, provider: Provider): RunRecord {
+  return { connection, model, configSha256: configHash(provider) }
 }
 
 /** A short name for the provider of `llm`: `azure`, `custom` (another OpenAI-compatible endpoint), the

@@ -1,4 +1,5 @@
 /** The office's connections: one private file each, the default pointer, removed names, resolve and labels. */
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
@@ -11,13 +12,19 @@ import {
   ConnectionFile,
   ConnectionGone,
   Connections,
+  ConnectionUnusable,
+  configHash,
+  keyId,
   providerLabel,
+  RunMoved,
+  runRecord,
 } from "../../src/chat/connections.ts"
 import { type Price, Provider, ProviderError } from "../../src/chat/provider.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { tempDir } from "../helpers.ts"
 
 const SENTINEL = "sk-ant-sentinel-a7d93c10e5b2"
+const OTHER_KEY = "sk-ant-other-5f0e2b7c91d4"
 
 /** `root/office` (0700), and, when `provider` is given, `connections/office.json` holding it. */
 async function officeDir(root: string, provider?: unknown): Promise<string> {
@@ -368,6 +375,21 @@ test("a connection cannot set the auth file", async () => {
   expect((error as Error).message).toMatch(/YIAN_AUTH_FILE/)
 })
 
+test("office may still set the auth file", async () => {
+  // office.json was valid with it before connections; only an added connection may not set it.
+  const root = tempDir()
+  const auth = path.join(root, "composer-auth.json")
+  const c = new Connections(
+    await officeDir(root, { llm_config: { provider: "openai", model: "m" }, env: { YIAN_AUTH_FILE: auth } }),
+  )
+  const provider = await c.resolve(OFFICE, null)
+  expect(provider.env).toEqual({ YIAN_AUTH_FILE: auth })
+  expect(await c.forRun(runRecord(OFFICE, null, provider), "r2")).toEqual(provider)
+  const [infos, dflt] = await c.infos()
+  expect(infos.map((i) => i.name)).toEqual([OFFICE])
+  expect(dflt).toBe(OFFICE)
+})
+
 test("infos lists every readable connection and logs only a broken ones name", async () => {
   const office = await officeDir(tempDir(), { llm_config: { provider: "anthropic", api_key: SENTINEL } })
   const { lines, log } = logs()
@@ -668,4 +690,98 @@ test("a connection file has the python layout and a python file reads", async ()
   const read = await c.get("chatgpt")
   expect(read.method).toBe("subscription")
   expect(read.prices).toEqual({ m: { input: 3, output: 15 } })
+})
+
+// run records
+
+test("a run record holds hashes and no key", async () => {
+  const { lines, log } = logs()
+  const c = new Connections(await officeDir(tempDir()), { log })
+  await c.put("second", apiKey())
+  const provider = await c.resolve("second", "gpt-4o-mini")
+  const record = runRecord("second", "gpt-4o-mini", provider)
+  expect(record).toEqual({ connection: "second", model: "gpt-4o-mini", configSha256: configHash(provider) })
+  expect(record.configSha256).toMatch(/^[0-9a-f]{64}$/)
+  expect(JSON.stringify(record)).not.toContain(SENTINEL)
+  expect(keyId(provider)).toBe(createHash("sha256").update(SENTINEL).digest("hex"))
+  expect(keyId(Provider.parse({}))).toBeNull()
+  expect(lines.join("\n")).not.toContain(SENTINEL)
+})
+
+/** The run values of a run r1 started on `name` and `model`. */
+async function recordOf(c: Connections, name = "second", model: string | null = null) {
+  return runRecord(name, model, await c.resolve(name, model))
+}
+
+/** The error `forRun(record, "r1")` rejects with, checked to be a `RunMoved` whose message matches `pattern`. */
+async function moved(c: Connections, record: Parameters<Connections["forRun"]>[0], pattern: RegExp) {
+  const error = await raised(() => c.forRun(record, "r1"))
+  expect(error).toBeInstanceOf(RunMoved)
+  expect((error as Error).message).toMatch(pattern)
+  return error as RunMoved
+}
+
+test("for run exact needs the whole config", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("second", apiKey())
+  const record = await recordOf(c)
+  expect(await c.forRun(record, "r1")).toEqual(await c.resolve("second", null))
+  await c.put("second", apiKey({ model: "gpt-4o-mini" }))
+  await moved(c, record, /connection 'second' changed since run r1/)
+})
+
+test("for run fails on a changed key or endpoint", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("second", apiKey())
+  const record = await recordOf(c)
+  for (const changed of [apiKey({ key: OTHER_KEY }), apiKey({ baseUrl: "https://elsewhere.example/v1/" })]) {
+    await c.put("second", changed)
+    const error = await moved(c, record, /connection 'second' changed since run r1/)
+    expect(error.message).not.toContain(SENTINEL)
+    expect(error.message).not.toContain(OTHER_KEY)
+  }
+})
+
+test("for run fails on a removed connection", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("second", apiKey())
+  const record = await recordOf(c)
+  await c.remove("second")
+  await moved(c, record, /connection 'second' was removed/)
+})
+
+test("for run tells a connection that cant be used now from one that moved", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("second", apiKey())
+  const record = await recordOf(c)
+  fs.chmodSync(path.join(c.dir, "second.json"), 0o644)
+  const error = await moved(c, record, /private/)
+  expect(error).toBeInstanceOf(ConnectionUnusable)
+  expect((error as ConnectionUnusable).connection).toBe("second")
+  expect(error.cause).toBeUndefined()
+  fs.chmodSync(path.join(c.dir, "second.json"), 0o600)
+  await c.put("second", apiKey({ key: OTHER_KEY }))
+  expect(await moved(c, record, /changed/)).not.toBeInstanceOf(ConnectionUnusable)
+  await c.remove("second")
+  expect(await moved(c, record, /removed/)).not.toBeInstanceOf(ConnectionUnusable)
+})
+
+test("for run raises only run moved", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  for (const bad of ["../x", "default", ""]) {
+    await moved(c, { connection: bad, model: null, configSha256: "c" }, /run r1's record names no connection/)
+  }
+  await c.put("chatgpt", subscription())
+  await moved(c, { connection: "chatgpt", model: null, configSha256: "c" }, /no sign-in/)
+  await c.put("broken", apiKey())
+  fs.chmodSync(path.join(c.dir, "broken.json"), 0o644)
+  const error = await moved(c, { connection: "broken", model: null, configSha256: "c" }, /private/)
+  expect(error.cause).toBeUndefined()
+  expect(error.message).not.toContain(SENTINEL)
+})
+
+test("an env change trips the config hash", () => {
+  const before = Provider.parse({ llm_config: { provider: "openai", api_key: SENTINEL, model: "m" } })
+  const after = Provider.parse({ llm_config: before.llm_config, env: { OPENAI_BASE_URL: "https://proxy.example/v1" } })
+  expect(configHash(before)).not.toBe(configHash(after))
 })
