@@ -1,5 +1,5 @@
 python	status	ts	reason	item
-auth/test_identity.py	open	—	—	O1-14
+auth/test_identity.py	ported	packages/office/tests/auth/identity.test.ts	—	O1-14
 auth/test_passwords.py	ported	packages/office/tests/auth/passwords.test.ts	—	O1-14
 auth/test_tokens.py	ported	packages/office/tests/auth/tokens.test.ts	—	O1-14
 chat/test_check.py	open	—	—	O3-5
@@ -253,6 +253,8 @@ worker/test_resume.py	open	—	—	O4a-2
 worker/test_rpc.py	open	—	—	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
+—	new	packages/office/tests/auth/identity.test.ts::an identity file that isnt private is no identity [%s]	design §5.3, security rule 6: identity.json is a private file; stricter than Python, which read it plainly	O1-14
+—	new	packages/office/tests/auth/identity.test.ts::writing an identity makes its folder 0700	O1-1 handoff: callers create the parent 0700; design §5.2	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a hash past the cost bounds checks nothing even when it matches [%s]	design §6.4: each cost bound refuses a hash on its own	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a hash with an impossible base64 length checks nothing [%s]	design §6.4	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a password is counted in characters	design §6.4 (passwords as Python's): Python's len counts code points	O1-14
