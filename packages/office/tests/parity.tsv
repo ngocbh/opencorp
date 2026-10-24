@@ -27,8 +27,8 @@ company/test_flows.py	open	—	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
 company/test_lint.py	open	—	split: O1-8 → O2-16a	O2-16a
 company/test_loader.py	open	—	—	O1-7
-company/test_naming.py	open	—	—	O1-5
-company/test_secret_keys.py	open	—	—	O1-5
+company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O1-5
+company/test_secret_keys.py	ported	packages/office/tests/company/secret_keys.test.ts	—	O1-5
 company/test_snapshot.py	open	—	—	O1-7
 company/test_source.py	open	—	—	O1-7
 company/test_watch.py	open	—	—	O2-4
@@ -197,10 +197,42 @@ worker/test_resume.py	open	—	—	O4a-2
 worker/test_rpc.py	open	—	—	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
+—	new	packages/office/tests/company/flow_yaml.test.ts::a company file refuses a tag outside the core schema	D8: YAML 1.2 core schema for company files	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a leading zero int is decimal and 0o and 0x are octal and hex	D8, design §9.5: YAML 1.2 core readings	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a lone cr is a line break	design §9.5: read as TS yian reads flows	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a mapping of many keys reads in linear time	design §6: repo content agents write must not stall the office	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a merge value that isnt a mapping is an error	design §9.5: merge keys read exactly as TS yian reads them	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a proto key is an own key	design §6: prototype safety for repo content	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a recursive alias is refused	design §9.5: the alias cap	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a repeated key is an error but several merge keys are not	design §9.5: unique keys, as TS yian	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a tagged scalar in a flow reads as its text	design §9.5: the system.paths check reads tags as text	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::a type tagged key reads as its text	design §9.5: keys read as TS yian reads them	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::an alias bomb is refused	design §9.5: the alias cap	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::an alias names the latest node anchored before it	design §9.5: read as TS yian reads flows	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::an undefined alias is refused	design §6: a malformed company file is an issue, never an exception	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::core booleans nulls and floats	D8, design §9.5: YAML 1.2 core readings	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::errors never quote the text	design §6 rules 1 and 13: no file text in errors	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::many anchors and aliases read in linear time	design §6: repo content agents write must not stall the office	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::merge keys follow yian and pyyaml order	design §9.5: merge keys read exactly as TS yian reads them	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::missing values read as null and a null key is refused	design §9.5: yian refuses a null key	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::more than one document is an error	design §9.5; PyYAML safe_load refused several documents	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::nesting past the limit is refused and 100000 brackets do not overflow the stack	design §9.5: the nesting limit	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::only flow_yaml imports yaml	design §9.5: flow_yaml.ts is the only module importing yaml	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::readFlow and yian agree on system.paths	design §9.5, §6 rule 10: the yian-agreement test	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::yes no on and off are text and dates stay text	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/git.test.ts::a locked section calling a locking method throws instead of deadlocking	design §3.3: the non-reentrant mutex	O1-6
 —	new	packages/office/tests/company/git.test.ts::a path holding a nul or starting with a slash is refused before git runs	design §6.9, rule 12: literal pathspecs (paths travel NUL-separated on stdin)	O1-6
 —	new	packages/office/tests/company/git.test.ts::pin leaves files under a symlinked folder alone and survives a symlink loop	plan.md O1-6 (pinned read-only worktrees): a pin never changes files outside it	O1-6
 —	new	packages/office/tests/company/git.test.ts::the test helpers git reads only the repos own config and runs no hooks	plan.md Test helpers (git isolation); design §10.1	O1-6
+—	new	packages/office/tests/company/issues.test.ts::a deeply nested file is unreadable	design §9.5: the nesting limit	O1-5
+—	new	packages/office/tests/company/issues.test.ts::a file that isnt a mapping is a schema issue	design §5.4: path-only messages	O1-5
+—	new	packages/office/tests/company/issues.test.ts::a non utf8 file is unreadable	design §5.4: company file bytes are UTF-8	O1-5
+—	new	packages/office/tests/company/issues.test.ts::a repo issue defaults to an error	design §5.4: company files through the zod schemas	O1-5
+—	new	packages/office/tests/company/issues.test.ts::a schema error names the field and never the value	design §5.4, §6 rule 1: path-only messages	O1-5
+—	new	packages/office/tests/company/issues.test.ts::a valid file parses with defaults filled	design §5.4: company files through the zod schemas	O1-5
+—	new	packages/office/tests/company/issues.test.ts::an undefined alias is unreadable	design §6: a malformed company file is an issue, never an exception	O1-5
+—	new	packages/office/tests/company/issues.test.ts::malformed yaml is unreadable with its line only	design §5.4, §6 rule 1: path-only messages	O1-5
+—	new	packages/office/tests/company/issues.test.ts::yes stays text in a company file	D8: YAML 1.2 for company files	O1-5
 —	new	packages/office/tests/store/close.test.ts::a store cannot close inside a transaction	close() refuses inside a transaction (final review)	O1-2
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a fifo at the store path is refused	never blocks on or follows a non-file (§6 rule 6)	O1-2
