@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test"
 import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
+import http from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -22,7 +23,10 @@ beforeAll(() => {
   proj = path.join(tmp, "proj")
   // A folder a model could have written: Bun loads them if it reads the folder.
   fs.mkdirSync(proj)
-  fs.writeFileSync(path.join(proj, ".env"), "PLANTED=1\n")
+  fs.writeFileSync(path.join(proj, ".env"), `PLANTED=1\nOPENCORP_HOME=${path.join(proj, "ph")}\n`)
+  // An identity only the planted .env points at: `opencorp whoami` shows it only if the .env loaded.
+  fs.mkdirSync(path.join(proj, "ph"))
+  fs.writeFileSync(path.join(proj, "ph/identity.json"), '{"handle":"planted","device":"d","token":"t"}', { mode: 0o600 })
   fs.writeFileSync(path.join(proj, ".env.local"), "PLANTED_LOCAL=1\n")
   fs.writeFileSync(path.join(proj, "bunfig.toml"), 'preload = ["./evil.ts"]\n')
   fs.writeFileSync(
@@ -401,7 +405,9 @@ describe("the built binary", () => {
   let built = ""
   let npmOut = ""
   let bin = ""
+  let home = ""
   const groups = new Set<number>()
+  const cleanups: (() => void)[] = []
   const pkg = JSON.parse(fs.readFileSync(path.join(CLI, "package.json"), "utf8")) as { version: string; license: string }
   const description = "OpenCorp: run a company of AI employees on your machine"
   const cpu = PLATFORM.split("-")[2]!
@@ -410,6 +416,8 @@ describe("the built binary", () => {
     built = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-built-")))
     npmOut = path.join(built, "npm")
     bin = path.join(npmOut, PLATFORM, "bin/opencorp")
+    home = path.join(built, "home")
+    fs.mkdirSync(home)
     const build = await runDetached(
       [process.execPath, "--no-env-file", "--config=/dev/null", "script/build.ts", "--outdir", npmOut],
       { cwd: CLI, env: process.env, limit: 600_000, groups },
@@ -418,17 +426,89 @@ describe("the built binary", () => {
     // The first run of a fresh binary can take minutes on macOS while the system scans it.
     const warm = await runDetached([bin, "--help"], {
       cwd: built,
-      env: { HOME: built, PATH: "/usr/bin:/bin" },
+      env: { HOME: home, PATH: "/usr/bin:/bin" },
       limit: 300_000,
       groups,
     })
     if (warm.code !== 0) throw new Error(`the binary's --help exited ${warm.code}:\n${warm.stdout}\n${warm.stderr}`)
   }, 960_000)
 
+  afterEach(() => {
+    for (const pid of groups) killGroup(pid)
+    groups.clear()
+    for (const cleanup of cleanups.splice(0)) cleanup()
+  })
+
   afterAll(() => {
     for (const pid of groups) killGroup(pid)
     fs.rmSync(built, { recursive: true, force: true })
   })
+
+  /** A fresh empty folder for one spawn's TMPDIR and BUN_TMPDIR. */
+  const freshTmp = () => fs.mkdtempSync(path.join(built, "tmpdir-"))
+
+  /** Runs `argv` for at most 60 s, by default in the planted folder (its MARKER removed first), with only HOME, a
+   *  system PATH, a private TMPDIR (also BUN_TMPDIR) and `env`. */
+  function runBuilt(
+    argv: string[],
+    options: {
+      env?: Record<string, string>
+      cwd?: string
+      tmpdir?: string
+      input?: string
+      until?: (stdout: string) => boolean
+    } = {},
+  ) {
+    const { env = {}, cwd = proj, tmpdir = freshTmp(), input, until } = options
+    fs.rmSync(path.join(proj, "MARKER"), { force: true })
+    return runDetached(argv, {
+      cwd,
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: tmpdir, BUN_TMPDIR: tmpdir, ...env },
+      limit: 60_000,
+      groups,
+      input,
+      until,
+    })
+  }
+
+  /** Checks that `command` loaded neither the planted folder's .env nor its bunfig.toml preload. */
+  async function expectSeesNeither(command: string) {
+    const whoami = await runBuilt([command, "whoami"])
+    expect(whoami.stdout, whoami.stderr).toContain("This device has no identity")
+    expect(whoami.stdout).not.toContain("as @planted")
+    expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
+    const extra = await runBuilt([command, "whoami", "x y"])
+    expect(extra.stderr).toContain("Unexpected argument 'x y'")
+    expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
+  }
+
+  /** Serves a fake office on `<home>/office/office.sock` that answers only `GET /health`; returns that home. */
+  async function fakeOffice() {
+    // A short folder: macOS caps a socket path at 104 bytes.
+    const short = fs.realpathSync(fs.mkdtempSync("/tmp/oc-"))
+    fs.mkdirSync(path.join(short, "office"))
+    const server = http.createServer((req, res) => {
+      // Bun's unix-socket fetch sends the absolute form (`http://office/health`) as the request target.
+      const health = req.method === "GET" && new URL(req.url ?? "/", "http://office").pathname === "/health"
+      res.writeHead(health ? 200 : 404, { "content-type": "application/json" })
+      res.end(health ? '{"ok": true}' : '{"error": "not found"}')
+    })
+    cleanups.push(() => {
+      server.closeAllConnections()
+      server.close()
+      fs.rmSync(short, { recursive: true, force: true })
+    })
+    await new Promise<void>((resolve) => server.listen(path.join(short, "office/office.sock"), resolve))
+    return short
+  }
+
+  /** Runs `command tui` against a fake office with a fresh TMPDIR until the renderer writes an escape sequence
+   *  (its native library loaded), or the process exits. */
+  async function runTui(command: string) {
+    const tmpdir = freshTmp()
+    const env = { OPENCORP_HOME: await fakeOffice(), TERM: "xterm" }
+    return { ...(await runBuilt([command, "tui"], { env, tmpdir, until: (out) => out.includes("\x1b[") })), tmpdir }
+  }
 
   test("the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset", async () => {
     const readJson = (file: string) => JSON.parse(fs.readFileSync(path.join(npmOut, file), "utf8"))
@@ -491,4 +571,52 @@ describe("the built binary", () => {
       "}",
     ])
   })
+
+  test("plain bun from a folder holding .env shows the planted identity", async () => {
+    const result = await runBuilt([process.execPath, ENTRY, "whoami"])
+    expect(result.stdout, result.stderr).toContain("as @planted")
+  }, 90_000)
+
+  test("the binary from a folder holding .env and a bunfig.toml preload sees neither", async () => {
+    await expectSeesNeither(bin)
+  }, 150_000)
+
+  test("opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither", async () => {
+    // Hard links: the same file as the warmed-up binary, so no second first-run scan.
+    const root = fs.mkdtempSync(path.join(built, "npm-"))
+    await expectSeesNeither(npmInstall(root, "nested", bin, fs.linkSync).link)
+    for (const layout of ["hoisted", "pnpm"] as const) {
+      const result = await runBuilt([npmInstall(root, layout, bin, fs.linkSync).link, "--help"])
+      expect(result.code, result.stderr).toBe(0)
+      expect(result.stdout).toContain("Usage: opencorp [command] [options]")
+    }
+  }, 300_000)
+
+  test("the binary runs the fs helper in its compiled form and reaches the worker stub", async () => {
+    const empty = fs.mkdtempSync(path.join(built, "empty-"))
+    const helper = await runBuilt([bin, "__fs-helper"], { cwd: empty, input: '{"op":"list","path":"."}' })
+    expect(helper.stdout, helper.stderr).toBe('{"ok": true, "output": "(empty)"}')
+    expect(helper.code).toBe(0)
+    const worker = await runBuilt([bin, "__worker"])
+    expect(worker.stderr).toContain("opencorp __worker: not built yet")
+    expect(worker.code).toBe(1)
+  }, 150_000)
+
+  test("the binary loads the TUI assets from beside it and extracts nothing to TMPDIR", async () => {
+    const result = await runTui(bin)
+    expect(result.reached, `exited ${result.code} first:\n${result.stdout}\n${result.stderr}`).toBe(true)
+    expect(fs.readdirSync(result.tmpdir)).toEqual([])
+  }, 90_000)
+
+  test("without the assets beside it the binary refuses to start the TUI", async () => {
+    // A hard link, not a symlink: through a symlink process.execPath would be the real binary, beside its assets.
+    const bare = path.join(built, "bare/bin/opencorp")
+    fs.mkdirSync(path.dirname(bare), { recursive: true })
+    fs.linkSync(bin, bare)
+    const result = await runTui(bare)
+    expect(result.reached, result.stdout).toBe(false)
+    expect(result.code).not.toBe(0)
+    expect(result.stderr).toContain("Missing OpenTUI asset")
+    expect(fs.readdirSync(result.tmpdir)).toEqual([])
+  }, 90_000)
 })

@@ -308,7 +308,12 @@ worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/te
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
+—	new	packages/cli/test/entry.test.ts::opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
+—	new	packages/cli/test/entry.test.ts::plain bun from a folder holding .env shows the planted identity	§2.7 (control for the binary checks)	O2-26
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
+—	new	packages/cli/test/entry.test.ts::the binary from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
+—	new	packages/cli/test/entry.test.ts::the binary loads the TUI assets from beside it and extracts nothing to TMPDIR	O0-10 P4	O2-26
+—	new	packages/cli/test/entry.test.ts::the binary runs the fs helper in its compiled form and reaches the worker stub	§2.5, O1-11	O2-26
 —	new	packages/cli/test/entry.test.ts::the build writes the opencorp package with the npm shim and the platform package with the binary and every TUI asset	§2.7, O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the entry sets the TUI asset root only in the compiled binary	O0-10 P4	O2-26
 —	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
@@ -316,6 +321,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/cli/test/entry.test.ts::the npm shim is an executable sh script that never runs bun or node	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::the npm shim never searches above the package and names the missing package	§2.7 bounded search, O0-10 P5	O2-26
 —	new	packages/cli/test/entry.test.ts::the npm shim refuses an unsupported OS	§2.7	O2-26
+—	new	packages/cli/test/entry.test.ts::without the assets beside it the binary refuses to start the TUI	O0-10 P4	O2-26
 —	new	packages/office/tests/auth/devices.test.ts::a device name with another hash or a hash someone lists is refused	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a failed commit restores the person file	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a refused change never echoes a value	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
