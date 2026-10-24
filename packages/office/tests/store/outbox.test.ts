@@ -172,6 +172,20 @@ test("failing listener is logged not raised", () => {
   expect(got).toHaveLength(1)
   expect(lines.some((line) => line.includes("store listener failed") && line.includes("TypeError"))).toBe(true)
   expect(lines.some((line) => line.includes("secret-ish text"))).toBe(false)
+
+  // A log that throws costs neither the other listeners nor the writer.
+  const broken = openStore({
+    log: () => {
+      throw new Error("log broke")
+    },
+  })
+  broken.addListener(() => {
+    throw new TypeError()
+  })
+  const after: Event[] = []
+  broken.addListener((event) => after.push(event))
+  createItem(broken, workItem())
+  expect(after).toHaveLength(1)
 })
 
 test("remove listener", () => {
