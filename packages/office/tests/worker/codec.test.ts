@@ -40,22 +40,37 @@ test("nested values round trip", () => {
 })
 
 test("a plain object with a $v key is refused", () => {
-  for (const value of [{ a: [{ $v: "bigint", s: "1" }] }, { $v: 1 }]) {
-    let error: unknown
-    try {
-      encode(value)
-    } catch (e) {
-      error = e
-    }
-    expect(error).toBeInstanceOf(TypeError)
-    expect((error as Error).message).toBe("a record with a $v key can't be sent")
+  const vKey = { toJSON: () => ({ $v: "inf" }) }
+  for (const value of [{ a: [{ $v: "bigint", s: "1" }] }, { $v: 1 }, [vKey]]) {
+    expect(() => encode(value)).toThrow(TypeError)
+    expect(() => encode(value)).toThrow(new TypeError("a record with a $v key can't be sent"))
+  }
+  for (const value of [undefined, () => 1]) {
+    expect(() => encode(value)).toThrow(TypeError)
+    expect(() => encode(value)).toThrow(new TypeError("a value with no JSON form can't be sent"))
   }
 })
 
 test("a forged tag is refused", () => {
-  for (const text of ['{"$v":"x"}', '{"$v":"bigint","s":"1.5"}', '{"$v":"bigint","s":"1","t":2}', '{"$v":"nan","s":"1"}',
-    '[{"a":{"$v":"inf","x":null}}]']) {
+  const forged = [
+    '{"$v":"x"}',
+    '{"$v":"bigint","s":"1.5"}',
+    '{"$v":"bigint","s":"1","t":2}',
+    '{"$v":"bigint","s":"-007"}',
+    '{"$v":"bigint","s":"-0"}',
+    '{"$v":"nan","s":"1"}',
+    '[{"a":{"$v":"inf","x":null}}]',
+  ]
+  for (const text of forged) {
+    expect(() => decode(text)).toThrow(TypeError)
     expect(() => decode(text)).toThrow(new TypeError("a frame holds a $v record that isn't a tag"))
+  }
+})
+
+test("text that is not json is refused with a fixed message", () => {
+  for (const text of ["sk-SECRET123", '{"k": sk-secret']) {
+    expect(() => decode(text)).toThrow(SyntaxError)
+    expect(() => decode(text)).toThrow(new SyntaxError("a frame isn't valid JSON"))
   }
 })
 

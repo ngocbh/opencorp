@@ -1,23 +1,36 @@
 /** The office-only codec for values inside worker frames: JSON with tags for the values JSON can't hold. */
 
-const BIGINT = /^-?[0-9]+$/
+// Only the form encode writes, so a tag has one spelling.
+const BIGINT = /^(0|-?[1-9][0-9]*)$/
 // Fixed messages: a frame can hold secrets, so an error never quotes a value.
-const PLAIN_TAG = "a record with a $v key can't be sent"
+const PLAIN_V_KEY = "a record with a $v key can't be sent"
+const NO_JSON_FORM = "a value with no JSON form can't be sent"
 const FORGED_TAG = "a frame holds a $v record that isn't a tag"
+const NOT_JSON = "a frame isn't valid JSON"
 
 /** `value` as frame text: JSON, with a `bigint` as `{"$v": "bigint", "s": "<decimal>"}` and `NaN`, `Infinity` and
  *  `-Infinity` as `{"$v": "nan"}`, `{"$v": "inf"}` and `{"$v": "-inf"}`. Everything else is as `JSON.stringify`
  *  writes it: an object's `toJSON()` result, else its own enumerable fields, with `undefined` fields dropped; so a
- *  `Map` or `Set` becomes `{}` and functions are dropped. Throws a `TypeError` for a record with an own `$v` key,
- *  which would read back as a tag. */
+ *  `Map` or `Set` becomes `{}` and functions are dropped. A boxed number, string or bigint is unwrapped after the
+ *  replacer, so `Object(NaN)` writes `null` and a boxed bigint makes `JSON.stringify` throw its own `TypeError`. A
+ *  throwing `toJSON()` passes its own error through. Throws a `TypeError` with a fixed message for a record with an
+ *  own `$v` key, which would read back as a tag, and for a value with no JSON form (`undefined`, a function). */
 export function encode(value: unknown): string {
-  return JSON.stringify(value, replacer)
+  const text = JSON.stringify(value, replacer)
+  if (text === undefined) throw new TypeError(NO_JSON_FORM)
+  return text
 }
 
 /** The value `encode` wrote as `text`. Throws a `TypeError` for a record with an own `$v` key that isn't exactly one
- *  of the tags. */
+ *  of the tags, and a `SyntaxError` with a fixed message and no cause for text that isn't JSON. */
 export function decode(text: string): unknown {
-  return JSON.parse(text, reviver)
+  try {
+    return JSON.parse(text, reviver)
+  } catch (error) {
+    // The engine's message quotes the text, which can hold a secret.
+    if (error instanceof SyntaxError) throw new SyntaxError(NOT_JSON)
+    throw error
+  }
 }
 
 // JSON.stringify hands the replacer each value after its toJSON() and doesn't hand it the tags the replacer returns,
@@ -31,7 +44,7 @@ function replacer(_key: string, value: unknown): unknown {
     return value
   }
   if (typeof value === "object" && value !== null && !Array.isArray(value) && Object.hasOwn(value, "$v")) {
-    throw new TypeError(PLAIN_TAG)
+    throw new TypeError(PLAIN_V_KEY)
   }
   return value
 }
