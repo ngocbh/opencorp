@@ -23,8 +23,8 @@ test("a hires person file is laid out as python wrote it", () => {
 
 test("a hostile title reads back as itself and adds no key", () => {
   const keys = Object.keys(readYaml(GOLDEN["people/lan/person.yaml"]) as object)
-  const titles = ["QA\nkind: human", "QA\npassword_hash: x", "yes", "0755", "null", "~", "- x", "a: b", "x #y", " lead", " "]
-  for (const title of [...titles, "x".repeat(200)]) {
+  const titles = ["QA\nkind: human", "QA\npassword_hash: x", "yes", "0755", "null", "~", "- x", "a: b", "x #y", " lead"]
+  for (const title of [...titles, " ", "x".repeat(200)]) {
     const body = readYaml(agentFiles({ ...FORM, title })[1]["people/lan/person.yaml"]!) as Record<string, unknown>
     expect([Object.keys(body), body.title]).toEqual([keys, title])
   }
