@@ -2,14 +2,15 @@
  *  knows, as Python's monitor scrubs them (perm/monitor.py), with the Python string functions it relies on. */
 
 import { Buffer } from "node:buffer"
+import { MIN_VALUE_CHARS } from "../secrets.ts"
 
 /** What replaces a secret. */
 export const REDACTED = "[redacted]"
 /** Characters of a result kept in its audit row. */
 export const DETAIL_CHARS = 2000
 /** Lines of a multi-line secret this long or longer are scrubbed on their own: the secret store's minimum value
- *  length (Python's MIN_VALUE_CHARS). */
-export const SECRET_LINE_CHARS = 8
+ *  length. */
+export const SECRET_LINE_CHARS = MIN_VALUE_CHARS
 
 /** `value` with entries under `keys` and every secret in `values` replaced by `[redacted]`.
  *

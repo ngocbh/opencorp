@@ -65,7 +65,6 @@ const ENCODED: [string, string, string][] = [
   ["basic user", "Basic " + b64("user:" + CONN), b64("user:" + CONN).slice(8, -4)],
   ["basic u", "Basic " + b64("u:" + CONN), b64("u:" + CONN).slice(4, -4)],
   ["basic ab", "Basic " + b64("ab:" + CONN), b64("ab:" + CONN).slice(4, -4)],
-  // Python's base64.urlsafe_b64encode(f"??{CONN}>>".encode())
   ["urlsafe base64", URLSAFE, URLSAFE.slice(4, -4)],
   ["upper case", CONN.toUpperCase(), CONN.toUpperCase()],
   ["mixed case", "Conn-Key-5F3A9c1e7b2d4a60", "5F3A9c1e7b2d4a60"],
