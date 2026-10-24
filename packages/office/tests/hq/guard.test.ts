@@ -452,7 +452,9 @@ test.each(BRANCHES)("the guard checks each refusal branch [$name]", async (c) =>
   const { inner, ran } = echo()
   const { sock } = await guarded(inner, { port: c.port, devOrigins: c.devOrigins })
   const { method = "GET", target = "/api/health", host, origin, headers, body } = c
-  const r = parse((await raw(sock, message(method, target, { host, origin, headers, body }))).text)
+  // Only a 200 asks for close, so `raw` reads to its end; a refusal must close the connection itself.
+  const request = message(method, target, { host, origin, headers, body, close: c.status === 200 })
+  const r = parse((await raw(sock, request)).text)
   expect(r.status).toBe(c.status)
   if (c.error) expect(JSON.parse(r.body).error).toBe(c.error)
   if (c.status !== 200) {
