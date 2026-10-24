@@ -144,6 +144,17 @@ test("os errors read as python strerror texts", () => {
   expect(reply(ws, { op: "write_file", path: "", content: "" })).toEqual(
     error("[Errno 2] No such file or directory: ''"),
   )
+  const nul = "a\0b"
+  expect(reply(ws, { op: "read_file", path: nul })).toEqual(error("embedded null byte"))
+  expect(reply(ws, { op: "write_file", path: nul, content: "" })).toEqual(error("embedded null byte"))
+  expect(reply(ws, { op: "edit_file", path: nul, old: "x", new: "y" })).toEqual(error("embedded null byte"))
+  expect(reply(ws, { op: "write_file", path: "d\0/x", content: "" })).toEqual(
+    error("mkdir: embedded null character in path"),
+  )
+  expect(reply(ws, { op: "list", path: nul })).toEqual(error("scandir: embedded null character in path"))
+  expect(reply(ws, { op: "search", pattern: "x", path: nul })).toEqual(
+    error("scandir: embedded null character in path"),
+  )
 })
 
 test("strings that are not well formed are refused", () => {
@@ -310,6 +321,8 @@ test("glob follows fnmatch", () => {
     ["[z-ax]", ["x"]],
     ["[^]x]", ["^x]"]],
     ["[!]x]", ["-", "[", "^", "b", "z", "\u{1f600}"]],
+    ["[a-0!]", ["-", "[", "]", "^", "b", "x", "z", "\u{1f600}"]],
+    ["[a-0!x]", ["-", "[", "]", "^", "b", "z", "\u{1f600}"]],
     ["[", ["["]],
     ["a\\b", ["a\\b"]],
     ["?", ["-", "[", "]", "^", "b", "x", "z", "\u{1f600}"]],
@@ -356,6 +369,9 @@ test("python regex forms are translated", () => {
   expect(search("(?P<w>o)(?P=w)")).toEqual(ok("f:2:fooZ\nf:3:xfoo\nf:4:foo bar\nf:5:oo"))
   expect(search("\\\\Z")).toEqual(ok("f:6:\\Z"))
   expect(search("(?x)a")).toEqual(error("bad pattern: verbose mode is not supported"))
+  fs.writeFileSync(path.join(ws, "f"), "a]\nx\n")
+  expect(search("[]a]")).toEqual(ok("f:1:a]"))
+  expect(search("[^]a]")).toEqual(ok("f:2:x"))
   fs.writeFileSync(path.join(ws, "f"), "\ufeffx\n")
   expect(search("^\ufeffx")).toEqual(ok("f:1:\ufeffx"))
 })

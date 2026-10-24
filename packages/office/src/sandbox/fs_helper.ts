@@ -195,8 +195,8 @@ function listDir(path: string): string {
 
 /** `pattern`, a Python regex, compiled as a JavaScript one. A leading inline-flag group becomes flags
  *  (`i`, `m`, `s`; `a`, `L`, `u` dropped; `x` refused), `\A` and `\Z` become `^` and `$`, `(?P<n>` becomes
- *  `(?<n>` and `(?P=n)` becomes `\k<n>`; character classes are kept as they are. Throws an `OpError` for a
- *  pattern that doesn't compile. */
+ *  `(?<n>` and `(?P=n)` becomes `\k<n>`; character classes are kept as they are, but for a leading `]`.
+ *  Throws an `OpError` for a pattern that doesn't compile. */
 function translateRegex(pattern: string): RegExp {
   const lead = /^\(\?([aiLmsux]+)\)/.exec(pattern)
   const given = lead?.[1] ?? ""
@@ -216,9 +216,15 @@ function translateRegex(pattern: string): RegExp {
       // As Python reads a class: a `]` first (or after `^`) is a member, and an escape is skipped.
       let j = i + 1
       if (pattern[j] === "^") j++
-      if (pattern[j] === "]") j++
+      source += pattern.slice(i, j)
+      if (pattern[j] === "]") {
+        // Escaped, or JavaScript reads `[]a]` as an empty class and `[^]a]` as any character.
+        source += "\\]"
+        j++
+      }
+      const from = j
       while (j < pattern.length && pattern[j] !== "]") j += pattern[j] === "\\" ? 2 : 1
-      source += pattern.slice(i, j + 1)
+      source += pattern.slice(from, j + 1)
       i = j + 1
     } else if (pattern.startsWith("(?P<", i)) {
       source += "(?<"
@@ -265,12 +271,10 @@ function translateGlob(glob: string): RegExp {
         out += "\\["
         continue
       }
-      const negate = p[i] === "!"
-      const start = negate ? i + 1 : i
-      // The class split at each `-` that makes a range; a `-` first or last is a member.
+      // The class (its `!` too) split at each `-` that makes a range; a `-` first or last is a member.
       const chunks: string[][] = []
-      let from = start
-      for (let k = p.indexOf("-", start + 1); k >= 0 && k < j; k = p.indexOf("-", k + 3)) {
+      let from = i
+      for (let k = p.indexOf("-", p[i] === "!" ? i + 2 : i + 1); k >= 0 && k < j; k = p.indexOf("-", k + 3)) {
         chunks.push(p.slice(from, k))
         from = k + 1
       }
@@ -286,8 +290,10 @@ function translateGlob(glob: string): RegExp {
       }
       // Escaped so that Python's `[]x]` and `[^]x]` don't read as JavaScript's empty or any-character class.
       const body = chunks.map((chunk) => chunk.join("").replace(/[\\\]\[^-]/g, "\\$&")).join("-")
-      if (body) out += `[${negate ? "^" : ""}${body}]`
-      else out += negate ? "." : "(?!)"
+      // A `!` that leads once reversed ranges are gone negates, as in Python: `[a-0!]` is any character.
+      if (!body) out += "(?!)"
+      else if (body === "!") out += "."
+      else out += body.startsWith("!") ? `[^${body.slice(1)}]` : `[${body}]`
       i = j + 1
     } else {
       out += c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")
@@ -421,7 +427,7 @@ const OPS: Record<string, Op> = Object.assign(Object.create(null), {
 } satisfies Record<string, Op>)
 
 /** The op's arguments from `request`; `null` leaves an optional one out. */
-function checkArgs(op: Op, request: Record<string, unknown>): Args {
+function checkArgs(opName: string, op: Op, request: Record<string, unknown>): Args {
   for (const name of Object.keys(request)) {
     if (name !== "op" && !Object.hasOwn(op.args, name)) throw new OpError(`unexpected argument ${name}`)
   }
@@ -440,7 +446,19 @@ function checkArgs(op: Op, request: Record<string, unknown>): Args {
     if (typeof value === "string" && ENCODED.has(name) && !value.isWellFormed()) throw encodeError(value)
     args[name] = value
   }
+  const path = args.path
+  if (typeof path === "string" && path.includes("\0")) throw nulError(opName, path)
   return args as Args
+}
+
+/** Python's error for the NUL in `path`: `os.scandir` (list, search) and `os.mkdir` (write_file's
+ *  parent folders) word it apart from `open`. The runtime would throw a TypeError instead. */
+function nulError(op: string, path: string): OpError {
+  if (op === "list" || op === "search") return new OpError("scandir: embedded null character in path")
+  if (op === "write_file" && path.slice(0, path.lastIndexOf("/") + 1).includes("\0")) {
+    return new OpError("mkdir: embedded null character in path")
+  }
+  return new OpError("embedded null byte")
 }
 
 /** The output of the request in `input`; throws an `OpError` for a reply that is an error. */
@@ -455,9 +473,9 @@ function serve(input: Buffer): string {
     throw new OpError("request must be a JSON object")
   }
   const name = (request as Record<string, unknown>).op
-  const op = typeof name === "string" && Object.hasOwn(OPS, name) ? OPS[name]! : undefined
-  if (!op) throw new OpError("unknown op")
-  const args = checkArgs(op, request as Record<string, unknown>)
+  if (typeof name !== "string" || !Object.hasOwn(OPS, name)) throw new OpError("unknown op")
+  const op = OPS[name]!
+  const args = checkArgs(name, op, request as Record<string, unknown>)
   try {
     return op.run(args)
   } catch (error) {
