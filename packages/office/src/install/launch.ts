@@ -152,6 +152,9 @@ export function runCommand(argv: readonly string[], { timeoutMs = 60_000 } = {})
     const timer = setTimeout(() => {
       timedOut = true
       child.kill("SIGKILL")
+      // A grandchild may hold the pipes open; closing our ends lets `close` follow the child's own exit.
+      child.stdout!.destroy()
+      child.stderr!.destroy()
     }, timeoutMs)
     child.on("error", (error) => {
       // A program that never started (ENOENT, EACCES); a failed kill also lands here and is ignored.

@@ -4,8 +4,9 @@ import fs from "node:fs"
 import http from "node:http"
 import net from "node:net"
 import path from "node:path"
-import { expect, test } from "bun:test"
+import { expect, onTestFinished, test } from "bun:test"
 import { Launch, daemonEnv, launch, officeAnswers, resolveHome, runCommand } from "../../src/install/launch.ts"
+import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
 import { ps, shortDir, tempDir } from "../helpers.ts"
 import { Runner, makeHost } from "./helpers.ts"
@@ -152,6 +153,18 @@ test("a program that outlives the timeout is exit 124", async () => {
   expect(performance.now() - started).toBeLessThan(3000)
   expect(out).toEqual({ code: 124, stdout: "", stderr: "/bin/sleep timed out" })
   expect(childRuns("/bin/sleep 5")).toBe(false)
+
+  // A grandchild holding the pipes doesn't hold the call past its timeout.
+  const pidFile = path.join(tempDir(), "pid")
+  const again = performance.now()
+  const held = await runCommand(["/bin/sh", "-c", `/bin/sleep 5 & echo $! > ${pidFile}; wait`], { timeoutMs: 200 })
+  const grandchild = Number(fs.readFileSync(pidFile, "utf8"))
+  const grandchildStarted = startTime(grandchild)
+  onTestFinished(() => {
+    if (grandchildStarted !== null && sameProcess(grandchild, grandchildStarted)) process.kill(grandchild, "SIGKILL")
+  })
+  expect(performance.now() - again).toBeLessThan(3000)
+  expect(held.code).toBe(124)
 })
 
 test("office answers is false without a server, for a non 200 and for one that never replies", async () => {
