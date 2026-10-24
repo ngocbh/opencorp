@@ -7,7 +7,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { type ErrorPart, type Message, now, type TextPart, type ToolPart } from "@opencorp/protocol"
-import { splitLines } from "../perm/redact.ts"
+import { pyJson, splitLines } from "../perm/redact.ts"
 import { newId } from "../store/store.ts"
 import type { HarnessEvent } from "./adapter.ts"
 
@@ -23,6 +23,10 @@ export const REQUEST = "codex.request"
 /** The tool name of each Codex item type that becomes a tool part. */
 export const TOOL_ITEMS: ReadonlyMap<string, string> = new Map([
   ["commandExecution", COMMAND], ["fileChange", FILE_CHANGE], ["mcpToolCall", MCP_TOOL],
+])
+/** The part state of each Codex item status; any other status is still running. */
+const STATES: ReadonlyMap<string, ToolState> = new Map([
+  ["inProgress", "running"], ["completed", "completed"], ["failed", "error"], ["declined", "error"],
 ])
 /** What a message an interrupt stopped ends with. */
 export const INTERRUPTED_TEXT = "\n\n[interrupted]"
@@ -192,6 +196,12 @@ export class Translator {
       this.live.stream({ node, exchange: item.id, chunk: leads ? text.slice(sent.length) : "", final: true })
     } else if (kind === "reasoning" && done && truthy(item.summary)) {
       this.live.stream({ node, exchange: item.id, chunk: "(thinking) " + item.summary.join("\n"), final: true })
+    } else if (TOOL_ITEMS.has(kind)) {
+      if (kind === "fileChange") {  // named once here, so the card, the part, the debrief and the TUI all agree
+        item = { ...item, changes: (item.changes ?? []).map((c: Obj) => this.relativeChange(c)) }
+      }
+      this.items.set(item.id, item)
+      this.put(turnId, item.id)
     }
   }
 
@@ -201,6 +211,24 @@ export class Translator {
     this.shown.set(params.turnId, message)
     this.live.error(`Codex: ${message}`)
     this.afterError.add(params.turnId)  // what Codex does next goes below the error, not above it
+  }
+
+  /** `change` with its path, and where it moved to, relative to the session's cwd. */
+  private relativeChange(change: Obj): Obj {
+    const to = moved(change)
+    const kind = truthy(to) ? { ...change.kind, move_path: relative(to!, this.cwd) } : change.kind ?? null
+    return { ...change, path: relative(change.path, this.cwd), kind }
+  }
+
+  /** (Re)writes `callId`'s tool part from its item, with the decision on it. */
+  private put(turnId: string, callId: string): void {
+    const item = this.items.get(callId)!
+    const [tool, input, output, error] = view(item)
+    this.live.tool(this.node(turnId, callId), callId, tool, {
+      state: STATES.get(item.status) ?? "running",
+      input: this.approvals.has(callId) ? { ...input, approval: this.approvals.get(callId) } : input,
+      output, error,
+    })
   }
 }
 
@@ -322,6 +350,38 @@ class Live {
     this.tails.delete(node)
     this.messages.delete(node)
   }
+}
+
+function kind(change: Obj): string | null {
+  return (truthy(change.kind) ? change.kind : {}).type ?? null
+}
+
+function moved(change: Obj): string | null {
+  return (truthy(change.kind) ? change.kind : {}).move_path ?? null
+}
+
+/** A change's path, with where it moved to: `a.py → b.py`. */
+function named(change: Obj): string {
+  return truthy(moved(change)) ? `${change.path} → ${moved(change)}` : change.path
+}
+
+/** A tool item's part fields: tool, input, output, error. */
+function view(item: Obj): [string, Obj, unknown, string | null] {
+  const type = item.type
+  const error = item.status === "declined" ? "declined" : null
+  if (type === "commandExecution") {
+    return [COMMAND, { command: item.command, cwd: item.cwd ?? null, exit_code: item.exitCode ?? null },
+      cap(item.aggregatedOutput), error]
+  }
+  if (type === "fileChange") {
+    const changes = (item.changes ?? []).map((c: Obj) => ({ path: c.path, kind: kind(c),
+      ...(truthy(moved(c)) ? { move_path: moved(c) } : {}), diff: cap(c.diff) }))
+    return [FILE_CHANGE, { changes }, "", error]
+  }
+  const result = item.result, failure = item.error
+  const output = truthy(result) ? cap(pyJson(result.content ?? null)) : ""
+  return [MCP_TOOL, { server: item.server, tool: item.tool, arguments: item.arguments ?? null }, output,
+    truthy(failure) ? failure.message ?? null : error]
 }
 
 /** Server requests that become cards. */

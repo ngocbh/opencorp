@@ -4,8 +4,10 @@ import { Ajv } from "ajv"
 import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
-import { changeCounts, REFUSED, SERVED, Translator } from "../../src/harness/translate.ts"
-import { agentMessage, agentMessageDelta, error, fill } from "../../src/testing/fake_codex.ts"
+import { changeCounts, COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative, SERVED,
+  Translator } from "../../src/harness/translate.ts"
+import { agentMessage, agentMessageDelta, command, commandStarted, error, fileChange, fill }
+  from "../../src/testing/fake_codex.ts"
 
 const FIXTURES = new URL("../fixtures/codex/", import.meta.url)
 /** The recorded sessions' names, without `.jsonl`, sorted. */
@@ -185,6 +187,26 @@ test("an error mid turn puts what follows below it", () => {
   expect(shape(events)).toEqual([["assistant", ["One."]], ["assistant", ["error"]], ["assistant", ["Two."]]])
 })
 
+test("a long session keeps nothing from its finished turns", () => {
+  const { t, events } = tr()
+  for (let n = 1; n < 6; n++) {
+    const turn = `turn_${n}`
+    feed(t, [...command("c", "true"), commandStarted(`c${n}`, "sleep 9"), ...agentMessage(`m${n}`, "Hi").slice(0, 2),
+      error("hiccup", { willRetry: false })], turn)
+    t.turnCompleted(turn, n % 2 ? "interrupted" : "failed", { message: "hiccup" })
+    feed(t, [error("late", { willRetry: false })], turn)  // after its turn ended: nothing to keep
+    t.turnCompleted(turn, "interrupted", null)  // ended twice (a turn's end, then a dead app-server)
+  }
+  const kept = [t["items"], t["streamed"], t["nodes"], t["segments"], t["shown"], t["afterError"]]
+  expect(kept.map((x) => x.size)).toEqual([0, 0, 0, 0, 0, 0])
+  const live = t["live"]
+  expect([live["messages"], live["texts"], live["tools"], live["steered"], live["tails"]].map((x) => x.size))
+    .toEqual([0, 0, 0, 0, 0])
+  expect(errors(events)).toEqual(Array(5).fill("Codex: hiccup"))
+  // One marker per interrupted turn, below its error; ending a turn again adds none.
+  expect(texts(events).filter((x) => x === "[interrupted]").length).toBe(3)
+})
+
 test("a part event is not changed by later deltas", () => {
   const { t, events } = tr()
   feed(t, agentMessage("m1", "Hello there"))
@@ -193,7 +215,43 @@ test("a part event is not changed by later deltas", () => {
   expect(first.type === "part" && first.part.type === "text" && first.part.text).toBe("Hello")
 })
 
-// --- file changes ------------------------------------------------------------------------
+// --- tool items --------------------------------------------------------------------------
+
+test("a command is a tool part with its exit code and capped output", () => {
+  const { t, events } = tr()
+  feed(t, command("c1", "pytest -q", { output: "x".repeat(OUTPUT_MAX_CHARS + 10), exitCode: 1 }))
+  t.turnCompleted("turn_1", "completed", null)
+  const [part, ...rest] = parts(events)
+  expect(rest).toEqual([])
+  if (part?.type !== "tool") throw new Error("not a tool part")
+  expect([part.tool, part.state, part.input.command, part.input.exit_code])
+    .toEqual([COMMAND, "completed", "pytest -q", 1])
+  expect(typeof part.output === "string" && part.output.endsWith(OUTPUT_CUT)).toBe(true)
+  expect((part.output as string).length).toBe(OUTPUT_MAX_CHARS + OUTPUT_CUT.length)
+})
+
+test("a file change keeps paths kinds and diffs", () => {
+  const { t, events } = tr()
+  feed(t, fileChange("f1", "notes.md", "hi\n"))
+  t.turnCompleted("turn_1", "completed", null)
+  const [part, ...rest] = parts(events)
+  expect(rest).toEqual([])
+  if (part?.type !== "tool") throw new Error("not a tool part")
+  expect(part.tool).toBe(FILE_CHANGE)
+  expect(part.input.changes).toEqual([{ path: "notes.md", kind: "add", diff: "hi\n" }])
+})
+
+test("a file change under the cwd is named relative to it", () => {
+  // Codex sends absolute paths; the owner reads them as the project's.
+  const { t, events } = tr()
+  feed(t, [...fileChange("f1", "{cwd}/docs/notes.md", "hi\n"), ...fileChange("f2", "/etc/hosts", "x\n")])
+  t.turnCompleted("turn_1", "completed", null)
+  expect(parts(events).map((p) => p.type === "tool" && (p.input.changes as Msg[])[0]!.path))
+    .toEqual(["docs/notes.md", "/etc/hosts"])
+  expect(relative("/w", "/w")).toBe("/w")
+  expect(relative("/wx/a", "/w")).toBe("/wx/a")
+  expect(relative("a.py", "/w")).toBe("a.py")
+})
 
 test.each([
   ["add", "one\ntwo\n", [2, 0]],  // Codex sends a new file's content
@@ -203,6 +261,61 @@ test.each([
   ["update", "--- a/f\n+++ b/f\n@@ -1 +1 @@\n--- x\n+++ y\n", [1, 1]],  // headers, then lines "-- x" and "++ y"
 ] as [string, string, [number, number]][])("a file changes lines are counted by its kind [%s]", (kind, diff, counts) => {
   expect(changeCounts(kind, diff)).toEqual(counts)
+})
+
+test("a declined command is an error part and a running one is interrupted at turn end", () => {
+  const { t, events } = tr()
+  feed(t, [command("c1", "rm -rf build", { status: "declined", exitCode: null })[1]!])
+  feed(t, [commandStarted("c2", "sleep 9")])
+  t.turnCompleted("turn_1", "interrupted", null)
+  const states = Object.fromEntries(parts(events).flatMap((p) =>
+    p.type === "tool" ? [[p.input.command, [p.state, p.error]]] : []))
+  expect(states).toEqual({ "rm -rf build": ["error", "declined"], "sleep 9": ["interrupted", null] })
+})
+
+test("an mcp call names server and tool", () => {
+  const { t, events } = tr()
+  t.notification("item/completed", { turnId: "turn_1", item: {
+    type: "mcpToolCall", id: "x1", server: "docs", tool: "search", status: "completed",
+    arguments: { q: "launchd" }, result: { content: [{ type: "text", text: "3 hits" }] }, error: null } })
+  t.turnCompleted("turn_1", "completed", null)
+  const [part, ...rest] = parts(events)
+  expect(rest).toEqual([])
+  if (part?.type !== "tool") throw new Error("not a tool part")
+  expect(part.tool).toBe(MCP_TOOL)
+  expect(part.input).toEqual({ server: "docs", tool: "search", arguments: { q: "launchd" } })
+  expect(part.output).toContain("3 hits")
+})
+
+test("a steer while a command runs completes its part in place", () => {
+  const { t, events } = tr()
+  feed(t, [commandStarted("c1", "sleep 3")])
+  t.user("also b", "ngocbh")
+  feed(t, [command("c1", "sleep 3")[1]!, ...agentMessage("m1", "Slept.")])
+  t.turnCompleted("turn_1", "completed", null)
+  expect(shape(events)).toEqual([["assistant", [[COMMAND, "completed"]]], ["user", ["also b"]],
+    ["assistant", ["Slept."]]])
+})
+
+test("two steers around a running command keep it in its message", () => {
+  const { t, events } = tr()
+  feed(t, [commandStarted("c1", "sleep 3")])
+  t.user("a", "ngocbh")
+  feed(t, agentMessage("m1", "One."))
+  t.user("b", "ngocbh")
+  feed(t, [command("c1", "sleep 3")[1]!, ...agentMessage("m2", "Two.")])
+  t.turnCompleted("turn_1", "completed", null)
+  expect(shape(events)).toEqual([["assistant", [[COMMAND, "completed"]]], ["user", ["a"]], ["assistant", ["One."]],
+    ["user", ["b"]], ["assistant", ["Two."]]])
+})
+
+test("a running command from before a steer is interrupted with the turn", () => {
+  const { t, events } = tr()
+  feed(t, [commandStarted("c1", "sleep 30")])
+  t.user("never mind", "ngocbh")
+  t.turnCompleted("turn_1", "interrupted", null)
+  expect(shape(events)).toEqual([["assistant", [[COMMAND, "interrupted"]]], ["user", ["never mind"]],
+    ["assistant", ["[interrupted]"]]])
 })
 
 // --- the pinned schema -------------------------------------------------------------------
