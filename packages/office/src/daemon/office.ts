@@ -3,6 +3,8 @@ import path from "node:path"
 import { now } from "@opencorp/protocol"
 import { Hiring } from "../chat/hire.ts"
 import type { CompanyGit } from "../company/git.ts"
+import { CompanySnapshots } from "../company/snapshot.ts"
+import { SecretStore } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
 
@@ -67,6 +69,10 @@ export class Office {
   readonly bus: Bus
   /** Hire previews and confirms; one for the office's life, since previews live in memory. */
   readonly hiring: Hiring
+  /** The company at a commit, cached for HQ. */
+  readonly snapshots: CompanySnapshots
+  /** Asset secrets under `office/secrets`, read per call. */
+  readonly secrets: SecretStore
   workers: WorkerPool | undefined
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
   readonly startedAt: string = now()
@@ -98,6 +104,8 @@ export class Office {
     this.git = git
     this.bus = bus
     this.hiring = new Hiring(git)
+    this.snapshots = new CompanySnapshots(git)
+    this.secrets = new SecretStore(paths.secrets)
     this.workers = workers
     this.#log = log
   }
