@@ -361,7 +361,7 @@ worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	package
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
 worker/test_spawn.py	open	—	—	O3-4
-worker/test_steering.py	open	—	—	O3-3
+worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—	O3-3
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses steers and interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted	O3-3
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
 worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	packages/office/tests/worker/steering.test.ts::an interrupt waits for its node to start	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted	O3-3
