@@ -223,7 +223,10 @@ const endedEarly = () => new HttpError(400, "invalid_body", "the body ended earl
 const notJson = () => new HttpError(422, "invalid_body", "the body isn't JSON")
 
 /** The iterator's next step, or undefined once `signal` aborts first. */
-function nextUnlessAborted<T>(it: AsyncIterator<T>, signal?: AbortSignal): Promise<IteratorResult<T> | undefined> {
+export function nextUnlessAborted<T>(
+  it: AsyncIterator<T>,
+  signal?: AbortSignal,
+): Promise<IteratorResult<T> | undefined> {
   if (!signal) return it.next()
   if (signal.aborted) return Promise.resolve(undefined)
   return new Promise((resolve, reject) => {
@@ -328,13 +331,14 @@ function hasBody(req: IncomingMessage): boolean {
 }
 
 /** A `node:http` listener that serves `routes` through `options`' hooks; its promise settles once the request is
- *  answered and never rejects (node ignores it, tests await it). */
+ *  answered and never rejects (node ignores it, tests await it). Its `body`, when given, is a body already read
+ *  whole under the caller's own cap (HQ's guard): a body route parses it instead of reading the request. */
 export function requestListener<C>(
   routes: readonly Route<C>[],
   options: PipelineOptions<C>,
-): (req: IncomingMessage, res: ServerResponse) => Promise<void> {
+): (req: IncomingMessage, res: ServerResponse, body?: Buffer) => Promise<void> {
   const patterns = routes.map(compile)
-  return async (req, res) => {
+  return async (req, res, given) => {
     const controller = new AbortController()
     res.on("close", () => {
       if (!res.writableFinished) controller.abort()
@@ -357,7 +361,7 @@ export function requestListener<C>(
     }
     // A body left unread, or read only in part, stays on the connection, so it can't be reused: what follows on
     // it would start inside that body. Reading the whole body clears this.
-    let unread: Record<string, string> = hasBody(req) ? { connection: "close" } : {}
+    let unread: Record<string, string> = given === undefined && hasBody(req) ? { connection: "close" } : {}
     try {
       const target = originForm(req.url ?? "/")
       const q = target.indexOf("?")
@@ -395,7 +399,7 @@ export function requestListener<C>(
       // The body is read only after the guard: a refused request is answered without reading a byte of it.
       let body: unknown
       if (route.body) {
-        const buf = await readBody(req, controller.signal, res)
+        const buf = given ?? (await readBody(req, controller.signal, res))
         unread = {}
         body = parseBody(route.body, buf)
       }
