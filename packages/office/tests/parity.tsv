@@ -424,6 +424,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/perm/redaction.test.ts::values under secret keys are redacted at any depth	design §6.3: arguments named after the asset's secret keys (Python covers it only through Monitor.call)	O1-12
 —	new	packages/office/tests/platform.test.ts::helperCommand in a checkout runs fs_helper.ts with the no-autoload flags	§2.5 checkout form, 2026-10-23 design fix	O1-11
 —	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
+—	new	packages/office/tests/platform.test.ts::procStartTime reads a running child and is null for an exited one	§2.2, O0-10 P6	O2-11a
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::selfSpawnEnv drops a name a spawn cant pass as given	design §6.5: the spawn filter drops the names a spawn can't pass as given, as Provider.env refuses them	O2-19
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
