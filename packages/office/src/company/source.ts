@@ -18,6 +18,7 @@ export const MAX_FILE = 1 << 20
 export const MAX_LINK = 4 << 10
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f]/
 
 /** A file request the Source view refuses: `status` and `code` as the API returns them. */
 export class SourceError extends Error {
@@ -38,6 +39,18 @@ export function badPath(path: unknown): boolean {
   return path.split("/").some((seg) => seg === "" || seg === "." || seg === "..")
 }
 
+/** `data` as text: strict UTF-8 with no C0 control character but tab, LF and CR; null means binary. A BOM is
+ *  kept, as stored. */
+function asText(data: Uint8Array): string | null {
+  let text: string
+  try {
+    text = UTF8.decode(data)
+  } catch {
+    return null
+  }
+  return CONTROL.test(text) ? null : text
+}
+
 /** A HEAD the tree route listed: its readable entries by path and the tree response. */
 interface Served {
   readonly listing: Map<string, TreeEntry>
@@ -56,6 +69,7 @@ export class CompanySource {
   // Maps iterate in insertion order: re-setting a key makes it the newest, and the first key is the oldest.
   readonly #ring = new Map<string, Served>()
   readonly #loading = new Map<string, Promise<Served>>()
+  readonly #rendered = new Map<string, CompanyFile>()
 
   constructor(git: CompanyGit, { treeCap = TREE_CAP }: { treeCap?: number } = {}) {
     this.git = git
@@ -121,21 +135,38 @@ export class CompanySource {
     if (entry === undefined || entry.type === "folder") {
       throw new SourceError(404, "no_file", "no such file in that commit")
     }
-    return this.#render(at as string, entry)
+    const key = `${at}:${entry.path}`
+    const done = this.#rendered.get(key)
+    if (done !== undefined) {
+      this.#rendered.delete(key)
+      this.#rendered.set(key, done)
+      return done
+    }
+    const found = await this.#render(at as string, entry)
+    this.#rendered.set(key, found)
+    while (this.#rendered.size > RENDERED) this.#rendered.delete(this.#rendered.keys().next().value!)
+    return found
   }
 
-  /** The file response for `entry` at `sha`: its text as stored. */
+  /** The file response for `entry` at `sha`: its text as stored, or why it has none. */
   async #render(sha: string, entry: TreeEntry): Promise<CompanyFile> {
-    const data = await this.git.readBlob(entry.blob)
-    if (data === null) throw new Error(`the clone has no blob for ${JSON.stringify(entry.path)} at ${sha}`)
-    return {
+    const out = (content: CompanyFile["content"], fields: Partial<CompanyFile> = {}): CompanyFile => ({
       path: entry.path,
       commit: sha,
-      content: "text",
-      text: UTF8.decode(data),
+      content,
+      text: null,
       target: null,
       reason: null,
       rewritten: false,
-    }
+      ...fields,
+    })
+    if (entry.type === "submodule") return out("submodule")
+    if ((entry.size ?? 0) > (entry.type === "symlink" ? MAX_LINK : MAX_FILE)) return out("too_large")
+    const data = await this.git.readBlob(entry.blob)
+    if (data === null) throw new Error(`the clone has no blob for ${JSON.stringify(entry.path)} at ${sha}`)
+    const text = asText(data)
+    if (text === null) return out("binary")
+    if (entry.type === "symlink") return out("symlink", { target: text }) // shown, never followed
+    return out("text", { text })
   }
 }
