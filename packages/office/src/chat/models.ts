@@ -11,7 +11,7 @@ import {
 } from "@ngocbh/yian/llm_clients"
 import type { ModelList } from "@opencorp/protocol"
 import type { z } from "zod"
-import { providerLabel } from "./connections.ts"
+import { type ConnectionFile, type Connections, configHash, providerLabel } from "./connections.ts"
 import type { LlmConfig, Provider } from "./provider.ts"
 
 /** How long one listing may take, in ms: under the TUI's 15 s read timeout. */
@@ -288,7 +288,7 @@ export interface ListOptions {
   deadlineMs?: number
   /** Stands in for the HTTP senders (yian's, and the office's for Azure). */
   request?: AuthRequest
-  /** The sign-in of a subscription connection. */
+  /** The auth file holding a subscription connection's sign-in; null for any other connection. */
   authFile?: string | null
   /** Where a failure's line goes; `console.error` by default. */
   log?: (line: string) => void
@@ -316,5 +316,144 @@ export async function listModels(conn: Provider, name: string, options: ListOpti
     return await Promise.race([listed(conn, name, deadlineMs, request, authFile, log), late])
   } finally {
     clearTimeout(timer)
+  }
+}
+
+/** Listing a connection's models ran out of time. */
+export class ListTimeout extends Error {
+  override name = "ListTimeout"
+}
+
+/** Lists connection `name` (`conn`) within `deadlineMs`, through `authFile` for a subscription, as `listModels`
+ *  does. */
+export type Lister = (
+  conn: ConnectionFile,
+  name: string,
+  options: { deadlineMs: number; authFile: string | null },
+) => Promise<ModelListing>
+
+/** Options for `ModelCache`. */
+export interface ModelCacheOptions {
+  /** Lists a connection; `listModels` by default. */
+  lister?: Lister
+  /** Dates the entries, in ms; `performance.now` by default. */
+  clock?: () => number
+  /** Where log lines go; `console.error` by default. */
+  log?: (line: string) => void
+}
+
+type Entry = { at: number; hash: string; listing: ModelListing }
+
+/** Whether `promise` settles, either way, within `ms`. */
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), Math.max(0, ms))
+  })
+  const settled = promise.then(
+    () => true,
+    () => true,
+  )
+  try {
+    return await Promise.race([settled, late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Each connection's listing, kept `FRESH_MS`, and made by one caller at a time per connection.
+ *
+ * A connection being listed has its flight, so a slow connection never holds up another, and a caller that finds a
+ * listing under way waits for it rather than listing again. `clock` dates the entries.
+ */
+export class ModelCache {
+  readonly connections: Connections
+  readonly #lister: Lister
+  readonly #clock: () => number
+  readonly #log: (line: string) => void
+  readonly #entries = new Map<string, Entry>()
+  readonly #flights = new Map<string, Promise<ModelListing>>()
+
+  constructor(connections: Connections, options: ModelCacheOptions = {}) {
+    this.connections = connections
+    this.#log = options.log ?? console.error
+    const log = this.#log
+    this.#lister =
+      options.lister ?? ((conn, name, { deadlineMs, authFile }) => listModels(conn, name, { deadlineMs, authFile, log }))
+    this.#clock = options.clock ?? (() => performance.now())
+  }
+
+  /**
+   * The models connection `name` offers, listed again if `refresh`, if older than `FRESH_MS`, or if the last
+   * listing failed; by `deadlineMs` (`DEADLINE_MS` by default).
+   *
+   * Rejects with `BadConnectionName` when `name` isn't a connection name, `ConnectionGone` when there is no such
+   * connection, and `ProviderError` when its file can't be used.
+   */
+  async get(name: string, options: { refresh?: boolean; deadlineMs?: number } = {}): Promise<ModelListing> {
+    const end = performance.now() + (options.deadlineMs ?? DEADLINE_MS)
+    const conn = await this.connections.get(name)
+    const entry = this.#entries.get(name)
+    if (
+      !options.refresh &&
+      entry !== undefined &&
+      entry.hash === configHash(conn) &&
+      entry.listing.error === null &&
+      this.#clock() - entry.at < FRESH_MS
+    ) {
+      return entry.listing
+    }
+    return this.#list(name, conn, entry, end)
+  }
+
+  /** Forgets the listing of connection `name`, or of every connection. */
+  invalidate(name?: string): void {
+    if (name === undefined) this.#entries.clear()
+    else this.#entries.delete(name)
+  }
+
+  /** Lists every connection not listed in the last `FRESH_MS`; settles once each is listed, and never rejects. */
+  async warm(): Promise<void> {
+    let names: string[]
+    try {
+      names = await this.connections.names()
+    } catch {
+      this.#log("the office's connections can't be read; no models are listed ahead of time")
+      return
+    }
+    await Promise.all(
+      names.map(async (name) => {
+        try {
+          await this.get(name)
+        } catch {
+          this.#log(`connection ${name} can't be read; its models aren't listed ahead of time`)
+        }
+      }),
+    )
+  }
+
+  /** Lists connection `name`, unless another caller lists it while this one waits; `seen` is the entry this caller
+   *  found, and `end` the `performance.now()` it must be done by. */
+  async #list(name: string, conn: ConnectionFile, seen: Entry | undefined, end: number): Promise<ModelListing> {
+    for (let flight = this.#flights.get(name); flight !== undefined; flight = this.#flights.get(name)) {
+      if (!(await settlesWithin(flight, end - performance.now()))) return ownModels(conn, name, TIMED_OUT)
+      const entry = this.#entries.get(name)
+      // listed while this caller waited
+      if (entry !== undefined && entry !== seen && entry.hash === configHash(conn)) return entry.listing
+    }
+    const remaining = end - performance.now()
+    if (remaining <= 0) return ownModels(conn, name, TIMED_OUT)
+    const authFile = conn.method === "subscription" ? this.connections.authFile(name) : null
+    const flight: Promise<ModelListing> = this.#lister(conn, name, { deadlineMs: remaining, authFile })
+      .then((listing) => {
+        this.#entries.set(name, { at: this.#clock(), hash: configHash(conn), listing })
+        return listing
+      })
+      .finally(() => {
+        if (this.#flights.get(name) === flight) this.#flights.delete(name)
+      })
+    this.#flights.set(name, flight)
+    return flight
   }
 }

@@ -13,16 +13,19 @@ import {
   OAuthCredentials,
 } from "@ngocbh/yian/llm_clients"
 import { ModelList } from "@opencorp/protocol"
-import { ConnectionFile } from "../../src/chat/connections.ts"
+import { ConnectionFile, ConnectionGone, Connections } from "../../src/chat/connections.ts"
 import {
   azureDeployments,
+  FRESH_MS,
   listModels,
+  ModelCache,
   ModelListError,
   type ModelListing,
   providerModels,
   TIMED_OUT,
 } from "../../src/chat/models.ts"
-import { tempDir } from "../helpers.ts"
+import { writePrivate } from "../../src/secrets.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 
 const SENTINEL = "sk-sentinel-3c9e10b7a2f4"
 const ANTHROPIC_KEY = "sk-ant-sentinel-a7d93c10e5b2"
@@ -366,7 +369,7 @@ test("an expiring sign in is refreshed and each request gets the time left", asy
   const replies = new Replies([new HttpResponse(200, { access_token: NEW_ACCESS, expires_in: 3600n }), CATALOG])
   const send: AuthRequest = async (method, url, options) => {
     const reply = await replies.send(method, url, options)
-    if (url.endsWith("/oauth/token")) await Bun.sleep(300)
+    if (url.endsWith("/oauth/token")) await new Promise((resolve) => setTimeout(resolve, 300))
     return reply
   }
   const got = await listModels(subscription(), "chatgpt", { deadlineMs: 6000, request: send, authFile: auth })
@@ -414,6 +417,34 @@ test("a subscription without its sign in offers its own model", async () => {
   })
   expect([got.listed, got.error, got.models]).toEqual([false, "no sign-in", [{ id: "gpt-5.5", name: null }]])
   expect(request.calls()).toBe(0)
+})
+
+test("the cache lists a subscription through its own auth file", async () => {
+  const office = path.join(tempDir(), "office")
+  fs.mkdirSync(office, { mode: 0o700 })
+  const conns = new Connections(office)
+  const creds = new OAuthCredentials({
+    accessToken: ACCESS,
+    refreshToken: REFRESH,
+    expiresAt: Date.now() / 1000 + 3600,
+    accountId: "account-test",
+  })
+  await conns.add("chatgpt", subscription(), {
+    signIn: async (auth) => {
+      await new AuthStore(auth).save("openai", creds, "gpt-5.5")
+    },
+  })
+  await conns.put("openai", openai())
+  const seen: Record<string, string | null> = {}
+  const cache = new ModelCache(conns, {
+    lister: (conn, name, { deadlineMs, authFile }) => {
+      seen[name] = authFile
+      return listModels(conn, name, { deadlineMs, request: new FakeRequest(CATALOG).send, authFile })
+    },
+  })
+  expect((await cache.get("chatgpt")).models.map((m) => m.id)).toEqual(["gpt-5.5", "gpt-5.5-codex"])
+  await cache.get("openai")
+  expect(seen).toEqual({ chatgpt: conns.authFile("chatgpt"), openai: null })
 })
 
 test("listing returns by the deadline", async () => {
@@ -497,3 +528,225 @@ test.each([
     }
   },
 )
+
+// The cache.
+
+/** A mutable clock for the cache's entries. */
+function clock(): { now: number; read: () => number } {
+  const c = { now: 1_000_000, read: () => c.now }
+  return c
+}
+
+/** A promise the test opens with `resolve`. */
+function gate(): { promise: Promise<void>; resolve: () => void } {
+  let resolve = () => {}
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** A fake `listModels` (`list`): offers `models` (by connection name), waiting first for `delays` ms, then up to
+ *  its deadline for `gates` that name it, and failing with `errors`; `deadlines` records the deadline each call
+ *  got, and `started` resolves on the first call. */
+class Lister {
+  readonly models: Map<string, string[]>
+  readonly gates: Map<string, { promise: Promise<void> }>
+  readonly delays: Map<string, number>
+  readonly errors: Map<string, string>
+  readonly calls: string[] = []
+  readonly deadlines = new Map<string, number>()
+  readonly started: Promise<void>
+  #start = () => {}
+
+  constructor(
+    options: {
+      models?: Record<string, string[]>
+      gates?: Record<string, { promise: Promise<void> }>
+      delays?: Record<string, number>
+      errors?: Record<string, string>
+    } = {},
+  ) {
+    this.models = new Map(Object.entries(options.models ?? {}))
+    this.gates = new Map(Object.entries(options.gates ?? {}))
+    this.delays = new Map(Object.entries(options.delays ?? {}))
+    this.errors = new Map(Object.entries(options.errors ?? {}))
+    this.started = new Promise((resolve) => {
+      this.#start = resolve
+    })
+  }
+
+  readonly list = async (
+    _conn: ConnectionFile,
+    name: string,
+    { deadlineMs }: { deadlineMs: number; authFile: string | null },
+  ): Promise<ModelListing> => {
+    this.calls.push(name)
+    this.deadlines.set(name, deadlineMs)
+    this.#start()
+    await sleep(this.delays.get(name) ?? 0)
+    const gated = this.gates.get(name)
+    if (gated !== undefined) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const late = new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), deadlineMs)
+      })
+      const opened = await Promise.race([gated.promise.then(() => true), late])
+      clearTimeout(timer)
+      if (!opened) return { connection: name, models: [], listed: false, error: TIMED_OUT }
+    }
+    const error = this.errors.get(name)
+    if (error !== undefined) return { connection: name, models: [], listed: false, error }
+    const ids = this.models.get(name) ?? ["m"]
+    return { connection: name, models: ids.map((id) => ({ id, name: null })), listed: true, error: null }
+  }
+}
+
+/** An office whose `office` connection holds the sentinel key, with `fast`, `slow` and `second` added. */
+async function connections(): Promise<Connections> {
+  const office = path.join(tempDir(), "office")
+  fs.mkdirSync(office, { mode: 0o700 })
+  const conns = new Connections(office)
+  const dir = conns.ensureDir()
+  await writePrivate(
+    path.join(dir, "office.json"),
+    JSON.stringify({ llm_config: { provider: "anthropic", api_key: SENTINEL } }),
+  )
+  for (const name of ["fast", "slow", "second"]) await conns.put(name, openai())
+  return conns
+}
+
+test("the cache refreshes after five minutes and on refresh", async () => {
+  const conns = await connections()
+  const lister = new Lister()
+  const time = clock()
+  const cache = new ModelCache(conns, { lister: lister.list, clock: time.read })
+  const first = await cache.get("office")
+  expect(await cache.get("office")).toBe(first)
+  time.now += FRESH_MS - 1
+  expect(await cache.get("office")).toBe(first)
+  expect(lister.calls).toEqual(["office"])
+  time.now += 2
+  expect(await cache.get("office")).not.toBe(first)
+  expect(lister.calls).toEqual(["office", "office"])
+  await cache.get("office", { refresh: true })
+  expect(lister.calls).toEqual(["office", "office", "office"])
+})
+
+test("a failed listing or a changed connection is listed again", async () => {
+  const conns = await connections()
+  const fast = gate()
+  const lister = new Lister({ gates: { fast } })
+  const cache = new ModelCache(conns, { lister: lister.list })
+  try {
+    expect((await cache.get("fast", { deadlineMs: 100 })).error).toBe(TIMED_OUT)
+  } finally {
+    fast.resolve()
+  }
+  lister.gates.clear()
+  expect((await cache.get("fast")).error).toBeNull()
+  expect(lister.calls).toEqual(["fast", "fast"])
+  await conns.put("fast", openai("gpt-6"))
+  await cache.get("fast")
+  expect(lister.calls).toEqual(["fast", "fast", "fast"])
+})
+
+test("an unknown connection raises", async () => {
+  const conns = await connections()
+  await expect(new ModelCache(conns, { lister: new Lister().list }).get("nope")).rejects.toBeInstanceOf(ConnectionGone)
+})
+
+test("warm lists every connection in the background", async () => {
+  const conns = await connections()
+  const slow = gate()
+  const lister = new Lister({ gates: { slow } })
+  const cache = new ModelCache(conns, { lister: lister.list })
+  let settled = false
+  let warming: Promise<void> | undefined
+  try {
+    const start = performance.now()
+    warming = cache.warm().then(() => {
+      settled = true
+    })
+    expect(performance.now() - start).toBeLessThan(500)
+    await waitFor(() => lister.calls.length === 4, { timeout: 5000, what: "every connection to be listed" })
+    expect(settled).toBe(false)
+  } finally {
+    slow.resolve()
+    await warming
+  }
+  expect(settled).toBe(true)
+  expect([...lister.calls].sort()).toEqual(["fast", "office", "second", "slow"])
+  await cache.get("slow")
+  expect(lister.calls).toHaveLength(4)
+})
+
+test("a caller waits for an in flight listing instead of listing again", async () => {
+  const conns = await connections()
+  const slow = gate()
+  const lister = new Lister({ gates: { slow } })
+  const cache = new ModelCache(conns, { lister: lister.list })
+  let first: Promise<ModelListing> | undefined
+  let second: Promise<ModelListing> | undefined
+  try {
+    first = cache.get("slow")
+    await lister.started
+    second = cache.get("slow")
+    await sleep(100)
+  } finally {
+    slow.resolve()
+  }
+  const [gotFirst, gotSecond] = await Promise.all([first, second])
+  expect(lister.calls).toEqual(["slow"])
+  expect(gotFirst).toBe(gotSecond!)
+})
+
+test("a slow connection never blocks another", async () => {
+  const conns = await connections()
+  const slow = gate()
+  const cache = new ModelCache(conns, { lister: new Lister({ gates: { slow } }).list })
+  let settled = false
+  const listing = cache.get("slow").finally(() => {
+    settled = true
+  })
+  try {
+    const start = performance.now()
+    expect((await cache.get("fast")).listed).toBe(true)
+    expect(performance.now() - start).toBeLessThan(1000)
+    expect(settled).toBe(false)
+  } finally {
+    slow.resolve()
+    await listing
+  }
+})
+
+test("warm survives a connection that cant be read", async () => {
+  const conns = await connections()
+  await writePrivate(path.join(conns.dir, "broken.json"), JSON.stringify({ llm_config: 1 }))
+  const lines: string[] = []
+  const lister = new Lister()
+  const cache = new ModelCache(conns, { lister: lister.list, log: (line) => void lines.push(line) })
+  await cache.warm()
+  expect(lines).toContain("connection broken can't be read; its models aren't listed ahead of time")
+  expect([...lister.calls].sort()).toEqual(["fast", "office", "second", "slow"])
+})
+
+test("invalidate forgets one listing or all", async () => {
+  const conns = await connections()
+  const lister = new Lister()
+  const cache = new ModelCache(conns, { lister: lister.list })
+  await cache.get("fast")
+  await cache.get("second")
+  await cache.get("fast")
+  expect(lister.calls).toEqual(["fast", "second"])
+  cache.invalidate("fast")
+  await cache.get("fast")
+  await cache.get("second")
+  expect(lister.calls).toEqual(["fast", "second", "fast"])
+  cache.invalidate()
+  await cache.get("fast")
+  await cache.get("second")
+  expect(lister.calls).toEqual(["fast", "second", "fast", "fast", "second"])
+})
