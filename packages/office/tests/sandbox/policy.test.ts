@@ -71,8 +71,6 @@ test("sensitive home paths are not workspaces", () => {
   for (const rel of [
     ".opencorp",
     ".opencorp/office/runs",
-    ".agent-corp",
-    ".agent-corp/office/runs",
     ".ssh",
     ".aws",
     ".gnupg",

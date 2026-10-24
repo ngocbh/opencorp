@@ -7,8 +7,6 @@ import path from "node:path"
  *  lie inside one, since the workspace is readable (and maybe writable) by model code. */
 export const SENSITIVE_HOME_PATHS: readonly string[] = [
   ".opencorp",
-  // The home from before the rename to OpenCorp, until its owner moves it: it still holds keys and the store.
-  ".agent-corp",
   ".ssh",
   ".aws",
   ".gnupg",
