@@ -1,7 +1,7 @@
 /** Repo issues, and company files read as YAML into issues instead of exceptions. */
 import { expect, test } from "bun:test"
-import { Group, Person, RepoIssue } from "@opencorp/protocol"
-import { parseFile, repoIssue, type RepoIssue as Issue } from "../../src/company/issues.ts"
+import { Group, Person, RepoIssue as RepoIssueSchema } from "@opencorp/protocol"
+import { parseFile, type RepoIssue, repoIssue } from "../../src/company/issues.ts"
 
 const bytes = (text: string) => new TextEncoder().encode(text)
 const PATH = "people/minh/person.yaml"
@@ -9,7 +9,7 @@ const PERSON = "handle: minh\nname: Minh\nkind: human\ntitle: Engineer\nmanager:
 
 /** `text` parsed as a person file, with the issues it gave. */
 function parse(text: string | Uint8Array) {
-  const issues: Issue[] = []
+  const issues: RepoIssue[] = []
   const data = typeof text === "string" ? bytes(text) : text
   const value = parseFile(PATH, data, Person, issues)
   return { value, issues }
@@ -23,7 +23,7 @@ test("a repo issue defaults to an error", () => {
     message: "company.yaml is missing",
     severity: "error",
   })
-  expect(RepoIssue.parse(issue)).toEqual(issue)
+  expect(RepoIssueSchema.parse(issue)).toEqual(issue)
   expect(repoIssue("a.yaml", "x", "y", "warning").severity).toBe("warning")
 })
 
@@ -33,7 +33,7 @@ test("a valid file parses with defaults filled", () => {
   expect(value?.handle).toBe("minh")
   expect(value?.groups).toEqual([])
   expect(value?.password_hash).toBeNull()
-  const groupIssues: Issue[] = []
+  const groupIssues: RepoIssue[] = []
   const group = parseFile("groups/eng.yaml", bytes("id: eng\nname: Engineering\n"), Group, groupIssues)
   expect(groupIssues).toEqual([])
   expect(group).toEqual({ id: "eng", name: "Engineering", parent: null, head: null })
@@ -50,8 +50,10 @@ test("a schema error names the field and never the value", () => {
   const extra = parse(PERSON + "hunter2: x\n")
   expect(extra.value).toBeNull()
   expect(extra.issues[0]!.code).toBe("repo.schema")
+  expect(extra.issues[0]!.message).toBe("an extra field: isn't allowed")
   expect(extra.issues[0]!.message).not.toContain("hunter2")
 
+  // Uppercase because a lowercase `$scrypt$...` is a valid PasswordHash and would raise no issue.
   const hash = parse(PERSON + "password_hash: $SCRYPT$leak\n")
   expect(hash.value).toBeNull()
   expect(hash.issues[0]!.message).toContain("password_hash")

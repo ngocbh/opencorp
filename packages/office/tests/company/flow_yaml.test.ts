@@ -250,9 +250,9 @@ describe("readFlow agrees with yian", () => {
   const BASE =
     'id: f\nname: f\ninput:\n  x: !str\nnodes:\n  a: {kind: code, code: ./nowhere.ts:echo, input: {x: "${input.x}"}}\noutput: {y: "${a.output}"}\n'
   // Yian allows only a list of strings under `system.paths`, so `paths: 5` gives this message when, and
-  // only when, yian read `system.paths`. Each case pins whether it did.
+  // only when, yian read `system.paths`. Each case pins whether it did; a directive goes before BASE.
   const YIAN_READ_PATHS = "system: paths must be a list of strings"
-  const CASES: [text: string, yian: boolean][] = [
+  const CASES: [text: string, yian: boolean, directive?: string][] = [
     ["system: {paths: 5}", true],
     ["system: {<<: {paths: 5}}", true],
     ['system: {"<<": {paths: 5}}', false],
@@ -285,13 +285,17 @@ describe("readFlow agrees with yian", () => {
     ["system: {}", false],
     // Yian refuses the repeated key, so it never reads `system.paths`.
     ["system: {paths: 5, paths: 6}", false],
+    ["system: {!merge x: {paths: 5}}", true, "%TAG ! tag:yaml.org,2002:\n---\n"],
+    ["system: {!e!merge x: {paths: 5}}", true, "%TAG !e! tag:yaml.org,2002:\n---\n"],
+    // `!!` names another namespace here, so `!!merge` is no longer the merge tag.
+    ["system: {!!merge x: {paths: 5}}", false, "%TAG !! tag:example.com,2000:\n---\n"],
   ]
 
   test("readFlow and yian agree on system.paths", async () => {
     const isRecord = (value: unknown): value is Record<string, unknown> =>
       typeof value === "object" && value !== null && !Array.isArray(value)
-    for (const [extra, pinned] of CASES) {
-      const text = BASE + extra
+    for (const [extra, pinned, directive = ""] of CASES) {
+      const text = directive + BASE + extra
       let threw = false
       let doc: unknown
       try {
