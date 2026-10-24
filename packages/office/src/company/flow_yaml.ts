@@ -47,10 +47,11 @@ export function readYaml(text: string): unknown {
   return read(text, false)
 }
 
-/** A company file's text for `value`, as `readYaml` reads it back: keys in order, long text on one line and
- *  no anchors. */
+/** A company file's text for `value`, as `readYaml` reads it back: keys in order, long text on one line, no
+ *  anchors, and a list's items at its key's indent (PyYAML's layout, so files the office writes look like the
+ *  Python office's). */
 export function writeYaml(value: unknown): string {
-  return stringify(value, { version: "1.2", lineWidth: 0, aliasDuplicateObjects: false })
+  return stringify(value, { version: "1.2", lineWidth: 0, aliasDuplicateObjects: false, indentSeq: false })
 }
 
 /**
