@@ -1,4 +1,5 @@
 /** The `__fs-helper`: one workspace file operation per process, a JSON request in and a JSON reply out. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
@@ -16,6 +17,17 @@ function reply(ws: string, request: object): unknown {
 
 const ok = (output: string) => ({ ok: true, output })
 const error = (text: string) => ({ ok: false, error: text })
+
+/** Whether this process runs as root, which reads files whatever their mode. */
+const root = process.getuid?.() === 0
+
+/** Writes each `files` entry (path relative to `ws`, then text or bytes), making its folders. */
+function tree(ws: string, files: Record<string, string | Buffer>): void {
+  for (const [name, data] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(ws, name)), { recursive: true })
+    fs.writeFileSync(path.join(ws, name), data)
+  }
+}
 
 test("requests that are not objects or name no op are error replies", () => {
   const ws = tempDir()
@@ -243,4 +255,107 @@ test("list marks folders but not links to them and sorts by code point", () => {
   expect(reply(ws, { op: "list" })).toEqual(ok("a-b\na.txt\na/\nlnk\n\uff01\n\u{1f600}"))
   fs.writeFileSync(path.join(ws, "f"), "")
   expect(reply(ws, { op: "list", path: "f" })).toEqual(error("Not a directory: f"))
+})
+
+test("search", () => {
+  const ws = tempDir()
+  tree(ws, {
+    "src/a.py": "def foo():\n    return 1\n",
+    "src/b.txt": "foo bar\n",
+    ".git/x": "foo\n",
+    bin: Buffer.from("foo\0"),
+  })
+  expect(reply(ws, { op: "search", pattern: "foo" })).toEqual(ok("src/a.py:1:def foo():\nsrc/b.txt:1:foo bar"))
+  expect(reply(ws, { op: "search", pattern: "foo", glob: "*.py" })).toEqual(ok("src/a.py:1:def foo():"))
+  expect(reply(ws, { op: "search", pattern: "nothing" })).toEqual(ok("(no matches)"))
+  const bad = reply(ws, { op: "search", pattern: "(" }) as { ok: boolean; error: string }
+  expect(bad.ok).toBe(false)
+  expect(bad.error).toStartWith("bad pattern: ")
+})
+
+test("search walks like os walk", () => {
+  const ws = tempDir()
+  tree(ws, { "t/a.txt": "hit\n", "t/c.txt": "hit\n", "t/b/x.txt": "hit\n", "t/real/r.txt": "hit\n", "t/.git": "hit\n" })
+  fs.symlinkSync("real", path.join(ws, "t/lnkdir"))
+  fs.symlinkSync("a.txt", path.join(ws, "t/lnkfile"))
+  fs.symlinkSync("nowhere", path.join(ws, "t/broken"))
+  const all = "t/.git:1:hit\nt/a.txt:1:hit\nt/c.txt:1:hit\nt/lnkfile:1:hit\nt/b/x.txt:1:hit\nt/real/r.txt:1:hit"
+  expect(reply(ws, { op: "search", pattern: "hit", path: "t" })).toEqual(ok(all))
+  expect(reply(ws, { op: "search", pattern: "hit", path: "t", glob: null })).toEqual(ok(all))
+  expect(reply(ws, { op: "search", pattern: "hit", path: "t", glob: "" })).toEqual(ok(all))
+  expect(reply(ws, { op: "search", pattern: "hit", path: "missing" })).toEqual(ok("(no matches)"))
+  fs.symlinkSync("t/real", path.join(ws, "lnk"))
+  expect(reply(ws, { op: "search", pattern: "hit", path: "lnk" })).toEqual(ok("lnk/r.txt:1:hit"))
+  expect(reply(ws, { op: "search", pattern: "hit", path: "./t/a.txt" })).toEqual(ok("./t/a.txt:1:hit"))
+  if (!root) {
+    fs.chmodSync(path.join(ws, "t"), 0o000)
+    try {
+      expect(reply(ws, { op: "search", pattern: "hit", path: "t" })).toEqual(ok("(no matches)"))
+    } finally {
+      fs.chmodSync(path.join(ws, "t"), 0o755)
+    }
+  }
+})
+
+test("glob follows fnmatch", () => {
+  const ws = tempDir()
+  const names = ["a.py", "a.pyc", "b", "x", "z", "]", "^", "-", "[", "a\\b", "ab", "\u{1f600}", "^x]"]
+  for (const name of names) fs.writeFileSync(path.join(ws, name), "hit\n")
+  const table: [string, string[]][] = [
+    ["*.py", ["a.py"]],
+    ["[!a]*", ["-", "[", "]", "^", "^x]", "b", "x", "z", "\u{1f600}"]],
+    ["[]x]", ["]", "x"]],
+    ["[^b]", ["^", "b"]],
+    ["[z-a]", []],
+    ["[z-ax]", ["x"]],
+    ["[^]x]", ["^x]"]],
+    ["[!]x]", ["-", "[", "^", "b", "z", "\u{1f600}"]],
+    ["[", ["["]],
+    ["a\\b", ["a\\b"]],
+    ["?", ["-", "[", "]", "^", "b", "x", "z", "\u{1f600}"]],
+  ]
+  for (const [glob, matched] of table) {
+    const output = matched.map((name) => `${name}:1:hit`).join("\n") || "(no matches)"
+    expect([glob, reply(ws, { op: "search", pattern: "hit", glob })]).toEqual([glob, ok(output)])
+  }
+  tree(ws, { "src/b/c.py": "hit\n" })
+  expect(reply(ws, { op: "search", pattern: "hit", path: "src", glob: "src*py" })).toEqual(ok("src/b/c.py:1:hit"))
+})
+
+test("search skips binary, big and unreadable files", () => {
+  const ws = tempDir()
+  tree(ws, {
+    "s/nul8191": Buffer.concat([Buffer.alloc(8191, "a"), Buffer.from("\0\nhit\n")]),
+    "s/nul8192": Buffer.concat([Buffer.alloc(8192, "a"), Buffer.from("\0\nhit\n")]),
+    "s/fits": `hit\n${"x".repeat(2_000_000 - 4)}`,
+    "s/big": `hit\n${"x".repeat(2_000_001 - 4)}`,
+    "s/locked": "hit\n",
+  })
+  fs.chmodSync(path.join(ws, "s/locked"), 0o000)
+  expect(spawnSync("mkfifo", [path.join(ws, "s/fifo")]).status).toBe(0)
+  const found = ["s/fits:1:hit", ...(root ? ["s/locked:1:hit"] : []), "s/nul8192:2:hit"]
+  expect(reply(ws, { op: "search", pattern: "hit", path: "s" })).toEqual(ok(found.join("\n")))
+})
+
+test("search caps matches and lines", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "f"), "hit\n".repeat(200))
+  const lines = Array.from({ length: 200 }, (_, i) => `f:${i + 1}:hit`)
+  expect(reply(ws, { op: "search", pattern: "hit" })).toEqual(ok(`${lines.join("\n")}\n[stopped at 200 matches]`))
+  fs.writeFileSync(path.join(ws, "f"), `hit${"\u{1f600}".repeat(400)}\n`)
+  expect(reply(ws, { op: "search", pattern: "hit" })).toEqual(ok(`f:1:hit${"\u{1f600}".repeat(297)}`))
+})
+
+test("python regex forms are translated", () => {
+  const ws = tempDir()
+  fs.writeFileSync(path.join(ws, "f"), "FOO\nfooZ\nxfoo\nfoo bar\noo\n\\Z\n")
+  const search = (pattern: string) => reply(ws, { op: "search", pattern })
+  expect(search("(?i)foo")).toEqual(ok("f:1:FOO\nf:2:fooZ\nf:3:xfoo\nf:4:foo bar"))
+  expect(search("foo\\Z")).toEqual(ok("f:3:xfoo"))
+  expect(search("\\Afoo")).toEqual(ok("f:2:fooZ\nf:4:foo bar"))
+  expect(search("(?P<w>o)(?P=w)")).toEqual(ok("f:2:fooZ\nf:3:xfoo\nf:4:foo bar\nf:5:oo"))
+  expect(search("\\\\Z")).toEqual(ok("f:6:\\Z"))
+  expect(search("(?x)a")).toEqual(error("bad pattern: verbose mode is not supported"))
+  fs.writeFileSync(path.join(ws, "f"), "\ufeffx\n")
+  expect(search("^\ufeffx")).toEqual(ok("f:1:\ufeffx"))
 })
