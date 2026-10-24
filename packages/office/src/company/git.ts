@@ -28,7 +28,7 @@ const FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
 // Every line boundary `splitlines` knows, so a trailer matches as a whole line however the message breaks.
 const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 // The whitespace Python's str.split() splits on, so a newline in a folder name can't start a trailer line.
-const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
+export const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
 // Bad bytes become U+FFFD, so text that wasn't UTF-8 can still go into JSON.
