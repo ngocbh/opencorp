@@ -343,7 +343,9 @@ function killGroup(pid: number) {
   try {
     process.kill(-pid, "SIGKILL")
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e
+    // macOS answers EPERM for a group left with only an unreaped zombie.
+    const code = (e as NodeJS.ErrnoException).code
+    if (code !== "ESRCH" && code !== "EPERM") throw e
   }
 }
 

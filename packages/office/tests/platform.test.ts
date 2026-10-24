@@ -195,7 +195,9 @@ function killGroup(pid: number): void {
   try {
     process.kill(-pid, "SIGKILL")
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+    // macOS answers EPERM for a group left with only an unreaped zombie.
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== "ESRCH" && code !== "EPERM") throw error
   }
 }
 
@@ -209,6 +211,7 @@ function runDetached(
     const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env, detached: true, stdio: "pipe" })
     child.on("error", reject)
     const pid = child.pid
+    // A failed spawn has no pid; its `error` event rejects.
     if (pid === undefined) return
     let closed = false
     onTestFinished(() => {
@@ -259,7 +262,8 @@ test(
         `import { templateFiles } from ${JSON.stringify(path.join(SRC, "company_template/index.ts"))}`,
         `import file from ${JSON.stringify(migration)} with { type: "file" }`,
         `const sha = (bytes) => createHash("sha256").update(bytes).digest("hex")`,
-        `const worker = new Worker(threadEntry("runs_indexer"))`,
+        `const entry = threadEntry("runs_indexer")`,
+        `const worker = new Worker(entry)`,
         `const threadReply = await new Promise((resolve, reject) => {`,
         `  worker.once("message", resolve)`,
         `  worker.once("error", reject)`,
@@ -272,7 +276,7 @@ test(
         `console.log(JSON.stringify({`,
         `  self: selfCommand(),`,
         `  helper: helperCommand(),`,
-        `  thread: threadEntry("runs_indexer").href,`,
+        `  thread: entry.href,`,
         `  threadReply,`,
         `  file,`,
         `  sha: sha(embedded(file)),`,
@@ -281,6 +285,8 @@ test(
         "",
       ].join("\n"),
     )
+    // A one-line thread stands in for the CLI's runs_indexer shim, which isn't built yet; the real build's second
+    // entry is nodes/code/worker.ts.
     fs.writeFileSync(
       path.join(dir, "probe/runs_indexer.ts"),
       `import { parentPort } from "node:worker_threads"\nparentPort.postMessage("thread ok")\n`,
@@ -315,6 +321,7 @@ test(
     expect(probe.file).toStartWith("/$bunfs/")
     expect(probe.sha).toBe(sha256(fs.readFileSync(migration)))
     const template = Object.fromEntries([...templateFiles("Acme", owner)].map(([rel, data]) => [rel, sha256(data)]))
+    // Keeps the toEqual below from passing on two empty maps.
     expect(template).toHaveProperty(["people/casey/person.yaml"])
     expect(probe.template).toEqual(template)
   },
