@@ -52,7 +52,7 @@ chat/test_wake.py	open	—	—	O4a-3
 company/test_draft.py	open	—	—	O2-16b
 company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
-company/test_lint.py	open	—	split: O1-8 → O2-16a	O2-16a
+company/test_lint.py	ported	packages/office/tests/company/lint.test.ts	—	O2-16a
 company/test_lint.py::test_unexpected_flow_error_names_its_type	changed	packages/office/tests/company/lint.test.ts::unexpected flow error names its type	design §10.1: ESM modules cant be monkeypatched; a natural TypeError (a non-UTF-8 flow) stands in	O1-8
 company/test_loader.py	ported	packages/office/tests/company/loader.test.ts	—	O1-7
 company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O1-5
