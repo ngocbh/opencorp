@@ -263,6 +263,7 @@ test("writes leave pinned worktrees alone", async () => {
 
 test("profile memory restores a snapshot after a later write", async () => {
   const { store } = setup()
+  // Stands in for Python's isinstance check: the store type-checks as a MarkdownStore.
   const asStore: MarkdownStore = store
   const memory = new ProfileMemory(asStore, { llmConfig: LLM_CONFIG })
   const session = await memory.openRun()
@@ -315,7 +316,7 @@ test("commit ids are per profile", async () => {
   expect((error as Error).message).toMatch(/commit_id/)
 })
 
-/** One agent under the profile memory: yian's chat flow for profile integration. */
+/** A one-agent flow whose long-term memory is the profile, so backward() runs the profile learner. */
 const CHAT = `id: chat
 name: chat
 long_term_memory: profile
@@ -335,6 +336,7 @@ test("profile memory commit is a git commit with run and commit id", async () =>
   const { root, store } = setup()
   const fake = await fakeLlm()
   const env = (name: string) => fake.env()[name]
+  // The agent's reply, the AGENT backward feedback, the learner's new profile.
   fake.script(
     { content: "Hello." },
     { content: '{"input_feedback":{},"self_feedback":[],"variable_feedback":{}}' },
