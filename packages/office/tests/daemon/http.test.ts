@@ -984,6 +984,72 @@ describe("raw replies", () => {
     await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
   })
 
+  test("a streamed reply resumes when a paused client reads again", async () => {
+    const chunks = 64
+    const chunk = "x".repeat(64 * 1024)
+    let pulls = 0
+    let ran = false
+    const finite: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            while (pulls < chunks) {
+              pulls++
+              yield chunk
+            }
+            yield "end"
+            ran = true
+          })(),
+        ),
+    }
+    const { sock } = await serve([finite])
+    const socket = connect(sock)
+    socket.write("GET /s HTTP/1.1\r\nhost: office\r\nconnection: close\r\n\r\n")
+    socket.pause()
+    // Blocked once the count holds for 200 ms short of the end: the buffers up to the paused socket are full.
+    let last = -1
+    let since = performance.now()
+    await waitFor(
+      () => {
+        if (pulls !== last) {
+          last = pulls
+          since = performance.now()
+          return false
+        }
+        return pulls > 0 && performance.now() - since >= 200
+      },
+      { timeout: 9000, what: "the body to stop being pulled" },
+    )
+    expect(pulls).toBeLessThan(chunks)
+    const parts: Buffer[] = []
+    const text = await new Promise<string>((resolve, reject) => {
+      socket.on("data", (part: Buffer) => parts.push(part))
+      socket.on("end", () => resolve(Buffer.concat(parts).toString()))
+      socket.on("error", reject)
+      socket.resume()
+    })
+    const { status, body } = parse(text)
+    expect(status).toBe(200)
+    // Decode the chunked body: a hex size line, that many bytes, CRLF; a zero size ends it.
+    let decoded = ""
+    let at = 0
+    for (;;) {
+      const eol = body.indexOf("\r\n", at)
+      const size = Number.parseInt(body.slice(at, eol), 16)
+      if (!size) break
+      decoded += body.slice(eol + 2, eol + 2 + size)
+      at = eol + 2 + size + 2
+    }
+    expect(body.endsWith("0\r\n\r\n")).toBe(true)
+    expect(decoded.length).toBe(chunks * chunk.length + "end".length)
+    expect(decoded.endsWith("xend")).toBe(true)
+    expect(ran).toBe(true)
+  })
+
   test("a streamed body ends when the client leaves", async () => {
     let finished = false
     const waiting: Route<Ctx> = {
@@ -1085,11 +1151,16 @@ describe("raw replies", () => {
         ),
     }
     const { sock } = await serve([stream])
-    const r = await exchange(sock, "HEAD", "/s")
+    const conn = await Conn.open(sock)
+    conn.send("HEAD /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    const r = await conn.response({ head: true })
     expect(r.status).toBe(200)
     expect(r.head.toLowerCase()).toContain("\r\ncontent-type: text/event-stream")
     expect(r.head.toLowerCase()).toContain("\r\ncache-control: no-cache")
-    expect(r.body).toBe("")
+    expect(pulls).toBe(0)
+    // The same connection still serves: HEAD left no body behind to confuse the next response.
+    conn.send("GET /nope HTTP/1.1\r\nhost: office\r\n\r\n")
+    expect((await conn.response()).status).toBe(404)
     expect(pulls).toBe(0)
   })
 })

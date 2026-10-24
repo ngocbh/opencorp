@@ -1,5 +1,5 @@
 /** The office's HTTP pipeline: the route table, how a request target finds its route, how a request body is
- *  read and parsed, and the JSON replies and `ApiError` bodies it sends. */
+ *  read and parsed, and the JSON replies, `ApiError` bodies, and raw or streamed replies it sends. */
 import http, {
   type IncomingHttpHeaders,
   type IncomingMessage,
