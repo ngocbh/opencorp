@@ -3,6 +3,8 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { type ComposedFlow, runFlow, tool } from "@ngocbh/yian"
+import { ConnectionFile } from "../../src/chat/connections.ts"
+import { listModels } from "../../src/chat/models.ts"
 import { loadConfined } from "../../src/company/flows.ts"
 import { type FakeLLM, LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { fakeLlm } from "../chat/helpers.ts"
@@ -182,6 +184,12 @@ test("it lists its model without recording a chat request", async () => {
   expect(await listed.json()).toEqual({ object: "list", data: [{ id: "stub", object: "model" }] })
   expect(fake.requests()).toEqual([])
   expect(await (await fetch(`${fake.baseUrl}/_requests`)).json()).toEqual([])
+})
+
+test("a connection to it is listed cleanly", async () => {
+  const fake = await fakeLlm()
+  const listed = await listModels(ConnectionFile.parse({ llm_config: { ...LLM_CONFIG }, env: fake.env() }), "office")
+  expect([listed.listed, listed.error, listed.models.map((m) => m.id)]).toEqual([true, null, ["stub"]])
 })
 
 test("closing releases held replies and ends open connections", async () => {

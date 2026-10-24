@@ -39,6 +39,7 @@ chat/test_hooks.py::test_a_failing_callback_is_logged_and_the_rest_still_run	cha
 chat/test_identity.py	ported	packages/office/tests/chat/identity.test.ts	—	O3-8b
 chat/test_logins.py	open	—	—	O2-20
 chat/test_models.py	open	—	—	O2-20
+chat/test_models.py::test_a_request_that_fails_says_why_in_composers_words	changed	packages/office/tests/chat/models.test.ts::a request that fails says why in composers words [%s]	Y1: yian's transport ProviderError isn't public, so the cases come from a throwing sender, a malformed reply and a local server that never answers	O2-20
 chat/test_provider.py	open	—	split: O2-19 → O3-4	O3-4
 chat/test_restart.py	open	—	split: O4a-6 → O4b-1	O4b-1
 chat/test_run_records.py	open	—	—	O4a-5
@@ -324,7 +325,7 @@ tools/test_build.py	open	—	—	O2-22b
 tools/test_work_items.py	open	—	—	O2-22a
 worker/test_channel.py	ported	packages/office/tests/worker/channel.test.ts,packages/office/tests/worker/codec.test.ts	—	O3-1
 worker/test_channel.py::test_jsonable_unpacks_observer_values	changed	packages/office/tests/worker/codec.test.ts::observer values are sent as their JSON form	design §2.4: the office codec replaces jsonable; TS values have no dataclass, enum, pydantic or Path kinds	O3-1
-worker/test_fake_llm.py	open	—	split: O2-24 → O2-20	O2-20
+worker/test_fake_llm.py	ported	packages/office/tests/worker/fake_llm.test.ts	—	O2-20
 worker/test_job.py	open	—	split: O3-1 → O2-22b	O2-22b
 worker/test_job.py::test_a_job_round_trips_through_json	changed	packages/office/tests/worker/job.test.ts::a job round trips through json	design §2.4: no session memory (#1001), env (R2 m5) or feedback (D32)	O3-1
 worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5)	O3-1
@@ -393,6 +394,8 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/chat/hire.test.ts::an in repo people link is refused at preview as at confirm	design §6.4 (O1-14 handoff): a person write never goes through a link; the preview says so too	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::issue messages name the company repo not the scratch copy	O1-8 handoff (yian #1051): absolute CODE-root paths would name the scratch copy	O2-24
 —	new	packages/office/tests/chat/hooks.test.ts::notifications are awaited in order	P13 (D36), design §8.6: notifications may be async and are awaited in order; a rejected one is logged and skipped	O3-8b
+—	new	packages/office/tests/chat/models.test.ts::a redirect from azure is not followed	design §6 rule 1: the office's Azure sender never sends the key on to a redirect's target	O2-20
+—	new	packages/office/tests/chat/models.test.ts::azure deployments through the default sender says why [%s]	design §6 rule 13: the office's own Azure sender (Python's httpx client) gives the same fixed reasons; Python's test ran httpx's real client	O2-20
 —	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
