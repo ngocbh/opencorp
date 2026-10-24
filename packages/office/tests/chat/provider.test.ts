@@ -196,12 +196,12 @@ test.each([
 })
 
 test.each([
-  ["NODE_OPTIONS=--require=/tmp/x.js", ""],
-  [`OPENAI_API_KEY=${SENTINEL}`, ""],
-  ["", "x"],
-  ["A\0B", "x"],
-  ["HTTPS_PROXY", `http://p\0${SENTINEL}`],
-])("an env name or value a spawn cant pass is refused [%s]", async (name, value) => {
+  ["a name setting NODE_OPTIONS", "NODE_OPTIONS=--require=/tmp/x.js", ""],
+  ["a name holding a key", `OPENAI_API_KEY=${SENTINEL}`, ""],
+  ["an empty name", "", "x"],
+  ["a NUL in a name", "A\0B", "x"],
+  ["a NUL in a value", "HTTPS_PROXY", `http://p\0${SENTINEL}`],
+])("an env name or value a spawn cant pass is refused [%s]", async (_label, name, value) => {
   const error = await refusal(write(path.join(tempDir(), "provider.json"), { env: { [name]: value } }))
   expectNoneOf(error, SENTINEL, "--require")
 })
