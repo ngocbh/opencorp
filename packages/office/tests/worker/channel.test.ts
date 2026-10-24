@@ -1,11 +1,17 @@
 /** The worker channel: length-prefixed JSON frames over a socket, in order, size-capped, closed cleanly. */
+import { spawn } from "node:child_process"
+import { createHash } from "node:crypto"
+import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { ChannelClosed, FrameTooLarge, socketChannel, type Channel } from "../../src/worker/channel.ts"
-import { shortDir, waitFor } from "../helpers.ts"
+import { shortDir, tempDir, waitFor } from "../helpers.ts"
 
 const TIMEOUT = 20_000
+const CHILD_TIMEOUT = 60_000
+const CHANNEL_URL = new URL("../../src/worker/channel.ts", import.meta.url).href
+const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 type Pair = { left: Channel; right: Channel; leftSocket: net.Socket; rightSocket: net.Socket }
 
@@ -200,3 +206,159 @@ test("a broken transport closes the channel with a fixed message", async () => {
     }
   }
 }, TIMEOUT)
+
+type Exit = { code: number | null; signal: NodeJS.Signals | null }
+
+/** Kills the process group `pid` leads, if it still exists. */
+function killGroup(pid: number | undefined): void {
+  if (pid === undefined) return
+  try {
+    process.kill(-pid, "SIGKILL")
+  } catch (error) {
+    // macOS answers EPERM for a group left with only an unreaped zombie.
+    const code = (error as { code?: unknown }).code
+    if (code !== "ESRCH" && code !== "EPERM") throw error
+  }
+}
+
+/** Runs `body` as a worker script in a fresh directory, after an import of `ChannelClosed` and `fdChannel`, with
+ *  the office end of its fd 3 as `office`. The child leads its own process group, killed when the test finishes. */
+function worker(body: string): { office: Channel; exited: Promise<Exit>; dir: string } {
+  const dir = tempDir()
+  const script = path.join(dir, "worker.ts")
+  fs.writeFileSync(script, `import { ChannelClosed, fdChannel } from "${CHANNEL_URL}"\n${body}\n`)
+  const child = spawn(process.execPath, [...BUN_FLAGS, script], {
+    cwd: dir,
+    env: { PATH: "/usr/bin:/bin", HOME: dir },
+    stdio: ["ignore", "inherit", "inherit", "pipe"],
+    detached: true,
+  })
+  const exited = new Promise<Exit>((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })))
+  const office = socketChannel(child.stdio[3] as net.Socket)
+  onTestFinished(() => {
+    office.close()
+    killGroup(child.pid)
+  })
+  return { office, exited, dir }
+}
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
+
+test(
+  "the worker end carries 20 MiB frames over fd 3 under backpressure",
+  async () => {
+    const { office, exited } = worker(`
+      import { createHash } from "node:crypto"
+      const channel = fdChannel(3)
+      const got = await channel.recv()
+      const text = got.text
+      const echo = { length: text.length, sha256: createHash("sha256").update(text).digest("hex"), big: got.big }
+      await Promise.all([
+        channel.send({ text: "w".repeat(20 * 2 ** 20) }),
+        channel.send(echo),
+        channel.send({ n: 1 }),
+        channel.send({ n: 2 }),
+        channel.send({ n: 3 }),
+      ])
+      process.exit(0)
+    `)
+    const text = "o".repeat(20 * 2 ** 20)
+    const big = 2n ** 80n + 7n
+    // Resolves once the child has taken nearly all of it, so the wait below starts with the child sending.
+    await office.send({ text, big })
+    await new Promise((resolve) => setTimeout(resolve, 1_000))
+    const first = await office.recv()
+    expect(first.text).toBe("w".repeat(20 * 2 ** 20))
+    expect(await office.recv()).toEqual({ length: text.length, sha256: sha256(text), big })
+    for (const n of [1, 2, 3]) expect(await office.recv()).toEqual({ n })
+    expect(await exited).toEqual({ code: 0, signal: null })
+  },
+  CHILD_TIMEOUT,
+)
+
+test(
+  "frames sent just before the worker exits still arrive",
+  async () => {
+    const { office, exited } = worker(`
+      const channel = fdChannel(3)
+      await channel.send({ n: 1 })
+      await channel.send({ n: 2 })
+      process.exit(0)
+    `)
+    expect(await exited).toEqual({ code: 0, signal: null })
+    expect(await office.recv()).toEqual({ n: 1 })
+    expect(await office.recv()).toEqual({ n: 2 })
+    expect(await office.recv().catch((error: unknown) => error)).toBeInstanceOf(ChannelClosed)
+  },
+  CHILD_TIMEOUT,
+)
+
+test(
+  "the worker end still sends after the office closes its sending side",
+  async () => {
+    const { office, exited } = worker(`
+      const channel = fdChannel(3)
+      const first = await channel.recv()
+      const ended = await channel.recv().then(() => undefined, (error) => error)
+      if (first.n !== 1 || !(ended instanceof ChannelClosed)) process.exit(1)
+      await channel.send({ late: true })
+      process.exit(0)
+    `)
+    await office.send({ n: 1 })
+    office.closeSend()
+    expect(await office.recv()).toEqual({ late: true })
+    expect(await office.recv().catch((error: unknown) => error)).toBeInstanceOf(ChannelClosed)
+    expect(await exited).toEqual({ code: 0, signal: null })
+  },
+  CHILD_TIMEOUT,
+)
+
+test(
+  "a worker send after the office closed the channel raises channel closed",
+  async () => {
+    const { office, exited } = worker(`
+      const channel = fdChannel(3)
+      await channel.send({ ready: true })
+      const received = await channel.recv().then(() => undefined, (error) => error)
+      if (!(received instanceof ChannelClosed)) process.exit(1)
+      const sent = await channel.send({ after: true }).then(() => undefined, (error) => error)
+      process.exit(sent instanceof ChannelClosed ? 7 : 1)
+    `)
+    expect(await office.recv()).toEqual({ ready: true })
+    office.close()
+    expect(await exited).toEqual({ code: 7, signal: null })
+  },
+  CHILD_TIMEOUT,
+)
+
+test(
+  "a grandchild of the worker does not hold the channel open",
+  async () => {
+    // The grandchild lists which of fds 3-9 it holds, in the worker's directory, then sleeps.
+    const probe =
+      'for f in 3 4 5 6 7 8 9; do if { true >&$f; } 2>/dev/null; then printf "fd$f "; fi; done > fds; ' +
+      "echo end >> fds; exec sleep 60"
+    const { office, dir } = worker(`
+      import { spawn } from "node:child_process"
+      const channel = fdChannel(3)
+      const grandchild = spawn("/bin/sh", ["-c", ${JSON.stringify(probe)}], { detached: true, stdio: "ignore" })
+      await channel.send({ pid: grandchild.pid })
+      process.exit(0)
+    `)
+    const { pid } = (await office.recv()) as { pid: number }
+    // Detached, so the grandchild leads its own process group.
+    onTestFinished(() => killGroup(pid))
+    expect(await within(office.recv().catch((error: unknown) => error), 15_000)).toBeInstanceOf(ChannelClosed)
+    expect(() => process.kill(pid, 0)).not.toThrow()
+    const fds = path.join(dir, "fds")
+    const listed = await waitFor(
+      () => {
+        const text = fs.existsSync(fds) ? fs.readFileSync(fds, "utf8") : ""
+        return text.includes("end") && text
+      },
+      { timeout: 15_000, what: "the grandchild's fd list" },
+    )
+    expect(listed).not.toContain("fd3")
+  },
+  CHILD_TIMEOUT,
+)

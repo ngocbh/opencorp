@@ -1,4 +1,5 @@
 /** Length-prefixed JSON frames over a socket, for traffic between the office and a worker. */
+import fs from "node:fs"
 import type net from "node:net"
 import type { Readable } from "node:stream"
 import { decode, encode, NOT_JSON } from "./codec.ts"
@@ -214,6 +215,50 @@ export function socketChannel(socket: net.Socket, options?: { maxFrame?: number 
     },
     options,
   )
+}
+
+/** The worker's channel over the socket the office passed as `fd`. End of stream leaves the fd open, so the worker
+ *  can still send after the office stops sending; the worker's `closeSend()` only stops this end sending, since a
+ *  file descriptor can't be half-closed. Nothing here closes the fd: the worker ends with `process.exit`, because a
+ *  read blocked on the fd keeps the event loop alive, and the fd closes with the process. Closing it sooner could let
+ *  a read or write still queued in the thread pool hit an unrelated file that reused its number. */
+export function fdChannel(fd = 3, options?: { maxFrame?: number }): Channel {
+  // A file stream, not a socket: Bun's runtime can't wrap fd 3 in a `net.Socket`. `autoClose: false` keeps the fd for
+  // writes after end of stream, and also turns off `autoDestroy`, so end of stream emits no `close`, which the
+  // channel would take for a broken transport. The stream's `fs.close` is a no-op, since `destroy()` closes the fd
+  // even with `autoClose: false`.
+  const readable = fs.createReadStream("", { fd, autoClose: false, fs: { ...fs, close: noClose } })
+  // One write at a time: parallel writes would interleave in the thread pool.
+  let queue: Promise<void> = Promise.resolve()
+  return new Channel(
+    {
+      readable,
+      write: (data) => {
+        const done = queue.then(() => writeAll(fd, data))
+        queue = done.catch(() => {})
+        return done
+      },
+      endWrite: () => {},
+      destroy: () => readable.destroy(),
+    },
+    options,
+  )
+}
+
+function noClose(_fd: number, callback: (error: null) => void): void {
+  callback(null)
+}
+
+// Async, since the fd is blocking and a sync write would freeze the event loop while the office is slow; looped,
+// since a blocking fd may take part of a buffer.
+async function writeAll(fd: number, data: Buffer): Promise<void> {
+  for (let offset = 0; offset < data.length; ) {
+    offset += await new Promise<number>((resolve, reject) =>
+      fs.write(fd, data, offset, data.length - offset, null, (error, written) =>
+        error ? reject(error) : resolve(written),
+      ),
+    )
+  }
 }
 
 function toFrame(body: Buffer): Frame {
