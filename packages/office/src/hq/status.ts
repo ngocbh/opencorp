@@ -6,6 +6,7 @@ import os from "node:os"
 import path from "node:path"
 import { promisify } from "node:util"
 
+const execFileAsync = promisify(execFile)
 const NOT_PEOPLE = new Set(["Shared", "Guest"])
 
 /** This user's name, in Python's `getpass.getuser()` order: `LOGNAME`, `USER`, `LNAME`, `USERNAME`, then the
@@ -25,7 +26,7 @@ export function currentUser(): string {
 /** The output of `who`; "" when it fails or takes over 2 s. */
 export async function runWho(): Promise<string> {
   try {
-    const { stdout } = await promisify(execFile)("/usr/bin/who", [], { timeout: 2000, env: { LC_ALL: "C" } })
+    const { stdout } = await execFileAsync("/usr/bin/who", [], { timeout: 2000, env: { LC_ALL: "C" } })
     return stdout
   } catch {
     return ""
@@ -50,16 +51,22 @@ export async function otherUsers(
     who = runWho,
   }: { usersDir?: string; me?: string; who?: () => Promise<string> } = {},
 ): Promise<string[]> {
-  let names: string[]
-  if (platform === "darwin") {
-    try {
-      names = fs.readdirSync(usersDir).filter((name) => !name.startsWith(".") && isDir(path.join(usersDir, name)))
-    } catch {
-      return []
-    }
-    names = names.filter((name) => !NOT_PEOPLE.has(name))
-  } else {
-    names = (await who()).split("\n").flatMap((line) => line.trim().split(/\s+/u)[0] || [])
+  const others = (names: string[]): string[] => [...new Set(names)].filter((name) => name !== me).sort()
+  if (platform !== "darwin") {
+    return others(
+      (await who())
+        .split("\n")
+        .map((line) => line.trim().split(/\s+/u)[0])
+        .filter((name): name is string => Boolean(name)),
+    )
   }
-  return [...new Set(names)].filter((name) => name !== me).sort()
+  try {
+    return others(
+      fs
+        .readdirSync(usersDir)
+        .filter((name) => !name.startsWith(".") && !NOT_PEOPLE.has(name) && isDir(path.join(usersDir, name))),
+    )
+  } catch {
+    return []
+  }
 }

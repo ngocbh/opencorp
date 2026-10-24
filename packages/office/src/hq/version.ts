@@ -27,8 +27,11 @@ function readUpTo(file: string): Buffer | null {
     if (!fs.fstatSync(fd).isFile()) return null
     const buf = Buffer.alloc(MAX_BUILD_JSON + 1)
     let size = 0
-    // A short read isn't the end of the file; only 0 is.
-    for (let n = -1; n !== 0 && size < buf.length; size += n) n = fs.readSync(fd, buf, size, buf.length - size, null)
+    while (size < buf.length) {
+      const n = fs.readSync(fd, buf, size, buf.length - size, null)
+      if (n === 0) break // a short read isn't the end of the file; only 0 is
+      size += n
+    }
     return buf.subarray(0, size)
   } finally {
     fs.closeSync(fd)
@@ -38,7 +41,7 @@ function readUpTo(file: string): Buffer | null {
 /** The built app's `build.json` under `appDir`, parsed again only when its content changes. */
 export class BuildInfo {
   readonly path: string | null
-  // The bytes last read and what they parsed to, swapped in one assignment so they always belong together.
+  // The bytes last read and what they parsed to.
   private cache: [Buffer, AppBuild | null] | null = null
 
   constructor(appDir: string | null) {

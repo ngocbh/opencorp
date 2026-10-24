@@ -61,7 +61,7 @@ function apply(defaults: HqConfig, data: unknown, officeDir: string): HqConfig {
   if (typeof data !== "object" || data === null || Array.isArray(data)) throw new Error("must be a JSON object")
   const settings = data as Record<string, unknown>
   const unknown = Object.keys(settings).filter((key) => !KEYS.includes(key))
-  if (unknown.length) throw new Error(`unknown keys ${quoted(unknown.sort())}; known: ${quoted(KEYS)}`)
+  if (unknown.length) throw new Error(`unknown keys ${quoted(unknown.sort())}; known: ${quoted([...KEYS].sort())}`)
   const config = { ...defaults }
   if (Object.hasOwn(settings, "tcp")) {
     if (typeof settings.tcp !== "boolean") throw new Error("tcp must be true or false")
@@ -93,7 +93,8 @@ function apply(defaults: HqConfig, data: unknown, officeDir: string): HqConfig {
 
 /**
  * `officeDir/hq.json` over the defaults. A file that isn't valid is ignored, logged through `log`, and named in
- * `problem`; the problem never quotes the parser or a setting's value, only unknown key names.
+ * `problem`; the problem never quotes the parser or a setting's value, except unknown key names and an app_dir that
+ * can't be expanded, as Python does.
  *
  * TCP is on by default only on macOS: on a host with other users, whoever holds the port while the office doesn't
  * is the origin the browser trusts, so HQ listens there on `hq.sock` alone unless the owner opts in.
@@ -120,7 +121,7 @@ export function loadConfig(
   } catch (error) {
     const code = (error as NodeJS.ErrnoException | null)?.code
     if (code === "ENOENT") return defaults
-    return ignored(`${file} can't be read: ${code}`)
+    return ignored(`${file} can't be read: ${code ?? "error"}`)
   }
   let data: unknown
   try {
