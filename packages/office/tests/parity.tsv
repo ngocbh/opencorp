@@ -62,7 +62,8 @@ company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O
 company/test_secret_keys.py	ported	packages/office/tests/company/secret_keys.test.ts	—	O1-5
 company/test_snapshot.py	ported	packages/office/tests/company/snapshot.test.ts	—	O1-7
 company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O1-7
-company/test_watch.py	open	—	—	O2-4
+company/test_watch.py	ported	packages/office/tests/company/watch.test.ts	—	O2-4
+company/test_watch.py::test_a_failed_read_or_emit_is_logged_and_polling_goes_on	changed	packages/office/tests/company/watch.test.ts::a failed read or emit is logged and polling goes on	design §6 rule 13: the log names the error type, never its message	O2-4
 company_template/test_writer.py	ported	packages/office/tests/company_template/writer.test.ts	—	O2-16a
 company_template/test_writer.py::test_a_bad_handle_is_refused_before_anything_is_written	changed	packages/office/tests/company_template/writer.test.ts::a bad handle is refused before anything is written	design §5.4: validation messages name the field (handle), never the value	O2-16a
 company_template/test_writer.py::test_a_company_from_before_the_learning_flows_gets_them_and_keeps_its_edits	changed	packages/office/tests/company_template/writer.test.ts::a company from before the profile manager flow gets it and keeps its edits	D32: debrief.yaml is left out of the template until learning returns (design §9.2)	O2-16a
