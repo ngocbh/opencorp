@@ -92,7 +92,7 @@ test.each([
   ["/assets/gone-123.js", "document"],
   ["/gone.css", null],
   ["/company", "image"],
-])("a missing asset or non document gets a plain 404 [%s]", async (target, dest) => {
+])("a missing asset or non document gets a plain 404 [%s %s]", async (target, dest) => {
   const sock = await served(dist(tempDir()))
   const r = await fetchRaw(sock, "GET", target, dest ? [`Sec-Fetch-Dest: ${dest}`] : [])
   expect(r.status).toBe(404)
@@ -181,8 +181,8 @@ test("a fifo in app dir is never opened", async () => {
   execFileSync("mkfifo", [path.join(root, "assets", "pipe.js")])
   expect(resolve(root, "assets/pipe.js")).toBeNull()
   const sock = await served(root)
-  // No writer ever opens the FIFO: a server that opened it blocking would hang past this timeout.
-  const { text } = await raw(sock, message("GET", "/assets/pipe.js"), { timeout: 5000 })
+  // resolve takes only regular files, so the FIFO is never opened: a 404.
+  const { text } = await raw(sock, message("GET", "/assets/pipe.js"))
   expect(parse(text).status).toBe(404)
 })
 

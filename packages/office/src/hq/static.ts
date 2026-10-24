@@ -24,7 +24,7 @@ export function escapeHtml(text: string): string {
 }
 
 /** The page sent while the app isn't built, naming the `checkout` to build it in. */
-export function notBuilt(checkout: string = CHECKOUT): string {
+function notBuilt(checkout: string): string {
   return `<!doctype html><html lang="en"><meta charset="utf-8"><title>OpenCorp HQ</title>
 <h1>The web app isn't built</h1><p>Run <code>bun run build</code> in the checkout (${escapeHtml(checkout)}), \
 then reload.</p></html>`
@@ -59,18 +59,25 @@ const TYPES: Readonly<Record<string, string>> = {
   ".map": "application/json",
 }
 
-/** Sends a whole small `body` with `status` and `type`; no body for HEAD. */
+/** Sends a whole small `body` with `status` and `type` unless the response is already closed; no body for HEAD.
+ *  A failed write destroys the response, so it never hangs and never throws. */
 function sendText(req: IncomingMessage, res: ServerResponse, status: number, type: string, body: string): void {
-  res.writeHead(status, { "content-type": type, "content-length": String(Buffer.byteLength(body)) })
-  res.end(req.method === "HEAD" ? undefined : body)
+  if (res.destroyed || res.socket?.destroyed) return
+  try {
+    res.writeHead(status, { "content-type": type, "content-length": String(Buffer.byteLength(body)) })
+    res.end(req.method === "HEAD" ? undefined : body)
+  } catch {
+    res.destroy()
+  }
 }
 
 const notFound = (req: IncomingMessage, res: ServerResponse) =>
   sendText(req, res, 404, "text/plain; charset=utf-8", "not found")
 
-/** Streams the regular file at real path `file` with `cacheControl`; false, having sent nothing, if it can't be
- *  opened as one. The fd is always closed: by the pipeline, which ends when the file is sent, on an error, or when
- *  the client leaves; or here, for HEAD and every failure. */
+/** Streams the regular file at real path `file` with `cacheControl`, at most the size it announced; false, having
+ *  sent nothing, if it can't be opened or stat'ed as one. True once a reply is started: if writeHead fails, the
+ *  response is destroyed. The fd is always closed: by the read stream's pipeline, which ends when the file is sent,
+ *  on an error, or when the client leaves; or here, for HEAD, an empty file, and every failure. */
 function sendFile(req: IncomingMessage, res: ServerResponse, file: string, cacheControl: string): boolean {
   const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK } = fs.constants
   let fd: number
@@ -80,24 +87,31 @@ function sendFile(req: IncomingMessage, res: ServerResponse, file: string, cache
   } catch {
     return false
   }
+  let stat: fs.Stats | null = null
   try {
-    const stat = fs.fstatSync(fd)
-    if (!stat.isFile()) {
-      fs.closeSync(fd)
-      return false
-    }
-    const type = TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream"
+    stat = fs.fstatSync(fd)
+  } catch {}
+  if (!stat?.isFile()) {
+    fs.closeSync(fd)
+    return false
+  }
+  const size = stat.size
+  const type = TYPES[path.extname(file).toLowerCase()] ?? "application/octet-stream"
+  try {
     // Explicit, so the guard's writeHead adds HQ's headers before any byte goes out.
-    res.writeHead(200, { "content-type": type, "content-length": String(stat.size), "cache-control": cacheControl })
+    res.writeHead(200, { "content-type": type, "content-length": String(size), "cache-control": cacheControl })
   } catch {
     fs.closeSync(fd)
     res.destroy()
     return true
   }
-  if (req.method === "HEAD") {
+  if (req.method === "HEAD" || size === 0) {
     fs.closeSync(fd)
     res.end()
-  } else pipeline(fs.createReadStream("", { fd }), res, () => {})
+  } else {
+    // Bounded by the size announced: a rebuild that grows the file mid-send can't overrun content-length.
+    pipeline(fs.createReadStream(file, { fd, start: 0, end: size - 1 }), res, () => {})
+  }
   return true
 }
 

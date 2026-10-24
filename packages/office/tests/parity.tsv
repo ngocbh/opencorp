@@ -484,7 +484,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/guard.test.ts::the guard checks each refusal branch [$name]	design §6.4, rule 7: each Host, Fetch Metadata, Origin and JSON refusal against a stand-in, without the HQ app	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a client that leaves mid file leaves no file open	design §6 static rules: the file is streamed through stream.pipeline, which closes the fd when the client leaves	O2-7
-—	new	packages/office/tests/hq/static.test.ts::a fifo in app dir is never opened	design §6 static rules: resolve takes only regular files and the open is O_NONBLOCK with an fstat check, so a FIFO is a 404 without blocking	O2-7
+—	new	packages/office/tests/hq/static.test.ts::a fifo in app dir is never opened	design §6.4: resolve takes only regular files, so a FIFO is a 404 and is never opened	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a file served behind the guard carries the security headers	design §6, rule 7: a streamed file's head goes out through an explicit writeHead, so the guard adds HQ's headers	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a path with a doubled slash is not a file of the app	design §6 static rules: //index.html resolves as an absolute path outside app_dir (Python's app_dir / rel), so it is a 404	O2-7
 —	new	packages/office/tests/hq/static.test.ts::the not built page escapes the checkout path	design §6.4 (static): the checkout path is HTML-escaped in the not-built page, as Python's html.escape	O2-7
