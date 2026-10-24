@@ -235,24 +235,21 @@ function nextUnlessAborted<T>(it: AsyncIterator<T>, signal?: AbortSignal): Promi
   })
 }
 
-/** The responses that have sent `100 Continue`. */
-const continued = new WeakSet<ServerResponse>()
-
-/** Sends `100 Continue` if the request waits for it: call it right before reading a body, after every check, on a
- *  server from `createServer` (which never sends it on its own). Not for HTTP/1.0, and at most once per response. */
-export function continueIfExpected(req: Pick<IncomingMessage, "headers" | "httpVersion">, res: ServerResponse): void {
-  const expect = req.headers.expect
+/** Sends `100 Continue` if `res`'s request waits for it, on a server from `createServer` (which never sends it on
+ *  its own); not for HTTP/1.0. Call it once, right before reading a body, after every check. */
+export function continueIfExpected(res: ServerResponse): void {
+  const { headers, httpVersion } = res.req
   // Node's own test of the header.
-  if (expect === undefined || !/(?:^|\W)100-continue(?:$|\W)/i.test(expect)) return
+  if (headers.expect === undefined || !/(?:^|\W)100-continue(?:$|\W)/i.test(headers.expect)) return
   // An HTTP/1.0 client doesn't know 100 (RFC 9110).
-  if (req.httpVersion === "1.0" || continued.has(res)) return
-  continued.add(res)
+  if (httpVersion === "1.0") return
   res.writeContinue()
 }
 
 /** The request body. Throws `HttpError` 413 once it passes `MAX_BODY`, reading no further, and 400 when it ends
  *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). Given
- *  `res`, it sends `100 Continue` first if the request waits for it, unless the declared length is too large. */
+ *  `res`, which must be `req`'s response, it sends `100 Continue` first if the request waits for it, unless the
+ *  declared length is too large. */
 export async function readBody(
   req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders },
   signal?: AbortSignal,
@@ -260,7 +257,7 @@ export async function readBody(
 ): Promise<Buffer> {
   const length = req.headers["content-length"]
   if (length !== undefined && /^\d+$/.test(length) && Number(length) > MAX_BODY) throw tooLarge()
-  if (res) continueIfExpected(res.req, res)
+  if (res) continueIfExpected(res)
   // Chunks are taken by hand, never with `for await` or `it.return()`: leaving the loop early destroys an
   // unfinished request, and with it the socket on Node, so the 413 would never reach the client. The rest of an
   // oversized body is never drained either; the reply closes the connection instead.

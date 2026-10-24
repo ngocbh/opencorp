@@ -391,7 +391,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::an unread body closes the connection and a read one keeps it	design §6.4: Connection: close on unread bodies	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::connections past max connections are closed	design §6.4: the runtime enforces maxConnections	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is answered once the body is read	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
-—	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is not answered before the context or the guard	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
+—	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is not answered before the context the guard or a body read	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is not sent for a too large body or to http 1 0	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::head on a get route answers without a body	design §2.3: GET routes answer HEAD, as Starlette's did	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::head on a streamed reply sends no body and never starts it	design §2.3: SSE needs a streamed reply (O2-1 handoff)	O2-2

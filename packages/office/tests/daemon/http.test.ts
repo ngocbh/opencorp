@@ -786,7 +786,7 @@ describe("bodies", () => {
     expect((await read.response()).status).toBe(200)
   })
 
-  test("expect 100 continue is not answered before the context or the guard", async () => {
+  test("expect 100 continue is not answered before the context the guard or a body read", async () => {
     const waiting = (target: string) =>
       `POST ${target} HTTP/1.1\r\nhost: office\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n`
     const ping: Route<Ctx> = { method: "POST", path: "/ping", handler: () => ({ ok: true }) }
@@ -812,7 +812,7 @@ describe("bodies", () => {
   })
 
   test("expect 100 continue is answered once the body is read", async () => {
-    const { sock } = await serveBodies()
+    const { sock, answered } = await serveBodies()
     const conn = await Conn.open(sock)
     const body = answerBody("yes")
     const length = Buffer.byteLength(body)
@@ -821,14 +821,18 @@ describe("bodies", () => {
     conn.send(body)
     const res = await conn.response()
     expect([res.status, JSON.parse(res.body)]).toEqual([200, { answer: "yes" }])
+    expect(answered()).toBe(1)
   })
 
   test("an unknown expectation is served as a plain request", async () => {
-    const { sock } = await serveBodies()
-    const head = "GET /people HTTP/1.1\r\nhost: office\r\nexpect: something\r\nconnection: close\r\n\r\n"
+    let runs = 0
+    const count: Route<Ctx> = { method: "GET", path: "/count", handler: () => ({ runs: ++runs }) }
+    const { sock } = await serveBodies([count])
+    const head = "GET /count HTTP/1.1\r\nhost: office\r\nexpect: something\r\nconnection: close\r\n\r\n"
     const got = await raw(sock, head)
     const res = parse(got.text)
-    expect([res.status, res.body]).toEqual([200, "[]"])
+    expect([res.status, JSON.parse(res.body)]).toEqual([200, { runs: 1 }])
+    expect(runs).toBe(1)
   })
 
   test("expect 100 continue is not sent for a too large body or to http 1 0", async () => {
