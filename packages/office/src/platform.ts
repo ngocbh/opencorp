@@ -33,15 +33,19 @@ export function helperCommand(): { argv: [string, ...string[]]; helper: Helper }
   return { argv: [bin, ...CHECKOUT_FLAGS, entry], helper: { bun: bin, entry } }
 }
 
-/** Names a self-spawn's env never carries: they change how Bun, Node or the loader start. */
 const UNSAFE_ENV = /^(BUN_|LD_|DYLD_)|^NODE_(OPTIONS|PATH|PRESERVE_SYMLINKS(_MAIN)?)$/
+
+/** Whether `name` changes how Bun, Node or the loader start; a self-spawn's env never carries one. */
+export function unsafeEnvName(name: string): boolean {
+  return UNSAFE_ENV.test(name)
+}
 
 /** `env` without the names that change how the runtime or loader starts, and without unset
  *  values: the last filter on every self-spawn's env. */
 export function selfSpawnEnv(env: Record<string, string | undefined>): Record<string, string> {
   const kept: Record<string, string> = {}
   for (const [name, value] of Object.entries(env)) {
-    if (value !== undefined && !UNSAFE_ENV.test(name)) kept[name] = value
+    if (value !== undefined && !unsafeEnvName(name)) kept[name] = value
   }
   return kept
 }
