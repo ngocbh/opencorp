@@ -253,6 +253,14 @@ worker/test_resume.py	open	—	—	O4a-2
 worker/test_rpc.py	open	—	—	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
+—	new	packages/office/tests/auth/devices.test.ts::a device name with another hash or a hash someone lists is refused	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::a failed commit restores the person file	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::a refused change never echoes a value	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::adding a device commits it and keeps the files key order	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::an unknown handle costs one password check	P4 (D36), design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::login adds the device once the password checks out	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::only the person or the ceo changes a humans devices	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
+—	new	packages/office/tests/auth/devices.test.ts::removing a device commits it and an unknown name is not found	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/identity.test.ts::an identity file that isnt private is no identity [%s]	design §5.3, security rule 6: identity.json is a private file; stricter than Python, which read it plainly	O1-14
 —	new	packages/office/tests/auth/identity.test.ts::writing an identity makes its folder 0700	O1-1 handoff: callers create the parent 0700; design §5.2	O1-14
 —	new	packages/office/tests/auth/passwords.test.ts::a hash past the cost bounds checks nothing even when it matches [%s]	design §6.4: each cost bound refuses a hash on its own	O1-14
@@ -283,6 +291,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/flow_yaml.test.ts::nesting past the limit is refused and 100000 brackets do not overflow the stack	design §9.5: the nesting limit	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::only flow_yaml imports yaml	design §9.5: flow_yaml.ts is the only module importing yaml	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::readFlow and yian agree on system.paths	design §9.5, §6 rule 10: the yian-agreement test	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::write yaml reads back as the same data and keeps key order	O1-5 handoff: every YAML writer is in flow_yaml.ts; design §9.5 writes keep key order	O1-14
 —	new	packages/office/tests/company/flow_yaml.test.ts::yes no on and off are text and dates stay text	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flows.test.ts::a flow named with two leading dots inside the repo loads	Python's is_relative_to compares path components	O1-8
 —	new	packages/office/tests/company/flows.test.ts::a flow whose yaml the office cant read is refused even if yian loads it	design §6 rule 10, §9.5: system.paths refused; a read error is never "no paths"	O1-8
