@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { expect, setDefaultTimeout, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
 import { command, refusal, run, type RunOptions, SandboxUnavailable, scrubbedEnv } from "../../src/sandbox/run.ts"
 import { waitFor } from "../helpers.ts"
@@ -82,6 +82,8 @@ test.skipIf(!sandboxAvailable())("cancel kills the call", async () => {
 })
 
 test.skipIf(!sandboxAvailable())("background process dies with the call", async () => {
+  // Kills a leftover even when an earlier assertion fails.
+  onTestFinished(() => gone("4242"))
   const start = performance.now()
   const result = await sh(makePolicy().make(), "sleep 4242 & echo started")
   expect(result.stdout.toString()).toBe("started\n")
@@ -101,6 +103,7 @@ test.skipIf(!sandboxAvailable())("std streams by path", async () => {
 test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits by itself", async () => {
   // The runtime reaps the leader before the group kill, so its pid (the group id) could in
   // theory be reused by then: the documented window.
+  onTestFinished(() => gone("4646"))
   let reaped: string | undefined
   const start = performance.now()
   const result = await sh(makePolicy().make(), "sleep 4646 & exit 0", {
@@ -139,22 +142,29 @@ test.skipIf(!sandboxAvailable())("on timeout the leader is killed before it is r
 test.skipIf(!sandboxAvailable())("setsid child dies with the call", async () => {
   // setsid leaves the process group, so killing the group misses it; the child also
   // holds the output pipes, and the call doesn't wait for the escapee.
+  onTestFinished(() => gone("4545"))
   const policy = makePolicy().make({ readOnly: [fs.realpathSync(process.execPath)] })
   const start = performance.now()
   const result = await setsidCall(policy, "4545")
+  // A failed spawn still prints "parent done" before the runtime dies of it, so the exit shows the
+  // escapee started.
+  expect(result.exit, result.stderr.toString()).toBe(0)
   expect(result.stdout.toString()).toBe("parent done\n")
   expect(performance.now() - start).toBeLessThan(10_000)
   expect(await gone("4545")).toBe(true)
 })
 
 test.skipIf(!sandboxAvailable())("escape cleanup spares concurrent calls", async () => {
+  onTestFinished(() => gone("4546"))
   const policy = makePolicy().make({ readOnly: [fs.realpathSync(process.execPath)] })
   // TMPDIR in the sandbox is the policy's tmpdir. The timeout ends the sibling if the test fails
   // before it says go.
   const script = ': > "$TMPDIR/up"; while [ ! -e "$TMPDIR/go" ]; do sleep 0.05; done; echo alive'
   const sibling = sh(policy, script, { timeout: 20 })
   await waitFor(() => fs.existsSync(path.join(policy.tmpdir, "up")), { timeout: 10_000, what: "sibling up" })
-  expect((await setsidCall(policy, "4546")).exit).toBe(0)
+  const escaper = await setsidCall(policy, "4546")
+  expect(escaper.exit, escaper.stderr.toString()).toBe(0)
+  expect(escaper.stdout.toString()).toBe("parent done\n")
   fs.writeFileSync(path.join(policy.tmpdir, "go"), "")
   const result = await sibling
   expect(result.exit).toBe(0)

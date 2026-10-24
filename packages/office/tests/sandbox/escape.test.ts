@@ -204,6 +204,8 @@ test.skipIf(!sandboxAvailable()).each([false, true])("network only when allowed 
 })
 
 test.skipIf(!sandboxAvailable())("background process is dead after the call", async () => {
+  // Kills a leftover even when an earlier assertion fails.
+  onTestFinished(() => gone("4343"))
   const result = await sh(makePolicy().make(), "sleep 4343 >/dev/null 2>&1 & echo started")
   expect(result.stdout.toString()).toBe("started\n")
   expect(result.exit).toBe(0)

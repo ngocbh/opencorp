@@ -68,13 +68,18 @@ export function killEscaped(canary: Canary): number[] {
 
   const me = process.pid
   const found: number[] = []
-  for (let round = 0; round < MAX_ROUNDS; round++) {
-    const fresh = listAllPids().filter((pid) => pid !== me && !found.includes(pid) && inCall(pid))
-    if (fresh.length === 0) break
-    for (const pid of fresh) signal(pid, "SIGSTOP")
-    found.push(...fresh)
+  try {
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      // Pid 0 is kernel_task, and signalling 0 would hit our own process group.
+      const fresh = listAllPids().filter((pid) => pid > 0 && pid !== me && !found.includes(pid) && inCall(pid))
+      if (fresh.length === 0) break
+      for (const pid of fresh) signal(pid, "SIGSTOP")
+      found.push(...fresh)
+    }
+  } finally {
+    // A round that throws must not leave the processes already stopped alive.
+    for (const pid of found) signal(pid, "SIGKILL")
   }
-  for (const pid of found) signal(pid, "SIGKILL")
   return found
 }
 

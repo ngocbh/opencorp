@@ -147,7 +147,7 @@ sandbox/test_escape.py::test_macos_other_process_environ_is_hidden	changed	packa
 sandbox/test_escapees.py	ported	packages/office/tests/sandbox/escapees.test.ts	—	O1-10
 sandbox/test_fileops.py	open	—	—	O1-11
 sandbox/test_policy.py	ported	packages/office/tests/sandbox/policy.test.ts	the two pre-rename home cases dropped (D24)	O1-9
-sandbox/test_run.py	ported	packages/office/tests/sandbox/run.test.ts	—	O1-10
+sandbox/test_run.py	ported	packages/office/tests/sandbox/run.test.ts	setsid bound 3 s → 10 s: the 2 s reader grace can't tell a missed sweep apart; gone() carries the test	O1-10
 sandbox/test_run.py::test_group_is_killed_before_the_leader_is_reaped	changed	packages/office/tests/sandbox/run.test.ts::on timeout the leader is killed before it is reaped	D12: kill before awaiting; both paths tested	O1-10
 sandbox/test_seatbelt.py	ported	packages/office/tests/sandbox/seatbelt.test.ts	—	O1-9
 sandbox/test_workspace_tools.py	open	—	—	O2-22a

@@ -29,7 +29,8 @@ export interface Result {
   truncated: boolean
   /** Seconds from the start of `run` to the end of the call. */
   duration: number
-  /** Whether the sandbox runner itself refused the call (see `refusal`). */
+  /** Whether the sandbox runner itself refused the call (see `refusal`); the call's own stderr can
+   *  spoof it, so it is a hint for the model and the logs, never a basis for policy. */
   refused: boolean
 }
 
@@ -62,7 +63,8 @@ export function command(
 }
 
 /** Whether the sandbox runner refused the call: it exited non-zero and a stderr line holds the
- *  platform's runner signature (`sandbox-exec: ` on macOS, `bwrap: ` on Linux). */
+ *  platform's runner signature (`sandbox-exec: ` on macOS, `bwrap: ` on Linux). The call's own stderr
+ *  can print the signature too, so this is a hint for the model and the logs: never decide policy on it. */
 export function refusal(platform: string, exit: number | null, stderr: Buffer): boolean {
   if (exit === null || exit === 0) return false
   const signature = platform === "darwin" ? "sandbox-exec: " : platform.startsWith("linux") ? "bwrap: " : null
