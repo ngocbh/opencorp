@@ -9,9 +9,10 @@ import { checked, type LlmConfig, loadProvider, Provider, ProviderError, provide
 /** Names no added connection may take: `default` and `login` are routes under /connections. */
 export const RESERVED: ReadonlySet<string> = new Set([OFFICE, "default", "login"])
 
+/** Valid names of added connections: lower-case letters, digits and inner `-`, at most 32 characters. */
 export const NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
 
-/** The variable that points composer at a subscription's own auth store. */
+/** The variable that points yian at a subscription's own auth store. */
 export const AUTH_FILE_ENV = "YIAN_AUTH_FILE"
 
 /** A connection is no longer on this office. */
@@ -51,7 +52,7 @@ export class ConnectionFile extends Provider {
     if (Object.hasOwn(fields.env, AUTH_FILE_ENV)) {
       throw new ProviderError(`env: ${AUTH_FILE_ENV} is set by the office, not the connection`)
     }
-    // A key would make composer bill it instead of the subscription.
+    // A key would make yian bill it instead of the subscription.
     const llm = fields.llm_config ?? {}
     if (method === "subscription" && (llm.provider !== "openai" || "api_key" in llm)) {
       throw new ProviderError("provider: a subscription connection is provider openai with no api_key")
@@ -59,8 +60,8 @@ export class ConnectionFile extends Provider {
     return new ConnectionFile(fields, method)
   }
 
-  /** The office connection: `provider` as it was checked, a plain `Provider` (the checks only an added
-   *  connection needs, such as no `YIAN_AUTH_FILE`, don't apply to it). */
+  /** The office connection: `provider`'s fields as `Provider.parse` checked them, with method `api_key` (the
+   *  checks only an added connection needs, such as no `YIAN_AUTH_FILE`, don't apply to it). */
   static office(provider: Provider): ConnectionFile {
     const { llm_config, env, prices } = provider
     return new ConnectionFile({ llm_config, env, prices }, "api_key")
@@ -77,7 +78,7 @@ function errnoCode(error: unknown): unknown {
 }
 
 /** Throws `BadConnectionName` unless `name` may name an added connection. */
-function check(name: string): void {
+function checkName(name: string): void {
   if (typeof name !== "string" || !NAME.test(name)) {
     throw new BadConnectionName(`a connection name must match ${NAME.source}`)
   }
@@ -86,7 +87,7 @@ function check(name: string): void {
   }
 }
 
-/** The text of a connection file, as the Python office's `model_dump_json(indent=2)` wrote it. */
+/** The text of a connection file, in the Python office's layout (key order, two-space indent). */
 function connectionText(conn: ConnectionFile): string {
   const { llm_config, env, prices, method } = conn
   return JSON.stringify({ llm_config, env, prices, method }, null, 2)
@@ -119,7 +120,8 @@ async function readOptional(file: string): Promise<Buffer | undefined> {
 /**
  * Reads, writes and resolves the office's connections; every file 0600, the directory 0700.
  *
- * Writes are serialised within the office, so two writes of one file never share `writePrivate`'s temporary file.
+ * Writes through one `Connections` are serialised, so two adds never take the same name and two writes of one
+ * file never share `writePrivate`'s temporary file.
  */
 export class Connections {
   readonly office: string
@@ -154,7 +156,7 @@ export class Connections {
     if (name === OFFICE) {
       return ConnectionFile.office(await loadProvider(path.join(this.dir, "office.json"), Provider.parse))
     }
-    check(name)
+    checkName(name)
     if ((await this.#removed()).has(name)) throw new ConnectionGone(`connection '${name}' was removed`)
     return this.#load(name)
   }
@@ -167,18 +169,18 @@ export class Connections {
   /** Every connection as clients see it, and the default; one that can't be read is left out. */
   async infos(): Promise<[Connection[], string]> {
     const names = await this.names()
-    const dflt = await this.#default(names)
+    const defaultName = await this.#default(names)
     const found: Connection[] = []
     for (const name of names) {
       // names() has left out the removed ones
       try {
-        found.push(this.#info(name, name === OFFICE ? await this.get(OFFICE) : await this.#load(name), dflt))
+        found.push(this.#info(name, name === OFFICE ? await this.get(OFFICE) : await this.#load(name), defaultName))
       } catch (error) {
         if (!(error instanceof ProviderError)) throw error
         this.#log(`connection ${name} can't be read; leaving it out of the list`)
       }
     }
-    return [found, dflt]
+    return [found, defaultName]
   }
 
   /** The connection new chats start on: the one `_default.json` names, or `office` if it is gone. Rejects
@@ -197,7 +199,7 @@ export class Connections {
 
   /** Makes `name` the default; rejects with `ConnectionGone` if there is no such connection. */
   async setDefault(name: string): Promise<void> {
-    if (name !== OFFICE) check(name)
+    if (name !== OFFICE) checkName(name)
     return this.#queued(async () => {
       if (!(await this.names()).includes(name)) {
         throw new ConnectionGone(`there is no connection '${name}' on this office`)
@@ -207,7 +209,7 @@ export class Connections {
     })
   }
 
-  /** office/connections, made 0700 (composer's auth store refuses any other mode). */
+  /** office/connections, made 0700 (yian's auth store refuses a directory others can open). */
   ensureDir(): string {
     try {
       fs.mkdirSync(this.dir, { mode: 0o700 })
@@ -220,13 +222,13 @@ export class Connections {
 
   /** Writes connection `name`; a removed name is refused. */
   async put(name: string, conn: ConnectionFile): Promise<void> {
-    check(name)
+    checkName(name)
     return this.#queued(() => this.#put(name, conn))
   }
 
-  /** Where subscription `name` keeps its sign-in (composer's own auth store). */
+  /** Where subscription `name` keeps its sign-in (yian's own auth store). */
   authFile(name: string): string {
-    check(name)
+    checkName(name)
     return path.join(this.dir, `${name}.auth.json`)
   }
 
@@ -243,7 +245,7 @@ export class Connections {
     if (conn.method === "subscription") {
       const auth = this.authFile(name)
       if (!isFile(auth)) {
-        // Without its store, composer would fall back to no credentials at all.
+        // Without its store, yian would fall back to no credentials at all.
         throw new ProviderError(`connection '${name}' has no sign-in; remove it and connect again`)
       }
       env[AUTH_FILE_ENV] = auth
@@ -277,7 +279,7 @@ export class Connections {
     }
   }
 
-  #info(name: string, conn: ConnectionFile, dflt: string): Connection {
+  #info(name: string, conn: ConnectionFile, defaultName: string): Connection {
     const llm = conn.llm_config ?? {}
     const model = llm.model ?? null
     if (model !== null && typeof model !== "string") {
@@ -286,10 +288,10 @@ export class Connections {
     if (llm.provider != null && typeof llm.provider !== "string") {
       throw new ProviderError(`connection '${name}' names a provider that isn't text`)
     }
-    // Without a key, office runs on composer's own login.
+    // Without a key, office runs on yian's own login.
     const method = name === OFFICE ? ("api_key" in llm ? "api_key" : "none") : conn.method
     const provider = conn.method === "subscription" ? "chatgpt" : providerLabel(llm)
-    return { name, provider, method, model, default: name === dflt }
+    return { name, provider, method, model, default: name === defaultName }
   }
 
   async #default(names: string[]): Promise<string> {
@@ -302,7 +304,7 @@ export class Connections {
   }
 
   #path(name: string): string {
-    check(name)
+    checkName(name)
     return path.join(this.dir, `${name}.json`)
   }
 
@@ -330,7 +332,7 @@ function isFile(file: string): boolean {
 }
 
 /** A short name for the provider of `llm`: `azure`, `custom` (another OpenAI-compatible endpoint), the
- *  provider's own name, or `composer` for composer's default provider. */
+ *  provider's own name, or `composer`, the label for yian's default provider. */
 export function providerLabel(llm: LlmConfig | null): string {
   const provider = llm?.provider
   if (!provider) return "composer"
