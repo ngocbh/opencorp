@@ -64,9 +64,10 @@ export class PidFile {
     readonly lockPath: string,
   ) {}
 
-  /** Takes the lock and writes our pid. `AlreadyRunning` (with the pid the pidfile names, or null) when
-   *  another holder has the lock; `OfficeStartError` for a symlinked pidfile, a lock file that isn't
-   *  private, or another open failure. Never follows a symlink and never truncates another file. */
+  /** Takes the lock and writes our pid, the pidfile made 0600. `AlreadyRunning` (with the pid the pidfile names,
+   *  or null) when another holder has the lock; `OfficeStartError` for a pidfile that is a symlink, not a regular
+   *  file or hard-linked, a lock file that isn't private, or another open failure. Never follows a symlink and
+   *  never truncates another file. */
   async acquire(): Promise<void> {
     let lock: FileLock
     try {
@@ -89,7 +90,23 @@ export class PidFile {
       if (code === "ELOOP" || code === "EMLINK") throw new OfficeStartError(`the pidfile ${this.path} is a symlink`)
       throw new OfficeStartError(`can't open the pidfile ${this.path}: ${messageOf(error)}`)
     }
+    let stat: fs.Stats
     try {
+      stat = fs.fstatSync(fd)
+    } catch (error) {
+      fs.closeSync(fd)
+      lock.release()
+      throw new OfficeStartError(`can't open the pidfile ${this.path}: ${messageOf(error)}`)
+    }
+    // A hard link would have our pid written through to another file.
+    if (!stat.isFile() || stat.nlink !== 1) {
+      fs.closeSync(fd)
+      lock.release()
+      throw new OfficeStartError(`the pidfile ${this.path} is not a regular file`)
+    }
+    try {
+      // An existing pidfile keeps its mode through the open, so it is made private here.
+      fs.fchmodSync(fd, 0o600)
       fs.ftruncateSync(fd, 0)
       fs.writeSync(fd, `${process.pid}\n`)
     } catch (error) {
@@ -117,6 +134,15 @@ export class PidFile {
 
 /** Writes text (lines with their newline) where the daemon's log goes: stderr by default. */
 export type Write = (text: string) => void
+
+/** Writes `text` to stderr synchronously, dropping it if the write fails. */
+function writeStderr(text: string): void {
+  try {
+    fs.writeSync(2, text)
+  } catch {
+    // A full disk or a broken stderr pipe must not crash the office (Python's logging swallowed these errors too).
+  }
+}
 
 /** A log function for `logger` at `level`: each message becomes one `logLine` on `write`. */
 export function officeLogger(write: Write): (level: Level, logger: string) => (message: string) => void {
@@ -159,7 +185,7 @@ export function crashReport(error: unknown): string {
  * left. The marker never holds the error's message, which could quote a secret. The default write is synchronous,
  * so the line can't be lost to the exit when stderr is a pipe.
  */
-export function exitOnCrash(write: Write = (text) => void fs.writeSync(2, text)): void {
+export function exitOnCrash(write: Write = writeStderr): void {
   let crashed = false
   const onCrash = (error: unknown) => {
     if (crashed) return
@@ -205,7 +231,7 @@ export function buildOffice(paths: OfficePaths, { git, write }: { git?: string; 
 export const HANDLER_WAIT_MS = 5000
 
 /** Wraps a request listener so the requests it is still handling can be awaited: `settled(ms)` resolves
- *  once every running handler has settled or after `ms`, whichever is first (its timer unref'd). */
+ *  once every running handler has settled or after `ms`, whichever is first. */
 export function trackRequests(listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>): {
   listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>
   settled(ms: number): Promise<void>
@@ -219,8 +245,8 @@ export function trackRequests(listener: (req: IncomingMessage, res: ServerRespon
     },
     settled(ms) {
       return new Promise((resolve) => {
+        // Ref'd: the stop's wait must keep the process alive until the store closes and the pidfile and lock go.
         const timer = setTimeout(resolve, ms)
-        timer.unref()
         void Promise.allSettled(running).then(() => {
           clearTimeout(timer)
           resolve()
@@ -360,7 +386,7 @@ export interface MainOptions {
  */
 export async function main(
   argv: string[],
-  { extensions = EXTENSIONS, write = (text) => void fs.writeSync(2, text), git }: MainOptions = {},
+  { extensions = EXTENSIONS, write = writeStderr, git }: MainOptions = {},
 ): Promise<number> {
   let value: string | undefined
   try {

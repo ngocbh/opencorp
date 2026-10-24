@@ -533,6 +533,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/daemon/main.test.ts::a home that does not exist yet resolves through its real parent	Python's non-strict Path.resolve() (design §6.5 realpath): the nearest existing ancestor is resolved	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a lock file that is not private is refused	design §2.3, §6 rule 6: the lock file follows yian's private rules (Y4)	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a pidfile left by a dead office is taken over	design §2.3: the lock, not the pidfile, says who runs	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a pidfile that is a hard link or loose is made private or refused	design §6 rule 6: the pidfile is a private regular file	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a signal during the start stops the office once it has started	design §2.3: SIGINT, SIGTERM and SIGHUP stop cleanly, their handlers installed before the start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a symlinked office dir stops the daemon start [%s]	design §2.3, §6 rule 6: the office dir is checked through main(), as Python's test_a_symlinked_office_dir_is_refused did	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5

@@ -89,6 +89,26 @@ test("a pidfile left by a dead office is taken over", async () => {
   file.release()
 })
 
+test("a pidfile that is a hard link or loose is made private or refused", async () => {
+  const { dir, pid, lock } = paths()
+  fs.writeFileSync(pid, "99999999\n", { mode: 0o644 })
+  fs.chmodSync(pid, 0o644)
+  const file = pidFile(pid, lock)
+  await file.acquire()
+  expect(fs.statSync(pid).mode & 0o777).toBe(0o600)
+  file.release()
+
+  const other = path.join(dir, "other.txt")
+  fs.writeFileSync(other, "precious\n", { mode: 0o644 })
+  fs.linkSync(other, pid)
+  const error = await pidFile(pid, lock).acquire().catch((e: unknown) => e)
+  expect(error).toBeInstanceOf(OfficeStartError)
+  expect((error as Error).message).toBe(`the pidfile ${pid} is not a regular file`)
+  expect(fs.readFileSync(other, "utf8")).toBe("precious\n")
+  expect(fs.statSync(other).mode & 0o777).toBe(0o644)
+  expect(isLocked(lock)).toBe(false)
+})
+
 test("a lock file that is not private is refused", async () => {
   const { pid, lock } = paths()
   fs.writeFileSync(lock, "")
