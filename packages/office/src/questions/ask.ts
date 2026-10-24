@@ -15,7 +15,7 @@ import { formatAnswer } from "./format.ts"
 import { normalizeOptions } from "./normalize.ts"
 
 /** Store an open question (with `workItem`, if given), wait until it is answered, and return it answered. An
- *  aborted `signal` stops the wait. */
+ *  aborted `signal` stops the wait; a caller that aborts an ask with a work item settles that item itself. */
 export type OnQuestion = (
   question: QuestionRecord,
   options?: { workItem?: WorkItemRecord; signal?: AbortSignal },
@@ -80,7 +80,7 @@ export function makeAskUser(
 }
 
 /** Store questions and make callers wait until each is answered; one store listener wakes them all. Answers written
- *  by another process are not seen until the question's next event: only the daemon writes the store. */
+ *  by another process are not seen until the question's next event or `close()`: only the daemon writes the store. */
 export class Answers {
   readonly store: Store
   #log: (line: string) => void
@@ -99,7 +99,7 @@ export class Answers {
     })
   }
 
-  /** How many question ids have a waiting call now. */
+  /** How many question ids have a waiting call now; tests use it to show no waiter is left behind. */
   get waiting(): number {
     return this.#waiting.size
   }
@@ -125,7 +125,7 @@ export class Answers {
    * `workItem`, if given, is stored in the same transaction as the question, and set to `cancelled` if the question
    * goes stale. A `human_input` asked again for the same run and node (after a restart) reuses the question already
    * stored, and its answer if it has one. An aborted `signal` rejects with its reason and leaves the question and its
-   * work item as they are.
+   * work item as they are: nothing here moves that work item any more, so the caller settles it.
    *
    * Rejects with `QuestionExpired` if the question went stale first, `AnswersClosed` if this was closed first.
    */
