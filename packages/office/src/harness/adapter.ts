@@ -1,5 +1,5 @@
 /** The shape every external agent harness adapter takes, and the types it passes. Types only. */
-import type { AnswerField, HarnessPolicy, HarnessUsage, Part, QuestionPage } from "@opencorp/protocol"
+import type { AnswerField, HarnessPolicy, HarnessUsage, Message, Part, QuestionPage } from "@opencorp/protocol"
 
 /** Environment variables by name. */
 export type Env = Record<string, string>
@@ -79,10 +79,16 @@ export interface HarnessProcess {
 export type HarnessEvent =
   | { type: "turn_started"; turnId: string }
   | { type: "turn_completed"; turnId: string; usage: HarnessUsage | null }
-  /** Live only, never stored. */
-  | { type: "part"; part: Part; final: boolean }
-  /** Becomes a Question with source "harness". */
-  | { type: "request"; key: string; card: Card }
+  /** Live only, never stored, in order: a new user, assistant or error message, with its parts
+   *  (`message.updated`). The message is a copy the receiver may keep. */
+  | { type: "message"; message: Message }
+  /** Live only, never stored, in order: a part added to message `messageId`, or replacing the one with its `id`
+   *  (`part.updated`). The part is a copy the receiver may keep. */
+  | { type: "part"; messageId: string; part: Part }
+  /** Live only, never stored, in order: `text` appended to part `partId` of message `messageId` (`part.delta`). */
+  | { type: "delta"; messageId: string; partId: string; text: string }
+  /** Becomes a Question with source "harness" on run `runId`, node `nodeId`. */
+  | { type: "request"; key: string; card: Card; runId: string; nodeId: string }
   /** The card went stale. */
   | { type: "request_resolved"; key: string }
   | { type: "model"; model: string }

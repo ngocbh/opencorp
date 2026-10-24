@@ -1,0 +1,25 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Say hello once more."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "hello"
+        }
+      ]
+    }
+  ],
+  "cards": []
+}

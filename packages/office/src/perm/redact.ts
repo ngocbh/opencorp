@@ -224,19 +224,21 @@ function scrubAll(value: unknown, keys: Set<string>, needles: Needles): unknown 
   return value
 }
 
-/** Python's `json.dumps(value, ensure_ascii=False, default=str)` of a redacted value. */
-export function pyJson(value: unknown): string {
-  if (typeof value === "string") return jsonDumps(value, false)
+/** Python's `json.dumps(value, ensure_ascii=ensureAscii, default=str)` of a redacted value. */
+export function pyJson(value: unknown, ensureAscii = false): string {
+  if (typeof value === "string") return jsonDumps(value, ensureAscii)
   if (value === true) return "true"
   if (value === false) return "false"
   if (value === null) return "null"
   // String() writes NaN, Infinity and -Infinity as Python does, and a bigint as its digits.
   if (typeof value === "number" || typeof value === "bigint") return String(value)
-  if (Array.isArray(value)) return "[" + value.map(pyJson).join(", ") + "]"
+  // Not `value.map(pyJson)`: map would pass each item's index as the flag.
+  if (Array.isArray(value)) return "[" + value.map((v) => pyJson(v, ensureAscii)).join(", ") + "]"
   if (typeof value === "object") {
-    return "{" + Object.entries(value).map(([k, v]) => jsonDumps(k, false) + ": " + pyJson(v)).join(", ") + "}"
+    return "{" + Object.entries(value)
+      .map(([k, v]) => jsonDumps(k, ensureAscii) + ": " + pyJson(v, ensureAscii)).join(", ") + "}"
   }
-  return jsonDumps(String(value), false)
+  return jsonDumps(String(value), ensureAscii)
 }
 
 /** `args` redacted, or, when their JSON (as Python writes it) is longer than DETAIL_CHARS, that JSON cut to fit. */
