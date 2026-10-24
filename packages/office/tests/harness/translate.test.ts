@@ -5,9 +5,10 @@ import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
 import { changeCounts, COMMAND, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative,
-  REPLY_SCHEMAS, SERVED, Translator } from "../../src/harness/translate.ts"
+  REPLY_SCHEMAS, SERVED, Translator, Unserved } from "../../src/harness/translate.ts"
 import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,
-  fileChangeApproval, fill, networkApproval, permissionsApproval } from "../../src/testing/fake_codex.ts"
+  fileChangeApproval, fill, formElicitation, mcpApproval, mcpApprovalQuestion, networkApproval, permissionsApproval,
+  question, urlElicitation, userInput } from "../../src/testing/fake_codex.ts"
 
 const FIXTURES = new URL("../fixtures/codex/", import.meta.url)
 /** The recorded sessions' names, without `.jsonl`, sorted. */
@@ -436,6 +437,130 @@ test("a permissions card grants what was asked for this turn or session or nothi
   expect(c.reply("Deny")).toEqual([{ permissions: {}, scope: "turn" }, "decline"])
 })
 
+// --- question, MCP and elicitation cards -------------------------------------------------
+
+test("codex questions are pages with secret ones marked", () => {
+  const { t } = tr()
+  const step = userInput(4, "u1", [question("token", "Token", "Paste it", { secret: true }),
+    question("env", "Env", "Where?", { options: ["prod", "dev"] })])
+  const c = card(t, step)
+  expect(c.card.kind).toBe("question")
+  expect(c.card.questions?.map((p) => p.header)).toEqual(["Token", "Env"])
+  expect(c.card.questions?.map((p) => p.secret)).toEqual([true, false])
+  expect(c.card.answer_schema.map((f) => f.name)).toEqual(["Env"])  // no "other": only its options
+  expect(c.reply({ Token: "s3cret", Env: "dev" })).toEqual([
+    { answers: { token: { answers: ["s3cret"] }, env: { answers: ["dev"] } } }, "answer"])
+})
+
+test.each(["elicitation", "user_input"])("an mcp tool approval is one card in either wire form [%s]", (form) => {
+  const { t } = tr()
+  const step = form === "elicitation" ? mcpApproval(5, "docs", "search")
+    : mcpApprovalQuestion(5, "u2", "docs", "search")
+  const c = card(t, step)
+  expect(c.card.kind).toBe("mcp_tool")
+  expect(c.card.options).toEqual(["Allow", "Allow for this session", "Cancel"])
+  if (form === "elicitation") {
+    expect([c.card.title, c.callId]).toEqual(["Codex wants to use an MCP tool", "request-5"])
+    expect(c.reply("Allow for this session")).toEqual([{ action: "accept", _meta: { persist: "session" } },
+      "acceptForSession"])
+    expect(c.reply("Cancel")).toEqual([{ action: "cancel" }, "cancel"])
+  } else {
+    expect(c.callId).toBe("u2")
+    expect(c.reply("Allow")).toEqual([{ answers: { mcp_tool_call_approval_1: { answers: ["Allow"] } } }, "accept"])
+  }
+})
+
+test("an mcp approval without a session choice offers two", () => {
+  const { t } = tr()
+  expect(card(t, mcpApproval(5, "docs", "search", { sessionOption: false })).card.options).toEqual(["Allow", "Cancel"])
+})
+
+test("other elicitations are cards too", () => {
+  const { t } = tr()
+  const url = { request: "mcpServer/elicitation/request", id: 6, params: {
+    serverName: "gh", threadId: "{thread}", turnId: null, mode: "url", elicitationId: "e1",
+    message: "Sign in to GitHub", url: "https://example.com/login" } }
+  let c = card(t, url, "codex-123")
+  expect(c.card.kind).toBe("elicitation")
+  expect(c.card.question).toContain("https://example.com/login")
+  expect(c.card.options).toEqual(["Done", "Decline", "Cancel"])
+  expect(c.reply("Done")).toEqual([{ action: "accept" }, "accept"])
+  const form = { request: "mcpServer/elicitation/request", id: 7, params: {
+    serverName: "jira", threadId: "{thread}", turnId: "{turn}", mode: "form", message: "Ticket details",
+    requestedSchema: { type: "object", properties: {
+      priority: { type: "string", enum: ["low", "high"] }, points: { type: "integer" },
+      urgent: { type: "boolean" } } } } }
+  c = card(t, form)
+  expect(c.card.questions?.map((p) => p.header)).toEqual(["priority", "points", "urgent"])
+  // A number field is typed, so the answer check converts "3" or refuses "x" before the store or Codex sees it.
+  expect(c.card.answer_schema.map((f) => [f.name, f.type, f.enum])).toEqual([
+    ["priority", "str", ["low", "high"]], ["points", "int", null], ["urgent", "str", ["Yes", "No"]]])
+  expect(c.reply({ priority: "high", points: 3, urgent: "Yes" })).toEqual([
+    { action: "accept", content: { priority: "high", points: 3, urgent: true } }, "accept"])
+})
+
+test("a form with no fields is an accept decline or cancel card", () => {
+  const { t } = tr()
+  const c = card(t, formElicitation(7, "jira", "Go on?", {}))
+  expect([c.card.kind, c.card.question, c.card.questions]).toEqual(["elicitation", "jira: Go on?", null])
+  expect(c.card.options).toEqual(["Accept", "Decline", "Cancel"])
+  expect(c.reply("Decline")).toEqual([{ action: "decline" }, "decline"])
+})
+
+test.each([
+  // more fields than a card has pages
+  ["five fields", Object.fromEntries([0, 1, 2, 3, 4].map((i) => [`f${i}`, { type: "string" }]))],
+  // a list, which a page can't give
+  ["a list", { tags: { type: "array", items: { type: "string", enum: ["a", "b"] } } }],
+  // titled choices, whose values differ
+  ["titled choices", { env: { type: "string", oneOf: [{ const: "p", title: "Prod" }] } }],
+])("a form a card cannot answer in full is unserved [%s]", (_name, properties) => {
+  const { t } = tr()
+  expect(() => card(t, formElicitation(7, "jira", "Ticket", properties))).toThrow(Unserved)
+})
+
+test("more than four questions or an unknown method is unserved", () => {
+  const { t } = tr()
+  const many = userInput(8, "u3", [0, 1, 2, 3, 4].map((i) => question(`q${i}`, `Q${i}`, "?")))
+  expect(() => card(t, many)).toThrow(Unserved)
+  expect(() => t.card("item/tool/call", {}, { runId: "turn_1", nodeId: "9" })).toThrow(Unserved)
+})
+
+test.each([
+  // A device verification wants a proof in its reply, which no answer on a card makes.
+  ["openai/userVerification", { title: "Verify", description: "Confirm it's you", challenge: "c1" }],
+  // OpenAI's own forms have a schema the pinned protocol leaves open, so a card can't type their reply.
+  ["openai/form", { message: "Pick", requestedSchema: { anything: true } }],
+  ["openaiForm", { message: "Pick", requestedSchema: { anything: true } }],
+])("an elicitation in a mode a card cannot answer is unserved [%s]", (mode, rest) => {
+  const { t } = tr()
+  const params = { serverName: "gh", threadId: "thr_1", turnId: null, mode, ...rest }
+  const ask = () => t.card("mcpServer/elicitation/request", params, { runId: "codex-1", nodeId: "10" })
+  expect(ask).toThrow(Unserved)
+  expect(ask).toThrow(`in mode ${mode}`)
+})
+
+test("an answer that isnt an offered option makes no reply", () => {
+  const { t } = tr()
+  // A fixed text, so it holds neither the answer nor a key.
+  const refused = (c: Issued, answer: unknown) => {
+    let thrown: unknown
+    try {
+      c.reply(answer)
+    } catch (e) {
+      thrown = e
+    }
+    expect(thrown).toBeInstanceOf(RangeError)
+    expect((thrown as Error).message).toBe("the answer isn't one of the card's options")
+  }
+  const option = card(t, commandApproval(1, "c1", "touch a"))
+  for (const answer of ["Always allow", "toString", null, 1, ["Approve"]]) refused(option, answer)
+  const page = card(t, userInput(4, "u1", [question("token", "Token", "Paste it", { secret: true })]))
+  for (const answer of [{ Tokn: "x" }, { constructor: "x" }, "dev"]) refused(page, answer)
+  const form = card(t, formElicitation(9, "jira", "Ticket", { points: { type: "integer" } }))
+  refused(form, { constructor: "x" })
+})
+
 // --- the pinned schema -------------------------------------------------------------------
 
 test("every server request in the pinned schema is served or refused", () => {
@@ -445,6 +570,25 @@ test("every server request in the pinned schema is served or refused", () => {
   const added = [...methods].filter((m) => !known.has(m)).sort()
   const gone = [...known].filter((m) => !methods.has(m)).sort()
   expect([added, gone], `new: ${JSON.stringify(added)}; gone: ${JSON.stringify(gone)}`).toEqual([[], []])
+})
+
+test("every reply a card makes matches codexs response schema", () => {
+  const { t } = tr()
+  feed(t, [commandStarted("c1", "touch a"), fileChange("f1", "a.md", "a\n")[0]!])
+  const steps = [commandApproval(1, "c1", "touch a"), fileChangeApproval(2, "f1"), permissionsApproval(3, "p1"),
+    userInput(4, "u1", [question("env", "Env", "Where?", { options: ["prod", "dev"] })]),
+    mcpApproval(5, "docs", "search"), mcpApprovalQuestion(6, "u2", "docs", "search"),
+    networkApproval(7, "c2", "example.com"), urlElicitation(8, "gh", "Sign in", "https://e.com/l"),
+    formElicitation(9, "jira", "Ticket", { points: { type: "integer" }, urgent: { type: "boolean" } })]
+  // A form's answer as the answer check returns it.
+  const answers: Record<number, unknown[]> = { 4: [{ Env: "dev" }], 9: [{ points: 3, urgent: "No" }] }
+  for (const step of steps) {
+    const c = card(t, step)
+    const check = replyCheck(step.request)
+    for (const answer of answers[step.id] ?? c.card.options) {
+      expect(check(c.reply(answer)[0]), `${step.request} ${JSON.stringify(check.errors)}`).toBe(true)
+    }
+  }
 })
 
 // --- the recorded real sessions ----------------------------------------------------------

@@ -7,7 +7,8 @@
 import fs from "node:fs"
 import path from "node:path"
 import type { z } from "zod"
-import { type ErrorPart, type Message, now, Question, type TextPart, type ToolPart } from "@opencorp/protocol"
+import { type AnswerField, type ErrorPart, type Message, now, Question, type QuestionPage, type TextPart,
+  type ToolPart } from "@opencorp/protocol"
 import { pyJson, splitLines } from "../perm/redact.ts"
 import { newId } from "../store/store.ts"
 import type { Card, HarnessEvent } from "./adapter.ts"
@@ -284,7 +285,39 @@ export class Translator {
   }
 
   /** The card for a request that isn't an approval: questions, MCP approvals and elicitations. */
-  private other(method: string, _params: Obj, _asked: Asked): Issued {
+  private other(method: string, params: Obj, asked: Asked): Issued {
+    if (method === "item/tool/requestUserInput") {
+      const questions: Obj[] = params.questions
+      const mcp = questions.find((q) => q.id.startsWith(MCP_APPROVAL_PREFIX))
+      if (mcp !== undefined) {
+        const labels = (truthy(mcp.options) ? mcp.options : []).map((o: Obj) => o.label)
+          .filter((x: unknown) => x !== REMEMBER)
+        const options = MCP.filter(([x]) => labels.includes(x))
+        return issue("mcp_tool", params.itemId, asked, { title: mcp.header, question: mcp.question,
+          options: options.map(([x]) => x) },
+        choice(options, (d) => ({ answers: Object.fromEntries([[mcp.id, { answers: [label(options, d)] }]]) })))
+      }
+      return pages(params, asked, questions)
+    }
+    if (method === "mcpServer/elicitation/request") {
+      // Only MCP's own modes can be answered from a card. A device verification (openai/userVerification) wants a
+      // proof Codex's client makes, and OpenAI's forms (openai/form, openaiForm) have a schema the pinned protocol
+      // leaves open, so no reply could be checked; Codex takes the error as a refusal.
+      if (params.mode !== "form" && params.mode !== "url") throw new Unserved(`${method} in mode ${pyStr(params.mode)}`)
+      const meta: Obj = truthy(params._meta) ? params._meta : {}
+      const title = `${params.serverName}: ${params.message}`
+      if (truthy(meta.codex_approval_kind)) {
+        const persist = meta.persist
+        const offersSession = persist === "session" || (Array.isArray(persist) && persist.includes("session"))
+        const options = MCP.filter(([, d]) => d !== "acceptForSession" || offersSession)
+        const reply = (d: string) => d === "cancel" ? { action: "cancel" }
+          : { action: "accept", ...(d === "acceptForSession" ? { _meta: { persist: "session" } } : {}) }
+        return issue("mcp_tool", `request-${asked.nodeId}`, asked, {
+          title: APPROVAL_TITLES.get(meta.codex_approval_kind) ?? "Codex asks about an MCP server", question: title,
+          options: options.map(([x]) => x) }, choice(options, reply))
+      }
+      return elicitation(params, asked, title)
+    }
     throw new Unserved(method)
   }
 
@@ -485,8 +518,21 @@ const COMMAND_TITLES: ReadonlyMap<unknown, string> = new Map([
 ])
 const PERMISSIONS: Options = [["Approve for this turn", "turn"], ["Approve for this session", "session"],
   ["Deny", "decline"]]
+const MCP: Options = [["Allow", "accept"], ["Allow for this session", "acceptForSession"], ["Cancel", "cancel"]]
+/** Writes the owner's Codex config: never offered. */
+const REMEMBER = "Allow and don't ask me again"
+const APPROVAL_TITLES: ReadonlyMap<unknown, string> = new Map([
+  ["mcp_tool_call", "Codex wants to use an MCP tool"],
+  ["browser_auth", "An MCP server wants to sign in through your browser"],
+  ["tool_suggestion", "Codex suggests an MCP tool"],
+])
+/** Question.questions holds at most four pages. */
+const MAX_PAGES = 4
+const NUMBERS: ReadonlyMap<unknown, AnswerField["type"]> = new Map([["integer", "int"], ["number", "float"]])
 /** What an answer that makes no reply throws; it never echoes the answer. */
 const NOT_AN_OPTION = "the answer isn't one of the card's options"
+/** What a form answer that isn't the number its field wants throws; it never echoes the answer. */
+const NOT_A_NUMBER = "the answer isn't a number"
 /** The fields of a Question a card shows, checked as Python's `Question.model_validate` checks them. */
 const CARD = Question.pick({ title: true, question: true, options: true, questions: true, answer_schema: true })
 
@@ -504,6 +550,78 @@ function approval(kind: Card["kind"], params: Obj, asked: Asked, title: string, 
   Issued {
   return issue(kind, params.itemId, asked, { title, question: withReason(text, params),
     options: options.map(([label]) => label) }, choice(options, (d) => ({ decision: d })))
+}
+
+/** A question card with a page per Codex question; `Unserved` for more than a card holds. */
+function pages(params: Obj, asked: Asked, questions: Obj[]): Issued {
+  if (questions.length > MAX_PAGES) throw new Unserved("item/tool/requestUserInput with more than four questions")
+  const headers = new Map<string, string>()  // page header -> Codex question id
+  const shown: QuestionPage[] = [], schema: AnswerField[] = []
+  for (const q of questions) {
+    let header: string = truthy(q.header) ? q.header : q.id
+    while (headers.has(header)) header += "'"  // headers key the answer record, so they must differ
+    headers.set(header, q.id)
+    const options = (truthy(q.options) ? q.options : []).map((o: Obj) => ({ label: o.label,
+      description: truthy(o.description) ? o.description : "" }))
+    shown.push({ question: q.question, header, options, secret: truthy(q.isSecret) })
+    if (truthy(options) && !truthy(q.isOther)) {
+      schema.push({ name: header, type: "str", required: true, enum: options.map((o: Obj) => o.label) })
+    }
+  }
+  return issue("question", params.itemId, asked, { title: "Codex asks", question: questions[0]?.question,
+    questions: shown, answer_schema: schema }, (answer) => {
+    if (!isPlain(answer)) throw new RangeError(NOT_AN_OPTION)
+    const answers = Object.entries(answer).map(([h, v]) => {
+      const id = headers.get(h)
+      if (id === undefined) throw new RangeError(NOT_AN_OPTION)
+      return [id, { answers: Array.isArray(v) ? v : [v] }]
+    })
+    return [{ answers: Object.fromEntries(answers) }, "answer"]
+  })
+}
+
+/** An MCP server's elicitation as a card: a URL or a form with no fields is accept, decline or cancel; a form gets a
+ *  page per field. */
+function elicitation(params: Obj, asked: Asked, title: string): Issued {
+  const callId = `request-${asked.nodeId}`
+  const url = params.mode === "url"
+  const requested: Obj = truthy(params.requestedSchema) ? params.requestedSchema : {}
+  const props: Obj = url ? {} : truthy(requested.properties) ? requested.properties : {}
+  if (!truthy(props)) {
+    const options: Options = [[url ? "Done" : "Accept", "accept"], ["Decline", "decline"], ["Cancel", "cancel"]]
+    return issue("elicitation", callId, asked, { title: "An MCP server asks",
+      question: url ? `${title}\n${params.url}` : title, options: options.map(([x]) => x) },
+    choice(options, (d) => ({ action: d })))
+  }
+  const fields = new Map<string, Obj>(Object.entries(props))
+  // A reply must hold every field, typed as the schema says: a form a card can't answer in full is refused.
+  if (fields.size > MAX_PAGES) throw new Unserved("mcpServer/elicitation/request with more than four fields")
+  if ([...fields.values()].some((spec) => spec.type === "array" || Object.hasOwn(spec, "oneOf")
+    || Object.hasOwn(spec, "anyOf"))) {
+    throw new Unserved("mcpServer/elicitation/request with a list or titled-choice field")
+  }
+  const shown: QuestionPage[] = [], schema: AnswerField[] = []
+  for (const [name, spec] of fields) {
+    const labels: string[] = truthy(spec.enum) ? spec.enum : spec.type === "boolean" ? ["Yes", "No"] : []
+    shown.push({ question: truthy(spec.description) ? spec.description : truthy(spec.title) ? spec.title : name,
+      header: name, options: labels.map((x) => ({ label: x })) })
+    const number = NUMBERS.get(spec.type)
+    if (truthy(labels)) {  // a field with choices takes only them
+      schema.push({ name, type: "str", required: true, enum: labels })
+    } else if (number !== undefined) {  // the answer check converts typed text, or refuses it before Codex sees it
+      schema.push({ name, type: number, required: true })
+    }
+  }
+  return issue("elicitation", callId, asked, { title: "An MCP server asks", question: title, questions: shown,
+    answer_schema: schema }, (answer) => {
+    if (!isPlain(answer)) throw new RangeError(NOT_AN_OPTION)
+    const content = Object.entries(answer).map(([k, v]) => {
+      const spec = fields.get(k)
+      if (spec === undefined) throw new RangeError(NOT_AN_OPTION)
+      return [k, typed(spec, v)]
+    })
+    return [{ action: "accept", content: Object.fromEntries(content) }, "accept"]
+  })
 }
 
 /** A reply made from the decision of the picked label; a label the card doesn't hold makes none. */
@@ -531,6 +649,29 @@ function withReason(text: string, params: Obj): string {
 
 function isPlain(value: unknown): value is Obj {
   return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+/** The label of `decision` among `options`. */
+function label(options: Options, decision: string): string {
+  return options.find(([, d]) => d === decision)![0]
+}
+
+/** A typed form answer as the elicitation's schema wants it. */
+function typed(spec: Obj, value: unknown): unknown {
+  const kind = spec.type
+  if (kind === "boolean") return value === "Yes"
+  if (!NUMBERS.has(kind)) return value
+  let n = NaN
+  if (kind === "integer") {
+    if (typeof value === "number") n = Math.trunc(value)
+    else if (typeof value === "string" && /^\s*[-+]?\d+\s*$/.test(value)) n = Number(value)
+  } else if (typeof value === "number") {
+    n = value
+  } else if (typeof value === "string" && value.trim() !== "") {
+    n = Number(value)
+  }
+  if (!Number.isFinite(n)) throw new RangeError(NOT_A_NUMBER)
+  return n
 }
 
 /** `value` without its null or empty-object entries, at any depth: Codex sends every field it could have asked
