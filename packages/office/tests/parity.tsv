@@ -64,6 +64,9 @@ company_template/test_writer.py	open	—	—	O2-16a
 daemon/test_app.py	open	—	split: O2-1 → O2-2	O2-2
 daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
 daemon/test_bus.py	open	—	—	O2-2
+daemon/test_bus.py::test_publish_and_close_racing_a_closing_loop_are_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
+daemon/test_bus.py::test_publish_before_attach_is_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
+daemon/test_bus.py::test_publish_from_another_thread_keeps_order	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_extensions.py	open	—	—	O2-4
 daemon/test_http.py	ported	packages/office/tests/daemon/http.test.ts	a test route table with zod bodies stands in for the routes (rule 1)	O2-1
 daemon/test_main.py	open	—	split: O2-1 → O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
@@ -365,6 +368,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
+—	new	packages/office/tests/daemon/bus.test.ts::a burst overflows a full queue before a waiting reader runs	design §2.3: a reader is woken after the fan-out, as asyncio's queue	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::a 500 logs only the error type	design §2.3, §6 rule 13: a 500 logs the error type only	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a body that isnt utf 8 is 422	design §5.4: the body is UTF-8 JSON; json.loads also took UTF-16/32, which is refused now	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::a decoded slash or dot dot in a param is a 404	design §2.3: params decoded once; a decoded / or .. is a 404	O2-1
