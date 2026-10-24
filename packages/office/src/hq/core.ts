@@ -27,7 +27,9 @@ export class Hq {
   readonly log: (line: string) => void
   /** The TCP listener's port while it listens; set by the listeners. */
   boundPort: number | null = null
+  /** Why the TCP listener isn't listening; set by the listeners. */
   tcpError: string | null = null
+  /** When the listeners next try to bind TCP; set by the listeners. */
   nextRetryAt: string | null = null
   /** Why hq.sock isn't listening, when binding it failed. */
   socketError: string | null = null

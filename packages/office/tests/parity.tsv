@@ -161,7 +161,7 @@ harness/test_translate.py::test_recorded_sessions_translate_as_their_golden_file
 harness/test_translate.py::test_the_recorded_steer_keeps_the_running_command_in_the_message_it_started_in	changed	packages/office/tests/harness/translate.test.ts::the recorded steer keeps the running command in the message it started in	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_translate.py::test_two_steers_around_a_running_command_keep_it_in_its_message	changed	packages/office/tests/harness/translate.test.ts::two steers around a running command keep it in its message	D9, design §7.3: no stored transcript; the parts are read from the translator's live events	O3-11
 harness/test_waiting.py	open	—	—	O3-14
-hq/test_api.py	open	—	split: O2-9 → O4b-7	O4b-7
+hq/test_api.py	open	—	split: O2-9 → O3-9 → O3-15 → O4b-7; O2-9's tests are in packages/office/tests/hq/api.test.ts	O4b-7
 hq/test_app_fixture.py	ported	packages/office/tests/hq/app_fixture.test.ts	—	O2-7
 hq/test_auth.py	open	—	—	O2-9
 hq/test_config.py	ported	packages/office/tests/hq/config.test.ts	—	O2-7
@@ -179,7 +179,7 @@ hq/test_servers.py	open	—	—	O2-10
 hq/test_sessions.py	ported	packages/office/tests/hq/sessions.test.ts	—	O2-8
 hq/test_sessions.py::test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row	changed	packages/office/tests/hq/sessions.test.ts::a revoke marks the entry a check made while it read the row	design §3.3: the TS store is synchronous, so a revoke's row read can't interleave with a check; the test checks that a revoke marks, never replaces or drops, the entry a check made	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10
-hq/test_source.py	open	—	—	O2-9
+hq/test_source.py	ported	packages/office/tests/hq/source.test.ts	—	O2-9
 hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
 hq/test_status.py	ported	packages/office/tests/hq/status.test.ts	—	O2-7
 hq/test_version.py	ported	packages/app/test/build.test.ts,packages/office/tests/hq/version.test.ts,packages/protocol/test/version.test.ts	—	O2-7
@@ -567,6 +567,9 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/harness/translate.test.ts::a reasoning item with an empty summary writes nothing	translate.py:166,241,339: Python's truthiness kept	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::a typed form answer that isnt a number makes no reply	design §7.1: the adapter builds the reply from its own card; numbers parse as decimals only (translate.py:444-451's int()/float(), strict)	O3-11
 —	new	packages/office/tests/harness/translate.test.ts::an answer that isnt an offered option makes no reply	design §7.1 and security rule 11: an answer that isn't an offered label is refused	O3-11
+—	new	packages/office/tests/hq/api.test.ts::a work item and costs are on the allowlist	design §3.2: HQ reuses getWorkItem and costs; test_open_questions_a_work_item_and_costs stays open for O3-9's /api/questions	O2-9
+—	new	packages/office/tests/hq/api.test.ts::a wrong method under api is a json 404	design §6.4: a wrong method under /api is 404 no_route, as Starlette's catch-all route was	O2-9
+—	new	packages/office/tests/hq/api.test.ts::get office isnt on the hq allowlist	design §6, rule 7 (P14): GET /office is office.sock only	O2-9
 —	new	packages/office/tests/hq/auth.test.ts::only the first cookie header counts	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/auth.test.ts::the open requests and the app need no session	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
 —	new	packages/office/tests/hq/auth.test.ts::the session check reads the cookie named for the host port	design §6.4, rule 8: the API's session check against a stand-in request, before O2-9's HQ app	O2-8
