@@ -334,6 +334,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19
+—	new	packages/office/tests/chat/template.test.ts::a template chat carries its history in the prompt list and ends on exit [%s]	design §9.2, §8.8: the chat flows' first TS form (history input, prompt list, TS exit_turn)	O2-16a
 —	new	packages/office/tests/company/flow_yaml.test.ts::a company file refuses a tag outside the core schema	D8: YAML 1.2 core schema for company files	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a leading zero int is decimal and 0o and 0x are octal and hex	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a lone cr is a line break	design §9.5: read as TS yian reads flows	O1-5
