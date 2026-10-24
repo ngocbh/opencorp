@@ -1,0 +1,64 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "author": "owner",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Run the shell command `touch spike-wait.txt` here. Don't use apply_patch."
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "author": null,
+      "parts": [
+        {
+          "type": "text",
+          "text": "I’ll run `touch spike-wait.txt` in the current directory."
+        },
+        {
+          "type": "tool",
+          "tool": "codex.command",
+          "state": "error",
+          "input": {
+            "command": "/usr/bin/bash -lc 'touch spike-wait.txt'",
+            "cwd": "/work/spike/ws",
+            "exit_code": 1
+          },
+          "output": "touch: cannot touch 'spike-wait.txt': Read-only file system\n",
+          "error": null
+        },
+        {
+          "type": "tool",
+          "tool": "codex.command",
+          "state": "interrupted",
+          "input": {
+            "command": "/usr/bin/bash -lc 'touch spike-wait.txt'",
+            "cwd": "/work/spike/ws",
+            "exit_code": null
+          },
+          "output": "",
+          "error": null
+        },
+        {
+          "type": "text",
+          "text": "[interrupted]"
+        }
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "kind": "command",
+      "title": "Codex wants to run a command",
+      "question": "$ /usr/bin/bash -lc 'touch spike-wait.txt'\nin /work/spike/ws\nThe read-only sandbox blocked the command. Allow `touch spike-wait.txt` in the current directory?",
+      "options": [
+        "Approve",
+        "Deny and stop"
+      ],
+      "pages": []
+    }
+  ]
+}

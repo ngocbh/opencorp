@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer"
 import { createHash } from "node:crypto"
 import { expect, test } from "bun:test"
 import {
-  auditArgs, casefold, DETAIL_CHARS, jsonDumps, quote, quotePlus, redact, repr, splitLines, strip,
+  auditArgs, casefold, DETAIL_CHARS, jsonDumps, pyJson, quote, quotePlus, redact, repr, splitLines, strip,
 } from "../../src/perm/redact.ts"
 import { KINDS, makeMonitor, RuntimeError, TOKEN } from "./helpers.ts"
 
@@ -356,6 +356,12 @@ const EVERY = (() => {
 })()
 
 const sha256 = (text: string) => createHash("sha256").update(text, "utf8").digest("hex")
+
+test("pyjson escapes non ascii only when asked", () => {
+  // Both unescaped: an array's later items get the flag, not their index.
+  expect(pyJson(["\u00e9", "\u00e9"])).toBe('["\u00e9", "\u00e9"]')
+  expect(pyJson({ p: ["\u00e9"] }, true)).toBe('{"p": ["\\u00e9"]}')
+})
 
 // Digests from Python 3.12.14 (unidata 15.0.0), where
 // every = "".join(chr(c) for c in range(0x110000) if not 0xd800 <= c <= 0xdfff)
