@@ -202,3 +202,15 @@ test("integer arguments above 2^53 are audited as text", async () => {
   expect(args.ids).toEqual([1, "12345678901234567890"])
   expect((args.opts as Record<string, unknown>).n).toBe(2)
 })
+
+test("non json arguments are audited as text", async () => {
+  const { monitor, store } = await makeMonitor({
+    "assets/cluster-a.yaml": cluster([{ who: "minh", can: ["submit_job"] }]),
+  })
+  const blob = new TextEncoder().encode(TOKEN)
+  expect(String(await monitor.call("minh", "r1", "cluster_a__submit_job", { job: "a", blob }))).toStartWith("ran a")
+  const row = store.listAudit().at(-1)!
+  expect(row.args.blob).toBe("[redacted]")
+  expect(JSON.stringify(row)).not.toContain(TOKEN)
+  expect(JSON.stringify(row)).not.toContain("115,51")
+})

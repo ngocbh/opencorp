@@ -93,7 +93,7 @@ export class Monitor {
         person,
         kind: "asset",
         tool: name,
-        args: storable(auditArgs(args, keys, values)) as Record<string, unknown>,
+        args: storable(auditArgs(toJson(args) as Record<string, unknown>, keys, values)) as Record<string, unknown>,
         outcome,
         sessionId: options.sessionId ?? null,
         runId,
@@ -179,7 +179,8 @@ function find(repo: CompanyRepo, name: string): [Asset | null, string | null] {
   return [null, null]
 }
 
-/** Whether `value` is an array or an object of the plain kind JSON makes (prototype `Object.prototype` or null). */
+/** Whether `value` is an object of the plain kind JSON makes (prototype `Object.prototype` or null); arrays are
+ *  not. */
 function isPlain(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null) return false
   const proto = Object.getPrototypeOf(value)
@@ -225,7 +226,8 @@ function denial(
       (key) => !Object.hasOwn(args, key) || !where[key]!.some((a) => same(args[key], a)),
     )
     if (failed.length === 0) return null
-    reasons.push(`${failed[0]} must be one of ${pyJson(where[failed[0]!])}`)
+    const key = failed[0]!
+    reasons.push(`${key} must be one of ${pyJson(where[key])}`)
   }
   return `${name}: ${reasons[0]}`
 }
@@ -235,7 +237,8 @@ function denial(
  *  Throws `TypeError` on a cycle. */
 function toJson(value: unknown, path: Set<object> = new Set()): unknown {
   if (value === undefined) return null
-  if (value === null || ["string", "boolean", "number", "bigint"].includes(typeof value)) return value
+  const t = typeof value
+  if (value === null || t === "string" || t === "boolean" || t === "number" || t === "bigint") return value
   // Python's str gives `<function …>`, never the source.
   if (typeof value === "function") return "[function]"
   if (typeof value !== "object") return String(value)
@@ -280,7 +283,7 @@ function storable(value: unknown): unknown {
 function reasonOf(error: unknown): string {
   try {
     if (error instanceof MonitorError) return error.message
-    if (error instanceof Error) return error.message ? `${error.name}: ${error.message}` : `${error.name}`
+    if (error instanceof Error) return error.message ? `${error.name}: ${error.message}` : error.name
     // Named by its type, as Python names an exception; its text could print bytes as numbers.
     return typeof error
   } catch {
@@ -293,6 +296,7 @@ function isAbort(error: unknown): boolean {
   try {
     return error instanceof Error && error.name === "AbortError"
   } catch {
+    // A `name` getter that throws: not an abort, and the call's error path must not throw.
     return false
   }
 }
