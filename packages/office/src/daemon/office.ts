@@ -46,7 +46,9 @@ export interface WorkerPool {
  *  and the request's abort signal and query. */
 export interface RequestContext {
   office: Office
-  person: string
+  /** The handle the request acts as; null on the open requests and for a tokenless request while HEAD names no
+   *  CEO. Routes that need one call `actingPerson`. */
+  person: string | null
   device: string | null
   signal: AbortSignal
   query: URLSearchParams
