@@ -1158,7 +1158,12 @@ export class Store {
 
   /** Answers an open question and emits `question.updated`; the answer is stored as its JSON form. The first
    *  answer wins: answering a question that is not open throws `InvalidTransition`. */
-  answerQuestion(questionId: string, answer: unknown, answerKind: string, answeredBy?: string | null): QuestionRecord {
+  answerQuestion(
+    questionId: string,
+    answer: unknown,
+    answerKind: NonNullable<QuestionRecord["answer_kind"]>,
+    answeredBy?: string | null,
+  ): QuestionRecord {
     return this.transaction((tx) => {
       const current = this.#must(QUESTIONS, questionId)
       checkMove("question", QUESTION_MOVES, current.status, "answered")
@@ -1173,12 +1178,12 @@ export class Store {
   }
 
   /** Moves a question to `consumed` (from answered) or `stale` (from open) and emits `question.updated`. */
-  setQuestionStatus(questionId: string, status: string): QuestionRecord {
+  setQuestionStatus(questionId: string, status: QuestionRecord["status"]): QuestionRecord {
     if (status === "answered") throw new InvalidTransition("answer a question with answerQuestion")
     return this.transaction((tx) => {
       const current = this.#must(QUESTIONS, questionId)
       checkMove("question", QUESTION_MOVES, current.status, status)
-      return this.#writeQuestion(tx, { ...current, status: status as QuestionRecord["status"], updated_at: now() })
+      return this.#writeQuestion(tx, { ...current, status, updated_at: now() })
     })
   }
 

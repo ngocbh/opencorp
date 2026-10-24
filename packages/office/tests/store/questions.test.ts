@@ -1,6 +1,6 @@
 /** Questions: round-trips, the human_input key, status moves, first answer wins. */
 import { expect, test } from "bun:test"
-import { DuplicateKey, InvalidTransition, StoreError, type Store } from "../../src/store/store.ts"
+import { DuplicateKey, InvalidTransition, StoreError, type QuestionRecord, type Store } from "../../src/store/store.ts"
 import { openStore, question, recordEvents, session, thrown } from "./helpers.ts"
 
 const PAGES = [
@@ -17,6 +17,8 @@ function withSession(): { store: Store; sid: string } {
   const store = openStore()
   return { store, sid: store.createSession(session()).id }
 }
+
+type Status = QuestionRecord["status"]
 
 /** The raw `answer` column of a question: null for SQL NULL, else its text. */
 function rawAnswer(store: Store, questionId: string): unknown {
@@ -84,11 +86,11 @@ test.each([
 ])("status moves only forward [%s]", (_, path, bad) => {
   const { store, sid } = withSession()
   const q = store.addQuestion(question(sid))
-  for (const step of path as string[]) {
+  for (const step of path as ("answer" | Status)[]) {
     if (step === "answer") store.answerQuestion(q.id, "x", "text")
     else store.setQuestionStatus(q.id, step)
   }
-  expect(thrown(() => store.setQuestionStatus(q.id, bad as string))).toBeInstanceOf(InvalidTransition)
+  expect(thrown(() => store.setQuestionStatus(q.id, bad as Status))).toBeInstanceOf(InvalidTransition)
 })
 
 test("status happy paths", () => {
@@ -121,7 +123,7 @@ test.each([
 ])("lose answer takes only an answered question [%s]", (_, path) => {
   const { store, sid } = withSession()
   const q = store.addQuestion(question(sid))
-  for (const step of path as string[]) {
+  for (const step of path as ("answer" | Status)[]) {
     if (step === "answer") store.answerQuestion(q.id, "x", "text")
     else store.setQuestionStatus(q.id, step)
   }
@@ -214,8 +216,24 @@ test("an answer that isnt json is refused", () => {
   const { store, sid } = withSession()
   const q = store.addQuestion(question(sid))
   const events = recordEvents(store)
-  for (const answer of [{ k: 1n }, () => "x"]) {
-    expect(thrown(() => store.answerQuestion(q.id, answer, "text"))).toBeInstanceOf(StoreError)
+  const cyclic: Record<string, unknown> = { secret: "SECRET-1234" }
+  cyclic.self = cyclic
+  const answers = [
+    { k: 1n },
+    () => "x",
+    cyclic,
+    Symbol("SECRET-1234"),
+    { toJSON: () => undefined },
+    {
+      toJSON() {
+        throw new Error("SECRET-1234")
+      },
+    },
+  ]
+  for (const answer of answers) {
+    const error = thrown(() => store.answerQuestion(q.id, answer, "text"))
+    expect(error).toBeInstanceOf(StoreError)
+    expect((error as StoreError).message).not.toContain("SECRET")
     expect(store.getQuestion(q.id)!.status).toBe("open")
     expect(rawAnswer(store, q.id)).toBeNull()
   }
