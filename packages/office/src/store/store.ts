@@ -11,7 +11,7 @@ import {
   type SqliteRow,
   type SqliteStatement,
 } from "@ngocbh/yian/platform"
-import { Comment, CostReport, Event, Session, WorkItem, now, validationMessage } from "@opencorp/protocol"
+import { Comment, CostReport, Event, Question, Session, WorkItem, now, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
 import { migrate } from "./migrate.ts"
 
@@ -64,6 +64,9 @@ export interface WorkedFolder {
 
 /** A stored session, defaults filled. */
 export type SessionRecord = z.output<typeof Session>
+
+/** A stored question, defaults filled. */
+export type QuestionRecord = z.output<typeof Question>
 
 /** The longest reason a run shows. */
 export const REASON_CHARS = 200
@@ -156,6 +159,26 @@ const SESSIONS: Table<typeof Session> = {
   json: new Set(["harness_usage", "waiting_on"]),
   bools: new Set(["capped"]),
   derived: new Set(["run_ids"]),
+}
+
+const QUESTIONS: Table<typeof Question> = {
+  name: "questions",
+  label: "Question",
+  key: "id",
+  schema: Question,
+  json: new Set(["options", "questions", "answer_schema", "discussion", "answer"]),
+  bools: new Set(["gate"]),
+  derived: new Set(),
+}
+
+/** The statuses whose question keeps its answer. */
+const ANSWERED = new Set(["answered", "consumed"])
+/** The status moves a question may make. */
+const QUESTION_MOVES: Record<string, string[]> = { open: ["answered", "stale"], answered: ["consumed"] }
+
+/** Throws `InvalidTransition` unless `moves` lets a `kind` go from `from` to `to`. */
+function checkMove(kind: string, moves: Record<string, string[]>, from: string, to: string): void {
+  if (!moves[from]?.includes(to)) throw new InvalidTransition(`${kind} cannot move from ${from} to ${to}`)
 }
 
 /** `name` quoted as an SQL identifier (a column may be a keyword, like `groups`). */
@@ -964,6 +987,123 @@ export class Store {
   /** The summed price of a run's model calls. */
   runUsageUsd(runId: string): number {
     return this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE run_id = ?").get(runId)!.usd as number
+  }
+
+  // Questions.
+
+  #questionColumns(question: QuestionRecord): Record<string, SqliteParam> {
+    const cols = this.#columns(QUESTIONS, question)
+    // SQL NULL means "not answered"; an answered question stores its answer as JSON, which may be the text
+    // `null`. An open or stale question keeps no answer fields.
+    if (ANSWERED.has(question.status)) cols.answer = JSON.stringify(question.answer ?? null)
+    else Object.assign(cols, { answer: null, answer_kind: null, answered_by: null })
+    return cols
+  }
+
+  /** Inserts a question and emits `question.created`. A second question with the same `(run_id, node_id)`
+   *  throws `DuplicateKey`; questions with a null `node_id` never collide. */
+  addQuestion(question: QuestionRecord): QuestionRecord {
+    return this.transaction((tx) => {
+      tx.insert(QUESTIONS.name, this.#questionColumns(question))
+      const stored = this.#must(QUESTIONS, question.id)
+      tx.emit("question.created", question.id, stored)
+      return stored
+    })
+  }
+
+  /** The question, or undefined. `answer` is null until the question is answered. */
+  getQuestion(questionId: string): QuestionRecord | undefined {
+    return this.#get(QUESTIONS, questionId)
+  }
+
+  /** The `human_input` question stored for a run's node, or undefined. */
+  getQuestionByNode(runId: string, nodeId: string): QuestionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM questions WHERE run_id = ? AND node_id = ?").get(runId, nodeId)
+    return row && this.#entity(QUESTIONS, row)
+  }
+
+  /** Questions, oldest first, optionally filtered (by any of several run ids or statuses). */
+  listQuestions(filter?: {
+    sessionId?: string
+    runId?: string | string[]
+    status?: string | string[]
+    source?: string
+  }): QuestionRecord[] {
+    const where = {
+      session_id: filter?.sessionId,
+      run_id: filter?.runId,
+      status: filter?.status,
+      source: filter?.source,
+    }
+    return this.#list(QUESTIONS, where, "created_at, rowid")
+  }
+
+  #writeQuestion(tx: Tx, question: QuestionRecord): QuestionRecord {
+    tx.update(QUESTIONS.name, QUESTIONS.key, this.#questionColumns(question))
+    const stored = this.#must(QUESTIONS, question.id)
+    tx.emit("question.updated", question.id, stored)
+    return stored
+  }
+
+  /** Answers an open question and emits `question.updated`; the answer is stored as its JSON form. The first
+   *  answer wins: answering a question that is not open throws `InvalidTransition`. */
+  answerQuestion(questionId: string, answer: unknown, answerKind: string, answeredBy?: string | null): QuestionRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      checkMove("question", QUESTION_MOVES, current.status, "answered")
+      const question = this.#changed(
+        QUESTIONS,
+        current,
+        { status: "answered", answer, answer_kind: answerKind, answered_by: answeredBy ?? null, updated_at: now() },
+        [],
+      )
+      return this.#writeQuestion(tx, question)
+    })
+  }
+
+  /** Moves a question to `consumed` (from answered) or `stale` (from open) and emits `question.updated`. */
+  setQuestionStatus(questionId: string, status: string): QuestionRecord {
+    if (status === "answered") throw new InvalidTransition("answer a question with answerQuestion")
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      checkMove("question", QUESTION_MOVES, current.status, status)
+      return this.#writeQuestion(tx, { ...current, status: status as QuestionRecord["status"], updated_at: now() })
+    })
+  }
+
+  /** Moves an answered question to `stale`, dropping its answer: the answer never reached the asker (a harness
+   *  request that resolved, or whose process died, before the reply). Emits `question.updated`.
+   *
+   *  Only this move leaves `answered` for `stale`. `setQuestionStatus` never does, so a run that ends can't
+   *  expire an answer that has just landed. */
+  loseAnswer(questionId: string): QuestionRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      if (current.status !== "answered") {
+        throw new InvalidTransition(`question ${questionId} is ${current.status}, not answered`)
+      }
+      return this.#writeQuestion(tx, { ...current, status: "stale", updated_at: now() })
+    })
+  }
+
+  /** Changes non-status fields (discussion, side_session_id, ...) and emits `question.updated` (`updated_at`
+   *  defaults to now). */
+  updateQuestion(questionId: string, changes: Partial<QuestionRecord>): QuestionRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(QUESTIONS, questionId)
+      const question = this.#changed(QUESTIONS, current, { updated_at: now(), ...defined(changes) }, [
+        "id",
+        "session_id",
+        "run_id",
+        "node_id",
+        "status",
+        "answer",
+        "answer_kind",
+        "answered_by",
+        "created_at",
+      ])
+      return this.#writeQuestion(tx, question)
+    })
   }
 
   // Audit, usage, workers: office bookkeeping, no events.
