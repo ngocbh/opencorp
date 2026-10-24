@@ -101,6 +101,7 @@ daemon/test_main.py::test_office_logging_sends_opencorp_info_lines_to_stderr_lik
 daemon/test_main.py::test_office_logging_twice_writes_each_line_once	dropped	—	design §2.3: no process-wide logger, so no handler to add twice	O2-5
 daemon/test_main.py::test_served_over_a_real_socket	changed	packages/office/tests/daemon/main.test.ts::served over a real socket	GET /people lands with O2-6; GET /whoami takes the same served-socket path (rule 1 stand-in)	O2-5
 daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	packages/office/tests/daemon/http.test.ts::the socket mode leaves the process umask as it found it	node:http binds and listens in one call; the umask is narrowed to 0177 for that one synchronous call and restored, and the private 0700 temp folder is the real guard (design §2.3)	O2-1
+daemon/test_main.py::test_the_daemons_info_lines_reach_its_log_in_uvicorns_format	changed	packages/office/tests/daemon/main.test.ts::the daemons info lines reach its log in the office format	design §2.3 log format: the office serving line is <ISO time> INFO opencorp.daemon.main: <message>; the HQ pairing line comes with O2-10	O2-5
 daemon/test_main.py::test_the_office_server_has_websockets_off	changed	packages/office/tests/daemon/http.test.ts::the office server has no upgrade listener	no uvicorn ws setting: no upgrade listener is attached, so an upgrade is plain HTTP (design §2.3)	O2-1
 daemon/test_main.py::test_the_soft_fd_limit_is_raised_to_4096_within_the_hard_one	dropped	—	design §2.3 Open files: no setrlimit in Node or Bun; the service files raise the limit (§9.3)	O2-5
 daemon/test_main.py::test_the_tcp_socket_reuses_addresses_but_never_shares_the_port	changed	packages/office/tests/daemon/http.test.ts::the tcp socket listens on loopback and never shares the port	node:net has no getsockopt: a second listener asking for port sharing gets EADDRINUSE, and the TIME_WAIT test shows address reuse (design §2.3)	O2-1
@@ -369,10 +370,12 @@ worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	package
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
 worker/test_spawn.py	open	—	—	O3-4
+worker/test_steering.py	open	—	—	O3-3
 worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—	O3-3
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses steers and interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted	O3-3
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
 worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	packages/office/tests/worker/steering.test.ts::an interrupt waits for its node to start	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted	O3-3
+—	new	packages/cli/test/entry.test.ts::opencorp daemon reaches the office daemon mode	§2.1: the CLI hands daemon to the office before it loads anything else	O2-5
 —	new	packages/cli/test/entry.test.ts::opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::plain bun from a folder holding .env shows the planted identity	§2.7 (control for the binary checks)	O2-26
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
@@ -531,7 +534,9 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/daemon/main.test.ts::a home that does not exist yet resolves through its real parent	Python's non-strict Path.resolve() (design §6.5 realpath): the nearest existing ancestor is resolved	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a lock file that is not private is refused	design §2.3, §6 rule 6: the lock file follows yian's private rules (Y4)	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a pidfile left by a dead office is taken over	design §2.3: the lock, not the pidfile, says who runs	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::a signal during the start stops the office once it has started	design §2.3: SIGINT, SIGTERM and SIGHUP stop cleanly, their handlers installed before the start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a symlinked office dir stops the daemon start [%s]	design §2.3, §6 rule 6: the office dir is checked through main(), as Python's test_a_symlinked_office_dir_is_refused did	O2-5
+—	new	packages/office/tests/daemon/main.test.ts::an uncaught error in the daemon is logged as office crashed [%s]	design §2.3, §6 rule 13: an uncaught exception or rejection writes the crash marker (type and frames, never the message) and exits 1	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::bad arguments exit 2	argparse's exit 2 for bad arguments, kept	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::build office reaps workers left by an earlier office	design §6.6 and O2-11a: the workers an earlier office left are reaped at start	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::release removes the pidfile and frees the lock	design §2.3: the pidfile is removed on stop	O2-5

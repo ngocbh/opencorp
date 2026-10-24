@@ -1,9 +1,12 @@
 /** The daemon process: a 0600 socket, one daemon per home, clean shutdown. */
+import { type ChildProcess, spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
+import http, { type IncomingMessage, type ServerResponse } from "node:http"
+import net from "node:net"
 import path from "node:path"
-import type { IncomingMessage, ServerResponse } from "node:http"
+import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
-import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import {
   AlreadyRunning,
   PidFile,
@@ -16,8 +19,10 @@ import {
   trackRequests,
 } from "../../src/daemon/main.ts"
 import { OfficePaths } from "../../src/daemon/office.ts"
-import { OfficeStartError } from "../../src/daemon/sockets.ts"
+import { OfficeStartError, listenUnix } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
+import { sameProcess, startTime } from "../../src/install/proc.ts"
+import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
 import { company } from "../company/helpers.ts"
 import { isGone, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
@@ -375,3 +380,293 @@ test("the office holds the company snapshots and the secret store", () => {
   expect(office.secrets.root).toBe(office.paths.secrets)
   expect(office.paths.lock).toBe(path.join(office.paths.home, "office", "office.lock"))
 })
+
+/** A daemon process a test started, leading its own process group. */
+interface Daemon {
+  child: ChildProcess
+  pid: number
+  /** Resolves with the exit code and signal once it exits. */
+  exited: Promise<{ code: number | null; signal: NodeJS.Signals | null }>
+}
+
+/** Every daemon this file started, with its home and the start time read right after the spawn. */
+const launched: { home: string; pid: number; started: number | null }[] = []
+
+/** SIGKILLs the group of `d` if its leader still has its recorded start time; never by name or pattern. */
+function killDaemon(d: { pid: number; started: number | null }): void {
+  if (d.started === null || !sameProcess(d.pid, d.started)) return
+  try {
+    process.kill(-d.pid, "SIGKILL")
+  } catch (error) {
+    // ESRCH: the group is gone. EPERM: macOS refuses to signal a group of only zombies.
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== "ESRCH" && code !== "EPERM") throw error
+  }
+}
+
+// Runs when `bun test` exits normally or through process.exit, not when the runner is killed by a signal.
+process.once("exit", () => {
+  for (const d of launched) killDaemon(d)
+})
+
+afterAll(() => {
+  expect(launched.filter((d) => !isGone(d.pid, d.started))).toEqual([])
+})
+
+/** A `home()` whose daemons are killed when the test finishes, before the home is removed. */
+function daemonHome(): string {
+  let dir = ""
+  // Registered before home()'s removal: onTestFinished runs callbacks in registration order.
+  onTestFinished(() => {
+    for (const d of launched) if (d.home === dir) killDaemon(d)
+  })
+  dir = home()
+  return dir
+}
+
+/** Runs `argv` detached (its own group) in `<home>/office` with the self-spawn env and HOME set to `home`, its
+ *  output in `<home>/daemon.log`, and records it for the cleanup. */
+function launch(home: string, [bin, ...args]: string[]): Daemon {
+  // A file: an unread pipe fills up and blocks the daemon's writes.
+  const fd = fs.openSync(path.join(home, "daemon.log"), "w")
+  let child: ChildProcess
+  try {
+    child = spawn(bin!, args, {
+      cwd: path.join(home, "office"),
+      env: selfSpawnEnv({ ...process.env, HOME: home }),
+      detached: true,
+      stdio: ["ignore", fd, fd],
+    })
+  } finally {
+    fs.closeSync(fd)
+  }
+  if (child.pid === undefined) {
+    // The spawn error is also emitted as an event; a listener keeps it from becoming an uncaught exception.
+    child.on("error", () => {})
+    throw new Error(`can't start ${bin}`)
+  }
+  const pid = child.pid
+  launched.push({ home, pid, started: startTime(pid) })
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
+    child.on("exit", (code, signal) => resolve({ code, signal })),
+  )
+  return { child, pid, exited }
+}
+
+/** The argv of `opencorp daemon --home <home>`. */
+function daemonCommand(home: string): string[] {
+  const [bin, ...pre] = selfCommand()
+  return [bin, ...pre, "daemon", "--home", home]
+}
+
+/** Starts `opencorp daemon` on `home`. */
+function startDaemon(home: string): Daemon {
+  return launch(home, daemonCommand(home))
+}
+
+function daemonLog(home: string): string {
+  return fs.readFileSync(path.join(home, "daemon.log"), "utf8")
+}
+
+/** Whether GET /health on `sock` answers 200 with `{ ok: true }` within 2 s; a slower request is destroyed, so a
+ *  half-up daemon can't hang the poll. */
+function healthy(sock: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const req = http.get({ socketPath: sock, path: "/health", agent: false }, (res) => {
+      let text = ""
+      res.setEncoding("utf8")
+      res.on("data", (part: string) => (text += part))
+      res.on("error", () => resolve(false))
+      res.on("end", () => {
+        clearTimeout(timer)
+        try {
+          resolve(res.statusCode === 200 && Bun.deepEquals(JSON.parse(text), { ok: true }))
+        } catch {
+          resolve(false)
+        }
+      })
+    })
+    const timer = setTimeout(() => {
+      req.destroy()
+      resolve(false)
+    }, 2000)
+    req.on("error", () => {
+      clearTimeout(timer)
+      resolve(false)
+    })
+  })
+}
+
+/** Waits until the daemon of `home` is healthy on its socket; fails with its log if it exits or after 30 s. */
+async function waitUntilServing(home: string, d: Daemon): Promise<void> {
+  const sock = new OfficePaths(home).socket
+  const deadline = performance.now() + 30_000
+  while (!(await healthy(sock))) {
+    if (d.child.exitCode !== null || d.child.signalCode !== null)
+      throw new Error(`daemon exited (${d.child.exitCode ?? d.child.signalCode}):\n${daemonLog(home)}`)
+    if (performance.now() >= deadline) throw new Error(`daemon is not serving on ${sock}:\n${daemonLog(home)}`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
+
+/** How `d` exited, waiting up to `ms`; fails with the log of `home` if it is still running then. */
+async function exitWithin(
+  home: string,
+  d: Daemon,
+  ms: number,
+): Promise<{ code: number | null; signal: string | null }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`still running after ${ms} ms:\n${daemonLog(home)}`)), ms)
+  })
+  try {
+    return await Promise.race([d.exited, late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Sends `signal` to the daemon and checks it exits 0 within 15 s. */
+async function stopDaemon(home: string, d: Daemon, signal: NodeJS.Signals = "SIGTERM"): Promise<void> {
+  process.kill(d.pid, signal)
+  expect(await exitWithin(home, d, 15_000), daemonLog(home)).toEqual({ code: 0, signal: null })
+}
+
+test(
+  "daemon serves turns away a second and stops cleanly",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    expect(fs.statSync(paths.socket).mode & 0o777).toBe(0o600)
+    expect(fs.readFileSync(paths.pidfile, "utf8")).toBe(`${d.pid}\n`)
+    const [bin, ...args] = daemonCommand(dir)
+    const second = spawnSync(bin!, args, {
+      cwd: paths.office,
+      env: selfSpawnEnv({ ...process.env, HOME: dir }),
+      encoding: "utf8",
+      timeout: 30_000,
+      killSignal: "SIGKILL",
+    })
+    // Exit 0, so a service manager that restarts on failure doesn't retry the duplicate forever.
+    expect(second.status, second.stderr).toBe(0)
+    expect(second.stderr).toContain(`office already running (pid ${d.pid})`)
+    await stopDaemon(dir, d)
+    expect(fs.existsSync(paths.socket)).toBe(false)
+    expect(fs.existsSync(paths.pidfile)).toBe(false)
+    expect(isLocked(paths.lock)).toBe(false)
+  },
+  120_000,
+)
+
+test.each(["SIGINT", "SIGHUP"] as const)(
+  "sigint and sighup stop the daemon cleanly [%s]",
+  async (signal) => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    await stopDaemon(dir, d, signal)
+    expect(fs.existsSync(paths.socket)).toBe(false)
+    await released(paths)
+  },
+  120_000,
+)
+
+test(
+  "stale socket file is replaced",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const left = net.createServer()
+    onTestFinished(() => void left.close())
+    await listenUnix(left, paths.socket)
+    left.close() // close leaves the file, as a crash does
+    expect(fs.lstatSync(paths.socket).isSocket()).toBe(true)
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    await stopDaemon(dir, d)
+  },
+  120_000,
+)
+
+test(
+  "the daemons info lines reach its log in the office format",
+  async () => {
+    const dir = daemonHome()
+    const d = startDaemon(dir)
+    await waitUntilServing(dir, d)
+    await stopDaemon(dir, d)
+    const sock = new OfficePaths(dir).socket.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    expect(daemonLog(dir)).toMatch(new RegExp(`^\\S+Z INFO opencorp\\.daemon\\.main: office serving on ${sock}$`, "m"))
+  },
+  120_000,
+)
+
+const DAEMON_MAIN = fileURLToPath(new URL("../../src/daemon/main.ts", import.meta.url))
+
+/** Writes `script` into `home` and runs it with this Bun (no autoloads), as `launch` runs the daemon, with the
+ *  home and `mode` as its arguments. */
+function runScript(home: string, script: string, mode = ""): Daemon {
+  const file = path.join(home, "daemon.ts")
+  fs.writeFileSync(file, script)
+  return launch(home, [process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", file, home, mode])
+}
+
+test.each(["throw", "reject"])(
+  "an uncaught error in the daemon is logged as office crashed [%s]",
+  async (mode) => {
+    const dir = daemonHome()
+    const d = runScript(
+      dir,
+      `import { exitOnCrash, main } from ${JSON.stringify(DAEMON_MAIN)}
+class Leaky extends Error {}
+exitOnCrash()
+const fail = () => {
+  const e = new Leaky("sk-secret-123")
+  if (process.argv[3] === "reject") void Promise.reject(e)
+  else throw e
+}
+process.exit(await main(["--home", process.argv[2]!], {
+  extensions: [{ name: "crash", register: (office) => void office.onStart.push(() => void setTimeout(fail, 200)) }],
+}))
+`,
+      mode,
+    )
+    expect(await exitWithin(dir, d, 30_000)).toEqual({ code: 1, signal: null })
+    const log = daemonLog(dir)
+    const lines = log.split("\n")
+    expect(lines.some((line) => line.endsWith("office crashed: Leaky")), log).toBe(true)
+    expect(lines.some((line) => line.startsWith("    at ")), log).toBe(true)
+    expect(log).not.toContain("sk-secret-123")
+  },
+  120_000,
+)
+
+test(
+  "a signal during the start stops the office once it has started",
+  async () => {
+    const dir = daemonHome()
+    const paths = new OfficePaths(dir)
+    const d = runScript(
+      dir,
+      `import { exitOnCrash, main } from ${JSON.stringify(DAEMON_MAIN)}
+exitOnCrash()
+const stopTwice = () => {
+  process.kill(process.pid, "SIGTERM")
+  process.kill(process.pid, "SIGTERM")
+}
+process.exit(await main(["--home", process.argv[2]!], {
+  extensions: [{ name: "signal", register: (office) => void office.onStart.push(stopTwice) }],
+}))
+`,
+    )
+    expect(await exitWithin(dir, d, 30_000), daemonLog(dir)).toEqual({ code: 0, signal: null })
+    expect(fs.existsSync(paths.socket)).toBe(false)
+    expect(fs.existsSync(paths.pidfile)).toBe(false)
+    expect(isLocked(paths.lock)).toBe(false)
+    expect(daemonLog(dir)).toContain(`office serving on ${paths.socket}`)
+  },
+  120_000,
+)

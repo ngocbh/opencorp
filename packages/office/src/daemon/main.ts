@@ -152,6 +152,30 @@ export function crashReport(error: unknown): string {
   return failureReport("office crashed", error)
 }
 
+/**
+ * Makes the first uncaught exception or unhandled rejection write the crash marker (`crashReport`) on `write`
+ * (stderr by default) and exit 1 at once; a later one returns at once. Exiting at once is safe: the kernel frees
+ * the home's lock with the process, and the next start removes the stale socket and reaps the workers this office
+ * left. The marker never holds the error's message, which could quote a secret. The default write is synchronous,
+ * so the line can't be lost to the exit when stderr is a pipe.
+ */
+export function exitOnCrash(write: Write = (text) => void fs.writeSync(2, text)): void {
+  let crashed = false
+  const onCrash = (error: unknown) => {
+    if (crashed) return
+    crashed = true
+    try {
+      write(crashReport(error))
+    } catch {
+      // A failing write has nowhere to be reported; the exit still happens.
+    } finally {
+      process.exit(1)
+    }
+  }
+  process.on("uncaughtException", onCrash)
+  process.on("unhandledRejection", onCrash)
+}
+
 /** Opens the store and the company clone, kills the processes an earlier office left, and assembles the
  *  office with its HEAD watcher (started and stopped with the office). */
 export function buildOffice(paths: OfficePaths, { git, write }: { git?: string; write: Write }): Office {
