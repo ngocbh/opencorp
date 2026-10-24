@@ -16,7 +16,7 @@ const WRITE = 0o222
 const PROFILES = ":(glob)people/*/profile.md"
 const BLOB_ID = /^[0-9a-f]{40}$/
 const COMMIT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
-const KINDS: Record<string, "folder" | "file" | "symlink" | "submodule"> = {
+const KINDS: Record<string, TreeEntry["type"]> = {
   "040000": "folder",
   "100644": "file",
   "100755": "file",
@@ -27,7 +27,6 @@ const KINDS: Record<string, "folder" | "file" | "symlink" | "submodule"> = {
 const FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
 // Every line boundary `splitlines` knows, so a trailer matches as a whole line however the message breaks.
 const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
-
 // The whitespace Python's str.split() splits on, so a newline in a folder name can't start a trailer line.
 const WHITESPACE = /[\t\n\v\f\r \x1c-\x1f\x85\xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/
 
@@ -105,25 +104,14 @@ function encodePath(text: string): Buffer {
   return Buffer.concat(parts)
 }
 
-/** `out` split at each NUL byte. */
-function splitNul(out: Buffer): Buffer[] {
-  const parts = []
-  let at = 0
-  for (let end = out.indexOf(0); end >= 0; end = out.indexOf(0, at)) {
-    parts.push(out.subarray(at, end))
-    at = end + 1
-  }
-  parts.push(out.subarray(at))
-  return parts
-}
-
 /** The info fields and path of each entry of `git ls-tree -z` output (`<info>\t<path>`, NUL-terminated). */
 function lsTreeEntries(out: Buffer): { info: string[]; path: string }[] {
-  return splitNul(out)
-    .filter((entry) => entry.length)
+  return decodePath(out)
+    .split("\0")
+    .filter(Boolean)
     .map((entry) => {
-      const tab = entry.indexOf(0x09)
-      return { info: entry.subarray(0, tab).toString().trim().split(/\s+/), path: decodePath(entry.subarray(tab + 1)) }
+      const tab = entry.indexOf("\t")
+      return { info: entry.slice(0, tab).trim().split(/\s+/), path: entry.slice(tab + 1) }
     })
 }
 
@@ -300,7 +288,8 @@ export class CompanyGit {
     const out = await this.#run(["ls-tree", "-r", "-z", "--full-tree", commit, "--", `:(literal)${folder}`])
     const found = new Map<string, string>()
     for (const entry of lsTreeEntries(out.stdout)) {
-      if (entry.info[1] === "blob") found.set(entry.path, entry.info[2]!)
+      const [, type, blob] = entry.info
+      if (type === "blob") found.set(entry.path, blob!)
     }
     return found
   }
@@ -323,13 +312,8 @@ export class CompanyGit {
     // --no-show-signature: a repo's log.showSignature would put gpg's output before the format.
     const format = ["log", "-1", "--no-show-signature", "--format=%H%x00%s%x00%an%x00%ct"]
     const out = await this.#run([...format, fullId(commit)])
-    const [sha, subject, author, ct] = splitNul(out.stdout)
-    return {
-      id: sha!.toString(),
-      subject: UTF8_REPLACING.decode(subject),
-      author: UTF8_REPLACING.decode(author),
-      time: stamp(new Date(Number(ct!.toString().trim()) * 1000)),
-    }
+    const [id, subject, author, ct] = UTF8_REPLACING.decode(out.stdout).split("\0")
+    return { id: id!, subject: subject!, author: author!, time: stamp(new Date(Number(ct) * 1000)) }
   }
 
   /** The bytes of blob `blobId` (40 lowercase hex), or null if the clone has no such blob. */
