@@ -1,0 +1,314 @@
+{
+  "toolbox": [
+    {
+      "name": "fake__echo",
+      "description": "Echo the text back.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "description": "Echo the text back."
+      }
+    }
+  ],
+  "workspace": [
+    {
+      "name": "read_file",
+      "description": "Read a text file in the workspace.\n\n`path` is relative to the workspace. `offset` is the first line to return\n(0-based) and `limit` the number of lines; omit both for the whole file.",
+      "parameters": {
+        "description": "Read a text file in the workspace.\n\n`path` is relative to the workspace. `offset` is the first line to return\n(0-based) and `limit` the number of lines; omit both for the whole file.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "offset": {
+            "default": 0,
+            "title": "Offset",
+            "type": "integer"
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Limit"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "title": "read_file",
+        "type": "object"
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Create or overwrite a file in the workspace with `content`.\n\nParent directories are created. `path` is relative to the workspace.",
+      "parameters": {
+        "description": "Create or overwrite a file in the workspace with `content`.\n\nParent directories are created. `path` is relative to the workspace.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "title": "write_file",
+        "type": "object"
+      }
+    },
+    {
+      "name": "edit_file",
+      "description": "Replace the exact text `old` with `new` in a workspace file.\n\n`old` must appear exactly once, unless `replace_all` is true; include enough\nsurrounding text to make it unique.",
+      "parameters": {
+        "description": "Replace the exact text `old` with `new` in a workspace file.\n\n`old` must appear exactly once, unless `replace_all` is true; include enough\nsurrounding text to make it unique.",
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "old": {
+            "title": "Old",
+            "type": "string"
+          },
+          "new": {
+            "title": "New",
+            "type": "string"
+          },
+          "replace_all": {
+            "default": false,
+            "title": "Replace All",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "old",
+          "new"
+        ],
+        "title": "edit_file",
+        "type": "object"
+      }
+    },
+    {
+      "name": "list",
+      "description": "List a workspace directory; subdirectories end with `/`.",
+      "parameters": {
+        "description": "List a workspace directory; subdirectories end with `/`.",
+        "properties": {
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "title": "list",
+        "type": "object"
+      }
+    },
+    {
+      "name": "search",
+      "description": "Search workspace files for a Python regex; returns `file:line:text` lines.\n\n`path` limits the search to a file or directory. `glob` (such as `*.py`) filters\nfile names. `.git` and binary files are skipped.",
+      "parameters": {
+        "description": "Search workspace files for a Python regex; returns `file:line:text` lines.\n\n`path` limits the search to a file or directory. `glob` (such as `*.py`) filters\nfile names. `.git` and binary files are skipped.",
+        "properties": {
+          "pattern": {
+            "title": "Pattern",
+            "type": "string"
+          },
+          "path": {
+            "default": ".",
+            "title": "Path",
+            "type": "string"
+          },
+          "glob": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Glob"
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "title": "search",
+        "type": "object"
+      }
+    },
+    {
+      "name": "shell",
+      "description": "Run a `/bin/sh` command in the workspace and return its output and exit status.\n\nThe command runs in a sandbox: only the workspace and a private temp directory\nare available, the network may be off, and anything it starts is stopped when\nit returns. `timeout` is in seconds (default 120, at most 600). Output over\n64 KB keeps only its start and end.",
+      "parameters": {
+        "description": "Run a `/bin/sh` command in the workspace and return its output and exit status.\n\nThe command runs in a sandbox: only the workspace and a private temp directory\nare available, the network may be off, and anything it starts is stopped when\nit returns. `timeout` is in seconds (default 120, at most 600). Output over\n64 KB keeps only its start and end.",
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Timeout"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "title": "shell",
+        "type": "object"
+      }
+    }
+  ],
+  "company": [
+    {
+      "name": "ask_manager",
+      "description": "Ask your manager a question and wait for the answer.\n\nUse it for a decision or information your manager must give. Put the context\nthey need in one or two sentences.",
+      "parameters": {
+        "description": "Ask your manager a question and wait for the answer.\n\nUse it for a decision or information your manager must give. Put the context\nthey need in one or two sentences.",
+        "properties": {
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "options": {
+            "default": null,
+            "description": "Optional 2-4 short answer choices. Your manager can always type a different answer.",
+            "title": "Options"
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "title": "ask_manager",
+        "type": "object"
+      }
+    },
+    {
+      "name": "create_work_item",
+      "description": "Create a work item (a task) under the one you are working on.\n\n`assignee` is a person's handle, without the @; leave it out to leave the task unassigned.",
+      "parameters": {
+        "description": "Create a work item (a task) under the one you are working on.\n\n`assignee` is a person's handle, without the @; leave it out to leave the task unassigned.",
+        "properties": {
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Summary"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Assignee"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "title": "create_work_item",
+        "type": "object"
+      }
+    },
+    {
+      "name": "comment",
+      "description": "Add a comment to a work item.",
+      "parameters": {
+        "description": "Add a comment to a work item.",
+        "properties": {
+          "work_item_id": {
+            "title": "Work Item Id",
+            "type": "string"
+          },
+          "body": {
+            "title": "Body",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id",
+          "body"
+        ],
+        "title": "comment",
+        "type": "object"
+      }
+    }
+  ],
+  "work_items": [
+    {
+      "name": "list_work_items",
+      "description": "List the work items you can see (yours, and those around this question), newest first, as JSON.",
+      "parameters": {
+        "description": "List the work items you can see (yours, and those around this question), newest first, as JSON.",
+        "properties": {},
+        "title": "list_work_items",
+        "type": "object"
+      }
+    },
+    {
+      "name": "read_work_item",
+      "description": "Read one work item with its comments and children, as JSON.",
+      "parameters": {
+        "description": "Read one work item with its comments and children, as JSON.",
+        "properties": {
+          "work_item_id": {
+            "title": "Work Item Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "work_item_id"
+        ],
+        "title": "read_work_item",
+        "type": "object"
+      }
+    }
+  ]
+}
