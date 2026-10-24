@@ -45,6 +45,11 @@ test("a run belongs to one session", () => {
   store.addSessionRun(a.id, "run-1")
   expect(thrown(() => store.addSessionRun(b.id, "run-1"))).toBeInstanceOf(DuplicateKey)
   expect(thrown(() => store.addSessionRun(NO_SESSION, "run-9"))).toBeInstanceOf(NotFound)
+  // A clash on a later run id undoes the whole create, the session row and its earlier runs too.
+  const c = session({ run_ids: ["run-new", "run-1"] })
+  expect(thrown(() => store.createSession(c))).toBeInstanceOf(DuplicateKey)
+  expect(store.getSession(c.id)).toBeUndefined()
+  expect(store.sessionForRun("run-new")).toBeUndefined()
 })
 
 test("sessions filter by folder and kind", () => {
@@ -59,9 +64,17 @@ test("update session", () => {
   const store = openStore()
   const events = recordEvents(store)
   const s = store.createSession(session())
-  const got = store.updateSession(s.id, { status: "busy", cost: 0.25 })
+  const got = store.updateSession(s.id, { status: "busy", cost: 0.25, model: "gpt-4o-mini" })
   expect([got.status, got.cost]).toEqual(["busy", 0.25])
   expect(got.updated_at >= s.updated_at).toBe(true)
+  // An explicit undefined changes nothing; it never resets a field to its default.
+  const kept = store.updateSession(s.id, {
+    cost: undefined,
+    model: undefined,
+    updated_at: undefined,
+  } as Partial<SessionRecord>)
+  expect([kept.cost, kept.model]).toEqual([0.25, "gpt-4o-mini"])
+  expect(kept.updated_at >= got.updated_at).toBe(true)
   expect(thrown(() => store.updateSession(s.id, { run_ids: ["x"] }))).toBeInstanceOf(StoreError)
   expect(events.at(-1)!.data.status).toBe("busy")
 })
@@ -165,6 +178,11 @@ test("a session keeps who it waits on and whether its cap holds it", () => {
   expect([got.waiting_on, got.capped]).toEqual([["ngocbh", "lan"], true])
   const changed = store.updateSession(s.id, { status: "idle", waiting_on: [], capped: false })
   expect([changed.waiting_on, changed.capped]).toEqual([[], false])
+  // A corrupt JSON column is refused without quoting its text.
+  store.db.prepare("UPDATE sessions SET waiting_on = 'sk-not-json' WHERE id = ?").run(s.id)
+  const error = thrown(() => store.getSession(s.id))
+  expect(error).toBeInstanceOf(StoreError)
+  expect((error as Error).message).not.toContain("sk")
 })
 
 test("a field with no column needs a store migration", () => {

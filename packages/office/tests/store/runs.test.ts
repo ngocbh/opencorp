@@ -1,7 +1,14 @@
 /** The runs table: the office's facts about a launched run, an end reason written once, and no events. */
 import { expect, test } from "bun:test"
 import { sqliteErrorCode } from "@ngocbh/yian/platform"
-import { DuplicateKey, NotFound, newId, type RunRow, type SessionRecord } from "../../src/store/store.ts"
+import {
+  DuplicateKey,
+  NotFound,
+  StoreError,
+  newId,
+  type RunRow,
+  type SessionRecord,
+} from "../../src/store/store.ts"
 import { openStore, recordEvents, session, thrown } from "./helpers.ts"
 
 const T = "2026-10-20T10:00:00.000Z"
@@ -33,6 +40,15 @@ test("a launch is stored", () => {
   expect(events).toEqual([])
   expect(thrown(() => store.addRun(launch(s, { sessionId: newId() })))).toBeInstanceOf(NotFound)
   expect(thrown(() => store.addRun(launch(s, { runId: row.runId })))).toBeInstanceOf(DuplicateKey)
+  // Any other constraint is a plain StoreError.
+  const error = thrown(() =>
+    store.transaction((tx) =>
+      tx.insert("runs", { run_id: newId(), session_id: s.id, flow: "chat", flow_path: "x", created_at: T }),
+    ),
+  )
+  expect(error).toBeInstanceOf(StoreError)
+  expect(error).not.toBeInstanceOf(DuplicateKey)
+  expect(error).not.toBeInstanceOf(NotFound)
 })
 
 test("a runs config is recorded at spawn", () => {
@@ -42,6 +58,10 @@ test("a runs config is recorded at spawn", () => {
   store.setRunConfig(row.runId, { connection: "azure-2", model: "gpt-4o-mini", configSha256: "f".repeat(64) })
   const got = store.getRun(row.runId)!
   expect([got.connection, got.model, got.configSha256]).toEqual(["azure-2", "gpt-4o-mini", "f".repeat(64)])
+  const unknown = newId()
+  const error = thrown(() => store.setRunConfig(unknown, { connection: null, model: null, configSha256: null }))
+  expect(error).toBeInstanceOf(NotFound)
+  expect((error as Error).message).toBe(`no run ${unknown}`)
 })
 
 test("an end reason is written once and capped", () => {
@@ -94,6 +114,11 @@ test("the sweep gives the listed runs its reason and no end time", () => {
   expect(store.getRun(kept.runId)).toEqual(kept)
   expect(store.getRun("nope")).toBeUndefined()
   expect(events).toEqual([])
+  // The sweep cuts a long reason as endRun does.
+  const long = store.addRun(launch(s))
+  store.sweepRuns([long.runId], "x".repeat(1000))
+  const reason = store.getRun(long.runId)!.endReason!
+  expect([reason.length, reason.endsWith("…")]).toEqual([256, true])
 })
 
 test("rows by session and by id", () => {

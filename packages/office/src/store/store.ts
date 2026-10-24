@@ -117,7 +117,22 @@ const SESSIONS: Table<typeof Session> = {
 
 /** `name` quoted as an SQL identifier (a column may be a keyword, like `groups`). */
 function quote(name: string): string {
-  return `"${name}"`
+  return `"${name.replaceAll('"', '""')}"`
+}
+
+/** `changes` without its undefined entries: an explicit undefined changes nothing. */
+function defined(changes: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined))
+}
+
+/** The JSON in column `name` of `table`; throws `StoreError` if it isn't valid JSON. */
+function parseJson(table: string, name: string, text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    // The parser's message quotes the text, which could hold a secret.
+    throw new StoreError(`${table}: ${name} isn't valid JSON`)
+  }
 }
 
 /** Puts the database in WAL mode, unless it already is. Switching needs an exclusive lock: when several
@@ -537,8 +552,8 @@ export class Store {
     const data: Record<string, unknown> = {}
     for (const [name, value] of Object.entries(row)) {
       if (!(name in table.schema.shape)) continue
-      if (table.json.has(name)) data[name] = value === null ? null : JSON.parse(value as string)
-      else if (table.bools.has(name)) data[name] = value !== 0
+      if (table.json.has(name)) data[name] = value === null ? null : parseJson(table.name, name, value as string)
+      else if (table.bools.has(name)) data[name] = value === null ? null : value !== 0
       else data[name] = value
     }
     Object.assign(data, extra)
@@ -547,13 +562,15 @@ export class Store {
     return result.data
   }
 
-  /** `current` with `changes` applied, validated; throws `StoreError` if `changes` touches a `frozen` field. */
+  /** `current` with `changes` applied (undefined entries skipped), validated; throws `StoreError` if `changes`
+   *  touches a `frozen` field. */
   #changed<S extends z.ZodObject>(
     table: Table<S>,
     current: z.output<S>,
     changes: Record<string, unknown>,
     frozen: string[],
   ): z.output<S> {
+    changes = defined(changes)
     const bad = frozen.filter((name) => name in changes).sort()
     if (bad.length) throw new StoreError(`cannot change ${JSON.stringify(bad)} this way`)
     const data = { ...current, ...changes }
@@ -654,7 +671,7 @@ export class Store {
   updateSession(sessionId: string, changes: Partial<SessionRecord>): SessionRecord {
     return this.transaction((tx) => {
       const current = this.#mustSession(sessionId)
-      const session = this.#changed(SESSIONS, current, { updated_at: now(), ...changes }, [
+      const session = this.#changed(SESSIONS, current, { updated_at: now(), ...defined(changes) }, [
         "id",
         "run_ids",
         "created_at",
@@ -723,24 +740,30 @@ export class Store {
     return run
   }
 
-  /** Records the connection, model and config hash a run was started on (set at spawn). */
+  /** Records the connection, model and config hash a run was started on (set at spawn); an unknown run →
+   *  NotFound. */
   setRunConfig(
     runId: string,
     config: { connection: string | null; model: string | null; configSha256: string | null },
   ): void {
-    this.transaction((tx) =>
-      tx.run(
-        "UPDATE runs SET connection = ?, model = ?, config_sha256 = ? WHERE run_id = ?",
+    const row = this.transaction((tx) =>
+      tx.get(
+        "UPDATE runs SET connection = ?, model = ?, config_sha256 = ? WHERE run_id = ? RETURNING run_id",
         config.connection,
         config.model,
         config.configSha256,
         runId,
       ),
     )
+    if (row === undefined) throw new NotFound(`no run ${runId}`)
   }
 
   /** Writes the office's end reason (cut to REASON_KEPT; ended now or at `at`) unless the run has one; returns
-   *  whether it wrote. */
+   *  whether it wrote.
+   *
+   *  It records an end the office decided. Callers must not call it for a run whose end yian recorded (a
+   *  finished, failed or stopped run): in the run status rule the office's end reason wins over yian's status,
+   *  so it would hide yian's outcome. Write-once only stops a second office end. */
   endRun(runId: string, reason: string, at?: string): boolean {
     const row = this.transaction((tx) =>
       tx.get(
@@ -758,9 +781,10 @@ export class Store {
   sweepRuns(runIds: Iterable<string>, reason: string): string[] {
     const ids = [...new Set(runIds)].sort()
     const sql = "UPDATE runs SET end_reason = ? WHERE run_id = ? AND end_reason IS NULL RETURNING run_id"
+    const kept = cutReason(reason, REASON_KEPT)
     return this.transaction((tx) => {
       const written: string[] = []
-      for (const runId of ids) if (tx.get(sql, reason, runId) !== undefined) written.push(runId)
+      for (const runId of ids) if (tx.get(sql, kept, runId) !== undefined) written.push(runId)
       return written
     })
   }
