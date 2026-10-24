@@ -370,7 +370,8 @@ async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boo
  */
 export class ModelCache {
   readonly connections: Connections
-  readonly #lister: Lister
+  /** Lists a connection, saved or not: the cache's listings, and a connection being added. */
+  readonly lister: Lister
   readonly #clock: () => number
   readonly #log: (line: string) => void
   readonly #entries = new Map<string, Entry>()
@@ -380,7 +381,7 @@ export class ModelCache {
     this.connections = connections
     this.#log = options.log ?? console.error
     const log = this.#log
-    this.#lister =
+    this.lister =
       options.lister ?? ((conn, name, { deadlineMs, authFile }) => listModels(conn, name, { deadlineMs, authFile, log }))
     this.#clock = options.clock ?? (() => performance.now())
   }
@@ -484,7 +485,7 @@ export class ModelCache {
     const remaining = end - performance.now()
     if (remaining <= 0) return ownModels(conn, name, TIMED_OUT)
     const authFile = conn.method === "subscription" ? this.connections.authFile(name) : null
-    const flight: Promise<ModelListing> = this.#lister(conn, name, { deadlineMs: remaining, authFile })
+    const flight: Promise<ModelListing> = this.lister(conn, name, { deadlineMs: remaining, authFile })
       .then((listing) => {
         this.#entries.set(name, { at: this.#clock(), hash: configHash(conn), listing })
         return listing

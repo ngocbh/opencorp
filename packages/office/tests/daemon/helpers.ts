@@ -11,6 +11,8 @@ import { tokenSha256 } from "../../src/auth/tokens.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import { DeviceTokens } from "../../src/daemon/auth.ts"
 import { Bus } from "../../src/daemon/bus.ts"
+import type { LoginsOptions } from "../../src/chat/logins.ts"
+import { type ModelCacheOptions, ownModels } from "../../src/chat/models.ts"
 import { type Limits, type RequestInfo, type Route, createServer, requestListener } from "../../src/daemon/http.ts"
 import { Office, OfficePaths, type RequestContext } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
@@ -27,13 +29,22 @@ export const ULID = "01JA1H0000000000000000000A"
 
 /**
  * An office over a fresh home: the base company at `paths.company`, a store, company git and a bus; not started
- * (Python's `office` fixture). `log` gets the office's raw log messages.
+ * (Python's `office` fixture). `log` gets the office's raw log messages. The listing and the sign-in are offline
+ * stand-ins unless `models`/`logins` give others: the defaults reach OpenAI.
  *
  * When the test finishes it is stopped and its store closed, before its temp dir is removed. A test that already
  * called `stop()` gets a second one then, after its assertions; that is harmless, though `stop` is not idempotent
  * (its stop callbacks run again), as in Python.
  */
-export function makeOffice({ log }: { log?: (message: string) => void } = {}): Office {
+export function makeOffice({
+  log,
+  models,
+  logins,
+}: {
+  log?: (message: string) => void
+  models?: ModelCacheOptions
+  logins?: Omit<LoginsOptions, "models">
+} = {}): Office {
   let office: Office | undefined
   let store: Store | undefined
   // Registered before tempDir's removal: onTestFinished runs callbacks in registration order.
@@ -48,7 +59,20 @@ export function makeOffice({ log }: { log?: (message: string) => void } = {}): O
   company(home)
   const paths = new OfficePaths(home)
   store = new Store(paths.store)
-  office = new Office({ paths, store, git: new CompanyGit(paths.company, paths.worktrees), bus: new Bus(), log })
+  office = new Office({
+    paths,
+    store,
+    git: new CompanyGit(paths.company, paths.worktrees),
+    bus: new Bus(),
+    log,
+    models: { lister: (conn, name) => Promise.resolve(ownModels(conn, name)), ...models },
+    logins: {
+      auth: () => {
+        throw new Error("no network in tests: pass logins.auth")
+      },
+      ...logins,
+    },
+  })
   return office
 }
 

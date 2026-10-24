@@ -295,7 +295,8 @@ export class Connections {
    * `setDefault` on this `Connections`: the queue isn't re-entrant, so the call would wait forever.
    *
    * Rejects with `RangeError` when `base` can't make a free connection name, `ProviderError` when `_removed.json`
-   * can't be read or office/connections isn't a private directory of this user, and otherwise with the error that stopped `signIn` or the write.
+   * can't be read or office/connections isn't a private directory of this user, and otherwise with the error that
+   * stopped `signIn` or the write.
    */
   async add(
     base: string,

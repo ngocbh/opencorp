@@ -228,7 +228,14 @@ export function buildOffice(
       tools,
       guards,
       log: log("ERROR", "opencorp.daemon.office"),
+      connections: { log: log("WARNING", "opencorp.chat.connections") },
+      models: { log: log("WARNING", "opencorp.chat.models") },
+      logins: { log: log("WARNING", "opencorp.chat.logins") },
     })
+    // Not awaited: a slow provider must not hold up the start. warm never rejects.
+    office.onStart.push(() => void office.models.warm())
+    // Bounded: closeAll waits at most STOP_WAIT_MS for the sign-ins to stop.
+    office.onStop.push(() => office.logins.closeAll())
     const watcher = new HeadWatcher(office, { log: log("ERROR", "opencorp.company.watch") })
     office.onStart.push(() => watcher.start())
     office.onStop.push(() => watcher.stop())

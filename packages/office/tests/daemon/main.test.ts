@@ -6,7 +6,7 @@ import net from "node:net"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
-import { afterAll, expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import {
   AlreadyRunning,
   PidFile,
@@ -426,6 +426,26 @@ test("the office holds the company snapshots and the secret store", () => {
   expect(office.snapshots.git).toBe(office.git)
   expect(office.secrets.root).toBe(office.paths.secrets)
   expect(office.paths.lock).toBe(path.join(office.paths.home, "office", "office.lock"))
+})
+
+test("build office lists models on start and cancels sign ins on stop", async () => {
+  const office = buildOffice(new OfficePaths(home()), { write: collect().write })
+  try {
+    expect(office.models.connections).toBe(office.connections)
+    expect(office.logins.connections).toBe(office.connections)
+    expect(office.connections.office).toBe(office.paths.office)
+    // Never settles: start must not wait for the warm-up.
+    const warm = spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+    const close = spyOn(office.logins, "closeAll").mockResolvedValue(undefined)
+    await office.start()
+    expect(warm).toHaveBeenCalledTimes(1)
+    expect(close).not.toHaveBeenCalled()
+    await office.stop()
+    expect(close).toHaveBeenCalledTimes(1)
+  } finally {
+    await office.stop()
+    office.store.close()
+  }
 })
 
 /** How a process exited. */
