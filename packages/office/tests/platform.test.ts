@@ -1,9 +1,11 @@
 /** The office's one Bun-specific module, and the lints that keep Bun APIs and self-spawns inside it. */
 import { spawn, spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
+import { templateFiles } from "../src/company_template/index.ts"
 import {
   embedded,
   helperCommand,
@@ -187,6 +189,137 @@ test("embedded reads the bytes of the file a file import names", () => {
   fs.writeFileSync(file, bytes)
   expect(embedded(file)).toEqual(bytes)
 })
+
+/** Kills the process group `pid` leads; one already gone is fine. */
+function killGroup(pid: number): void {
+  try {
+    process.kill(-pid, "SIGKILL")
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+  }
+}
+
+/** Runs `argv` in its own process group and resolves to its exit and output once it closes; after `limit` ms
+ *  the group is killed and the run rejects. The group is also killed when the current test finishes. */
+function runDetached(
+  argv: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; limit: number },
+): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env, detached: true, stdio: "pipe" })
+    child.on("error", reject)
+    const pid = child.pid
+    if (pid === undefined) return
+    let closed = false
+    onTestFinished(() => {
+      // Once closed and reaped, the pid may lead an unrelated group.
+      if (!closed) killGroup(pid)
+    })
+    let stdout = ""
+    let stderr = ""
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      killGroup(pid)
+    }, options.limit)
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk))
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk))
+    child.stdin.end()
+    child.on("close", (code) => {
+      clearTimeout(timer)
+      // Anything the run left in its group goes with it.
+      killGroup(pid)
+      closed = true
+      if (timedOut) reject(new Error(`${argv.join(" ")} ran past ${options.limit} ms:\n${stdout}\n${stderr}`))
+      else resolve({ code, stdout, stderr })
+    })
+  })
+}
+
+/** The sha256 of `bytes`, in hex. */
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex")
+}
+
+test(
+  "selfCommand, helperCommand, threadEntry and embedded work in a compiled binary",
+  async () => {
+    // A small probe compiled with the binary's flags stands in for the real binary. It is written here, importing
+    // the office's files by absolute path, so no checked-in file imports across packages.
+    const dir = tempDir()
+    fs.mkdirSync(path.join(dir, "probe"))
+    const migration = path.join(SRC, "store/migrations/0001_initial.sql")
+    const owner = { handle: "casey", name: "Casey" }
+    fs.writeFileSync(
+      path.join(dir, "probe/main.ts"),
+      [
+        `import { createHash } from "node:crypto"`,
+        `import { Worker } from "node:worker_threads"`,
+        `import { embedded, helperCommand, selfCommand, threadEntry } from ${JSON.stringify(path.join(SRC, "platform.ts"))}`,
+        `import { templateFiles } from ${JSON.stringify(path.join(SRC, "company_template/index.ts"))}`,
+        `import file from ${JSON.stringify(migration)} with { type: "file" }`,
+        `const sha = (bytes) => createHash("sha256").update(bytes).digest("hex")`,
+        `const worker = new Worker(threadEntry("runs_indexer"))`,
+        `const threadReply = await new Promise((resolve, reject) => {`,
+        `  worker.once("message", resolve)`,
+        `  worker.once("error", reject)`,
+        `  worker.once("exit", (code) => reject(new Error("the thread exited " + code)))`,
+        `})`,
+        // Ends the thread, so the probe exits on its own.
+        `await worker.terminate()`,
+        `const template = {}`,
+        `for (const [rel, data] of templateFiles("Acme", ${JSON.stringify(owner)})) template[rel] = sha(data)`,
+        `console.log(JSON.stringify({`,
+        `  self: selfCommand(),`,
+        `  helper: helperCommand(),`,
+        `  thread: threadEntry("runs_indexer").href,`,
+        `  threadReply,`,
+        `  file,`,
+        `  sha: sha(embedded(file)),`,
+        `  template,`,
+        `}))`,
+        "",
+      ].join("\n"),
+    )
+    fs.writeFileSync(
+      path.join(dir, "probe/runs_indexer.ts"),
+      `import { parentPort } from "node:worker_threads"\nparentPort.postMessage("thread ok")\n`,
+    )
+    const build = await runDetached(
+      [
+        process.execPath,
+        "build",
+        "--compile",
+        "--no-compile-autoload-dotenv",
+        "--no-compile-autoload-bunfig",
+        "probe/main.ts",
+        "probe/runs_indexer.ts",
+        "--outfile",
+        "out/probe",
+      ],
+      { cwd: dir, env: process.env, limit: 300_000 },
+    )
+    expect(build.code, build.stdout + build.stderr).toBe(0)
+
+    const bin = path.join(dir, "out/probe")
+    const elsewhere = path.join(dir, "elsewhere")
+    fs.mkdirSync(elsewhere)
+    // The first run of a fresh binary can take minutes on macOS while the system scans it.
+    const run = await runDetached([bin], { cwd: elsewhere, env: { PATH: "/usr/bin:/bin", HOME: dir }, limit: 300_000 })
+    expect(run.code, run.stdout + run.stderr).toBe(0)
+    const probe = JSON.parse(run.stdout)
+    expect(probe.self).toEqual([bin])
+    expect(probe.helper).toEqual({ argv: [bin, "__fs-helper"], helper: { binary: bin } })
+    expect(probe.thread).toBe("file:///$bunfs/root/runs_indexer.js")
+    expect(probe.threadReply).toBe("thread ok")
+    expect(probe.file).toStartWith("/$bunfs/")
+    expect(probe.sha).toBe(sha256(fs.readFileSync(migration)))
+    const template = Object.fromEntries([...templateFiles("Acme", owner)].map(([rel, data]) => [rel, sha256(data)]))
+    expect(template).toHaveProperty(["people/casey/person.yaml"])
+    expect(probe.template).toEqual(template)
+  },
+  660_000,
+)
 
 test.skipIf(process.platform !== "darwin")("listAllPids includes this process and a child", () => {
   const child = spawn("sleep", ["30"], { stdio: "ignore" })

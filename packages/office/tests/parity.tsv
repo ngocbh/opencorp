@@ -511,6 +511,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::procStartTime reads a running child and is null for an exited one	§2.2, O0-10 P6	O2-11a
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
+—	new	packages/office/tests/platform.test.ts::selfCommand, helperCommand, threadEntry and embedded work in a compiled binary	O0-4 handoff; a probe stands in for the real binary until O3-3/O4b-6	O2-26
 —	new	packages/office/tests/platform.test.ts::selfSpawnEnv drops a name a spawn cant pass as given	design §6.5: the spawn filter drops the names a spawn can't pass as given, as Provider.env refuses them	O2-19
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
