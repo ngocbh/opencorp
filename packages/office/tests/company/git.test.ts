@@ -184,6 +184,30 @@ test("lock serializes writers", async () => {
   expect(git(company, "log", "--format=%s").split("\n")).toHaveLength(3)
 })
 
+test("a locked section calling a locking method throws instead of deadlocking", async () => {
+  const { company, g } = setup()
+  const edit = (line: string) => fs.appendFileSync(path.join(company, PROFILE), `${line}\n`)
+  await expect(
+    g.locked(async (locked) => {
+      edit("a")
+      await locked.commit([PROFILE], "a")
+      edit("b")
+      return g.commit([PROFILE], "b")
+    }),
+  ).rejects.toThrow(/not reentrant/)
+  expect(await g.locked(async () => 1)).toBe(1)
+
+  let later: Promise<string> | undefined
+  await g.locked(async () => {
+    later = sleep(50).then(() => {
+      edit("c")
+      return g.commit([PROFILE], "c")
+    })
+  })
+  await later
+  expect(git(company, "log", "--format=%s").split("\n").slice(0, 2)).toEqual(["c", "a"])
+})
+
 test("git dir in the environment is ignored", async () => {
   const other = writeRepo(path.join(tempDir(), "other"), { "x.txt": "x\n" })
   const { company, g } = setup({ env: { ...process.env, GIT_DIR: path.join(other, ".git"), GIT_WORK_TREE: other } })

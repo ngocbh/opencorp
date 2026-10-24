@@ -1,4 +1,5 @@
 /** The office's clone of the company repo: pinned worktrees, the repo lock, commits. */
+import { AsyncLocalStorage } from "node:async_hooks"
 import { spawn } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
@@ -101,6 +102,9 @@ function gitEnv(base: Record<string, string | undefined>): Record<string, string
 }
 
 const noop = () => {}
+// Which instance's lock the current async context holds. `held` is cleared when the section ends,
+// since timers and callbacks started inside it keep the context afterwards.
+const holder = new AsyncLocalStorage<{ git: CompanyGit; held: boolean }>()
 
 /** A git command on the company clone failed; the message includes git's stderr. */
 export class CompanyGitError extends Error {
@@ -181,9 +185,30 @@ export class CompanyGit {
     })
   }
 
-  /** Runs `fn` holding the repo lock; sections run one at a time, in call order. */
+  /**
+   * Runs `fn` holding the repo lock; sections run one at a time, in call order.
+   *
+   * The lock isn't reentrant: a locking method called inside a section (`commit`, `locked`) rejects
+   * instead of waiting for a lock its own caller holds. Write through the `LockedGit` passed to `fn`;
+   * it is valid only while `fn`'s promise is pending, and its calls must be awaited one at a time. A
+   * write started detached inside a section that is still running there rejects too, rather than
+   * waiting.
+   */
   locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
-    const run = this.#queue.then(() => fn(this.#held))
+    const current = holder.getStore()
+    if (current?.git === this && current.held) {
+      return Promise.reject(new Error("CompanyGit's lock is not reentrant; use the LockedGit that locked() passes"))
+    }
+    const run = this.#queue.then(() => {
+      const token = { git: this, held: true }
+      return holder.run(token, async () => {
+        try {
+          return await fn(this.#held)
+        } finally {
+          token.held = false
+        }
+      })
+    })
     this.#queue = run.then(noop, noop) // a failed section must not wedge the lock
     return run
   }
