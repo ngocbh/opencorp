@@ -302,6 +302,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/chat/connections.test.ts::a connection file has the python layout and a python file reads	design §10.4 (R2 m9): test_run_logs.py writes connections through the Python code	O2-19
 —	new	packages/office/tests/chat/hire.test.ts::a hires person file is laid out as python wrote it	design §3.2 (mirror): init (O2-17) and hire write the same files as the Python office	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a hostile title reads back as itself and adds no key	design §6.9: the person file decides kind and password_hash; titles may come from an LLM (O2-17)	O2-24
+—	new	packages/office/tests/chat/hire.test.ts::issue messages name the company repo not the scratch copy	O1-8 handoff (yian #1051): absolute CODE-root paths would name the scratch copy	O2-24
 —	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
