@@ -1,11 +1,13 @@
 /** Opening the store: schema, WAL, file modes. */
+import { spawnSync } from "node:child_process"
 import fs from "node:fs"
+import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
 import { openSqlite, sqliteErrorCode, type SqliteStatement } from "@ngocbh/yian/platform"
 import { MIGRATIONS, MigrationError, ladder, userVersion } from "../../src/store/migrate.ts"
 import { Store, StoreError, enableWal } from "../../src/store/store.ts"
-import { tempDir } from "../helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
 import { openStore, thrown } from "./helpers.ts"
 
 const TABLES = new Set([
@@ -21,6 +23,8 @@ const TABLES = new Set([
   "workers",
   "hq_sessions",
 ])
+
+const STORE_URL = new URL("../../src/store/store.ts", import.meta.url).href
 
 /** A store at `path`, closed when the test finishes. */
 function storeAt(file: string): Store {
@@ -229,6 +233,61 @@ test("an existing store file is tightened to 0600", () => {
   expect(fs.statSync(elsewhere).mode & 0o777).toBe(0o644)
   expect(fs.statSync(elsewhere).size).toBe(0)
 })
+
+test(
+  "a fifo at the store path is refused",
+  async () => {
+    // A short dir: macOS limits a unix socket's path to 104 bytes.
+    const dir = shortDir()
+    const office = path.join(dir, "office")
+    fs.mkdirSync(office, { mode: 0o700 })
+    const file = path.join(office, "store.sqlite")
+    // A child process: a regression blocks the open in a sync syscall, which no timer here could end.
+    const child = path.join(dir, "child.ts")
+    fs.writeFileSync(
+      child,
+      [
+        `import { Store, StoreError } from "${STORE_URL}"`,
+        "try {",
+        "  new Store(process.argv[2]!).close()",
+        '  console.log("opened")',
+        "} catch (error) {",
+        '  console.log(error instanceof StoreError ? `StoreError: ${error.message}` : `other: ${String(error)}`)',
+        "}",
+        "",
+      ].join("\n"),
+    )
+    const open = () =>
+      spawnSync(process.execPath, ["--no-install", "--no-env-file", "--config=/dev/null", child, file], {
+        env: { PATH: "/usr/bin:/bin", HOME: dir },
+        cwd: dir,
+        encoding: "utf8",
+        timeout: 20_000,
+      })
+    const refused = (planted: string) => {
+      const result = open()
+      expect(result.error).toBeUndefined()
+      expect(result.signal).toBeNull()
+      expect(result.status).toBe(0)
+      expect(result.stdout.trim()).toMatch(/^StoreError: .*not a regular file/)
+      fs.rmSync(planted)
+    }
+
+    expect(spawnSync("mkfifo", [file]).status).toBe(0)
+    refused(file)
+
+    // A fifo beside a store that doesn't exist yet.
+    expect(spawnSync("mkfifo", [`${file}-wal`]).status).toBe(0)
+    refused(`${file}-wal`)
+    fs.rmSync(file)
+
+    const server = net.createServer()
+    onTestFinished(() => void server.close())
+    await new Promise<void>((resolve) => server.listen(file, resolve))
+    refused(file)
+  },
+  60_000,
+)
 
 test("opening restores the umask", () => {
   // A umask other than the store's 0o077, so a missing restore shows.

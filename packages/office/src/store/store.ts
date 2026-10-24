@@ -194,13 +194,15 @@ function tighten(file: string): void {
   // SQLite gives a new -wal or -shm the database's mode but never tightens an existing file, so a store
   // copied or restored with a loose mode would stay readable, and spread it to its sidecars. OpenCode's
   // restrictToOwner does the same for this reason.
+  const { O_NOFOLLOW, O_NONBLOCK, O_RDONLY } = fs.constants
   let fd: number
   try {
-    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+    // O_NONBLOCK: a FIFO would otherwise block the open until a writer appears.
+    fd = fs.openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)
   } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    if (code === "ENOENT") return
-    if (code === "ELOOP") throw new StoreError(`store file ${file} is not a regular file`)
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+    // A symlink (ELOOP), a socket (EOPNOTSUPP, ENXIO on Linux) or anything else that isn't a regular file.
+    if (!fs.lstatSync(file).isFile()) throw new StoreError(`store file ${file} is not a regular file`)
     throw error
   }
   try {
