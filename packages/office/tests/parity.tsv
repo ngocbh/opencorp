@@ -34,7 +34,7 @@ company/test_snapshot.py	ported	packages/office/tests/company/snapshot.test.ts	�
 company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O1-7
 company/test_watch.py	open	—	—	O2-4
 company_template/test_writer.py	open	—	—	O2-16a
-daemon/test_app.py	open	—	—	O2-2
+daemon/test_app.py	open	—	split: O2-1 → O2-2	O2-2
 daemon/test_auth.py	open	—	split: O2-3 → O2-11b	O2-11b
 daemon/test_bus.py	open	—	—	O2-2
 daemon/test_extensions.py	open	—	—	O2-4
@@ -294,6 +294,17 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
 —	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
+—	new	packages/office/tests/daemon/http.test.ts::a 500 logs only the error type	design §2.3, §6 rule 13: a 500 logs the error type only	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a decoded slash or dot dot in a param is a 404	design §2.3: params decoded once; a decoded / or .. is a 404	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a get route can refuse head	design §2.3: HEAD /events refused (Python events.py)	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a malformed or empty path segment is a 404	design §2.3: a bad escape or empty param matches no route, as Starlette's [^/]+	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a reply is parsed so its defaults are filled	design §2.3, §5.4: reply.parse fills defaults as model_dump did	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a reply that fails its schema is a 500 that leaks nothing	design §2.3, §6 rule 13, O0-6 handoff: a ZodError never reaches a reply or log	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::a wildcard param is decoded once	design §2.3: *cwd params get the same care	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::an http error is its status code and message	design §2.3: HttpError is Python's HTTPError	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::head on a get route answers without a body	design §2.3: GET routes answer HEAD, as Starlette's did	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::the context runs before routing	design §2.3: DeviceTokens before routing, as Python's middleware order	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
 —	new	packages/office/tests/perm/redaction.test.ts::a key named __proto__ stays a plain key	design §6.3: object keys scrubbed; a JS object needs an own key for __proto__	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret holding regex characters is scrubbed only as written	design §6.3: each form matched as text (Python's re.escape, hand-written here)	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::a secret in base64 is scrubbed in either alphabet	design §6.3: base64 in both alphabets (Python's vector has no - or _)	O1-12
