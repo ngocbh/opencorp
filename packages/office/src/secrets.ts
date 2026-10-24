@@ -4,6 +4,8 @@ import path from "node:path"
 import { inspect } from "node:util"
 import { type FileLock, waitForLock } from "@ngocbh/yian/platform"
 
+/** Valid secret names: lower-case letters, digits, `_`, `.`, `-`, not starting with `.` or `-`, at most 128
+ *  characters; so `.lock` and temp files can never be names. */
 export const NAME = /^[a-z0-9_][a-z0-9_.-]{0,127}$/
 
 /** The shortest value accepted: results are scrubbed of every secret value, so a short one would mangle them. */
@@ -70,8 +72,9 @@ function replaceFile(dir: string, name: string, data: string | Uint8Array): void
     fs.fchmodSync(fd, 0o600) // the umask may have narrowed it
     fs.writeFileSync(fd, data)
     fs.fsyncSync(fd)
-    fs.closeSync(fd)
-    fd = undefined
+    const open = fd
+    fd = undefined // so a failing close isn't closed again below, where an EBADF would hide its error
+    fs.closeSync(open)
     fs.renameSync(tmp, path.join(dir, name))
   } catch (error) {
     if (fd !== undefined) fs.closeSync(fd)
@@ -97,7 +100,8 @@ export class SecretStore {
 
   /** The secret `name`. Rejects with `SecretNotSetError` when no secret has that name, `InvalidSecretError`
    *  for a bad name, and `PrivateFileError` when the root or the secret's file is not private to this user
-   *  or the value is too short to scrub. */
+   *  or the value is too short to scrub. Rejects with yian's `FileLockError` when the folder's lock can't be
+   *  taken (a 30 s wait for another holder, or a `.lock` that isn't private). */
   async get(name: string): Promise<string> {
     checkName(name)
     this.openRoot(name)
@@ -135,7 +139,8 @@ export class SecretStore {
   /** Sets the secret `name` to `value`, replacing any old value atomically; creates the root, mode 0700, if
    *  missing. Rejects with `InvalidSecretError` for a bad name or a value (without surrounding whitespace)
    *  shorter than `MIN_VALUE_CHARS`, and `PrivateFileError` when the root is not a private directory of
-   *  this user. */
+   *  this user. Rejects with yian's `FileLockError` when the folder's lock can't be taken (a 30 s wait for
+   *  another holder, or a `.lock` that isn't private). */
   async set(name: string, value: string): Promise<void> {
     checkName(name)
     if (trimmedLength(value) < MIN_VALUE_CHARS) {
@@ -156,7 +161,8 @@ export class SecretStore {
 
   /** Removes the secret `name`. Rejects with `SecretNotSetError` when no secret has that name,
    *  `InvalidSecretError` for a bad name, and `PrivateFileError` when the root is not a private directory
-   *  of this user. */
+   *  of this user. Rejects with yian's `FileLockError` when the folder's lock can't be taken (a 30 s wait
+   *  for another holder, or a `.lock` that isn't private). */
   async delete(name: string): Promise<void> {
     checkName(name)
     this.openRoot(name)
@@ -192,6 +198,7 @@ export class SecretStore {
 
 function checkName(name: string): void {
   if (typeof name !== "string" || !NAME.test(name)) {
-    throw new InvalidSecretError(`secret name ${JSON.stringify(name)} must match ${NAME.source}`)
+    // The name isn't echoed: a caller who swapped name and value would put the secret in the message.
+    throw new InvalidSecretError(`secret name must match ${NAME.source}`)
   }
 }

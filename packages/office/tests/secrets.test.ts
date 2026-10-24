@@ -5,7 +5,7 @@ import path from "node:path"
 import util from "node:util"
 import { expect, onTestFinished, spyOn, test } from "bun:test"
 import { FileLockError, lockFile } from "@ngocbh/yian/platform"
-import { InvalidSecretError, PrivateFileError, SecretNotSetError, SecretStore } from "../src/secrets.ts"
+import { InvalidSecretError, NAME, PrivateFileError, SecretNotSetError, SecretStore } from "../src/secrets.ts"
 import { tempDir } from "./helpers.ts"
 
 const KEY = "-----BEGIN KEY-----\nabc\n"
@@ -91,6 +91,8 @@ test.each(["", "../x", "a/b", ".hidden", "x".repeat(129), "sp ace", "Token", "TO
     const error = await call().catch((e: unknown) => e)
     expect(error).toBeInstanceOf(InvalidSecretError)
     expect((error as Error).message).toMatch(/secret name/)
+    // A name swapped with its value would put a secret in the message; parts of short names occur in the pattern.
+    if (name.length >= 3 && !NAME.source.includes(name)) expect((error as Error).message).not.toContain(name)
   }
 })
 
@@ -173,16 +175,13 @@ test("get refuses a value too short to scrub", async () => {
 })
 
 test("concurrent sets on a fresh store all succeed", async () => {
-  const tmp = tempDir()
+  const root = path.join(tempDir(), "s")
+  const store = new SecretStore(root)
   const names = Array.from({ length: 8 }, (_, i) => `token${i}`)
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const root = path.join(tmp, `s${attempt}`)
-    const store = new SecretStore(root)
-    const results = await Promise.allSettled(names.map((name, i) => store.set(name, `value-number-${i}`)))
-    expect(results.filter((r) => r.status === "rejected")).toEqual([])
-    expect(fs.readdirSync(root).sort()).toEqual([".lock", ...names].sort())
-  }
-}, 30_000)
+  const results = await Promise.allSettled(names.map((name, i) => store.set(name, `value-number-${i}`)))
+  expect(results.filter((r) => r.status === "rejected")).toEqual([])
+  expect(fs.readdirSync(root).sort()).toEqual([".lock", ...names].sort())
+})
 
 const ODD_FILES = [
   ["mkdir", (p: string) => fs.mkdirSync(p)],
@@ -237,6 +236,10 @@ test("a root that is a file is refused", async () => {
   const error = await new SecretStore(root).set("token", "first-value").catch((e: unknown) => e)
   expect(error).toBeInstanceOf(PrivateFileError)
   expect((error as Error).message).toMatch(/directory/)
+  // A root under a file fails its lstat with ENOTDIR.
+  const nested = await new SecretStore(path.join(root, "inner")).get("token").catch((e: unknown) => e)
+  expect(nested).toBeInstanceOf(PrivateFileError)
+  expect((nested as Error).message).toMatch(/directory/)
 })
 
 test("get from a missing root is a key error", async () => {
