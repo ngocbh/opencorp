@@ -38,11 +38,29 @@ try {
   fail(e instanceof Error ? e.message : String(e), 2)
 }
 const outdir = path.resolve(values.outdir ?? path.join(CLI, "dist/npm"))
-for (const t of positionals) if (!isTarget(t)) fail(`unknown target ${t} (one of ${TARGETS.join(", ")})`, 2)
+const names: Target[] = []
+for (const t of new Set(positionals)) {
+  if (!isTarget(t)) fail(`unknown target ${t} (one of ${TARGETS.join(", ")})`, 2)
+  names.push(t)
+}
+const host = `${process.platform}-${process.arch}`
+if (!names.length) {
+  // The main package lists only TARGETS, so a package for another host would never be installed.
+  if (!isTarget(host)) fail(`no package for this machine (${host}); name a target`, 2)
+  names.push(host)
+}
 // No target: the running Bun's own platform, so no Bun for another platform is downloaded.
-const builds = positionals.length
-  ? positionals.filter(isTarget).map((name) => ({ name, target: `bun-${name}` as const }))
-  : [{ name: `${process.platform}-${process.arch}`, target: undefined }]
+const builds = names.map((name) => {
+  const [os = "", cpu = ""] = name.split("-")
+  return { name, os, cpu, target: positionals.length ? (`bun-${name}` as const) : undefined }
+})
+
+/** The package an asset key starts with (`@scope/name` or `name`), and the key's path inside it. */
+function splitKey(key: string) {
+  const parts = key.split("/")
+  const n = key.startsWith("@") ? 2 : 1
+  return { owner: parts.slice(0, n).join("/"), inner: parts.slice(n).join("/") }
+}
 
 // OpenTUI's own list of what it loads at run time; @opentui/core is the TUI's dependency, not ours.
 const nodeAssets = Bun.resolveSync(
@@ -50,17 +68,29 @@ const nodeAssets = Bun.resolveSync(
   path.dirname(fileURLToPath(import.meta.resolve("@opencorp/tui"))),
 )
 const { getNodeAssets } = (await import(nodeAssets)) as NodeAssets
-// Every target's assets are found before anything is written.
+/** OpenTUI's assets for one target, or one `opencorp build:` line when its native package isn't installed. */
+function assetsFor(name: string, platform: string, arch: string) {
+  try {
+    return getNodeAssets({ platform, arch })
+  } catch (e) {
+    const native = `@opentui/core-${name}`
+    if (String(e).includes(native)) fail(`${name} needs ${native} installed (bun install --os='*' --cpu='*')`, 1)
+    throw e
+  }
+}
+// Every target's assets, and the LICENSE of each package they come from, are found before anything is written.
 const assetsOf = new Map(
-  builds.map(({ name }) => {
-    const [platform = "", arch = ""] = name.split("-")
-    try {
-      return [name, getNodeAssets({ platform, arch })]
-    } catch (e) {
-      const native = `@opentui/core-${name}`
-      if (String(e).includes(native)) fail(`${name} needs ${native} installed (bun install --os='*' --cpu='*')`, 1)
-      throw e
+  builds.map(({ name, os, cpu }) => {
+    const assets = assetsFor(name, os, cpu)
+    const licenses = new Map<string, string>()
+    for (const { key, source } of assets) {
+      const { owner, inner } = splitKey(key)
+      if (!source.endsWith(path.sep + inner)) fail(`${source} is not ${inner} in a package`, 1)
+      const file = path.join(source.slice(0, -inner.length), "LICENSE")
+      if (!fs.existsSync(file)) fail(`${owner} has no LICENSE (${file})`, 1)
+      licenses.set(owner, file)
     }
+    return [name, { assets, licenses }] as const
   }),
 )
 
@@ -75,14 +105,7 @@ function writePackage(dir: string, data: object) {
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify(data, null, 2) + "\n")
 }
 
-/** The package an asset key starts with (`@scope/name` or `name`), and the key's path inside it. */
-function splitKey(key: string) {
-  const parts = key.split("/")
-  const n = key.startsWith("@") ? 2 : 1
-  return { owner: parts.slice(0, n).join("/"), inner: parts.slice(n).join("/") }
-}
-
-for (const { name, target } of builds) {
+for (const { name, os, cpu, target } of builds) {
   const dir = path.join(outdir, `opencorp-${name}`)
   fs.rmSync(dir, { recursive: true, force: true })
   const result = await Bun.build({
@@ -102,16 +125,10 @@ for (const { name, target } of builds) {
     process.exit(1)
   }
   // The binary sets OTUI_ASSET_ROOT to `../assets`, so OpenTUI loads these instead of extracting copies to $TMPDIR.
-  const licenses = new Map<string, string>()
-  for (const { key, source } of assetsOf.get(name)!) {
-    copy(source, path.join(dir, "assets", key))
-    const { owner, inner } = splitKey(key)
-    if (!source.endsWith(path.sep + inner)) throw new Error(`${source} is not ${inner} in a package`)
-    licenses.set(owner, path.join(source.slice(0, -inner.length), "LICENSE"))
-  }
+  const { assets, licenses } = assetsOf.get(name)!
+  for (const { key, source } of assets) copy(source, path.join(dir, "assets", key))
   for (const [owner, file] of licenses) copy(file, path.join(dir, "assets", owner, "LICENSE"))
   fs.copyFileSync(LICENSE, path.join(dir, "LICENSE"))
-  const [os, cpu] = name.split("-")
   writePackage(dir, {
     name: `opencorp-${name}`,
     version,

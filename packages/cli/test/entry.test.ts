@@ -368,6 +368,7 @@ function runDetached(
     const child = spawn(argv[0]!, argv.slice(1), { cwd: options.cwd, env: options.env, detached: true, stdio: "pipe" })
     child.on("error", reject)
     const pid = child.pid
+    // A spawn that failed has no pid and emits `error`, which rejects above.
     if (pid === undefined) return
     options.groups.add(pid)
     let stdout = ""
@@ -392,6 +393,10 @@ function runDetached(
     child.on("close", (code, signal) => {
       clearTimeout(timer)
       child.stdin.destroy()
+      // Reap anything the run left in its group, then forget the pid: once the group is empty the system may give
+      // it to an unrelated group leader, which a later kill(-pid) would hit.
+      killGroup(pid)
+      options.groups.delete(pid)
       if (timedOut)
         reject(new Error(`${argv.join(" ")} ran past ${options.limit} ms (exit ${code}, ${signal}):\n${stdout}\n${stderr}`))
       else resolve({ code, signal, stdout, stderr, reached })
@@ -407,7 +412,7 @@ describe("the built binary", () => {
   let bin = ""
   let home = ""
   const groups = new Set<number>()
-  const cleanups: (() => void)[] = []
+  const cleanups: (() => void | Promise<void>)[] = []
   const pkg = JSON.parse(fs.readFileSync(path.join(CLI, "package.json"), "utf8")) as { version: string; license: string }
   const description = "OpenCorp: run a company of AI employees on your machine"
   const cpu = PLATFORM.split("-")[2]!
@@ -433,10 +438,10 @@ describe("the built binary", () => {
     if (warm.code !== 0) throw new Error(`the binary's --help exited ${warm.code}:\n${warm.stdout}\n${warm.stderr}`)
   }, 960_000)
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const pid of groups) killGroup(pid)
     groups.clear()
-    for (const cleanup of cleanups.splice(0)) cleanup()
+    for (const cleanup of cleanups.splice(0)) await cleanup()
   })
 
   afterAll(() => {
@@ -493,12 +498,16 @@ describe("the built binary", () => {
       res.writeHead(health ? 200 : 404, { "content-type": "application/json" })
       res.end(health ? '{"ok": true}' : '{"error": "not found"}')
     })
-    cleanups.push(() => {
+    cleanups.push(async () => {
       server.closeAllConnections()
-      server.close()
+      // The socket closes before its folder is removed.
+      await new Promise((resolve) => server.close(resolve))
       fs.rmSync(short, { recursive: true, force: true })
     })
-    await new Promise<void>((resolve) => server.listen(path.join(short, "office/office.sock"), resolve))
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject)
+      server.listen(path.join(short, "office/office.sock"), resolve)
+    })
     return short
   }
 
