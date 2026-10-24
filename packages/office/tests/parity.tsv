@@ -288,7 +288,11 @@ worker/test_main.py	open	—	—	O3-3
 worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
 worker/test_remote_store.py	open	—	—	O3-2
 worker/test_resume.py	open	—	—	O4a-2
-worker/test_rpc.py	open	—	—	O3-2
+worker/test_rpc.py	ported	packages/office/tests/worker/rpc.test.ts	—	O3-2
+worker/test_rpc.py::test_a_failed_request_logs_its_exception_type_at_info_and_the_traceback_only_at_debug	changed	packages/office/tests/worker/rpc.test.ts::a failed request logs only its exception type	§6 rule 13: one INFO line with the error type; no debug traceback	O3-2
+worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	packages/office/tests/worker/rpc.test.ts::an office tool error is the tool result	design §2.4: an error reply throws ReportedToolError; the AGENT loop gives the model its message as the result	O3-2
+worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
+worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
 —	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
@@ -565,6 +569,18 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/office/tests/worker/reaper.test.ts::reap kills leftover sandboxed calls and harness processes too	design §6.6: call: and harness: rows (O1-10 handoff)	O2-11a
+—	new	packages/office/tests/worker/rpc.test.ts::a forged frame through the channel is refused	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a forged store request for a store the job was not given is refused	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a forged tool call for a group the job was not given is refused	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a malformed field is failed without its value	§6 rule 1	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a model written $v key reaches the office tool	design §2.4 (settled $v escape)	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a reply that cannot be sent becomes a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::a thrown non error value is a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::bigint arguments reach the office tool	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
 —	new	packages/protocol/test/errors.test.ts::422 text never holds an input value or an unknown key	§5.4, §6 rule 7	O0-6
 —	new	packages/protocol/test/errors.test.ts::every code a client branches on is a protocol error code	§5.4	O0-6

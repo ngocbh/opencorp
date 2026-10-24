@@ -1,8 +1,10 @@
 /** Request/reply calls over a worker channel, and the office-side handler interface. */
 import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
+import { type AskUserHandler, type FunctionTool, ReportedToolError, tool } from "@ngocbh/yian/tools"
+import { z } from "zod"
 import { repr } from "../perm/redact.ts"
 import { ChannelClosed, type Channel, type Frame } from "./channel.ts"
-import type { DeclaredTool, Job } from "./job.ts"
+import type { DeclaredTool, Job, ToolSpec } from "./job.ts"
 
 /** JSON object data, as a store write's provenance holds it. */
 export type JsonObject = NonNullable<Parameters<MarkdownStore["write"]>[1]["provenance"]>
@@ -27,6 +29,149 @@ export const REPLY_TYPES: ReadonlySet<string> = new Set(Object.values(REQUEST_RE
 /** Whether `type` is a request frame type: an own key of `REQUEST_REPLIES`, so `toString` or `__proto__` is not. */
 export function isRequest(type: unknown): type is RequestType {
   return typeof type === "string" && Object.hasOwn(REQUEST_REPLIES, type)
+}
+
+/** The office answered a request with an error reply; `code` is its `error`. */
+export class RemoteError extends Error {
+  /** The reply's `error` code. */
+  readonly code: string
+  /** A copy of the error reply. */
+  readonly reply: Frame
+
+  constructor(reply: Frame) {
+    super(String(reply.message || reply.error))
+    this.name = "RemoteError"
+    this.code = String(reply.error)
+    this.reply = { ...reply }
+  }
+}
+
+/** Numbered requests over a channel, on the worker side; a reader loop hands replies to `deliver`. */
+export class Rpc {
+  #lastId = 0
+  readonly #waiting = new Map<number, (reply: Frame) => void>()
+
+  constructor(readonly channel: Channel) {}
+
+  /** Sends a `type` request frame with `fields` and resolves to its reply; rejects with `RemoteError` for an error
+   *  reply, or with the send's own error. A request already sent when the channel closes never settles: the worker
+   *  exits when its channel closes. */
+  async request(type: RequestType, fields: Frame = {}): Promise<Frame> {
+    const id = ++this.#lastId
+    let reply: Frame
+    try {
+      // Registered before the send, so a reply that arrives at once finds its waiter.
+      const replied = new Promise<Frame>((resolve) => this.#waiting.set(id, resolve))
+      await this.channel.send({ ...fields, type, id })
+      reply = await replied
+    } finally {
+      this.#waiting.delete(id)
+    }
+    if (Object.hasOwn(reply, "error")) throw new RemoteError(reply)
+    return reply
+  }
+
+  /** Completes the request `frame` answers; `false` if none is waiting. */
+  deliver(frame: Frame): boolean {
+    const resolve = typeof frame.id === "number" ? this.#waiting.get(frame.id) : undefined
+    if (resolve === undefined) return false
+    resolve(frame)
+    return true
+  }
+}
+
+/** A zod type for one JSON Schema property. `integer` and `number` take a `bigint` too, as Yian hands an integer
+ *  past 2^53. */
+function zodType(schema: Record<string, unknown>): z.ZodType {
+  if (Array.isArray(schema.anyOf)) {
+    const options = schema.anyOf.map((option) => zodType(isPlainObject(option) ? option : {}))
+    return options.length === 1 ? options[0]! : z.union(options)
+  }
+  const kind = schema.type
+  if (Array.isArray(kind)) return z.union(kind.map((type) => zodType({ ...schema, type })))
+  if (Array.isArray(schema.enum)) return z.literal(schema.enum as z.core.util.Literal[])
+  switch (kind) {
+    case "array":
+      return z.array(zodType(isPlainObject(schema.items) ? schema.items : {}))
+    case "string":
+      return z.string()
+    case "integer":
+      return z.union([z.int(), z.bigint()])
+    case "number":
+      return z.union([z.number(), z.bigint()])
+    case "boolean":
+      return z.boolean()
+    case "null":
+      return z.null()
+    case "object":
+      return z.record(z.string(), z.unknown())
+    default:
+      return z.unknown()
+  }
+}
+
+/** A zod object for a JSON Schema object: its properties, in order, with their descriptions; a property not
+ *  `required` defaults to its `default`, else `null`. `name` is unused (Python names its model). */
+export function modelFromSchema(
+  _name: string,
+  schema: Record<string, unknown>,
+): z.ZodObject<Record<string, z.ZodType>> {
+  const required = Array.isArray(schema.required) ? schema.required : []
+  const properties = isPlainObject(schema.properties) ? schema.properties : {}
+  const shape: Record<string, z.ZodType> = {}
+  for (const [key, value] of Object.entries(properties)) {
+    const prop = isPlainObject(value) ? value : {}
+    let field = zodType(prop)
+    if (typeof prop.description === "string") field = field.describe(prop.description)
+    if (!required.includes(key)) field = field.default(prop.default ?? null)
+    shape[key] = field
+  }
+  return z.object(shape)
+}
+
+/**
+ * A tool that runs `spec` in the office: one `tool_call` request per call. The model sees `spec.parameters`
+ * unchanged; Yian checks a call against it, then `modelFromSchema` fills the defaults.
+ *
+ * An error reply throws `ReportedToolError` (`error: <message>`), which an AGENT's model reads as the call's result.
+ */
+export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionTool {
+  return tool({
+    name: spec.name,
+    description: spec.description || spec.name,
+    parameters: modelFromSchema(`${spec.name}_args`, spec.parameters),
+    // The job's schema already checked that the parameters are a JSON object.
+    parametersJsonSchema: spec.parameters as JsonObject,
+    execute: async (args) => {
+      try {
+        const reply = await rpc.request("tool_call", { group, name: spec.name, args })
+        return reply.result ?? null
+      } catch (error) {
+        if (isInstance(error, RemoteError)) throw new ReportedToolError(`error: ${error.message}`)
+        throw error
+      }
+    },
+  })
+}
+
+/** Yian's `ask_user` handler, answered by the office through an `ask_user` request with the six `ASK_KEYS`. */
+export function askUserStub(rpc: Rpc): AskUserHandler {
+  return async ({ question, questions, answerSchema, title, nodeId, options }) => {
+    const request = {
+      question: question ?? null,
+      questions: questions ?? null,
+      answer_schema: answerSchema ?? null,
+      title: title ?? null,
+      node_id: nodeId ?? null,
+      options: options ?? null,
+    }
+    try {
+      return (await rpc.request("ask_user", { request })).answer ?? null
+    } catch (error) {
+      if (isInstance(error, RemoteError)) throw new Error(`ask_user failed: ${error.message}`)
+      throw error
+    }
+  }
 }
 
 /** A tool the office runs for a worker: its declared description and schema, and the call itself. */

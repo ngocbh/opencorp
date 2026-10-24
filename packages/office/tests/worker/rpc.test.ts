@@ -1,19 +1,25 @@
 /** Worker requests: the office answers each with its handlers, checked against the job, with value-free errors. */
 import { expect, test } from "bun:test"
 import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
+import { isReportedToolError, ToolSet } from "@ngocbh/yian/tools"
+import { z } from "zod"
 import { ChannelClosed, FrameTooLarge, type Channel, type Frame } from "../../src/worker/channel.ts"
-import { groupSpecs } from "../../src/worker/job.ts"
+import { groupSpecs, toolSpec } from "../../src/worker/job.ts"
 import {
   answerRequest,
   ASK_KEYS,
   type AskRequest,
+  askUserStub,
   BaseHandlers,
   isRequest,
+  modelFromSchema,
   type OfficeTool,
+  RemoteError,
+  remoteTool,
   replyTo,
   type RpcLog,
 } from "../../src/worker/rpc.ts"
-import { workerFor } from "./helpers.ts"
+import { officeEnd, workerFor } from "./helpers.ts"
 
 /** A tool taking string `properties`, all required, that runs `call`. */
 function tool(call: (args: Record<string, unknown>) => unknown, properties = ["text"]): OfficeTool {
@@ -398,4 +404,215 @@ test("reply to never rejects", async () => {
   const ignored = channel()
   await replyTo(ignored.channel, { type: "toString", id: 7 }, handlers, worker)
   expect(ignored.sent).toEqual([])
+})
+
+const shout: OfficeTool = {
+  description: "Return text in capitals.",
+  parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+  call: (args) => String(args.text).toUpperCase(),
+}
+
+/** An office tool with one required argument `key` of JSON Schema `schema`, recording each value it gets. */
+function taking(key: string, schema: Record<string, unknown>): { seen: unknown[]; tool: OfficeTool } {
+  const seen: unknown[] = []
+  const parameters = { type: "object", properties: { [key]: schema }, required: [key] }
+  return { seen, tool: { description: "Take a value.", parameters, call: (args) => void seen.push(args[key]) } }
+}
+
+/** What `promise` rejects with; fails if it resolves. */
+async function rejection(promise: Promise<unknown>): Promise<unknown> {
+  return promise.then(
+    () => {
+      throw new Error("expected a rejection")
+    },
+    (error: unknown) => error,
+  )
+}
+
+test("a remote tool runs in the office", async () => {
+  const rpc = await officeEnd(new BaseHandlers({ tools: { toolbox: { shout } } }))
+  const tool = remoteTool(rpc, "toolbox", toolSpec("shout", shout))
+  expect([tool.name, tool.description]).toEqual(["shout", "Return text in capitals."])
+  expect(await new ToolSet({ toolbox: [tool] }).invoke("shout", { text: "hi" })).toBe("HI")
+})
+
+test("a remote tool sends validated args with defaults", async () => {
+  const seen: unknown[][] = []
+  const readFile: OfficeTool = {
+    description: "Read a file.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        offset: { type: "integer", default: 0 },
+        limit: { anyOf: [{ type: "integer" }, { type: "null" }], default: null },
+      },
+      required: ["path"],
+    },
+    call: ({ path, offset, limit }) => {
+      seen.push([path, offset, limit])
+      return "ok"
+    },
+  }
+  const rpc = await officeEnd(new BaseHandlers({ tools: { workspace: { read_file: readFile } } }))
+  const tools = new ToolSet({ workspace: [remoteTool(rpc, "workspace", toolSpec("read_file", readFile))] })
+  expect(await tools.invoke("read_file", { path: "a.txt", limit: 3 })).toBe("ok")
+  const error = await rejection(tools.invoke("read_file", { offset: 1 }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect(String((error as Error).message)).toContain("path")
+  expect(seen).toEqual([["a.txt", 0, 3]])
+})
+
+test("an office tool error is the tool result", async () => {
+  const boom: OfficeTool = {
+    ...shout,
+    description: "Fail.",
+    call: () => {
+      throw new Error("no grant for boom")
+    },
+  }
+  const handlers = new BaseHandlers({ tools: { toolbox: { boom } } })
+  // The job grants shout too, so the handlers, which lack it, refuse it.
+  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { boom, shout } }) })
+  const rpc = await officeEnd(handlers, { worker })
+  const tools = new ToolSet({
+    toolbox: [remoteTool(rpc, "toolbox", toolSpec("boom", boom)), remoteTool(rpc, "toolbox", toolSpec("shout", shout))],
+  })
+  const failed = await rejection(tools.invoke("boom", { text: "x" }))
+  expect(isReportedToolError(failed)).toBe(true)
+  expect((failed as Error).message).toBe("error: no grant for boom")
+  const missing = await rejection(tools.invoke("shout", { text: "x" }))
+  expect(isReportedToolError(missing)).toBe(true)
+  expect((missing as Error).message).toBe("error: no tool 'shout' in group 'toolbox'")
+})
+
+test("ask user sends the six keys and returns the answer", async () => {
+  class Answering extends BaseHandlers {
+    request: AskRequest | undefined
+    override askUser(_worker: unknown, request: AskRequest): unknown {
+      this.request = request
+      return "Paris"
+    }
+  }
+  const handlers = new Answering()
+  const asking = new ToolSet({ ask_user: askUserStub(await officeEnd(handlers)) })
+  expect(await asking.invoke("ask_user", { question: "Which city?", options: ["Paris", "Rome"] })).toBe("Paris")
+  expect(handlers.request).toEqual({
+    question: "Which city?",
+    questions: null,
+    answer_schema: null,
+    title: null,
+    node_id: null,
+    options: ["Paris", "Rome"],
+  })
+  const nobody = new ToolSet({ ask_user: askUserStub(await officeEnd(new BaseHandlers())) })
+  await expect(nobody.invoke("ask_user", { question: "Hello?" })).rejects.toThrow(
+    "ask_user failed: nobody is here to answer",
+  )
+})
+
+test("model from schema covers the json types", () => {
+  const model = modelFromSchema("args", {
+    type: "object",
+    required: ["name"],
+    properties: {
+      name: { type: "string", description: "Who." },
+      count: { type: "integer", default: 2 },
+      ratio: { type: "number" },
+      on: { type: "boolean" },
+      tags: { type: "array", items: { type: "string" } },
+      extra: { type: "object" },
+      mode: { enum: ["a", "b"] },
+      either: { type: ["string", "null"] },
+      maybe: { anyOf: [{ type: "integer" }, { type: "null" }], default: null },
+    },
+  })
+  const value = model.parse({ name: "x", ratio: 0.5, on: true, tags: ["t"], extra: { k: 1 }, mode: "a", either: null })
+  expect(value).toEqual({
+    name: "x",
+    count: 2,
+    ratio: 0.5,
+    on: true,
+    tags: ["t"],
+    extra: { k: 1 },
+    mode: "a",
+    either: null,
+    maybe: null,
+  })
+  const json = z.toJSONSchema(model, { unrepresentable: "any" })
+  expect((json.properties?.name as { description?: string }).description).toBe("Who.")
+  for (const bad of [{}, { name: "x", tags: "t" }, { name: "x", mode: "c" }, { name: "x", count: "many" }]) {
+    expect(model.safeParse(bad).success).toBe(false)
+  }
+  expect(model.parse({ name: "x", count: 2n ** 64n }).count).toBe(2n ** 64n)
+})
+
+test("concurrent requests get their own replies", async () => {
+  const slow: OfficeTool = {
+    description: "Echo after a delay.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string" }, delay: { type: "number" } },
+      required: ["text", "delay"],
+    },
+    call: ({ text, delay }) => new Promise((resolve) => setTimeout(() => resolve(text), Number(delay))),
+  }
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { slow } } }), { concurrent: true })
+  const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("slow", slow))] })
+  const order: string[] = []
+  const run = async (text: string, delay: number) => {
+    const result = await tools.invoke("slow", { text, delay })
+    order.push(text)
+    return [text, result] as const
+  }
+  expect(Object.fromEntries(await Promise.all([run("a", 300), run("b", 0)]))).toEqual({ a: "a", b: "b" })
+  expect(order).toEqual(["b", "a"])
+})
+
+test("a forged frame through the channel is refused", async () => {
+  const ran: string[] = []
+  const wipe: OfficeTool = { description: "Wipe.", call: () => void ran.push("wipe") }
+  const handlers = new BaseHandlers({ tools: { toolbox: { shout }, admin: { wipe } } })
+  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout } }) })
+  const rpc = await officeEnd(handlers, { worker })
+  const error = await rejection(rpc.request("tool_call", { group: "admin", name: "wipe", args: {} }))
+  expect(error).toBeInstanceOf(RemoteError)
+  expect([(error as RemoteError).code, (error as RemoteError).message]).toEqual([
+    "failed",
+    "no tool 'wipe' in group 'admin'",
+  ])
+  expect(ran).toEqual([])
+})
+
+test("a reply that cannot be sent becomes a failed reply", async () => {
+  const cyclic: OfficeTool = {
+    description: "Return a cycle.",
+    call: () => {
+      const loop: Record<string, unknown> = {}
+      loop.self = loop
+      return loop
+    },
+  }
+  const { calls, log } = recorder()
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { cyclic } } }), { log })
+  const tools = new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("cyclic", cyclic))] })
+  const error = await rejection(tools.invoke("cyclic", {}))
+  expect(isReportedToolError(error)).toBe(true)
+  expect((error as Error).message).toBe("error: the reply could not be sent (TypeError)")
+  expect(calls).toEqual([["WARNING", "worker could not answer a tool_call request: TypeError"]])
+})
+
+test("bigint arguments reach the office tool", async () => {
+  const { seen, tool } = taking("n", { type: "integer" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take: tool } } }))
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", tool))] }).invoke("take", { n: 2n ** 64n })
+  expect(seen).toEqual([2n ** 64n])
+})
+
+test("a model written $v key reaches the office tool", async () => {
+  const { seen, tool } = taking("payload", { type: "object" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take: tool } } }))
+  const payload = { $v: "x", value: 1 }
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", tool))] }).invoke("take", { payload })
+  expect(seen).toEqual([payload])
 })
