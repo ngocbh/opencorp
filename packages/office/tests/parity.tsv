@@ -587,6 +587,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/install/provider_setup.test.ts::a clack prompt and a line read share one input	design §9.1: the fallbacks and clack read one stdin	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::a secret needs a terminal on stdout too	design §9.1: refused when stdin or stdout isn't a TTY	O2-13a
 —	new	packages/office/tests/install/provider_setup.test.ts::a secret on a dumb terminal is still read masked	design §9.1: clack's password() on any TTY; the key stays masked	O2-13a
+—	new	packages/office/tests/install/provider_setup.test.ts::on a real dumb terminal a numbered list after a secret gets its answer	design §9.1: Bun's tty stream stops feeding a paused reader once clack has used it, so line reads flow	O2-13a
 —	new	packages/office/tests/perm/monitor.test.ts::a bigint result holding a digit secret is redacted	design §6.3 and O1-12's handoff: results keep bigint through JSON so redact sees every digit	O1-13
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where holds an integer past the safe range grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
 —	new	packages/office/tests/perm/monitor.test.ts::a grant whose where key is proto grants nothing	#358, D15: a grant the schema can't read exactly grants nothing	O1-15
