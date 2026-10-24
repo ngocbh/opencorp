@@ -149,10 +149,10 @@ runs/test_reason_cut.py	open	—	—	O4b-7
 runs/test_records.py	open	—	—	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
-sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts, shell stand-ins and Bun for WorkspaceTools and the interpreter	O1-10
+sandbox/test_escape.py	ported	packages/office/tests/sandbox/escape.test.ts	rule 1: through run.ts; file tools through the real __fs-helper under its profile, shell stand-ins for the rest; Bun for the interpreter	O1-10
 sandbox/test_escape.py::test_macos_other_process_environ_is_hidden	changed	packages/office/tests/sandbox/escape.test.ts::macos other process environ is readable	§6.1: Seatbelt doesn't gate KERN_PROCARGS2; the Python xfail pinned as the known leak	O1-10
 sandbox/test_escapees.py	ported	packages/office/tests/sandbox/escapees.test.ts	—	O1-10
-sandbox/test_fileops.py	open	—	—	O1-11
+sandbox/test_fileops.py	ported	packages/office/tests/sandbox/fs_helper.test.ts	D11: JS RegExp after a Python-forms pre-pass (ASCII \w \d \s \b); fixed texts for request, argument and decode errors; NUL and surrogate checks before each op's own; FIFOs skipped; real bounds in the cap tests	O1-11
 sandbox/test_policy.py	ported	packages/office/tests/sandbox/policy.test.ts	the two pre-rename home cases dropped (D24)	O1-9
 sandbox/test_run.py	ported	packages/office/tests/sandbox/run.test.ts	setsid bound 3 s → 10 s: the 2 s reader grace can't tell a missed sweep apart; gone() carries the test	O1-10
 sandbox/test_run.py::test_group_is_killed_before_the_leader_is_reaped	changed	packages/office/tests/sandbox/run.test.ts::on timeout the leader is killed before it is reaped	D12: kill before awaiting; both paths tested	O1-10
@@ -253,6 +253,7 @@ worker/test_resume.py	open	—	—	O4a-2
 worker/test_rpc.py	open	—	—	O3-2
 worker/test_spawn.py	open	—	—	O3-4
 worker/test_steering.py	open	—	—	O3-3
+—	new	packages/cli/test/entry.test.ts::the fs helper imports only node builtins	§6.2	O1-11
 —	new	packages/office/tests/auth/devices.test.ts::a device name with another hash or a hash someone lists is refused	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a failed commit restores the person file	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
 —	new	packages/office/tests/auth/devices.test.ts::a refused change never echoes a value	devices.py has no unit test file in Python (its route tests port with O2-3); design §6.4	O1-14
@@ -380,6 +381,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/perm/redaction.test.ts::repr matches python on every code point	design §6.3 and §1.4: hand-written repr, Python 3.12 as the oracle	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::strip and splitlines follow python whitespace and line breaks	design §6.3: the stripped value and its lines as Python splits them	O1-12
 —	new	packages/office/tests/perm/redaction.test.ts::values under secret keys are redacted at any depth	design §6.3: arguments named after the asset's secret keys (Python covers it only through Monitor.call)	O1-12
+—	new	packages/office/tests/platform.test.ts::helperCommand in a checkout runs fs_helper.ts with the no-autoload flags	§2.5 checkout form, 2026-10-23 design fix	O1-11
 —	new	packages/office/tests/platform.test.ts::listAllPids includes this process and a child	§2.2, D17	O1-10
 —	new	packages/office/tests/platform.test.ts::sandboxCheck answers for this process	§2.2, D17	O1-10
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
@@ -388,6 +390,26 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the compiled helper is bound read only before the root is remounted	§2.5, O0-10 P7	O1-9
 —	new	packages/office/tests/sandbox/escapees.test.ts::a process under the canary profile is found and killed	§6.6	O1-10
 —	new	packages/office/tests/sandbox/escapees.test.ts::sandboxCheck tells the canary pair apart	D17	O1-10
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::a bom is kept by read	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::a planted env file and bunfig preload in the workspace are not read	§6 rule 2	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::bad arguments are error replies	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::edit keeps a bom	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::edit refuses a file that is not utf8 and leaves it unchanged	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::edit writes dollar signs literally	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::glob follows fnmatch	§2.5, CPython fnmatch port	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::list marks folders but not links to them and sorts by code point	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::os errors read as python strerror texts	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::python regex forms are translated	D11 regex dialect	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::read handles offsets, limits and python line breaks	§2.5 today's replies	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::requests that are not objects or name no op are error replies	§2.5 reply contract	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::search caps matches and lines	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::search skips binary, big and unreadable files	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::search walks like os walk	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::strings that are not well formed are refused	§2.5	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::the helper does not run under the shell profile	§6 rule 4: helper rules only in its profile	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::the helper reads and writes inside the workspace under its own profile	§2.5, §6.2	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::the read cap counts code points	§2.5 today's bounds	O1-11
+—	new	packages/office/tests/sandbox/fs_helper.test.ts::write counts utf8 bytes and makes parents	§2.5	O1-11
 —	new	packages/office/tests/sandbox/policy.test.ts::a folder beside the office paths is fine	§6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a policy rebuilt with a helper keeps its office paths and checks	§2.5, §6.1	O1-9
 —	new	packages/office/tests/sandbox/policy.test.ts::a relative office path refuses every workspace	§6.1 (fail closed)	O1-9
@@ -402,6 +424,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/sandbox/run.test.ts::a throwing tracking hook still kills the call	§6.1: any error kills and cleans up	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::stdin is ignored unless given	§6.1	O1-10
 —	new	packages/office/tests/sandbox/run.test.ts::the group is killed after a leader that exits by itself	D12: the documented window	O1-10
+—	new	packages/office/tests/sandbox/run.test.ts::the helper is refused inside the office home	§2.5	O1-11
 —	new	packages/office/tests/sandbox/run.test.ts::the tracking hook sees the leader while it runs and is cleaned up after the kill	§6.6: call rows recorded through the hook	O1-10
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::a shell profile equals the Python profile byte for byte	§6.1 golden strings	O1-9
 —	new	packages/office/tests/sandbox/seatbelt.test.ts::a shell profile has no helper rule	§2.5 helper rules only in the helper's profile	O1-9
