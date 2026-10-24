@@ -38,7 +38,7 @@ export interface Route<C> {
   body?: z.ZodType
   /** The reply schema; its `parse` fills defaults. */
   reply?: z.ZodType
-  /** Returns a JSON value: `undefined` (without a reply schema) is a 500. */
+  /** Returns a JSON value or a `RawReply`: `undefined` (without a reply schema) is a 500. */
   handler(ctx: C, params: Params, body: unknown): unknown | Promise<unknown>
 }
 
@@ -78,6 +78,50 @@ function send(res: ServerResponse, status: number, text: string, headers: Record
   } catch {
     res.destroy()
   }
+}
+
+/** A reply the handler shapes itself, sent as is (no reply schema): `status`, `headers` (lower-case names), and a
+ *  body that is either text, sent whole with its length (`content-type` defaults to `application/json`), or chunks
+ *  streamed as they come. A streamed body that waits must end once `ctx.signal` aborts: an async generator can't be
+ *  stopped from outside while it awaits. */
+export class RawReply {
+  constructor(
+    readonly status: number,
+    readonly headers: Readonly<Record<string, string>>,
+    readonly body: string | AsyncIterable<string>,
+  ) {}
+}
+
+/** Resolves once `res` can take more data or has closed. */
+function drained(res: ServerResponse): Promise<void> {
+  return new Promise((resolve) => {
+    if (res.destroyed) return resolve()
+    const done = () => {
+      res.off("drain", done)
+      res.off("close", done)
+      resolve()
+    }
+    res.on("drain", done)
+    res.on("close", done)
+  })
+}
+
+/** Sends `reply` with `extra` headers added: text whole through `send`, a stream chunk by chunk, waiting while
+ *  the client isn't reading. HEAD gets the head only and never starts the stream. An error from the stream
+ *  rejects, after the head has gone out. */
+async function sendRaw(res: ServerResponse, reply: RawReply, extra: Record<string, string>): Promise<void> {
+  const headers = { ...reply.headers, ...extra }
+  if (typeof reply.body === "string") return send(res, reply.status, reply.body, headers)
+  res.writeHead(reply.status, headers)
+  if (res.req.method === "HEAD") {
+    res.end()
+    return
+  }
+  for await (const chunk of reply.body) {
+    if (res.destroyed) break
+    if (!res.write(chunk)) await drained(res)
+  }
+  if (!res.destroyed) res.end()
 }
 
 /** An `ApiError` JSON body. */
@@ -282,10 +326,19 @@ export function requestListener<C>(
       if (!controller.signal.aborted) send(res, status, text, headers)
     }
     const method = req.method ?? "GET"
+    let route: Route<C> | undefined
+    // Guarded: a throwing log hook must not make the listener reject.
+    const logInternal = (error: unknown) => {
+      try {
+        // The type only: a message (or a settable `.name`) can quote a secret or a request's input.
+        const type = error instanceof Error ? error.constructor.name : typeof error
+        const where = `${method} ${route?.path ?? "(no route)"}`
+        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${type}`))
+      } catch {}
+    }
     // A body left unread, or read only in part, stays on the connection, so it can't be reused: what follows on
     // it would start inside that body. Reading the whole body clears this.
     let unread: Record<string, string> = hasBody(req) ? { connection: "close" } : {}
-    let route: Route<C> | undefined
     try {
       const target = originForm(req.url ?? "/")
       const q = target.indexOf("?")
@@ -328,10 +381,23 @@ export function requestListener<C>(
         body = parseBody(route.body, buf)
       }
       const value = await route.handler(ctx, params!, body)
+      if (value instanceof RawReply) {
+        if (!controller.signal.aborted) await sendRaw(res, value, unread)
+        return
+      }
       const text = JSON.stringify(route.reply ? route.reply.parse(value) : value) as string | undefined
       if (text === undefined) throw new TypeError("the handler returned no JSON value")
       reply(200, text, unread)
     } catch (error) {
+      if (res.headersSent) {
+        // No reply can follow a head: the client sees the connection close without the last chunk.
+        const left = controller.signal.aborted
+        // Bun sends what was written only at the end of the event loop turn, and a destroy before then drops it.
+        await new Promise((resolve) => setImmediate(resolve))
+        res.destroy()
+        if (!left) logInternal(error)
+        return
+      }
       if (error instanceof HttpError) return reply(error.status, apiError(error.code, error.message), unread)
       // Store messages name ids, never values.
       if (error instanceof NotFound) return reply(404, apiError("not_found", error.message), unread)
@@ -339,13 +405,8 @@ export function requestListener<C>(
       // nor logged.
       if (controller.signal.aborted) return
       reply(500, apiError("internal_error", "internal error"), { connection: "close" })
-      // After the reply, and guarded: a throwing log hook must neither leave the client waiting nor reject.
-      try {
-        // The type only: a message (or a settable `.name`) can quote a secret or a request's input.
-        const type = error instanceof Error ? error.constructor.name : typeof error
-        const where = `${method} ${route?.path ?? "(no route)"}`
-        options.log(logLine("ERROR", "opencorp.daemon.http", `internal error on ${where}: ${type}`))
-      } catch {}
+      // After the reply, so a throwing log hook can't leave the client waiting.
+      logInternal(error)
     }
   }
 }

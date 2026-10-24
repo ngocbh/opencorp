@@ -11,6 +11,7 @@ import {
   LIMITS,
   type Limits,
   MAX_BODY,
+  RawReply,
   type RequestInfo,
   type Route,
   createServer,
@@ -26,7 +27,7 @@ import {
 } from "../../src/daemon/sockets.ts"
 import { NotFound } from "../../src/store/store.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
-import { Conn, exchange, parse, raw, request, serve as serveRoutes } from "./helpers.ts"
+import { Conn, type ServeOptions, exchange, parse, raw, request, serve as serveRoutes } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -36,7 +37,7 @@ type Ctx = { person: string; signal: AbortSignal; query: URLSearchParams }
 const defaultContext = (info: RequestInfo): Ctx => ({ person: "ngocbh", signal: info.signal, query: info.query })
 
 /** Serves `routes` with the test context unless `options` gives another. */
-const serve = (routes: readonly Route<Ctx>[], options: Partial<Parameters<typeof serveRoutes<Ctx>>[1]> = {}) =>
+const serve = (routes: readonly Route<Ctx>[], options: Partial<ServeOptions<Ctx>> = {}) =>
   serveRoutes(routes, { context: defaultContext, ...options })
 
 function mode(p: string): number {
@@ -783,5 +784,208 @@ describe("bodies", () => {
     expect(second.head.toLowerCase()).not.toContain("connection: close")
     read.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
     expect((await read.response()).status).toBe(200)
+  })
+})
+
+/** Resolves once `signal` aborts (at once if it already has). */
+function aborted(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve()
+    else signal.addEventListener("abort", () => resolve(), { once: true })
+  })
+}
+
+/** A raw `net` connection to `sock`, destroyed when the current test finishes. */
+function connect(sock: string): net.Socket {
+  const socket = net.connect(sock)
+  onTestFinished(() => socket.destroy())
+  return socket
+}
+
+describe("raw replies", () => {
+  test("a raw reply sends its own status headers and text", async () => {
+    const json: Route<Ctx> = {
+      method: "GET",
+      path: "/conflict",
+      handler: () => new RawReply(409, { "x-a": "b" }, '{"k":1}'),
+    }
+    const text: Route<Ctx> = {
+      method: "GET",
+      path: "/text",
+      handler: () => new RawReply(200, { "content-type": "text/plain" }, "hello"),
+    }
+    const { sock } = await serve([json, text])
+    const r = await request(sock, "GET", "/conflict")
+    expect(r.status).toBe(409)
+    expect(r.headers["content-type"]).toBe("application/json")
+    expect(r.headers["x-a"]).toBe("b")
+    expect(r.headers["content-length"]).toBe("7")
+    expect(r.text).toBe('{"k":1}')
+    const t = await request(sock, "GET", "/text")
+    expect([t.status, t.headers["content-type"], t.text]).toEqual([200, "text/plain", "hello"])
+  })
+
+  test("a streamed reply sends each chunk as it is made", async () => {
+    let release!: () => void
+    const released = new Promise<void>((resolve) => (release = resolve))
+    const stream: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            yield "a"
+            await released
+            yield "b"
+          })(),
+        ),
+    }
+    const { sock } = await serve([stream])
+    const seen: string[] = []
+    const result = await new Promise<{ headers: http.IncomingHttpHeaders; beforeRelease: string }>(
+      (resolve, reject) => {
+        let beforeRelease = ""
+        const req = http.request({ socketPath: sock, method: "GET", path: "/s", agent: false }, (res) => {
+          res.on("data", (part: Buffer) => {
+            seen.push(part.toString())
+            if (!beforeRelease) {
+              beforeRelease = seen.join("")
+              release()
+            }
+          })
+          res.on("error", reject)
+          res.on("end", () => resolve({ headers: res.headers, beforeRelease }))
+        })
+        onTestFinished(() => req.destroy())
+        req.on("error", reject)
+        req.end()
+      },
+    )
+    expect(result.beforeRelease).toBe("a")
+    expect(seen.join("")).toBe("ab")
+    expect(result.headers["transfer-encoding"]).toBe("chunked")
+  })
+
+  test("a streamed reply waits while the client is not reading", async () => {
+    let pulls = 0
+    let finished = false
+    const chunk = "x".repeat(64 * 1024)
+    const forever: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: (ctx) =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            try {
+              while (!ctx.signal.aborted) {
+                pulls++
+                yield chunk
+              }
+            } finally {
+              finished = true
+            }
+          })(),
+        ),
+    }
+    const { sock } = await serve([forever])
+    const socket = connect(sock)
+    socket.on("error", () => {})
+    socket.write("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    socket.pause()
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const early = pulls
+    expect(early).toBeGreaterThan(0)
+    expect(early).toBeLessThanOrEqual(64)
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(pulls).toBe(early)
+    socket.destroy()
+    await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+  })
+
+  test("a streamed body ends when the client leaves", async () => {
+    let finished = false
+    const waiting: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: (ctx) =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            try {
+              yield "a"
+              await aborted(ctx.signal)
+            } finally {
+              finished = true
+            }
+          })(),
+        ),
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([waiting], { log: (line) => lines.push(line) })
+    const conn = await Conn.open(sock)
+    conn.send("GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    await waitFor(() => conn.socket.bytesRead > 0, { timeout: 9000, what: "the first chunk" })
+    conn.socket.destroy()
+    await waitFor(() => finished, { timeout: 9000, what: "the body to finish" })
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toEqual([])
+  })
+
+  test("an error in a streamed reply closes the connection and logs its type", async () => {
+    class StreamBroke extends Error {}
+    const broken: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/plain" },
+          (async function* () {
+            yield "a"
+            throw new StreamBroke("secret detail")
+          })(),
+        ),
+    }
+    const lines: string[] = []
+    const { sock, settled } = await serve([broken], { log: (line) => lines.push(line) })
+    const got = await raw(sock, "GET /s HTTP/1.1\r\nhost: office\r\n\r\n")
+    expect(got.closed).toBe(true)
+    const { status, body } = parse(got.text)
+    expect(status).toBe(200)
+    expect(body).toStartWith("1\r\na\r\n")
+    expect(body).not.toContain("0\r\n\r\n")
+    await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toEndWith("internal error on GET /s: StreamBroke")
+    expect(lines[0]).not.toContain("secret")
+  })
+
+  test("head on a streamed reply sends no body and never starts it", async () => {
+    let pulls = 0
+    const stream: Route<Ctx> = {
+      method: "GET",
+      path: "/s",
+      handler: () =>
+        new RawReply(
+          200,
+          { "content-type": "text/event-stream", "cache-control": "no-cache" },
+          (async function* () {
+            pulls++
+            yield "a"
+          })(),
+        ),
+    }
+    const { sock } = await serve([stream])
+    const r = await exchange(sock, "HEAD", "/s")
+    expect(r.status).toBe(200)
+    expect(r.head.toLowerCase()).toContain("\r\ncontent-type: text/event-stream")
+    expect(r.head.toLowerCase()).toContain("\r\ncache-control: no-cache")
+    expect(r.body).toBe("")
+    expect(pulls).toBe(0)
   })
 })

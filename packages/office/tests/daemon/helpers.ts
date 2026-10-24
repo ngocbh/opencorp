@@ -8,14 +8,17 @@ import { type Limits, type RequestInfo, type Route, createServer, requestListene
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { shortDir } from "../helpers.ts"
 
+/** How `serve` builds each request's context, where its log lines go, and its server's limits. */
+export type ServeOptions<C> = {
+  context: (info: RequestInfo) => C | Promise<C>
+  log?: (line: string) => void
+  limits?: Limits
+}
+
 /** Serves `routes` on a unix socket until the current test finishes; `settled` counts answered requests. */
 export async function serve<C>(
   routes: readonly Route<C>[],
-  {
-    context,
-    log = () => {},
-    limits,
-  }: { context: (info: RequestInfo) => C | Promise<C>; log?: (line: string) => void; limits?: Limits },
+  { context, log = () => {}, limits }: ServeOptions<C>,
 ): Promise<{ sock: string; server: http.Server; settled: () => number }> {
   let settled = 0
   const listener = requestListener(routes, { context, log })
