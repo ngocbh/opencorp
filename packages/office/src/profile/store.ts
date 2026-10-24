@@ -1,8 +1,11 @@
 /** A person's profile.md in the company clone as a yian MarkdownStore, versioned by git blob id. */
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
+import fs from "node:fs"
+import path from "node:path"
+import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
 import type { JsonObject } from "@ngocbh/yian/run"
 import { Handle } from "@opencorp/protocol"
-import { type CompanyGit, CompanyGitError, WHITESPACE } from "../company/git.ts"
+import { type CompanyGit, CompanyGitError, type LockedGit, WHITESPACE } from "../company/git.ts"
 
 /** The git blob id of empty content. */
 export const EMPTY_BLOB = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
@@ -57,9 +60,9 @@ function systemError(message: string, syscall: "read" | "write", cause?: unknown
  * `people/<handle>/profile.md` in the company clone, as a yian `MarkdownStore`.
  *
  * Versions are git blob ids, and every version handed out is committed, so it stays readable.
- * The constructor does no I/O: the office builds one per request.
+ * Every write is a commit. The constructor does no I/O: the office builds one per request.
  */
-export class GitProfileStore {
+export class GitProfileStore implements MarkdownStore {
   readonly git: CompanyGit
   readonly handle: string
   readonly path: string
@@ -99,6 +102,121 @@ export class GitProfileStore {
     return [this.#decode(data), current]
   }
 
+  /**
+   * Replaces the profile and commits it if `baseVersion` is current; returns the new version.
+   *
+   * If a write with the same `provenance.commit_id` was already committed for this profile,
+   * returns its version and writes nothing (a retried write). Throws a TypeError for non-strings,
+   * `MarkdownVersionMismatch` for a stale base, a RangeError for a bad commit id, a lone surrogate
+   * or a profile path through a symlink, and a Node system error when git fails.
+   */
+  async write(
+    text: string,
+    { baseVersion, provenance = null }: { baseVersion: string; provenance?: JsonObject | null },
+  ): Promise<string> {
+    if (typeof text !== "string" || typeof baseVersion !== "string") {
+      throw new TypeError("text and base_version must be strings")
+    }
+    const commitId = commitIdOf(provenance)
+    if (!text.isWellFormed()) throw new RangeError("text holds a lone surrogate, which has no UTF-8 encoding")
+    const data = Buffer.from(text, "utf8")
+    try {
+      return await this.git.locked((locked) => this.#write(locked, data, baseVersion, provenance, commitId))
+    } catch (error) {
+      if (error instanceof CompanyGitError) throw systemError(error.message, "write", error)
+      throw error
+    }
+  }
+
+  async #write(
+    locked: LockedGit,
+    data: Buffer,
+    baseVersion: string,
+    provenance: JsonObject | null,
+    commitId: string | null,
+  ): Promise<string> {
+    if (commitId !== null) {
+      const done = await this.#committed(commitId)
+      if (done !== null) return done
+    }
+    await locked.commitHandEdits() // a pending hand edit is the current version
+    const current = await this.#current()
+    if (current !== baseVersion) throw new MarkdownVersionMismatch(baseVersion, current)
+    const message = commitMessage(this.handle, provenance)
+    const target = this.target()
+    const previous = readIfExists(target)
+    if ((previous === null ? EMPTY_BLOB : blobId(previous)) !== current) {
+      // A hand edit since commitHandEdits(), or bytes git normalizes (.gitattributes): let git decide which.
+      await locked.commitHandEdits()
+      const now = await this.#current()
+      if (now !== current) throw new MarkdownVersionMismatch(baseVersion, now)
+    }
+    this.#put(target, data)
+    try {
+      await locked.commit([this.path], message)
+    } catch (error) {
+      throw error
+    }
+    return await this.#current()
+  }
+
+  /**
+   * The version a write with `commitId` committed for this profile, or null if none did.
+   *
+   * Throws a RangeError for a commit id that isn't one token, and a Node system error when git fails.
+   */
+  async committed(commitId: string): Promise<string | null> {
+    const id = commitIdOf({ commit_id: commitId })!
+    try {
+      return await this.#committed(id)
+    } catch (error) {
+      if (error instanceof CompanyGitError) throw systemError(error.message, "read", error)
+      throw error
+    }
+  }
+
+  /** The profile's blob id in the newest commit with a `Commit-Id: <commitId>` line, or null. */
+  async #committed(commitId: string): Promise<string | null> {
+    const sha = await this.git.findCommit(this.path, `Commit-Id: ${commitId}`)
+    return sha === null ? null : ((await this.git.blobId(this.path, sha)) ?? EMPTY_BLOB)
+  }
+
+  /** The profile's path in the clone; a RangeError if it leaves the person's directory. */
+  protected target(): string {
+    const target = path.join(this.git.root, this.path)
+    const person = path.join(fs.realpathSync(this.git.root), "people", this.handle)
+    if (lstatIfExists(target)?.isSymbolicLink() || fs.realpathSync(path.dirname(target)) !== person) {
+      throw new RangeError(`${this.path} goes through a symlink; not writing it`)
+    }
+    return target
+  }
+
+  /** Replaces `target` with `data` through a temporary file in the same directory. */
+  #put(target: string, data: Uint8Array): void {
+    // The temp file is made 0600; keep the profile's mode, or git's default for a new file.
+    const existing = lstatIfExists(target)
+    const mode = existing ? existing.mode & 0o777 : 0o644
+    const temporary = path.join(path.dirname(target), `.profile.md.${randomBytes(6).toString("hex")}`)
+    const { O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW } = fs.constants
+    const fd = fs.openSync(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+    let open = true
+    try {
+      fs.fchmodSync(fd, mode) // umask-proof
+      fs.writeFileSync(fd, data)
+      open = false
+      fs.closeSync(fd)
+      fs.renameSync(temporary, target)
+    } catch (error) {
+      try {
+        if (open) fs.closeSync(fd)
+        fs.unlinkSync(temporary)
+      } catch {
+        // the write's error is the one to report
+      }
+      throw error
+    }
+  }
+
   /** The blob id of the profile at HEAD; a missing profile is the empty blob. */
   async #current(): Promise<string> {
     return (await this.git.blobId(this.path)) ?? EMPTY_BLOB
@@ -117,5 +235,25 @@ export class GitProfileStore {
       if (error instanceof TypeError) throw new RangeError(`${this.path} is not UTF-8`)
       throw error
     }
+  }
+}
+
+/** `fs.lstatSync(file)`, or null if it doesn't exist. */
+function lstatIfExists(file: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
+  }
+}
+
+/** The bytes of `file`, or null if it doesn't exist. */
+function readIfExists(file: string): Buffer | null {
+  try {
+    return fs.readFileSync(file)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null
+    throw error
   }
 }

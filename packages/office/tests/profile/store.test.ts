@@ -3,6 +3,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, setDefaultTimeout, test } from "bun:test"
+import { MarkdownVersionMismatch } from "@ngocbh/yian"
 import { CompanyGit } from "../../src/company/git.ts"
 import { blobId, commitMessage, EMPTY_BLOB, GitProfileStore } from "../../src/profile/store.ts"
 import { company, git, recordingGit } from "../company/helpers.ts"
@@ -22,7 +23,16 @@ function setup() {
 }
 
 const subject = (root: string) => git(root, "log", "-1", "--format=%s")
+const count = (root: string) => Number(git(root, "rev-list", "--count", "HEAD"))
 const bytes = (text: string) => new TextEncoder().encode(text)
+const read = (root: string, rel = PROFILE) => fs.readFileSync(path.join(root, rel), "utf8")
+
+/** What `promise` rejects with, or null if it fulfils. */
+const rejection = (promise: Promise<unknown>) =>
+  promise.then(
+    () => null,
+    (caught: unknown) => caught,
+  )
 
 /** `cases` as `test.each` rows labelled with their JSON, so a NUL, a newline or a number prints readably. */
 const labelled = <T>(cases: T[]): [string, T][] => cases.map((c) => [JSON.stringify(c), c])
@@ -138,4 +148,149 @@ test("python whitespace collapses and blanks like python", () => {
   expect(commitMessage("minh", { source: "\x1c\x85" })).toBe("profile(@minh): write")
   expect(commitMessage("minh", { source: "a\x1fb" })).toBe("profile(@minh): a b")
   expect(commitMessage("minh\x1cx", null)).toBe("profile(@minh x): write")
+})
+
+// Writes
+
+test("write commits with the provenance message", async () => {
+  const { root, g, store } = setup()
+  const base = (await store.read())[1]
+  const version = await store.write("# Minh\nterse\n", {
+    baseVersion: base,
+    provenance: { source: "ngocbh via profile manager" },
+  })
+  expect(version).toBe(blobId(bytes("# Minh\nterse\n")))
+  expect(version).toBe((await g.blobId(PROFILE))!)
+  expect(read(root)).toBe("# Minh\nterse\n")
+  expect(subject(root)).toBe("profile(@minh): ngocbh via profile manager")
+  expect(git(root, "status", "--porcelain")).toBe("")
+})
+
+test("stale base raises with both versions and writes nothing", async () => {
+  const { root, store } = setup()
+  const stale = blobId(bytes("old\n"))
+  const head = git(root, "rev-parse", "HEAD")
+  const error = await rejection(store.write("x\n", { baseVersion: stale }))
+  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
+  expect(error).toMatchObject({ expected: stale, current: blobId(bytes(MINH)) })
+  expect(read(root)).toBe(MINH)
+  expect(git(root, "rev-parse", "HEAD")).toBe(head)
+})
+
+test("a hand edit makes the base stale", async () => {
+  const { root, store } = setup()
+  const base = (await store.read())[1]
+  fs.writeFileSync(path.join(root, PROFILE), "# Minh\nby hand\n")
+  const error = await rejection(store.write("# Minh\nby model\n", { baseVersion: base }))
+  expect(error).toBeInstanceOf(MarkdownVersionMismatch)
+  expect((error as MarkdownVersionMismatch).current).toBe(blobId(bytes("# Minh\nby hand\n")))
+  expect(read(root)).toBe("# Minh\nby hand\n")
+  expect(subject(root)).toBe("profile(@minh): hand edit")
+})
+
+test("write with the empty base creates a missing profile", async () => {
+  const { root, g, store } = setup()
+  git(root, "rm", "-q", PROFILE)
+  git(root, "commit", "-q", "-m", "drop")
+  const version = await store.write("# Minh\n", { baseVersion: EMPTY_BLOB })
+  expect(version).toBe((await g.blobId(PROFILE))!)
+  expect(version).toBe(blobId(bytes("# Minh\n")))
+})
+
+test("unchanged text makes no commit", async () => {
+  const { root, store } = setup()
+  const base = (await store.read())[1]
+  const before = count(root)
+  expect(await store.write(MINH, { baseVersion: base })).toBe(base)
+  expect(count(root)).toBe(before)
+})
+
+test("write refuses a symlinked profile", async () => {
+  const { dir, root, store } = setup()
+  const outside = path.join(dir, "outside.md")
+  fs.writeFileSync(outside, MINH)
+  fs.unlinkSync(path.join(root, PROFILE))
+  fs.symlinkSync(outside, path.join(root, PROFILE))
+  const base = (await store.read())[1] // the symlink, committed as a hand edit
+  const error = await rejection(store.write("pwned\n", { baseVersion: base }))
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/symlink/)
+  expect(fs.readFileSync(outside, "utf8")).toBe(MINH)
+})
+
+test("write refuses non strings", async () => {
+  const { store } = setup()
+  const base = (await store.read())[1]
+  await expect(store.write(Buffer.from("x") as unknown as string, { baseVersion: base })).rejects.toThrow(TypeError)
+})
+
+test.each(labelled<unknown>(["", "a b", "a\nCommit-Id: b", 7, "a\x1cb", "a\x85b", "a\0b", "a\ud800"]))(
+  "bad commit id is a range error [%s]",
+  async (_label, commitId) => {
+    const { store } = setup()
+    const base = (await store.read())[1]
+    const error = await rejection(store.write("x\n", { baseVersion: base, provenance: { commit_id: commitId as string } }))
+    expect(error).toBeInstanceOf(RangeError)
+    expect((error as Error).message).toMatch(/commit_id/)
+  },
+)
+
+// Concurrency and pins
+
+test("two concurrent writes with one base one wins", async () => {
+  const { g } = setup()
+  const base = (await new GitProfileStore(g, "minh").read())[1]
+  const results = await Promise.allSettled(
+    ["a", "b"].map((n) => new GitProfileStore(g, "minh").write(`# Minh\n${n}\n`, { baseVersion: base })),
+  )
+  const won = results.filter((r) => r.status === "fulfilled")
+  const lost = results.filter((r) => r.status === "rejected")
+  expect([won.length, lost.length]).toEqual([1, 1])
+  expect(typeof won[0]!.value).toBe("string")
+  expect(lost[0]!.reason).toBeInstanceOf(MarkdownVersionMismatch)
+  expect((await new GitProfileStore(g, "minh").read())[1]).toBe(won[0]!.value)
+})
+
+test("writes leave pinned worktrees alone", async () => {
+  const { g, store } = setup()
+  const pin = await g.pin("HEAD")
+  await store.write("# Minh\nnew\n", { baseVersion: (await store.read())[1] })
+  expect(read(pin)).toBe(MINH)
+})
+
+test("write keeps the file mode", async () => {
+  const { root, store } = setup()
+  fs.chmodSync(path.join(root, PROFILE), 0o644)
+  await store.write("# Minh\nnew\n", { baseVersion: (await store.read())[1] })
+  expect(fs.statSync(path.join(root, PROFILE)).mode & 0o777).toBe(0o644)
+})
+
+// Retried writes
+
+test("same commit id twice makes one commit", async () => {
+  const { root, store } = setup()
+  const base = (await store.read())[1]
+  const first = await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })
+  const before = count(root)
+  expect(await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })).toBe(first)
+  expect(count(root)).toBe(before)
+  expect(await store.committed("c-1")).toBe(first)
+  expect(await store.committed("c-2")).toBeNull()
+})
+
+test("retry after a later write returns its own version", async () => {
+  const { root, store } = setup()
+  const base = (await store.read())[1]
+  const first = await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })
+  await store.write("# Minh\nv2\n", { baseVersion: first })
+  expect(await store.write("# Minh\nv1\n", { baseVersion: base, provenance: { commit_id: "c-1" } })).toBe(first)
+  expect(read(root)).toBe("# Minh\nv2\n")
+})
+
+test("commit ids are per profile", async () => {
+  const { g } = setup()
+  const minh = new GitProfileStore(g, "minh")
+  const boss = new GitProfileStore(g, "ngocbh")
+  await minh.write("# Minh\nv1\n", { baseVersion: (await minh.read())[1], provenance: { commit_id: "c-1" } })
+  expect(await boss.committed("c-1")).toBeNull()
 })
