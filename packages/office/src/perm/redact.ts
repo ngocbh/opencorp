@@ -225,7 +225,7 @@ function scrubAll(value: unknown, keys: Set<string>, needles: Needles): unknown 
 }
 
 /** Python's `json.dumps(value, ensure_ascii=False, default=str)` of a redacted value. */
-function pyJson(value: unknown): string {
+export function pyJson(value: unknown): string {
   if (typeof value === "string") return jsonDumps(value, false)
   if (value === true) return "true"
   if (value === false) return "false"
