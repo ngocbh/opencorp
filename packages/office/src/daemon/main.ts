@@ -9,6 +9,7 @@ import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform
 import { CompanyGit } from "../company/git.ts"
 import { HeadWatcher } from "../company/watch.ts"
 import { EXTENSIONS, type Extension, ExtensionError, loadExtensions } from "../extensions/index.ts"
+import { resolveHome } from "../install/launch.ts"
 import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
 import { DeviceTokens } from "./auth.ts"
@@ -343,25 +344,6 @@ async function run(
     }
   } finally {
     pidfile.release()
-  }
-}
-
-/** `value` as an absolute home path: a leading `~` is the user's home directory, and the nearest existing
- *  ancestor is resolved through its symlinks, with the rest (not created yet) appended. */
-export function resolveHome(value: string): string {
-  const expanded = value === "~" || value.startsWith("~/") ? path.join(os.homedir(), value.slice(1)) : value
-  let dir = path.resolve(expanded)
-  let rest = ""
-  for (;;) {
-    try {
-      return path.join(fs.realpathSync(dir), rest)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      const parent = path.dirname(dir)
-      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === dir) throw error
-      rest = path.join(path.basename(dir), rest)
-      dir = parent
-    }
   }
 }
 

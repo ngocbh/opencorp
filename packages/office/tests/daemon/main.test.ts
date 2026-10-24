@@ -15,12 +15,12 @@ import {
   crashReport,
   main,
   officeLogger,
-  resolveHome,
   trackRequests,
 } from "../../src/daemon/main.ts"
 import { OfficePaths } from "../../src/daemon/office.ts"
 import { OfficeStartError, listenUnix } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
+import { resolveHome } from "../../src/install/launch.ts"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"

@@ -46,11 +46,12 @@ test("a planted temp path is never followed", () => {
   const victim = path.join(dir, "victim")
   fs.writeFileSync(victim, "keep")
   const file = path.join(dir, "svc.plist")
-  fs.symlinkSync(victim, path.join(dir, `.svc.plist.${process.pid}.tmp`))
+  const planted = path.join(dir, `.svc.plist.${process.pid}.tmp`)
+  fs.symlinkSync(victim, planted)
   expect(() => writeIfChanged(file, "evil")).toThrow(expect.objectContaining({ code: "EEXIST" }))
   expect(fs.readFileSync(victim, "utf8")).toBe("keep")
   expect(fs.existsSync(file)).toBe(false)
-  expect(fs.lstatSync(path.join(dir, `.svc.plist.${process.pid}.tmp`)).isSymbolicLink()).toBe(true)
+  expect(fs.lstatSync(planted).isSymbolicLink()).toBe(true)
 })
 
 test.skipIf(process.getuid?.() === 0)("an unwritable folder throws and leaves no temp file", () => {

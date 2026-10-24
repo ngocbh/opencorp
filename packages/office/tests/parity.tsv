@@ -386,7 +386,7 @@ worker/test_rpc.py::test_a_remote_tool_sends_validated_args_with_defaults	change
 worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	packages/office/tests/worker/rpc.test.ts::an office tool error is the tool result	design §2.4: an error reply throws ReportedToolError; the AGENT loop gives the model its message as the result	O3-2
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
-worker/test_spawn.py	open	—	—	O3-4
+worker/test_spawn.py	open	—	split: O2-11b → O3-4; the two worker_env tests are in packages/office/tests/worker/spawn.test.ts	O3-4
 worker/test_steering.py	ported	packages/office/tests/worker/steering.test.ts	—	O3-3
 worker/test_steering.py::test_a_finished_node_refuses_steers_and_interrupts	changed	packages/office/tests/worker/steering.test.ts::a finished node refuses interrupts	design §2.4, D33: yian's Steering takes an AbortSignal; interrupted is the signal's aborted; yian #1089: steers go to the agent's steer inbox through yian's send; unread steers stay in the inbox, so only interrupts are refused	O3-17
 worker/test_steering.py::test_a_node_is_cut_once_it_reads_its_interrupt	changed	packages/office/tests/worker/steering.test.ts::a node is cut once it reads its interrupt	design §2.4, D33: yian's Steering takes an AbortSignal; reading the interrupt is taking the signal	O3-3
@@ -639,6 +639,8 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/json_prompts.test.ts::a stdin destroyed before an answer is an onboard error	design §9.1: a closed or broken stdin is closed input, not a hang	O2-13a
 —	new	packages/office/tests/install/json_prompts.test.ts::an empty choice list is refused before anything is sent	design §9.1: SetupChoose needs an option; the TUI would wait forever	O2-13a
 —	new	packages/office/tests/install/json_prompts.test.ts::read line leaves the rest of the stream for the next read and lets the process exit	design §9.1: the TUI keeps the setup's stdin open, so a read must not hold the process	O2-13a
+—	new	packages/office/tests/install/launch.test.ts::the daemon env leaves out every name a self spawn may not carry	design §6.5 (no BUN_*/NODE_OPTIONS/LD_*/DYLD_* in any office env)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::the daemon path keeps only absolute entries	design §6.5 (daemonEnv drops relative PATH entries; O1-9 handoff)	O2-11b
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
@@ -846,6 +848,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/spawn.test.ts::the worker env names are the launch allowlist	design §6.5 (one allowlist for daemon and worker)	O2-11b
 —	new	packages/office/tests/worker/steering.test.ts::after close a node gets a signal that never aborts	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/office/tests/worker/steering.test.ts::an interrupt aborts the signal a running node already took	design §2.4, D33: an AbortSignal per node replaces the polled flag	O3-3
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6

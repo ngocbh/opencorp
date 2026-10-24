@@ -3,8 +3,8 @@ import fs from "node:fs"
 import path from "node:path"
 
 /** Writes `data` to `file` unless it already holds exactly those bytes, and returns whether it changed. The
- *  write goes to a fresh temp file renamed over `file`, atomically, so a crash never leaves launchd or systemd
- *  half a file; a symlink planted at the temp path is refused (`EEXIST`), never followed. */
+ *  write goes to a fresh temp file renamed over `file` atomically; a symlink planted at the temp path is refused
+ *  (`EEXIST`), never followed. */
 export function writeIfChanged(file: string, data: Uint8Array | string): boolean {
   const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : data
   try {
