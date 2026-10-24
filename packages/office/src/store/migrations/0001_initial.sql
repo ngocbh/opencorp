@@ -84,7 +84,7 @@ CREATE TABLE runs (
     ended_at TEXT,
     replaces_run_id TEXT,
     created_at TEXT NOT NULL,
-    CHECK ((end_reason IS NULL) = (ended_at IS NULL))
+    CHECK (ended_at IS NULL OR end_reason IS NOT NULL)
 );
 CREATE INDEX runs_session ON runs (session_id);
 

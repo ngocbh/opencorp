@@ -11,7 +11,8 @@ import {
   type SqliteRow,
   type SqliteStatement,
 } from "@ngocbh/yian/platform"
-import { Event, now, validationMessage } from "@opencorp/protocol"
+import { CostReport, Event, Session, now, validationMessage } from "@opencorp/protocol"
+import type { z } from "zod"
 import { migrate } from "./migrate.ts"
 
 /** How long a connection waits for another writer's lock, in ms. */
@@ -20,6 +21,118 @@ export const BUSY_TIMEOUT_MS = 10_000
 /** A store operation was refused. */
 export class StoreError extends Error {
   override name = "StoreError"
+}
+
+/** The row to change does not exist. */
+export class NotFound extends StoreError {
+  override name = "NotFound"
+}
+
+/** A row with the same key already exists. */
+export class DuplicateKey extends StoreError {
+  override name = "DuplicateKey"
+}
+
+/** A folder a person has had a session in, for the picker. */
+export interface WorkedFolder {
+  cwd: string
+  lastAt: string
+}
+
+/** A stored session, defaults filled. */
+export type SessionRecord = z.output<typeof Session>
+
+/** The longest reason a run shows. */
+export const REASON_CHARS = 200
+/** The longest reason a run keeps. */
+export const REASON_KEPT = 256
+
+/** `reason` cut to `limit` characters, ending in "…" when cut. */
+export function cutReason(reason: string, limit = REASON_CHARS): string {
+  // A string has at least as many UTF-16 units as characters, so a short one needs no split.
+  if (reason.length <= limit) return reason
+  // By code point, so a cut never splits a surrogate pair.
+  const chars = Array.from(reason)
+  return chars.length <= limit ? reason : chars.slice(0, limit - 1).join("") + "…"
+}
+
+/** A run as the office keeps it: who drove it, what it ran, the connection, model and config hash that decide
+ *  resume or a fresh run, the run it replaced, and the end the office decided (if any). */
+export interface RunRow {
+  runId: string
+  sessionId: string
+  driver: string
+  flow: string
+  flowPath: string
+  connection: string | null
+  model: string | null
+  configSha256: string | null
+  endReason: string | null
+  endedAt: string | null
+  replacesRunId: string | null
+  createdAt: string
+}
+
+/** The run in a `runs` row. */
+function runRow(r: SqliteRow): RunRow {
+  return {
+    runId: r.run_id as string,
+    sessionId: r.session_id as string,
+    driver: r.driver as string,
+    flow: r.flow as string,
+    flowPath: r.flow_path as string,
+    connection: r.connection as string | null,
+    model: r.model as string | null,
+    configSha256: r.config_sha256 as string | null,
+    endReason: r.end_reason as string | null,
+    endedAt: r.ended_at as string | null,
+    replacesRunId: r.replaces_run_id as string | null,
+    createdAt: r.created_at as string,
+  }
+}
+
+/** An entity table: its protocol schema and how its fields map to columns. */
+interface Table<S extends z.ZodObject> {
+  name: string
+  label: string
+  key: string
+  schema: S
+  /** Fields stored as JSON text. */
+  json: Set<string>
+  /** Fields stored as 0/1. */
+  bools: Set<string>
+  /** Fields kept in a child table rather than a column. */
+  derived: Set<string>
+}
+
+const SESSIONS: Table<typeof Session> = {
+  name: "sessions",
+  label: "Session",
+  key: "id",
+  schema: Session,
+  json: new Set(["harness_usage", "waiting_on"]),
+  bools: new Set(["capped"]),
+  derived: new Set(["run_ids"]),
+}
+
+/** `name` quoted as an SQL identifier (a column may be a keyword, like `groups`). */
+function quote(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`
+}
+
+/** `changes` without its undefined entries: an explicit undefined changes nothing. */
+function defined(changes: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined))
+}
+
+/** The JSON in column `name` of `table`; throws `StoreError` if it isn't valid JSON. */
+function parseJson(table: string, name: string, text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    // The parser's message quotes the text, which could hold a secret.
+    throw new StoreError(`${table}: ${name} isn't valid JSON`)
+  }
 }
 
 /** Puts the database in WAL mode, unless it already is. Switching needs an exclusive lock: when several
@@ -136,10 +249,38 @@ export class Tx {
     return this.#db.prepare(sql).get(...params)
   }
 
+  /** Inserts `cols` into `table`; a UNIQUE or PRIMARY KEY clash → DuplicateKey, a missing parent row (FOREIGN
+   *  KEY) → NotFound("<table>: the row it belongs to does not exist"), any other constraint → StoreError. */
+  insert(table: string, cols: Record<string, SqliteParam>): void {
+    const names = Object.keys(cols)
+    const sql = `INSERT INTO ${quote(table)} (${names.map(quote).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`
+    try {
+      this.run(sql, ...Object.values(cols))
+    } catch (error) {
+      // SQLite's constraint messages name columns, never values.
+      const code = sqliteErrorCode(error)
+      if (code === 2067 || code === 1555) throw new DuplicateKey(`${table}: ${(error as Error).message}`)
+      if (code === 787) throw new NotFound(`${table}: the row it belongs to does not exist`)
+      if (code !== undefined && (code & 0xff) === 19) throw new StoreError(`${table}: ${(error as Error).message}`)
+      throw error
+    }
+  }
+
+  /** Updates the row whose `key` column equals `cols[key]` with the other columns. */
+  update(table: string, key: string, cols: Record<string, SqliteParam>): void {
+    const names = Object.keys(cols).filter((name) => name !== key)
+    this.run(
+      `UPDATE ${quote(table)} SET ${names.map((name) => `${quote(name)} = ?`).join(", ")} WHERE ${quote(key)} = ?`,
+      ...names.map((name) => cols[name] as SqliteParam),
+      cols[key] as SqliteParam,
+    )
+  }
+
   /** Validates and records an Event (new ULID, now()); listeners get it after the outermost commit. */
   emit(type: Event["type"], subjectId: string, data: Record<string, unknown>): Event {
     this.checkOpen()
-    const input = { id: newId(), type, at: now(), subject_id: subjectId, data }
+    // A copy, so a listener that keeps the event never sees the caller's later changes to its record.
+    const input = { id: newId(), type, at: now(), subject_id: subjectId, data: structuredClone(data) }
     const result = Event.safeParse(input)
     if (!result.success) throw new StoreError(`bad event: ${validationMessage(Event, result.error, input)}`)
     this.events.push(result.data)
@@ -233,6 +374,8 @@ export class Store {
   #closed = false
   #tx: Tx | undefined
   #listeners: Listener[] = []
+  /** Each entity table's column names, read once. */
+  readonly #tableColumns = new Map<string, Set<string>>()
   /** The events still to deliver while a delivery is running, else undefined. */
   #pending: Event[] | undefined
   readonly #log: (line: string) => void
@@ -370,6 +513,310 @@ export class Store {
     }
   }
 
+  // Generic row access.
+
+  /** The row for `entity`: validated, with JSON fields as JSON text and booleans as 0/1. A field with no
+   *  column (a protocol field added without a store migration) throws `StoreError`. */
+  #columns<S extends z.ZodObject>(table: Table<S>, entity: z.output<S>): Record<string, SqliteParam> {
+    let known = this.#tableColumns.get(table.name)
+    if (!known) {
+      const rows = this.db.prepare(`PRAGMA table_info(${quote(table.name)})`).all()
+      known = new Set(rows.map((r) => r.name as string))
+      this.#tableColumns.set(table.name, known)
+    }
+    // Every schema field, not just the ones given, as Python's full model dump did.
+    const names = new Set([...Object.keys(table.schema.shape), ...Object.keys(entity)])
+    const missing = [...names].filter((name) => !table.derived.has(name) && !known.has(name)).sort()
+    if (missing.length) {
+      throw new StoreError(
+        `${table.name} has no column ${missing.map((name) => `'${name}'`).join(", ")} for ${table.label}; ` +
+          "the field needs a store migration",
+      )
+    }
+    const result = table.schema.safeParse(entity)
+    if (!result.success) {
+      throw new StoreError(`${table.name}: ${validationMessage(table.schema, result.error, entity)}`)
+    }
+    const cols: Record<string, SqliteParam> = {}
+    for (const [name, value] of Object.entries(result.data as Record<string, unknown>)) {
+      if (table.derived.has(name)) continue
+      if (table.json.has(name)) cols[name] = value === null ? null : JSON.stringify(value)
+      else if (table.bools.has(name)) cols[name] = value ? 1 : 0
+      else cols[name] = value as SqliteParam
+    }
+    return cols
+  }
+
+  /** The entity in `row`, with `extra` (derived fields) merged in; throws `StoreError` if it doesn't validate. */
+  #entity<S extends z.ZodObject>(table: Table<S>, row: SqliteRow, extra?: Record<string, unknown>): z.output<S> {
+    const data: Record<string, unknown> = {}
+    for (const [name, value] of Object.entries(row)) {
+      if (!(name in table.schema.shape)) continue
+      if (table.json.has(name)) data[name] = value === null ? null : parseJson(table.name, name, value as string)
+      else if (table.bools.has(name)) data[name] = value === null ? null : value !== 0
+      else data[name] = value
+    }
+    Object.assign(data, extra)
+    const result = table.schema.safeParse(data)
+    if (!result.success) throw new StoreError(`${table.name}: ${validationMessage(table.schema, result.error, data)}`)
+    return result.data
+  }
+
+  /** `current` with `changes` applied (undefined entries skipped), validated; throws `StoreError` if `changes`
+   *  touches a `frozen` field. */
+  #changed<S extends z.ZodObject>(
+    table: Table<S>,
+    current: z.output<S>,
+    changes: Record<string, unknown>,
+    frozen: string[],
+  ): z.output<S> {
+    changes = defined(changes)
+    const bad = frozen.filter((name) => name in changes).sort()
+    if (bad.length) throw new StoreError(`cannot change ${JSON.stringify(bad)} this way`)
+    const data = { ...current, ...changes }
+    const result = table.schema.safeParse(data)
+    if (!result.success) throw new StoreError(`${table.name}: ${validationMessage(table.schema, result.error, data)}`)
+    return result.data
+  }
+
+  // Sessions, their runs, worked folders.
+
+  #session(row: SqliteRow): SessionRecord {
+    const runs = this.db.prepare("SELECT run_id FROM session_runs WHERE session_id = ? ORDER BY seq").all(row.id!)
+    return this.#entity(SESSIONS, row, { run_ids: runs.map((r) => r.run_id) })
+  }
+
+  #mustSession(sessionId: string): SessionRecord {
+    const found = this.getSession(sessionId)
+    if (!found) throw new NotFound(`no session ${sessionId}`)
+    return found
+  }
+
+  #insertRun(tx: Tx, sessionId: string, runId: string): void {
+    try {
+      tx.run(
+        "INSERT INTO session_runs (session_id, run_id, seq) " +
+          "VALUES (?, ?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM session_runs WHERE session_id = ?))",
+        sessionId,
+        runId,
+        sessionId,
+      )
+    } catch (error) {
+      const code = sqliteErrorCode(error)
+      if (code === 2067 || code === 1555) throw new DuplicateKey(`run ${runId} already belongs to a session`)
+      if (code === 787) throw new NotFound(`no session ${sessionId}`)
+      throw error
+    }
+  }
+
+  /** Inserts a session (and its `run_ids`) and emits `session.created`. */
+  createSession(session: SessionRecord): SessionRecord {
+    return this.transaction((tx) => {
+      tx.insert(SESSIONS.name, this.#columns(SESSIONS, session))
+      for (const runId of session.run_ids) this.#insertRun(tx, session.id, runId)
+      const stored = this.#mustSession(session.id)
+      tx.emit("session.created", session.id, stored)
+      return stored
+    })
+  }
+
+  /** The session with its runs, or undefined. */
+  getSession(sessionId: string): SessionRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM sessions WHERE id = ?").get(sessionId)
+    return row && this.#session(row)
+  }
+
+  /** Sessions, most recently updated first, optionally filtered (`cwd` is the folder's resolved path). */
+  listSessions(filter?: {
+    person?: string
+    status?: string | string[]
+    kind?: string
+    cwd?: string
+    limit?: number
+  }): SessionRecord[] {
+    const clauses: string[] = []
+    const params: SqliteParam[] = []
+    const where = { person: filter?.person, status: filter?.status, kind: filter?.kind, cwd: filter?.cwd }
+    for (const [name, value] of Object.entries(where)) {
+      if (value === undefined) continue
+      if (Array.isArray(value)) {
+        clauses.push(`${quote(name)} IN (${value.map(() => "?").join(", ")})`)
+        params.push(...value)
+      } else {
+        clauses.push(`${quote(name)} = ?`)
+        params.push(value)
+      }
+    }
+    const sql =
+      `SELECT * FROM sessions${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ` +
+      "ORDER BY updated_at DESC, rowid DESC LIMIT ?"
+    return this.db
+      .prepare(sql)
+      .all(...params, filter?.limit ?? -1)
+      .map((row) => this.#session(row))
+  }
+
+  /** A person's sessions, most recently updated first. */
+  recentSessions(person: string, limit = 20): SessionRecord[] {
+    return this.listSessions({ person, limit })
+  }
+
+  /** The session a run belongs to, or undefined. */
+  sessionForRun(runId: string): SessionRecord | undefined {
+    const row = this.db.prepare("SELECT session_id FROM session_runs WHERE run_id = ?").get(runId)
+    return row && this.getSession(row.session_id as string)
+  }
+
+  /** Changes fields of a session and emits `session.updated` (`updated_at` defaults to now). */
+  updateSession(sessionId: string, changes: Partial<SessionRecord>): SessionRecord {
+    return this.transaction((tx) => {
+      const current = this.#mustSession(sessionId)
+      const session = this.#changed(SESSIONS, current, { updated_at: now(), ...defined(changes) }, [
+        "id",
+        "run_ids",
+        "created_at",
+      ])
+      tx.update(SESSIONS.name, SESSIONS.key, this.#columns(SESSIONS, session))
+      const stored = this.#mustSession(sessionId)
+      tx.emit("session.updated", sessionId, stored)
+      return stored
+    })
+  }
+
+  /** Appends a run to a session and emits `session.updated`. */
+  addSessionRun(sessionId: string, runId: string): SessionRecord {
+    return this.transaction((tx) => {
+      this.#mustSession(sessionId)
+      this.#insertRun(tx, sessionId, runId)
+      tx.run("UPDATE sessions SET updated_at = ? WHERE id = ?", now(), sessionId)
+      const stored = this.#mustSession(sessionId)
+      tx.emit("session.updated", sessionId, stored)
+      return stored
+    })
+  }
+
+  /** Records that `person` worked in `cwd` at `at` (default now). */
+  touchWorkedFolder(person: string, cwd: string, at?: string): void {
+    this.transaction((tx) =>
+      tx.run(
+        "INSERT INTO worked_folders (person, cwd, last_at) VALUES (?, ?, ?) " +
+          "ON CONFLICT (person, cwd) DO UPDATE SET last_at = excluded.last_at",
+        person,
+        cwd,
+        at ?? now(),
+      ),
+    )
+  }
+
+  /** A person's folders, most recent first. */
+  workedFolders(person: string, limit = 20): WorkedFolder[] {
+    return this.db
+      .prepare("SELECT cwd, last_at FROM worked_folders WHERE person = ? ORDER BY last_at DESC, cwd LIMIT ?")
+      .all(person, limit)
+      .map((r) => ({ cwd: r.cwd as string, lastAt: r.last_at as string }))
+  }
+
+  // Runs: the office's own facts, no events (yian's run log holds the rest).
+
+  /** Inserts a launched run with no end; an unknown session → NotFound, a repeated run id → DuplicateKey. */
+  addRun(row: Omit<RunRow, "endReason" | "endedAt">): RunRow {
+    const run: RunRow = { ...row, endReason: null, endedAt: null }
+    this.transaction((tx) =>
+      tx.insert("runs", {
+        run_id: run.runId,
+        session_id: run.sessionId,
+        driver: run.driver,
+        flow: run.flow,
+        flow_path: run.flowPath,
+        connection: run.connection,
+        model: run.model,
+        config_sha256: run.configSha256,
+        end_reason: null,
+        ended_at: null,
+        replaces_run_id: run.replacesRunId,
+        created_at: run.createdAt,
+      }),
+    )
+    return run
+  }
+
+  /** Records the connection, model and config hash a run was started on (set at spawn); an unknown run →
+   *  NotFound. */
+  setRunConfig(
+    runId: string,
+    config: { connection: string | null; model: string | null; configSha256: string | null },
+  ): void {
+    const row = this.transaction((tx) =>
+      tx.get(
+        "UPDATE runs SET connection = ?, model = ?, config_sha256 = ? WHERE run_id = ? RETURNING run_id",
+        config.connection,
+        config.model,
+        config.configSha256,
+        runId,
+      ),
+    )
+    if (row === undefined) throw new NotFound(`no run ${runId}`)
+  }
+
+  /** Writes the office's end reason (cut to REASON_KEPT; ended now or at `at`) unless the run has one; returns
+   *  whether it wrote.
+   *
+   *  It records an end the office decided. Callers must not call it for a run whose end yian recorded (a
+   *  finished, failed or stopped run): in the run status rule the office's end reason wins over yian's status,
+   *  so it would hide yian's outcome. Write-once only stops a second office end. */
+  endRun(runId: string, reason: string, at?: string): boolean {
+    const row = this.transaction((tx) =>
+      tx.get(
+        "UPDATE runs SET end_reason = ?, ended_at = ? WHERE run_id = ? AND end_reason IS NULL RETURNING run_id",
+        cutReason(reason, REASON_KEPT),
+        at ?? now(),
+        runId,
+      ),
+    )
+    return row !== undefined
+  }
+
+  /** Gives each listed run that has a row and no end reason the end reason `reason` and no end time; returns
+   *  the ids it wrote, in run-id order. The caller picks the runs (yian's index knows which ended). */
+  sweepRuns(runIds: Iterable<string>, reason: string): string[] {
+    const ids = [...new Set(runIds)].sort()
+    const sql = "UPDATE runs SET end_reason = ? WHERE run_id = ? AND end_reason IS NULL RETURNING run_id"
+    const kept = cutReason(reason, REASON_KEPT)
+    return this.transaction((tx) => {
+      const written: string[] = []
+      for (const runId of ids) if (tx.get(sql, kept, runId) !== undefined) written.push(runId)
+      return written
+    })
+  }
+
+  /** The run's row, or undefined. */
+  getRun(runId: string): RunRow | undefined {
+    const row = this.db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId)
+    return row && runRow(row)
+  }
+
+  /** The rows of those of `runIds` that have one, by run id. */
+  getRuns(runIds: Iterable<string>): Map<string, RunRow> {
+    // One JSON parameter rather than a `?` per id: a long list would pass SQLite's variable limit.
+    const rows = this.db
+      .prepare("SELECT * FROM runs WHERE run_id IN (SELECT value FROM json_each(?))")
+      .all(JSON.stringify([...runIds]))
+    return new Map(rows.map((r) => [r.run_id as string, runRow(r)]))
+  }
+
+  /** A session's rows, oldest first. */
+  runsOfSession(sessionId: string): RunRow[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at, run_id")
+      .all(sessionId)
+      .map(runRow)
+  }
+
+  /** The summed price of a run's model calls. */
+  runUsageUsd(runId: string): number {
+    return this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE run_id = ?").get(runId)!.usd as number
+  }
+
   // Audit, usage, workers: office bookkeeping, no events.
 
   /** Appends an audit row. `args` must already be redacted. */
@@ -472,6 +919,35 @@ export class Store {
   sessionUsageUsd(sessionId: string): number {
     const row = this.db.prepare("SELECT COALESCE(SUM(usd), 0) AS usd FROM usage WHERE session_id = ?").get(sessionId)
     return row!.usd as number
+  }
+
+  /** Spend per person since `since` (a Timestamp): priced usage, and harness sessions updated since then.
+   *
+   *  Only composer sessions record priced usage; a Codex or Claude session's tokens aren't priced, so it is
+   *  counted instead. `unpriced_sessions` counts harness sessions whose `updated_at` is at or after `since`,
+   *  which any update moves (a status change, a rename), so a counted session may not have spent anything since
+   *  then. Every session kind counts: all of it is real spend. */
+  costsSince(since: string): z.output<typeof CostReport> {
+    const usd = new Map<string, number>()
+    const count = new Map<string, number>()
+    const priced = this.db
+      .prepare(
+        "SELECT s.person, SUM(u.usd) AS usd FROM usage u JOIN sessions s ON s.id = u.session_id " +
+          "WHERE u.at >= ? GROUP BY s.person",
+      )
+      .all(since)
+    for (const r of priced) usd.set(r.person as string, r.usd as number)
+    const unpriced = this.db
+      .prepare(
+        "SELECT person, COUNT(*) AS n FROM sessions WHERE harness != 'composer' AND updated_at >= ? GROUP BY person",
+      )
+      .all(since)
+    for (const r of unpriced) count.set(r.person as string, r.n as number)
+    const people: z.output<typeof CostReport>["people"] = {}
+    for (const person of [...new Set([...usd.keys(), ...count.keys()])].sort()) {
+      people[person] = { usd: usd.get(person) ?? 0, unpriced_sessions: count.get(person) ?? 0 }
+    }
+    return { since, people }
   }
 
   /** Records the process under `key`, replacing any earlier record for the key (which keeps its place). */
