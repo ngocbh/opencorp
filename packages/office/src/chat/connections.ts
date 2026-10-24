@@ -17,7 +17,8 @@ export const NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
 /** The variable that points yian at a subscription's own auth store. */
 export const AUTH_FILE_ENV = "YIAN_AUTH_FILE"
 
-/** How long `remove` waits for yian's lock on a sign-in, in ms; yian's own store waits as long. */
+/** How long `remove` (and a failed `add`'s rollback) waits for yian's lock on a sign-in, in ms; yian's own store
+ *  waits as long. */
 export const SIGN_IN_LOCK_TIMEOUT_MS = 30_000
 
 /** A connection is no longer on this office. */
@@ -94,14 +95,16 @@ export class ConnectionFile extends Provider {
 export type RunRecord = {
   connection: string
   model: string | null
-  /** For resume: the whole config without its key, plus the key's sha256 (`configHash`). */
+  /** For resume: the `configHash` of the provider the run was started with (its whole config without the key,
+   *  plus the key's sha256). */
   configSha256: string
 }
 
 export interface ConnectionsOptions {
   /** Where log lines go (default `console.error`). */
   log?: (line: string) => void
-  /** How long `remove` waits for yian's lock on a sign-in, in ms (default `SIGN_IN_LOCK_TIMEOUT_MS`). */
+  /** How long `remove` (and a failed `add`'s rollback) waits for yian's lock on a sign-in, in ms (default
+   *  `SIGN_IN_LOCK_TIMEOUT_MS`). */
   signInLockTimeoutMs?: number
 }
 
@@ -153,7 +156,8 @@ async function readOptional(file: string): Promise<Buffer | undefined> {
  * Reads, writes and resolves the office's connections; every file 0600, the directory 0700.
  *
  * Writes through one `Connections` are serialised, so two adds never take the same name and two writes of one
- * file never share `writePrivate`'s temporary file.
+ * file never share `writePrivate`'s temporary file. Only within one instance: two instances could both take the
+ * same free name, so the office keeps one `Connections` per office folder, as the Python daemon kept one.
  */
 export class Connections {
   readonly office: string
@@ -265,7 +269,8 @@ export class Connections {
    *
    * `signIn`, when given, saves the connection's sign-in to the path it is passed before the connection file is
    * written; if either fails, the sign-in is removed again. It runs in the queue of writes, so it must be quick:
-   * a save of a sign-in already made, not a device login.
+   * a save of a sign-in already made, not a device login. `signIn` must not call `put`, `add`, `remove` or
+   * `setDefault` on this `Connections`: the queue isn't re-entrant, so the call would wait forever.
    *
    * Rejects with `RangeError` when `base` can't make a free connection name, `ProviderError` when `_removed.json`
    * can't be read, and otherwise with the error that stopped `signIn` or the write.
@@ -362,7 +367,8 @@ export class Connections {
 
   /** The provider to resume run `runId` on, which was started with `record`. Rejects with `RunMoved` when the
    *  run's connection is gone, can't be used (`ConnectionUnusable`), or no longer gives what the run had; the
-   *  message says why. */
+   *  message says why. I/O errors and yian's `FileLockError` from reading the files propagate, as Python's
+   *  `OSError` did. */
   async forRun(record: RunRecord, runId: string): Promise<Provider> {
     const name = record.connection
     if (name !== OFFICE && (!NAME.test(name) || RESERVED.has(name))) {

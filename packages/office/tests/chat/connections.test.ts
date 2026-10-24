@@ -17,6 +17,7 @@ import {
   keyId,
   providerLabel,
   RunMoved,
+  type RunRecord,
   runRecord,
 } from "../../src/chat/connections.ts"
 import { type Price, Provider, ProviderError } from "../../src/chat/provider.ts"
@@ -384,7 +385,7 @@ test("a connection cannot set the auth file", async () => {
 })
 
 test("office may still set the auth file", async () => {
-  // office.json was valid with it before connections; only an added connection may not set it.
+  // Only an added connection is refused the auth file; office.json may set it.
   const root = tempDir()
   const auth = path.join(root, "composer-auth.json")
   const c = new Connections(
@@ -393,9 +394,9 @@ test("office may still set the auth file", async () => {
   const provider = await c.resolve(OFFICE, null)
   expect(provider.env).toEqual({ YIAN_AUTH_FILE: auth })
   expect(await c.forRun(runRecord(OFFICE, null, provider), "r2")).toEqual(provider)
-  const [infos, dflt] = await c.infos()
+  const [infos, defaultName] = await c.infos()
   expect(infos.map((i) => i.name)).toEqual([OFFICE])
-  expect(dflt).toBe(OFFICE)
+  expect(defaultName).toBe(OFFICE)
 })
 
 test("infos lists every readable connection and logs only a broken ones name", async () => {
@@ -411,8 +412,8 @@ test("infos lists every readable connection and logs only a broken ones name", a
   await writePrivate(path.join(c.dir, "loose.json"), JSON.stringify({ llm_config: apiKey().llm_config }))
   fs.chmodSync(path.join(c.dir, "loose.json"), 0o644)
   await c.setDefault("second")
-  const [infos, dflt] = await c.infos()
-  expect(dflt).toBe("second")
+  const [infos, defaultName] = await c.infos()
+  expect(defaultName).toBe("second")
   expect(infos.map((i) => [i.name, i.default])).toEqual([
     [OFFICE, false],
     ["second", true],
@@ -716,13 +717,13 @@ test("a run record holds hashes and no key", async () => {
   expect(lines.join("\n")).not.toContain(SENTINEL)
 })
 
-/** The run values of a run r1 started on `name` and `model`. */
-async function recordOf(c: Connections, name = "second", model: string | null = null) {
-  return runRecord(name, model, await c.resolve(name, model))
+/** The run values of a run r1 started on connection `second` with its own model. */
+async function recordOf(c: Connections) {
+  return runRecord("second", null, await c.resolve("second", null))
 }
 
 /** The error `forRun(record, "r1")` rejects with, checked to be a `RunMoved` whose message matches `pattern`. */
-async function moved(c: Connections, record: Parameters<Connections["forRun"]>[0], pattern: RegExp) {
+async function moved(c: Connections, record: RunRecord, pattern: RegExp) {
   const error = await raised(() => c.forRun(record, "r1"))
   expect(error).toBeInstanceOf(RunMoved)
   expect((error as Error).message).toMatch(pattern)
@@ -792,4 +793,6 @@ test("an env change trips the config hash", () => {
   const before = Provider.parse({ llm_config: { provider: "openai", api_key: SENTINEL, model: "m" } })
   const after = Provider.parse({ llm_config: before.llm_config, env: { OPENAI_BASE_URL: "https://proxy.example/v1" } })
   expect(configHash(before)).not.toBe(configHash(after))
+  const reordered = Provider.parse({ llm_config: { model: "m", api_key: SENTINEL, provider: "openai" } })
+  expect(configHash(reordered)).toBe(configHash(before))
 })
