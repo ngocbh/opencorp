@@ -2,6 +2,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
+import { lockFile } from "@ngocbh/yian/platform"
 import { expect, spyOn, test } from "bun:test"
 import { OFFICE } from "@opencorp/protocol"
 import {
@@ -136,7 +137,7 @@ test.each(["Office", "..", "../x", "a/b", "_default", "_removed", "chatgpt.auth"
     const root = tempDir()
     const c = new Connections(await officeDir(root, { llm_config: { provider: "anthropic", api_key: SENTINEL } }))
     const before = tree(root)
-    const calls: (() => unknown)[] = [() => c.put(bad, apiKey()), () => c.authFile(bad)]
+    const calls: (() => unknown)[] = [() => c.put(bad, apiKey()), () => c.remove(bad), () => c.authFile(bad)]
     if (bad !== OFFICE) {
       calls.push(
         () => c.get(bad),
@@ -147,7 +148,7 @@ test.each(["Office", "..", "../x", "a/b", "_default", "_removed", "chatgpt.auth"
     }
     for (const call of calls) expect(await raised(call)).toBeInstanceOf(RangeError)
     if (bad === OFFICE) {
-      // office can be read and resolved, never written
+      // office can be read and resolved, never written or removed
       expect((await c.get(bad)).llm_config?.provider).toBe("anthropic")
       expect(await c.resolve(bad, null)).toEqual(await c.resolve(null, null))
     }
@@ -172,9 +173,126 @@ test("default follows the pointer and falls back when its file is gone", async (
   expect(await c.default()).toBe(OFFICE)
 })
 
+test("a chat on a removed connection moves to the default on its own model", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  for (const name of ["second", "third"]) await c.put(name, apiKey())
+  expect(await c.choice(null, null)).toEqual([OFFICE, null, false])
+  expect(await c.choice("second", "gpt-4o-mini")).toEqual(["second", "gpt-4o-mini", false])
+  await c.setDefault("third")
+  await c.remove("second")
+  expect(await c.choice("second", "gpt-4o-mini")).toEqual(["third", null, true])
+})
+
+test("remove unlinks the connection and its sign in", async () => {
+  const office = await officeDir(tempDir())
+  const c = new Connections(office)
+  await c.put("chatgpt", subscription())
+  await writePrivate(c.authFile("chatgpt"), "{}")
+  const lock = path.join(c.dir, "chatgpt.auth.json.lock")
+  await writePrivate(lock, "") // yian's lock on the sign-in
+  const removedAtUnlink: unknown[] = []
+  const unlink = fs.unlinkSync
+  const spy = spyOn(fs, "unlinkSync").mockImplementation((p: fs.PathLike) => {
+    // writePrivate clears its own temporary file first
+    if (!path.basename(String(p)).startsWith(".")) {
+      removedAtUnlink.push(JSON.parse(fs.readFileSync(path.join(c.dir, "_removed.json"), "utf8")))
+    }
+    unlink(p)
+  })
+  try {
+    await c.remove("chatgpt")
+  } finally {
+    spy.mockRestore()
+  }
+  expect(removedAtUnlink.length).toBeGreaterThan(0)
+  for (const r of removedAtUnlink) expect(r).toEqual({ names: ["chatgpt"] })
+  expect(fs.existsSync(path.join(c.dir, "chatgpt.json"))).toBe(false)
+  expect(fs.existsSync(c.authFile("chatgpt"))).toBe(false)
+  // yian keeps it, so a waiter and a newcomer never lock different files
+  expect(fs.existsSync(lock)).toBe(true)
+  expect(await c.names()).toEqual([OFFICE])
+  const error = await raised(() => c.get("chatgpt"))
+  expect(error).toBeInstanceOf(ConnectionGone)
+  expect((error as Error).message).toMatch(/removed/)
+  expect(await raised(() => c.remove("chatgpt"))).toBeInstanceOf(ConnectionGone)
+})
+
+test("remove waits for composer to let go of the sign in", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("chatgpt", subscription())
+  const auth = c.authFile("chatgpt")
+  await writePrivate(auth, "{}")
+  const lock = `${auth}.lock`
+  const held = lockFile(lock, { private: true }) // yian refreshing the sign-in
+  let settled = false
+  const removing = c.remove("chatgpt").finally(() => {
+    settled = true
+  })
+  try {
+    await Bun.sleep(400)
+    expect(settled).toBe(false)
+    expect(fs.existsSync(auth)).toBe(true)
+  } finally {
+    held.release()
+  }
+  await Promise.race([removing, Bun.sleep(5_000)])
+  expect(settled).toBe(true)
+  await removing
+  expect(fs.existsSync(auth)).toBe(false)
+  expect(fs.existsSync(lock)).toBe(true)
+})
+
+test("remove gives up on a sign in locked too long", async () => {
+  const c = new Connections(await officeDir(tempDir()), { signInLockTimeoutMs: 200 })
+  await c.put("chatgpt", subscription())
+  await writePrivate(c.authFile("chatgpt"), "{}")
+  const held = lockFile(path.join(c.dir, "chatgpt.auth.json.lock"), { private: true })
+  try {
+    const error = await raised(() => c.remove("chatgpt"))
+    expect(error).toBeInstanceOf(ProviderError)
+    expect((error as Error).message).toMatch(/timed out/i)
+  } finally {
+    held.release()
+  }
+  expect(fs.existsSync(c.authFile("chatgpt"))).toBe(true)
+  // still removed: its name was retired first
+  expect(await c.names()).toEqual([OFFICE])
+  await c.remove("chatgpt")
+  expect(tree(c.dir)).toEqual([".lock", "_removed.json", "chatgpt.auth.json.lock"])
+})
+
+test("remove refuses a symlinked lock", async () => {
+  const root = tempDir()
+  const c = new Connections(await officeDir(root))
+  await c.put("chatgpt", subscription())
+  await writePrivate(c.authFile("chatgpt"), "{}")
+  const target = path.join(root, "elsewhere")
+  fs.writeFileSync(target, "")
+  fs.symlinkSync(target, path.join(c.dir, "chatgpt.auth.json.lock"))
+  const error = await raised(() => c.remove("chatgpt"))
+  expect(error).toBeInstanceOf(ProviderError)
+  expect((error as Error).message).toMatch(/regular private path/)
+  expect(fs.existsSync(target)).toBe(true)
+})
+
+test("remove cleans a sign in whose connection was never written", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  c.ensureDir()
+  await writePrivate(c.authFile("chatgpt"), "{}")
+  await c.remove("chatgpt")
+  expect(tree(c.dir)).toEqual([".lock", "_removed.json", "chatgpt.auth.json.lock"])
+  expect(await raised(() => c.remove("chatgpt"))).toBeInstanceOf(ConnectionGone)
+  expect(await raised(() => c.remove("../x"))).toBeInstanceOf(RangeError)
+})
+
 test("a bad name raises bad connection name", async () => {
   const c = new Connections(await officeDir(tempDir(), { llm_config: { provider: "anthropic", api_key: SENTINEL } }))
-  for (const call of [() => c.get("Bad"), () => c.setDefault("login"), () => c.put("office", apiKey())]) {
+  for (const call of [
+    () => c.get("Bad"),
+    () => c.remove("../x"),
+    () => c.setDefault("login"),
+    () => c.put("office", apiKey()),
+  ]) {
     expect(await raised(call)).toBeInstanceOf(BadConnectionName)
   }
 })
@@ -276,6 +394,166 @@ test("infos lists every readable connection and logs only a broken ones name", a
   expect(inspect(infos)).not.toContain(SENTINEL)
 })
 
+test("remove finishes a remove cut short", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("chatgpt", subscription())
+  // retired, but its file was left
+  await writePrivate(path.join(c.dir, "_removed.json"), '{"names": ["chatgpt"]}')
+  expect(await c.names()).toEqual([OFFICE])
+  await c.remove("chatgpt")
+  expect(tree(c.dir)).toEqual([".lock", "_removed.json"])
+  expect(JSON.parse(fs.readFileSync(path.join(c.dir, "_removed.json"), "utf8"))).toEqual({ names: ["chatgpt"] })
+  expect(await raised(() => c.remove("chatgpt"))).toBeInstanceOf(ConnectionGone)
+})
+
+test("add raises its own error when the sign in cannot be removed", async () => {
+  const { lines, log } = logs()
+  const c = new Connections(await officeDir(tempDir()), { log, signInLockTimeoutMs: 200 })
+  c.ensureDir()
+  const held = lockFile(path.join(c.dir, "chatgpt.auth.json.lock"), { private: true })
+  try {
+    const refuse = (auth: string) => {
+      fs.writeFileSync(auth, SENTINEL)
+      throw new ProviderError("sign-in cancelled")
+    }
+    const error = await raised(() => c.add("chatgpt", subscription(), { signIn: refuse }))
+    expect(error).toBeInstanceOf(ProviderError)
+    expect((error as Error).message).toMatch(/cancelled/)
+  } finally {
+    held.release()
+  }
+  const logged = lines.join("\n")
+  expect(logged).toContain("connection chatgpt")
+  expect(logged).not.toContain(SENTINEL)
+})
+
+test("office cannot be removed", async () => {
+  const office = await officeDir(tempDir(), { llm_config: { provider: "anthropic", api_key: SENTINEL } })
+  const c = new Connections(office)
+  const error = await raised(() => c.remove(OFFICE))
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/opencorp onboard/)
+  expect(fs.existsSync(path.join(office, "connections", "office.json"))).toBe(true)
+})
+
+test("add takes the first name no file holds", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  expect(await c.add("azure", apiKey())).toBe("azure")
+  await c.put("azure-2", apiKey())
+  expect(await c.add("azure", apiKey())).toBe("azure-3")
+  expect((await c.names()).slice(0, 4)).toEqual([OFFICE, "azure", "azure-2", "azure-3"])
+  c.ensureDir()
+  await writePrivate(c.authFile("chatgpt"), "{}") // a sign-in whose connection was never written
+  expect(await c.add("chatgpt", subscription())).toBe("chatgpt-2")
+  // a reserved name is skipped like a taken one
+  expect(await c.add("login", apiKey())).toBe("login-2")
+  for (const bad of ["Bad", "x".repeat(33)]) {
+    expect(await raised(() => c.add(bad, apiKey()))).toBeInstanceOf(RangeError)
+  }
+  expect(await c.add("x".repeat(31), apiKey())).toBe("x".repeat(31))
+  // x*31-2 is too long a name
+  expect(await raised(() => c.add("x".repeat(31), apiKey()))).toBeInstanceOf(RangeError)
+})
+
+test("add saves the sign in before the connection", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  const seen: [string, string[]][] = []
+  const signIn = async (auth: string) => {
+    seen.push([auth, fs.readdirSync(c.dir).sort()])
+    await writePrivate(auth, "{}")
+  }
+  const name = await c.add("chatgpt", subscription(), { signIn })
+  expect(name).toBe("chatgpt")
+  expect(seen).toEqual([[c.authFile("chatgpt"), []]])
+  expect(mode(c.dir)).toBe(0o700)
+  expect((await c.resolve("chatgpt", null)).env.YIAN_AUTH_FILE).toBe(c.authFile("chatgpt"))
+})
+
+test("add removes the sign in when the connection cannot be written", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  const full = Object.assign(new Error("No space left on device"), { code: "ENOSPC" })
+  const spy = spyOn(fs, "renameSync").mockImplementation(() => {
+    throw full
+  })
+  try {
+    // Python's path.write_bytes; writePrivate would fail on the spy
+    const signIn = (auth: string) => fs.writeFileSync(auth, "{}")
+    const error = await raised(() => c.add("chatgpt", subscription(), { signIn }))
+    expect(error).toBe(full)
+  } finally {
+    spy.mockRestore()
+  }
+  expect(tree(c.dir)).toEqual([".lock", "chatgpt.auth.json.lock"])
+  const refuse = (auth: string) => {
+    fs.writeFileSync(auth, "{}")
+    throw new ProviderError("sign-in cancelled")
+  }
+  const error = await raised(() => c.add("chatgpt", subscription(), { signIn: refuse }))
+  expect(error).toBeInstanceOf(ProviderError)
+  expect((error as Error).message).toMatch(/cancelled/)
+  expect(tree(c.dir)).toEqual([".lock", "chatgpt.auth.json.lock"])
+})
+
+// Each in-process collision on connections/.lock costs one of yian waitForLock's 100 ms polls (measured ~12 s at
+// load 7); Python's 30 rounds and unqueued default() reads are kept.
+test(
+  "concurrent adds take distinct names and defaults stay whole",
+  async () => {
+    const c = new Connections(await officeDir(tempDir()))
+    await c.put("second", apiKey())
+    const flip = async (name: string) => {
+      for (let i = 0; i < 30; i++) {
+        await c.setDefault(name)
+        expect([OFFICE, "second"]).toContain(await c.default())
+      }
+    }
+    const [names] = await Promise.all([
+      Promise.all([1, 2, 3, 4].map(() => c.add("azure", apiKey()))),
+      ...[OFFICE, "second", OFFICE, "second"].map(flip),
+    ])
+    expect(names.sort()).toEqual(["azure", "azure-2", "azure-3", "azure-4"])
+    const defaultName = JSON.parse(fs.readFileSync(path.join(c.dir, "_default.json"), "utf8")).name
+    expect([OFFICE, "second"]).toContain(defaultName)
+    expect(fs.readdirSync(c.dir).filter((e) => e.startsWith("."))).toEqual([".lock"])
+  },
+  60_000,
+)
+
+test("a removed name is never reused", async () => {
+  const office = await officeDir(tempDir())
+  const c = new Connections(office)
+  const anthropic = () => ConnectionFile.parse({ llm_config: { provider: "anthropic", api_key: SENTINEL } })
+  await c.put("anthropic", anthropic())
+  await c.remove("anthropic")
+  expect(await new Connections(office).add("anthropic", apiKey())).toBe("anthropic-2")
+  const error = await raised(() => c.put("anthropic", anthropic()))
+  expect(error).toBeInstanceOf(RangeError)
+  expect((error as Error).message).toMatch(/removed/)
+  expect(await c.names()).toEqual([OFFICE, "anthropic-2"])
+})
+
+test("a removed name is gone even if its file was left", async () => {
+  const office = await officeDir(tempDir())
+  const c = new Connections(office)
+  await c.put("second", apiKey())
+  // a remove cut short
+  await writePrivate(path.join(office, "connections", "_removed.json"), '{"names": ["second"]}')
+  expect(await c.names()).toEqual([OFFICE])
+  expect(await raised(() => c.resolve("second", null))).toBeInstanceOf(ConnectionGone)
+})
+
+test("a garbled removed list is refused not ignored", async () => {
+  const office = await officeDir(tempDir())
+  const c = new Connections(office)
+  c.ensureDir()
+  for (const garbled of ["{", '{"names": "anthropic"}', '{"names": [1]}', "null"]) {
+    await writePrivate(path.join(office, "connections", "_removed.json"), garbled)
+    const error = await raised(() => c.add("anthropic", apiKey()))
+    expect(error).toBeInstanceOf(ProviderError)
+    expect((error as Error).message).toMatch(/_removed\.json/)
+  }
+})
+
 test("resolve puts the model in llm config", async () => {
   const c = new Connections(
     await officeDir(tempDir(), {
@@ -326,6 +604,18 @@ test("a subscription without its sign in fails clearly", async () => {
   const error = await raised(() => c.resolve("chatgpt", null))
   expect(error).toBeInstanceOf(ProviderError)
   expect((error as Error).message).toMatch(/connection 'chatgpt' has no sign-in/)
+})
+
+test("resolving a removed connection raises connection gone", async () => {
+  const c = new Connections(await officeDir(tempDir()))
+  await c.put("second", apiKey())
+  await c.remove("second")
+  let error = await raised(() => c.resolve("second", null))
+  expect(error).toBeInstanceOf(ConnectionGone)
+  expect((error as Error).message).toMatch(/second/)
+  error = await raised(() => c.resolve("nope", null))
+  expect(error).toBeInstanceOf(ConnectionGone)
+  expect((error as Error).message).toMatch(/nope/)
 })
 
 test("prices are per connection", async () => {

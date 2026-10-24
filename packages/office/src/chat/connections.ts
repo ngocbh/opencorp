@@ -1,6 +1,7 @@
 /** This office's model connections: office/connections/office.json (`office`) and office/connections/<name>.json. */
 import fs from "node:fs"
 import path from "node:path"
+import { AuthError, AuthStore } from "@ngocbh/yian/llm_clients"
 import { type Connection, OFFICE } from "@opencorp/protocol"
 import type { z } from "zod"
 import { PrivateFileError, readPrivate, writePrivate } from "../secrets.ts"
@@ -14,6 +15,9 @@ export const NAME = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/
 
 /** The variable that points yian at a subscription's own auth store. */
 export const AUTH_FILE_ENV = "YIAN_AUTH_FILE"
+
+/** How long `remove` waits for yian's lock on a sign-in, in ms; yian's own store waits as long. */
+export const SIGN_IN_LOCK_TIMEOUT_MS = 30_000
 
 /** A connection is no longer on this office. */
 export class ConnectionGone extends ProviderError {
@@ -71,6 +75,8 @@ export class ConnectionFile extends Provider {
 export interface ConnectionsOptions {
   /** Where log lines go (default `console.error`). */
   log?: (line: string) => void
+  /** How long `remove` waits for yian's lock on a sign-in, in ms (default `SIGN_IN_LOCK_TIMEOUT_MS`). */
+  signInLockTimeoutMs?: number
 }
 
 function errnoCode(error: unknown): unknown {
@@ -127,12 +133,14 @@ export class Connections {
   readonly office: string
   readonly dir: string
   readonly #log: (line: string) => void
+  readonly #signInLockTimeoutMs: number
   #tail: Promise<unknown> = Promise.resolve()
 
   constructor(office: string, options?: ConnectionsOptions) {
     this.office = office
     this.dir = path.join(office, "connections")
     this.#log = options?.log ?? console.error
+    this.#signInLockTimeoutMs = options?.signInLockTimeoutMs ?? SIGN_IN_LOCK_TIMEOUT_MS
   }
 
   /** `office` first, then the added connections, sorted. */
@@ -226,6 +234,76 @@ export class Connections {
     return this.#queued(() => this.#put(name, conn))
   }
 
+  /**
+   * Adds `conn` under the first free name of `base`, `base-2`, …, and returns that name.
+   *
+   * `signIn`, when given, saves the connection's sign-in to the path it is passed before the connection file is
+   * written; if either fails, the sign-in is removed again. It runs in the queue of writes, so it must be quick:
+   * a save of a sign-in already made, not a device login.
+   */
+  async add(
+    base: string,
+    conn: ConnectionFile,
+    options?: { signIn?: (auth: string) => void | Promise<void> },
+  ): Promise<string> {
+    const signIn = options?.signIn
+    return this.#queued(async () => {
+      const name = await this.#freeName(base)
+      this.ensureDir()
+      const auth = this.authFile(name)
+      try {
+        if (signIn) await signIn(auth)
+        await this.#put(name, conn)
+      } catch (error) {
+        if (signIn) {
+          try {
+            await this.#removeSignIn(name, auth)
+          } catch {
+            // the error that stopped the add is the one to throw
+            this.#log(`couldn't remove the sign-in of connection ${name} after its add failed`)
+          }
+        }
+        throw error
+      }
+      return name
+    })
+  }
+
+  /**
+   * Removes connection `name` and its sign-in. Rejects with `RangeError` for `office`, `ConnectionGone` when
+   * neither exists, and `ProviderError` when the sign-in can't be removed, such as when yian holds its lock for
+   * longer than `signInLockTimeoutMs`.
+   *
+   * A running reply keeps the key it has, but one on a subscription may fail once it next reads or refreshes the
+   * sign-in, which is gone.
+   */
+  async remove(name: string): Promise<void> {
+    if (name === OFFICE) {
+      throw new RangeError(
+        "office is office/connections/office.json; `opencorp onboard` changes it, and it can't be removed",
+      )
+    }
+    const file = this.#path(name)
+    const auth = this.authFile(name)
+    return this.#queued(async () => {
+      // By its files, not names(): a retry after a remove cut short must still clean up a retired name.
+      if (!lexists(file) && !lexists(auth)) throw new ConnectionGone(`there is no connection '${name}' on this office`)
+      // The name is retired before its files go: a connection re-added under it would move that name's chats and
+      // runs to a new account without a word, and a remove cut short still reads as removed.
+      const removed = await this.#removed()
+      if (!removed.has(name)) {
+        this.ensureDir()
+        await writePrivate(path.join(this.dir, "_removed.json"), JSON.stringify({ names: [...removed, name].sort() }))
+      }
+      try {
+        fs.unlinkSync(file)
+      } catch (error) {
+        if (errnoCode(error) !== "ENOENT") throw error
+      }
+      await this.#removeSignIn(name, auth)
+    })
+  }
+
   /** Where subscription `name` keeps its sign-in (yian's own auth store). */
   authFile(name: string): string {
     checkName(name)
@@ -266,6 +344,30 @@ export class Connections {
     }
     this.ensureDir()
     await writePrivate(this.#path(name), connectionText(conn))
+  }
+
+  /** `base`, or `base-2`, `base-3`, …: the first that no file, reservation or removal holds. */
+  async #freeName(base: string): Promise<string> {
+    const removed = await this.#removed()
+    for (let n = 1; ; n++) {
+      const name = n === 1 ? base : `${base}-${n}`
+      // also ends the loop once the suffix makes the name too long
+      if (!NAME.test(name)) throw new RangeError(`a connection name must match ${NAME.source}`)
+      if (RESERVED.has(name) || removed.has(name)) continue
+      if (!lexists(this.#path(name)) && !lexists(this.authFile(name))) return name
+    }
+  }
+
+  /** Deletes the sign-in at `auth` of connection `name` through yian's own store, under the lock yian refreshes
+   *  it under; the lock file stays. */
+  async #removeSignIn(name: string, auth: string): Promise<void> {
+    try {
+      await new AuthStore(auth, { lockTimeoutMs: this.#signInLockTimeoutMs }).delete()
+    } catch (error) {
+      if (!(error instanceof AuthError)) throw error
+      // yian's AuthError messages are fixed text, with no path or key in them
+      throw new ProviderError(`can't remove the sign-in of connection '${name}': ${error.message}`)
+    }
   }
 
   /** The file of added connection `name`, removed or not; `ConnectionGone` if there is none. */
@@ -319,6 +421,17 @@ export class Connections {
       throw new ProviderError(`${file} can't be read`)
     }
     return new Set(names)
+  }
+}
+
+/** Whether anything, even a dangling symlink, is at `file`. */
+function lexists(file: string): boolean {
+  try {
+    fs.lstatSync(file)
+    return true
+  } catch (error) {
+    if (errnoCode(error) === "ENOENT") return false
+    throw error
   }
 }
 
