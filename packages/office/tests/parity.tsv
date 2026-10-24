@@ -140,13 +140,13 @@ runs/test_reader.py	open	—	—	O4b-5
 runs/test_reason_cut.py	open	—	—	O4b-7
 runs/test_records.py	open	—	—	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
-sandbox/test_bwrap.py	open	—	—	O1-9
+sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
 sandbox/test_escape.py	open	—	—	O1-10
 sandbox/test_escapees.py	open	—	—	O1-10
 sandbox/test_fileops.py	open	—	—	O1-11
-sandbox/test_policy.py	open	—	—	O1-9
+sandbox/test_policy.py	ported	packages/office/tests/sandbox/policy.test.ts	the two pre-rename home cases dropped (D24)	O1-9
 sandbox/test_run.py	open	—	—	O1-10
-sandbox/test_seatbelt.py	open	—	—	O1-9
+sandbox/test_seatbelt.py	ported	packages/office/tests/sandbox/seatbelt.test.ts	—	O1-9
 sandbox/test_workspace_tools.py	open	—	—	O2-22a
 store/test_bookkeeping.py	ported	packages/office/tests/store/bookkeeping.test.ts	—	O1-2
 store/test_bookkeeping.py::test_usage_rows_and_total	changed	packages/office/tests/store/bookkeeping.test.ts::usage rows and total	usage is money only; tokens are in yian's run index (§5.1)	O1-2
@@ -233,6 +233,24 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/issues.test.ts::an undefined alias is unreadable	design §6: a malformed company file is an issue, never an exception	O1-5
 —	new	packages/office/tests/company/issues.test.ts::malformed yaml is unreadable with its line only	design §5.4, §6 rule 1: path-only messages	O1-5
 —	new	packages/office/tests/company/issues.test.ts::yes stays text in a company file	D8: YAML 1.2 for company files	O1-5
+—	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
+—	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
+—	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
+—	new	packages/office/tests/sandbox/bwrap.test.ts::the compiled helper is bound read only before the root is remounted	§2.5, O0-10 P7	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a folder beside the office paths is fine	§6.1	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a policy rebuilt with a helper keeps its office paths and checks	§2.5, §6.1	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a relative office path refuses every workspace	§6.1 (fail closed)	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace inside the office install is refused	§6.1, D35	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains a folder on the office PATH is refused	§6.1	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains a program the office runs is refused	§6.1	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::a workspace that contains the office install is refused	§6.1, D35	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::office paths are compared resolved	§6.1	O1-9
+—	new	packages/office/tests/sandbox/policy.test.ts::the policy keeps the office and helper paths resolved	§6.1	O1-9
+—	new	packages/office/tests/sandbox/seatbelt.test.ts::a shell profile equals the Python profile byte for byte	§6.1 golden strings	O1-9
+—	new	packages/office/tests/sandbox/seatbelt.test.ts::a shell profile has no helper rule	§2.5 helper rules only in the helper's profile	O1-9
+—	new	packages/office/tests/sandbox/seatbelt.test.ts::the checkout helper profile adds only the helper rules and lists the entry folder	§2.5, O0-11	O1-9
+—	new	packages/office/tests/sandbox/seatbelt.test.ts::the compiled helper profile adds only the helper rules	§2.5, O0-11	O1-9
+—	new	packages/office/tests/sandbox/seatbelt.test.ts::the install is write denied after every file allow	§6.1	O1-9
 —	new	packages/office/tests/store/close.test.ts::a store cannot close inside a transaction	close() refuses inside a transaction (final review)	O1-2
 —	new	packages/office/tests/store/migrate.test.ts::every migration file is in the ladder	the binary embeds the migrations (§2.7, §5.1)	O1-2
 —	new	packages/office/tests/store/open.test.ts::a fifo at the store path is refused	never blocks on or follows a non-file (§6 rule 6)	O1-2
