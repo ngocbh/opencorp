@@ -2,7 +2,7 @@
 import path from "node:path"
 import type { z } from "zod"
 import { onTestFinished } from "bun:test"
-import { Event, Session, WorkItem, now } from "@opencorp/protocol"
+import { Comment, Event, Session, WorkItem, now } from "@opencorp/protocol"
 import { Store, newId, type StoreOptions } from "../../src/store/store.ts"
 import { tempDir } from "../helpers.ts"
 
@@ -26,6 +26,19 @@ export function workItem(over?: Partial<WorkItem>): z.output<typeof WorkItem> {
     requester: "ngocbh",
     created_at: t,
     updated_at: t,
+    ...over,
+  })
+}
+
+/** A Comment on `workItemId` with Python's defaults (`comment` in conftest): a new id, author ngocbh, body
+ *  "looks good", now(), overridden by `over`; parsed, so defaults are filled. */
+export function comment(workItemId: string, over?: Partial<Comment>): z.output<typeof Comment> {
+  return Comment.parse({
+    id: newId(),
+    work_item_id: workItemId,
+    author: "ngocbh",
+    body: "looks good",
+    created_at: now(),
     ...over,
   })
 }

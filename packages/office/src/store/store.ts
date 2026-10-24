@@ -11,7 +11,7 @@ import {
   type SqliteRow,
   type SqliteStatement,
 } from "@ngocbh/yian/platform"
-import { CostReport, Event, Session, now, validationMessage } from "@opencorp/protocol"
+import { Comment, CostReport, Event, Session, WorkItem, now, validationMessage } from "@opencorp/protocol"
 import type { z } from "zod"
 import { migrate } from "./migrate.ts"
 
@@ -32,6 +32,29 @@ export class NotFound extends StoreError {
 export class DuplicateKey extends StoreError {
   override name = "DuplicateKey"
 }
+
+/** A status change the entity's state machine doesn't allow. */
+export class InvalidTransition extends StoreError {
+  override name = "InvalidTransition"
+}
+
+/** A work item update was based on an older version. */
+export class StaleVersion extends StoreError {
+  override name = "StaleVersion"
+
+  constructor(
+    readonly expected: number,
+    readonly current: number,
+  ) {
+    super(`based on version ${expected}, current is ${current}`)
+  }
+}
+
+/** A stored work item, defaults filled. */
+export type WorkItemRecord = z.output<typeof WorkItem>
+
+/** A stored comment, defaults filled. */
+export type CommentRecord = z.output<typeof Comment>
 
 /** A folder a person has had a session in, for the picker. */
 export interface WorkedFolder {
@@ -103,6 +126,26 @@ interface Table<S extends z.ZodObject> {
   bools: Set<string>
   /** Fields kept in a child table rather than a column. */
   derived: Set<string>
+}
+
+const WORK_ITEMS: Table<typeof WorkItem> = {
+  name: "work_items",
+  label: "WorkItem",
+  key: "id",
+  schema: WorkItem,
+  json: new Set(["groups"]),
+  bools: new Set(["gate"]),
+  derived: new Set(),
+}
+
+const COMMENTS: Table<typeof Comment> = {
+  name: "comments",
+  label: "Comment",
+  key: "id",
+  schema: Comment,
+  json: new Set(),
+  bools: new Set(),
+  derived: new Set(),
 }
 
 const SESSIONS: Table<typeof Session> = {
@@ -562,6 +605,49 @@ export class Store {
     return result.data
   }
 
+  /** The row of `table` whose key is `key`, as an entity, or undefined. */
+  #get<S extends z.ZodObject>(table: Table<S>, key: string): z.output<S> | undefined {
+    const row = this.db.prepare(`SELECT * FROM ${quote(table.name)} WHERE ${quote(table.key)} = ?`).get(key)
+    return row && this.#entity(table, row)
+  }
+
+  /** The row of `table` whose key is `key`, as an entity; throws `NotFound` if there is none. */
+  #must<S extends z.ZodObject>(table: Table<S>, key: string): z.output<S> {
+    const found = this.#get(table, key)
+    if (!found) throw new NotFound(`no ${table.name} row ${key}`)
+    return found
+  }
+
+  /** The rows of `table` matching `where` (an undefined or null value is no filter, an array is any of its
+   *  values), in `order`, at most `limit`, as entities. */
+  #list<S extends z.ZodObject>(
+    table: Table<S>,
+    where: Record<string, string | string[] | null | undefined>,
+    order: string,
+    limit?: number,
+  ): z.output<S>[] {
+    const clauses: string[] = []
+    const params: SqliteParam[] = []
+    for (const [name, value] of Object.entries(where)) {
+      if (value === undefined || value === null) continue
+      if (Array.isArray(value)) {
+        // One JSON parameter rather than a `?` per value: a long list would pass SQLite's variable limit.
+        clauses.push(`${quote(name)} IN (SELECT value FROM json_each(?))`)
+        params.push(JSON.stringify(value))
+      } else {
+        clauses.push(`${quote(name)} = ?`)
+        params.push(value)
+      }
+    }
+    const sql =
+      `SELECT * FROM ${quote(table.name)}${clauses.length ? ` WHERE ${clauses.join(" AND ")}` : ""} ` +
+      `ORDER BY ${order} LIMIT ?`
+    return this.db
+      .prepare(sql)
+      .all(...params, limit ?? -1)
+      .map((row) => this.#entity(table, row))
+  }
+
   /** `current` with `changes` applied (undefined entries skipped), validated; throws `StoreError` if `changes`
    *  touches a `frozen` field. */
   #changed<S extends z.ZodObject>(
@@ -577,6 +663,69 @@ export class Store {
     const result = table.schema.safeParse(data)
     if (!result.success) throw new StoreError(`${table.name}: ${validationMessage(table.schema, result.error, data)}`)
     return result.data
+  }
+
+  // Work items and comments.
+
+  /** Inserts a work item and emits `work_item.created`. */
+  createWorkItem(item: WorkItemRecord): WorkItemRecord {
+    return this.transaction((tx) => {
+      tx.insert(WORK_ITEMS.name, this.#columns(WORK_ITEMS, item))
+      const stored = this.#must(WORK_ITEMS, item.id)
+      tx.emit("work_item.created", item.id, stored)
+      return stored
+    })
+  }
+
+  /** The work item, or undefined. */
+  getWorkItem(itemId: string): WorkItemRecord | undefined {
+    return this.#get(WORK_ITEMS, itemId)
+  }
+
+  /** Work items, newest first, optionally filtered. */
+  listWorkItems(filter?: { assignee?: string; status?: string | string[]; limit?: number }): WorkItemRecord[] {
+    return this.#list(
+      WORK_ITEMS,
+      { assignee: filter?.assignee, status: filter?.status },
+      "created_at DESC, rowid DESC",
+      filter?.limit,
+    )
+  }
+
+  /** Changes fields of a work item, bumps its version and emits `work_item.updated` (`updated_at` defaults to
+   *  now). With `baseVersion`, a work item at another version throws `StaleVersion`. */
+  updateWorkItem(itemId: string, changes: Partial<WorkItemRecord>, baseVersion?: number): WorkItemRecord {
+    return this.transaction((tx) => {
+      const current = this.#must(WORK_ITEMS, itemId)
+      if (baseVersion !== undefined && baseVersion !== current.version) {
+        throw new StaleVersion(baseVersion, current.version)
+      }
+      const changed = this.#changed(WORK_ITEMS, current, { updated_at: now(), ...defined(changes) }, [
+        "id",
+        "version",
+        "created_at",
+      ])
+      const item = { ...changed, version: current.version + 1 }
+      tx.update(WORK_ITEMS.name, WORK_ITEMS.key, this.#columns(WORK_ITEMS, item))
+      const stored = this.#must(WORK_ITEMS, itemId)
+      tx.emit("work_item.updated", itemId, stored)
+      return stored
+    })
+  }
+
+  /** Inserts a comment and emits `comment.created`; a missing work item → NotFound. */
+  addComment(comment: CommentRecord): CommentRecord {
+    return this.transaction((tx) => {
+      tx.insert(COMMENTS.name, this.#columns(COMMENTS, comment))
+      const stored = this.#must(COMMENTS, comment.id)
+      tx.emit("comment.created", comment.id, stored)
+      return stored
+    })
+  }
+
+  /** A work item's comments, oldest first. */
+  listComments(workItemId: string): CommentRecord[] {
+    return this.#list(COMMENTS, { work_item_id: workItemId }, "created_at, rowid")
   }
 
   // Sessions, their runs, worked folders.
