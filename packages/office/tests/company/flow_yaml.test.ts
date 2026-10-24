@@ -260,6 +260,7 @@ describe("writing company files", () => {
     // No anchors for the repeated object, and the long hash stays on one line.
     expect(text).not.toContain("&")
     expect(text).toContain(`password_hash: ${data.password_hash}\n`)
+    expect(writeYaml({ a: ["x"] })).toBe("a:\n- x\n") // PyYAML's list layout
   })
 })
 

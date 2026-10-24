@@ -34,8 +34,12 @@ function pin(): string {
 const flow = (pin: string, name: string) => loadConfined(pin, path.join(pin, "flows", `${name}.yaml`))
 
 /** Runs `flow` against `fake`. */
-function run(fake: FakeLLM, flow: ComposedFlow, inputs: Record<string, unknown>,
-             options: Parameters<typeof runFlow>[2] = {}) {
+function run(
+  fake: FakeLLM,
+  flow: ComposedFlow,
+  inputs: Record<string, unknown>,
+  options: Parameters<typeof runFlow>[2] = {},
+) {
   return runFlow(flow, inputs, { llmConfig: LLM_CONFIG, env: (name) => fake.env()[name], ...options })
 }
 

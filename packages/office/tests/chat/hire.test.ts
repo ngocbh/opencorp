@@ -285,6 +285,56 @@ test("a relative people link out of the repo counts as outside the repo", async 
   expect(fs.existsSync(path.join(shared, "lan"))).toBe(false)
 })
 
+test("a preview through a symlinked company folder writes nothing in the repo", async () => {
+  const dir = tempDir()
+  const real = writeRepo(path.join(dir, "real"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  fs.symlinkSync(real, path.join(dir, "company"))
+  const hiring = new Hiring(new CompanyGit(path.join(dir, "company"), path.join(dir, "worktrees")))
+  expect((await hiring.hire(req(FORM))).issues).toEqual([])
+  expect(fs.existsSync(path.join(real, "people/lan"))).toBe(false)
+  expect(status(real)).toBe("")
+  const again = await hiring.hire(req(FORM))
+  expect(again.issues.map((i) => i.code)).not.toContain("person.duplicate_handle")
+  expect((await hiring.hire(req(FORM, true))).commit).toBe(runGit(real, "rev-parse", "HEAD"))
+  expect(fs.readdirSync(path.join(real, "people/lan")).sort()).toEqual(["person.yaml", "profile.md"])
+})
+
+test("an in repo people link is refused at preview as at confirm", async () => {
+  const dir = tempDir()
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  fs.renameSync(path.join(root, "people"), path.join(root, "staff"))
+  fs.symlinkSync("staff", path.join(root, "people"))
+  runGit(root, "add", "-A")
+  runGit(root, "commit", "-qm", "people is staff")
+  const hiring = new Hiring(new CompanyGit(root, path.join(dir, "worktrees")))
+  const preview = await hiring.hire(req(FORM))
+  expect(preview.issues.map((i) => [i.code, i.severity])).toEqual([["person.outside_repo", "error"]])
+  expect((await refused(hiring.hire(req(FORM, true)))).code).toBe("lint_failed")
+  expect(fs.existsSync(path.join(root, "staff/lan"))).toBe(false)
+})
+
+test("a handle folder made after the draft is refused as taken", async () => {
+  class RacingGit extends CompanyGit {
+    raced = false
+    override async head(): Promise<string> {
+      if (!this.raced) {
+        this.raced = true
+        fs.mkdirSync(path.join(this.root, "people/lan"))
+      }
+      return super.head()
+    }
+  }
+  const dir = tempDir()
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const head = runGit(root, "rev-parse", "HEAD")
+  const hiring = new Hiring(new RacingGit(root, path.join(dir, "worktrees")))
+  await hiring.hire(req(FORM)) // a preview doesn't read HEAD; the confirm reads it after its draft
+  const error = await refused(hiring.hire(req(FORM, true)))
+  expect([error.code, error.message]).toEqual(["lint_failed", "@lan is already taken"])
+  expect(fs.readdirSync(path.join(root, "people/lan"))).toEqual([])
+  expect(runGit(root, "rev-parse", "HEAD")).toBe(head)
+})
+
 test("a people folder swapped for a link after the draft is never written through", async () => {
   const dir = tempDir()
   const outside = path.join(dir, "outside")

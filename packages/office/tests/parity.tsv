@@ -300,11 +300,14 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/auth/passwords.test.ts::the dummy hash checks nothing	P4 (D36)	O1-14
 —	new	packages/office/tests/auth/tokens.test.ts::a person file in the wrong folder lets no one in	design §6.4: the roster reads people as the loader does	O1-14
 —	new	packages/office/tests/chat/connections.test.ts::a connection file has the python layout and a python file reads	design §10.4 (R2 m9): test_run_logs.py writes connections through the Python code	O2-19
+—	new	packages/office/tests/chat/hire.test.ts::a handle folder made after the draft is refused as taken	design §6.4 (O1-14 handoff): the confirm's write only makes a folder of its own; Python's duplicate-handle words	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a hires person file is laid out as python wrote it	design §3.2 (mirror): init (O2-17) and hire write the same files as the Python office	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a hostile title reads back as itself and adds no key	design §6.9: the person file decides kind and password_hash; titles may come from an LLM (O2-17)	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a people folder swapped for a link after the draft is never written through	design §6.4 (O1-14 handoff): a person write never goes through a symlinked folder	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a people folder swapped for a link during the commit is never deleted through	design §6.4 (O1-14 handoff): the undo never deletes through a symlinked folder	O2-24
+—	new	packages/office/tests/chat/hire.test.ts::a preview through a symlinked company folder writes nothing in the repo	design §6 path guard: Python's copytree copied a linked root's contents	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::a relative people link out of the repo counts as outside the repo	design §6 path guard: Python's non-strict realpath followed a link that dangles in the scratch copy	O2-24
+—	new	packages/office/tests/chat/hire.test.ts::an in repo people link is refused at preview as at confirm	design §6.4 (O1-14 handoff): a person write never goes through a link; the preview says so too	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::issue messages name the company repo not the scratch copy	O1-8 handoff (yian #1051): absolute CODE-root paths would name the scratch copy	O2-24
 —	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19

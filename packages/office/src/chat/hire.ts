@@ -91,7 +91,12 @@ export class Hiring {
       }
       // Not recursive: it fails on anything already there, a link included, so the undo only removes a
       // folder this hire made.
-      fs.mkdirSync(path.join(people, person.handle))
+      try {
+        fs.mkdirSync(path.join(people, person.handle))
+      } catch (error) {
+        if (errno(error) !== "EEXIST") throw error
+        throw new HireRefused("lint_failed", `@${person.handle} is already taken`)
+      }
       try {
         for (const [rel, text] of Object.entries(files)) {
           const fd = fs.openSync(path.join(this.git.root, rel), CREATE_NEW, 0o644)
@@ -139,7 +144,9 @@ export class Hiring {
     const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "opencorp-hire-")))
     try {
       const scratch = path.join(tmp, "company")
-      await fs.promises.cp(this.git.root, scratch, {
+      // The real path: cp copies a linked root as the link, and the scratch copy would be the live repo.
+      const repo = fs.realpathSync(this.git.root)
+      await fs.promises.cp(repo, scratch, {
         recursive: true,
         verbatimSymlinks: true,
         filter: (src) => path.basename(src) !== ".git",
@@ -154,9 +161,9 @@ export class Hiring {
       }
       const root = resolvePath(scratch)
       for (const [rel, text] of Object.entries(files)) {
-        // A symlink in the repo (people/ itself, say) could point the write elsewhere.
+        // The office never writes through a link, which may leave the repo: absolute, relative or swapped.
         const target = resolvePath(path.join(scratch, rel))
-        if (outsideRoot(root, target) || danglingLink(scratch, path.dirname(rel))) {
+        if (outsideRoot(root, target) || linkOnPath(scratch, path.dirname(rel))) {
           const outside = `${rel} would be written outside the company repo`
           return [person, files, [repoIssue(rel, "person.outside_repo", outside)]]
         }
@@ -166,7 +173,6 @@ export class Hiring {
       // An error the repo already had isn't this hire's to fix; it shows as a warning.
       const key = (i: RepoIssue) => JSON.stringify([i.path, i.code, i.message])
       const known = new Set((await lint(before)).map(key))
-      const repo = fs.realpathSync(this.git.root)
       const issues = (await lint(loadRepo(scratch))).map((i) => ({
         ...i,
         severity: known.has(key(i)) && !i.path.startsWith(`${base}/`) ? ("warning" as const) : i.severity,
@@ -188,26 +194,16 @@ function peopleInRepo(root: string): boolean {
   return fs.realpathSync(path.join(root, "people")) === path.join(fs.realpathSync(root), "people")
 }
 
-/**
- * Whether a folder on `rel`'s path under `root` is a symlink that doesn't resolve. A link out of the repo by a
- * relative path (`people -> ../shared-people`) dangles in the scratch copy, and `resolvePath` doesn't follow a
- * dangling link, so it would look inside the repo.
- */
-function danglingLink(root: string, rel: string): boolean {
+/** Whether a folder on `rel`'s path under `root` is a symlink; the walk ends at the first missing folder. */
+function linkOnPath(root: string, rel: string): boolean {
   let dir = root
   for (const part of rel.split("/")) {
     dir = path.join(dir, part)
     try {
-      if (!fs.lstatSync(dir).isSymbolicLink()) continue
+      if (fs.lstatSync(dir).isSymbolicLink()) return true
     } catch (error) {
-      if (errno(error) === undefined) throw error
-      return false // nothing there, so no link further down either
-    }
-    try {
-      fs.realpathSync(dir)
-    } catch (error) {
-      if (errno(error) === undefined) throw error
-      return true
+      if (errno(error) !== "ENOENT") throw error
+      return false
     }
   }
   return false
