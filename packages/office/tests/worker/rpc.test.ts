@@ -148,22 +148,24 @@ test("store replies are plain json", async () => {
   const stores = { profile: store({ read: () => Object.freeze(["text", "v1"] as const), write: () => "v2" }) }
   const read = await answer(READ, { stores })
   const write = await answer(WRITE, { stores })
-  expect([read.text, read.version, write.version]).toEqual(["text", "v1", "v2"])
   expect(read).toEqual({ type: "store_reply", id: 1, text: "text", version: "v1" })
   expect(write).toEqual({ type: "store_reply", id: 2, version: "v2" })
 })
 
 test("a forged tool call for a group the job was not given is refused", async () => {
   const ran: string[] = []
-  const toolbox = { shout: tool(() => ran.push("shout")) }
+  const toolbox = { shout: tool(() => ran.push("shout")), purge: tool(() => ran.push("purge"), []) }
   const admin = { wipe: tool(() => ran.push("wipe"), []) }
   const handlers = new BaseHandlers({ tools: { toolbox, admin } })
-  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox }) })
+  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout: toolbox.shout } }) })
   const wipe = { type: "tool_call", id: 9, group: "admin", name: "wipe", args: {} }
   const forged = await answerRequest(wipe, handlers, worker)
   expect(forged).toEqual({ type: "tool_result", id: 9, error: "failed", message: "no tool 'wipe' in group 'admin'" })
   const unlisted = await answerRequest({ ...wipe, group: "toolbox" }, handlers, worker)
   expect([unlisted.error, unlisted.message]).toEqual(["failed", "no tool 'wipe' in group 'toolbox'"])
+  // The handlers hold purge, so only the job check can refuse it.
+  const purge = await answerRequest({ ...wipe, group: "toolbox", name: "purge" }, handlers, worker)
+  expect([purge.error, purge.message]).toEqual(["failed", "no tool 'purge' in group 'toolbox'"])
   expect(ran).toEqual([])
 })
 
@@ -189,9 +191,35 @@ test("a forged store request for a store the job was not given is refused", asyn
 })
 
 test("object method names are never tools or stores", async () => {
-  const handlers = new BaseHandlers({ tools: { toolbox: { shout: tool(() => "OK") } }, stores: { profile: store() } })
-  const worker = workerFor(handlers)
-  for (const key of ["__proto__", "constructor", "toString"]) {
+  const ran: string[] = []
+  const keys = ["__proto__", "constructor", "toString"]
+  const shout = tool(() => "OK")
+  const sneaky = tool(() => ran.push("tool"), [])
+  const notes = store({
+    read: () => {
+      ran.push("read")
+      return ["", "v0"] as const
+    },
+    write: () => {
+      ran.push("write")
+      return "v1"
+    },
+  })
+  const each = <T>(value: T) => Object.fromEntries(keys.map((key) => [key, value]))
+  // The handlers hold each name as an own key, which the job doesn't grant, so only the job check can refuse it.
+  const handlers = new BaseHandlers({
+    tools: { toolbox: { shout, ...each(sneaky) }, ...each({ shout: sneaky }) },
+    stores: { profile: store(), ...each(notes) },
+  })
+  for (const key of keys) {
+    expect([Object.hasOwn(handlers.tools, key), Object.hasOwn(handlers.tools.toolbox!, key)]).toEqual([true, true])
+    expect(Object.hasOwn(handlers.stores, key)).toBe(true)
+  }
+  const worker = workerFor(handlers, {
+    groups: groupSpecs({ toolbox: { shout } }),
+    memory: { profile: { store: "profile" } },
+  })
+  for (const key of keys) {
     const shout = { type: "tool_call", id: 1, group: "toolbox", name: "shout", args: {} }
     const group = await answerRequest({ ...shout, group: key }, handlers, worker)
     expect([group.error, group.message]).toEqual(["failed", `no tool 'shout' in group '${key}'`])
@@ -202,6 +230,7 @@ test("object method names are never tools or stores", async () => {
       expect([reply.error, reply.message]).toEqual(["unavailable", `no store named '${key}'`])
     }
   }
+  expect(ran).toEqual([])
   for (const type of ["toString", "__proto__", "constructor"]) expect(isRequest(type)).toBe(false)
   expect(isRequest("tool_call")).toBe(true)
   await expect(answerRequest({ type: "toString", id: 1 }, handlers, worker)).rejects.toThrow(TypeError)
@@ -279,7 +308,13 @@ test("an error whose name or message cannot be read is a failed reply", async ()
   const spaced = tool(() => {
     throw Object.assign(new Error("y"), { name: "bad name with spaces" })
   })
-  const tools = { badName, badMessage, spaced }
+  // A revoked Proxy throws on every check, instanceof included.
+  const revoked = () => {
+    const { proxy, revoke } = Proxy.revocable({}, {})
+    revoke()
+    throw proxy
+  }
+  const tools = { badName, badMessage, spaced, revoked: tool(revoked) }
   const { calls, log } = recorder()
   const first = await answer(call("badName"), { tools, log })
   expect([first.error, first.message]).toEqual(["failed", "x"])
@@ -287,11 +322,19 @@ test("an error whose name or message cannot be read is a failed reply", async ()
   expect([second.error, second.message]).toEqual(["failed", "Error"])
   const third = await answer(call("spaced"), { tools, log })
   expect([third.error, third.message]).toEqual(["failed", "y"])
+  const fourth = await answer(call("revoked"), { tools, log })
+  expect(fourth).toEqual({ type: "tool_result", id: 3, error: "failed", message: "Error" })
   expect(calls).toEqual([
     ["INFO", "worker tool_call request failed: Error"],
     ["INFO", "worker tool_call request failed: Error"],
     ["INFO", "worker tool_call request failed: Error"],
+    ["INFO", "worker tool_call request failed: Error"],
   ])
+  const stores = { profile: store({ read: revoked, write: revoked }) }
+  for (const frame of [READ, WRITE]) {
+    const reply = await answer(frame, { stores })
+    expect([reply.type, reply.error, reply.message]).toEqual(["store_reply", "unavailable", "Error"])
+  }
   expect(await answer(call("badName"), { tools, log: throwingLog })).toEqual(first)
 })
 
@@ -311,26 +354,28 @@ test("reply to never rejects", async () => {
     return { sent, channel: { send } }
   }
 
-  for (const log of [recorder(), { calls: [], log: throwingLog }]) {
+  const message = "the reply could not be sent (FrameTooLarge)"
+  const failed = { type: "tool_result", id: 7, error: "failed", message }
+  // (c) with a log that throws, each case still sends what it would with a working log.
+  const { calls, log: recording } = recorder()
+  for (const log of [recording, throwingLog]) {
     // (a) a closed channel: the reply is dropped.
     const closed = channel(new ChannelClosed())
-    await replyTo(closed.channel, frame, handlers, worker, { log: log.log })
+    await replyTo(closed.channel, frame, handlers, worker, { log })
     expect(closed.sent).toEqual([{ type: "tool_result", id: 7, result: "HI" }])
-    expect(log.calls).toEqual([])
 
     // (b) a reply that can't be sent: a failed reply instead; a failing second send is dropped too.
     const tooLarge = channel(new FrameTooLarge(10, 5))
-    await replyTo(tooLarge.channel, frame, handlers, worker, { log: log.log })
-    const message = "the reply could not be sent (FrameTooLarge)"
-    const failed = { type: "tool_result", id: 7, error: "failed", message }
+    await replyTo(tooLarge.channel, frame, handlers, worker, { log })
     expect(tooLarge.sent).toEqual([{ type: "tool_result", id: 7, result: "HI" }, failed])
-    if (log.log !== throwingLog) {
-      expect(log.calls).toEqual([["WARNING", "worker could not answer a tool_call request: FrameTooLarge"]])
-    }
     const twice = channel(new FrameTooLarge(10, 5), new Error("down"))
-    await replyTo(twice.channel, frame, handlers, worker, { log: log.log })
+    await replyTo(twice.channel, frame, handlers, worker, { log })
     expect(twice.sent).toEqual([{ type: "tool_result", id: 7, result: "HI" }, failed])
   }
+  expect(calls).toEqual([
+    ["WARNING", "worker could not answer a tool_call request: FrameTooLarge"],
+    ["WARNING", "worker could not answer a tool_call request: FrameTooLarge"],
+  ])
 
   // (d) not a request: nothing is sent.
   const ignored = channel()

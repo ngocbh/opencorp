@@ -116,11 +116,21 @@ export class BaseHandlers implements WorkerHandlers {
     return await named[name]!.call(args)
   }
 
-  storeRead(_worker: unknown, store: string, version: string | null) {
+  storeRead(
+    _worker: unknown,
+    store: string,
+    version: string | null,
+  ): readonly [string, string] | Promise<readonly [string, string]> {
     return this.#store(store).read(version)
   }
 
-  storeWrite(_worker: unknown, store: string, text: string, baseVersion: string, provenance: JsonObject | null) {
+  storeWrite(
+    _worker: unknown,
+    store: string,
+    text: string,
+    baseVersion: string,
+    provenance: JsonObject | null,
+  ): string | Promise<string> {
     return this.#store(store).write(text, { baseVersion, provenance })
   }
 
@@ -175,7 +185,7 @@ export async function answerRequest(
       }
     }
   } catch (error) {
-    if (error instanceof MarkdownVersionMismatch) {
+    if (isInstance(error, MarkdownVersionMismatch)) {
       const { expected, current } = error
       return { ...head, error: "mismatch", message: errorMessage(error), expected, current }
     }
@@ -203,7 +213,7 @@ export async function replyTo(
   try {
     await channel.send(await answerRequest(frame, handlers, worker, { log }))
   } catch (error) {
-    if (isClosed(error)) return
+    if (isInstance(error, ChannelClosed)) return
     const name = errorName(error)
     // Only the name and fixed text: the error's message could quote the reply.
     write(log, "WARNING", `worker could not answer a ${kind} request: ${name}`)
@@ -281,8 +291,8 @@ function checkJob(job: Job, args: RequestArgs): void {
 /** A store error's reply code. A write's `RangeError` is never an unknown version (a lone surrogate, a non-finite
  *  provenance number or an undecodable current file), and a `TypeError` is a value the store refuses. */
 function storeCode(kind: "store_read" | "store_write", error: unknown): string {
-  if (error instanceof RangeError) return kind === "store_read" ? "unknown_version" : "invalid"
-  return error instanceof TypeError ? "invalid" : "unavailable"
+  if (isInstance(error, RangeError)) return kind === "store_read" ? "unknown_version" : "invalid"
+  return isInstance(error, TypeError) ? "invalid" : "unavailable"
 }
 
 // The same texts whether the job check or the handlers refuse, so a worker can't tell which did.
@@ -324,9 +334,10 @@ function errorMessage(error: unknown): string {
   return errorName(error)
 }
 
-function isClosed(error: unknown): boolean {
+/** Whether `error` is an instance of `type`; never throws (a revoked `Proxy` throws on `instanceof`). */
+function isInstance<T>(error: unknown, type: abstract new (...args: never[]) => T): error is T {
   try {
-    return error instanceof ChannelClosed
+    return error instanceof type
   } catch {
     return false
   }
