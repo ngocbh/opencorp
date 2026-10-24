@@ -248,15 +248,22 @@ export function requestListener<C>(
   }
 }
 
-/** The server's timeouts and checks, in milliseconds. */
+/** The server's timeouts, checks and connection cap; times in milliseconds. */
 export interface Limits {
   connectionsCheckingInterval: number
   headersTimeout: number
   requestTimeout: number
   keepAliveTimeout: number
+  /** Past this many open connections a new one is closed at once; no cap when absent. */
+  maxConnections?: number
 }
 
-/** The office's limits. */
+/** The office's limits.
+ *
+ *  - The runtime checks `headersTimeout` and `requestTimeout` only every `connectionsCheckingInterval`, hence 1 s
+ *    rather than the 30 s default.
+ *  - `requestTimeout` covers receiving the request only: a slow handler's reply isn't cut.
+ *  - HQ's listeners pass `{...LIMITS, requestTimeout: 10_000, maxConnections: 64}`. */
 export const LIMITS: Limits = {
   connectionsCheckingInterval: 1000,
   headersTimeout: 10_000,
@@ -265,10 +272,13 @@ export const LIMITS: Limits = {
 }
 
 /** An HTTP server for `listener` with `limits`; it has no idle socket timeout (`requestTimeout` bounds a
- *  request) and no upgrade listener. */
+ *  request) and no upgrade listener, so an upgrade request is served as plain HTTP. */
 export function createServer(listener: RequestListener, limits: Limits = LIMITS): http.Server {
-  const server = http.createServer(limits, listener)
+  const { maxConnections, ...options } = limits
+  const server = http.createServer(options, listener)
+  // An event stream stays open with long quiet spells, so there is no idle cut.
   server.timeout = 0
+  if (maxConnections !== undefined) server.maxConnections = maxConnections
   return server
 }
 

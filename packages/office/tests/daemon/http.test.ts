@@ -7,10 +7,12 @@ import { describe, expect, onTestFinished, setDefaultTimeout, test } from "bun:t
 import { z } from "zod"
 import {
   HttpError,
+  LIMITS,
   type Limits,
   type RequestInfo,
   type Route,
   createServer,
+  logLine,
   requestListener,
 } from "../../src/daemon/http.ts"
 import {
@@ -582,5 +584,95 @@ describe("routes", () => {
     await waitFor(() => aborted, { timeout: 9000, what: "the signal to abort" })
     await waitFor(() => settled() === 1, { timeout: 9000, what: "the request to settle" })
     expect(lines).toEqual([]) // an abort is no 500 and logs nothing
+  })
+})
+
+/** Short deadlines, checked often, so a stalled request is cut within a test's time. */
+const SHORT: Limits = {
+  connectionsCheckingInterval: 200,
+  headersTimeout: 1000,
+  requestTimeout: 1500,
+  keepAliveTimeout: 4000,
+}
+
+describe("server", () => {
+  test("a websocket upgrade is served as plain http on the office socket", async () => {
+    const health: Route<Ctx> = { method: "GET", path: "/health", handler: () => ({ ok: true }) }
+    const { sock } = await serve([health])
+    const got = await raw(
+      sock,
+      "GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+        "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+      { until: "line", timeout: 5000 },
+    )
+    expect(got.text).toStartWith("HTTP/1.1 200")
+  })
+
+  test("the office server has no upgrade listener", () => {
+    expect(createServer(() => {}).listenerCount("upgrade")).toBe(0)
+  })
+
+  test("the listener limits are the designs values", () => {
+    expect(LIMITS).toEqual({
+      connectionsCheckingInterval: 1000,
+      headersTimeout: 10_000,
+      requestTimeout: 20_000,
+      keepAliveTimeout: 4000,
+    })
+    const s = createServer(() => {})
+    expect([s.headersTimeout, s.requestTimeout, s.keepAliveTimeout, s.timeout]).toEqual([10_000, 20_000, 4000, 0])
+    expect(s.maxConnections).toBe(http.createServer().maxConnections)
+    expect(createServer(() => {}, { ...LIMITS, maxConnections: 2 }).maxConnections).toBe(2)
+  })
+
+  test(
+    "a stalled head is cut with 408",
+    async () => {
+      const { sock } = await serve([people], { limits: SHORT })
+      // The status line tells this deadline from the runtime's own cut at about 12 s, which sends nothing.
+      const got = await raw(sock, "GET / HTTP/1.1\r\nHost: x\r\n", { until: "line", timeout: 9000 })
+      expect(got.text).toStartWith("HTTP/1.1 408")
+    },
+    15_000,
+  )
+
+  test(
+    "a slow reply is not cut by the request timeout",
+    async () => {
+      const slow: Route<Ctx> = {
+        method: "GET",
+        path: "/slow",
+        handler: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 2500))
+          return { ok: true }
+        },
+      }
+      const { sock } = await serve([slow], { limits: SHORT })
+      const r = await exchange(sock, "GET", "/slow")
+      expect([r.status, JSON.parse(r.body)]).toEqual([200, { ok: true }])
+    },
+    15_000,
+  )
+
+  test("connections past max connections are closed", async () => {
+    const { sock, server } = await serve([people], { limits: { ...LIMITS, maxConnections: 2 } })
+    const one = await Conn.open(sock)
+    const two = await Conn.open(sock)
+    await waitFor(() => new Promise<boolean>((r) => server.getConnections((_, n) => r(n === 2))), {
+      timeout: 10_000,
+      what: "two connections",
+    })
+    expect(await raw(sock, "", { until: "close" })).toEqual({ text: "", closed: true })
+    for (const conn of [one, two]) {
+      conn.send("GET /people HTTP/1.1\r\nHost: x\r\n\r\n")
+      expect((await conn.response()).status).toBe(200)
+    }
+  })
+
+  test("a log line is the time level logger and message", () => {
+    const at = new Date("2026-10-23T01:02:03.004Z")
+    expect(logLine("INFO", "opencorp.hq.login", "sign-in for @ngocbh throttled", at)).toBe(
+      "2026-10-23T01:02:03.004Z INFO opencorp.hq.login: sign-in for @ngocbh throttled",
+    )
   })
 })
