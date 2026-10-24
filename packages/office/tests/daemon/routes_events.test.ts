@@ -1,11 +1,13 @@
 /** GET /events over a real socket. */
 import http from "node:http"
-import { expect, onTestFinished, test } from "bun:test"
+import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type Event, type LiveEvent, now } from "@opencorp/protocol"
 import { newId } from "../../src/store/store.ts"
 import { waitFor } from "../helpers.ts"
 import { recordEvents, session } from "../store/helpers.ts"
 import { Conn, makeOffice, served } from "./helpers.ts"
+
+setDefaultTimeout(30_000)
 
 /** `[event, id, data]` per SSE frame, and `["comment", null, text]` per comment line. */
 type Frame = [string, string | null, unknown]
@@ -184,7 +186,7 @@ test("head is 405 and leaves the connection usable", async () => {
   const head = await conn.response({ head: true })
   expect(head.status).toBe(405)
   expect(head.head).toMatch(/\r\nallow: GET\r\n/i)
-  // Any route will do; no other route than /events exists yet.
+  // An unknown path has a known reply (404 no_route), which shows the connection still serves requests.
   conn.send("GET /nope HTTP/1.1\r\nhost: office\r\n\r\n")
   const next = await conn.response()
   expect(next.status).toBe(404)

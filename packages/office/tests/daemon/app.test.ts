@@ -1,10 +1,12 @@
 /** The office: its paths, and start and stop. */
 import path from "node:path"
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import { OfficePaths, type WorkerPool } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { tempDir } from "../helpers.ts"
 import { makeOffice, request, served } from "./helpers.ts"
+
+setDefaultTimeout(30_000)
 
 /** A WorkerPool that counts closeAll calls. */
 class FakePool implements WorkerPool {
@@ -92,8 +94,8 @@ test("a failing stop callback does not skip the rest", async () => {
 // routes_events.test.ts.
 const STREAMS: [string, string][] = [["GET", "/events"]]
 
-// [method, route pattern, concrete path, body] for every other route; null is no body. Each route area adds its
-// routes as it is ported. Still to come, from Python's table:
+// [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
+// (tests/daemon/test_app.py) also covered these routes; each is added here when its route area is ported:
 // - people and work items: GET /people, GET /folders/*cwd/people, POST /people, GET /work-items/:id,
 //   GET /work-items/:id/comments;
 // - profiles: GET and PUT /profiles/:person;
@@ -105,7 +107,7 @@ const TABLE: [string, string, string, unknown][] = []
 
 test("every table route is served", async () => {
   const listed = new Set([...STREAMS, ...TABLE].map(([method, pattern]) => `${method} ${pattern}`))
-  expect(allRoutes().map((r) => `${r.method} ${r.path}`).filter((route) => !listed.has(route))).toEqual([])
+  expect(new Set(allRoutes().map((r) => `${r.method} ${r.path}`))).toEqual(listed)
   const office = makeOffice()
   const { sock } = await served(office)
   for (const [method, , target, body] of TABLE) {

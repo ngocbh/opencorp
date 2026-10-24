@@ -6,6 +6,7 @@ import type { RequestContext } from "../office.ts"
 /** Milliseconds of silence before a `: ping` comment keeps the stream open. */
 export const PING_MS = 15_000
 
+/** The frame that tells a client the office dropped it for falling behind. */
 // The empty data field makes standard SSE parsers (EventSource included) dispatch the event; one with no data
 // field at all is silently skipped.
 export const RESET = "event: reset\ndata:\n\n"
