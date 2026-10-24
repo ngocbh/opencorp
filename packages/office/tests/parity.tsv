@@ -506,6 +506,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/worker/codec.test.ts::negative Infinity round trips	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::nested values round trip	design §2.4: the office value codec	O3-1
 —	new	packages/office/tests/worker/codec.test.ts::text that is not json is refused with a fixed message	design §2.4: the office value codec; §6 rule 1	O3-1
+—	new	packages/office/tests/worker/fake_llm.test.ts::closing releases held replies and ends open connections	O2-1 handoff: node:http stop order; servers close per test	O2-24
 —	new	packages/office/tests/worker/job.test.ts::a bad job error holds no input value	design §2.4, §6 rule 1	O3-1
 —	new	packages/office/tests/worker/job.test.ts::group specs builds a spec for each tool under its key	design §2.4	O3-1
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6
