@@ -182,7 +182,7 @@ install/test_doctor.py	open	—	—	O2-18a
 install/test_fallback.py	open	—	—	O2-12
 install/test_init.py	open	—	—	O2-17
 install/test_interview.py	open	—	—	O2-17
-install/test_json_prompts.py	open	—	—	O2-13a
+install/test_json_prompts.py	ported	packages/office/tests/install/json_prompts.test.ts	—	O2-13a
 install/test_launch.py	open	—	—	O2-11b
 install/test_launchd.py	open	—	—	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
@@ -561,6 +561,8 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/static.test.ts::a path with a doubled slash is not a file of the app	design §6 static rules: //index.html resolves as an absolute path outside app_dir (Python's app_dir / rel), so it is a 404	O2-7
 —	new	packages/office/tests/hq/static.test.ts::the not built page escapes the checkout path	design §6.4 (static): the checkout path is HTML-escaped in the not-built page, as Python's html.escape	O2-7
 —	new	packages/office/tests/hq/version.test.ts::build json that is a fifo is invalid without blocking	design §6: build.json is opened O_NONBLOCK and fstat-checked, so a FIFO never blocks	O2-7
+—	new	packages/office/tests/install/json_prompts.test.ts::an empty choice list is refused before anything is sent	design §9.1: SetupChoose needs an option; the TUI would wait forever	O2-13a
+—	new	packages/office/tests/install/json_prompts.test.ts::read line leaves the rest of the stream for the next read and lets the process exit	design §9.1: the TUI keeps the setup's stdin open, so a read must not hold the process	O2-13a
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a
