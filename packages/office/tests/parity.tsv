@@ -165,6 +165,7 @@ hq/test_guard.py::test_a_408_closes_the_connection_while_the_client_still_trickl
 hq/test_guard.py::test_a_body_that_stops_arriving_is_408	changed	packages/office/tests/hq/guard.test.ts::a body that stops arriving is 408	D16, design §6.4: the listener's requestTimeout answers Bun's own 408 and closes; no body_timeout JSON	O2-7
 hq/test_guard.py::test_only_origin_form_targets_pass[OPTIONS-*-127.0.0.1:49380]	changed	packages/office/tests/hq/guard.test.ts::only origin form targets pass [OPTIONS *]	D16: Bun refuses an asterisk-form target itself (400, Connection: close, no JSON) before the guard	O2-7
 hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
+hq/test_login.py::test_a_check_whose_request_went_away_still_holds_its_slot	changed	packages/office/tests/hq/login.test.ts::a check whose request went away still holds its slot	design §3.3: promises can't be cancelled, so a caller that leaves can't stop the check; the slot frees when the scrypt promise settles (pinned by Busy while two held checks run, and running back to 0); checked on Logins with a stand-in sessions object	O2-8
 hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
 hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
 hq/test_servers.py	open	—	—	O2-10
@@ -542,6 +543,9 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/guard.test.ts::the first origin header counts	design §6.4, rule 7: header() reads the first raw value; node:http would join repeated values	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard checks each refusal branch [$name]	design §6.4, rule 7: each Host, Fetch Metadata, Origin and JSON refusal against a stand-in, without the HQ app	O2-7
 —	new	packages/office/tests/hq/guard.test.ts::the guard refuses host before fetch metadata before origin before json	design §6.4, rule 7: the refusal order, against a stand-in rather than the HQ app	O2-7
+—	new	packages/office/tests/hq/login.test.ts::a throttled pair is refused before the password is checked	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
+—	new	packages/office/tests/hq/login.test.ts::an unknown handle is checked against the dummy hash and fails	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
+—	new	packages/office/tests/hq/login.test.ts::the right password returns the fingerprint of its hash and clears the failures	design §6.4, rule 8: Logins checked without the HQ app, whose rows O2-9 ports	O2-8
 —	new	packages/office/tests/hq/pairing.test.ts::its inspect and json show no key or code	design §6, rule 1: inspect and JSON show the office dir and a count, never a code or its sha256 key	O2-7
 —	new	packages/office/tests/hq/pairing.test.ts::remove leftovers deletes redirect and temp files only	design §6, rule 6: a crashed office's redirect and writePrivate temp files go; the folder lock and other files stay	O2-7
 —	new	packages/office/tests/hq/sessions.test.ts::a failed fingerprint load is tried again	design §3.3: a cached load is a plain promise; a rejected one is dropped so the next check loads again, as Python retried a failed future	O2-8
