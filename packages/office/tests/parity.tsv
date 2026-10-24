@@ -168,7 +168,8 @@ hq/test_login.py	open	—	split: O2-8 → O2-9	O2-9
 hq/test_pairing.py	ported	packages/office/tests/hq/pairing.test.ts	—	O2-7
 hq/test_pairing.py::test_the_file_is_written_off_the_loop	dropped	—	design §3.3: no threads; the small redirect file is written and fsync'd on the loop after writePrivate's async lock wait (O1-1)	O2-7
 hq/test_servers.py	open	—	—	O2-10
-hq/test_sessions.py	open	—	—	O2-8
+hq/test_sessions.py	ported	packages/office/tests/hq/sessions.test.ts	—	O2-8
+hq/test_sessions.py::test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row	changed	packages/office/tests/hq/sessions.test.ts::a revoke marks the entry a check made while it read the row	design §3.3: the TS store is synchronous, so a revoke's row read can't interleave with a check; the test checks that a revoke marks, never replaces or drops, the entry a check made	O2-8
 hq/test_socket_routes.py	open	—	—	O2-10
 hq/test_source.py	open	—	—	O2-9
 hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
@@ -544,6 +545,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/hq/pairing.test.ts::its inspect and json show no key or code	design §6, rule 1: inspect and JSON show the office dir and a count, never a code or its sha256 key	O2-7
 —	new	packages/office/tests/hq/pairing.test.ts::remove leftovers deletes redirect and temp files only	design §6, rule 6: a crashed office's redirect and writePrivate temp files go; the folder lock and other files stay	O2-7
 —	new	packages/office/tests/hq/sessions.test.ts::a failed fingerprint load is tried again	design §3.3: a cached load is a plain promise; a rejected one is dropped so the next check loads again, as Python retried a failed future	O2-8
+—	new	packages/office/tests/hq/sessions.test.ts::its inspect and json show no secret or fingerprint	design §6.4, rule 1: the in-memory sessions hold fingerprints; inspect and JSON show a count only	O2-8
 —	new	packages/office/tests/hq/static.test.ts::a client that leaves mid file leaves no file open	design §6 static rules: the file is streamed through stream.pipeline, which closes the fd when the client leaves	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a fifo in app dir is never opened	design §6.4: resolve takes only regular files, so a FIFO is a 404 and is never opened	O2-7
 —	new	packages/office/tests/hq/static.test.ts::a file served behind the guard carries the security headers	design §6, rule 7: a streamed file's head goes out through an explicit writeHead, so the guard adds HQ's headers	O2-7
