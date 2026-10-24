@@ -6,7 +6,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { stamp } from "@opencorp/protocol"
 import { CompanyGit, CompanyGitError, type CompanyGitOptions } from "../../src/company/git.ts"
 import { tempDir } from "../helpers.ts"
-import { company, git, gitEnv, gitInput, writeRepo } from "./helpers.ts"
+import { company, git, gitEnv, gitInput, recordingGit, writeRepo } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -20,39 +20,6 @@ function setup(options?: CompanyGitOptions) {
   const tmp = tempDir()
   const root = company(tmp)
   return { tmp, company: root, g: new CompanyGit(root, path.join(tmp, "worktrees"), options) }
-}
-
-/** A `git` script in `dir` that logs each call (whether its stdin is `/dev/null`, then its args) to
- *  `dir/calls` and runs the real git. */
-function recordingGit(dir: string) {
-  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
-  const script = path.join(dir, "git")
-  const log = path.join(dir, "calls")
-  fs.writeFileSync(
-    script,
-    [
-      "#!/bin/sh",
-      "if [ -c /dev/stdin ] && [ ! -t 0 ]; then s=null; else s=other; fi",
-      `{ printf '%s' "$s"; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; } >> ${JSON.stringify(log)}`,
-      `exec ${JSON.stringify(real)} "$@"`,
-      "",
-    ].join("\n"),
-    { mode: 0o755 },
-  )
-  return {
-    git: script,
-    calls(): { stdin: string; args: string[] }[] {
-      if (!fs.existsSync(log)) return []
-      return fs
-        .readFileSync(log, "utf8")
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => {
-          const [stdin, ...args] = line.split("\t")
-          return { stdin: stdin!, args }
-        })
-    },
-  }
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))

@@ -130,3 +130,52 @@ export function writeRepo(root: string, files: Record<string, unknown>): string 
 export function company(dir = tempDir()): string {
   return writeRepo(path.join(dir, "company"), baseFiles())
 }
+
+/** The base person file in `people/<folder>/` with `changes` applied. */
+export function person(folder: string, changes: Record<string, unknown> = {}): Record<string, unknown> {
+  return { ...(baseFiles()[`people/${folder}/person.yaml`] as Record<string, unknown>), ...changes }
+}
+
+/** A committed repo in `dir`'s `company` folder: the base files with each override applied (`null`
+ *  removes the file); returns its root. Call inside a test. */
+export function makeCompany(overrides: Record<string, unknown> = {}, dir = tempDir()): string {
+  const files = baseFiles()
+  for (const [rel, content] of Object.entries(overrides)) {
+    if (content === null) delete files[rel]
+    else files[rel] = content
+  }
+  return writeRepo(path.join(dir, "company"), files)
+}
+
+/** A `git` script in `dir` that logs each call (whether its stdin is `/dev/null`, then its args) to
+ *  `dir/calls` and runs the real git. */
+export function recordingGit(dir: string) {
+  const real = spawnSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim()
+  const script = path.join(dir, "git")
+  const log = path.join(dir, "calls")
+  fs.writeFileSync(
+    script,
+    [
+      "#!/bin/sh",
+      "if [ -c /dev/stdin ] && [ ! -t 0 ]; then s=null; else s=other; fi",
+      `{ printf '%s' "$s"; for a in "$@"; do printf '\\t%s' "$a"; done; printf '\\n'; } >> ${JSON.stringify(log)}`,
+      `exec ${JSON.stringify(real)} "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  )
+  return {
+    git: script,
+    calls(): { stdin: string; args: string[] }[] {
+      if (!fs.existsSync(log)) return []
+      return fs
+        .readFileSync(log, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => {
+          const [stdin, ...args] = line.split("\t")
+          return { stdin: stdin!, args }
+        })
+    },
+  }
+}
