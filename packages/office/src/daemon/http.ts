@@ -235,14 +235,32 @@ function nextUnlessAborted<T>(it: AsyncIterator<T>, signal?: AbortSignal): Promi
   })
 }
 
+/** The responses that have sent `100 Continue`. */
+const continued = new WeakSet<ServerResponse>()
+
+/** Sends `100 Continue` if the request waits for it: call it right before reading a body, after every check, on a
+ *  server from `createServer` (which never sends it on its own). Not for HTTP/1.0, and at most once per response. */
+export function continueIfExpected(req: Pick<IncomingMessage, "headers" | "httpVersion">, res: ServerResponse): void {
+  const expect = req.headers.expect
+  // Node's own test of the header.
+  if (expect === undefined || !/(?:^|\W)100-continue(?:$|\W)/i.test(expect)) return
+  // An HTTP/1.0 client doesn't know 100 (RFC 9110).
+  if (req.httpVersion === "1.0" || continued.has(res)) return
+  continued.add(res)
+  res.writeContinue()
+}
+
 /** The request body. Throws `HttpError` 413 once it passes `MAX_BODY`, reading no further, and 400 when it ends
- *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). */
+ *  early: the stream fails, or `signal` aborts (the client left, or the runtime's 408 closed the request). Given
+ *  `res`, it sends `100 Continue` first if the request waits for it, unless the declared length is too large. */
 export async function readBody(
   req: AsyncIterable<Buffer | string> & { headers: IncomingHttpHeaders },
   signal?: AbortSignal,
+  res?: ServerResponse,
 ): Promise<Buffer> {
   const length = req.headers["content-length"]
   if (length !== undefined && /^\d+$/.test(length) && Number(length) > MAX_BODY) throw tooLarge()
+  if (res) continueIfExpected(res.req, res)
   // Chunks are taken by hand, never with `for await` or `it.return()`: leaving the loop early destroys an
   // unfinished request, and with it the socket on Node, so the 413 would never reach the client. The rest of an
   // oversized body is never drained either; the reply closes the connection instead.
@@ -380,7 +398,7 @@ export function requestListener<C>(
       // The body is read only after the guard: a refused request is answered without reading a byte of it.
       let body: unknown
       if (route.body) {
-        const buf = await readBody(req, controller.signal)
+        const buf = await readBody(req, controller.signal, res)
         unread = {}
         body = parseBody(route.body, buf)
       }
@@ -439,10 +457,17 @@ export const LIMITS: Readonly<Limits> = {
 }
 
 /** An HTTP server for `listener` with `limits`; it has no idle socket timeout (`requestTimeout` bounds a
- *  request) and no upgrade listener, so an upgrade request is served as plain HTTP. */
+ *  request) and no upgrade listener, so an upgrade request is served as plain HTTP. It never sends `100 Continue`
+ *  on its own and serves a request with any `Expect` value: `listener` must call `continueIfExpected` (or
+ *  `readBody` with `res`) before it reads a body. */
 export function createServer(listener: RequestListener, limits: Limits = LIMITS): http.Server {
   const { maxConnections, ...options } = limits
   const server = http.createServer(options, listener)
+  // Otherwise the runtime answers `Expect` before the listener runs: 100 for 100-continue, 417 for anything else.
+  // Nothing may go out before the context hook (auth) and the guard; unknown expectations are ignored, as
+  // uvicorn did.
+  server.on("checkContinue", (req, res) => server.emit("request", req, res))
+  server.on("checkExpectation", (req, res) => server.emit("request", req, res))
   // An event stream stays open with long quiet spells, so there is no idle cut.
   server.timeout = 0
   if (maxConnections !== undefined) server.maxConnections = maxConnections

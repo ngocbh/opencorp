@@ -387,8 +387,12 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::an error in a streamed reply closes the connection and logs its type	design §6 rule 13: a 500 logs the error type only	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::an http error is its status code and message	design §2.3: HttpError is Python's HTTPError	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::an idle keep alive connection is closed after the keep alive timeout	D16: the runtime enforces keepAliveTimeout (checked by a test)	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::an unknown expectation is served as a plain request	design §2.3: served as uvicorn did	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::an unread body closes the connection and a read one keeps it	design §6.4: Connection: close on unread bodies	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::connections past max connections are closed	design §6.4: the runtime enforces maxConnections	O2-1
+—	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is answered once the body is read	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
+—	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is not answered before the context or the guard	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
+—	new	packages/office/tests/daemon/http.test.ts::expect 100 continue is not sent for a too large body or to http 1 0	design §6 rule 7: nothing goes out before the guard; uvicorn sent 100 only when the body was read	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::head on a get route answers without a body	design §2.3: GET routes answer HEAD, as Starlette's did	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::head on a streamed reply sends no body and never starts it	design §2.3: SSE needs a streamed reply (O2-1 handoff)	O2-2
 —	new	packages/office/tests/daemon/http.test.ts::json nested 64 deep is read and 65 deep is 422	P6 (D36): JSON depth ≤ 64	O2-1

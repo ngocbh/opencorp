@@ -785,6 +785,70 @@ describe("bodies", () => {
     read.send("GET /people HTTP/1.1\r\nhost: office\r\n\r\n")
     expect((await read.response()).status).toBe(200)
   })
+
+  test("expect 100 continue is not answered before the context or the guard", async () => {
+    const waiting = (target: string) =>
+      `POST ${target} HTTP/1.1\r\nhost: office\r\ncontent-length: 5\r\nexpect: 100-continue\r\n\r\n`
+    const ping: Route<Ctx> = { method: "POST", path: "/ping", handler: () => ({ ok: true }) }
+    const { sock } = await serveBodies([ping])
+
+    const guarded = await raw(sock, waiting("/guarded"))
+    expect(guarded.text).toStartWith("HTTP/1.1 403")
+    expect(guarded.text).not.toContain("100 Continue")
+    expect(parse(guarded.text).head.toLowerCase()).toContain("\r\nconnection: close")
+
+    const unbodied = await raw(sock, waiting("/ping"))
+    expect(unbodied.text).toStartWith("HTTP/1.1 200")
+    expect(unbodied.text).not.toContain("100 Continue")
+
+    const refused = await serveBodies([], {
+      context: () => {
+        throw new HttpError(401, "unauthenticated", "who are you")
+      },
+    })
+    const unauthenticated = await raw(refused.sock, waiting(ANSWER))
+    expect(unauthenticated.text).toStartWith("HTTP/1.1 401")
+    expect(unauthenticated.text).not.toContain("100 Continue")
+  })
+
+  test("expect 100 continue is answered once the body is read", async () => {
+    const { sock } = await serveBodies()
+    const conn = await Conn.open(sock)
+    const body = answerBody("yes")
+    const length = Buffer.byteLength(body)
+    conn.send(`POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: ${length}\r\nexpect: 100-continue\r\n\r\n`)
+    expect((await conn.response()).head).toStartWith("HTTP/1.1 100 Continue")
+    conn.send(body)
+    const res = await conn.response()
+    expect([res.status, JSON.parse(res.body)]).toEqual([200, { answer: "yes" }])
+  })
+
+  test("an unknown expectation is served as a plain request", async () => {
+    const { sock } = await serveBodies()
+    const head = "GET /people HTTP/1.1\r\nhost: office\r\nexpect: something\r\nconnection: close\r\n\r\n"
+    const got = await raw(sock, head)
+    const res = parse(got.text)
+    expect([res.status, res.body]).toEqual([200, "[]"])
+  })
+
+  test("expect 100 continue is not sent for a too large body or to http 1 0", async () => {
+    const { sock } = await serveBodies()
+    const large = await raw(
+      sock,
+      `POST ${ANSWER} HTTP/1.1\r\nhost: office\r\ncontent-length: 2000000\r\nexpect: 100-continue\r\n\r\n`,
+    )
+    expect(large.text).toStartWith("HTTP/1.1 413")
+    expect(large.text).not.toContain("100 Continue")
+
+    const conn = await Conn.open(sock)
+    const body = answerBody("yes")
+    const length = Buffer.byteLength(body)
+    conn.send(`POST ${ANSWER} HTTP/1.0\r\nhost: office\r\ncontent-length: ${length}\r\nexpect: 100-continue\r\n\r\n`)
+    expect(await conn.response({ timeout: 300 }).catch((e: Error) => e.message)).toBe("no response head")
+    conn.send(body)
+    const res = await conn.response()
+    expect([res.status, JSON.parse(res.body)]).toEqual([200, { answer: "yes" }])
+  })
 })
 
 /** Resolves once `signal` aborts (at once if it already has). */
