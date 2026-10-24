@@ -309,6 +309,28 @@ test("a people folder swapped for a link after the draft is never written throug
   expect(runGit(root, "rev-parse", "HEAD")).toBe(head)
 })
 
+test("a people folder swapped for a link during the commit is never deleted through", async () => {
+  const dir = tempDir()
+  const outside = path.join(dir, "outside")
+  fs.mkdirSync(path.join(outside, "lan"), { recursive: true })
+  fs.writeFileSync(path.join(outside, "lan/keep"), "keep\n")
+  class SwappingGit extends CompanyGit {
+    override locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
+      const commit = () => {
+        fs.renameSync(path.join(this.root, "people"), path.join(dir, "moved"))
+        fs.symlinkSync(outside, path.join(this.root, "people"))
+        return Promise.reject(new Error("commit failed"))
+      }
+      return super.locked((locked) => fn({ ...locked, commit }))
+    }
+  }
+  const root = writeRepo(path.join(dir, "company"), { ...baseFiles(), "shared/flows/chat.yaml": CHAT_FLOW })
+  const hiring = new Hiring(new SwappingGit(root, path.join(dir, "worktrees")))
+  await hiring.hire(req(FORM))
+  await expect(hiring.hire(req(FORM, true))).rejects.toThrow("commit failed")
+  expect(fs.existsSync(path.join(outside, "lan/keep"))).toBe(true)
+})
+
 test("concurrent confirms commit a hire once", async () => {
   const git = makeGit()
   const hiring = new Hiring(git)

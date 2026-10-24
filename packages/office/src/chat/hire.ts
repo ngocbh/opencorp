@@ -53,7 +53,7 @@ export class Hiring {
     readonly maxPreviews = 100,
   ) {}
 
-  /** Preview `request`, or with `confirm` commit its preview; throw `HireRefused` if a confirm can't. */
+  /** Preview `request`, or with `confirm` commit its preview; reject with `HireRefused` if a confirm can't. */
   hire(request: Request): Promise<HireResult> {
     return request.confirm ? this.confirm(request) : this.preview(request)
   }
@@ -85,7 +85,7 @@ export class Hiring {
       const people = path.join(this.git.root, "people")
       fs.mkdirSync(people, { recursive: true })
       // A link swapped in since the draft would send the write outside the repo.
-      if (fs.realpathSync(people) !== path.join(fs.realpathSync(this.git.root), "people")) {
+      if (!peopleInRepo(this.git.root)) {
         const outside = `people/${person.handle}/person.yaml would be written outside the company repo`
         throw new HireRefused("lint_failed", outside)
       }
@@ -94,8 +94,7 @@ export class Hiring {
       fs.mkdirSync(path.join(people, person.handle))
       try {
         for (const [rel, text] of Object.entries(files)) {
-          const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW
-          const fd = fs.openSync(path.join(this.git.root, rel), flags, 0o644)
+          const fd = fs.openSync(path.join(this.git.root, rel), CREATE_NEW, 0o644)
           try {
             fs.writeFileSync(fd, text)
           } finally {
@@ -119,7 +118,11 @@ export class Hiring {
     try {
       if ((await this.git.head()) !== head) return // the commit landed before the failure; keep it
       try {
-        fs.rmSync(path.join(this.git.root, "people", handle), { recursive: true, force: true })
+        // `people` may have been swapped for a link during the commit, and rmSync would delete through it. No
+        // await sits between this check and the removal.
+        if (peopleInRepo(this.git.root)) {
+          fs.rmSync(path.join(this.git.root, "people", handle), { recursive: true, force: true })
+        }
       } catch (error) {
         if (errno(error) === undefined) throw error
       }
@@ -175,6 +178,14 @@ export class Hiring {
       fs.rmSync(tmp, { recursive: true, force: true })
     }
   }
+}
+
+/** Creates the file or fails: a hire never writes over an existing file or through a link at its name. */
+const CREATE_NEW = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW
+
+/** Whether `root`'s `people` folder resolves to itself, not through a link elsewhere. */
+function peopleInRepo(root: string): boolean {
+  return fs.realpathSync(path.join(root, "people")) === path.join(fs.realpathSync(root), "people")
 }
 
 /**
