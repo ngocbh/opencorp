@@ -206,7 +206,7 @@ function azureProblem(answer: string): string | null {
   try {
     new LLMConfig({ provider: "openai", base_url: azureBaseUrl(answer), api_key: "-" })
   } catch (error) {
-    if (!(error instanceof RangeError)) throw error
+    if (!(error instanceof ValidationError)) throw error
     return "give the resource name, or its endpoint like https://<resource>.openai.azure.com"
   }
   return null
@@ -259,12 +259,13 @@ export async function askModel(
       prompter.say(`Couldn't list the models (${error.message}).`)
     }
   }
-  const fallback = Object.hasOwn(models.DEFAULT_MODELS, name) ? models.DEFAULT_MODELS[name] : undefined
-  if (key && fallback) {
-    const first = `${fallback} (the default)`
+  const defaultModel = Object.hasOwn(models.DEFAULT_MODELS, name) ? models.DEFAULT_MODELS[name] : undefined
+  if (key && defaultModel) {
+    const first = `${defaultModel} (the default)`
     // Typing a name picks another model; the one typed last time is the answer for nothing.
-    const picked = await prompter.choose("Model", [first, ...listed.filter((m) => m !== fallback)], last || first, true)
-    return picked === first ? fallback : picked
+    const options = [first, ...listed.filter((m) => m !== defaultModel)]
+    const picked = await prompter.choose("Model", options, last || first, true)
+    return picked === first ? defaultModel : picked
   }
   if (listed.length > 0) return prompter.choose("Model", listed, last || listed[0], true)
   return askUntil(prompter, `Model name (${name} has no default model)`, last, (m) =>
@@ -306,8 +307,9 @@ async function askProviderData(prompter: Prompter, last: Answers, listers: Liste
   return { llm_config: llm }
 }
 
-/** What to do when the model doesn't answer. */
+/** When the model doesn't answer: check the same provider again. */
 export const TRY_AGAIN = "Try again"
+/** When the model doesn't answer: ask for the provider again, starting from the last answers. */
 export const SET_UP_AGAIN = "Set up the model again"
 
 /** Why a provider's model doesn't answer, or null when it does. */

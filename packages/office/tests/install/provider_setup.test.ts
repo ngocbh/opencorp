@@ -816,17 +816,6 @@ function askModelWith(prompter: Prompter, name: string, last = "", key = "", lis
   return askModel(prompter, name, last, key, listers)
 }
 
-/** `askDeployment` with `NO_LISTING` unless a test gives listers. */
-function askDeploymentWith(
-  prompter: Prompter,
-  baseUrl: string,
-  key: string,
-  last: string,
-  listers = NO_LISTING,
-): Promise<string> {
-  return askDeployment(prompter, baseUrl, key, last, listers)
-}
-
 /** Listers whose deployments are `deployments` and which list no models. */
 const deploymentsListed = (deployments: () => Promise<string[]>): Listers => ({ ...NO_LISTING, azureDeployments: deployments })
 
@@ -954,7 +943,7 @@ test("a model typed before is the answer for nothing", async () => {
 test("a deployment typed before is the answer for nothing", async () => {
   const ask = new Script([""])
   const url = "https://acme.openai.azure.com/openai/v1/"
-  expect(await askDeploymentWith(ask, url, KEY, "mine", deploymentsListed(async () => ["gpt-5.4"]))).toBe("mine")
+  expect(await askDeployment(ask, url, KEY, "mine", deploymentsListed(async () => ["gpt-5.4"]))).toBe("mine")
   expect(ask.offered).toEqual([["gpt-5.4"]])
   expect(ask.typed).toEqual([true])
 })
@@ -965,7 +954,7 @@ test("an empty typed deployment on the terminal is never saved empty", async () 
   const url = "https://acme.openai.azure.com/openai/v1/"
   const prompter = new TtyPrompter({ input, output, env: {} })
   const listers = deploymentsListed(async () => ["gpt-5.4", "o3"])
-  expect(await askDeploymentWith(prompter, url, KEY, "", listers)).toBe("gpt-5.4")
+  expect(await askDeployment(prompter, url, KEY, "", listers)).toBe("gpt-5.4")
 })
 
 test("azure asks for the name when it cant list the deployments", async () => {
@@ -1099,7 +1088,10 @@ test("a key in the environment is never read", async () => {
   const code = [
     `import { ensureProvider } from ${JSON.stringify(ONBOARD)}`,
     'const answers = ["anthropic", "", ""]',
-    "const next = (answer = \"\") => answers.shift() || answer",
+    "const next = (answer = \"\") => {",
+    '  if (answers.length === 0) throw new Error("the script ran out of answers")',
+    "  return answers.shift() || answer",
+    "}",
     "const prompter = {",
     "  interactive: true,",
     "  ask: async (_q, answer) => next(answer),",
@@ -1114,7 +1106,7 @@ test("a key in the environment is never read", async () => {
   const child = Bun.spawn([process.execPath, "--no-install", "--no-env-file", "--config=/dev/null", "-e", code, office], {
     cwd: OFFICE,
     env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: KEY },
-    stdout: "pipe",
+    stdout: "ignore",
     stderr: "pipe",
   })
   try {
@@ -1122,6 +1114,8 @@ test("a key in the environment is never read", async () => {
     const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), 20_000)))
     const status = await Promise.race([child.exited, timeout])
     clearTimeout(timer)
+    // Killed before stderr is read: a child that timed out would keep stderr open.
+    child.kill("SIGKILL")
     expect(status, await new Response(child.stderr).text()).toBe(0)
     const text = readFileSync(file(office), "utf8")
     expect(text).not.toContain(KEY)
@@ -1166,10 +1160,10 @@ test("the provider is saved only once the model answers", async () => {
 
 test("trying again checks the same answers and nothing is saved until it works", async () => {
   const office = newOffice()
-  const problems = ["Connection error", "Connection error", null]
-  const check = async () => {
+  const problems = answers("Connection error", "Connection error", null)
+  const check = async (provider: Provider) => {
     expect(existsSync(file(office))).toBe(false)
-    return problems.shift() ?? null
+    return problems(provider)
   }
   const ask = new Script(["openai", KEY, "", "", "1"])
   await ensure(office, ask, { checkModel: check })
