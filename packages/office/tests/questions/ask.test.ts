@@ -394,8 +394,8 @@ test("an ask whose signal is already aborted stores nothing", async () => {
 
 test("an answer that lands just before the abort is left answered", async () => {
   const { store, sid, answers } = setup()
-  // The abort comes in the same synchronous block as the answer, or a microtask after it: after ask has read the
-  // answer but before it marks it consumed.
+  // The abort comes in the same synchronous block as the answer (caught before the read) or a microtask after it
+  // (after ask has read the answer but before it marks it consumed).
   const aborts: ((abort: () => void) => void)[] = [(abort) => abort(), (abort) => queueMicrotask(abort)]
   for (const later of aborts) {
     const item = workItem({ kind: "question" })
