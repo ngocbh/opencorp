@@ -10,7 +10,7 @@ export class Runner {
 
   constructor(private readonly answers: [prefix: string[], code: number, stderr: string, stdout?: string][] = []) {}
 
-  readonly run = async (argv: readonly string[]): Promise<Completed> => {
+  readonly run = async (argv: readonly [string, ...string[]]): Promise<Completed> => {
     this.calls.push([...argv])
     for (const [prefix, code, stderr, stdout = ""] of this.answers) {
       if (prefix.every((part, i) => argv[i] === part)) return { code, stdout, stderr }

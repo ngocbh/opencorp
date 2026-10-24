@@ -645,6 +645,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::the daemon env leaves out every name a self spawn may not carry	design §6.5 (no BUN_*/NODE_OPTIONS/LD_*/DYLD_* in any office env)	O2-11b
 —	new	packages/office/tests/install/launch.test.ts::the daemon path keeps only absolute entries	design §6.5 (daemonEnv drops relative PATH entries; O1-9 handoff)	O2-11b
 —	new	packages/office/tests/install/launch.test.ts::the install test host runs nothing real and its clock moves only when it sleeps	design §9.3 (install tests run on a stand-in host)	O2-11b
+—	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/proc.test.ts::args of an exited process is null	design §9.4: ps replaces psutil cmdline	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args refuses a ps that is not an absolute path	design §6 rule 5: tools by absolute path	O2-11a
 —	new	packages/office/tests/install/proc.test.ts::args shows the command line of a process	design §9.4: ps replaces psutil cmdline	O2-11a

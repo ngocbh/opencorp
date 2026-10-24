@@ -5,10 +5,18 @@ import http from "node:http"
 import net from "node:net"
 import path from "node:path"
 import { expect, onTestFinished, test } from "bun:test"
-import { Launch, daemonEnv, launch, officeAnswers, resolveHome, runCommand } from "../../src/install/launch.ts"
+import {
+  Launch,
+  daemonEnv,
+  launch,
+  officeAnswers,
+  resolveHome,
+  runCommand,
+  which,
+} from "../../src/install/launch.ts"
 import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, unsafeEnvName } from "../../src/platform.ts"
-import { ps, shortDir, tempDir } from "../helpers.ts"
+import { ps, shortDir, tempDir, waitFor } from "../helpers.ts"
 import { Runner, makeHost } from "./helpers.ts"
 
 // Resolved as `launch` resolves it: on a machine without /Users the path comes back as given.
@@ -154,17 +162,59 @@ test("a program that outlives the timeout is exit 124", async () => {
   expect(out).toEqual({ code: 124, stdout: "", stderr: "/bin/sleep timed out" })
   expect(childRuns("/bin/sleep 5")).toBe(false)
 
-  // A grandchild holding the pipes doesn't hold the call past its timeout.
+  // Output written before the kill is kept.
+  expect(await runCommand(["/bin/sh", "-c", "echo hi; exec /bin/sleep 5"], { timeoutMs: 1000 })).toEqual({
+    code: 124,
+    stdout: "hi\n",
+    stderr: "/bin/sh timed out",
+  })
+
+  // A grandchild holding the pipes doesn't hold the call past its timeout. The grandchild writes its own pid
+  // before it becomes the sleep, so the file appears however soon its parent is killed once it has started it;
+  // the 1 s timeout leaves time to start it.
   const pidFile = path.join(tempDir(), "pid")
   const again = performance.now()
-  const held = await runCommand(["/bin/sh", "-c", `/bin/sleep 5 & echo $! > ${pidFile}; wait`], { timeoutMs: 200 })
-  const grandchild = Number(fs.readFileSync(pidFile, "utf8"))
+  const held = await runCommand(
+    ["/bin/sh", "-c", `/bin/sh -c 'echo $$ > ${pidFile}; exec /bin/sleep 5' & wait`],
+    { timeoutMs: 1000 },
+  )
+  const took = performance.now() - again
+  const grandchild = await waitFor(() => {
+    const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : ""
+    return /^\d+\n$/.test(text) ? Number(text) : null
+  }, {
+    timeout: 5000,
+    what: "the grandchild's pid",
+  })
   const grandchildStarted = startTime(grandchild)
   onTestFinished(() => {
     if (grandchildStarted !== null && sameProcess(grandchild, grandchildStarted)) process.kill(grandchild, "SIGKILL")
   })
-  expect(performance.now() - again).toBeLessThan(3000)
+  expect(took).toBeLessThan(3000)
   expect(held.code).toBe(124)
+})
+
+test("which finds a runnable program on the absolute path entries only", () => {
+  const dir = tempDir()
+  const [folder, plain, runnable, second, links] = ["folder", "plain", "runnable", "second", "links"].map((name) =>
+    path.join(dir, name),
+  )
+  for (const entry of [folder, plain, runnable, second, links]) fs.mkdirSync(entry!)
+  fs.mkdirSync(path.join(folder!, "prog"))
+  fs.writeFileSync(path.join(plain!, "prog"), "#!/bin/sh\n", { mode: 0o644 })
+  for (const entry of [runnable, second]) fs.writeFileSync(path.join(entry!, "prog"), "#!/bin/sh\n", { mode: 0o755 })
+  fs.symlinkSync(path.join(runnable!, "prog"), path.join(links!, "prog"))
+
+  const searchPath = [path.relative(process.cwd(), runnable!), folder, plain, runnable, second].join(":")
+  expect(which("prog", searchPath)).toBe(path.join(runnable!, "prog"))
+  expect(which("prog", [folder, plain].join(":"))).toBeNull()
+  expect(which("prog", undefined)).toBeNull()
+  expect(which("prog", links)).toBe(path.join(links!, "prog"))
+
+  expect(which(path.join(second!, "prog"), "")).toBe(path.join(second!, "prog"))
+  expect(which(path.join(plain!, "prog"), runnable)).toBeNull()
+  expect(which(path.join(folder!, "prog"), runnable)).toBeNull()
+  expect(which("./prog", runnable)).toBeNull()
 })
 
 test("office answers is false without a server, for a non 200 and for one that never replies", async () => {

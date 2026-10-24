@@ -137,12 +137,12 @@ export interface Completed {
 
 /**
  * Runs `argv` with this process's environment and captures its output. A program that can't start is exit 127
- * and one still running after `timeoutMs` is killed and exit 124, not an exception; one killed by a signal is
- * minus the signal's number.
+ * and one still running after `timeoutMs` is killed and exit 124, not an exception: the output it wrote before
+ * the kill is kept, and stderr becomes `<argv[0]> timed out`. One killed by a signal is minus the signal's number.
  */
-export function runCommand(argv: readonly string[], { timeoutMs = 60_000 } = {}): Promise<Completed> {
+export function runCommand(argv: readonly [string, ...string[]], { timeoutMs = 60_000 } = {}): Promise<Completed> {
   return new Promise((resolve) => {
-    const child = spawn(argv[0]!, argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(argv[0], argv.slice(1), { stdio: ["ignore", "pipe", "pipe"] })
     let stdout = ""
     let stderr = ""
     let failed = false
@@ -167,7 +167,7 @@ export function runCommand(argv: readonly string[], { timeoutMs = 60_000 } = {})
       clearTimeout(timer)
       if (failed) return
       if (timedOut) resolve({ code: 124, stdout, stderr: `${argv[0]} timed out` })
-      else resolve({ code: code ?? -(signal ? os.constants.signals[signal] : 0), stdout, stderr })
+      else resolve({ code: code ?? (signal ? -os.constants.signals[signal] : 0), stdout, stderr })
     })
   })
 }
@@ -194,7 +194,7 @@ export interface Host {
   /** The user's id, which names launchd's per-user domain (`gui/<uid>`). */
   uid: number
   /** Runs a command and captures its output (`runCommand`). */
-  run(argv: readonly string[]): Promise<Completed>
+  run(argv: readonly [string, ...string[]]): Promise<Completed>
   /** Starts a process without waiting for it (the fallback daemon). */
   spawn(argv: readonly [string, ...string[]], options: SpawnOptions): ChildProcess
   /** The path of the program `name` on the user's `PATH`, or null. */
