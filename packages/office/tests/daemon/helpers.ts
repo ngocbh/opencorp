@@ -3,6 +3,8 @@ import fs from "node:fs"
 import http, { type IncomingHttpHeaders } from "node:http"
 import net from "node:net"
 import path from "node:path"
+import { type MarkdownStore, MarkdownVersionMismatch } from "@ngocbh/yian"
+import type { JsonObject } from "@ngocbh/yian/run"
 import { onTestFinished } from "bun:test"
 import { parse as parseYaml, stringify } from "yaml"
 import { tokenSha256 } from "../../src/auth/tokens.ts"
@@ -13,6 +15,7 @@ import { type Limits, type RequestInfo, type Route, createServer, requestListene
 import { Office, OfficePaths, type RequestContext } from "../../src/daemon/office.ts"
 import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
+import { blobId } from "../../src/profile/store.ts"
 import { Store } from "../../src/store/store.ts"
 import { company, git } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
@@ -47,6 +50,50 @@ export function makeOffice({ log }: { log?: (message: string) => void } = {}): O
   store = new Store(paths.store)
   office = new Office({ paths, store, git: new CompanyGit(paths.company, paths.worktrees), bus: new Bus(), log })
   return office
+}
+
+/** A MarkdownStore over one file, versioned by git blob id; only the current version is readable. */
+export class BlobFileStore implements MarkdownStore {
+  /** Each write's provenance, in order. */
+  readonly provenance: (JsonObject | null)[] = []
+
+  constructor(readonly path: string) {}
+
+  #current(): [string, string] {
+    const data = fs.existsSync(this.path) ? fs.readFileSync(this.path) : Buffer.alloc(0)
+    return [data.toString(), blobId(data)]
+  }
+
+  read(version?: string | null): [string, string] {
+    const [text, current] = this.#current()
+    if (version !== undefined && version !== null && version !== current) throw new RangeError(version)
+    return [text, current]
+  }
+
+  write(text: string, { baseVersion, provenance = null }: { baseVersion: string; provenance?: JsonObject | null }) {
+    const [, current] = this.#current()
+    if (baseVersion !== current) throw new MarkdownVersionMismatch(baseVersion, current)
+    fs.mkdirSync(path.dirname(this.path), { recursive: true })
+    const data = Buffer.from(text)
+    fs.writeFileSync(this.path, data)
+    this.provenance.push(provenance)
+    return blobId(data)
+  }
+}
+
+/** Sets `office.profileStore` to one `BlobFileStore` per person over `<company>/people/<handle>/profile.md`, made
+ *  on first use; returns them by handle (Python's `profile_stores` fixture). */
+export function blobStores(office: Office): Map<string, BlobFileStore> {
+  const stores = new Map<string, BlobFileStore>()
+  office.profileStore = (handle) => {
+    let store = stores.get(handle)
+    if (store === undefined) {
+      store = new BlobFileStore(path.join(office.paths.company, "people", handle, "profile.md"))
+      stores.set(handle, store)
+    }
+    return store
+  }
+  return stores
 }
 
 /** How `serve` builds each request's context, where its log lines go, and its server's limits. */
