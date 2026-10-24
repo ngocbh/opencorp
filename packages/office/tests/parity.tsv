@@ -26,11 +26,11 @@ company/test_draft.py	open	—	—	O2-16b
 company/test_flows.py	open	—	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
 company/test_lint.py	open	—	split: O1-8 → O2-16a	O2-16a
-company/test_loader.py	open	—	—	O1-7
+company/test_loader.py	ported	packages/office/tests/company/loader.test.ts	—	O1-7
 company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O1-5
 company/test_secret_keys.py	ported	packages/office/tests/company/secret_keys.test.ts	—	O1-5
-company/test_snapshot.py	open	—	—	O1-7
-company/test_source.py	open	—	—	O1-7
+company/test_snapshot.py	ported	packages/office/tests/company/snapshot.test.ts	—	O1-7
+company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O1-7
 company/test_watch.py	open	—	—	O2-4
 company_template/test_writer.py	open	—	—	O2-16a
 daemon/test_app.py	open	—	—	O2-2
@@ -274,6 +274,9 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/issues.test.ts::an undefined alias is unreadable	design §6: a malformed company file is an issue, never an exception	O1-5
 —	new	packages/office/tests/company/issues.test.ts::malformed yaml is unreadable with its line only	design §5.4, §6 rule 1: path-only messages	O1-5
 —	new	packages/office/tests/company/issues.test.ts::yes stays text in a company file	D8: YAML 1.2 for company files	O1-5
+—	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
+—	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7
+—	new	packages/office/tests/company/source.test.ts::a path named like an object property is no file	design §6 rule 12: request paths match the listing only	O1-7
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv equals the Python argv	§6.1 golden argv	O1-9
 —	new	packages/office/tests/sandbox/bwrap.test.ts::the checkout helper binds bun and its entry read only	§2.5, O0-10 P7	O1-9
