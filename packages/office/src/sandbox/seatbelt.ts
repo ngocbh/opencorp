@@ -74,7 +74,7 @@ export const DNS_SOCKET = "/private/var/run/mDNSResponder"
  * LaunchServices, is denied.
  *
  * `canary`, a directory, gets a `file-write-data` rule (a no-op on a directory) that
- * marks processes running under this profile; see `sandbox.escapees`. `developerDir`
+ * marks processes running under this profile; see `escapees.ts`. `developerDir`
  * is the toolchain folder to allow: left out, `developerDir()` finds it; `null` means none.
  */
 export function profile(
@@ -101,7 +101,8 @@ export function profile(
     ";; System and toolchain, read-only.",
     allow("file-read*", [
       '(literal "/")',
-      ...[...SYSTEM_SUBPATHS, ...(developer ? [developer] : [])].map((p) => `(subpath ${quote(p)})`),
+      ...SYSTEM_SUBPATHS.map((p) => `(subpath ${quote(p)})`),
+      ...(developer ? [`(subpath ${quote(developer)})`] : []),
       ...SYSTEM_LITERALS.map((p) => `(literal ${quote(p)})`),
     ]),
     '(allow file-write-data (literal "/dev/null"))',
@@ -134,7 +135,7 @@ export function profile(
       allow("file-read*", files.map((f) => `(literal ${quote(f)})`)),
       allow("file-read-metadata", ancestors(files).map((p) => `(literal ${quote(p)})`)),
     )
-    if (!("binary" in helper)) {
+    if ("entry" in helper) {
       lines.push(
         ";; Bun lists the folder of the file it runs.",
         `(allow file-read-data (literal ${quote(path.dirname(helper.entry))}))`,
@@ -176,13 +177,13 @@ function quote(value: string): string {
   return '"' + value.replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '"'
 }
 
-/** Every parent of each of `paths`, nearest first, each listed once. */
+/** The ancestors of each of `paths` (not the path itself), nearest first, each listed once; `/` has none. */
 function ancestors(paths: readonly string[]): string[] {
   const seen = new Set<string>()
   for (const p of paths) {
-    for (let dir = path.dirname(p); ; dir = path.dirname(dir)) {
+    for (let dir = p; path.dirname(dir) !== dir; ) {
+      dir = path.dirname(dir)
       seen.add(dir)
-      if (dir === path.dirname(dir)) break
     }
   }
   return [...seen]
@@ -194,6 +195,7 @@ export function developerDir(): string | null {
   try {
     return fs.lstatSync(link).isSymbolicLink() ? fs.realpathSync(link) : null
   } catch {
+    // Missing or dangling link: no toolchain to allow.
     return null
   }
 }
