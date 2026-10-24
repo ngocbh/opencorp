@@ -1,6 +1,6 @@
 /** How onboarding talks to the owner: the errors it stops with and the prompter it asks through. */
 import type { Readable, Writable } from "node:stream"
-import { type CommonOptions, isCancel, password, select, text } from "@clack/prompts"
+import { type CANCEL_SYMBOL, type CommonOptions, isCancel, password, select, text } from "@clack/prompts"
 import { repr, strip } from "../perm/redact.ts"
 
 /** Onboarding stopped; the message says why and what to do. It never contains a key. */
@@ -191,7 +191,7 @@ export class TtyPrompter implements Prompter {
 
   /** One of `options` picked from a list, `defaultAnswer` for an empty answer. */
   private async pick(question: string, options: readonly string[], defaultAnswer: string): Promise<string> {
-    // Here, not in choose: without anyone to ask any list gives its default, and a typed list is never empty.
+    // Here, not in choose: without anyone to ask, any list gives its default, and a typed list is never empty.
     if (options.length === 0) throw new Error("a choice needs at least one option")
     if (this.drawn()) return this.drawnPick(question, options, defaultAnswer)
     options.forEach((option, i) => this.say(`  ${i + 1}. ${option}`))
@@ -226,14 +226,18 @@ export class TtyPrompter implements Prompter {
 
   /** The answer `run` gets from a clack prompt on this terminal. A cancel (Ctrl-C) throws `KeyboardInterrupt`;
    *  input that ends or fails first is closed input. */
-  private async clack(question: string, run: (common: CommonOptions) => ReturnType<typeof text>): Promise<string> {
+  private async clack(
+    question: string,
+    run: (common: CommonOptions) => Promise<string | typeof CANCEL_SYMBOL>,
+  ): Promise<string> {
     const input = this.input
     // clack never notices its input ending and would wait for ever; aborting makes it cancel.
     const controller = new AbortController()
     const abort = () => controller.abort()
     input.on("end", abort)
     input.on("close", abort)
-    // Also keeps an error on the input (EIO once the terminal is gone) from crashing the process.
+    // An input error (EIO once the terminal is gone) ends the prompt as closed input. readline still re-emits
+    // the error on itself, so the setup's top-level handler deals with that.
     input.on("error", abort)
     if (input.readableEnded || input.destroyed) abort()
     try {

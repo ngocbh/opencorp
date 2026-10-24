@@ -43,7 +43,8 @@ function pipe(text: string): { input: Readable; output: Writable; printed: () =>
   return { input: Readable.from([text]), output: stream, printed }
 }
 
-/** Types `keys` once `drawn()` shows `question`: keys typed ahead for a prompt that isn't up yet can be lost. */
+/** Types `keys` once `drawn()` shows `question`, and throws if it never does: keys typed ahead for a prompt that
+ *  isn't up yet can be lost. */
 async function typeWhenAsked(
   terminal: { input: PassThrough; drawn: () => string },
   question: string,
@@ -51,6 +52,7 @@ async function typeWhenAsked(
 ): Promise<void> {
   for (let i = 0; i < 400 && !terminal.drawn().includes(question); i++)
     await new Promise((resolve) => setTimeout(resolve, 5))
+  if (!terminal.drawn().includes(question)) throw new Error(`${question} was never drawn`)
   terminal.input.write(keys)
 }
 
