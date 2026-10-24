@@ -124,6 +124,11 @@ function within(child: string, parent: string): boolean {
   return parent === "/" || child === parent || child.startsWith(parent + "/")
 }
 
+/** Whether `path` is `dir` or lies inside it, both resolved as the OS resolves them (see `real`). */
+export function isInside(path: string, dir: string): boolean {
+  return within(real(path), real(dir))
+}
+
 /** `entries` with each absolute one resolved; relative ones are kept as given (they refuse every workspace). */
 function realEntries(entries: readonly string[] | undefined): string[] {
   return (entries ?? []).map((e) => (path.isAbsolute(e) ? real(e) : e))

@@ -3,10 +3,20 @@ import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import type { SandboxPolicy } from "../../src/sandbox/policy.ts"
-import { command, refusal, run, type RunOptions, SandboxUnavailable, scrubbedEnv } from "../../src/sandbox/run.ts"
-import { waitFor } from "../helpers.ts"
+import { helperCommand } from "../../src/platform.ts"
+import {
+  command,
+  fsHelper,
+  refusal,
+  run,
+  type RunOptions,
+  SandboxUnavailable,
+  scrubbedEnv,
+} from "../../src/sandbox/run.ts"
+import { tempDir, waitFor } from "../helpers.ts"
 import { envInChild, gone, makePolicy, sandboxAvailable } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -270,4 +280,15 @@ test("a sandbox refusal is labelled", () => {
   expect(refusal("darwin", 71, bwrap)).toBe(false)
   expect(refusal("linux", 1, seatbelt)).toBe(false)
   expect(refusal("darwin", null, seatbelt)).toBe(false)
+})
+
+test("the helper is refused inside the office home", () => {
+  const checkout = fs.realpathSync(fileURLToPath(new URL("../../../..", import.meta.url)))
+  const link = path.join(tempDir(), "home")
+  fs.symlinkSync(checkout, link)
+  for (const home of [checkout, link, `${checkout}/x/..`]) {
+    expect(() => fsHelper(home), home).toThrow(SandboxUnavailable)
+  }
+  const { argv, helper } = helperCommand()
+  expect(fsHelper(tempDir())).toEqual({ argv, helper })
 })

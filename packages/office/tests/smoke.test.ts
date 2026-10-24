@@ -18,7 +18,7 @@ test("each office mode is a stub until its item lands, and an unknown mode exits
   const saved = console.error
   console.error = (...args: unknown[]) => void errors.push(args.join(" "))
   try {
-    for (const mode of ["daemon", "__worker", "__fs-helper", "install"]) {
+    for (const mode of ["daemon", "__worker", "install"]) {
       errors.length = 0
       expect(await office.officeMain([mode, "x"])).toBe(1)
       expect(errors).toEqual([`opencorp ${mode}: not built yet`])

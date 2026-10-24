@@ -4,8 +4,9 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { helperCommand } from "../../src/platform.ts"
 import { type Helper, type OfficePaths, SandboxPolicy } from "../../src/sandbox/policy.ts"
-import { command, scrubbedEnv } from "../../src/sandbox/run.ts"
+import { command, fsHelper, run, scrubbedEnv } from "../../src/sandbox/run.ts"
 import { tempDir } from "../helpers.ts"
 
 const SRC = fileURLToPath(new URL("../../src/sandbox/", import.meta.url))
@@ -138,4 +139,60 @@ export function envInChild(ws: string, tmp: string, env: Record<string, string>)
     encoding: "utf8",
     timeout: 30_000,
   })
+}
+
+/** Runs one `__fs-helper` request (unsandboxed) in `ws`: stdin is the request as JSON, or `request` itself
+ *  when it is a string (for stdin that isn't JSON); env is `PATH`, `HOME` (a fresh temp dir) and `env`.
+ *  `reply` is the parsed stdout, or undefined when stdout isn't JSON. */
+export function helperOp(
+  ws: string,
+  request: object | string,
+  env: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string; reply: unknown } {
+  const [file, ...args] = helperCommand().argv
+  const result = spawnSync(file, args, {
+    cwd: ws,
+    // HOME is not `ws`, as in the sandbox (its private tmpdir): Bun's transpiler cache lands under HOME.
+    env: { PATH: "/usr/bin:/bin", HOME: tempDir(), ...env },
+    input: typeof request === "string" ? request : JSON.stringify(request),
+    encoding: "utf8",
+    timeout: 20_000,
+  })
+  if (result.error) throw result.error
+  let reply: unknown
+  try {
+    reply = JSON.parse(result.stdout)
+  } catch {
+    reply = undefined
+  }
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr, reply }
+}
+
+/** A `__fs-helper` reply. */
+export type HelperReply = { ok: true; output: string } | { ok: false; error: string }
+
+/** Runs one `__fs-helper` request in the sandbox: `fsHelper(<a temp office home>)` under `policy` with
+ *  that helper, through `run()`, the request as JSON on stdin, a 20 s timeout. Throws, with stderr,
+ *  unless stdout is a well-formed reply, so a helper that never ran can't pass as a refusal. */
+export async function helperTool(policy: SandboxPolicy, request: object): Promise<HelperReply> {
+  const { argv, helper } = fsHelper(tempDir())
+  const result = await run(new SandboxPolicy({ ...policy, helper }), argv, {
+    stdin: JSON.stringify(request),
+    timeout: 20,
+  })
+  let reply: unknown
+  try {
+    reply = JSON.parse(result.stdout.toString("utf8"))
+  } catch {
+    reply = undefined
+  }
+  const r = reply as Record<string, unknown> | undefined
+  const wellFormed =
+    typeof r === "object" &&
+    r !== null &&
+    ((r.ok === true && typeof r.output === "string") || (r.ok === false && typeof r.error === "string"))
+  if (!wellFormed) {
+    throw new Error(`no helper reply (exit ${result.exit}): ${result.stdout.toString()}\n${result.stderr.toString()}`)
+  }
+  return reply as HelperReply
 }

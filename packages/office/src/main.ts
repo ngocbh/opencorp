@@ -17,7 +17,7 @@ export const daemonMain: ModeMain = async () => notBuilt("daemon")
 /** One yian run in its own process, talking to the daemon over fd 3. */
 export const workerMain: ModeMain = async () => notBuilt("__worker")
 /** One file operation inside the sandbox. */
-export const fsHelperMain: ModeMain = async () => notBuilt("__fs-helper")
+export const fsHelperMain: ModeMain = async () => (await import("./sandbox/fs_helper.ts")).fsHelperMain()
 /** The setup commands (init, onboard, offboard, doctor, start, restart). */
 export const installMain: ModeMain = async () => notBuilt("install")
 

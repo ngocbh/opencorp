@@ -1,12 +1,14 @@
 /**
  * Every Bun-specific call of the office, in one file: moving to Node rewrites this file, plus the few
  * Bun-only behaviours elsewhere that no lint can see (unix-socket fetch, file imports). The office
- * spawns its own code only through `selfCommand()`, with `selfSpawnEnv()` and an office-controlled cwd.
+ * spawns its own code only through `selfCommand()`, with `selfSpawnEnv()` and an office-controlled cwd,
+ * and through `helperCommand()`, which runs the `__fs-helper` in the sandbox.
  */
 import { dlopen, FFIType, read, type Pointer } from "bun:ffi"
 import fs from "node:fs"
 import os from "node:os"
 import { fileURLToPath } from "node:url"
+import type { Helper } from "./sandbox/policy.ts"
 
 /** The Bun flags that stop a checkout's Bun from reading the cwd's `.env` and `bunfig.toml`
  *  (and its preloads) or installing a missing package; `packages/cli/bin/opencorp` passes the
@@ -19,6 +21,16 @@ const CHECKOUT_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 export function selfCommand(): [string, ...string[]] {
   if (Bun.isStandaloneExecutable) return [process.execPath]
   return [process.execPath, ...CHECKOUT_FLAGS, fileURLToPath(new URL("../../cli/src/main.ts", import.meta.url))]
+}
+
+/** How to run the `__fs-helper`, and the files its profile exposes: the compiled binary in its helper
+ *  mode, or (checkout) this Bun with the no-autoload flags running `sandbox/fs_helper.ts` as its entry. */
+export function helperCommand(): { argv: [string, ...string[]]; helper: Helper } {
+  // Resolved paths, as the sandbox profile names them.
+  const bin = fs.realpathSync(process.execPath)
+  if (Bun.isStandaloneExecutable) return { argv: [bin, "__fs-helper"], helper: { binary: bin } }
+  const entry = fs.realpathSync(fileURLToPath(new URL("./sandbox/fs_helper.ts", import.meta.url)))
+  return { argv: [bin, ...CHECKOUT_FLAGS, entry], helper: { bun: bin, entry } }
 }
 
 /** Names a self-spawn's env never carries: they change how Bun, Node or the loader start. */

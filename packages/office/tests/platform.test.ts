@@ -4,7 +4,15 @@ import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
-import { embedded, listAllPids, sandboxCheck, selfCommand, selfSpawnEnv, threadEntry } from "../src/platform.ts"
+import {
+  embedded,
+  helperCommand,
+  listAllPids,
+  sandboxCheck,
+  selfCommand,
+  selfSpawnEnv,
+  threadEntry,
+} from "../src/platform.ts"
 import { tempDir } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -18,6 +26,12 @@ const BUN_FLAGS = ["--no-install", "--no-env-file", "--config=/dev/null"]
 
 test("selfCommand in a checkout is this Bun with the no-autoload flags on the CLI entry", () => {
   expect(selfCommand()).toEqual([process.execPath, ...BUN_FLAGS, ENTRY])
+})
+
+test("helperCommand in a checkout runs fs_helper.ts with the no-autoload flags", () => {
+  const bun = fs.realpathSync(process.execPath)
+  const entry = path.join(SRC, "sandbox/fs_helper.ts")
+  expect(helperCommand()).toEqual({ argv: [bun, ...BUN_FLAGS, entry], helper: { bun, entry } })
 })
 
 test("selfCommand runs the same command line as the opencorp wrapper", () => {
