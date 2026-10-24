@@ -11,7 +11,7 @@ import {
   OpenAIAuth,
 } from "@ngocbh/yian/llm_clients"
 import type { Scheduler } from "@ngocbh/yian/platform"
-import { AUTH_FILE_ENV, Connections } from "../../src/chat/connections.ts"
+import { AUTH_FILE_ENV, ConnectionFile, Connections } from "../../src/chat/connections.ts"
 import {
   FORGET_MS,
   LoginNotFound,
@@ -193,8 +193,9 @@ test("start returns the url and code then signs in", async () => {
     const auth = conns.authFile("chatgpt")
     expect(fs.statSync(auth).mode & 0o777).toBe(0o600)
     expect(new AuthStore(auth).selection("openai")?.model).toBe("gpt-5.5")
-    const conn = await conns.get("chatgpt")
-    expect([conn.method, conn.llm_config]).toEqual(["subscription", { provider: "openai", model: "gpt-5.5" }])
+    expect(await conns.get("chatgpt")).toEqual(
+      ConnectionFile.parse({ method: "subscription", llm_config: { provider: "openai", model: "gpt-5.5" } }),
+    )
     expect((await conns.resolve("chatgpt", null)).env).toEqual({ [AUTH_FILE_ENV]: auth })
     noTokens(
       JSON.stringify(login),
