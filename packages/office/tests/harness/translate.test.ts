@@ -163,9 +163,9 @@ test("a steer mid stream leaves the streaming text in its message", () => {
   expect(shape(events)).toEqual([["assistant", ["Hello there"]], ["user", ["stop at 5"]],
     ["assistant", ["Stopping at 5."]]])
   const [first, , third] = fold(events)
-  const deltas = events.flatMap((e) => e.type === "delta" ? [[e.partId, e.messageId]] : [])
-  expect(new Set(deltas.filter(([p]) => p === first!.parts[0]!.id).map(([, m]) => m))).toEqual(new Set([first!.id]))
-  expect(new Set(deltas.filter(([p]) => p === third!.parts[0]!.id).map(([, m]) => m))).toEqual(new Set([third!.id]))
+  for (const e of events) {
+    if (e.type === "delta") expect(e.messageId).toBe(e.partId === first!.parts[0]!.id ? first!.id : third!.id)
+  }
 })
 
 test("a steer mid stream then an interrupt keeps the text whole and marks after the steer", () => {

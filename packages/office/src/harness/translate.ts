@@ -77,6 +77,7 @@ function truthy(value: unknown): boolean {
   return Boolean(value)
 }
 
+/** The notification methods the translator writes. */
 const NOTIFIED = new Set(["item/agentMessage/delta", "item/started", "item/completed", "error"])
 
 /** Writes one Codex thread's items as live message, part and delta events. */
@@ -206,11 +207,6 @@ export class Translator {
 /** A tool part's states. */
 type ToolState = ToolPart["state"]
 
-/** A copy of `part` to emit: `Live` keeps changing its own. */
-function copy(part: TextPart | ToolPart): TextPart | ToolPart {
-  return part.type === "tool" ? { ...part, input: { ...part.input } } : { ...part }
-}
-
 /** One session's messages and parts, as live events.
  *
  *  A node gets an assistant message when it opens or first writes. Each exchange is a text part, emitted at its first
@@ -239,7 +235,7 @@ class Live {
       parts: [part], created_at: now() } })
   }
 
-  /** A node calls a model: a steer since its message closes that message first. */
+  /** Opens `node`'s message; when a steer came after it, the old message is closed first. */
   open(node: string): void {
     if (this.steered.has(node)) this.close(node)
     this.message(node)
@@ -316,7 +312,7 @@ class Live {
   private put(node: string, part: TextPart | ToolPart): void {
     const messageId = this.message(node)
     this.tails.set(node, part)
-    this.emit({ type: "part", messageId, part: copy(part) })
+    this.emit({ type: "part", messageId, part: structuredClone(part) })  // Live keeps changing its own
   }
 
   private close(node: string): void {
