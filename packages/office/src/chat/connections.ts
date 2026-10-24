@@ -240,6 +240,9 @@ export class Connections {
    * `signIn`, when given, saves the connection's sign-in to the path it is passed before the connection file is
    * written; if either fails, the sign-in is removed again. It runs in the queue of writes, so it must be quick:
    * a save of a sign-in already made, not a device login.
+   *
+   * Rejects with `RangeError` when `base` can't make a free connection name, `ProviderError` when `_removed.json`
+   * can't be read, and otherwise with the error that stopped `signIn` or the write.
    */
   async add(
     base: string,
@@ -257,7 +260,7 @@ export class Connections {
       } catch (error) {
         if (signIn) {
           try {
-            await this.#removeSignIn(name, auth)
+            await this.#removeSignIn(name)
           } catch {
             // the error that stopped the add is the one to throw
             this.#log(`couldn't remove the sign-in of connection ${name} after its add failed`)
@@ -300,7 +303,7 @@ export class Connections {
       } catch (error) {
         if (errnoCode(error) !== "ENOENT") throw error
       }
-      await this.#removeSignIn(name, auth)
+      await this.#removeSignIn(name)
     })
   }
 
@@ -358,11 +361,11 @@ export class Connections {
     }
   }
 
-  /** Deletes the sign-in at `auth` of connection `name` through yian's own store, under the lock yian refreshes
-   *  it under; the lock file stays. */
-  async #removeSignIn(name: string, auth: string): Promise<void> {
+  /** Deletes the sign-in of connection `name` through yian's own store, under the lock yian refreshes it under;
+   *  the lock file stays. */
+  async #removeSignIn(name: string): Promise<void> {
     try {
-      await new AuthStore(auth, { lockTimeoutMs: this.#signInLockTimeoutMs }).delete()
+      await new AuthStore(this.authFile(name), { lockTimeoutMs: this.#signInLockTimeoutMs }).delete()
     } catch (error) {
       if (!(error instanceof AuthError)) throw error
       // yian's AuthError messages are fixed text, with no path or key in them

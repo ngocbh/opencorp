@@ -64,6 +64,8 @@ function logs(): { lines: string[]; log: (line: string) => void } {
   return { lines, log: (line) => lines.push(line) }
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+
 /** What `call` threw or rejected with; fails if it did neither. */
 async function raised(call: () => unknown): Promise<unknown> {
   try {
@@ -229,14 +231,12 @@ test("remove waits for composer to let go of the sign in", async () => {
     settled = true
   })
   try {
-    await Bun.sleep(400)
+    await sleep(400)
     expect(settled).toBe(false)
     expect(fs.existsSync(auth)).toBe(true)
   } finally {
     held.release()
   }
-  await Promise.race([removing, Bun.sleep(5_000)])
-  expect(settled).toBe(true)
   await removing
   expect(fs.existsSync(auth)).toBe(false)
   expect(fs.existsSync(lock)).toBe(true)
