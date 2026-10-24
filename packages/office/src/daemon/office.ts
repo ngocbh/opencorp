@@ -4,6 +4,7 @@ import { now } from "@opencorp/protocol"
 import { Hiring } from "../chat/hire.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
+import type { Hq } from "../hq/core.ts"
 import { SecretStore } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
@@ -74,6 +75,8 @@ export class Office {
   /** Asset secrets under `office/secrets`, read per call. */
   readonly secrets: SecretStore
   workers: WorkerPool | undefined
+  /** HQ, once `attach` put it here. */
+  hq: Hq | undefined
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
   readonly startedAt: string = now()
   /** Run in order by `start`, each awaited. */

@@ -3,7 +3,10 @@ import type { IncomingMessage } from "node:http"
 import { expect, test } from "bun:test"
 import { HttpError } from "../../src/daemon/http.ts"
 import { SIGN_IN, browserAuth } from "../../src/hq/auth.ts"
+import type { Hq } from "../../src/hq/core.ts"
 import type { BrowserSessions, Who } from "../../src/hq/sessions.ts"
+import { CEO, makeOffice } from "../daemon/helpers.ts"
+import { type HqClient, PORT, makeHq, pairCode, web } from "./helpers.ts"
 
 type Cookie = string | null | undefined
 
@@ -98,4 +101,27 @@ test("without a live session the api is 401 sign in required", async () => {
     expect(error).toMatchObject({ status: 401, code: "sign_in_required", message: SIGN_IN })
   }
   expect(await browserAuth(sessions(WHO), request("GET", "/api/x"))).toBe(WHO)
+})
+
+/** Pairs `client` as the CEO with a fresh code, naming the browser `label`. */
+async function pair(client: HqClient, hq: Hq, label = "Safari on Mac") {
+  return client.post("/api/pair", { code: await pairCode(hq), label })
+}
+
+test("pairing sets a strict http only cookie and returns the session", async () => {
+  const hq = await makeHq(makeOffice())
+  const client = await web(hq)
+  const r = await pair(client, hq)
+  const body = r.json() as Record<string, unknown>
+  expect(r.status).toBe(200)
+  expect(body.person).toBe(CEO)
+  expect(body.label).toBe("Safari on Mac")
+  expect(body.issued_by).toBe(CEO)
+  expect(body).not.toHaveProperty("secret_sha256")
+  const cookies = r.headers["set-cookie"]!
+  expect(cookies).toHaveLength(1)
+  const cookie = cookies[0]!
+  expect(cookie.startsWith(`opencorp_hq_${PORT}=`)).toBe(true)
+  for (const part of ["HttpOnly", "SameSite=Strict", "Path=/", "Max-Age=2592000"]) expect(cookie).toContain(part)
+  expect(cookie).not.toContain("Secure")
 })

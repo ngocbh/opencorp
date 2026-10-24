@@ -10,22 +10,12 @@ import { escapeHtml, resolve, serveApp } from "../../src/hq/static.ts"
 import { CHECKOUT } from "../../src/hq/version.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 import { parse, raw } from "../daemon/helpers.ts"
+import { dist } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
 const HOST = "127.0.0.1:5555"
 const ORIGIN = `http://${HOST}`
-
-/** A built app under `tmp`: index.html, one hashed asset, theme.js and build.json (Python's `dist`). */
-function dist(tmp: string): string {
-  const root = path.join(tmp, "dist")
-  fs.mkdirSync(path.join(root, "assets"), { recursive: true })
-  fs.writeFileSync(path.join(root, "index.html"), "<!doctype html><title>OpenCorp HQ</title>")
-  fs.writeFileSync(path.join(root, "assets", "index-abc123.js"), "console.log(1)")
-  fs.writeFileSync(path.join(root, "theme.js"), "// theme")
-  fs.writeFileSync(path.join(root, "build.json"), JSON.stringify({ build: "b1", api: "x" }))
-  return root
-}
 
 /** Serves `appDir` behind the guard (the hq.sock flavour) on a unix socket until the current test finishes. */
 async function served(appDir: string | null, checkout: string = CHECKOUT): Promise<string> {
