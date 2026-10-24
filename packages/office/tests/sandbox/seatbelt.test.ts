@@ -120,9 +120,10 @@ test("quotes in paths are escaped", () => {
   const { root, tmp } = makePolicy()
   const ws = path.join(root, 'we"ird\\ws')
   fs.mkdirSync(ws)
-  const text = profile(new SandboxPolicy({ workspace: ws, writable: true, network: false, tmpdir: tmp }))
-  // `root` is already real; Bun's realpathSync fails on a path with a backslash.
-  expect(text).toContain('(subpath "' + ws.replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '")')
+  const policy = new SandboxPolicy({ workspace: ws, writable: true, network: false, tmpdir: tmp })
+  const text = profile(policy)
+  expect(policy.workspace.endsWith('/we"ird\\ws')).toBe(true)
+  expect(text).toContain('(subpath "' + policy.workspace.replaceAll("\\", "\\\\").replaceAll('"', '\\"') + '")')
 })
 
 /** Block G2 of the Python office's goldens: read-only, networked, a read-only path, no developer dir, no canary. */

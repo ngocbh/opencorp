@@ -48,25 +48,63 @@ export function helperFiles(helper: Helper): string[] {
 const MAX_LINKS = 40
 
 /**
- * `p` with every symlink resolved: a missing tail is kept as given and a dangling link resolves to its target.
- * Past `MAX_LINKS` links the path is kept as reached, its folder resolved.
+ * `p` made absolute with its components resolved left to right, as the OS does: a symlink is
+ * replaced by its target before later components (`..` included) apply, a missing component is
+ * kept as given, and a dangling link resolves to its target. Past `MAX_LINKS` links no further
+ * link is followed: later links are kept as given. When the result exists, its case is the one on disk.
  */
-function real(p: string, links = 0): string {
+function real(p: string): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
-  // path the profile names must be resolved the same way.
-  const abs = path.resolve(p)
-  try {
-    return fs.realpathSync(abs)
-  } catch {
-    if (abs === "/") return abs
+  // path the profile names must be resolved the same way. The walk uses only lstat
+  // and readlink on the raw string: path.resolve and realpathSync drop `..` before
+  // links are resolved, and realpathSync reads `\` as a separator.
+  const abs = path.isAbsolute(p) ? p : process.cwd() + "/" + p
+  // A `{ done }` entry marks where a link's target ends, so its result can be kept.
+  const pending: (string | { done: string })[] = abs.split("/").reverse()
+  // Links already resolved, as Python's realpath keeps them: a resolved link is not followed
+  // again, so a loop through a linked folder spends the cap on the looping link alone.
+  const seen = new Map<string, string>()
+  let resolved = "/"
+  let links = 0
+  while (pending.length > 0) {
+    const name = pending.pop()!
+    if (typeof name !== "string") {
+      seen.set(name.done, resolved)
+      continue
+    }
+    if (name === "" || name === ".") continue
+    if (name === "..") {
+      // `resolved` holds no links, so its dirname is the physical parent.
+      resolved = path.dirname(resolved)
+      continue
+    }
+    const next = resolved === "/" ? "/" + name : resolved + "/" + name
+    const known = seen.get(next)
+    if (known !== undefined) {
+      resolved = known
+      continue
+    }
+    let isLink = false
+    try {
+      isLink = fs.lstatSync(next).isSymbolicLink()
+    } catch {}
+    if (!isLink || links >= MAX_LINKS) {
+      resolved = next
+      continue
+    }
+    links += 1
+    const target = fs.readlinkSync(next)
+    if (target.startsWith("/")) resolved = "/"
+    pending.push({ done: next }, ...target.split("/").reverse())
   }
-  const parent = path.dirname(abs)
-  let isLink = false
+  if (resolved.includes("\\")) return resolved
+  // The walked path has no links and no `..` left, so this only gives it the on-disk
+  // case on a case-insensitive volume (home/.SSH is home/.ssh).
   try {
-    isLink = fs.lstatSync(abs).isSymbolicLink()
-  } catch {}
-  if (!isLink || links >= MAX_LINKS) return path.join(real(parent, links), path.basename(abs))
-  return real(path.resolve(real(parent, links), fs.readlinkSync(abs)), links + 1)
+    return fs.realpathSync(resolved)
+  } catch {
+    return resolved
+  }
 }
 
 /** Whether `child` is `parent` or lies inside it (both resolved). */

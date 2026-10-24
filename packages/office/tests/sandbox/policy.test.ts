@@ -24,6 +24,10 @@ test("paths are resolved", () => {
   const policy = new SandboxPolicy({ workspace: link, writable: true, network: false, tmpdir: tmp })
   expect(policy.workspace).toBe(fs.realpathSync(ws))
   expect(policy.tmpdir).toBe(fs.realpathSync(tmp))
+  // A backslash is part of a name, not a separator.
+  const [backslash] = mkdirs(path.join(root, "a\\b"), path.join(root, "a/b"))
+  const named = new SandboxPolicy({ workspace: backslash!, writable: true, network: false, tmpdir: tmp })
+  expect(named.workspace).toBe(path.join(fs.realpathSync(root), "a\\b"))
 })
 
 test("read only paths are resolved tuples", () => {
@@ -97,6 +101,19 @@ test("sensitive paths are compared resolved", () => {
   const homeLink = path.join(root, "home-link")
   fs.symlinkSync(home, homeLink)
   expect(() => policyAt(link, tmp, { home: homeLink })).toThrow(UnsafeWorkspace)
+  // `..` after a link goes to the parent of the link's target, as the OS resolves it.
+  mkdirs(path.join(home, ".ssh/keys"), path.join(root, "x"))
+  fs.symlinkSync(path.join(home, ".ssh/keys"), path.join(root, "x/link"))
+  expect(() => policyAt(`${root}/x/link/..`, tmp, { home })).toThrow(/sensitive/)
+  // A backslash is part of a link's name, not a separator.
+  const [folder] = mkdirs(path.join(root, "bs"), path.join(root, "bs/a"), path.join(root, "bs/b"))
+  fs.symlinkSync(path.join(home, ".ssh"), path.join(folder!, "a\\..\\b"))
+  expect(() => policyAt(path.join(folder!, "a\\..\\b"), tmp, { home })).toThrow(/sensitive/)
+  // On a case-insensitive volume a sensitive path spelled in another case is still refused.
+  if (fs.existsSync(path.join(home, ".SSH"))) {
+    mkdirs(path.join(home, ".ssh/x"))
+    expect(() => policyAt(path.join(home, ".SSH/x"), tmp, { home })).toThrow(/sensitive/)
+  }
   // Names that merely start like a sensitive path are fine.
   const [mounts] = mkdirs(path.join(home, ".sshfs-mounts"))
   expect(path.basename(policyAt(mounts, tmp, { home: homeLink }).workspace)).toBe(".sshfs-mounts")
@@ -205,6 +222,13 @@ test("office paths are compared resolved", () => {
   const [loopWs] = mkdirs(path.join(root, "loop-ws"))
   const loopLink = link(loopWs, "loop-link")
   fs.symlinkSync(path.join(loopLink, "a"), path.join(loopWs, "a"))
+  // `..` after a link goes to the parent of the link's target: <other>/l/../bin is <dots-ws>/bin.
+  const [dotsWs, dotsBin, other] = mkdirs(
+    path.join(root, "dots-ws"),
+    path.join(root, "dots-ws/bin"),
+    path.join(root, "other"),
+  )
+  fs.symlinkSync(dotsBin!, path.join(other!, "l"))
   const tool = (ws: string, name: string) =>
     `workspace ${ws} contains ${path.join(ws, name)}, a program the office runs; use a project folder`
   const onPath = (ws: string, name: string) =>
@@ -220,6 +244,8 @@ test("office paths are compared resolved", () => {
     [realPath, { path: [pathLink] }, onPath(realPath, "bin")],
     [target, { path: [dangling] }, onPath(target, "bin")],
     [loopWs, { path: [path.join(loopLink, "a")] }, onPath(loopWs, "a")],
+    [dotsWs!, { tools: [`${other}/l/../bin/git`] }, tool(dotsWs!, "bin/git")],
+    [dotsWs!, { path: [`${other}/l/../bin`] }, onPath(dotsWs!, "bin")],
   ]
   for (const [ws, office, message] of cases) {
     expect(() => policyAt(ws, tmp, { home, ...office })).toThrow(UnsafeWorkspace)
