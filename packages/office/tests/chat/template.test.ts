@@ -48,10 +48,12 @@ test.each([
 test("every chat template reads steers from its steers inbox", () => {
   for (const file of [CHAT, SIDE, MANAGER]) {
     const flow = read(file)
-    expect(flow.input.steers.startsWith("!Inbox(str)")).toBe(true)
-    expect(flow.defs.turn.input.steers.startsWith("!Inbox(str)")).toBe(true)
-    expect(flow.nodes.chat.input.steers).toBe("${input.steers}")
-    expect(flow.defs.turn.nodes.reply.steer_inbox).toBe("${input.steers}")
+    expect([
+      flow.input.steers,
+      flow.defs.turn.input.steers,
+      flow.nodes.chat.input.steers,
+      flow.defs.turn.nodes.reply.steer_inbox,
+    ]).toEqual(["!Inbox(str)", "!Inbox(str)", "${input.steers}", "${input.steers}"])
   }
 })
 

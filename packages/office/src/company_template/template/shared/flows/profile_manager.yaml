@@ -10,7 +10,7 @@ typedefs:
     role: Literal(user, assistant)
     text: str
 input:
-  steers: !Inbox(str)  # what people send while the reply works; the office sends it
+  steers: !Inbox(str)  # what the owner sends while the reply works; the office sends it
   history: !list(Msg)  # the conversation so far; the office passes [] for a new chat
 
 defs:
@@ -21,7 +21,8 @@ defs:
       exited: !bool
       reply: !str
     nodes:
-      # The turn's one input: what the owner sent. Every node below reads it from here.
+      # The turn's message: what the owner sent. Every node below reads it from here; what they send
+      # while the reply works arrives through `steers`.
       ask:
         kind: tool
         tool_id: ask
@@ -71,7 +72,8 @@ defs:
         output: list(Msg)
         code: |
           return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
-    # An exit turn leaves the history as it was.
+    # An exit turn leaves the history as it was. The loop carries the steers inbox itself, so the output
+    # leaves it out.
     output:
       history: ${remember.output :- input.history}
       exited: ${exit_turn.output.exited == true}

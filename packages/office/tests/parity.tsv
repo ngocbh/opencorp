@@ -444,7 +444,7 @@ worker/test_steering.py::test_an_interrupt_waits_for_its_node_to_start	changed	p
 —	new	packages/office/tests/chat/provider.test.ts::runtime settings that arent loader variables are kept	design §6.5 (R2 m5): the refusal stops at runtime and loader names	O2-19
 —	new	packages/office/tests/chat/state.test.ts::write state with nothing new writes nothing	design §3.2 (mirror): Python's equality check before writing (state.py:56) had no test; it keeps a no-op status write from emitting session.updated	O3-8b
 —	new	packages/office/tests/chat/template.test.ts::a template chat carries its history in the prompt list and ends on exit [%s]	design §9.2, §8.8: the chat flows' first TS form (history input, prompt list, TS exit_turn)	O2-16a
-—	new	packages/office/tests/chat/template.test.ts::every chat template reads steers from its steers inbox	yian #1089: steer_inbox; the steers inbox is the contract O3-4 and 4a send to	O3-17
+—	new	packages/office/tests/chat/template.test.ts::every chat template reads steers from its steers inbox	yian #1089: steer_inbox; the steers inbox is the contract O3-4 and O4a send to	O3-17
 —	new	packages/office/tests/company/flow_yaml.test.ts::a company file refuses a tag outside the core schema	D8: YAML 1.2 core schema for company files	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a leading zero int is decimal and 0o and 0x are octal and hex	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::a lone cr is a line break	design §9.5: read as TS yian reads flows	O1-5

@@ -33,7 +33,8 @@ defs:
       exited: !bool
       reply: !str
     nodes:
-      # The turn's one input: what the person sent. Every node below reads it from here.
+      # The turn's message: what the person sent. Every node below reads it from here; what they send
+      # while the reply works arrives through `steers`.
       ask:
         kind: tool
         tool_id: ask
@@ -87,7 +88,8 @@ defs:
         code: |
           return [...inputs.history, {role: "user", text: inputs.message}, {role: "assistant", text: inputs.reply}]
     # A LOOP body maps its carried record to the next one, so the person and who they talk with ride along
-    # unchanged, and an exit turn leaves the history as it was.
+    # unchanged, and an exit turn leaves the history as it was. The loop carries the steers inbox itself,
+    # so the output leaves it out.
     output:
       person: ${input.person}
       talking_to: ${input.talking_to}
