@@ -89,6 +89,13 @@ jobs:
         with:
           bun-version-file: package.json
       - run: bun install --frozen-lockfile
+      # The office's sandbox tests fail on CI without bwrap.
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      # Ubuntu 24.04 blocks unprivileged user namespaces through AppArmor; bwrap needs them.
+      - run: |
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - run: bun run typecheck
       - run: bun test
         working-directory: packages/protocol
