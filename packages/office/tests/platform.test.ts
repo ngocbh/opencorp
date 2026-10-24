@@ -82,8 +82,8 @@ test(
 
     const result = spawn(selfSpawnEnv(env))
     expect(result.error).toBeUndefined()
-    expect(result.stderr).toContain("opencorp __worker: not built yet")
-    expect(result.status).toBe(1)
+    expect(result.stderr).toContain("opencorp __worker: no office channel on fd 3")
+    expect(result.status).toBe(3)
     expect(fs.existsSync(marker)).toBe(false)
     expect(fs.existsSync(optsMarker)).toBe(false)
 

@@ -14,8 +14,13 @@ function notBuilt(mode: string): number {
 
 /** The office daemon, one per home. */
 export const daemonMain: ModeMain = async () => notBuilt("daemon")
-/** One yian run in its own process, talking to the daemon over fd 3. */
-export const workerMain: ModeMain = async () => notBuilt("__worker")
+/** One yian run in its own process, talking to the daemon over fd 3. Its env is a frozen snapshot of this
+ *  process's, taken before any worker module loads, so nothing those modules do to `process.env` reaches the run's
+ *  settings. */
+export const workerMain: ModeMain = async (argv) => {
+  const env = Object.freeze({ ...process.env })
+  return (await import("./worker/main.ts")).main(argv, env)
+}
 /** One file operation inside the sandbox. */
 export const fsHelperMain: ModeMain = async () => (await import("./sandbox/fs_helper.ts")).fsHelperMain()
 /** The setup commands (init, onboard, offboard, doctor, start, restart). */
