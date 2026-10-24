@@ -11,6 +11,7 @@ setDefaultTimeout(30_000)
 /** The parsed reply to `request` in `ws`, its exit status checked against it (0 ok, 1 error). */
 function reply(ws: string, request: object): unknown {
   const result = helperOp(ws, request)
+  if (result.reply === undefined) throw new Error(`no reply: ${result.stderr}`)
   expect(result.status).toBe((result.reply as { ok: boolean }).ok ? 0 : 1)
   return result.reply
 }
@@ -192,6 +193,11 @@ test("edit", () => {
   expect(fs.readFileSync(file, "utf8")).toBe("a =3\nb =1\n")
   expect(edit({ old: "zzz", new: "y" })).toEqual(error("old text not found in f.py"))
   expect(edit({ old: "", new: "y" })).toEqual(error("old must not be empty"))
+  // Python's text holds code points, so a lone surrogate is never found, not even in half of a pair.
+  fs.writeFileSync(file, "\u{1f600} a\n")
+  expect(edit({ old: "\ud83d", new: "x" })).toEqual(error("old text not found in f.py"))
+  expect(edit({ old: "a\udc00", new: "x", replace_all: true })).toEqual(error("old text not found in f.py"))
+  expect(fs.readFileSync(file, "utf8")).toBe("\u{1f600} a\n")
 })
 
 test("edit reports the line each occurrence starts on", () => {
@@ -333,6 +339,11 @@ test("glob follows fnmatch", () => {
   }
   tree(ws, { "src/b/c.py": "hit\n" })
   expect(reply(ws, { op: "search", pattern: "hit", path: "src", glob: "src*py" })).toEqual(ok("src/b/c.py:1:hit"))
+  // Interior stars never backtrack (a plain `.*` each would take hours on the longest name a file can have).
+  tree(ws, { [`long/${"a".repeat(255)}`]: "hit\n", "long/xaxaxaxaxaxaxb": "hit\n" })
+  expect(reply(ws, { op: "search", pattern: "hit", path: "long", glob: "*a*a*a*a*a*a*b" })).toEqual(
+    ok("long/xaxaxaxaxaxaxb:1:hit"),
+  )
 })
 
 test("search skips binary, big and unreadable files", () => {

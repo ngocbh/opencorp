@@ -118,10 +118,12 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 - **What:** the `__fs-helper`'s `search` glob matching is a TypeScript port of `fnmatch.translate`'s pattern
   handling (`*`, `?`, and `[...]` classes: `!` negation, a leading `]`, `-` ranges with reversed ones dropped,
-  an unclosed `[` as a literal). Our changes: the result is a JavaScript RegExp anchored with `^…$` (flags `s`
-  and `u`); a run of `*` becomes a plain `.*` instead of Python's atomic groups; `\`, `]`, `[`, `^` and `-`
-  are escaped inside a class.
-- **Upstream:** https://github.com/python/cpython, `Lib/fnmatch.py` at tag `v3.12.14` (the 3.12 line).
+  an unclosed `[` as a literal) and of its stars (every `*` but the last matches its shortest run, never
+  retried). Our changes: the result is a JavaScript RegExp anchored with `^…$` (flags `s` and `u`); Python's
+  atomic group `(?>.*?fixed)` becomes a lookahead capture matched again by a named backreference; `\`, `]`,
+  `[`, `^` and `-` are escaped inside a class.
+- **Upstream:** https://github.com/python/cpython, `Lib/fnmatch.py` at tag `v3.12.14` (the 3.12 line), commit
+  `2abcf904b8dac8c999d2b3aac76681abb333798a`.
 - **Ours:** `packages/office/src/sandbox/fs_helper.ts`.
 - **License:** PSF-2.0 (Python Software Foundation License Version 2):
 

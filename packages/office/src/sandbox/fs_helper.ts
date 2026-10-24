@@ -2,8 +2,10 @@
  * Workspace file operations, run inside the sandbox as one process per call (`__fs-helper`).
  *
  * Reads one JSON request (`{"op": ..., ...args}`) on stdin and writes one JSON reply
- * (`{"ok": true, "output": ...}` or `{"ok": false, "error": ...}`) on stdout, byte for byte as the
- * Python office's helper did. Paths are relative to the working directory, the workspace. The sandbox,
+ * (`{"ok": true, "output": ...}` or `{"ok": false, "error": ...}`) on stdout. The reply envelope and the
+ * ops' own texts (their outputs, their errors, OS errors) match the Python office's helper byte for byte;
+ * the texts for a bad argument, a bad request and a file `edit_file` can't decode are new. Paths are
+ * relative to the working directory, the workspace. The sandbox,
  * not this code, decides what may be read or written. It imports only `node:` builtins, because the
  * sandbox exposes nothing else to it.
  */
@@ -142,15 +144,18 @@ function editFile(path: string, old: string, replacement: string, replaceAll: bo
     if (!(error instanceof TypeError)) throw error
     throw new OpError("'utf-8' codec can't decode the file")
   }
-  const n = count(text, old)
+  // A lone surrogate in `old` never occurs in Python's text of code points, though JavaScript would find
+  // it in half of a surrogate pair.
+  const n = old.isWellFormed() ? count(text, old) : 0
   if (n === 0) throw new OpError(`old text not found in ${path}`)
   if (n > 1 && !replaceAll) throw new OpError(`old text appears ${n} times in ${path}; add context or set replace_all`)
   // Not String.replace with a string, which expands `$&` and `$$` in the replacement.
-  const at = text.indexOf(old)
-  fs.writeFileSync(
-    path,
-    replaceAll ? text.split(old).join(replacement) : text.slice(0, at) + replacement + text.slice(at + old.length),
-  )
+  if (replaceAll) {
+    fs.writeFileSync(path, text.split(old).join(replacement))
+  } else {
+    const at = text.indexOf(old)
+    fs.writeFileSync(path, text.slice(0, at) + replacement + text.slice(at + old.length))
+  }
   const replaced = replaceAll ? n : 1
   const lines = starts(text, old, Math.min(replaced, MAX_EDIT_LINES))
   const where =
@@ -194,8 +199,10 @@ function listDir(path: string): string {
 }
 
 /** `pattern`, a Python regex, compiled as a JavaScript one. A leading inline-flag group becomes flags
- *  (`i`, `m`, `s`; `a`, `L`, `u` dropped; `x` refused), `\A` and `\Z` become `^` and `$`, `(?P<n>` becomes
- *  `(?<n>` and `(?P=n)` becomes `\k<n>`; character classes are kept as they are, but for a leading `]`.
+ *  (`i`, `m`, `s`; `a`, `L`, `u` dropped, `a` being JavaScript's default anyway; `x` refused), `\A` and `\Z`
+ *  become `^` and `$`, `(?P<n>` becomes `(?<n>` and `(?P=n)` becomes `\k<n>`; character classes are kept as
+ *  they are, but for a leading `]`. What still differs: without the `u` flag, `\w`, `\d`, `\s` and `\b` are
+ *  ASCII-only where Python's are Unicode, and `\U0001f600` and `\N{...}` match their letters literally.
  *  Throws an `OpError` for a pattern that doesn't compile. */
 function translateRegex(pattern: string): RegExp {
   const lead = /^\(\?([aiLmsux]+)\)/.exec(pattern)
@@ -249,26 +256,26 @@ function translateRegex(pattern: string): RegExp {
 
 /** The shell pattern `glob` as an anchored RegExp that matches as Python 3.12's `fnmatch.fnmatch` does on
  *  POSIX: `*` any run, `?` any one character, `[...]` a class (`!` first negates), all else literal.
- *  Ported from CPython's `fnmatch.translate` (Lib/fnmatch.py, PSF-2.0). */
+ *  Ported from CPython 3.12's `fnmatch.translate` (Lib/fnmatch.py, PSF-2.0). */
 function translateGlob(glob: string): RegExp {
   // Code points, as Python indexes the pattern; the `u` flag matches by code point too.
   const p = [...glob]
-  let out = ""
+  // Each piece's regex source; `null` stands for a run of `*`.
+  const parts: (string | null)[] = []
   let i = 0
   while (i < p.length) {
     const c = p[i++]!
     if (c === "*") {
-      // A run of `*` is one `.*`.
-      if (p[i - 2] !== "*") out += ".*"
+      if (parts.at(-1) !== null) parts.push(null)
     } else if (c === "?") {
-      out += "."
+      parts.push(".")
     } else if (c === "[") {
       let j = i
       if (p[j] === "!") j++
       if (p[j] === "]") j++
       while (j < p.length && p[j] !== "]") j++
       if (j >= p.length) {
-        out += "\\["
+        parts.push("\\[")
         continue
       }
       // The class (its `!` too) split at each `-` that makes a range; a `-` first or last is a member.
@@ -291,13 +298,28 @@ function translateGlob(glob: string): RegExp {
       // Escaped so that Python's `[]x]` and `[^]x]` don't read as JavaScript's empty or any-character class.
       const body = chunks.map((chunk) => chunk.join("").replace(/[\\\]\[^-]/g, "\\$&")).join("-")
       // A `!` that leads once reversed ranges are gone negates, as in Python: `[a-0!]` is any character.
-      if (!body) out += "(?!)"
-      else if (body === "!") out += "."
-      else out += body.startsWith("!") ? `[^${body.slice(1)}]` : `[${body}]`
+      if (!body) parts.push("(?!)")
+      else if (body === "!") parts.push(".")
+      else parts.push(body.startsWith("!") ? `[^${body.slice(1)}]` : `[${body}]`)
       i = j + 1
     } else {
-      out += c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")
+      parts.push(c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"))
     }
+  }
+  // As in Python, every `*` but the last matches the shortest run followed by `fixed` (the pieces up to the
+  // next `*`) and is never retried longer, so stars can't backtrack exponentially. Python spells that
+  // `(?>.*?fixed)`; JavaScript has no atomic groups, but a lookahead is never backtracked into, so the run
+  // it captures is matched again by a backreference (named, so a digit in `fixed` can't extend its number).
+  let out = ""
+  i = 0
+  while (i < parts.length && parts[i] !== null) out += parts[i++]
+  let groups = 0
+  while (i < parts.length) {
+    i++
+    let fixed = ""
+    while (i < parts.length && parts[i] !== null) fixed += parts[i++]
+    if (i === parts.length) out += `.*${fixed}`
+    else out += `(?=(?<g${++groups}>.*?${fixed}))\\k<g${groups}>`
   }
   return new RegExp(`^${out}$`, "su")
 }
@@ -306,11 +328,7 @@ function translateGlob(glob: string): RegExp {
  *  top-down, each folder's files sorted, then each sorted subfolder in turn. Folders named `.git` and
  *  symlinked folders below the top aren't entered; a folder that can't be read is passed over. */
 function* walk(top: string): Generator<string> {
-  let stat: fs.Stats | undefined
-  try {
-    stat = fs.statSync(top)
-  } catch {}
-  if (stat?.isFile()) {
+  if (stat(top)?.isFile()) {
     yield top
     return
   }
@@ -329,7 +347,7 @@ function* walkFolder(root: string): Generator<string> {
   const folders: string[] = []
   for (const entry of entries) {
     if (entry.isDirectory()) folders.push(entry.name)
-    else if (!entry.isSymbolicLink() || !isFolder(nodePath.join(root, entry.name))) files.push(entry.name)
+    else if (!entry.isSymbolicLink() || !stat(nodePath.join(root, entry.name))?.isDirectory()) files.push(entry.name)
   }
   for (const name of files.sort(byCodePoint)) yield nodePath.join(root, name)
   for (const name of folders.sort(byCodePoint)) {
@@ -338,23 +356,23 @@ function* walkFolder(root: string): Generator<string> {
   }
 }
 
-/** Whether `path` (links followed) is a folder; false when it can't be read. */
-function isFolder(path: string): boolean {
+/** `path`'s stat, links followed, or undefined when it can't be read. */
+function stat(path: string): fs.Stats | undefined {
   try {
-    return fs.statSync(path).isDirectory()
+    return fs.statSync(path)
   } catch {
-    return false
+    return undefined
   }
 }
 
 /** `file`'s bytes, or undefined when `search` skips it: not a regular file (links followed), over
  *  `MAX_SEARCH_FILE_BYTES`, unreadable, or binary (a NUL in its first 8192 bytes). */
 function searchable(file: string): Buffer | undefined {
+  const info = stat(file)
+  // A FIFO or device would block or never end, so only regular files are read.
+  if (!info?.isFile() || info.size > MAX_SEARCH_FILE_BYTES) return undefined
   let data: Buffer
   try {
-    // A FIFO or device would block or never end, so only regular files are read.
-    const stat = fs.statSync(file)
-    if (!stat.isFile() || stat.size > MAX_SEARCH_FILE_BYTES) return undefined
     data = fs.readFileSync(file)
   } catch {
     return undefined
@@ -406,10 +424,9 @@ interface Op {
 }
 
 /** String arguments that become bytes (a file name or file text), so must be well formed. */
-const ENCODED = new Set(["path", "content", "old", "new"])
+const ENCODED = new Set(["path", "content", "new"])
 
-// A null prototype, so a request's `op` can't name an inherited property.
-const OPS: Record<string, Op> = Object.assign(Object.create(null), {
+const OPS: Record<string, Op> = {
   read_file: {
     args: { path: "string", offset: "integer?", limit: "integer?" },
     run: (a: Args) => readFile(a.path!, a.offset ?? 0, a.limit),
@@ -424,9 +441,10 @@ const OPS: Record<string, Op> = Object.assign(Object.create(null), {
     args: { pattern: "string", path: "string?", glob: "string?" },
     run: (a: Args) => search(a.pattern!, a.path ?? ".", a.glob),
   },
-} satisfies Record<string, Op>)
+}
 
-/** The op's arguments from `request`; `null` leaves an optional one out. */
+/** The op's arguments from `request`; `null` leaves an optional one out. A NUL in `path` is refused here,
+ *  before the op's own checks (Python checked offset, limit, `old` and the pattern first). */
 function checkArgs(opName: string, op: Op, request: Record<string, unknown>): Args {
   for (const name of Object.keys(request)) {
     if (name !== "op" && !Object.hasOwn(op.args, name)) throw new OpError(`unexpected argument ${name}`)
@@ -434,7 +452,7 @@ function checkArgs(opName: string, op: Op, request: Record<string, unknown>): Ar
   const args: Record<string, unknown> = {}
   for (const [name, spec] of Object.entries(op.args)) {
     const optional = spec.endsWith("?")
-    const value = Object.hasOwn(request, name) ? request[name] : undefined
+    const value = request[name]
     if (value === undefined || (value === null && optional)) {
       if (!optional) throw new OpError(`missing argument ${name}`)
       continue
@@ -490,8 +508,11 @@ export async function fsHelperMain(): Promise<number> {
   let reply: string
   let ok: boolean
   try {
-    // fd 0, not /dev/stdin, which a sandbox profile may not expose.
-    reply = `{"ok": true, "output": ${JSON.stringify(serve(fs.readFileSync(0)))}}`
+    // process.stdin is fd 0, not /dev/stdin, which a sandbox profile may not expose; read as a stream,
+    // since a synchronous read of a non-blocking stdin fails with EAGAIN.
+    const chunks: Buffer[] = []
+    for await (const chunk of process.stdin) chunks.push(chunk as Buffer)
+    reply = `{"ok": true, "output": ${JSON.stringify(serve(Buffer.concat(chunks)))}}`
     ok = true
   } catch (error) {
     if (!(error instanceof OpError)) throw error
