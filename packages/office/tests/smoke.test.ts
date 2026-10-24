@@ -18,7 +18,8 @@ test("each office mode is a stub until its item lands, and an unknown mode exits
   const saved = console.error
   console.error = (...args: unknown[]) => void errors.push(args.join(" "))
   try {
-    for (const mode of ["daemon", "__worker", "install"]) {
+    // __worker is real and ends with process.exit, so only its worker-process tests run it.
+    for (const mode of ["daemon", "install"]) {
       errors.length = 0
       expect(await office.officeMain([mode, "x"])).toBe(1)
       expect(errors).toEqual([`opencorp ${mode}: not built yet`])
