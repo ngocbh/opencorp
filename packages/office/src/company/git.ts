@@ -23,7 +23,7 @@ const KINDS: Record<string, "folder" | "file" | "symlink" | "submodule"> = {
 }
 // argv can't carry bytes that aren't UTF-8, so paths go to git on stdin, NUL-separated.
 const FROM_STDIN = ["--pathspec-from-file=-", "--pathspec-file-nul"]
-// Python's `str.splitlines` boundaries.
+// Every line boundary `splitlines` knows, so a trailer matches as a whole line however the message breaks.
 const LINE_BREAK = /\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/
 
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
@@ -78,8 +78,9 @@ function encodePath(text: string): Buffer {
   let start = 0
   for (let at = 0; at < text.length; at++) {
     const code = text.charCodeAt(at)
-    const paired = at > 0 && text.charCodeAt(at - 1) >= 0xd800 && text.charCodeAt(at - 1) <= 0xdbff
-    if (code >= 0xdc80 && code <= 0xdcff && !paired) {
+    if (code >= 0xdc80 && code <= 0xdcff) {
+      const before = at > 0 ? text.charCodeAt(at - 1) : 0
+      if (before >= 0xd800 && before <= 0xdbff) continue // the low half of a surrogate pair
       parts.push(Buffer.from(text.slice(start, at)), Buffer.of(code - 0xdc00))
       start = at + 1
     }
@@ -137,7 +138,7 @@ export class CompanyGit {
   readonly #git: string
   readonly #env: Record<string, string>
   #queue: Promise<unknown> = Promise.resolve()
-  readonly #unlocked: LockedGit = { commit: (paths, message) => this.#commit(paths, message) }
+  readonly #held: LockedGit = { commit: (paths, message) => this.#commit(paths, message) }
 
   constructor(root: string, worktrees: string, options: CompanyGitOptions = {}) {
     this.root = root
@@ -182,7 +183,7 @@ export class CompanyGit {
 
   /** Runs `fn` holding the repo lock; sections run one at a time, in call order. */
   locked<T>(fn: (git: LockedGit) => Promise<T>): Promise<T> {
-    const run = this.#queue.then(() => fn(this.#unlocked))
+    const run = this.#queue.then(() => fn(this.#held))
     this.#queue = run.then(noop, noop) // a failed section must not wedge the lock
     return run
   }
@@ -242,9 +243,9 @@ export class CompanyGit {
     const found = new Map<string, Buffer>()
     if (!ids.length) return found
     const input = Buffer.from(ids.map((id) => `${id}\n`).join(""))
-    // The exit code is ignored, as Python did: complete output is enough.
+    // The exit code is ignored: a complete answer for every id is enough.
     const { code, stdout: out, stderr } = await this.#run(["cat-file", "--batch"], { check: false, input })
-    // Output that ends early (a broken or locked clone) fails, as Python's `index` and `int` raised.
+    // Output that ends early (a broken or locked clone) is an error, not a missing blob.
     const stopped = () => new CompanyGitError(`git cat-file --batch exited ${code}: ${stderr.toString().trim()}`)
     let at = 0
     for (const id of ids) {
@@ -269,10 +270,11 @@ export class CompanyGit {
     for (const record of out.split("\x1e")) {
       const trimmed = record.replace(/^\n+|\n+$/g, "")
       const nul = trimmed.indexOf("\0")
-      const lines = nul < 0 ? [] : trimmed.slice(nul + 1).split(LINE_BREAK)
+      if (nul < 0) continue
+      const lines = trimmed.slice(nul + 1).split(LINE_BREAK)
       if (lines.at(-1) === "") lines.pop() // as `splitlines`, a final break ends the last line
       // --grep matches substrings; a trailer must match whole
-      if (lines.includes(line)) return nul < 0 ? trimmed : trimmed.slice(0, nul)
+      if (lines.includes(line)) return trimmed.slice(0, nul)
     }
     return null
   }
