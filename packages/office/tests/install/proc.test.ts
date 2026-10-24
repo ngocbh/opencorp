@@ -1,27 +1,15 @@
 /** Process start times, the reaper's match and group kills. */
-import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { killGroup, linuxStartTime, sameProcess, startTime } from "../../src/install/proc.ts"
-import { PS, isGone, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { isGone, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
 // A group id no real process can have (Linux PID_MAX_LIMIT is 4,194,304; macOS pids stay under 100,000), so
 // a call that slipped past a mocked process.kill could never signal anything.
 const NO_GROUP = 2_000_000_000
-
-/** `ps -o stat=` of `pid`, or "" when there is no such pid. Reads only. */
-function psStat(pid: number): string {
-  try {
-    return execFileSync(PS, ["-o", "stat=", "-p", String(pid)], { env: {}, stdio: ["ignore", "pipe", "ignore"] })
-      .toString()
-      .trim()
-  } catch {
-    return ""
-  }
-}
 
 /** The error process.kill throws for a group that is gone. */
 function esrch(): Error {
@@ -56,6 +44,7 @@ test("startTime reads a zombie", async () => {
   const z = Number(await g.line())
   await waitFor(() => psStat(z).startsWith("Z"), { timeout: 10_000, what: "a zombie" })
   const found = startTime(z)
+  expect(g.started).not.toBeNull()
   expect(found).not.toBeNull()
   expect(found!).toBeGreaterThanOrEqual(g.started! - 0.01)
   expect(found!).toBeLessThan(g.started! + 10)
@@ -103,6 +92,7 @@ test("sameProcess matches the start time within 0.01 s only", async () => {
   expect(sameProcess(g.pid, started - 100)).toBe(false)
   const gone = startGroup("exit 0")
   await gone.exited
+  // If it exited before its start time was read, any start time is a valid probe: the pid runs nothing now.
   expect(sameProcess(gone.pid, gone.started ?? started)).toBe(false)
 })
 
@@ -110,6 +100,7 @@ test("killGroup kills the leader and its grandchild", async () => {
   const g = startGroup("/bin/sleep 61 & echo $!; wait")
   const grand = Number(await g.line())
   const grandStarted = startTime(grand)
+  expect(grandStarted).not.toBeNull()
   g.track(grand, grandStarted)
   expect(killGroup(g.pid)).toBe(true)
   expect((await g.exited).signal).toBe("SIGKILL")

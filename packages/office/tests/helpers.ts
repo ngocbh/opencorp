@@ -41,7 +41,29 @@ export function shortDir(): string {
 }
 
 /** The `ps` binary: /bin/ps on macOS, /usr/bin/ps on some Linux images. */
-export const PS = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p))!
+export const PS = (() => {
+  const found = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p))
+  if (found === undefined) throw new Error("tests need ps at /bin/ps or /usr/bin/ps")
+  return found
+})()
+
+/** `ps -o stat=` of `pid`, or "" when ps exits non-zero (no such pid). Any other failure, such as a spawn
+ *  error or a timeout, is rethrown. Reads only. */
+export function psStat(pid: number): string {
+  try {
+    return execFileSync(PS, ["-o", "stat=", "-p", String(pid)], {
+      env: {},
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    })
+      .toString()
+      .trim()
+  } catch (error) {
+    // A timeout kills ps by a signal, which leaves `status` null, so only a real exit code means no such pid.
+    if (typeof (error as { status?: unknown }).status === "number") return ""
+    throw error
+  }
+}
 
 /** A process started by a test: `/bin/sh -c script` leading its own group, stdout piped. */
 export interface Group {
@@ -54,22 +76,15 @@ export interface Group {
   /** The next line it prints. */
   line(): Promise<string>
   /** Also kills `pid` at test end if it still has `started` (a grandchild the script printed). */
-  track(pid: number, started: number | null): void
+  track(other: number, otherStarted: number | null): void
 }
 
 /** Whether the process that started at `started` is gone: no longer running with that start time, or a zombie
  *  (`ps -o stat=` starting with Z; an orphan's reaper may be slow, as in some containers). Reads only. */
 export function isGone(pid: number, started: number | null): boolean {
   if (started === null || !sameProcess(pid, started)) return true
-  try {
-    const stat = execFileSync(PS, ["-o", "stat=", "-p", String(pid)], {
-      env: {},
-      stdio: ["ignore", "pipe", "ignore"],
-    })
-    return stat.toString().trim().startsWith("Z")
-  } catch {
-    return true // ps exits non-zero when there is no such pid
-  }
+  const stat = psStat(pid)
+  return stat === "" || stat.startsWith("Z")
 }
 
 /** Starts `/bin/sh -c script` in a new process group (stdin and stderr ignored, stdout piped). When the
@@ -77,7 +92,12 @@ export function isGone(pid: number, started: number | null): boolean {
  *  process that still has its own. Never signals by name or pattern. Call inside a test. */
 export function startGroup(script: string): Group {
   const child = spawn("/bin/sh", ["-c", script], { detached: true, stdio: ["ignore", "pipe", "ignore"] })
-  const pid = child.pid!
+  if (child.pid === undefined) {
+    // The spawn error is also emitted as an event; a listener keeps it from becoming an uncaught exception.
+    child.on("error", () => {})
+    throw new Error("startGroup: spawn failed")
+  }
+  const pid = child.pid
   const started = startTime(pid)
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) =>
     child.on("exit", (code, signal) => resolve({ code, signal })),
@@ -108,8 +128,8 @@ export function startGroup(script: string): Group {
       if (next.done) throw new Error("the process closed its stdout")
       return next.value
     },
-    track(pid, started) {
-      tracked.push({ pid, started })
+    track(other, otherStarted) {
+      tracked.push({ pid: other, started: otherStarted })
     },
   }
 }

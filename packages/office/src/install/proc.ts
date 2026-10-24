@@ -26,7 +26,7 @@ const bootTimes = new Map<string, number>()
 const USER_HZ = 100
 
 /** A non-negative safe integer written in decimal digits only, else null (so "" never reads as 0). */
-function count(text: string | undefined): number | null {
+function parseDecimal(text: string | undefined): number | null {
   if (text === undefined || !/^\d+$/.test(text)) return null
   const n = Number(text)
   return Number.isSafeInteger(n) ? n : null
@@ -39,7 +39,7 @@ export function linuxStartTime(pid: number, procRoot = "/proc"): number | null {
     let btime = bootTimes.get(procRoot)
     if (btime === undefined) {
       const line = fs.readFileSync(path.join(procRoot, "stat"), "utf8").match(/^btime (.*)$/m)
-      const read = count(line?.[1])
+      const read = parseDecimal(line?.[1])
       if (read === null) return null
       btime = read
       bootTimes.set(procRoot, btime)
@@ -50,7 +50,7 @@ export function linuxStartTime(pid: number, procRoot = "/proc"): number | null {
     if (end < 0) return null
     const rest = stat.slice(end + 2).split(" ")
     // rest[0] is field 3 (the state), so field 22 is rest[19].
-    const ticks = count(rest[19])
+    const ticks = parseDecimal(rest[19])
     return ticks === null ? null : btime + ticks / USER_HZ
   } catch {
     return null
@@ -64,8 +64,8 @@ export function sameProcess(pid: number, started: number): boolean {
 }
 
 /** Sends SIGKILL to process group `pgid`; false when the group is gone, may not be signalled (macOS EPERM for
- *  a group of only zombies), or `pgid` isn't another process group the office may signal (its own included).
- *  Never throws. */
+ *  a group of only zombies), or `pgid` isn't a group id the office may signal or is the office's own pid (the
+ *  office leads its own group). Never throws. */
 export function killGroup(pgid: number): boolean {
   if (!isPid(pgid) || pgid === process.pid) return false
   try {
