@@ -6,10 +6,11 @@
  *  on it land on its own part. An interrupted turn ends with `[interrupted]`. */
 import fs from "node:fs"
 import path from "node:path"
-import { type ErrorPart, type Message, now, type TextPart, type ToolPart } from "@opencorp/protocol"
+import type { z } from "zod"
+import { type ErrorPart, type Message, now, Question, type TextPart, type ToolPart } from "@opencorp/protocol"
 import { pyJson, splitLines } from "../perm/redact.ts"
 import { newId } from "../store/store.ts"
-import type { HarnessEvent } from "./adapter.ts"
+import type { Card, HarnessEvent } from "./adapter.ts"
 
 /** The longest command output a part keeps, in code points. */
 export const OUTPUT_MAX_CHARS = 20_000
@@ -82,6 +83,25 @@ function truthy(value: unknown): boolean {
   if (value !== null && typeof value === "object") return Object.keys(value).length > 0
   return Boolean(value)
 }
+
+/** Python's `str()` of a value put into a card's text: `None` for a missing one. */
+function pyStr(value: unknown): string {
+  return value == null ? "None" : String(value)
+}
+
+/** A Codex server request as a card, and the reply each answer makes. */
+export type Issued = {
+  card: Card
+  /** The tool part a decision is written on: the item's id, else a request part of its own. */
+  callId: string
+  runId: string
+  nodeId: string
+  /** The JSON-RPC result for `answer` (as the answer check returns it), and the decision's variant name. */
+  reply(answer: unknown): [Record<string, unknown>, string]
+}
+
+/** Where a request's card is asked: its run (the turn) and its node. */
+type Asked = { runId: string; nodeId: string }
 
 /** The notification methods the translator writes. */
 const NOTIFIED = new Set(["item/agentMessage/delta", "item/started", "item/completed", "error"])
@@ -220,6 +240,51 @@ export class Translator {
     const to = movedTo(change)
     const kind = truthy(to) ? { ...change.kind, move_path: relative(to!, this.cwd) } : change.kind ?? null
     return { ...change, path: relative(change.path, this.cwd), kind }
+  }
+
+  /** The card for a server request; `Unserved` for a method that isn't one. */
+  card(method: string, params: Obj, asked: Asked): Issued {
+    if (method === "item/commandExecution/requestApproval") {
+      const network = params.networkApprovalContext
+      let title: string, text: string
+      if (truthy(network)) {  // a managed-network prompt: Codex sends no command or cwd, only the host
+        title = "Codex wants network access"
+        text = `${network.protocol} to ${network.host}`
+      } else {
+        const item = this.items.get(params.itemId) ?? {}
+        const command = truthy(params.command) ? params.command : truthy(item.command) ? item.command : "?"
+        const cwd = truthy(params.cwd) ? params.cwd : item.cwd
+        title = COMMAND_TITLES.get(params.kind) ?? COMMAND_TITLES.get("command")!
+        text = `$ ${command}\nin ${pyStr(cwd)}`
+        const permissions = pruned(params.additionalPermissions)
+        if (truthy(permissions)) text += `\nand asks for ${pyJson(permissions, true)}`
+      }
+      return approval("command", params, asked, title, text, offered(params.availableDecisions, APPROVE))
+    }
+    if (method === "item/fileChange/requestApproval") {
+      const changes: Obj[] = this.items.get(params.itemId)?.changes ?? []
+      let text = changes.map((c) => {
+        const [added, removed] = changeCounts(changeType(c), c.diff)
+        return `${changeName(c)} (${pyStr(changeType(c))}, +${added}/-${removed})`
+      }).join("\n")
+      if (truthy(params.grantRoot)) text += `\nand write access under ${params.grantRoot} for this session`
+      return approval("file_change", params, asked, "Codex wants to change files", text || "(no diff yet)",
+        offered(params.availableDecisions, APPROVE))
+    }
+    if (method === "item/permissions/requestApproval") {
+      const wanted = Object.fromEntries(Object.entries(params.permissions).filter(([, v]) => v != null))
+      const text = `${pyJson(wanted, true)}\nin ${pyStr(params.cwd)}`
+      const grant = (d: string) =>
+        d === "decline" ? { permissions: {}, scope: "turn" } : { permissions: wanted, scope: d }
+      return issue("permissions", params.itemId, asked, { title: "Codex asks for more permissions",
+        question: withReason(text, params), options: PERMISSIONS.map(([label]) => label) }, choice(PERMISSIONS, grant))
+    }
+    return this.other(method, params, asked)
+  }
+
+  /** The card for a request that isn't an approval: questions, MCP approvals and elicitations. */
+  private other(method: string, _params: Obj, _asked: Asked): Issued {
+    throw new Unserved(method)
   }
 
   /** (Re)writes `callId`'s tool part from its item, with the decision on it. */
@@ -407,6 +472,71 @@ export const REPLY_SCHEMAS: Readonly<Record<string, string>> = {
 export const MCP_APPROVAL_PREFIX = "mcp_tool_call_approval"
 /** Run id prefix of a request with no turn (`codex-<app-server pid>-<id made per app-server>`). */
 export const TURNLESS = "codex-"
+
+/** A card's options: each label, and the decision it makes. */
+type Options = readonly (readonly [string, string])[]
+
+const APPROVE: Options = [["Approve", "accept"], ["Approve for this session", "acceptForSession"],
+  ["Deny so Codex continues", "decline"], ["Deny and stop", "cancel"]]
+const COMMAND_TITLES: ReadonlyMap<unknown, string> = new Map([
+  ["command", "Codex wants to run a command"], ["writeStdin", "Codex wants to send input to a running command"],
+])
+const PERMISSIONS: Options = [["Approve for this turn", "turn"], ["Approve for this session", "session"],
+  ["Deny", "decline"]]
+/** What an answer that makes no reply throws; it never echoes the answer. */
+const NOT_AN_OPTION = "the answer isn't one of the card's options"
+/** The fields of a Question a card shows, checked as Python's `Question.model_validate` checks them. */
+const CARD = Question.pick({ title: true, question: true, options: true, questions: true, answer_schema: true })
+
+/** The card checked and parsed, with the reply each answer makes. */
+function issue(kind: Card["kind"], callId: string, { runId, nodeId }: Asked, shown: z.input<typeof CARD>,
+  reply: Issued["reply"]): Issued {
+  const parsed = CARD.safeParse(shown)
+  // The parse error quotes what Codex sent, so only a fixed text leaves.
+  if (!parsed.success) throw new Error("the request can't be shown as a card")
+  return { card: { kind, ...parsed.data }, callId, runId, nodeId, reply }
+}
+
+/** An approval card: the reply is the picked option's decision. */
+function approval(kind: Card["kind"], params: Obj, asked: Asked, title: string, text: string, options: Options):
+  Issued {
+  return issue(kind, params.itemId, asked, { title, question: withReason(text, params),
+    options: options.map(([label]) => label) }, choice(options, (d) => ({ decision: d })))
+}
+
+/** A reply made from the decision of the picked label; a label the card doesn't hold makes none. */
+function choice(options: Options, result: (decision: string) => Record<string, unknown>): Issued["reply"] {
+  const mapping = new Map<unknown, string>(options)
+  return (answer) => {
+    const decision = mapping.get(answer)
+    if (decision === undefined) throw new RangeError(NOT_AN_OPTION)
+    return [result(decision), decision]
+  }
+}
+
+/** The options whose decisions Codex lists; all of them when it lists none (a missing or null list). */
+function offered(available: unknown[] | null | undefined, options: Options): Options {
+  // Persistent decisions are objects (amendments) and write the owner's Codex config: never offered.
+  if (available == null) return options
+  const names = new Set(available.filter((d) => typeof d === "string"))
+  return options.filter(([, d]) => names.has(d))
+}
+
+function withReason(text: string, params: Obj): string {
+  return truthy(params.reason) ? `${text}\n${params.reason}` : text
+}
+
+function isPlain(value: unknown): value is Obj {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
+
+/** `value` without its null or empty-object entries, at any depth: Codex sends every field it could have asked
+ *  for. Arrays are kept as they are. */
+function pruned(value: unknown): unknown {
+  if (!isPlain(value)) return value
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, pruned(v)] as const)
+    .filter(([, v]) => v != null && !(isPlain(v) && Object.keys(v).length === 0)))
+}
 
 /** A server request the office doesn't turn into a card; it gets a JSON-RPC error. */
 export class Unserved extends Error {

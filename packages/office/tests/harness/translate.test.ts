@@ -4,10 +4,10 @@ import { Ajv } from "ajv"
 import { expect, test } from "bun:test"
 import type { Message, Part } from "@opencorp/protocol"
 import type { HarnessEvent } from "../../src/harness/adapter.ts"
-import { changeCounts, COMMAND, FILE_CHANGE, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative, SERVED,
-  Translator } from "../../src/harness/translate.ts"
-import { agentMessage, agentMessageDelta, command, commandStarted, error, fileChange, fill }
-  from "../../src/testing/fake_codex.ts"
+import { changeCounts, COMMAND, FILE_CHANGE, type Issued, MCP_TOOL, OUTPUT_CUT, OUTPUT_MAX_CHARS, REFUSED, relative,
+  REPLY_SCHEMAS, SERVED, Translator } from "../../src/harness/translate.ts"
+import { agentMessage, agentMessageDelta, command, commandApproval, commandStarted, error, fileChange,
+  fileChangeApproval, fill, networkApproval, permissionsApproval } from "../../src/testing/fake_codex.ts"
 
 const FIXTURES = new URL("../fixtures/codex/", import.meta.url)
 /** The recorded sessions' names, without `.jsonl`, sorted. */
@@ -53,6 +53,16 @@ function fold(events: HarnessEvent[]): Message[] {
     }
   }
   return messages
+}
+
+/** The card for a request step, with its params filled in as the session would. */
+function card(t: Translator, step: Msg, runId = "turn_1"): Issued {
+  return t.card(step.request, fill(step.params, runId, "/w", "thr_1"), { runId, nodeId: String(step.id) })
+}
+
+/** A check of a reply against the pinned response schema of `method`. */
+function replyCheck(method: string) {
+  return ajv.compile(JSON.parse(fs.readFileSync(new URL(`schema/${REPLY_SCHEMAS[method]}.json`, FIXTURES), "utf8")))
 }
 
 function parts(events: HarnessEvent[]): Part[] {
@@ -253,6 +263,21 @@ test("a file change under the cwd is named relative to it", () => {
   expect(relative("a.py", "/w")).toBe("a.py")
 })
 
+test("a moved file keeps where it moved to on its part and card", () => {
+  const { t, events } = tr()
+  const steps = fileChange("f1", "{cwd}/a.py", "@@ -1 +1 @@\n-a\n+b\n\n\nMoved to: {cwd}/b.py", { kind: "update" })
+  for (const step of steps) step.params.item.changes[0].kind.move_path = "{cwd}/b.py"
+  feed(t, steps.slice(0, 1))
+  expect(card(t, fileChangeApproval(2, "f1")).card.question).toContain("a.py → b.py (update, +1/-1)")
+  feed(t, steps.slice(1))
+  t.turnCompleted("turn_1", "completed", null)
+  const part = parts(events)[0]!
+  if (part.type !== "tool") throw new Error("not a tool part")
+  const [change, ...rest] = part.input.changes as Msg[]
+  expect(rest).toEqual([])
+  expect([change!.path, change!.move_path, change!.kind]).toEqual(["a.py", "b.py", "update"])
+})
+
 test.each([
   ["add", "one\ntwo\n", [2, 0]],  // Codex sends a new file's content
   ["delete", "one\n+two\n-three\n", [0, 3]],  // and a deleted file's content
@@ -317,6 +342,98 @@ test("a running command from before a steer is interrupted with the turn", () =>
   t.turnCompleted("turn_1", "interrupted", null)
   expect(shape(events)).toEqual([["assistant", [[COMMAND, "interrupted"]]], ["user", ["never mind"]],
     ["assistant", ["[interrupted]"]]])
+})
+
+// --- approval cards ----------------------------------------------------------------------
+
+test("a command approval offers the four decisions and replies with the picked one", () => {
+  const { t } = tr()
+  feed(t, [commandStarted("c1", "touch a")])
+  const c = card(t, commandApproval(1, "c1", "touch a"))
+  expect([c.card.kind, c.runId, c.nodeId, c.callId]).toEqual(["command", "turn_1", "1", "c1"])
+  expect(c.card.options).toEqual(["Approve", "Approve for this session", "Deny so Codex continues", "Deny and stop"])
+  expect(c.card.question).toContain("$ touch a")
+  expect(c.reply("Approve for this session")).toEqual([{ decision: "acceptForSession" }, "acceptForSession"])
+})
+
+test("only offered decisions show and persistent ones never do", () => {
+  const { t } = tr()
+  const step = commandApproval(1, "c1", "curl x")
+  step.params.availableDecisions = ["accept", { acceptWithExecpolicyAmendment: {} }, "cancel"]
+  expect(card(t, step).card.options).toEqual(["Approve", "Deny and stop"])
+})
+
+test.each([
+  ["add", "hi\nthere\n", "notes.md (add, +2/-0)"],
+  ["delete", "a\nb\nc\n", "notes.md (delete, +0/-3)"],
+  ["update", "@@ -1 +1,2 @@\n-z\n+x\n+y\n", "notes.md (update, +2/-1)"],
+])("a file change card counts lines by kind [%s]", (kind, diff, says) => {
+  const { t } = tr()
+  feed(t, [fileChange("f1", "{cwd}/notes.md", diff, { kind })[0]!])  // an absolute path, as Codex sends
+  const c = card(t, fileChangeApproval(2, "f1"))
+  expect(c.card.kind).toBe("file_change")
+  expect(c.card.question).toContain(says)
+  expect(c.reply("Deny so Codex continues")).toEqual([{ decision: "decline" }, "decline"])
+})
+
+test("a file change card offers only the decisions codex lists", () => {
+  const { t } = tr()
+  feed(t, [fileChange("f1", "{cwd}/notes.md", "hi\n")[0]!])
+  const step = fileChangeApproval(2, "f1")
+  step.params.availableDecisions = ["accept", { acceptWithExecpolicyAmendment: {} }, "decline"]
+  const c = card(t, step)
+  expect(c.card.options).toEqual(["Approve", "Deny so Codex continues"])
+  const check = replyCheck(step.request)
+  for (const label of c.card.options) expect(check(c.reply(label)[0])).toBe(true)
+  for (const label of ["Approve for this session", "Deny and stop", "toString"]) {
+    expect(() => c.reply(label)).toThrow(new RangeError("the answer isn't one of the card's options"))
+  }
+  step.params.availableDecisions = []
+  expect(card(t, step).card.options).toEqual([])
+})
+
+test("a command approval names the permissions it asks for", () => {
+  const { t } = tr()
+  const step = commandApproval(1, "c1", "make out")
+  step.params.additionalPermissions = { network: { enabled: true },
+    fileSystem: { write: ["/w/out"], read: null, entries: null } }
+  expect(card(t, step).card.question.split("\n")).toEqual(["$ make out", "in /w",
+    'and asks for {"network": {"enabled": true}, "fileSystem": {"write": ["/w/out"]}}'])
+})
+
+test("a command card whose permissions are all null names none", () => {
+  const { t } = tr()
+  const step = commandApproval(1, "c1", "make out")
+  step.params.additionalPermissions = { network: null, fileSystem: { read: null, write: null } }
+  expect(card(t, step).card.question).toBe("$ make out\nin /w")
+})
+
+test("input to a running command is titled as such", () => {
+  const { t } = tr()
+  const step = commandApproval(1, "c1", "python3")
+  step.params.kind = "writeStdin"
+  expect(card(t, step).card.title).toBe("Codex wants to send input to a running command")
+  step.params.kind = "command"
+  expect(card(t, step).card.title).toBe("Codex wants to run a command")
+})
+
+test("a network approval names the host", () => {
+  // Codex sends a managed-network approval with no command or cwd, only networkApprovalContext.
+  const { t } = tr()
+  const c = card(t, networkApproval(7, "c2", "pypi.org"))
+  expect([c.card.kind, c.card.title, c.card.question]).toEqual(["command", "Codex wants network access",
+    "https to pypi.org"])
+  expect(c.reply("Approve")).toEqual([{ decision: "accept" }, "accept"])
+})
+
+test("a permissions card grants what was asked for this turn or session or nothing", () => {
+  const { t } = tr()
+  const c = card(t, permissionsApproval(3, "p1"))
+  expect(c.card.kind).toBe("permissions")
+  expect(c.card.options).toEqual(["Approve for this turn", "Approve for this session", "Deny"])
+  expect(c.reply("Approve for this turn")).toEqual([{ permissions: { network: { enabled: true } }, scope: "turn" },
+    "turn"])
+  expect(c.reply("Deny")).toEqual([{ permissions: {}, scope: "turn" }, "decline"])
 })
 
 // --- the pinned schema -------------------------------------------------------------------
