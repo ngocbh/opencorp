@@ -5,6 +5,7 @@ import { expect, test } from "bun:test"
 import {
   auditArgs, casefold, DETAIL_CHARS, jsonDumps, quote, quotePlus, redact, repr, splitLines, strip,
 } from "../../src/perm/redact.ts"
+import { KINDS, makeMonitor, RuntimeError, TOKEN } from "./helpers.ts"
 
 const PEM = "-----BEGIN KEY-----\nAAAABBBBCCCCDDDD\nEEEEFFFFGGGGHHHH\n-----END KEY-----\n"
 const ESCAPED = "pa\\ss\"w\u00f6rd-123"
@@ -56,6 +57,139 @@ test("keys that scrub to the same text keep every value", () => {
   const got = redact({ "x-abcdefgh": 1, "x-12345678": 2, "[redacted]": 3, abcdefgh: 4 }, [], ["abcdefgh", "12345678"])
   expect(got).toEqual({ "x-[redacted]": 1, "x-[redacted]#2": 2, "[redacted]": 3, "[redacted]#2": 4 })
   expect(Object.keys(got as object)).toEqual(["x-[redacted]", "x-[redacted]#2", "[redacted]", "[redacted]#2"])
+})
+
+const PADDED = "p4dded-secret-value"
+const PIN = "20260930"
+
+/** An object whose text holds the secret. */
+class Handle {
+  constructor(readonly secret: string) {}
+
+  toString(): string {
+    return `Handle(${this.secret})`
+  }
+}
+
+/** The error Python raises for a missing key, named as Python names it. */
+class KeyError extends Error {
+  override name = "KeyError"
+}
+
+type Secrets = ReadonlyMap<string, string>
+
+const LEAKS: Record<string, (s: Secrets) => unknown> = {
+  dict_key: (s) => ({ [s.get("vault_token")!]: 1 }),
+  set: (s) => new Set([s.get("vault_token")!]),
+  bytes: (s) => new TextEncoder().encode(s.get("vault_token")!),
+  object: (s) => new Handle(s.get("vault_token")!),
+  number: (s) => ({ code: Number(s.get("pin")!) }),
+  stripped: (s) => `used ${strip(s.get("padded")!)}`,
+  pem_line: (s) => "bad line: " + splitLines(s.get("pem")!)[1],
+  // Python's str(KeyError(x)) is repr(x).
+  key_error: (s) => repr(s.get("escaped")!),
+  repr: (s) => `bad password ${repr(s.get("escaped")!)}`,
+  json_text: (s) => '{"p": ' + jsonDumps(s.get("escaped")!) + "}",
+  json_text_unicode: (s) => '{"p": ' + jsonDumps(s.get("escaped")!, false) + "}",
+  url: (s) => "https://host/login?p=" + quote(s.get("escaped")!, ""),
+  raise_repr: (s) => {
+    throw new KeyError(repr(s.get("escaped")!))
+  },
+  raise_stripped: (s) => {
+    throw new RuntimeError(`auth failed for ${strip(s.get("padded")!)}`)
+  },
+}
+
+function circular(s: Secrets): unknown {
+  const loop: Record<string, unknown> = { token: s.get("vault_token")! }
+  loop.self = loop
+  return loop
+}
+
+/** An interrupt with no message, so its reason is exactly its name, as Python's is `KeyboardInterrupt`. */
+function interrupt(): never {
+  throw new DOMException("", "AbortError")
+}
+
+function interruptSecret(s: Secrets): never {
+  throw new DOMException(`stopped with ${s.get("vault_token")!}`, "AbortError")
+}
+
+const MODES: Record<string, (s: Secrets) => unknown> = {
+  ...LEAKS, circular, interrupt, interrupt_secret: interruptSecret,
+}
+
+function leak(_asset: unknown, args: Record<string, unknown>, secrets: Secrets): unknown {
+  return MODES[args.mode as string]!(secrets)
+}
+
+/** Python's `monitor` fixture: a `vault` asset of kind `leaky` holding five secrets, granted to minh. */
+async function leakyMonitor() {
+  const made = await makeMonitor(
+    {
+      "assets/vault.yaml": {
+        id: "vault", kind: "leaky", secrets: ["vault_token", "padded", "pem", "pin", "escaped"],
+        tools: { leak: {} }, grants: [{ who: "minh", can: ["leak"] }],
+      },
+    },
+    { ...KINDS, leaky: { leak: { run: leak } } },
+  )
+  await made.secrets.set("padded", PADDED + "\n")
+  await made.secrets.set("pem", PEM)
+  await made.secrets.set("pin", PIN)
+  await made.secrets.set("escaped", ESCAPED)
+  return made
+}
+
+function leaked(text: string): boolean {
+  return [TOKEN, PADDED, PIN, "AAAABBBBCCCCDDDD", "EEEEFFFFGGGGHHHH", ...ESCAPED_FORMS].some((s) => text.includes(s))
+}
+
+test.each(Object.keys(LEAKS).sort())("no form of a secret reaches the result or the audit [%s]", async (mode) => {
+  const { monitor, store } = await leakyMonitor()
+  const got = await monitor.call("minh", "r1", "vault__leak", { mode })
+  const text = JSON.stringify(got)
+  expect(text).toContain("[redacted]")
+  expect(leaked(text)).toBe(false)
+  if (typeof got === "string") expect(leaked(got)).toBe(false)
+  const rows = store.listAudit()
+  expect(rows).toHaveLength(1)
+  expect(leaked(JSON.stringify(rows[0]))).toBe(false)
+})
+
+test("a non json result comes back as plain json", async () => {
+  const { monitor } = await leakyMonitor()
+  expect(await monitor.call("minh", "r1", "vault__leak", { mode: "set" })).toEqual(["[redacted]"])
+  expect(await monitor.call("minh", "r1", "vault__leak", { mode: "dict_key" })).toEqual({ "[redacted]": 1 })
+})
+
+test("a result that is not json is an audited error", async () => {
+  const { monitor, store } = await leakyMonitor()
+  const got = await monitor.call("minh", "r1", "vault__leak", { mode: "circular" })
+  expect(got).toBe("error: TypeError: Circular reference detected")
+  expect(store.listAudit().map((r) => r.outcome)).toEqual(["error"])
+})
+
+test("a kinds own key error is named by its type", async () => {
+  const { monitor } = await leakyMonitor()
+  expect(await monitor.call("minh", "r1", "vault__leak", { mode: "raise_repr" })).toBe("error: KeyError: '[redacted]'")
+})
+
+test("an interrupt inside a kind is audited then raised", async () => {
+  const { monitor, store } = await leakyMonitor()
+  const thrown = (mode: string) => monitor.call("minh", "r1", "vault__leak", { mode }).then(() => null, (e) => e)
+  expect((await thrown("interrupt"))?.name).toBe("AbortError")
+  const rows = store.listAudit()
+  expect(rows).toHaveLength(1)
+  expect([rows[0]!.outcome, rows[0]!.detail]).toEqual(["error", "AbortError"])
+
+  const error = await thrown("interrupt_secret")
+  expect(error?.name).toBe("AbortError")
+  expect(error.message).toContain("[redacted]")
+  expect(error.message).not.toContain(TOKEN)
+  const again = store.listAudit()
+  expect(again).toHaveLength(2)
+  expect(leaked(JSON.stringify(again))).toBe(false)
 })
 
 /** [label, text, a piece of the secret's form that must be gone]. */
