@@ -3,7 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
 import { args, killGroup, linuxStartTime, sameProcess, startTime, stopProcess } from "../../src/install/proc.ts"
-import { isGone, NO_GROUP, PS, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
+import { isGone, NO_GROUP, ps, psStat, startGroup, tempDir, waitFor } from "../helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -41,7 +41,7 @@ test("startTime reads a zombie", async () => {
   const g = startGroup(`(while [ ! -e '${gate}' ]; do /bin/sleep 0.05; done) & echo $!; exec /bin/sleep 61`)
   const z = Number(await g.line())
   g.track(z, startTime(z))
-  await waitFor(() => args(g.pid, PS) === "/bin/sleep 61", { timeout: 10_000, what: "the exec" })
+  await waitFor(() => args(g.pid, ps()) === "/bin/sleep 61", { timeout: 10_000, what: "the exec" })
   fs.writeFileSync(gate, "")
   await waitFor(() => psStat(z).startsWith("Z"), { timeout: 10_000, what: "a zombie" })
   const found = startTime(z)
@@ -138,9 +138,9 @@ test("args shows the command line of a process", async () => {
   // ps printed instead.
   async function expectArgs(pid: number, expected: string) {
     try {
-      await waitFor(() => args(pid, PS) === expected, { timeout: 5000, what: "ps args" })
+      await waitFor(() => args(pid, ps()) === expected, { timeout: 5000, what: "ps args" })
     } catch {}
-    expect(args(pid, PS)).toBe(expected)
+    expect(args(pid, ps())).toBe(expected)
   }
   const g = startGroup("exec /bin/sleep 61")
   await expectArgs(g.pid, "/bin/sleep 61")
@@ -156,7 +156,7 @@ test("args shows the command line of a process", async () => {
 test("args of an exited process is null", async () => {
   const g = startGroup("exit 0")
   await g.exited
-  expect(args(g.pid, PS)).toBeNull()
+  expect(args(g.pid, ps())).toBeNull()
 })
 
 test("args refuses a ps that is not an absolute path", () => {

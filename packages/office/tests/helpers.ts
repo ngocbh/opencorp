@@ -44,18 +44,23 @@ export function shortDir(): string {
 // a call that slipped past a mocked process.kill could never signal anything.
 export const NO_GROUP = 2_000_000_000
 
-/** The `ps` binary: /bin/ps on macOS, /usr/bin/ps on some Linux images. */
-export const PS = (() => {
-  const found = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p))
-  if (found === undefined) throw new Error("tests need ps at /bin/ps or /usr/bin/ps")
-  return found
-})()
+let psPath: string | undefined
+
+/** The `ps` binary: /bin/ps on macOS, /usr/bin/ps on some Linux images. Looked up on the first call, so only
+ *  the tests that need ps fail on an image without it. */
+export function ps(): string {
+  if (psPath === undefined) {
+    psPath = ["/bin/ps", "/usr/bin/ps"].find((p) => fs.existsSync(p))
+    if (psPath === undefined) throw new Error("this test needs ps at /bin/ps or /usr/bin/ps")
+  }
+  return psPath
+}
 
 /** `ps -o stat=` of `pid`, or "" when ps exits non-zero (no such pid). Any other failure, such as a spawn
  *  error or a timeout, is rethrown. Reads only. */
 export function psStat(pid: number): string {
   try {
-    return execFileSync(PS, ["-o", "stat=", "-p", String(pid)], {
+    return execFileSync(ps(), ["-o", "stat=", "-p", String(pid)], {
       env: {},
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 5000,

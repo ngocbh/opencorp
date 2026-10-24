@@ -21,7 +21,8 @@ export function startTime(pid: number): number | null {
 }
 
 // btime is read once per root, as psutil does: the kernel recomputes it on every read and it can shift by a
-// second, which would break the 0.01 s match against a start time recorded earlier.
+// second, which would break the 0.01 s match against a start time recorded earlier. An office restart re-reads
+// it, so if it shifted meanwhile a leftover isn't matched and is left alone (fails safe, as with psutil).
 const bootTimes = new Map<string, number>()
 
 const USER_HZ = 100
@@ -65,8 +66,9 @@ export function sameProcess(pid: number, started: number): boolean {
 }
 
 /** Sends SIGKILL to process group `pgid`; false when the group is gone, may not be signalled (macOS EPERM for
- *  a group of only zombies), or `pgid` isn't a group id the office may signal or is the office's own pid (the
- *  office leads its own group). Never throws. */
+ *  a group of only zombies), or `pgid` isn't a group id the office may signal or is the office's own pid (a
+ *  backstop: callers pass only groups the office spawned detached, and the office leads its own group under its
+ *  service). Never throws. */
 export function killGroup(pgid: number): boolean {
   if (!isPid(pgid) || pgid === process.pid) return false
   try {
@@ -121,7 +123,9 @@ async function waitGone(pid: number, started: number, timeout: number): Promise<
 
 /** Stops `pid` if it is still the process that started at `started`: SIGTERM, then SIGKILL after `timeout` ms,
  *  then waits up to `killWait` ms for it to go. The start time is re-read before each signal, so a pid reused
- *  meanwhile is never signalled. True when the process was found and signalled, false when it wasn't running. */
+ *  meanwhile is never signalled. True when the process was found and signalled, false when it wasn't running.
+ *  Read `started` with startTime(pid) before anything else identifies the process (e.g. args), so a pid reused
+ *  in between fails the re-check; never pass a time the office recorded itself. */
 export async function stopProcess(
   pid: number,
   started: number,
