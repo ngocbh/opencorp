@@ -34,7 +34,8 @@ chat/test_connections.py::test_write_run_record_creates_runs_dir	dropped	—	D4,
 chat/test_cost.py	open	—	—	O3-8b
 chat/test_harness.py	open	—	—	O4a-4
 chat/test_hire.py	ported	packages/office/tests/chat/hire.test.ts	—	O2-24
-chat/test_hooks.py	open	—	—	O3-8b
+chat/test_hooks.py	ported	packages/office/tests/chat/hooks.test.ts	—	O3-8b
+chat/test_hooks.py::test_a_failing_callback_is_logged_and_the_rest_still_run	changed	packages/office/tests/chat/hooks.test.ts::a failing callback is logged and the rest still run	design §6 rules 1 and 13: the log line names the hook and the error type, never the message; notifications return nothing (P13), so the results part runs on a check	O3-8b
 chat/test_identity.py	open	—	—	O3-8b
 chat/test_logins.py	open	—	—	O2-20
 chat/test_models.py	open	—	—	O2-20
@@ -334,6 +335,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/chat/hire.test.ts::a relative people link out of the repo counts as outside the repo	design §6 path guard: Python's non-strict realpath followed a link that dangles in the scratch copy	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::an in repo people link is refused at preview as at confirm	design §6.4 (O1-14 handoff): a person write never goes through a link; the preview says so too	O2-24
 —	new	packages/office/tests/chat/hire.test.ts::issue messages name the company repo not the scratch copy	O1-8 handoff (yian #1051): absolute CODE-root paths would name the scratch copy	O2-24
+—	new	packages/office/tests/chat/hooks.test.ts::notifications are awaited in order	P13 (D36), design §8.6: notifications may be async and are awaited in order; a rejected one is logged and skipped	O3-8b
 —	new	packages/office/tests/chat/provider.test.ts::a bom or bad utf 8 is not valid json [%s]	O2-19 plan: a private file is read as strict UTF-8 JSON, never repaired (stricter than Python, whose json.loads(bytes) took a BOM)	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::a runtime or loader variable in env is refused [%s]	design §6.5 (R2 m5): names that change how the worker's runtime or loader starts	O2-19
 —	new	packages/office/tests/chat/provider.test.ts::an env name or value a spawn cant pass is refused [%s]	design §6.5: a spawn can't pass an empty name or one holding = or NUL, or a value holding NUL, as given (= sets another variable; NUL makes the spawn throw with the value in its message)	O2-19
