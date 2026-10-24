@@ -1,6 +1,247 @@
 /** Secret scrubbing for asset-tool results and audit rows: every form of a secret the office
  *  knows, as Python's monitor scrubs them (perm/monitor.py), with the Python string functions it relies on. */
 
+import { Buffer } from "node:buffer"
+
+/** What replaces a secret. */
+export const REDACTED = "[redacted]"
+/** Characters of a result kept in its audit row. */
+export const DETAIL_CHARS = 2000
+/** Lines of a multi-line secret this long or longer are scrubbed on their own: the secret store's minimum value
+ *  length (Python's MIN_VALUE_CHARS). */
+export const SECRET_LINE_CHARS = 8
+
+/** `value` with entries under `keys` and every secret in `values` replaced by `[redacted]`.
+ *
+ *  Each secret is scrubbed as stored, without surrounding whitespace, and line by line for lines of at least
+ *  `SECRET_LINE_CHARS` (one line of a PEM key; a line that is not secret, such as the key's armor, may be scrubbed
+ *  too). Each of those is also scrubbed as it reads escaped inside JSON (once or twice), a Python repr, or a URL
+ *  (`quote` and `quote_plus`), in any letter case. A whole secret is also scrubbed base64-encoded, in either
+ *  alphabet and at any offset (inside `Basic` credentials, say); a block of base64 wrapped at 76 columns (MIME)
+ *  that holds one is scrubbed whole. All are scrubbed longest first, so a secret inside a longer one never leaves
+ *  the longer one's ends behind.
+ *
+ *  `value` is plain JSON plus the frame codec's revived kinds (`bigint`, `NaN`, `Infinity`, `-Infinity`); a
+ *  `bigint` counts as a number. */
+export function redact(value: string, keys: Iterable<string>, values: Iterable<string>): string
+export function redact(value: unknown, keys: Iterable<string>, values: Iterable<string>): unknown
+export function redact(value: unknown, keys: Iterable<string>, values: Iterable<string>): unknown {
+  // A Set once, so a one-shot iterable isn't drained by the first lookup.
+  return scrub(value, new Set(keys), needles(values))
+}
+
+/** The text casefolded and with the URL-safe base64 alphabet folded into the standard one, for the quick tests. */
+const fold = (text: string) => casefold(text).replaceAll("-", "+").replaceAll("_", "/")
+
+/** Base64 wrapped at 76 columns, as MIME (`base64.encodebytes`) writes it, its line breaks plain or JSON-escaped.
+ *  Flag `g`: used only with `String.prototype.replace`, which resets it. */
+const WRAPPED = /(?<![A-Za-z0-9+/_-])(?:[A-Za-z0-9+/_-]{76}(?:\r?\n|(?:\\r)?\\n))+[A-Za-z0-9+/_=-]{0,76}/g
+/** Flag `g`: used only with `String.prototype.replace`. */
+const BREAKS = /\r?\n|(?:\\r)?\\n/g
+/** A full line of wrapped base64 and its break, found from the break (a literal, so quick) before `WRAPPED`, which
+ *  has none to look for, runs. No flags: they are used with `test`, and a `g` regex keeps `lastIndex` between
+ *  calls, so it would skip the start of the next string. The ends are `\n`, `\r\n`, and their JSON escapes, written
+ *  here regex-escaped. */
+const WRAP_ENDS = ["\\n", "\\r\\n", "\\\\n", "\\\\r\\\\n"]
+  .map((end) => new RegExp(`${end}(?<=[A-Za-z0-9+/_-]{76}${end})`))
+
+/** One form of a secret. */
+type Form = {
+  text: string
+  /** The text casefolded and with `-_` as `+/`: a quick test on the value folded the same way, before the search. */
+  quick: string
+  /** Case-blind, or for base64 exact but for the alphabet. Flag `g`: used only with `String.prototype.replace`. */
+  pattern: RegExp
+}
+
+/** What `scrub` looks for, built once per set of secrets. */
+type Needles = {
+  /** Each form of a secret, longest first. */
+  forms: Form[]
+  /** Each form's quick test, in the same order. */
+  quick: string[]
+  /** Each secret's base64 core, in the standard alphabet, looked for in wrapped base64. */
+  cores: Set<string>
+  /** The length of the shortest form: a shorter string holds none. */
+  shortest: number
+  /** Whether no form holds NUL, so strings joined by it can be tested at once. */
+  joins: boolean
+}
+
+function needles(values: Iterable<string>): Needles {
+  const plain = new Set<string>()
+  const whole = new Set<string>()
+  for (const value of values) {
+    for (const text of [value, strip(value)]) {
+      whole.add(text)
+      plain.add(text)
+    }
+    for (const line of splitLines(value)) if ([...strip(line)].length >= SECRET_LINE_CHARS) plain.add(strip(line))
+  }
+  const texts = new Set<string>()
+  for (const needle of plain) {
+    for (const once of [jsonDumps(needle).slice(1, -1), jsonDumps(needle, false).slice(1, -1)]) {
+      for (const text of [once, jsonDumps(once).slice(1, -1), jsonDumps(once, false).slice(1, -1)]) texts.add(text)
+    }
+    for (const text of [needle, repr(needle).slice(1, -1), quote(needle, ""), quote(needle), quotePlus(needle)]) {
+      texts.add(text)
+    }
+  }
+  const cores = new Set<string>()
+  for (const value of whole) for (const core of base64Cores(value)) cores.add(core)
+  const found: Form[] = []
+  for (const text of texts) {
+    if (text) found.push({ text, quick: fold(text), pattern: new RegExp(caseBlind(text), "giu") })
+  }
+  for (const core of cores) {
+    // Either alphabet, so the URL-safe copy needs no form of its own; cores hold only A-Za-z0-9+/.
+    const pattern = new RegExp(core.replace(/[+/]/g, (c) => (c === "+" ? "[+\\-]" : "[/_]")), "g")
+    found.push({ text: core, quick: fold(core), pattern })
+  }
+  // Stable, so a text that is also a core keeps its case-blind form first, as Python's dict order does.
+  found.sort((a, b) => [...b.text].length - [...a.text].length || comparePoints(a.text, b.text))
+  const quick = found.map((form) => form.quick)
+  const shortest = found.length === 0 ? 0 : found.reduce((min, form) => Math.min(min, form.text.length), Infinity)
+  return { forms: found, quick, cores, shortest, joins: !quick.some((q) => q.includes("\0")) }
+}
+
+/** `text` as a regex source matching it in any letter case (with flags `iu`). */
+function caseBlind(text: string): string {
+  // Not `-`: `u` mode forbids `\-` outside a class, and it needs no escape there.
+  const escaped = text.replace(/[\\^$.*+?()[\]{}|/]/g, "\\$&")
+  // Python's `re` IGNORECASE treats i, I, U+0130 and U+0131 as one class; JS's simple case folding doesn't.
+  return escaped.replace(/[iI\u0130\u0131]/g, "[iI\u0130\u0131]")
+}
+
+/** Python's string order, by code point: JS `<` compares UTF-16 units, which puts U+E000 to U+FFFF after astral
+ *  characters. */
+function comparePoints(a: string, b: string): number {
+  const x = Array.from(a, (ch) => ch.codePointAt(0)!)
+  const y = Array.from(b, (ch) => ch.codePointAt(0)!)
+  for (let i = 0; i < x.length && i < y.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!
+  return x.length - y.length
+}
+
+/** What the base64 of any text holding `value` holds, whatever `value`'s offset in a 3-byte group: the characters
+ *  made only of its bits, in the standard alphabet. */
+function base64Cores(value: string): Set<string> {
+  const data = Buffer.from(value, "utf8")
+  const found = new Set<string>()
+  for (let pad = 0; pad < 3; pad++) {
+    const coded = Buffer.concat([Buffer.alloc(pad), data]).toString("base64")
+    found.add(coded.slice(Math.ceil(4 * pad / 3), Math.floor(8 * (pad + data.length) / 6)))
+  }
+  return new Set([...found].filter((core) => core.length >= SECRET_LINE_CHARS))
+}
+
+function scrubText(value: string, needles: Needles): string {
+  if (value.length < needles.shortest) return value
+  const folded = fold(value)
+  // The usual miss, without a search for every form.
+  if (needles.quick.some((quick) => folded.includes(quick))) value = scrubForms(value, folded, needles)
+  if (needles.cores.size > 0 && WRAP_ENDS.some((end) => end.test(value))) {
+    value = value.replace(WRAPPED, (block) => (holdsCore(block, needles.cores) ? REDACTED : block))
+  }
+  return value
+}
+
+function scrubForms(value: string, folded: string, needles: Needles): string {
+  for (const { quick, pattern } of needles.forms) {
+    if (folded.includes(quick)) {
+      const next = value.replace(pattern, REDACTED)
+      if (next !== value) {
+        value = next
+        folded = fold(next)
+      }
+    }
+  }
+  return value
+}
+
+function holdsCore(block: string, cores: Set<string>): boolean {
+  // Only the alphabet folded, no casefold: base64 is case-sensitive.
+  const joined = block.replace(BREAKS, "").replaceAll("-", "+").replaceAll("_", "/")
+  for (const core of cores) if (joined.includes(core)) return true
+  return false
+}
+
+function scrub(value: unknown, keys: Set<string>, needles: Needles): unknown {
+  if (keys.size === 0 && !mayHold(value, needles)) return value
+  return scrubAll(value, keys, needles)
+}
+
+/** Whether a string or number in `value` may hold a form of a secret: one test of all of them at once, joined by
+ *  NUL, which no form holds, rather than every form against every string. */
+function mayHold(value: unknown, needles: Needles): boolean {
+  if (!needles.joins) return true
+  const parts: string[] = []
+  texts(value, parts)
+  const joined = parts.join("\0")
+  const folded = fold(joined)
+  return needles.quick.some((quick) => folded.includes(quick))
+    || (needles.cores.size > 0 && WRAP_ENDS.some((end) => end.test(joined)))
+}
+
+function texts(value: unknown, parts: string[]): void {
+  if (typeof value === "string") parts.push(value)
+  else if (Array.isArray(value)) for (const v of value) texts(v, parts)
+  else if (typeof value === "object" && value !== null) {
+    for (const [k, v] of Object.entries(value)) {
+      texts(k, parts)
+      texts(v, parts)
+    }
+  } else if (typeof value === "number" || typeof value === "bigint") parts.push(String(value))
+}
+
+function scrubAll(value: unknown, keys: Set<string>, needles: Needles): unknown {
+  if (typeof value === "string") return scrubText(value, needles)
+  if (Array.isArray(value)) return value.map((v) => scrubAll(v, keys, needles))
+  if (typeof value === "object" && value !== null) {
+    const scrubbed = new Map<string, unknown>()
+    for (const [k, v] of Object.entries(value)) {
+      const key = scrubText(k, needles)
+      let name = key
+      let n = 1
+      while (scrubbed.has(name)) {  // two keys scrubbed to the same text: keep both values
+        n += 1
+        name = `${key}#${n}`
+      }
+      scrubbed.set(name, keys.has(k) ? REDACTED : scrubAll(v, keys, needles))
+    }
+    // fromEntries defines own properties, so a `__proto__` key stays a key; assigning it would set the prototype.
+    return Object.fromEntries(scrubbed)
+  }
+  if (typeof value === "number" || typeof value === "bigint") {
+    const text = String(value)
+    if (needles.forms.some((form) => text.includes(form.text))) return REDACTED  // an all-digit secret
+  }
+  return value
+}
+
+/** Python's `json.dumps(value, ensure_ascii=False, default=str)` of a redacted value. */
+function pyJson(value: unknown): string {
+  if (typeof value === "string") return jsonDumps(value, false)
+  if (value === true) return "true"
+  if (value === false) return "false"
+  if (value === null) return "null"
+  // String() writes NaN, Infinity and -Infinity as Python does, and a bigint as its digits.
+  if (typeof value === "number" || typeof value === "bigint") return String(value)
+  if (Array.isArray(value)) return "[" + value.map(pyJson).join(", ") + "]"
+  if (typeof value === "object") {
+    return "{" + Object.entries(value).map(([k, v]) => jsonDumps(k, false) + ": " + pyJson(v)).join(", ") + "}"
+  }
+  return jsonDumps(String(value), false)
+}
+
+/** `args` redacted, or, when their JSON (as Python writes it) is longer than DETAIL_CHARS, that JSON cut to fit. */
+export function auditArgs(args: Record<string, unknown>, keys: Iterable<string>, values: Iterable<string>):
+  Record<string, unknown> {
+  // Python round-trips args through JSON first; here they come from a frame, already JSON plus the codec's kinds.
+  const redacted = redact(args, keys, values) as Record<string, unknown>
+  const text = pyJson(redacted)
+  return text.length <= DETAIL_CHARS ? redacted : { truncated: text.slice(0, DETAIL_CHARS) }
+}
+
 // Python string functions the forms of a secret are built with
 
 const JSON_NAMED: Record<number, string> = {
@@ -109,6 +350,8 @@ function isPrintable(cp: number): boolean {
 // PRINTABLE_RUNS: base-36 run lengths from U+0000, alternating not printable and printable.
 // FOLD_RUNS: base-36 `start.count.step.delta`; `start + i*step` for `i < count` folds to itself plus delta.
 // FOLD_MULTI: base-36 `cp:a.b[.c]`; cp folds to those code points.
+// Rebuild with Python 3.12: run lengths of `chr(c).isprintable()` over range(0x110000); folds where
+// `chr(c).casefold() != chr(c)`, single-code-point ones grouped as start.count.step.delta, the rest as FOLD_MULTI.
 
 const PRINTABLE_RUNS =
   "w,2n,y,c,1,ju,2,6,4,7,1,1,1,k,1,b1,1,12,2,1e,2,3,1,1j,8,r,4,6,h,m,1,5c,1,1c,2,1n,2,2t,e,1n,2,1d,2,f,1,s,2,1,1," +
@@ -193,8 +436,9 @@ const PRINTABLE_STARTS = (() => {
 const FOLDS = (() => {
   const folds = new Map<number, string>()
   for (const run of FOLD_RUNS.split(" ")) {
-    const [start, count, step, delta] = run.split(".").map((part) => parseInt(part, 36))
-    for (let cp = start!, i = 0; i < count!; cp += step!, i++) folds.set(cp, String.fromCodePoint(cp + delta!))
+    const [start, count, step, delta] = run.split(".").map((part) => parseInt(part, 36)) as
+      [number, number, number, number]
+    for (let i = 0; i < count; i++) folds.set(start + i * step, String.fromCodePoint(start + i * step + delta))
   }
   for (const entry of FOLD_MULTI.split(" ")) {
     const [cp, to] = entry.split(":") as [string, string]
