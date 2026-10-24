@@ -802,7 +802,7 @@ test("a host that times out in composer makes offers time out", async () => {
 
 test.each([
   ["timed out", TIMED_OUT],
-  ["cant reach", "can't reach api.openai.com"],
+  ["cant reach api.openai.com", "can't reach api.openai.com"],
   ["the listing failed", "the listing failed"],
 ] as const)("offers lists again a connection whose last listing failed [%s]", async (_, error) => {
   const conns = await connections()
