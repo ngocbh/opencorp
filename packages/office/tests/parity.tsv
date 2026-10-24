@@ -295,6 +295,7 @@ worker/test_remote_store.py::test_provenance_arrives_as_json	changed	packages/of
 worker/test_resume.py	open	—	—	O4a-2
 worker/test_rpc.py	ported	packages/office/tests/worker/rpc.test.ts	—	O3-2
 worker/test_rpc.py::test_a_failed_request_logs_its_exception_type_at_info_and_the_traceback_only_at_debug	changed	packages/office/tests/worker/rpc.test.ts::a failed request logs only its exception type	§6 rule 13: one INFO line with the error type; no debug traceback	O3-2
+worker/test_rpc.py::test_a_remote_tool_sends_validated_args_with_defaults	changed	packages/office/tests/worker/rpc.test.ts::a remote tool sends validated args with defaults	design §1.4: yian's JSON Schema check refuses a missing required argument (RangeError), not pydantic	O3-2
 worker/test_rpc.py::test_an_office_tool_error_is_the_tool_result	changed	packages/office/tests/worker/rpc.test.ts::an office tool error is the tool result	design §2.4: an error reply throws ReportedToolError; the AGENT loop gives the model its message as the result	O3-2
 worker/test_rpc.py::test_store_replies_are_plain_json	changed	packages/office/tests/worker/rpc.test.ts::store replies are plain json	design §2.4: TS has no Path; a store's synchronous tuple is the reply	O3-2
 worker/test_rpc.py::test_store_value_and_os_errors_keep_their_codes	changed	packages/office/tests/worker/rpc.test.ts::store value and os errors keep their codes	design §4.1, Y3: a TS store throws RangeError for an unknown version and bad text alike: unknown_version from a read, invalid from a write or for a TypeError	O3-2
@@ -586,6 +587,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/worker/rpc.test.ts::an error whose name or message cannot be read is a failed reply	O3-1 handoff, design §2.4	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::ask user passes the handler only the six keys	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::bigint arguments reach the office tool	O3-1 handoff, design §2.4	O3-2
+—	new	packages/office/tests/worker/rpc.test.ts::object arguments keep a proto key	design §2.4: a model-written argument reaches the office as written (Python's dict kept the key)	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::object method names are never tools or stores	design §2.4 (RS I6), §6 rule 9	O3-2
 —	new	packages/office/tests/worker/rpc.test.ts::reply to never rejects	O3-1 handoff, design §2.4	O3-2
 —	new	packages/protocol/test/errors.test.ts::422 text names the field and a fixed phrase	§5.4	O0-6

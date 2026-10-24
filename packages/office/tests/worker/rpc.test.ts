@@ -616,3 +616,13 @@ test("a model written $v key reaches the office tool", async () => {
   await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { payload })
   expect(seen).toEqual([payload])
 })
+
+test("object arguments keep a proto key", async () => {
+  const { seen, tool: take } = taking("obj", { type: "object" })
+  const rpc = await officeEnd(new BaseHandlers({ tools: { g: { take } } }))
+  const obj = JSON.parse('{"__proto__": {"x": 1}, "a": 2}')
+  await new ToolSet({ g: [remoteTool(rpc, "g", toolSpec("take", take))] }).invoke("take", { obj })
+  expect(seen).toHaveLength(1)
+  expect(Object.keys(seen[0] as object)).toEqual(["__proto__", "a"])
+  expect(Object.getPrototypeOf(seen[0])).toBe(Object.prototype)
+})

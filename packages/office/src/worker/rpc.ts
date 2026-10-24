@@ -104,14 +104,16 @@ function zodType(schema: Record<string, unknown>): z.ZodType {
     case "null":
       return z.null()
     case "object":
-      return z.record(z.string(), z.unknown())
+      // Not z.record, which rebuilds the object and drops an own `__proto__` key.
+      return z.custom<Record<string, unknown>>(isPlainObject)
     default:
       return z.unknown()
   }
 }
 
 /** A zod object for a JSON Schema object: its properties, in order, with their descriptions; a property not
- *  `required` defaults to its `default`, else `null`. `name` is unused (Python names its model). */
+ *  `required` defaults to its `default`, else `null`. `name` is unused (Python names its model). zod skips a
+ *  property named `__proto__`: the parsed value lacks it (pydantic refuses such a name outright). */
 export function modelFromSchema(
   _name: string,
   schema: Record<string, unknown>,
@@ -124,7 +126,8 @@ export function modelFromSchema(
     let field = zodType(prop)
     if (typeof prop.description === "string") field = field.describe(prop.description)
     if (!required.includes(key)) field = field.default(prop.default ?? null)
-    shape[key] = field
+    // Defined, not assigned, so a property named `__proto__` can't replace the shape's prototype.
+    Object.defineProperty(shape, key, { value: field, enumerable: true, writable: true, configurable: true })
   }
   return z.object(shape)
 }
