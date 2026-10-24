@@ -236,7 +236,7 @@ export function ownModels(
 }
 
 /** The type of `error`, the only thing logged about an unexpected one: its message could quote a request. */
-const typeName = (error: unknown): string => (error instanceof Error ? error.constructor.name : typeof error)
+export const typeName = (error: unknown): string => (error instanceof Error ? error.constructor.name : typeof error)
 
 /** Lists connection `name` within `timeoutMs` per request; never rejects. */
 async function listed(
