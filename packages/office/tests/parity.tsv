@@ -98,7 +98,7 @@ daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	p
 daemon/test_main.py::test_the_office_server_has_websockets_off	changed	packages/office/tests/daemon/http.test.ts::the office server has no upgrade listener	no uvicorn ws setting: no upgrade listener is attached, so an upgrade is plain HTTP (design §2.3)	O2-1
 daemon/test_main.py::test_the_tcp_socket_reuses_addresses_but_never_shares_the_port	changed	packages/office/tests/daemon/http.test.ts::the tcp socket listens on loopback and never shares the port	node:net has no getsockopt: a second listener asking for port sharing gets EADDRINUSE, and the TIME_WAIT test shows address reuse (design §2.3)	O2-1
 daemon/test_routes_connections.py	open	—	split: O2-21 → O3-5	O3-5
-daemon/test_routes_costs.py	open	—	—	O2-6
+daemon/test_routes_costs.py	ported	packages/office/tests/daemon/routes_costs.test.ts	—	O2-6
 daemon/test_routes_events.py	open	—	split: O2-2 → O4a-7b	O4a-7b
 daemon/test_routes_learning.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 daemon/test_routes_people.py	open	—	—	O2-6
@@ -507,6 +507,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/daemon/routes_costs.test.ts::since keeps milliseconds and python iso forms	design §5 (fixed-width Timestamp); the TS parser is narrower than fromisoformat (no week dates, basic form or other separators), so its accepted forms are pinned; also refused: mixed basic forms, a space before the offset, fractional hours or minutes, offset seconds, offset minutes 60, an empty fraction	O2-6
 —	new	packages/office/tests/daemon/routes_runs.test.ts::every runs route answers 501 not implemented	design §4.3: GET /runs* answers 501 until the run views (O4b-3, O4b-7 replace it)	O2-6
 —	new	packages/office/tests/harness/codex.test.ts::a directory, a file that isnt executable or an empty path is not codex	design §6.8 rule 3: codex is looked up as shutil.which does	O3-10
 —	new	packages/office/tests/harness/rpc.test.ts::a broken stdin fails requests notifications and replies as rpc closed	design §7.2: write errors (EPIPE) become RpcClosed	O3-10

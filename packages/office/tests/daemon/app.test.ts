@@ -102,7 +102,8 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 //   prompt, steer, interrupt, end, continue, cost-cap and model;
 // - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
 //   carried/dismiss.
-// GET /health, GET /office, GET /whoami, the device routes and the GET /runs* stubs weren't in Python's table.
+// GET /health, GET /office, GET /whoami, the device routes, GET /costs and the GET /runs* stubs weren't in
+// Python's table.
 const TABLE: [string, string, string, unknown][] = [
   ["GET", "/health", "/health", null],
   ["GET", "/office", "/office", null],
@@ -113,6 +114,7 @@ const TABLE: [string, string, string, unknown][] = [
   ["PUT", "/people/:handle/password", "/people/ngocbh/password", { password: "a-long-enough-password" }],
   ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
   ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
+  ["GET", "/costs", "/costs?since=2026-01-01T00:00:00Z", null],
   ["GET", "/runs", "/runs", null],
   ["GET", "/runs/:id", "/runs/R1", null],
   ["GET", "/runs/:id/nodes", "/runs/R1/nodes", null],
