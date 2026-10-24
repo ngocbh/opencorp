@@ -40,31 +40,33 @@ type Transport = {
 
 /** JSON-object frames, each sent as a 4-byte big-endian length and UTF-8 JSON. */
 export class Channel {
-  private readonly transport: Transport
-  private readonly maxFrame: number
+  // `#` fields, so inspecting or logging a channel never shows the transport or buffered bytes, which can be part of
+  // the start frame and its provider key.
+  readonly #transport: Transport
+  readonly #maxFrame: number
   // Pending sends' rejecters, so close() or a broken transport settles them without waiting on the transport.
-  private readonly pending = new Set<(error: ChannelClosed) => void>()
-  private reading: Promise<unknown> = Promise.resolve()
-  private wake = () => {}
-  private closed = false
-  private sendClosed = false
-  private readClosed = false
+  readonly #pending = new Set<(error: ChannelClosed) => void>()
+  #reading: Promise<unknown> = Promise.resolve()
+  #wake = () => {}
+  #closed = false
+  #sendClosed = false
+  #readClosed = false
   // Set once the transport's stream ended or broke; reads still drain what it buffered before.
-  private ended: ChannelClosed | undefined
+  #ended: ChannelClosed | undefined
   // Set once the transport broke, closed or failed a write, after which nothing can be sent.
-  private broken: ChannelClosed | undefined
-  private chunks: Buffer[] = []
-  private buffered = 0
-  private size: number | undefined
+  #broken: ChannelClosed | undefined
+  #chunks: Buffer[] = []
+  #buffered = 0
+  #size: number | undefined
 
   constructor(transport: Transport, { maxFrame = MAX_FRAME }: { maxFrame?: number } = {}) {
-    this.transport = transport
-    this.maxFrame = maxFrame
+    this.#transport = transport
+    this.#maxFrame = maxFrame
     // Attached at once: an `error` event with no listener would crash the process.
-    transport.readable.on("readable", () => this.wake())
+    transport.readable.on("readable", () => this.#wake())
     transport.readable.on("end", () => {
-      this.ended ??= new ChannelClosed()
-      this.wake()
+      this.#ended ??= new ChannelClosed()
+      this.#wake()
     })
     transport.readable.on("error", (error) => this.stop(closedBy(error)))
     transport.readable.on("close", () => this.stop(new ChannelClosed()))
@@ -76,24 +78,24 @@ export class Channel {
   async send(frame: Frame): Promise<void> {
     const text = encode(frame)
     const size = Buffer.byteLength(text)
-    if (size > this.maxFrame) throw new FrameTooLarge(size, this.maxFrame)
-    if (this.sendClosed || this.closed) throw new ChannelClosed("this end stopped sending")
-    if (this.broken) throw this.broken
+    if (size > this.#maxFrame) throw new FrameTooLarge(size, this.#maxFrame)
+    if (this.#sendClosed || this.#closed) throw new ChannelClosed("this end stopped sending")
+    if (this.#broken) throw this.#broken
     const data = Buffer.allocUnsafe(HEADER + size)
     data.writeUInt32BE(size, 0)
     data.write(text, HEADER)
     return new Promise<void>((resolve, reject) => {
-      this.pending.add(reject)
-      this.transport
+      this.#pending.add(reject)
+      this.#transport
         .write(data)
         .then(resolve, (error: unknown) => {
           // Not every transport reports a failed write on its readable (a write to a file descriptor doesn't), and
           // reads still drain what arrived, so only sending stops.
           const closed = closedBy(error)
-          this.broken ??= closed
+          this.#broken ??= closed
           reject(closed)
         })
-        .finally(() => this.pending.delete(reject))
+        .finally(() => this.#pending.delete(reject))
     })
   }
 
@@ -103,55 +105,55 @@ export class Channel {
    *  JSON object (an array, `null`, or a number, string, boolean or tagged bigint) or holds a forged tag, after
    *  which the next frame still reads. Calls are served one at a time. */
   recv(): Promise<Frame> {
-    const next = this.reading.then(() => this.read())
-    this.reading = next.catch(() => {})
+    const next = this.#reading.then(() => this.read())
+    this.#reading = next.catch(() => {})
     return next
   }
 
   /** Stops sending, so the peer reads end of stream; later sends reject with `ChannelClosed`, and `recv()` keeps
    *  working. A send called before it still goes out. */
   closeSend(): void {
-    this.sendClosed = true
-    this.transport.endWrite()
+    this.#sendClosed = true
+    this.#transport.endWrite()
   }
 
   /** Closes both directions, dropping buffered bytes: pending and later `recv()` and `send()` calls reject with
    *  `ChannelClosed`. Idempotent. */
   close(): void {
-    if (this.closed) return
-    this.closed = true
-    this.chunks = []
-    this.buffered = 0
+    if (this.#closed) return
+    this.#closed = true
+    this.#chunks = []
+    this.#buffered = 0
     this.settle(new ChannelClosed())
-    this.transport.destroy()
+    this.#transport.destroy()
   }
 
   private stop(error: ChannelClosed): void {
-    this.ended ??= error
-    this.broken ??= error
+    this.#ended ??= error
+    this.#broken ??= error
     this.settle(error)
   }
 
   private settle(error: ChannelClosed): void {
-    for (const reject of this.pending) reject(error)
-    this.pending.clear()
-    this.wake()
+    for (const reject of this.#pending) reject(error)
+    this.#pending.clear()
+    this.#wake()
   }
 
   private async read(): Promise<Frame> {
     for (;;) {
-      if (this.closed || this.readClosed) throw new ChannelClosed()
+      if (this.#closed || this.#readClosed) throw new ChannelClosed()
       // Bytes the transport already took are read even after its stream ended, broke or was destroyed: a worker
       // that writes its last frames and exits while nobody reads makes the socket report a reset and close at
       // once, yet every byte is still buffered.
       const frame = this.take()
       if (frame) return frame
-      if (this.ended) {
-        this.readClosed = true
-        throw this.ended
+      if (this.#ended) {
+        this.#readClosed = true
+        throw this.#ended
       }
       await new Promise<void>((resolve) => {
-        this.wake = resolve
+        this.#wake = resolve
       })
     }
   }
@@ -162,27 +164,27 @@ export class Channel {
     for (;;) {
       const frame = this.parse()
       if (frame) return frame
-      const chunk: Buffer | null = this.transport.readable.read()
+      const chunk: Buffer | null = this.#transport.readable.read()
       if (chunk === null) return undefined
-      this.chunks.push(chunk)
-      this.buffered += chunk.length
+      this.#chunks.push(chunk)
+      this.#buffered += chunk.length
     }
   }
 
   private parse(): Frame | undefined {
-    if (this.size === undefined) {
-      if (this.buffered < HEADER) return undefined
+    if (this.#size === undefined) {
+      if (this.#buffered < HEADER) return undefined
       const size = this.split(HEADER).readUInt32BE(0)
-      if (size > this.maxFrame) {
+      if (size > this.#maxFrame) {
         // The body stays unread, so the stream can't be resynced.
-        this.readClosed = true
-        throw new FrameTooLarge(size, this.maxFrame)
+        this.#readClosed = true
+        throw new FrameTooLarge(size, this.#maxFrame)
       }
-      this.size = size
+      this.#size = size
     }
-    if (this.buffered < this.size) return undefined
-    const body = this.split(this.size)
-    this.size = undefined
+    if (this.#buffered < this.#size) return undefined
+    const body = this.split(this.#size)
+    this.#size = undefined
     return toFrame(body)
   }
 
@@ -190,12 +192,12 @@ export class Channel {
   private split(n: number): Buffer {
     let count = 0
     let have = 0
-    while (have < n) have += this.chunks[count++]!.length
-    const joined = count === 1 ? this.chunks[0]! : Buffer.concat(this.chunks.slice(0, count), have)
+    while (have < n) have += this.#chunks[count++]!.length
+    const joined = count === 1 ? this.#chunks[0]! : Buffer.concat(this.#chunks.slice(0, count), have)
     const rest = joined.subarray(n)
-    this.chunks.splice(0, count)
-    if (rest.length > 0) this.chunks.unshift(rest)
-    this.buffered -= n
+    this.#chunks.splice(0, count)
+    if (rest.length > 0) this.#chunks.unshift(rest)
+    this.#buffered -= n
     return joined.subarray(0, n)
   }
 }
@@ -218,7 +220,8 @@ export function socketChannel(socket: net.Socket, options?: { maxFrame?: number 
 }
 
 /** The worker's channel over the socket the office passed as `fd`. `closeSend()` only stops this end sending; nothing
- *  here closes the fd. */
+ *  here closes the fd. After `close()` or a failed write no queued frame is written, though a frame already being
+ *  written may still arrive. */
 export function fdChannel(fd = 3, options?: { maxFrame?: number }): Channel {
   // The fd is left to process exit: the worker ends with `process.exit`, since a read blocked on the fd keeps the event
   // loop alive. Closing it sooner could let a read or write still queued in the thread pool hit an unrelated file
@@ -230,17 +233,25 @@ export function fdChannel(fd = 3, options?: { maxFrame?: number }): Channel {
   const readable = fs.createReadStream("", { fd, autoClose: false, fs: { ...fs, close: noClose } })
   // One write at a time: parallel writes would interleave in the thread pool.
   let queue: Promise<void> = Promise.resolve()
+  // Set by destroy() or a failed write: a queued frame the channel already rejected must not go out, and after a
+  // partial write the next frame would be out of alignment.
+  let stopped = false
   return new Channel(
     {
       readable,
       write: (data) => {
-        const done = queue.then(() => writeAll(fd, data))
-        queue = done.catch(() => {})
+        const done = queue.then(() => (stopped ? Promise.reject(new ChannelClosed()) : writeAll(fd, data)))
+        queue = done.catch(() => {
+          stopped = true
+        })
         return done
       },
       // A file descriptor can't be half-closed, and end of stream leaves it open so this end can still send.
       endWrite: () => {},
-      destroy: () => readable.destroy(),
+      destroy: () => {
+        stopped = true
+        readable.destroy()
+      },
     },
     options,
   )

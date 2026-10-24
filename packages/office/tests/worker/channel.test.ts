@@ -5,8 +5,9 @@ import { createHash } from "node:crypto"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { inspect } from "node:util"
 import { expect, onTestFinished, test } from "bun:test"
-import { ChannelClosed, FrameTooLarge, socketChannel, type Channel } from "../../src/worker/channel.ts"
+import { ChannelClosed, FrameTooLarge, socketChannel, type Channel, type Frame } from "../../src/worker/channel.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
 
 const TIMEOUT = 20_000
@@ -170,6 +171,24 @@ test("a frame that is not json is refused with a fixed message", async () => {
   expect(await right.recv()).toEqual({ ok: 2 })
 }, TIMEOUT)
 
+test("a channel shows no frame bytes when inspected", async () => {
+  const { right, leftSocket, rightSocket } = await pair()
+  const body = Buffer.from('{"llm_config":{"api_key":"sk-secret"}}')
+  const head = framed(body).subarray(0, -2)
+  const reading = right.recv()
+  await rawWrite(leftSocket, head)
+  // Every byte so far is off the socket and in the channel's own buffer.
+  await waitFor(() => rightSocket.bytesRead >= head.length && rightSocket.readableLength === 0, {
+    timeout: 10_000,
+    what: "the cut frame buffered",
+  })
+  for (const shown of [inspect(right), inspect(right, { depth: Infinity, showHidden: true })]) {
+    expect(shown).toBe("Channel {}")
+  }
+  await rawWrite(leftSocket, framed(body).subarray(-2))
+  expect(await reading).toEqual({ llm_config: { api_key: "sk-secret" } })
+}, TIMEOUT)
+
 test("frames buffered before a reset still arrive", async () => {
   const { right, leftSocket, rightSocket } = await pair()
   const first = framed(Buffer.from('{"n":1}'))
@@ -208,7 +227,7 @@ test("a broken transport closes the channel with a fixed message", async () => {
   }
 }, TIMEOUT)
 
-type Exit = { code: number | null; signal: NodeJS.Signals | null }
+type Exit = { code: number | null; signal: NodeJS.Signals | null; error?: Error }
 
 /** Kills the process group `pid` leads, if it still exists. */
 function killGroup(pid: number | undefined): void {
@@ -234,7 +253,11 @@ function worker(body: string): { office: Channel; exited: Promise<Exit>; dir: st
     stdio: ["ignore", "inherit", "inherit", "pipe"],
     detached: true,
   })
-  const exited = new Promise<Exit>((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })))
+  const exited = new Promise<Exit>((resolve) => {
+    child.once("exit", (code, signal) => resolve({ code, signal }))
+    // A spawn failure emits `error` and no `exit`; settling here fails the test instead of the runner.
+    child.once("error", (error) => resolve({ code: null, signal: null, error }))
+  })
   const office = socketChannel(child.stdio[3] as net.Socket)
   onTestFinished(() => {
     office.close()
@@ -315,6 +338,44 @@ test(
     office.closeSend()
     expect(await office.recv()).toEqual({ late: true })
     expect(await office.recv().catch((error: unknown) => error)).toBeInstanceOf(ChannelClosed)
+    expect(await exited).toEqual({ code: 0, signal: null })
+  },
+  CHILD_TIMEOUT,
+)
+
+test(
+  "a worker close stops its queued sends",
+  async () => {
+    const { office, exited, dir } = worker(`
+      import fs from "node:fs"
+      const channel = fdChannel(3)
+      const pad = "q".repeat(4 * 2 ** 20)
+      // The office isn't reading yet, so the first frame blocks part way and the others wait their turn.
+      const sends = [1, 2, 3].map((n) => channel.send({ n, pad }).then(() => undefined, (error) => error))
+      await new Promise((resolve) => setTimeout(resolve, 200))
+      channel.close()
+      const ok = (await Promise.all(sends)).every((error) => error instanceof ChannelClosed)
+      fs.writeFileSync("closed", ok ? "ok" : "bad")
+      // Time for the office to drain the frame being written, and for any queued frame to follow if one wrongly did.
+      await new Promise((resolve) => setTimeout(resolve, 2_000))
+      process.exit(ok ? 0 : 1)
+    `)
+    await waitFor(() => fs.existsSync(path.join(dir, "closed")), { timeout: 30_000, what: "the worker's close" })
+    const got: Frame[] = []
+    let error: unknown
+    while (error === undefined) {
+      await office.recv().then(
+        (frame) => got.push(frame),
+        (reason: unknown) => {
+          error = reason
+        },
+      )
+    }
+    expect(error).toBeInstanceOf(ChannelClosed)
+    // Only the frame already being written at close() may arrive, and only whole; checked by length, so a failure
+    // doesn't print 4 MiB.
+    expect(got.length).toBeLessThanOrEqual(1)
+    for (const frame of got) expect([frame.n, (frame.pad as string).length]).toEqual([1, 4 * 2 ** 20])
     expect(await exited).toEqual({ code: 0, signal: null })
   },
   CHILD_TIMEOUT,
