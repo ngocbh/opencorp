@@ -62,7 +62,8 @@ company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O
 company/test_secret_keys.py	ported	packages/office/tests/company/secret_keys.test.ts	—	O1-5
 company/test_snapshot.py	ported	packages/office/tests/company/snapshot.test.ts	—	O1-7
 company/test_source.py	ported	packages/office/tests/company/source.test.ts	—	O1-7
-company/test_watch.py	open	—	—	O2-4
+company/test_watch.py	ported	packages/office/tests/company/watch.test.ts	—	O2-4
+company/test_watch.py::test_a_failed_read_or_emit_is_logged_and_polling_goes_on	changed	packages/office/tests/company/watch.test.ts::a failed read or emit is logged and polling goes on	design §6 rule 13: the log names the error type, never its message	O2-4
 company_template/test_writer.py	ported	packages/office/tests/company_template/writer.test.ts	—	O2-16a
 company_template/test_writer.py::test_a_bad_handle_is_refused_before_anything_is_written	changed	packages/office/tests/company_template/writer.test.ts::a bad handle is refused before anything is written	design §5.4: validation messages name the field (handle), never the value	O2-16a
 company_template/test_writer.py::test_a_company_from_before_the_learning_flows_gets_them_and_keeps_its_edits	changed	packages/office/tests/company_template/writer.test.ts::a company from before the profile manager flow gets it and keeps its edits	D32: debrief.yaml is left out of the template until learning returns (design §9.2)	O2-16a
@@ -82,7 +83,10 @@ daemon/test_bus.py	ported	packages/office/tests/daemon/bus.test.ts	—	O2-2
 daemon/test_bus.py::test_publish_and_close_racing_a_closing_loop_are_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_bus.py::test_publish_before_attach_is_dropped	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
 daemon/test_bus.py::test_publish_from_another_thread_keeps_order	dropped	—	design §3.3: one thread; publishes fan out synchronously, so there is no loop to attach and no cross-thread order	O2-2
-daemon/test_extensions.py	open	—	—	O2-4
+daemon/test_extensions.py	ported	packages/office/tests/daemon/extensions.test.ts	—	O2-4
+daemon/test_extensions.py::test_a_module_without_register_is_an_error	dropped	—	D23: the list is typed, so an entry without register does not compile	O2-4
+daemon/test_extensions.py::test_register_is_called_in_name_order	changed	packages/office/tests/daemon/extensions.test.ts::register is called in list order	D23: an explicit list registers in its own order; there is no discovery, so no name order or skipped _ names	O2-4
+daemon/test_extensions.py::test_the_default_package_is_opencorp_extensions	changed	packages/office/tests/daemon/extensions.test.ts::the default list is the explicit extensions list	D23: the default is the EXTENSIONS list, not a package to scan	O2-4
 daemon/test_http.py	ported	packages/office/tests/daemon/http.test.ts	a test route table with zod bodies stands in for the routes (rule 1)	O2-1
 daemon/test_main.py	open	—	split: O2-1 → O2-5 → O3-14 → O4a-4 → O4a-6	O4a-6
 daemon/test_main.py::test_socket_mode_does_not_touch_the_process_umask	changed	packages/office/tests/daemon/http.test.ts::the socket mode leaves the process umask as it found it	node:http binds and listens in one call; the umask is narrowed to 0177 for that one synchronous call and restored, and the private 0700 temp folder is the real guard (design §2.3)	O2-1
