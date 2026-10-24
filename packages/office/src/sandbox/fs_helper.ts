@@ -11,6 +11,8 @@ import fs from "node:fs"
 import os from "node:os"
 import util from "node:util"
 
+const MAX_READ_CHARS = 200_000
+
 /** A request that can't be done; the message goes back to the model. */
 class OpError extends Error {}
 
@@ -65,6 +67,49 @@ function encodeError(text: string): OpError {
   return new OpError(`'utf-8' codec can't encode ${what}: surrogates not allowed`)
 }
 
+/** A line and its break, as Python's `str.splitlines(keepends=True)` cuts them: at `\r\n` or any of
+ *  `\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029`, a last line without a break kept. */
+const LINE = /[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029])|[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]+/g
+
+/** `text`'s lines, each with its break (Python's `str.splitlines(keepends=True)`). */
+function splitLines(text: string): string[] {
+  return text.match(LINE) ?? []
+}
+
+/** The first `cap` code points of `text` (Python counts code points), or undefined when it has no more. */
+function cut(text: string, cap: number): string | undefined {
+  if (text.length <= cap) return undefined
+  let end = 0
+  for (let n = 0; n < cap && end < text.length; n++) end += text.codePointAt(end)! > 0xffff ? 2 : 1
+  return end < text.length ? text.slice(0, end) : undefined
+}
+
+/** Python's `os.path.dirname`: the text before the last `/`, its trailing slashes stripped unless it is
+ *  all slashes. */
+function dirname(path: string): string {
+  const head = path.slice(0, path.lastIndexOf("/") + 1)
+  return /^\/*$/.test(head) ? head : head.replace(/\/+$/, "")
+}
+
+/** Return the file's text, from line `offset` (0-based), at most `limit` lines. */
+function readFile(path: string, offset: number, limit: number | undefined): string {
+  if (offset < 0 || (limit !== undefined && limit < 0)) throw new OpError("offset and limit must not be negative")
+  // A bad byte becomes U+FFFD, as Python's errors="replace"; a BOM is kept.
+  const lines = splitLines(fs.readFileSync(path).toString("utf8"))
+  const text = lines.slice(offset, limit === undefined ? undefined : offset + limit).join("")
+  const head = cut(text, MAX_READ_CHARS)
+  return head === undefined ? text : `${head}\n[truncated at ${MAX_READ_CHARS} characters; use offset and limit]`
+}
+
+/** Create or replace the file with `content`, creating parent directories. */
+function writeFile(path: string, content: string): string {
+  const parent = dirname(path)
+  if (parent) fs.mkdirSync(parent, { recursive: true })
+  const data = Buffer.from(content, "utf8")
+  fs.writeFileSync(path, data)
+  return `wrote ${data.length} bytes to ${path}`
+}
+
 type Kind = "string" | "integer" | "boolean"
 
 /** Every op's arguments, each checked against the op's spec before `run` sees it. */
@@ -95,8 +140,11 @@ const notBuilt = (): string => {
 
 // A null prototype, so a request's `op` can't name an inherited property.
 const OPS: Record<string, Op> = Object.assign(Object.create(null), {
-  read_file: { args: { path: "string", offset: "integer?", limit: "integer?" }, run: notBuilt },
-  write_file: { args: { path: "string", content: "string" }, run: notBuilt },
+  read_file: {
+    args: { path: "string", offset: "integer?", limit: "integer?" },
+    run: (a: Args) => readFile(a.path!, a.offset ?? 0, a.limit),
+  },
+  write_file: { args: { path: "string", content: "string" }, run: (a: Args) => writeFile(a.path!, a.content!) },
   edit_file: { args: { path: "string", old: "string", new: "string", replace_all: "boolean?" }, run: notBuilt },
   list: { args: { path: "string?" }, run: notBuilt },
   search: { args: { pattern: "string", path: "string?", glob: "string?" }, run: notBuilt },

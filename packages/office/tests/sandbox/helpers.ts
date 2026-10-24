@@ -142,8 +142,8 @@ export function envInChild(ws: string, tmp: string, env: Record<string, string>)
 }
 
 /** Runs one `__fs-helper` request (unsandboxed) in `ws`: stdin is the request as JSON, or `request` itself
- *  when it is a string (for stdin that isn't JSON); env is `PATH`, `HOME` (`ws`) and `env`. `reply` is the
- *  parsed stdout, or undefined when stdout isn't JSON. */
+ *  when it is a string (for stdin that isn't JSON); env is `PATH`, `HOME` (a fresh temp dir) and `env`.
+ *  `reply` is the parsed stdout, or undefined when stdout isn't JSON. */
 export function helperOp(
   ws: string,
   request: object | string,
@@ -152,7 +152,8 @@ export function helperOp(
   const [file, ...args] = helperCommand().argv
   const result = spawnSync(file, args, {
     cwd: ws,
-    env: { PATH: "/usr/bin:/bin", HOME: ws, ...env },
+    // HOME is not `ws`, as in the sandbox (its private tmpdir): Bun's transpiler cache lands under HOME.
+    env: { PATH: "/usr/bin:/bin", HOME: tempDir(), ...env },
     input: typeof request === "string" ? request : JSON.stringify(request),
     encoding: "utf8",
     timeout: 20_000,
