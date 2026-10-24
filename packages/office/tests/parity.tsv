@@ -355,7 +355,7 @@ test_secrets.py::test_set_writes_into_the_root_it_checked	dropped	—	path-based
 test_smoke.py	ported	packages/office/tests/smoke.test.ts	the office package imports next to yian	O0-4
 testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, retired at cut-over (D29)	O0-9
 testing/test_fake_codex.py	ported	packages/office/tests/testing/fake_codex.test.ts	—	O3-10
-tools/company/test_draft.py	open	—	—	O2-16b
+tools/company/test_draft.py	ported	packages/office/tests/tools/company/draft.test.ts	—	O2-16b
 tools/company/test_work.py	open	—	—	O2-22b
 tools/test_build.py	open	—	—	O2-22b
 tools/test_work_items.py	ported	packages/office/tests/tools/work_items.test.ts	—	O2-22a
