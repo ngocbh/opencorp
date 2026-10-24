@@ -283,6 +283,7 @@ worker/test_steering.py	open	—	—	O3-3
 —	new	packages/office/tests/company/flow_yaml.test.ts::a type tagged key reads as its text	design §9.5: keys read as TS yian reads them	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::an alias bomb is refused	design §9.5: the alias cap	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::an alias names the latest node anchored before it	design §9.5: read as TS yian reads flows	O1-5
+—	new	packages/office/tests/company/flow_yaml.test.ts::an integer outside the safe range reads exactly as a bigint	#358: integers past 2^53 read exactly so they can be refused	O1-15
 —	new	packages/office/tests/company/flow_yaml.test.ts::an undefined alias is refused	design §6: a malformed company file is an issue, never an exception	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::core booleans nulls and floats	D8, design §9.5: YAML 1.2 core readings	O1-5
 —	new	packages/office/tests/company/flow_yaml.test.ts::errors never quote the text	design §6 rules 1 and 13: no file text in errors	O1-5
