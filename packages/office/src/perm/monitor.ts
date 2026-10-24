@@ -6,7 +6,7 @@ import { type CompanyRepo, loadRepo } from "../company/loader.ts"
 import { assetToolName } from "../company/naming.ts"
 import { type SecretStore, SecretNotSetError } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
-import type { WorkspaceCall, WorkspaceTools } from "../tools/workspace.ts"
+import type { ToolOutcome, WorkspaceCall, WorkspaceTools } from "../tools/workspace.ts"
 import { auditArgs, DETAIL_CHARS, pyJson, redact, repr, splitLines, strip } from "./redact.ts"
 
 type Asset = z.output<typeof AssetSchema>
@@ -150,7 +150,7 @@ export class Monitor {
     { sessionId = null }: { sessionId?: string | null } = {},
   ): WorkspaceCall {
     return async (name, args, options) => {
-      let outcome
+      let outcome: ToolOutcome
       try {
         outcome = await tools.call(name, args, options)
       } catch (error) {
@@ -166,15 +166,15 @@ export class Monitor {
         })
         throw error
       }
-      const a = outcome.audit
-      let detail = `exit=${a.exit ?? "None"} duration=${a.duration.toFixed(3)}s`
-      if (a.exit === null) detail += `: ${[...lastLine(outcome.output)].slice(0, REASON_CHARS).join("")}`
+      const audit = outcome.audit
+      let detail = `exit=${audit.exit ?? "None"} duration=${audit.duration.toFixed(3)}s`
+      if (audit.exit === null) detail += `: ${[...lastLine(outcome.output)].slice(0, REASON_CHARS).join("")}`
       this.store.recordAudit({
         person,
         kind: "workspace",
-        tool: a.tool,
-        args: { summary: a.argsSummary },
-        outcome: a.exit === 0 ? "ok" : "error",
+        tool: audit.tool,
+        args: { summary: audit.argsSummary },
+        outcome: audit.exit === 0 ? "ok" : "error",
         sessionId,
         runId,
         detail,

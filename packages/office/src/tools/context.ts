@@ -1,6 +1,5 @@
 /** What a run can offer its host tools. */
-// Types only: perm/monitor.ts type-imports tools/workspace.ts, which imports this module, so nothing here may
-// load at runtime.
+// Types only: perm/monitor.ts, tools/workspace.ts and this module import each other, and every edge is type-only.
 import type { CompanyRepo } from "../company/loader.ts"
 import type { Monitor } from "../perm/monitor.ts"
 import type { Carried, OnQuestion } from "../questions/ask.ts"

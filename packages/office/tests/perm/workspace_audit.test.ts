@@ -28,13 +28,13 @@ class StubTools {
   }
 }
 
-function outcome(output: string, tool: string, argsSummary: string, exit: number | null, duration: number) {
+function stubReturning(output: string, tool: string, argsSummary: string, exit: number | null, duration: number) {
   return new StubTools({ output, audit: { tool, argsSummary, exit, duration } })
 }
 
 test("each call writes one row and returns the output", async () => {
   const { monitor, store } = await makeMonitor()
-  const call = monitor.workspace(outcome("x = 1\n", "read_file", "path=a.py", 0, 0.012), "minh", "r1", {
+  const call = monitor.workspace(stubReturning("x = 1\n", "read_file", "path=a.py", 0, 0.012), "minh", "r1", {
     sessionId: "s1",
   })
   expect(await workspaceToolFunctions(call).read_file!.call({ path: "a.py" })).toBe("x = 1\n")
@@ -61,7 +61,7 @@ test("failed and killed calls are errors and killed ones say why", async () => {
     ["error: shell: missing a required argument: 'command'", null, 0],
   ]
   for (const [output, exit, duration] of cases) {
-    await monitor.workspace(outcome(output, "shell", "command=x", exit, duration), "minh", "r1")("shell", {})
+    await monitor.workspace(stubReturning(output, "shell", "command=x", exit, duration), "minh", "r1")("shell", {})
   }
   expect(store.listAudit().map((r) => [r.outcome, r.detail])).toEqual([
     ["error", "exit=1 duration=0.100s"],
@@ -97,7 +97,7 @@ test.skipIf(!sandboxAvailable())("real sandboxed calls are audited", async () =>
 test("killed reasons and raised details are capped", async () => {
   const { monitor, store } = await makeMonitor()
   const line = "😀" + "x".repeat(499)
-  await monitor.workspace(outcome(`partial\n${line}`, "shell", "command=x", null, 1), "minh", "r1")("shell", {})
+  await monitor.workspace(stubReturning(`partial\n${line}`, "shell", "command=x", null, 1), "minh", "r1")("shell", {})
   const huge = new Error("e".repeat(5000))
   const raising = monitor.workspace(new StubTools(null, huge), "minh", "r1")
   await expect(raising("shell", {})).rejects.toBe(huge)

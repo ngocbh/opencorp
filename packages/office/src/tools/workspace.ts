@@ -167,7 +167,7 @@ export function workspaceToolFunctions(call: WorkspaceCall): Record<string, Work
 
 /** The `workspace` group, each call audited by `ctx.monitor`: every tool, or `READ_TOOLS` when `ctx.readOnly`.
  *
- *  None without a monitor, workspace and session. */
+ *  No tools (`{}`) without a monitor, workspace and session. */
 export function tools(ctx: ToolContext): Record<string, WorkspaceTool> {
   if (!ctx.monitor || !ctx.workspace || !ctx.session) return {}
   const calls = workspaceToolFunctions(
