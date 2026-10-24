@@ -1,5 +1,6 @@
 /** The worker job: round trips, refusals with value-free errors, person flows and tool specs from declared tools. */
 import { expect, test } from "bun:test"
+import { inspect } from "node:util"
 import { decode, encode } from "../../src/worker/codec.ts"
 import { groupSpecs, JobError, parseJob, personFlow, toolSpec } from "../../src/worker/job.ts"
 
@@ -39,22 +40,24 @@ test("a job round trips through json", () => {
 })
 
 test("bad jobs are refused", () => {
-  const changes: Record<string, unknown>[] = [
-    { pin: "pins/abc" },
-    { log: "r1.jsonl" },
-    { flow: "/etc/flow.yaml" },
-    { groups: { ask_user: [] } },
-    { extra: 1 },
-    { kind: "debrief" },
-    { kind: "backward" },
-    { memory: { session: { kind: "session", storage: "/s.db" } } },
-    { env: { VLLM_BASE_URL: "http://x/v1" } },
-    { feedback: 1 },
-    { learnable: true },
-    { num_workers: 1.5 },
+  const cases: [Record<string, unknown>, string][] = [
+    [{ pin: "pins/abc" }, "pin"],
+    [{ log: "r1.jsonl" }, "log"],
+    [{ flow: "/etc/flow.yaml" }, "flow"],
+    [{ groups: { ask_user: [] } }, "groups"],
+    [{ extra: 1 }, "an extra field"],
+    [{ kind: "debrief" }, "kind"],
+    [{ kind: "backward" }, "kind"],
+    [{ memory: { session: { kind: "session", storage: "/s.db" } } }, "memory"],
+    [{ env: { VLLM_BASE_URL: "http://x/v1" } }, "an extra field"],
+    [{ feedback: 1 }, "an extra field"],
+    [{ learnable: true }, "an extra field"],
+    [{ num_workers: 1.5 }, "num_workers"],
   ]
-  for (const change of changes) {
-    expect(() => parseJob({ ...BASE, ...change }), JSON.stringify(change)).toThrow(JobError)
+  for (const [change, field] of cases) {
+    const label = JSON.stringify(change)
+    expect(() => parseJob({ ...BASE, ...change }), label).toThrow(JobError)
+    expect(() => parseJob({ ...BASE, ...change }), label).toThrow(new RegExp(`^${field}: `))
   }
 })
 
@@ -103,6 +106,7 @@ test("a bad job error holds no input value", () => {
   expect(caught).toBeInstanceOf(JobError)
   const error = caught as JobError
   expect(error.message).not.toContain("sk-")
+  expect(inspect(error)).not.toContain("sk-")
   expect(error.message).toContain("pin")
   expect(error.cause).toBeUndefined()
   expect("cause" in error).toBe(false)

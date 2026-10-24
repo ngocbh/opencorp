@@ -6,28 +6,23 @@ import { z } from "zod"
 const emptyParameters = (): Record<string, unknown> => ({ type: "object", properties: {} })
 
 /** A tool the office serves over the channel, as the model sees it. */
-export const ToolSpec = z
-  .object({
-    name: z.string(),
-    description: z.string().default(""),
-    parameters: z.record(z.string(), z.unknown()).default(emptyParameters),
-  })
-  .strict()
+export const ToolSpec = z.strictObject({
+  name: z.string(),
+  description: z.string().default(""),
+  parameters: z.record(z.string(), z.unknown()).default(emptyParameters),
+})
 export type ToolSpec = z.output<typeof ToolSpec>
-export type ToolSpecInput = z.input<typeof ToolSpec>
 
 /** A Yian `ProfileMemory` over the office store named `store`. */
-export const ProfileMemorySpec = z
-  .object({
-    kind: z.literal("profile").default("profile"),
-    store: z.string(),
-    max_chars: z.number().int().default(32000),
-    llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
-  })
-  .strict()
+export const ProfileMemorySpec = z.strictObject({
+  kind: z.literal("profile").default("profile"),
+  store: z.string(),
+  max_chars: z.number().int().default(32000),
+  llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
+})
 export type ProfileMemorySpec = z.output<typeof ProfileMemorySpec>
 
-// Refinement messages are fixed and name no value; the error text comes from validationMessage anyway.
+// validationMessage replaces these messages with a fixed phrase; they only say what each check means.
 const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an absolute path")
 
 /**
@@ -36,26 +31,24 @@ const absolute = z.string().refine((p) => path.posix.isAbsolute(p), "must be an 
  * `kind` is `chat` (runs the flow afresh) or `resume` (resumes the run `run_id` from its log). `flow` is relative
  * to `pin`. A `Job` holds the provider key in `llm_config`, so it is never logged.
  */
-export const Job = z
-  .object({
-    kind: z.enum(["chat", "resume"]),
-    session_id: z.string(),
-    run_id: z.string(),
-    person: z.string(),
-    pin: absolute,
-    flow: z.string().refine((p) => !path.posix.isAbsolute(p), "must be relative to pin"),
-    log: absolute,
-    inputs: z.record(z.string(), z.unknown()).default(() => ({})),
-    llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
-    skills: z.array(z.string()).default(() => []),
-    num_workers: z.number().int().default(8),
-    groups: z
-      .record(z.string(), z.array(ToolSpec))
-      .refine((groups) => !Object.hasOwn(groups, "ask_user"), "ask_user is the worker's own tool, not a group")
-      .default(() => ({})),
-    memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
-  })
-  .strict()
+export const Job = z.strictObject({
+  kind: z.enum(["chat", "resume"]),
+  session_id: z.string(),
+  run_id: z.string(),
+  person: z.string(),
+  pin: absolute,
+  flow: z.string().refine((p) => !path.posix.isAbsolute(p), "must be relative to pin"),
+  log: absolute,
+  inputs: z.record(z.string(), z.unknown()).default(() => ({})),
+  llm_config: z.record(z.string(), z.unknown()).nullable().default(null),
+  skills: z.array(z.string()).default(() => []),
+  num_workers: z.number().int().default(8),
+  groups: z
+    .record(z.string(), z.array(ToolSpec))
+    .refine((groups) => !Object.hasOwn(groups, "ask_user"), "ask_user is the worker's own tool, not a group")
+    .default(() => ({})),
+  memory: z.record(z.string(), ProfileMemorySpec).default(() => ({})),
+})
 export type Job = z.output<typeof Job>
 export type JobInput = z.input<typeof Job>
 
