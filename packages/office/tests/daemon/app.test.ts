@@ -96,7 +96,6 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 
 // [method, route pattern, concrete path, body] for every other route; null is no body. Python's table
 // (tests/daemon/test_app.py) also covered these routes; each is added here when its route area is ported:
-// - profiles: GET and PUT /profiles/:person;
 // - sessions: GET and POST /sessions, GET /sessions/:id, GET /sessions/:id/messages, and POST /sessions/:id/
 //   prompt, steer, interrupt, end, continue, cost-cap and model;
 // - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
@@ -116,6 +115,8 @@ const TABLE: [string, string, string, unknown][] = [
   ["GET", "/folders/*cwd/people", "/folders/%2Fw%2Fapp/people", null],
   ["GET", "/work-items/:id", `/work-items/${ULID}`, null],
   ["GET", "/work-items/:id/comments", `/work-items/${ULID}/comments`, null],
+  ["GET", "/profiles/:handle", "/profiles/minh", null],
+  ["PUT", "/profiles/:handle", "/profiles/minh", { text: "x", base_version: "a".repeat(40) }],
   ["GET", "/costs", "/costs?since=2026-01-01T00:00:00Z", null],
   ["GET", "/runs", "/runs", null],
   ["GET", "/runs/:id", "/runs/R1", null],

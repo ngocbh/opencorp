@@ -1,10 +1,12 @@
 /** The office object and its paths: what the routes and services share. */
 import path from "node:path"
+import type { MarkdownStore } from "@ngocbh/yian"
 import { now } from "@opencorp/protocol"
 import { Hiring } from "../chat/hire.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
 import type { Hq } from "../hq/core.ts"
+import { GitProfileStore } from "../profile/store.ts"
 import { SecretStore } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
@@ -77,6 +79,8 @@ export class Office {
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
+  /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
+  profileStore: ((handle: string) => MarkdownStore) | null
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
   readonly startedAt: string = now()
   /** Run in order by `start`, each awaited. */
@@ -92,6 +96,7 @@ export class Office {
     git,
     bus,
     workers,
+    profileStore,
     log = console.error,
   }: {
     paths: OfficePaths
@@ -99,6 +104,8 @@ export class Office {
     git: CompanyGit
     bus: Bus
     workers?: WorkerPool
+    /** Builds a person's profile store; defaults to their `profile.md` in `git`'s clone, null for none. */
+    profileStore?: ((handle: string) => MarkdownStore) | null
     /** Gets raw log messages. */
     log?: (message: string) => void
   }) {
@@ -110,6 +117,7 @@ export class Office {
     this.snapshots = new CompanySnapshots(git)
     this.secrets = new SecretStore(paths.secrets)
     this.workers = workers
+    this.profileStore = profileStore === undefined ? (handle) => new GitProfileStore(git, handle) : profileStore
     this.#log = log
   }
 
