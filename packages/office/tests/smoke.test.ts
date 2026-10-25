@@ -18,7 +18,7 @@ test("an unknown office mode exits 2", async () => {
   const saved = console.error
   console.error = (...args: unknown[]) => void errors.push(args.join(" "))
   try {
-    // The known modes end with process.exit, so only their child-process tests run them.
+    // The known modes run in child processes only, in their own tests.
     for (const argv of [["nope"], [], ["__proto__"], ["toString"]]) {
       errors.length = 0
       expect(await office.officeMain(argv)).toBe(2)

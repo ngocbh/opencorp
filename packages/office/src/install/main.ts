@@ -304,9 +304,13 @@ export async function run(argv: string[], setup: Partial<Setup> = {}): Promise<n
     // Bun reports a rejection the last step left only after a macrotask; this lets `crashed` see it first.
     await new Promise((resolve) => setImmediate(resolve))
     ending = true
-    // A zero-length write's callback can come before earlier writes have arrived; end's comes after all of them.
-    for (const stream of [process.stdout, process.stderr]) await new Promise<void>((resolve) => stream.end(resolve))
-    return process.exit(failed ? 1 : code)
+    try {
+      // A zero-length write's callback can come before earlier writes have arrived; end's comes after all of them.
+      for (const stream of [process.stdout, process.stderr]) await new Promise<void>((resolve) => stream.end(resolve))
+    } finally {
+      // A throw from `end` must not keep the process from exiting.
+      process.exit(failed ? 1 : code)
+    }
   }
   process.on("SIGINT", () => {
     // A repeat Ctrl-C exits at once, in case a flush never ends. A first one while an exit drains leaves that

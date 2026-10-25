@@ -947,11 +947,12 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/launchd.test.ts::a control character in a value is a service error	design §9.3 (hand-written plist refuses what plistlib refuses, CR included)	O2-12
 —	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
-—	new	packages/office/tests/install/main.test.ts::a missing or unknown command or flag is a usage error	design §9.1: exit 2 for usage, as argparse	O2-13b
-—	new	packages/office/tests/install/main.test.ts::a service mode that isnt one is a usage error	design §9.1: the service modes are auto plus service.MODES (O2-12)	O2-13b
+—	new	packages/office/tests/install/launchd.test.ts::the plist gives the daemon longer to stop than the office waits	#449: launchd's ExitTimeOut must outlast fallback.STOP_TIMEOUT_MS	O2-13b
+—	new	packages/office/tests/install/main.test.ts::a missing or unknown command or flag is a usage error	install/__main__.py: argparse exits 2 on a usage error	O2-13b
+—	new	packages/office/tests/install/main.test.ts::a service mode that isnt one is a usage error	O2-12: the service modes are service.MODES; __main__.py's --service choices add auto	O2-13b
 —	new	packages/office/tests/install/main.test.ts::all of stdout reaches the reader before setup exits	O2-13a handoff: exit only after stdout drains	O2-13b
 —	new	packages/office/tests/install/main.test.ts::an input error after a prompt failed is not a crash	O2-13a: node:readline re-emits the terminal EIO under clack	O2-13b
-—	new	packages/office/tests/install/main.test.ts::an unexpected error is exit 1 with its stack on stderr	design §9.1: setup failures go to stderr; Bun only prints an unhandled rejection	O2-13b
+—	new	packages/office/tests/install/main.test.ts::an unexpected error is exit 1 with its stack on stderr	install/__main__.py: an unexpected error is a traceback on stderr, exit 1; Bun only prints an unhandled rejection	O2-13b
 —	new	packages/office/tests/install/main.test.ts::ctrl c at a numbered question is exit 130 with only a newline	O2-13a handoff: a SIGINT during a numbered list is exit 130	O2-13b
 —	new	packages/office/tests/install/offboard.test.ts::launchers finds a link to the checkout wrapper and a script naming it	O0-5 handoff: packages/cli/bin/opencorp is the checkout's launcher; a link's hint names its target	O2-18b
 —	new	packages/office/tests/install/offboard.test.ts::offboard outside a checkout reports no launchers	design §2.1/O2-26: the compiled binary has no checkout, so there is no launcher to report	O2-18b

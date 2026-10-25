@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process"
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
+import { STOP_TIMEOUT_MS } from "../../src/install/fallback.ts"
 import { ServiceError, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { tempDir } from "../helpers.ts"
@@ -19,6 +20,12 @@ function plistAt(home: string): string {
 
 test("the plist matches the golden file", () => {
   expect(launchd.plist(ownerLaunch())).toEqual(fs.readFileSync(path.join(GOLDEN, "launchd.plist")))
+})
+
+test("the plist gives the daemon longer to stop than the office waits", () => {
+  const match = /<key>ExitTimeOut<\/key>\n\t<integer>(\d+)<\/integer>/.exec(launchd.plist(ownerLaunch()).toString("utf8"))
+  expect(match).not.toBeNull()
+  expect(Number(match![1]) * 1000).toBeGreaterThan(STOP_TIMEOUT_MS)
 })
 
 test.skipIf(!hasPlutil)("the golden plist is one launchd accepts", () => {

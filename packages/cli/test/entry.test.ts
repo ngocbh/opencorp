@@ -364,7 +364,7 @@ test(
   () => {
     fs.rmSync(path.join(proj, "MARKER"), { force: true })
     const home = fs.mkdtempSync(path.join(tmp, "home-"))
-    const result = spawnSync(WRAPPER, ["install", "start", "--home", home], {
+    const result = spawnSync(WRAPPER, ["install", "start"], {
       cwd: proj,
       env: { HOME: home, PATH: "/usr/bin:/bin", OPENCORP_BUN: process.execPath },
       input: "",
@@ -372,7 +372,9 @@ test(
       timeout: 20_000,
     })
     expect(result.error).toBeUndefined()
-    expect(result.stderr).toContain("no office at")
+    // `tmp` is already a realpath, so this is the home the office names; the planted .env's would end in /ph.
+    expect(result.stderr).toContain(`no office at ${path.join(home, ".opencorp")}`)
+    expect(result.stderr).not.toContain("/ph")
     expect(result.status).toBe(3)
     expect(fs.existsSync(path.join(proj, "MARKER"))).toBe(false)
   },
