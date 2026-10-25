@@ -84,6 +84,11 @@ export class CodexSessions {
     return live.prompt(text, { by })
   }
 
+  /** Esc on the session `sessionId`: interrupts its running turn. */
+  async interrupt(sessionId: string): Promise<void> {
+    await this.#must(sessionId).interrupt()
+  }
+
   /** Ends the session `sessionId`. */
   async end(sessionId: string): Promise<void> {
     await this.#must(sessionId).end()

@@ -6,6 +6,7 @@ import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from
 import { HarnessError } from "../../src/chat/state.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "../../src/harness/codex.ts"
 import { JsonRpc, RpcClosed } from "../../src/harness/rpc.ts"
+import type { CodexSession } from "../../src/harness/session.ts"
 import { CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, startTime } from "../../src/install/proc.ts"
 import * as fc from "../../src/testing/fake_codex.ts"
@@ -14,6 +15,7 @@ import { envNames, waitFor } from "../helpers.ts"
 import {
   allGone,
   codexLog,
+  deltas,
   errors,
   makeCodex,
   messages,
@@ -306,6 +308,152 @@ test("a queued message codex never answers leaves the session idle", async () =>
   expect(errors(h, sid)[0]).toContain("didn't take the message")
 })
 
+test("office stop mid reply stores all its text with the marker", async () => {
+  const h = makeCodex()
+  h.fake.script([
+    [
+      fc.agentMessage("m1", "Hello there, friend")[0],
+      fc.agentMessageDelta("m1", "Hello "),
+      fc.agentMessageDelta("m1", "there, "),
+      fc.agentMessageDelta("m1", "friend"),
+      { sleep: 30 },
+    ],
+  ])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "go", { by: "ngocbh" })
+  await waitFor(() => deltas(h).at(-1) === "friend", { what: "the third delta" })
+  await h.sessions.closeAll()
+  expect(texts(h, sid)).toEqual(["Hello there, friend\n\n[interrupted]"])
+  expect(status(h, sid)).toBe("busy")
+})
+
+test("office stop leaves the transcript to a thread still busy", async () => {
+  const h = makeCodex({ stopWaitMs: 200 })
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  const abort = spyOn(live.translator, "abort")
+  let begin!: () => void
+  let release!: () => void
+  const began = new Promise<void>((resolve) => (begin = resolve))
+  const released = new Promise<void>((resolve) => (release = resolve))
+  // A job that outlasts the stop's wait.
+  void live.post("hold", async () => {
+    begin()
+    await released
+  })
+  await began // running, so the stop can't skip it
+  await h.sessions.closeAll()
+  release()
+  await waitFor(() => !live.busy, { what: "the held job to finish" })
+  expect(abort).not.toHaveBeenCalled()
+})
+
+test("esc interrupts the turn and marks it", async () => {
+  const h = makeCodex()
+  h.fake.script([[fc.commandStarted("c1", "sleep 30"), { sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "sleep")
+  await waitFor(() => status(h, sid) === "busy", { what: "the turn to start" })
+  await waitFor(() => messages(h, sid).some((m) => m.parts.some((p) => p.type === "tool")), {
+    what: "the running command",
+  })
+  await h.sessions.interrupt(sid)
+  await waitFor(() => status(h, sid) === "idle", { what: "the interrupted turn's end" })
+  expect(h.fake.calls("turn/interrupt")).toEqual([{ threadId: "thr_1", turnId: "turn_1" }])
+  // parts[0] is "sleep".
+  const parts = messages(h, sid).flatMap((m) => m.parts)
+  const tool = parts[1]!
+  const last = parts.at(-1)!
+  expect(tool.type === "tool" && tool.state).toBe("interrupted")
+  expect(last.type === "text" && last.text.endsWith("[interrupted]")).toBe(true)
+})
+
+test("esc with no turn running asks codex nothing", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  await h.sessions.interrupt(sid)
+  expect(h.fake.calls("turn/interrupt")).toEqual([])
+  expect(status(h, sid)).toBe("idle")
+})
+
+test("esc on a codex that doesnt answer returns", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "work")
+  await waitFor(() => status(h, sid) === "busy", { what: "the turn to start" })
+  spyOn(h.sessions.get(sid)!.process!.rpc!, "request").mockRejectedValue(timeout("turn/interrupt got no answer in 60s"))
+  // No 500: ending the session or office stop kills a Codex that hangs.
+  await h.sessions.interrupt(sid)
+})
+
+test("ending closes the group and removes its record before end status", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Hi")])
+  const sid = await start(h, h.workspace)
+  const pid = h.store.listWorkers()[0]!.pid
+  const seen: unknown[] = []
+  const runs: unknown[] = []
+  h.hooks.endStatus.push(() => {
+    seen.push(h.store.listWorkers())
+    return "debriefing"
+  })
+  h.hooks.sessionEnded.push((s) => seen.push(s.status))
+  h.hooks.runStarted.push((...a) => runs.push(a))
+  h.hooks.runFinished.push((...a) => runs.push(a))
+  await h.sessions.prompt(sid, "hi")
+  await waitFor(() => texts(h, sid).join() === "Hi" && status(h, sid) === "idle", { what: "the reply" })
+  await h.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "debriefing", { what: "the end" })
+  expect(seen).toEqual([[], "debriefing"])
+  expect(startTime(pid)).toBeNull()
+  // Codex turns are not office runs.
+  expect(runs).toEqual([])
+  expect(h.store.getWorkItem(h.store.getSession(sid)!.work_item_id!)!.status).toBe("done")
+  const e = await rejection(h.sessions.prompt(sid, "again"))
+  expect([e.status, e.code]).toEqual([409, "not_live"])
+})
+
+test("ending a busy session interrupts its turn first", async () => {
+  const h = makeCodex()
+  h.fake.script([[{ sleep: 30 }]])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "work")
+  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  await h.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "ended", { what: "the end" })
+  expect(h.fake.calls("turn/interrupt").length).toBeGreaterThan(0)
+})
+
+test("a message refused because the session ended meanwhile leaves it ended", async () => {
+  const h = makeCodex()
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  spyOn(live.process!.rpc!, "request").mockImplementation(async () => {
+    await live.end()
+    await waitFor(() => status(h, sid) === "ended", { what: "the end" })
+    throw new RpcClosed("the app-server closed before answering turn/start")
+  })
+  const e = await rejection(h.sessions.prompt(sid, "hi"))
+  expect(e).toBeInstanceOf(HarnessError)
+  expect(status(h, sid)).toBe("ended")
+  expect(live.timer).toBeNull()
+})
+
+test("ending on a codex that never answers the interrupt returns and ends after end wait", async () => {
+  const h = makeCodex({ endWaitMs: 1000 })
+  h.fake.script([[{ sleep: 30 }]], { interrupt_hangs: true })
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "work")
+  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  const began = performance.now()
+  // The interrupt Codex never answers fails once the end wait closes the app-server.
+  await h.sessions.end(sid)
+  expect(performance.now() - began).toBeLessThan(5000)
+  await waitFor(() => status(h, sid) === "ended", { timeout: 5000, what: "the end after the end wait" })
+  expect(h.store.listWorkers()).toEqual([])
+})
+
 test("every load of the thread carries the owner load", async () => {
   const h = makeCodex()
   const sid = await start(h, h.workspace)
@@ -341,4 +489,63 @@ test("a session whose load failed takes no message or end before it is dropped",
   }
   // Only the error part.
   expect(messages(h, sid).map((m) => m.role)).toEqual(["assistant"])
+})
+
+test("a queued message failing because the office stopped stores no refusal", async () => {
+  const h = makeCodex()
+  h.fake.script([], { initialize_delay: 0.5 })
+  const real = JsonRpc.prototype.request
+  let sending = false
+  let live: CodexSession | undefined
+  const spy = spyOn(JsonRpc.prototype, "request").mockImplementation(async function (
+    this: JsonRpc,
+    method,
+    params,
+    options,
+  ) {
+    if (method !== "turn/start") return real.call(this, method, params, options)
+    sending = true
+    await waitFor(() => live?.stopped, { timeout: 5000, what: "office stop" })
+    throw new RpcClosed("the app-server closed before answering turn/start")
+  })
+  onTestFinished(() => spy.mockRestore())
+  const { id: sid } = await startSession(h, "minh", h.workspace, { openedBy: "ngocbh" })
+  live = h.sessions.get(sid)!
+  expect(await h.sessions.prompt(sid, "early")).toBe("queued")
+  await waitFor(() => sending, { timeout: 10_000, what: "the queued message's turn/start" })
+  await h.sessions.closeAll()
+  expect(errors(h, sid)).toEqual([])
+})
+
+test("a turn starting after the end leaves the end timer running", async () => {
+  const h = makeCodex({ endWaitMs: 1000 })
+  h.fake.script([[{ sleep: 30 }]], { interrupt_hangs: true })
+  const sid = await start(h, h.workspace)
+  const live = h.sessions.get(sid)!
+  await h.sessions.prompt(sid, "work")
+  await waitFor(() => status(h, sid) === "busy", { what: "busy" })
+  // Waits on the interrupt Codex never answers.
+  const ending = h.sessions.end(sid)
+  await waitFor(() => status(h, sid) === "ending" && live.timer, { what: "the end timer" })
+  // A message's turn that Codex starts after the end, as a queued message's would.
+  live.notified(live.process!, "turn/started", {
+    threadId: "thr_1",
+    turn: { id: "turn_2", items: [], status: "inProgress" },
+  })
+  await waitFor(() => status(h, sid) === "ended", { timeout: 5000, what: "the end after the end wait" })
+  await ending
+})
+
+test("an idle codex session arms no timer", async () => {
+  const h = makeCodex()
+  h.fake.script([fc.agentMessage("m1", "Hi")])
+  const sid = await start(h, h.workspace)
+  await h.sessions.prompt(sid, "hi")
+  await waitFor(() => texts(h, sid).join() === "Hi" && status(h, sid) === "idle", { what: "the reply" })
+  const live = h.sessions.get(sid)!
+  expect(live.timer).toBeNull()
+  expect("idleAfter" in live).toBe(false)
+  expect("idleSeconds" in h.sessions).toBe(false)
+  expect("idleEnd" in live).toBe(false)
+  expect("idleEndAfterRestore" in live).toBe(false)
 })

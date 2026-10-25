@@ -1,6 +1,6 @@
 /** One Codex session the owner drives: its app-server, its thread, its transcript and its turns. */
 import path from "node:path"
-import { HarnessError, runState, writeState } from "../chat/state.ts"
+import { HarnessError, notWaiting, runState, writeState } from "../chat/state.ts"
 import type { SessionRecord, Store } from "../store/store.ts"
 import { type CodexProcess, CodexStartError, ownerLoad } from "./codex.ts"
 import { RpcClosed, RpcError, nameOf } from "./rpc.ts"
@@ -161,6 +161,19 @@ export class CodexSession {
     }
   }
 
+  /** Esc: asks Codex to interrupt the running turn; its `turn/completed` marks it. */
+  async interrupt(): Promise<void> {
+    const turn = this.turnId
+    const proc = this.process
+    if (turn === null || proc === null) return
+    try {
+      await proc.rpc!.request("turn/interrupt", { threadId: this.threadId, turnId: turn })
+    } catch (error) {
+      // The turn ended meanwhile, the app-server is gone, or it hangs (its end or office stop kills it).
+      if (!(error instanceof RpcError || error instanceof RpcClosed || isTimeout(error))) throw error
+    }
+  }
+
   /** Ends the session: interrupts a running turn, closes the app-server, then ends through the hooks. */
   async end(): Promise<void> {
     if (this.stopped) throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live Codex app-server`)
@@ -168,6 +181,19 @@ export class CodexSession {
     if (this.closed)
       // A failed load not dropped yet.
       throw new HarnessError(409, "not_live", `session ${this.sessionId} has no live Codex app-server`)
+    this.ending = true
+    this.pending = []
+    this.#stopTimer()
+    const busy = this.turnId !== null
+    this.store.updateSession(this.sessionId, notWaiting("ending"))
+    if (!busy) {
+      void this.post("close", () => this.#close())
+      return
+    }
+    // Armed first: an interrupt Codex never answers fails at once when this closes the app-server.
+    this.timer = setTimeout(() => void this.post("close", () => this.#close()), this.owner.endWaitMs)
+    // turn/completed closes it; the end wait closes it if that never comes.
+    await this.interrupt()
   }
 
   /** Office stop: kills the app-server (or the one still starting or closing) and skips every job after the one in
@@ -316,6 +342,7 @@ export class CodexSession {
         return
       }
       const text = this.pending.join("\n\n")
+      // A flush a reload posted finds no process if an exit was queued first, and fails as Python's: a narrow race.
       const proc = this.process!
       this.pending = []
       try {
