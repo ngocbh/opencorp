@@ -11,7 +11,7 @@ import { CompanyGit } from "../../src/company/git.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
 import { discussion, readSeed, SEED_FILE, writeSeed } from "../../src/questions/side.ts"
-import { SecretStore } from "../../src/secrets.ts"
+import { PrivateFileError, SecretStore } from "../../src/secrets.ts"
 import { newId } from "../../src/store/store.ts"
 import type { Delivery } from "../../src/worker/job.ts"
 import { fakeLlm, logPrefix, ROOT, send, TemplateOffice, waitingChat } from "../chat/helpers.ts"
@@ -148,6 +148,24 @@ test("a seed is a private file read back as written", () => {
 
   fs.chmodSync(file, 0o640)
   expect(() => readSeed(dir)).toThrow()
+
+  const shared = path.join(root, "shared")
+  fs.mkdirSync(shared)
+  fs.chmodSync(shared, 0o777)
+  expect(() => writeSeed(shared, "SEED")).toThrow(PrivateFileError)
+  expect(fs.readdirSync(shared)).toEqual([])
+  fs.writeFileSync(path.join(shared, SEED_FILE), "PLANTED", { mode: 0o600 })
+  expect(() => readSeed(shared)).toThrow(PrivateFileError)
+
+  const real = path.join(root, "real")
+  const alias = path.join(root, "alias")
+  fs.mkdirSync(real, { mode: 0o700 })
+  fs.writeFileSync(path.join(real, SEED_FILE), "REAL", { mode: 0o600 })
+  fs.symlinkSync(real, alias)
+  expect(() => writeSeed(alias, "SEED")).toThrow(PrivateFileError)
+  expect(() => readSeed(alias)).toThrow(PrivateFileError)
+  expect(fs.readdirSync(real)).toEqual([SEED_FILE])
+  expect(fs.readFileSync(path.join(real, SEED_FILE), "utf8")).toBe("REAL")
 })
 
 const SIDE_CHAT_FLOW = "shared/flows/side_chat.yaml"

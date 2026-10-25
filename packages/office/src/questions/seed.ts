@@ -155,10 +155,11 @@ function eventsBefore(messages: readonly Message[], before: string): string[] {
 function cut(value: unknown): string {
   const text = typeof value === "string" ? value : pyJson(value, false)
   if (text.length <= TOOL_OUTPUT_CHARS) return text
-  // Tool outputs can be megabytes: split into code points only past the cap in UTF-16 units, which is never fewer.
-  const points = Array.from(text)
-  if (points.length <= TOOL_OUTPUT_CHARS) return text
-  return points.slice(0, TOOL_OUTPUT_CHARS).join("") + `… [${points.length} chars]`
+  // Tool outputs can be megabytes: count and find the cut in one walk, never splitting the text into an array.
+  let count = 0
+  let index = 0
+  for (const point of text) if (count++ < TOOL_OUTPUT_CHARS) index += point.length
+  return count <= TOOL_OUTPUT_CHARS ? text : `${text.slice(0, index)}… [${count} chars]`
 }
 
 // Lengths and cuts count code points, as Python does: yian refuses a message with an unpaired surrogate, so a cut
@@ -173,7 +174,16 @@ function chars(text: string): number {
 
 /** Python's `text[:n]` in code points. */
 function first(text: string, n: number): string {
-  return n >= 0 && text.length <= n ? text : Array.from(text).slice(0, n).join("")
+  if (n >= 0 && text.length <= n) return text
+  if (n < 0) n = Math.max(0, chars(text) + n)
+  // Walk to the UTF-16 index of the n-th code point, so a huge text is never split into an array.
+  let index = 0
+  let count = 0
+  for (const point of text) {
+    if (count++ >= n) break
+    index += point.length
+  }
+  return text.slice(0, index)
 }
 
 function fit(head: string, events: string[], card: string, maxChars: number): string {
