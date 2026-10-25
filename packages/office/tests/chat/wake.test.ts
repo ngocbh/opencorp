@@ -182,3 +182,97 @@ test("interrupt on a sleeping session spawns nothing", async () => {
   expect(actor.hasWorker).toBe(false)
   expect(status(o, sid)).toBe("idle")
 })
+
+test("end on a sleeping session runs its exit", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.status))
+  await actor.end()
+  await waitFor(() => status(o, sid) === "ended" && ended.length > 0, { what: "the end" })
+  expect(ended).toEqual(["ended"])
+  // The exit needs no reply.
+  expect(fake.requests()).toEqual([])
+})
+
+test("an end that wakes the session turns a racing prompt away", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  const held = o.hold()
+  const ending = actor.end()
+  await held.entered
+  const late = outcome(actor.prompt("late"))
+  await pause(200)
+  held.release()
+  await ending
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  // Ending while the run lives; not live once the finish ran.
+  expect(["409 ending", "409 not_live"]).toContain(await late)
+  expect(fake.requests()).toEqual([])
+})
+
+test("an end racing the prompt that wakes the session ends it", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "spare" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  const before = o.kinds.length
+  const held = o.hold()
+  const sent = outcome(actor.prompt("hi"))
+  await held.entered
+  const ending = outcome(actor.end())
+  await pause(200)
+  held.release()
+  expect(await ending).toBe("undefined")
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  await sent
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+})
+
+test("a wake never resumes a session whose finish is in flight", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.status))
+  const { worker, handlers, deliveries } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeWaiting", data: { node_id: "chat#0/heard", call_ids: ["c1"] } })
+  await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
+  await actor.end()
+  expect(deliveries.map((d) => d.op)).toEqual(["close"])
+  handlers.deliverReply(worker, { type: "deliver_reply", id: deliveries[0]!.id, seq: 2 })
+  const succeeded = { type: "result", status: "succeeded", run_id: actor.runId, output: null, failure: null, waits: [] }
+  handlers.result(worker, succeeded)
+  handlers.exited(worker, 0)
+  // Queued behind the exit, whose finish runs first.
+  expect(await outcome(actor.prompt("late"))).toBe("409 not_live")
+  expect(o.kinds).toEqual(["chat"])
+  await waitFor(() => ended.length > 0, { what: "the session ended" })
+  expect(ended).toEqual(["ended"])
+  expect(status(o, sid)).toBe("ended")
+})
+
+test("worker exit right after wake spawn is misread as stopping", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  const before = o.kinds.length
+  o.afterSpawn((worker) => {
+    try {
+      process.kill(-worker.pgid, "SIGKILL")
+    } catch {}
+  })
+  expect(["queued", "turn"]).toContain(await actor.prompt("hi"))
+  await waitFor(() => JSON.stringify(texts(o, sid)) === JSON.stringify(["one"]) && status(o, sid) === "idle", {
+    what: "the reply",
+  })
+  // One respawn after the death, which kept the message.
+  expect(o.kinds.slice(before)).toEqual(["advance", "advance"])
+  expect(await say(o, actor, sid, "again")).toBe("two")
+})

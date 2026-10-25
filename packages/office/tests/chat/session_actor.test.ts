@@ -1,8 +1,9 @@
 /** The session actor's host loop rules that have no Python test of their own. */
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { LiveEvent } from "@opencorp/protocol"
-import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
+import { INTERRUPTED_CALL, SessionActor, whyOf } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -341,4 +342,76 @@ test("a stored question fires question stored once", async () => {
   await actor.prompt("A")
   await waitFor(() => texts(o, sid).includes("A it is.") && status(o, sid) === "idle", { what: "the reply" })
   expect(stored).toEqual([q.id])
+})
+
+test("exit typed ends the session", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const ended: string[] = []
+  o.hooks.sessionEnded.push((s) => void ended.push(s.status))
+  const { actor, sid } = await startActor(o)
+  expect(await actor.prompt("/exit")).toBe("turn")
+  await waitFor(() => status(o, sid) === "ended" && ended.length > 0, { what: "the end" })
+  expect(ended).toEqual(["ended"])
+  expect(fake.requests()).toEqual([])
+  expect(texts(o, sid, "user")).toEqual([])
+})
+
+test("a message after end is refused as ending", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers, deliveries } = workers[0]!
+  handlers.event(worker, { type: "event", name: "NodeWaiting", data: { node_id: "chat#0/heard", call_ids: ["c1"] } })
+  await waitFor(() => status(o, sid) === "idle", { what: "idle at the turn" })
+  await actor.end()
+  expect(status(o, sid)).toBe("ending")
+  await expect(actor.prompt("late")).rejects.toMatchObject({ status: 409, code: "ending" })
+  await expect(actor.steer("late")).rejects.toMatchObject({ status: 409, code: "ending" })
+  // A second end does nothing more.
+  await actor.end()
+  expect(deliveries.map((d) => d.op)).toEqual(["close"])
+})
+
+test("the provider key never reaches a reason a hook a log or the store", async () => {
+  const key = "sk-sentinel-5d1f0e7a93"
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { llmConfig: { ...LLM_CONFIG, api_key: key } })
+  const workers = scriptedWorker(o)
+  const live: LiveEvent[] = []
+  const seen: unknown[] = []
+  o.hooks.runFinished.push((...args) => void seen.push(args))
+  o.hooks.sessionEnded.push((...args) => void seen.push(args))
+  const sid = await newSession(o)
+  const actor = new SessionActor({ ...o.ctx, bus: { publishLive: (event) => void live.push(event) } }, sid)
+  o.actors.push(actor)
+  await actor.start()
+  const runId = actor.runId!
+  const { worker, handlers } = workers[0]!
+  // The worker's start frame is the one place the key travels.
+  expect(worker.job.llm_config).toMatchObject({ api_key: key })
+  const failure = {
+    node_id: "chat#0/reply",
+    cause_type: "AuthError",
+    message: `bad key ${key} ${"x".repeat(900)}`,
+    details: [{ input: { api_key: key } }, key],
+  }
+  const failed = { type: "result", status: "failed", run_id: runId, output: null, failure, waits: [] }
+  handlers.result(worker, failed)
+  handlers.exited(worker, 1)
+  await waitFor(() => status(o, sid) === "failed" && seen.length === 2, { what: "the failure" })
+  const [[, finishedRun, frame]] = seen as [[unknown, string, { failure: typeof failure }]]
+  expect(finishedRun).toBe(runId)
+  expect(frame.failure.message).toStartWith("bad key [redacted] xxx")
+  expect(frame.failure.details).toEqual([{ input: { api_key: "[redacted]" } }, "[redacted]"])
+  const why = whyOf(failed, { llm_config: { api_key: key } })
+  expect(why).toStartWith("AuthError: bad key [redacted] xxx")
+  expect([why.length, why.at(-1)]).toEqual([500, "…"])
+  const stored = JSON.stringify([session(o, sid), o.office.store.getRun(runId)])
+  for (const text of [JSON.stringify(seen), o.logs.join("\n"), JSON.stringify(live), stored, why]) {
+    expect(text).not.toContain(key)
+  }
 })

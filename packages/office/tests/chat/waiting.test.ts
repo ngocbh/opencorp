@@ -197,7 +197,8 @@ test("a session waiting at a question node sleeps and an answer wakes it to the 
   expect(o.kinds.slice(before)).toEqual(["advance"])
   const complete = { op: "complete", call_id: q.call_id, result: { output: GATE_ANSWER } }
   expect(o.jobs.at(-1)!.deliver).toMatchObject([complete])
-  expect(status(o, sid)).not.toBe("waiting")
+  // Past its node the gate flow is done.
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
 })
 
 test("esc answers an ask manager card interrupted and closes its item", async () => {
@@ -217,4 +218,42 @@ test("esc answers an ask manager card interrupted and closes its item", async ()
   // Answered, not stale, so the cards carry none of its discussion into a later card.
   await waitFor(() => o.office.store.getWorkItem(q.work_item_id!)!.status === "done", { what: "the item closed" })
   await waitFor(() => status(o, sid) !== "waiting", { what: "no longer waiting" })
+})
+
+test("ending a waiting session clears waiting on", async () => {
+  const fake = await fakeLlm()
+  fake.script(ASK_USER, { content: "spare" })
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await actor.prompt("hi")
+  await card(o, sid, "ask_user")
+  await waitFor(() => status(o, sid) === "waiting", { what: "waiting" })
+  await actor.end()
+  await waitFor(() => JSON.stringify(waits(o, sid)) === JSON.stringify(["ended", []]), { what: "the end" })
+})
+
+test("a failed waiting session waits on no one", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const sid = await newSession(o)
+  o.office.store.updateSession(sid, { status: "waiting", waiting_on: [CEO], capped: true })
+  await makeActor(o, sid).fail()
+  expect(state(o, sid)).toEqual({ status: "failed", waiting_on: [], capped: false })
+})
+
+test("settle leaves a session whose finish is in flight", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const { worker, handlers } = workers[0]!
+  const succeeded = { type: "result", status: "succeeded", run_id: actor.runId, output: null, failure: null, waits: [] }
+  handlers.result(worker, succeeded)
+  handlers.exited(worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  // The finish stored the end; a settle after it leaves it.
+  actor.settle()
+  expect(state(o, sid)).toEqual({ status: "ended", waiting_on: [], capped: false })
 })
