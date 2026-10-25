@@ -415,6 +415,7 @@ test("a secret answer no reply can be made from is in no log error or reply", as
   expect(codexLog(h, sid)).not.toContain(SENTINEL)
   expect(JSON.stringify(h.storeEvents)).not.toContain(SENTINEL)
   expect(JSON.stringify(h.events)).not.toContain(SENTINEL)
+  expect(JSON.stringify(h.sessions.currentTurn(sid))).not.toContain(SENTINEL)
   storeLacksSentinel(h)
 })
 

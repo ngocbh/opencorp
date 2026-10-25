@@ -111,7 +111,7 @@ export class CodexSession {
   loading = false
   turnId: string | null = null
   pending: string[] = []
-  /** The current turn's messages as the live events built them (P12): the turn in progress, or the last one until
+  /** The current turn's messages as the live events built them: the turn in progress, or the last one until
    *  the next message starts one; nothing is kept after the session or the office ends. */
   turn: Message[] = []
   /** Question id -> the request Codex waits on. */

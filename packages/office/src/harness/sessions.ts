@@ -176,7 +176,7 @@ export class CodexSessions implements CardActor {
     return repo.company?.ceo ?? null
   }
 
-  /** A copy of the live session's current turn (P12); empty when it isn't live. */
+  /** A copy of the live session's current turn; empty when it isn't live. */
   currentTurn(sessionId: string): Message[] {
     const live = this.#live.get(sessionId)
     return live ? structuredClone(live.turn) : []
