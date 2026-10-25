@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import path from "node:path"
 import { createFakeOffice, createStub, seed } from "../../../script/stub"
 import { createOfficeClient } from "@opencorp/client"
-import { CONFLICT_MARKER, diffLines } from "../../../src/routes/profile/profile"
+import { CONFLICT_MARKER } from "../../../src/routes/profile/profile"
 import { bootFrame } from "../../fixture/frame"
 import { until } from "../../fixture/until"
 import { typeInto } from "../picker/type"
@@ -81,10 +81,10 @@ test("/profile with nobody picked says to pick a person first", async () => {
   }
 })
 
-test("an over-budget profile says feedback can't be learned until it is shorter", async () => {
+test("an over-budget profile says it is longer than its budget", async () => {
   const office = createFakeOffice({ profileMaxChars: 10 })
   await run(office, async (app) => {
-    await app.until((f) => f.includes("Over budget") && f.includes("until it is shorter"))
+    await app.until((f) => f.includes("Over budget: this profile is longer than its budget."))
   })
 })
 
@@ -270,149 +270,35 @@ test("an open manager chat for the person is picked up with its transcript", asy
   })
 })
 
-const PROPOSED = "# Minh\n\nWrites the test first, then small changes.\n"
-
-test("the open proposal shows as a diff; a applies it", async () => {
+test("a reconnect re-reads the profile (events sent while offline are lost)", async () => {
   const office = createFakeOffice()
-  const client = createOfficeClient({ socket: office.socket })
-  const manager = await client.profiles.manager("minh", { text: "Tests first" })
-  const proposal = office.propose(manager.id, PROPOSED)
   await run(office, async (app) => {
-    const f = await app.until((f) => f.includes("+Writes the test first, then small changes."))
-    expect(f).toContain("-Writes small, tested changes.")
-    expect(f).toContain("a apply")
-    // The profile itself still shows above the proposal once the chat grows under it.
-    reply(office, manager.id, "Here is a proposal.")
-    const profileShown = /^  Writes small, tested changes\. *$/m
-    await app.until((f) => f.includes("manager: Here is a proposal.") && profileShown.test(f))
-    app.input.pressKey("a")
-    await app.until((f) => f.includes("Proposal applied") && !f.includes("+Writes the test first"))
-    const last = office.requests.filter((r) => r.method === "POST").at(-1)
-    expect(last?.path).toBe(`/profile-proposals/${proposal.id}/apply`)
-    expect(office.state.profiles.minh.text).toBe(PROPOSED)
-  })
-})
-
-test("a long proposal shows its first lines and how many more there are", async () => {
-  const office = createFakeOffice()
-  const client = createOfficeClient({ socket: office.socket })
-  const manager = await client.profiles.manager("minh", { text: "Much more" })
-  const added = Array.from({ length: 12 }, (_, i) => `Rule ${i + 1}.`).join("\n")
-  const proposal = office.propose(manager.id, office.state.profiles.minh.text + added + "\n")
-  await run(office, async (app) => {
-    const more = diffLines(proposal.diff).length - 7
-    const f = await app.until((f) => f.includes(`… ${more} more lines`))
-    expect(f).toContain("+Rule 1.")
-    expect(f).not.toContain("+Rule 12.")
-  })
-})
-
-test("applying a proposal the office already closed says so and hides it", async () => {
-  const office = createFakeOffice()
-  const client = createOfficeClient({ socket: office.socket })
-  const manager = await client.profiles.manager("minh", { text: "Tests first" })
-  const proposal = office.propose(manager.id, PROPOSED)
-  await run(office, async (app) => {
-    await app.until((f) => f.includes("+Writes the test first, then small changes."))
-    // A direct edit sends no event, so the view still shows it open.
-    office.state.proposals[proposal.id] = { ...proposal, status: "discarded" }
-    app.input.pressKey("a")
-    await app.until((f) => f.includes(`proposal ${proposal.id} is discarded, not`) && !f.includes("a apply"))
-  })
-})
-
-test("a proposal made while the view is open appears; applying it after a hand edit says it is stale", async () => {
-  const office = createFakeOffice()
-  const client = createOfficeClient({ socket: office.socket })
-  const manager = await client.profiles.manager("minh", { text: "Tests first" })
-  await run(office, async (app) => {
-    office.propose(manager.id, PROPOSED)
-    await app.until((f) => f.includes("+Writes the test first, then small changes."))
-    const base_version = office.state.profiles.minh.version
-    await client.profiles.put("minh", { text: "# Minh\n\nHand edit.\n", base_version })
-    // The view sees the proposal no longer matches the profile before the office is asked.
-    const f = await app.until((f) => f.includes("Hand edit.") && f.includes("out of date; ask the manager again"))
-    expect(f).not.toContain("a apply")
-    app.input.pressKey("a")
-    await app.until((f) => f.includes("The profile changed after this proposal") && !f.includes("+Writes the test first"))
-    expect(office.state.profiles.minh.text).toBe("# Minh\n\nHand edit.\n")
-  })
-})
-
-test("a reconnect re-reads the profile and the proposals (events sent while offline are lost)", async () => {
-  const office = createFakeOffice()
-  const client = createOfficeClient({ socket: office.socket })
-  const manager = await client.profiles.manager("minh", { text: "Tests first" })
-  await run(office, async (app) => {
-    // Direct edits send no events: only a re-read can find them.
+    // A direct edit sends no event: only a re-read can find it.
     const text = "# Minh\n\nChanged while offline.\n"
     office.state.profiles.minh = { ...office.state.profiles.minh, text, version: "f".repeat(40) }
-    office.state.proposals.P1 = {
-      id: "P1",
-      session_id: manager.id,
-      person: "minh",
-      base_version: "f".repeat(40),
-      text: text + "More.\n",
-      diff: "@@ -1,3 +1,4 @@\n+More.\n",
-      status: "open",
-      commit: null,
-      created_at: new Date().toISOString(),
-    }
     office.reset()
-    await app.until((f) => f.includes("Changed while offline.") && f.includes("+More.") && f.includes("fffffff"))
+    await app.until((f) => f.includes("Changed while offline.") && f.includes("fffffff"))
   })
 })
 
-test("a re-read that answers after newer events doesn't undo them", async () => {
+test("a re-read that answers after newer events does not undo them", async () => {
   const office = createFakeOffice()
   const client = createOfficeClient({ socket: office.socket })
-  const manager = await client.profiles.manager("minh", { text: "Tests first" })
   await run(office, async (app) => {
     const reads = () => office.requests.filter((r) => r.method === "GET" && r.path.startsWith("/profiles/minh")).length
     const before = reads()
-    // Both re-reads answer with the state from when they arrived, after the events below.
+    // The re-read answers with the state from when it arrived, after the event below.
     const releaseProfile = office.hold("GET /profiles/:person", "reply")
-    const releaseProposals = office.hold("GET /profiles/:person/proposals", "reply")
     office.reset()
-    await until(() => reads() === before + 2)
+    await until(() => reads() === before + 1)
     await client.profiles.put("minh", { text: "# Minh\n\nNewer.\n", base_version: office.state.profiles.minh.version })
-    office.propose(manager.id, "# Minh\n\nNewer, proposed.\n")
-    await app.until((f) => f.includes("Newer.") && f.includes("+Newer, proposed."))
+    await app.until((f) => f.includes("Newer."))
     releaseProfile()
-    releaseProposals()
-    // Give the held replies time to land.
+    // Give the held reply time to land.
     await Bun.sleep(200)
     const f = await app.until(() => true)
     expect(f).toContain("Newer.")
-    expect(f).toContain("+Newer, proposed.")
     expect(f).not.toContain("Writes small, tested changes.")
-  })
-})
-
-test("an office without the proposals route yet shows the profile without an error", async () => {
-  const office = createFakeOffice({ notImplemented: ["GET /profiles/:person/proposals"] })
-  await run(office, async (app) => {
-    await Bun.sleep(200)
-    expect(await app.until(() => true)).not.toContain("not implemented")
-  })
-})
-
-test("a profile read that succeeds doesn't hide a failed proposals read", async () => {
-  const office = createFakeOffice()
-  await run(office, async (app) => {
-    const releaseProfile = office.hold("GET /profiles/:person", "reply")
-    const releaseProposals = office.hold("GET /profiles/:person/proposals")
-    const reads = office.requests.length
-    office.reset()
-    await until(() => office.requests.slice(reads).filter((r) => r.path.startsWith("/profiles/minh")).length === 2)
-    // The profile read is answered already; the proposals read now finds no such person.
-    const minh = office.state.people.findIndex((p) => p.handle === "minh")
-    office.state.people.splice(minh, 1)
-    releaseProposals()
-    await app.until((f) => f.includes("no person minh"))
-    releaseProfile()
-    await Bun.sleep(200)
-    expect(await app.until(() => true)).toContain("no person minh")
   })
 })
 
