@@ -37,6 +37,7 @@ import { HttpError, type Params, type Route } from "../http.ts"
 import type { Office, RequestContext } from "../office.ts"
 
 type AddBody = z.output<typeof AddConnectionRequest>
+type SetDefaultBody = z.output<typeof SetDefaultConnectionRequest>
 
 /** Whether `person` may manage the office's connections: its owner, or a grant in the company at HEAD. */
 async function mayManage(office: Office, person: string): Promise<boolean> {
@@ -147,10 +148,11 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
     // A host may not list a model it serves, such as an alias of a dated id, so one reply decides.
     needsCheck = !ids.includes(model)
   } else if (!body.model && fallback) {
-    // Yian has no default model, so the connection is saved with the one it is checked on.
+    // Yian has no default model, so the connection is checked, and saved, on this one.
     llm.model = fallback
   }
-  // The one-reply check runs as a worker job, which comes with the worker; until then such an add saves nothing.
+  // The one-reply check, on `llm` as built here, runs as a worker job, which comes with the worker;
+  // until then such an add saves nothing.
   if (needsCheck) {
     throw new HttpError(
       501,
@@ -165,6 +167,7 @@ async function buildAndCheck(office: Office, body: AddBody): Promise<string> {
     if (error instanceof ProviderError) throw new HttpError(409, "connection_unusable", error.message)
     throw error
   }
+  // Not awaited: the reply doesn't wait for the listings; warm never rejects.
   void office.models.warm()
   return name
 }
@@ -194,13 +197,14 @@ export async function remove(ctx: RequestContext, params: Params): Promise<Ack> 
   const { connections, models } = ctx.office
   await guarded(() => connections.remove(name))
   models.invalidate(name)
+  // Not awaited: the reply doesn't wait for the listings; warm never rejects.
   void models.warm()
   return { ok: true }
 }
 
 /** Makes a connection the one new chats start on; every connection afterwards. */
 export async function setDefault(ctx: RequestContext, _params: Params, body: unknown): Promise<ConnectionList> {
-  const { connection } = body as z.output<typeof SetDefaultConnectionRequest>
+  const { connection } = body as SetDefaultBody
   const connections = ctx.office.connections
   await guarded(() => connections.setDefault(connection))
   return connectionList(connections, true)

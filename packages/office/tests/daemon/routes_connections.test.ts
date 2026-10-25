@@ -262,7 +262,8 @@ test("others are refused before the body is read", async () => {
     ["PUT", "/connections/default"],
     ["POST", "/connections/login"],
   ] as const) {
-    // The length spelled out, as httpx sent it: without it, Bun's runtime answers a DELETE with a body 400 itself.
+    // node:http's client sends a DELETE body without a content-length, so the server would read it as a
+    // second request; the length is spelled out, as httpx sent it.
     const r = await request(sock, method, target, { headers: { ...ava, "content-length": "8" }, body: "not json" })
     expect([r.status, errorOf(r)]).toEqual([403, "forbidden"])
   }
@@ -447,7 +448,7 @@ test("a malformed add never echoes the key", async () => {
     expect([r.status, r.text.includes(SENTINEL)]).toEqual([422, false])
   }
   const r = await request(sock, "POST", "/connections", {
-    headers: { ...owner, "content-type": "application/json" },
+    headers: owner,
     body: `{"api_key": "${SENTINEL}"`,
   })
   expect([r.status, r.text.includes(SENTINEL)]).toEqual([422, false])
