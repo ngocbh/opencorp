@@ -708,7 +708,17 @@ test("build office brings the run index up to date and sweeps on start", async (
     replacesRunId: null,
     createdAt: ended.created_at,
   })
+  const codex = office.codex!
+  const restore = codex.restore.bind(codex)
+  const store = office.store
+  let atRestore: string | null | undefined
+  // The sweep goes first: the open run is already ended when the restore runs.
+  spyOn(codex, "restore").mockImplementation(async () => {
+    atRestore = store.getRun(open)?.endReason
+    await restore()
+  })
   await office.start()
+  expect(atRestore).toBe(OFFICE_STOPPED)
   expect(readRunIndex(paths.runs).map((row) => row.runId)).toEqual([RUN])
   const got = office.store.getRun(open)!
   expect([got.endReason, got.endedAt]).toEqual([OFFICE_STOPPED, null])
@@ -734,6 +744,29 @@ test("build office updates the run index when a worker exits", async () => {
   fake.script({ content: "OK" })
   expect(await office.checkModel(provider)).toBeNull()
   await waitFor(() => update.mock.calls.length > 0, { what: "a run index update on the worker's exit" })
+})
+
+test("a broken index does not stop the office start", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const key = "sk-test-sweep-3c9f61a2"
+  const out = collect()
+  const rec = recordingGit(tempDir())
+  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: out.write })
+  spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  spyOn(office.store, "openRuns").mockImplementation(() => {
+    throw new Error(`index broken: ${key}`)
+  })
+  await office.start()
+  expect(out.text()).toContain("the start sweep failed: Error")
+  expect(out.text()).not.toContain(key)
 })
 
 /** How a process exited. */

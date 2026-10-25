@@ -884,6 +884,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/daemon/http.test.ts::the guard runs before any body byte is read	design §2.3 step 3, §6 rule 7: the guard runs before the body	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the listener limits are the designs values	D16, design §2.3: listener limits	O2-1
 —	new	packages/office/tests/daemon/http.test.ts::the request signal aborts when the client goes away	design §2.3: RequestContext.signal	O2-1
+—	new	packages/office/tests/daemon/main.test.ts::a broken index does not stop the office start	§5.2: a broken or hung index never stops the start (choice 13); errors logged by type (§6 rule 13)	O4b-6
 —	new	packages/office/tests/daemon/main.test.ts::a home that cannot be resolved exits 1	design §6.5 realpath: a home that can't be resolved (ELOOP, EACCES) is a start error, not a crash	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a home that does not exist yet resolves through its real parent	Python's non-strict Path.resolve() (design §6.5 realpath): the nearest existing ancestor is resolved	O2-5
 —	new	packages/office/tests/daemon/main.test.ts::a lock file that is not private is refused	design §2.3, §6 rule 6: the lock file follows yian's private rules (Y4)	O2-5

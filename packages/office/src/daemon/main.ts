@@ -282,7 +282,7 @@ export function buildOffice(
     // No chat harness yet: the Codex sessions are the office's harness (card actions and session routes), on the
     // same hooks.
     office.harness = codex
-    // Before the restore, which settles the sessions whose current runs the sweep leaves open.
+    // Before the restores, as Python's restore swept first: the sweep must never end a run a restore resumes or starts.
     office.onStart.push(() => sweepOnStart(office, log))
     // Before loadExtensions adds the cards' sweep, so the sweep sees the statuses restore settled.
     office.onStart.push(() => codex.restore())
