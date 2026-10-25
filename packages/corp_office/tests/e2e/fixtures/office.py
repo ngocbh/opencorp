@@ -4,7 +4,6 @@ import json
 import os
 import signal
 import subprocess
-import sys
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -16,8 +15,8 @@ from opencorp.auth.identity import identity_path, read_identity
 from opencorp.daemon.app import OfficePaths
 from opencorp.install.launch import REPO
 
-CLI = REPO / "packages" / "cli" / "src" / "main.ts"
-"""The `opencorp` entry point in this checkout, run with bun."""
+OPENCORP = REPO / "packages" / "cli" / "bin" / "opencorp"
+"""The `opencorp` wrapper in this checkout; it runs the Bun from ``OPENCORP_BUN`` or ``PATH``."""
 
 
 def wait_for(check, what, timeout=40.0):
@@ -63,6 +62,7 @@ class RunningOffice:
         self.home = home
         self.paths = OfficePaths(home)
         self.paths.office.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.sessions = self.paths.office / "sessions"
         (self.paths.office / "hq.json").write_text(json.dumps({"tcp": False} if hq is None else hq))
         self.fake = fake
         self.http = self.client()
@@ -75,7 +75,7 @@ class RunningOffice:
 
     def onboard(self, device: bool = False) -> None:
         """Make Acme with Ngoc as CEO and Minh as its first teammate, and the office as a background process,
-        as `opencorp init` would.
+        by running `opencorp init` through the wrapper.
 
         With ``device``, init registers this device, so the office needs its token; the
         client sends it.
@@ -83,10 +83,11 @@ class RunningOffice:
         provider = {"llm_config": {"provider": "vllm", "model": "stub"}, "env": self.fake.env()}
         self.fake.script({"content": "OK", "match": "Reply with the single word OK."})  # init's model check
         done = subprocess.run(
-            [sys.executable, "-m", "opencorp.install", "init", "--home", str(self.home),
+            [str(OPENCORP), "init", "--home", str(self.home),
              "--provider-stdin", "--company", "Acme", "--name", "Ngoc", "--handle", "ngocbh",
              "--service", "background", *([] if device else ["--no-device"])],
-            input=json.dumps(provider), capture_output=True, text=True, cwd=REPO, timeout=120)
+            input=json.dumps(provider), capture_output=True, text=True, cwd=self.home, env=self._cli_env(),
+            timeout=120)
         if self.paths.pidfile.exists():
             self.pids.add(self.pid())
         assert done.returncode == 0, done.stdout + done.stderr
@@ -192,7 +193,7 @@ class RunningOffice:
 
     def opencorp(self, *args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run `opencorp <args>` in ``cwd`` against this office and wait for it."""
-        done = subprocess.run(["bun", str(CLI), *args], cwd=cwd, env=self._cli_env(),
+        done = subprocess.run([str(OPENCORP), *args], cwd=cwd, env=self._cli_env(),
                               capture_output=True, text=True, timeout=90)
         if check:
             assert done.returncode == 0, f"opencorp {' '.join(args)}: {done.stdout}{done.stderr}"
@@ -204,13 +205,13 @@ class RunningOffice:
                               check=True, capture_output=True, text=True).stdout.splitlines()
 
     def worker(self, sid: str) -> psutil.Process:
-        """Session ``sid``'s worker: the office's child running in the session's run dir."""
-        run_dir = str(self.paths.run_dir(sid))
+        """Session ``sid``'s worker: the office's child running in ``office/sessions/<sid>/``."""
+        session_dir = str(self.sessions / sid)
 
         def find():
             for child in psutil.Process(self.pid()).children():
                 try:
-                    if child.cwd() == run_dir:
+                    if child.cwd() == session_dir:
                         return child
                 except psutil.Error:
                     pass
@@ -242,10 +243,10 @@ class RunningOffice:
             except psutil.Error:
                 pass
         # A safety net: workers exit by themselves when their office goes.
-        runs = str(self.paths.runs) + os.sep
+        sessions = str(self.sessions) + os.sep
         for proc in psutil.process_iter():
             try:
-                if proc.cwd().startswith(runs):
+                if proc.cwd().startswith(sessions):
                     os.killpg(proc.pid, signal.SIGKILL)
             except (psutil.Error, OSError):
                 pass
