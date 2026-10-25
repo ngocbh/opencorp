@@ -11,8 +11,10 @@ import { lint } from "../company/lint.ts"
 import { loadRepo } from "../company/loader.ts"
 import { isNew, missingFiles } from "../company_template/index.ts"
 import { OfficePaths } from "../daemon/office.ts"
+import { CodexMissing, codexCommand } from "../harness/codex.ts"
 import { selfCommand } from "../platform.ts"
-import { defaultHost, type Env, type Host, type Launch, launch } from "./launch.ts"
+import { workerEnv } from "../worker/spawn.ts"
+import { defaultHost, type Env, type Host, type Launch, launch, runCommand } from "./launch.ts"
 import * as launchd from "./launchd.ts"
 import { checkProvider, SET_UP, setupConnectionFile, stopToTopUp, withDefaultModel } from "./onboard.ts"
 import { OnboardError } from "./prompts.ts"
@@ -33,6 +35,18 @@ const LOG_TAIL_BYTES = 64 * 1024
 
 /** A stack frame line under the crash marker. */
 const FRAME = /^\s+at /
+
+/** How `codex login status` starts the line it prints when nobody is signed in, lowercased. */
+const SIGNED_OUT = "not logged in"
+
+/** The most of a failed `codex --version` or `codex login status` the report shows. */
+const LINE_CAP = 200
+
+/** An ANSI color code, which Codex may print around a line. */
+const COLOR = /\x1b\[[0-9;]*m/g
+
+/** How Node words a program that never started: `<code>: <strerror>, posix_spawn '<path>'`. */
+const SPAWN_ERROR = /^E[A-Z0-9]+: (.*), (?:posix_)?spawn\b/
 
 /** One line of the report: `fail` needs fixing, `warn` is worth knowing. */
 export interface Check {
@@ -336,6 +350,92 @@ function crash(log: string): string | null {
   return marker?.match(CRASH_MARKER)?.[1] ?? null
 }
 
+/** The non-empty lines of `output`, trimmed and without color codes. */
+function lines(output: string): string[] {
+  return output
+    .split(/\r\n|\n|\r/)
+    .map((raw) => raw.replace(COLOR, "").trim())
+    .filter((line) => line)
+}
+
+/** How a Codex install or setting made in this shell reaches an office running under `mode`. */
+function codexChangeLands(mode: string | null): string {
+  // launchd and systemd start the office with the environment `opencorp onboard` wrote into its service file, which
+  // `opencorp restart` reuses; only a stopped office's onboard writes the file again.
+  if (mode === "launchd" || mode === "systemd") {
+    return "stop the office and run `opencorp onboard` again from that shell"
+  }
+  return "`opencorp restart` from that shell"
+}
+
+/**
+ * Whether the office can start Codex sessions, in the environment it gives an app-server (`env`): the binary on its
+ * PATH, the version, and the sign-in. Missing, signed out, or a `login status` that fails otherwise (shown by the
+ * first line it printed) is a warning, not a failure: only people with `codex` in `harnesses` need it. A `codex` that
+ * won't run or doesn't answer within `timeoutMs` fails.
+ *
+ * `environ` is the office's environment: its `OPENCORP_CODEX_BIN` picks the binary and its `CODEX_HOME` joins `env`,
+ * as they do for an app-server. `mode` is the office's recorded service mode, which decides how a fix reaches it.
+ */
+export async function codexCheck(
+  env: Record<string, string>,
+  environ: Env,
+  mode: string | null = null,
+  timeoutMs = 30_000,
+): Promise<Check> {
+  let found: string
+  try {
+    found = codexCommand(env, environ)[0]!
+  } catch (error) {
+    if (!(error instanceof CodexMissing)) throw error
+    const override = environ.OPENCORP_CODEX_BIN
+    const detail = override
+      ? `OPENCORP_CODEX_BIN names ${override}, which isn't an executable the office can find, so Codex sessions ` +
+        `can't start (fix or unset it, then ${codexChangeLands(mode)})`
+      : "not on the office's PATH, so Codex sessions can't start " +
+        `(npm install -g @openai/codex, then ${codexChangeLands(mode)})`
+    return { name: "codex", status: "warn", detail }
+  }
+  const home = environ.CODEX_HOME
+  if (home) env = { ...env, CODEX_HOME: home }
+  /** `found <args>`, or the failed check when it timed out or never started. */
+  const ask = async (...args: string[]) => {
+    const done = await runCommand([found, ...args], { env, timeoutMs })
+    if (done.code === 124 && done.stderr === `${found} timed out`) {
+      const detail = `${found} ${args.join(" ")} didn't answer in ${timeoutMs / 1000} s`
+      return { name: "codex", status: "fail", detail } satisfies Check
+    }
+    // Any other 127 is the program's own exit (a wrapper whose inner command is missing), not a failed start.
+    const unstarted = done.code === 127 ? done.stderr.match(SPAWN_ERROR) : null
+    if (unstarted) {
+      return { name: "codex", status: "fail", detail: `${found} can't run: ${unstarted[1]}` } satisfies Check
+    }
+    return done
+  }
+  const version = await ask("--version")
+  if ("name" in version) return version
+  if (version.code !== 0) {
+    const why = version.stderr.replace(COLOR, "").trim().slice(0, LINE_CAP) || `exit ${version.code}`
+    return { name: "codex", status: "fail", detail: `${found} --version failed: ${why}` }
+  }
+  const login = await ask("login", "status")
+  if ("name" in login) return login
+  const printed = version.stdout.trim()
+  const named = printed ? `${printed} at ${found}` : `${found} (no version printed)`
+  if (login.code !== 0) {
+    const said = lines(`${login.stderr}\n${login.stdout}`)
+    // Codex says "Not logged in" when signed out, and exits 1 on other errors too (a bad config.toml, say),
+    // possibly after a warning line.
+    if (said.some((line) => line.toLowerCase().startsWith(SIGNED_OUT))) {
+      return { name: "codex", status: "warn", detail: `${named} is signed out; run \`${found} login\`` }
+    }
+    const first = said.find((line) => line.startsWith("Error")) ?? said[0]
+    const why = first ? first.slice(0, LINE_CAP) : `exit ${login.code}`
+    return { name: "codex", status: "warn", detail: `${named}: \`${found} login status\` failed: ${why}` }
+  }
+  return { name: "codex", status: "ok", detail: `${named}, signed in` }
+}
+
 /** What `checks` reads and runs; tests pass stand-ins. */
 export interface CheckOptions {
   /** The machine (default `defaultHost()`). */
@@ -346,8 +446,9 @@ export interface CheckOptions {
   repo?: string
   /** Why a sandboxed command can't run for the office at the given home, or null if one does. */
   probe: (officeHome: string) => Promise<string | null>
-  /** The Codex check, given the worker env, the office's env and its recorded service mode. */
-  codex: (env: Record<string, string>, environ: Env, mode: string | null) => Promise<Check>
+  /** The Codex check, given the worker env, the office's env and its recorded service mode (default
+   *  `codexCheck`). */
+  codex?: (env: Record<string, string>, environ: Env, mode: string | null) => Promise<Check>
   /** The shell's environment (default `process.env`). */
   environ?: Env
   /** `GET /hq` from the office on the socket, sent with the identity's token when there is one. */
@@ -360,7 +461,7 @@ export interface CheckOptions {
 
 /** Every check for the office at `home`, in the order onboarding sets things up. */
 export async function checks(home: string, options: CheckOptions): Promise<Check[]> {
-  const { host = defaultHost(), command = selfCommand(), environ = process.env } = options
+  const { host = defaultHost(), command = selfCommand(), environ = process.env, codex = codexCheck } = options
   const lstat = options.lstat ?? ((p: string) => fs.lstatSync(p))
   const run = launch(home, { command, environ, userHome: host.userHome })
   const paths = new OfficePaths(run.home)
@@ -385,6 +486,9 @@ export async function checks(home: string, options: CheckOptions): Promise<Check
   }
   const problem = await options.probe(paths.home)
   found.push({ name: "sandbox", status: problem ? "fail" : "ok", detail: problem || "sandboxed commands run" })
+  // run.env is the environment an office set up or started from this shell gets, which can differ from the running
+  // daemon's (a launchd or systemd office keeps the one `opencorp onboard` wrote into its service file).
+  found.push(await codex(workerEnv(run.env), run.env, service.recordedMode(run)))
   return found
 }
 

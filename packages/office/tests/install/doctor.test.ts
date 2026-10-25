@@ -7,7 +7,7 @@ import { logLine } from "../../src/daemon/http.ts"
 import { OfficePaths } from "../../src/daemon/office.ts"
 import * as doctor from "../../src/install/doctor.ts"
 import type { Check } from "../../src/install/doctor.ts"
-import { launch } from "../../src/install/launch.ts"
+import { INHERITED_ENV, launch } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { SET_UP, setupConnectionFile } from "../../src/install/onboard.ts"
 import * as systemd from "../../src/install/systemd.ts"
@@ -463,4 +463,293 @@ test("a sandbox that cant start fails", async () => {
   const paths = await onboarded(dir)
   const got = byName(await runChecks(dir, paths, { probe: async () => "sandbox-exec: Operation not permitted" }))
   expect(got.sandbox).toEqual({ name: "sandbox", status: "fail", detail: "sandbox-exec: Operation not permitted" })
+})
+
+/** A fake codex on a PATH under `dir`; `login status` prints what real Codex does (on stderr) unless told
+ *  otherwise. Returns the env to run it with. */
+function fakeCodex(dir: string, loginExit: number, loginErr?: string, loginOut = ""): Record<string, string> {
+  const bin = path.join(dir, "bin")
+  fs.mkdirSync(bin)
+  const err = loginErr ?? (loginExit === 0 ? "Logged in using ChatGPT\n" : "Not logged in\n")
+  fs.writeFileSync(path.join(dir, "login.err"), err)
+  fs.writeFileSync(path.join(dir, "login.out"), loginOut)
+  fs.writeFileSync(
+    path.join(bin, "codex"),
+    `#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";;\n` +
+      `login) cat "${dir}/login.out"; cat "${dir}/login.err" >&2; exit ${loginExit};; esac\n`,
+    { mode: 0o755 },
+  )
+  return { PATH: `${bin}:/usr/bin:/bin`, HOME: dir }
+}
+
+/** A `checks` run on a fresh machine whose stand-in codex check records what it was given. */
+async function checksSeeingCodex(
+  dir: string,
+  environ: Record<string, string>,
+  {
+    paths = new OfficePaths(path.join(dir, "home")),
+    runner = new Runner(),
+    platform = "darwin" as NodeJS.Platform,
+  } = {},
+) {
+  const seen: { env: Record<string, string>; environ: Record<string, string | undefined>; mode: string | null }[] = []
+  const found = await doctor.checks(paths.home, {
+    host: makeHost(dir, runner, { platform }),
+    command: COMMAND,
+    repo: path.join(dir, "repo"),
+    probe: async () => null,
+    codex: async (env, environ, mode) => {
+      seen.push({ env, environ, mode })
+      return { name: "codex", status: "ok", detail: "stand-in" }
+    },
+    environ,
+    hq: async () => "unreachable",
+    office: async () => "unreachable",
+  })
+  return { found, seen }
+}
+
+test("codex on the office path and signed in is ok", async () => {
+  const check = await doctor.codexCheck(fakeCodex(tempDir(), 0), {})
+  expect(check.status).toBe("ok")
+  expect(check.detail).toContain("codex-cli 0.130.0")
+})
+
+test("codex signed out or missing is a warning", async () => {
+  const dir = tempDir()
+  const codex = path.join(dir, "bin", "codex")
+  expect(await doctor.codexCheck(fakeCodex(dir, 1), {})).toEqual({
+    name: "codex",
+    status: "warn",
+    detail: `codex-cli 0.130.0 at ${codex} is signed out; run \`${codex} login\``,
+  })
+  const missing = await doctor.codexCheck({ PATH: path.join(dir, "nowhere") }, {})
+  expect(missing.status).toBe("warn")
+  expect(missing.detail).toContain("not on the office's PATH")
+})
+
+test("a codex login status that fails otherwise shows its first line", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 1, "\nError loading configuration: unknown field `modle` in config.toml\nat line 3\n")
+  const codex = path.join(dir, "bin", "codex")
+  expect(await doctor.codexCheck(env, {})).toEqual({
+    name: "codex",
+    status: "warn",
+    detail:
+      `codex-cli 0.130.0 at ${codex}: \`${codex} login status\`` +
+      " failed: Error loading configuration: unknown field `modle` in config.toml",
+  })
+})
+
+test("codex is signed out when any line says so", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 1, "WARNING: proceeding, even though we could not update PATH\nNot logged in\n")
+  const codex = path.join(dir, "bin", "codex")
+  expect(await doctor.codexCheck(env, {})).toEqual({
+    name: "codex",
+    status: "warn",
+    detail: `codex-cli 0.130.0 at ${codex} is signed out; run \`${codex} login\``,
+  })
+})
+
+test("a failed codex login status shows its error line over a warning", async () => {
+  const env = fakeCodex(
+    tempDir(),
+    1,
+    "WARNING: proceeding, even though we could not update PATH\nError loading configuration: unknown field `modle`\n",
+  )
+  expect((await doctor.codexCheck(env, {})).detail).toEndWith(
+    "login status` failed: Error loading configuration: unknown field `modle`",
+  )
+})
+
+test("codex color codes are dropped before matching and showing", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 1, "\x1b[33mWARNING: odd\x1b[0m\n\x1b[1;31mError\x1b[0m checking login status: denied\n")
+  expect((await doctor.codexCheck(env, {})).detail).toEndWith(
+    "login status` failed: Error checking login status: denied",
+  )
+  fs.writeFileSync(path.join(dir, "login.err"), "\x1b[2mNot logged in\x1b[0m\n")
+  expect((await doctor.codexCheck(env, {})).detail).toEndWith(
+    `is signed out; run \`${path.join(dir, "bin", "codex")} login\``,
+  )
+})
+
+test("a failed codex version line is cut short and uncolored", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  fs.writeFileSync(
+    codex,
+    '#!/bin/sh\nprintf "\\033[31mboom %s\\033[0m\\n" "$(printf "y%.0s" $(seq 1 300))" >&2\nexit 3\n',
+  )
+  expect(await doctor.codexCheck(env, {})).toEqual({
+    name: "codex",
+    status: "fail",
+    detail: `${codex} --version failed: ` + `boom ${"y".repeat(300)}`.slice(0, 200),
+  })
+})
+
+test("a failed codex login status falls back to stdout then the exit code", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 2, "", "something odd\n")
+  expect((await doctor.codexCheck(env, {})).detail).toEndWith("login status` failed: something odd")
+  fs.writeFileSync(path.join(dir, "login.out"), "")
+  expect((await doctor.codexCheck(env, {})).detail).toEndWith("login status` failed: exit 2")
+})
+
+test("a failed codex login status line is cut short", async () => {
+  const env = fakeCodex(tempDir(), 1, `Error checking login status: ${"x".repeat(500)}\n`)
+  const check = await doctor.codexCheck(env, {})
+  expect(check.status).toBe("warn")
+  expect(check.detail).toEndWith(`failed: Error checking login status: ${"x".repeat(171)}`)
+})
+
+test("a codex that hangs or cant run fails the check", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  fs.writeFileSync(codex, "#!/bin/sh\nsleep 5\n")
+  expect(await doctor.codexCheck(env, {}, null, 500)).toEqual({
+    name: "codex",
+    status: "fail",
+    detail: `${codex} --version didn't answer in 0.5 s`,
+  })
+  fs.writeFileSync(codex, "#!/nonexistent/sh\n")
+  const broken = await doctor.codexCheck(env, {})
+  expect(broken.status).toBe("fail")
+  expect(broken.detail).toStartWith(`${codex} can't run`)
+})
+
+test("a codex wrapper whose inner command is missing is a failed version", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  fs.writeFileSync(codex, "#!/bin/sh\nopencorp-no-such-command --version\n")
+  const check = await doctor.codexCheck(env, {})
+  expect(check.status).toBe("fail")
+  expect(check.detail).toStartWith(`${codex} --version failed: `)
+  expect(check.detail).toContain("opencorp-no-such-command")
+  expect(check.detail).toContain("not found")
+})
+
+test("checks run the codex check they are given in the app servers environment", async () => {
+  const dir = tempDir()
+  const environ = { PATH: "/usr/bin:/bin", HOME: dir, OPENAI_API_KEY: "sk-secret" }
+  const { found, seen } = await checksSeeingCodex(dir, environ)
+  expect(found.at(-1)).toEqual({ name: "codex", status: "ok", detail: "stand-in" })
+  const inherited: readonly string[] = INHERITED_ENV
+  expect(seen).toHaveLength(1)
+  for (const key of Object.keys(seen[0]!.env)) expect(inherited.includes(key) || key.startsWith("LC_")).toBe(true)
+  expect(seen[0]!.env).not.toHaveProperty("OPENAI_API_KEY")
+})
+
+test("opencorp codex bin names the codex the check runs", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const other = path.join(dir, "codex-dev")
+  fs.writeFileSync(other, '#!/bin/sh\ncase "$1" in --version) echo "codex-cli 9.9.9";; login) exit 0;; esac\n', {
+    mode: 0o755,
+  })
+  expect(await doctor.codexCheck(env, { OPENCORP_CODEX_BIN: other })).toEqual({
+    name: "codex",
+    status: "ok",
+    detail: `codex-cli 9.9.9 at ${other}, signed in`,
+  })
+  const linked = path.join(dir, "bin", "codex-dev")
+  fs.symlinkSync(other, linked)
+  expect(await doctor.codexCheck(env, { OPENCORP_CODEX_BIN: "codex-dev" })).toEqual({
+    name: "codex",
+    status: "ok",
+    detail: `codex-cli 9.9.9 at ${linked}, signed in`,
+  })
+})
+
+test("an opencorp codex bin the office cant find is a warning even with codex on the path", async () => {
+  const check = await doctor.codexCheck(fakeCodex(tempDir(), 0), { OPENCORP_CODEX_BIN: "/nowhere/codex" })
+  expect(check.status).toBe("warn")
+  expect(check.detail).toContain(
+    "OPENCORP_CODEX_BIN names /nowhere/codex, which isn't an executable the office can find",
+  )
+})
+
+test("the check runs codex with the offices codex home when set", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  fs.writeFileSync(
+    path.join(dir, "bin", "codex"),
+    '#!/bin/sh\ncase "$1" in --version) echo "codex-cli 0.130.0";; login) [ "$CODEX_HOME" = /x/home ];; esac\n',
+  )
+  expect((await doctor.codexCheck(env, { CODEX_HOME: "/x/home" })).status).toBe("ok")
+  expect((await doctor.codexCheck(env, {})).status).toBe("warn")
+  expect(env).not.toHaveProperty("CODEX_HOME")
+})
+
+test("checks give the codex check the offices environment to find codex", async () => {
+  const dir = tempDir()
+  const { seen } = await checksSeeingCodex(dir, {
+    PATH: "/usr/bin:/bin",
+    HOME: dir,
+    CODEX_HOME: "/x/home",
+    OPENCORP_CODEX_BIN: "/x/codex",
+  })
+  const { env, environ } = seen[0]!
+  expect(environ.CODEX_HOME).toBe("/x/home")
+  expect(environ.OPENCORP_CODEX_BIN).toBe("/x/codex")
+  expect(env).not.toHaveProperty("CODEX_HOME")
+  expect(env).not.toHaveProperty("OPENCORP_CODEX_BIN")
+})
+
+test("the codex check runs with where tls finds ca certificates when set", async () => {
+  const dir = tempDir()
+  const { seen } = await checksSeeingCodex(dir, {
+    PATH: "/usr/bin:/bin",
+    HOME: dir,
+    SSL_CERT_FILE: "/etc/pki/tls/certs/ca-bundle.crt",
+    SSL_CERT_DIR: "/etc/pki/tls/certs",
+    OPENAI_API_KEY: "sk-secret",
+  })
+  expect(seen[0]!.env.SSL_CERT_FILE).toBe("/etc/pki/tls/certs/ca-bundle.crt")
+  expect(seen[0]!.env.SSL_CERT_DIR).toBe("/etc/pki/tls/certs")
+  expect(seen[0]!.env).not.toHaveProperty("OPENAI_API_KEY")
+})
+
+test("codex advice says how the office picks up a change under its service", async () => {
+  const missing = { PATH: path.join(tempDir(), "nowhere") }
+  for (const mode of ["launchd", "systemd"]) {
+    const managed = await doctor.codexCheck(missing, {}, mode)
+    expect(managed.detail).toContain("stop the office and run `opencorp onboard` again from that shell")
+    expect(managed.detail).not.toContain("opencorp restart")
+    const override = await doctor.codexCheck(missing, { OPENCORP_CODEX_BIN: "/nowhere/codex" }, mode)
+    expect(override.detail).toContain("stop the office and run `opencorp onboard` again from that shell")
+  }
+  for (const mode of ["tmux", "background", null]) {
+    expect((await doctor.codexCheck(missing, {}, mode)).detail).toContain("then `opencorp restart` from that shell")
+  }
+})
+
+test("checks give the codex check the offices recorded service mode", async () => {
+  const dir = tempDir()
+  const paths = await onboarded(dir, undefined, "systemd")
+  const runner = new Runner([[["loginctl"], 0, "", "Linger=yes\n"]])
+  const { seen } = await checksSeeingCodex(dir, {}, { paths, runner, platform: "linux" })
+  expect(seen.map((s) => s.mode)).toEqual(["systemd"])
+})
+
+test("a codex that says nothing is still described", async () => {
+  const dir = tempDir()
+  const env = fakeCodex(dir, 0)
+  const codex = path.join(dir, "bin", "codex")
+  fs.writeFileSync(codex, '#!/bin/sh\ncase "$1" in --version) exit 3;; esac\n')
+  expect(await doctor.codexCheck(env, {})).toEqual({
+    name: "codex",
+    status: "fail",
+    detail: `${codex} --version failed: exit 3`,
+  })
+  fs.writeFileSync(codex, "#!/bin/sh\nexit 0\n")
+  expect(await doctor.codexCheck(env, {})).toEqual({
+    name: "codex",
+    status: "ok",
+    detail: `${codex} (no version printed), signed in`,
+  })
 })
