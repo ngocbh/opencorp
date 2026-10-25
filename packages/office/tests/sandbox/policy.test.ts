@@ -11,6 +11,13 @@ function policyAt(workspace: string, tmpdir: string, office?: OfficePaths): Sand
   return new SandboxPolicy({ workspace, writable: false, network: false, tmpdir, office })
 }
 
+/** Checks that `checkWorkspace` and a policy over `ws` both refuse it with exactly `message`. */
+function expectRefused(ws: string, tmp: string, office: OfficePaths, message: string): void {
+  expect(() => checkWorkspace(ws, office)).toThrow(message)
+  expect(() => policyAt(ws, tmp, office)).toThrow(UnsafeWorkspace)
+  expect(() => policyAt(ws, tmp, office)).toThrow(message)
+}
+
 /** Makes the folders `dirs` (with their parents) and returns them. */
 function mkdirs(...dirs: string[]): string[] {
   for (const dir of dirs) fs.mkdirSync(dir, { recursive: true })
@@ -298,7 +305,7 @@ test("a folder beside the office paths is fine", () => {
   }
 })
 
-test("the policy keeps the office and helper paths resolved", () => {
+test("the policy keeps the install home and helper paths resolved and tools and path entries as given", () => {
   const { root, make } = makePolicy()
   const [real] = mkdirs(path.join(root, "real"))
   for (const name of ["install", "path", "home"]) mkdirs(path.join(real, name))
@@ -314,8 +321,8 @@ test("the policy keeps the office and helper paths resolved", () => {
   const resolved = {
     home: path.join(real, "home"),
     install: [path.join(real, "install")],
-    tools: [path.join(real, "git")],
-    path: [path.join(real, "path")],
+    tools: [path.join(link, "git")],
+    path: [path.join(link, "path")],
   }
   const checkout = make({ office, helper: { bun: path.join(link, "bun"), entry: path.join(link, "entry.ts") } })
   expect(checkout.office).toEqual(resolved)
@@ -345,4 +352,63 @@ test("a policy rebuilt with a helper keeps its office paths and checks", () => {
   expect(() => make({ office: bad, helper })).toThrow(UnsafeWorkspace)
   expect(() => new SandboxPolicy({ ...policy, office: bad })).toThrow(UnsafeWorkspace)
   expect(() => new SandboxPolicy({ ...policy, office: bad, helper })).toThrow(UnsafeWorkspace)
+})
+
+/** The refusal of a workspace containing `matched`, a program the office runs. */
+const runs = (ws: string, matched: string) =>
+  `workspace ${ws} contains ${matched}, a program the office runs; use a project folder`
+
+/** The refusal of a workspace containing `matched`, a folder on the office's PATH. */
+const onPath = (ws: string, matched: string) =>
+  `workspace ${ws} contains ${matched}, a folder on the office's PATH; use a project folder`
+
+test("a workspace holding a link to a tool elsewhere is refused", () => {
+  const { root, tmp } = makePolicy()
+  const home = path.join(root, "home")
+  const [dir, elsewhere] = mkdirs(path.join(root, "dir"), path.join(root, "elsewhere"))
+  fs.writeFileSync(path.join(elsewhere!, "git-2.47"), "")
+  fs.symlinkSync(path.join(elsewhere!, "git-2.47"), path.join(dir!, "git"))
+  expectRefused(dir!, tmp, { home, tools: [path.join(dir!, "git")] }, runs(dir!, path.join(dir!, "git")))
+})
+
+test("a workspace holding a linked folder on the way to a tool is refused", () => {
+  const { root, tmp } = makePolicy()
+  const home = path.join(root, "home")
+  const [proj, toolBin] = mkdirs(path.join(root, "proj"), path.join(root, "tools/bin"))
+  fs.writeFileSync(path.join(toolBin!, "git"), "")
+  const binLink = path.join(proj!, "bin-link")
+  fs.symlinkSync(toolBin!, binLink)
+  expectRefused(proj!, tmp, { home, tools: [path.join(binLink, "git")] }, runs(proj!, binLink))
+  expectRefused(proj!, tmp, { home, path: [binLink] }, onPath(proj!, binLink))
+})
+
+test("a workspace holding a link in a tools chain is refused", () => {
+  const { root, tmp } = makePolicy()
+  const home = path.join(root, "home")
+  const [local, proj, elsewhere, x] = mkdirs(
+    path.join(root, "local"),
+    path.join(root, "proj"),
+    path.join(root, "elsewhere"),
+    path.join(root, "x"),
+  )
+  fs.writeFileSync(path.join(elsewhere!, "codex"), "")
+  fs.symlinkSync(path.join(proj!, "link"), path.join(local!, "codex"))
+  fs.symlinkSync(path.join(elsewhere!, "codex"), path.join(proj!, "link"))
+  expectRefused(proj!, tmp, { home, tools: [path.join(local!, "codex")] }, runs(proj!, path.join(proj!, "link")))
+  // `..` after a link walks from the link's target, yet the link itself is still on the way.
+  mkdirs(path.join(elsewhere!, "sub"), path.join(elsewhere!, "bin"))
+  fs.writeFileSync(path.join(elsewhere!, "bin/git"), "")
+  fs.symlinkSync(path.join(elsewhere!, "sub"), path.join(proj!, "l"))
+  expectRefused(proj!, tmp, { home, tools: [`${proj}/l/../bin/git`] }, runs(proj!, path.join(proj!, "l")))
+  // A dangling link is on the way too: its target may appear later.
+  fs.symlinkSync(path.join(root, "nowhere/git"), path.join(proj!, "gone"))
+  expectRefused(proj!, tmp, { home, tools: [path.join(proj!, "gone")] }, runs(proj!, path.join(proj!, "gone")))
+  // A linked folder above a PATH entry's last part.
+  fs.symlinkSync(elsewhere!, path.join(x!, "lnk"))
+  expectRefused(x!, tmp, { home, path: [path.join(x!, "lnk/bin")] }, onPath(x!, path.join(x!, "lnk")))
+  // A plain folder entered and left with `..` is on the way too: it could be replaced by a link.
+  const [sub] = mkdirs(path.join(proj!, "sub"))
+  fs.writeFileSync(path.join(x!, "git"), "")
+  expectRefused(proj!, tmp, { home, tools: [`${sub}/../../x/git`] }, runs(proj!, sub!))
+  expectRefused(proj!, tmp, { home, path: [`${sub}/../../x`] }, onPath(proj!, sub!))
 })

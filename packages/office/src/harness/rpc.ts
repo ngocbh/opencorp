@@ -53,8 +53,8 @@ function codeOf(error: unknown): string {
   return typeof code === "string" ? code : "unknown"
 }
 
-/** `error`'s `name`: what a log line says of a handler's failure, since its message can quote a secret. */
-function nameOf(error: unknown): string {
+/** `error`'s `name`: what a log line says of a failure, since its message can quote a secret. */
+export function nameOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error
 }
 

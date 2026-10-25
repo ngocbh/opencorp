@@ -1,5 +1,7 @@
-/** The programs the daemon runs, resolved once at start on the daemon's `PATH` to absolute realpaths, so a
- *  folder a sandboxed call can write can't plant one; and the paths every workspace must stay clear of. */
+/** The programs the daemon runs, each the absolute path found on the pinned `PATH` at start, so a package
+ *  manager's upgrade (a link repointed to a new versioned folder) and a multi-call binary dispatching on `argv[0]`
+ *  keep working; a folder a sandboxed call can write can't plant one. And the paths every workspace must stay
+ *  clear of. */
 import fs from "node:fs"
 import path from "node:path"
 import { selfCommand } from "../platform.ts"
@@ -12,22 +14,22 @@ export const TOOL_NAMES = ["git", "codex", "tmux", "bwrap", "ps", "who"] as cons
 /** One of `TOOL_NAMES`. */
 export type ToolName = (typeof TOOL_NAMES)[number]
 
-/** Each tool found, as its absolute realpath; a missing one is absent. */
+/** Each tool found, as the absolute path found on the pinned `PATH` at start; a missing one is absent. */
 export type Tools = { readonly [K in ToolName]?: string }
 
 /** An npm platform package's folder name, `opencorp-<os>-<cpu>`. */
 const PLATFORM_PACKAGE = /^opencorp-[a-z0-9]+-[a-z0-9]+$/
 
 /**
- * Each tool as `env.PATH`'s absolute entries find it, resolved to its realpath. Codex is `OPENCORP_CODEX_BIN` when
- * set (a name looked up on the path, or an absolute path; a relative path finds nothing), else `codex`; a missing
- * override never falls back to `codex`.
+ * Each tool as the absolute path `env.PATH`'s absolute entries find it at, not its realpath. Codex is
+ * `OPENCORP_CODEX_BIN` when set (a name looked up on the path, or an absolute path; a relative path finds nothing),
+ * else `codex`; a missing override never falls back to `codex`.
  */
 export function resolveTools(env: Env): Tools {
   const tools: { [K in ToolName]?: string } = {}
   for (const name of TOOL_NAMES) {
     const found = which(name === "codex" ? env.OPENCORP_CODEX_BIN || "codex" : name, env.PATH)
-    if (found !== null) tools[name] = realPath(found)
+    if (found !== null) tools[name] = found
   }
   return tools
 }
@@ -60,9 +62,10 @@ export function installPaths([program, ...rest]: readonly [string, ...string[]] 
 }
 
 /**
- * What every workspace must stay clear of: the install, the resolved tools plus the program running the office
- * (`command[0]`: the binary, or a checkout's Bun), and the absolute entries of `env.PATH`. The policy realpaths each
- * entry; a relative `PATH` entry is already gone (`daemonEnv`), and would refuse every workspace if kept.
+ * What every workspace must stay clear of: the install, each tool's found path and its realpath plus the program
+ * running the office (`command[0]`: the binary, or a checkout's Bun), and the absolute entries of `env.PATH`. The
+ * policy also refuses every folder or link a tool or `PATH` entry's path walks through; a relative `PATH` entry is
+ * already gone (`daemonEnv`), and would refuse every workspace if kept.
  */
 export function workspaceGuards(
   tools: Tools,
@@ -71,7 +74,10 @@ export function workspaceGuards(
 ): SandboxOfficePaths {
   return {
     install: installPaths(command),
-    tools: [...Object.values(tools).filter((tool) => tool !== undefined), realPath(command[0])],
+    tools: [
+      ...new Set(Object.values(tools).flatMap((tool) => (tool === undefined ? [] : [tool, realPath(tool)]))),
+      realPath(command[0]),
+    ],
     path: (env.PATH ?? "").split(":").filter((entry) => entry.startsWith("/")),
   }
 }
