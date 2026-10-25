@@ -30,9 +30,10 @@ export interface OfficePaths {
   home?: string
   /** The office's install folders: refused as, around or inside a workspace; write-denied by Seatbelt. */
   install?: readonly string[]
-  /** Programs the office runs (git, codex, tmux, bwrap, ps, who, and its own runtime in a checkout). */
+  /** Programs the office runs (git, codex, tmux, bwrap, ps, who, and its own runtime in a checkout): refused
+   *  in a workspace as found, as realpath, and every link on the way. */
   tools?: readonly string[]
-  /** The daemon's PATH entries. */
+  /** The daemon's PATH entries: refused in a workspace as found, as realpath, and every link on the way. */
   path?: readonly string[]
 }
 
@@ -49,10 +50,11 @@ export function helperFiles(helper: Helper): string[] {
  * replaced by its target before later components (`..` included) apply, a missing component is
  * kept as given, and a dangling link resolves to its target. A link met again while its own target
  * is being resolved is a loop and is kept as given, as Python's `os.path.realpath` does. The longest
- * existing part with no `\` then gets its on-disk spelling (case, firmlinks). Throws if a link's
- * target is not valid UTF-8.
+ * existing part with no `\` then gets its on-disk spelling (case, firmlinks). When `links` is given,
+ * each link the walk follows is pushed to it, as its folder's on-disk spelling plus its own name.
+ * Throws if a link's target is not valid UTF-8.
  */
-export function realPath(p: string): string {
+export function realPath(p: string, links?: string[]): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
   // path the profile names must be resolved the same way. The walk uses only lstat
   // and readlink on the raw string: path.resolve and realpathSync drop `..` before
@@ -96,6 +98,7 @@ export function realPath(p: string): string {
       continue
     }
     seen.set(next, null)
+    links?.push(path.join(onDisk(resolved), name))
     const raw = fs.readlinkSync(next, { encoding: "buffer" })
     const target = raw.toString("utf8")
     // A lossy decode would make the walk look up a different name than the OS follows.
@@ -103,6 +106,11 @@ export function realPath(p: string): string {
     if (target.startsWith("/")) resolved = "/"
     pending.push({ done: next }, ...target.split("/").reverse())
   }
+  return onDisk(resolved)
+}
+
+/** `resolved` (absolute, links resolved) with its longest existing part with no `\` in its on-disk spelling. */
+function onDisk(resolved: string): string {
   // On a case-insensitive volume home/.SSH is home/.ssh, and a firmlinked
   // /System/Volumes/Data/Users is /Users; realpathSync gives the on-disk spelling.
   let head = resolved
@@ -136,7 +144,8 @@ function realEntries(entries: readonly string[] | undefined): string[] {
 
 /** Throws `UnsafeWorkspace` if `workspace` is `/`, contains the home directory, is or lies inside a
  *  sensitive home path (`SENSITIVE_HOME_PATHS`), contains or lies inside the office install, contains
- *  a program the office runs or a folder on its PATH, or if any office path is relative. */
+ *  a program the office runs or a folder on its PATH (or a link on the way to one), or if any office
+ *  path is relative. */
 export function checkWorkspace(workspace: string, office: OfficePaths = {}): void {
   const ws = realPath(workspace)
   const home = realPath(office.home ?? os.homedir())
@@ -149,11 +158,18 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
       throw new UnsafeWorkspace(`workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`)
     }
   }
-  const resolvedEntry = (entry: string, kind: string): string => {
-    if (path.isAbsolute(entry)) return realPath(entry)
+  const resolvedEntry = (entry: string, kind: string, links?: string[]): string => {
+    if (path.isAbsolute(entry)) return realPath(entry, links)
     throw new UnsafeWorkspace(
       `workspace ${ws} is refused: the office's ${kind} has a relative entry ${JSON.stringify(entry)}; use absolute paths`,
     )
+  }
+  // A link on the way to a tool or a PATH folder is as dangerous as its end: whoever can write the
+  // workspace can repoint it.
+  const contained = (entry: string, kind: string): string | undefined => {
+    const links: string[] = []
+    const real = resolvedEntry(entry, kind, links)
+    return [...links, real].find((p) => within(p, ws))
   }
   for (const entry of office.install ?? []) {
     const install = resolvedEntry(entry, "install")
@@ -165,15 +181,17 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
     }
   }
   for (const entry of office.tools ?? []) {
-    const tool = resolvedEntry(entry, "tool list")
-    if (within(tool, ws)) {
-      throw new UnsafeWorkspace(`workspace ${ws} contains ${tool}, a program the office runs; use a project folder`)
+    const matched = contained(entry, "tool list")
+    if (matched !== undefined) {
+      throw new UnsafeWorkspace(`workspace ${ws} contains ${matched}, a program the office runs; use a project folder`)
     }
   }
   for (const entry of office.path ?? []) {
-    const dir = resolvedEntry(entry, "PATH")
-    if (within(dir, ws)) {
-      throw new UnsafeWorkspace(`workspace ${ws} contains ${dir}, a folder on the office's PATH; use a project folder`)
+    const matched = contained(entry, "PATH")
+    if (matched !== undefined) {
+      throw new UnsafeWorkspace(
+        `workspace ${ws} contains ${matched}, a folder on the office's PATH; use a project folder`,
+      )
     }
   }
 }
@@ -190,7 +208,8 @@ export interface PolicyInit {
   office?: OfficePaths
 }
 
-/** The access one sandboxed call gets. Every path is resolved.
+/** The access one sandboxed call gets. Every path is resolved except tool and PATH entries, which are
+ *  checked through their links on every build.
  *
  *  Throws `Error` if `workspace` or `tmpdir` is not an existing directory, and `UnsafeWorkspace`
  *  if `checkWorkspace` refuses the workspace. */
@@ -228,8 +247,8 @@ export class SandboxPolicy {
     this.office = {
       home: realPath(office.home ?? os.homedir()),
       install: realEntries(office.install),
-      tools: realEntries(office.tools),
-      path: realEntries(office.path),
+      tools: [...(office.tools ?? [])],
+      path: [...(office.path ?? [])],
     }
     checkWorkspace(this.workspace, this.office)
   }

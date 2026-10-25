@@ -348,7 +348,7 @@ export interface MainOptions {
   extensions?: readonly Extension[]
   /** Where log lines and start errors go (default stderr). */
   write?: Write
-  /** The programs the daemon runs, as absolute realpaths (default `resolveTools` on the daemon's `PATH`). */
+  /** The programs the daemon runs, as the absolute paths found on the daemon's PATH (default `resolveTools`). */
   tools?: Tools
 }
 
@@ -362,7 +362,8 @@ export interface MainOptions {
  * `HANDLER_WAIT_MS`), the store, and the pidfile and lock. Writes are synchronous by default: the process exits as
  * soon as this returns, so nothing may wait in a stream buffer.
  *
- * The tools are resolved once at start, to absolute realpaths; nothing is looked up by name later.
+ * The tools are resolved once at start, as the absolute paths found on the daemon's PATH; nothing is looked up by
+ * name later.
  */
 export async function main(
   argv: string[],
