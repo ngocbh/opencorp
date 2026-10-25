@@ -69,6 +69,8 @@ company/test_draft.py	ported	packages/office/tests/company/draft.test.ts	—	O2-
 company/test_flows.py	ported	packages/office/tests/company/flows.test.ts	—	O1-8
 company/test_git.py	ported	packages/office/tests/company/git.test.ts	—	O1-6
 company/test_lint.py	ported	packages/office/tests/company/lint.test.ts	—	O2-16a
+company/test_lint.py::test_a_main_flow_must_declare_person_and_talking_to	changed	packages/office/tests/company/lint.test.ts::a main flow must declare person and talking_to	4a-revision §1, plan O4a-1: a main chat now takes the messages inbox, summary, history, turns and max_turns too	O4a-1
+company/test_lint.py::test_child_flow_inside_repo_is_fine	changed	packages/office/tests/company/lint.test.ts::child flow inside repo is fine	plan O4a-1: a main flow must be chat-shaped, so the parent that imports the child is a SOP	O4a-1
 company/test_lint.py::test_unexpected_flow_error_names_its_type	changed	packages/office/tests/company/lint.test.ts::unexpected flow error names its type	design §10.1: ESM modules cant be monkeypatched; a natural TypeError (a non-UTF-8 flow) stands in	O1-8
 company/test_loader.py	ported	packages/office/tests/company/loader.test.ts	—	O1-7
 company/test_naming.py	ported	packages/office/tests/company/naming.test.ts	—	O1-5
@@ -629,6 +631,9 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo in a child flow is a lint error	design §6 rule 10, Y6a: every nested load is confined	O1-8
 —	new	packages/office/tests/company/lint.test.ts::a code reference outside the repo is a lint error	design §6 rule 10, Y6a: CODE references stay inside the repo	O1-8
 —	new	packages/office/tests/company/lint.test.ts::a file in a skills folder is skipped	Python's is_file/is_dir never raise on odd paths	O1-8
+—	new	packages/office/tests/company/lint.test.ts::a main flow whose messages input is not an inbox of messages is a lint error	plan O4a-1: lint requires the messages inbox, the reply reading it as steer_inbox and an Optional reply	O4a-1
+—	new	packages/office/tests/company/lint.test.ts::a main flow whose reply does not steer from the messages inbox is a lint error	plan O4a-1: lint requires the messages inbox, the reply reading it as steer_inbox and an Optional reply	O4a-1
+—	new	packages/office/tests/company/lint.test.ts::a main flow whose reply output is not optional is a lint error	plan O4a-1: lint requires the messages inbox, the reply reading it as steer_inbox and an Optional reply	O4a-1
 —	new	packages/office/tests/company/lint.test.ts::a symlinked code file pointing out of the repo is a lint error	design §6 rule 10, Y6a: symlinks resolved	O1-8
 —	new	packages/office/tests/company/loader.test.ts::a file that cant be read is unreadable without its path or text	design §5.4, §6 rule 1: path-only messages	O1-7
 —	new	packages/office/tests/company/loader.test.ts::a person file named in another case is not a person file	design §5.4: the loader and the git snapshot read the same files	O1-7

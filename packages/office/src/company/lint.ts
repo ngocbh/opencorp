@@ -1,8 +1,9 @@
 /** Check a loaded company repo for problems the schema can't express. */
 import fs from "node:fs"
 import path from "node:path"
-import { LoadError } from "@ngocbh/yian"
+import { type ComposedFlow, LoadError } from "@ngocbh/yian"
 import { loadSkillDir, type Skill, SkillError } from "@ngocbh/yian/skills"
+import { MAIN_CHAT } from "../chat/turns.ts"
 import { errno, FlowOutsideRepo, loadConfined, outsideRoot, resolvePath } from "./flows.ts"
 import { type RepoIssue, repoIssue } from "./issues.ts"
 import type { CompanyRepo } from "./loader.ts"
@@ -174,10 +175,61 @@ function* checkAssets(repo: CompanyRepo): Iterable<RepoIssue> {
 }
 
 /** The inputs the office passes a main flow; Yian refuses inputs a flow doesn't declare. */
-const MAIN_INPUTS = ["person", "talking_to"]
+const MAIN_INPUTS = ["messages", "person", "talking_to", "summary", "history", "turns", "max_turns"]
+
+/** The fields of a compiled node or type the chat-shape checks read; yian exports none of their classes. */
+interface Shape {
+  kind?: string
+  element?: Shape
+  required?: ReadonlySet<string>
+  nullable?: boolean
+  child?: Compiled
+  predicateKind?: string
+  steerInbox?: boolean
+  outputContract?: { type?: Shape } | null
+}
+
+/** A compiled flow's nodes and input wiring, as the chat-shape checks read them. */
+interface Compiled {
+  nodes: ReadonlyMap<string, Shape>
+  wiring: ReadonlyMap<string, ReadonlyMap<string, { source: unknown }>>
+}
+
+/** What's wrong with a main flow's chat shape, each with its fix; empty when it has the template's shape. */
+function chatShapeProblems(ref: string, flow: ComposedFlow): string[] {
+  const like = "as the template's shared/flows/chat.yaml does"
+  const [loopName, replyName] = MAIN_CHAT.reply.split("/") as [string, string]
+  const inbox = `\${input.${MAIN_CHAT.inbox}}`
+  const problems: string[] = []
+  const parameter = flow.input.find((p) => p.name === MAIN_CHAT.inbox)
+  const type = parameter?.contract?.type as Shape | undefined
+  const element = type?.kind === "inbox" ? type.element : undefined
+  if (element?.kind !== "object" || !element.required?.has("role") || !element.required.has("parts")) {
+    problems.push(`${ref}'s ${MAIN_CHAT.inbox} input isn't an inbox of messages; the office sends what people say`
+      + ` there, so declare \`${MAIN_CHAT.inbox}: !Inbox(Message)\` ${like}`)
+  }
+  const compiled = flow.compiled as unknown as Compiled
+  const loop = compiled.nodes.get(loopName)
+  if (loop?.child === undefined || loop.predicateKind === undefined
+    || compiled.wiring.get(loopName)?.get(MAIN_CHAT.inbox)?.source !== inbox) {
+    problems.push(`${ref} has no LOOP node ${loopName} that passes ${MAIN_CHAT.inbox}: ${inbox} to its turn; the`
+      + ` office reads each turn there, so loop a turn def as ${loopName} ${like}`)
+    return problems
+  }
+  const reply = loop.child.nodes.get(replyName)
+  if (reply?.steerInbox !== true || loop.child.wiring.get(replyName)?.get("__steer_inbox")?.source !== inbox) {
+    problems.push(`${ref}'s ${MAIN_CHAT.reply} doesn't read the ${MAIN_CHAT.inbox} inbox as its steer inbox, so`
+      + ` messages sent while it works never reach it; set \`steer_inbox: ${inbox}\` on it ${like}`)
+  }
+  if (reply !== undefined && reply.outputContract?.type?.nullable !== true) {
+    problems.push(`${ref}'s ${MAIN_CHAT.reply} output isn't optional; an interrupt cuts the reply and fails a strict`
+      + ` output, so declare it as Optional(...), such as \`output: Optional(str)\`, ${like}`)
+  }
+  return problems
+}
 
 /** Agents have a main flow; every main, SOP, and routine flow exists inside the repo and compiles; a main
- *  flow declares the inputs the office passes it. */
+ *  flow declares the inputs the office passes it and has the template chat's shape. */
 async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
   for (const [handle, person] of sorted(repo.people)) {
     const file = personPath(handle)
@@ -197,9 +249,9 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         yield repoIssue(file, "person.flow_missing", `${ref} does not exist`)
         continue
       }
-      let declared: Set<string>
+      let flow: ComposedFlow
       try {
-        declared = new Set((await loadConfined(repo.root, resolved)).input.map((parameter) => parameter.name))
+        flow = await loadConfined(repo.root, resolved)
       } catch (error) {
         if (error instanceof FlowOutsideRepo) {
           yield repoIssue(file, "person.flow_outside_repo", `${ref}: ${error.message}`)
@@ -212,14 +264,19 @@ async function* checkFlows(repo: CompanyRepo): AsyncIterable<RepoIssue> {
         }
         continue
       }
+      if (!isMain) continue
+      const declared = new Set(flow.input.map((parameter) => parameter.name))
       const missing = MAIN_INPUTS.filter((name) => !declared.has(name))
-      if (isMain && missing.length > 0) {
-        const what = `the ${missing.join(" and ")} input${missing.length > 1 ? "s" : ""}`
+      if (missing.length > 0) {
+        const names = missing.length > 1 ? `${missing.slice(0, -1).join(", ")} and ${missing.at(-1)}` : missing[0]
+        const [them, s] = missing.length > 1 ? ["them", "s"] : ["it", ""]
         yield repoIssue(file, "person.main_inputs_missing",
-          `${ref} doesn't declare ${what}; the office passes both to a main flow and Yian refuses inputs a`
-          + " flow doesn't declare, so declare `person: !Person` (name, handle, title, company, reports_to)"
-          + " and `talking_to: !str` under input: (as the template's shared/flows/chat.yaml does)")
+          `${ref} doesn't declare the ${names} input${s}; the office passes ${them} to a main flow and Yian refuses`
+          + ` inputs a flow doesn't declare, so declare ${them} under input: as the template's`
+          + " shared/flows/chat.yaml does")
+        continue
       }
+      for (const problem of chatShapeProblems(ref, flow)) yield repoIssue(file, "person.main_chat_shape", problem)
     }
   }
 }

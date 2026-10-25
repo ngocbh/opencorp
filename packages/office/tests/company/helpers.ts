@@ -6,7 +6,7 @@ import path from "node:path"
 import { stringify } from "yaml"
 import { tempDir } from "../helpers.ts"
 
-/** The inputs the office passes a main flow, which it must declare. */
+/** The input block a main chat declares: what the office passes a main flow. */
 export const MAIN_INPUTS = `typedefs:
   Person:
     name: str
@@ -15,8 +15,13 @@ export const MAIN_INPUTS = `typedefs:
     company: str
     reports_to: str
 input:
+  messages: !Inbox(Message)
   person: !Person
   talking_to: !str
+  summary: !str
+  history: !list(list(Message))
+  turns: !int
+  max_turns: !int
 `
 
 export const CHAT = `id: chat
@@ -37,8 +42,47 @@ nodes:
 output: \${reply.output}
 `
 
-/** `CHAT` as a person's main flow. */
-export const MAIN = CHAT.replace("name: chat\n", "name: chat\n" + MAIN_INPUTS)
+/** A minimal chat-shaped main flow: a LOOP `chat` over a `turn` whose `reply` steers from `messages`. */
+export const MAIN = `id: chat
+name: chat
+${MAIN_INPUTS}defs:
+  turn:
+    input:
+      messages: !Inbox(Message)
+      closed: !bool
+      turns: !int
+      max_turns: !int
+    nodes:
+      heard:
+        kind: tool
+        tool_id: take
+        input:
+          from: \${input.messages}
+          take: all
+      reply:
+        kind: agent
+        steer_inbox: \${input.messages}
+        input:
+          said: \${heard.output.events}
+        output: Optional(str)
+        prompt:
+          - \${said}
+    output:
+      closed: \${heard.output.closed}
+      turns: \${input.turns + 1}
+      max_turns: \${input.max_turns}
+nodes:
+  chat:
+    kind: loop
+    call: turn
+    input:
+      messages: \${input.messages}
+      closed: false
+      turns: \${input.turns}
+      max_turns: \${input.max_turns}
+    while: not closed and turns < max_turns
+output: \${chat.output.turns}
+`
 
 /** `base` without `GIT_*` variables or unset values, and without the user's or system git config. */
 export function gitEnv(base: Record<string, string | undefined> = process.env): Record<string, string> {
