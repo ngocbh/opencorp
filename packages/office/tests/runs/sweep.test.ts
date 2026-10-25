@@ -86,10 +86,13 @@ test("the start sweep interrupts what an earlier office left open", () => {
   addRuns(store, idle)
   const ended = store.createSession(session({ status: "ended", run_ids: [newId()] }))
   const [killed] = addRuns(store, ended, { flow: DEBRIEF, flowPath: "shared/flows/debrief.yaml", driver: OFFICE })
+  // Only composer sessions' current runs are kept: a live Codex session's run is swept.
+  const codex = store.createSession(session({ harness: "codex", status: "idle", run_ids: [newId()] }))
+  const [coded] = addRuns(store, codex)
   const yian = yianOf()
 
-  expect(sweep(store, yian)).toEqual([replaced, killed!.runId].sort())
-  for (const [runId, s] of [[killed!.runId, ended], [replaced, idle]] as const) {
+  expect(sweep(store, yian)).toEqual([replaced, killed!.runId, coded!.runId].sort())
+  for (const [runId, s] of [[killed!.runId, ended], [replaced, idle], [coded!.runId, codex]] as const) {
     const got = store.getRun(runId)!
     expect([got.endReason, got.endedAt]).toEqual([OFFICE_STOPPED, null])
     expect(statusOf(got, s, new Live(), yian)).toEqual({
