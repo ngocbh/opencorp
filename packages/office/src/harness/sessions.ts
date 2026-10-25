@@ -78,7 +78,10 @@ export class CodexSessions {
 
   /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
   async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
-    return this.#must(sessionId).prompt(text, { by })
+    const live = this.#must(sessionId)
+    for (const refusal of this.hooks.fire("promptCheck", this.store.getSession(sessionId), text))
+      if (refusal) throw new HarnessError(422, "refused", String(refusal))
+    return live.prompt(text, { by })
   }
 
   /** Ends the session `sessionId`. */
@@ -100,9 +103,9 @@ export class CodexSessions {
    *  `sessionEnded` fires once. */
   async finished(live: CodexSession, status: "ended" | "failed"): Promise<void> {
     if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
-    const session = this.store.getSession(live.sessionId)
+    const session = this.store.getSession(live.sessionId)!
     let final: SessionRecord["status"] = status
-    if (status === "ended" && session !== undefined) {
+    if (status === "ended") {
       final = this.hooks.fire("endStatus", session).find((s) => s) ?? "ended"
       // First, so no client sees an ended session with its work still open.
       if (session.work_item_id) this.store.updateWorkItem(session.work_item_id, { status: "done" })
@@ -113,8 +116,7 @@ export class CodexSessions {
 
   /** The session's person's harness policy at the session's pinned commit. */
   async policy(sessionId: string): Promise<HarnessPolicy | null> {
-    const session = this.store.getSession(sessionId)
-    if (session === undefined) return null
+    const session = this.store.getSession(sessionId)!
     const person = loadRepo(await this.office.git.pin(session.repo_commit)).people.get(session.person)
     return person?.harness_policy ?? null
   }
