@@ -2,7 +2,11 @@
 import fs from "node:fs"
 import path from "node:path"
 import { expect, test } from "bun:test"
-import { deviceName } from "../../src/auth/identity.ts"
+import type { Device } from "@opencorp/protocol"
+import { addDevice } from "../../src/auth/devices.ts"
+import { deviceName, readIdentity } from "../../src/auth/identity.ts"
+import { tokenSha256 } from "../../src/auth/tokens.ts"
+import { CompanyGit } from "../../src/company/git.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { type Owner, writeCompany } from "../../src/company_template/index.ts"
 import { type Env, which } from "../../src/install/launch.ts"
@@ -94,6 +98,128 @@ test("offboard says what it will remove and no keeps everything", async () => {
   expect(fs.existsSync(path.join(paths.home, "tui"))).toBe(true)
 })
 
+test("offboard removes the device and the office but keeps a company with no remote", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  const ask = new Script(["2"])
+  await offboard(paths.home, ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(devices(paths)).toEqual([])
+  expect(subjects(paths.company)[0]).toBe(`devices(@me): remove ${deviceName()}`)
+  expect(fs.readdirSync(paths.home).sort()).toEqual(["company"])
+  expect(git(paths.company, "worktree", "list").split("\n")).toHaveLength(1)
+  expect(ask.seen.some((line) => line.includes("Kept the company repo") && line.includes("no remote"))).toBe(true)
+})
+
+test("offboard deletes a pushed company and then the empty home", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  const remote = publish(paths, dir)
+  const pushed = git(remote, "rev-parse", "main")
+  await offboard(paths.home, new Script(), { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(fs.existsSync(paths.home)).toBe(false)
+  // Offboard never pushes.
+  expect(git(remote, "rev-parse", "main")).toBe(pushed)
+}, 30_000)
+
+test("this devices own commits dont count as unpushed", async () => {
+  // A company joined with `opencorp onboard --from` has this device's commit on top of what it cloned.
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"), { device: false })
+  publish(paths, dir)
+  const me = await makeDevice(paths.home, { handle: "me", name: "Me" })
+  await addDevice(new CompanyGit(paths.company, paths.worktrees), "me", me.devices![0]!, "me")
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(fs.existsSync(paths.home)).toBe(false)
+  expect(ask.seen.join("\n")).toContain(`the company repo at ${paths.company} (everything in it is pushed)`)
+}, 30_000)
+
+test.each([
+  ["commit", "it has 1 commit not pushed to its remote"],
+  ["edit", "it has uncommitted changes"],
+  ["untracked", "it has uncommitted changes"],
+  ["branch", "its branch drafts isn't pushed anywhere"],
+  ["stash", "it has stashed changes"],
+])(
+  "offboard keeps a company with work that isnt pushed [%s]",
+  async (change, why) => {
+    const dir = tempDir()
+    const paths = await office(path.join(dir, "home"))
+    publish(paths, dir)
+    const readme = path.join(paths.company, "notes.md")
+    if (["commit", "stash", "edit"].includes(change)) {
+      fs.writeFileSync(readme, "notes\n")
+      git(paths.company, "add", "notes.md")
+    }
+    if (change === "commit") git(paths.company, "commit", "-qm", "notes")
+    else if (change === "stash") git(paths.company, "stash", "-q")
+    else if (change === "untracked") fs.writeFileSync(readme, "notes\n")
+    else if (change === "branch") git(paths.company, "branch", "drafts")
+    const ask = new Script()
+    await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+    expect(fs.readdirSync(paths.home).sort()).toEqual(["company"])
+    const said = ask.seen.join("\n")
+    expect(said).toContain(`Keeping the company repo at ${paths.company}: ${why}`)
+    expect(said).toContain("--delete-company")
+  },
+  30_000,
+)
+
+test("delete company deletes it even with unpushed work", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  fs.writeFileSync(path.join(paths.company, "notes.md"), "notes\n")
+  const ask = new Script()
+  await offboard(paths.home, ask, {
+    yes: true,
+    deleteCompany: true,
+    host: makeHost(dir, new Runner()),
+    environ: gitOnly(dir),
+  })
+  expect(fs.existsSync(paths.home)).toBe(false)
+  expect(ask.seen.join("\n")).toContain(
+    `the company repo at ${paths.company}, even though it has no remote, so this is its only copy`,
+  )
+})
+
+test("a second offboard finds nothing and asks nothing", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  await offboard(paths.home, new Script(), { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  let ask = new Script()
+  await offboard(paths.home, ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen).toContain(`Nothing of this office to remove at ${paths.home}.`)
+  expect(ask.seen.some((line) => line.startsWith(`Keeping the company repo at ${paths.company}`))).toBe(true)
+  expect(ask.seen).not.toContain(CONFIRM)
+  expect(ask.offered).toEqual([])
+  expect(subjects(paths.company)[0]).toBe(`devices(@me): remove ${deviceName()}`)
+  ask = new Script()
+  const nowhere = path.join(dir, "nowhere")
+  await offboard(nowhere, ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen).toContain(`Nothing of this office to remove at ${nowhere}.`)
+})
+
+test("offboard cleans up a half made office", async () => {
+  // Onboarding that stopped before the company leaves only the office dir.
+  const dir = tempDir()
+  const home = path.join(dir, "home")
+  makeHome(home)
+  fs.mkdirSync(path.join(home, ".company-clone"))
+  await offboard(home, new Script(), { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(fs.existsSync(home)).toBe(false)
+})
+
+test("offboard with an identity the company doesnt list skips the device", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"), { device: false })
+  // identity.json only
+  await makeDevice(paths.home, { handle: "me", name: "Me" })
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen.some((line) => line.includes("from @me in the company repo"))).toBe(false)
+  expect(subjects(paths.company)).toEqual(["init: create the company"])
+})
+
 test("offboard reports how opencorp was put on path and keeps the checkout", async () => {
   const dir = tempDir()
   const repo = path.join(dir, "checkout")
@@ -126,6 +252,30 @@ test("offboard with no launcher on path says so", async () => {
   await offboard(path.join(dir, "nowhere"), ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(ask.seen.some((line) => line.includes("No `opencorp` launcher from"))).toBe(true)
 })
+
+test("offboard never prints the token or the provider", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"))
+  const token = (await readIdentity(path.join(paths.home, "identity.json")))!.token
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  const said = ask.seen.join("\n")
+  expect(said).not.toContain(token)
+  expect(said).not.toContain(tokenSha256(token))
+  expect(said).not.toContain("anthropic")
+})
+
+test("a device named like another doesnt hide this ones commits", async () => {
+  const dir = tempDir()
+  const paths = await office(path.join(dir, "home"), { device: false })
+  publish(paths, dir)
+  const other: Device = { name: "laptop", token_sha256: "0".repeat(64) }
+  await addDevice(new CompanyGit(paths.company, paths.worktrees), "me", other, "me")
+  await makeDevice(paths.home, { handle: "me", name: "Me" })
+  const ask = new Script()
+  await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
+  expect(ask.seen.join("\n")).toContain("it has 1 commit not pushed to its remote")
+}, 30_000)
 
 test("launchers finds another name and entry", () => {
   const dir = tempDir()

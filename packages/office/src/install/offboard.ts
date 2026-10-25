@@ -1,12 +1,15 @@
 /** `opencorp offboard`: take this machine's office away again, leaving the company's history where it is safe. */
 import fs from "node:fs"
 import path from "node:path"
+import { DeviceRefused, removeDevice } from "../auth/devices.ts"
 import { type Identity, identityPath } from "../auth/identity.ts"
+import { CompanyGit, CompanyGitError } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
+import { strerror } from "../sandbox/fs_helper.ts"
 import * as fallback from "./fallback.ts"
 import { daemonEnv, defaultHost, type Env, type Host, type Launch, launch } from "./launch.ts"
 import * as launchd from "./launchd.ts"
-import { CLONE, knownIdentity, lexists, userGit } from "./onboard.ts"
+import { CLONE, knownIdentity, lexists, removePath, userGit } from "./onboard.ts"
 import type { Prompter } from "./prompts.ts"
 import * as service from "./service.ts"
 import * as systemd from "./systemd.ts"
@@ -196,6 +199,41 @@ export async function plan(
   return { run, found }
 }
 
+/** Removes this device through the running office, with its own token; whether the office took it. */
+async function removeOnline(run: Launch, me: Identity): Promise<boolean> {
+  const url = `http://office/people/${encodeURIComponent(me.handle)}/devices/${encodeURIComponent(me.device)}`
+  try {
+    // Bun's fetch over a unix socket.
+    const res = await fetch(url, {
+      method: "DELETE",
+      unix: run.socket,
+      headers: me.headers(),
+      signal: AbortSignal.timeout(30_000),
+    })
+    await res.arrayBuffer()
+    return res.status === 200
+  } catch {
+    return false
+  }
+}
+
+/** Removes this device from its human in the company repo at `company` by a local commit, once the office is
+ *  stopped; what to tell the owner. */
+async function removeOffline(run: Launch, company: string, me: Identity): Promise<string> {
+  try {
+    await removeDevice(new CompanyGit(company, path.join(run.office, "worktrees")), me.handle, me.device, me.handle)
+  } catch (error) {
+    if (error instanceof DeviceRefused && error.status === 404) {
+      return `This device (${me.device}) was already gone from @${me.handle}.`
+    }
+    if (!(error instanceof DeviceRefused || error instanceof CompanyGitError || strerror(error) !== undefined)) {
+      throw error
+    }
+    return `Warning: couldn't remove this device from @${me.handle}: ${(error as Error).message}.`
+  }
+  return `Removed this device (${me.device}) from @${me.handle} in the company repo.`
+}
+
 /** Tells the owner which `opencorp` launchers on `PATH` run the checkout at `repo`, and that the checkout stays;
  *  nothing when `repo` isn't a checkout (the compiled binary). */
 function reportLaunchers(prompter: Prompter, environ: Env, repo: string): void {
@@ -222,6 +260,10 @@ function reportLaunchers(prompter: Prompter, environ: Env, repo: string): void {
  * company repo, only if all of it is pushed (or `deleteCompany`); and `home` itself once empty. Running it again,
  * or on a half-made office, removes only what's there. The user's git runs in `environ`, whose `PATH` is also
  * searched for the launchers of the checkout at `repo`.
+ *
+ * `<home>/.lock` goes once the identity is removed and the office stopped. A later identity read on a home whose
+ * company was kept (the CLI, `doctor`) can leave a lone `.lock` beside `company`, which a second offboard finds
+ * nothing of and leaves; it's harmless, and the next read recreates it anyway.
  *
  * Throws `OffboardError` when the answer was no, or the office wouldn't stop (only the device is gone then).
  */
@@ -253,4 +295,45 @@ export async function offboard(
   if (!yes && (await prompter.choose(CONFIRM, [KEEP, REMOVE], KEEP)) !== REMOVE) {
     throw new Declined("nothing was removed")
   }
+
+  const me = found.me
+  let removedOnline = false
+  if (found.listed && me && (await host.answers(run.socket))) {
+    removedOnline = await removeOnline(run, me)
+    if (removedOnline) prompter.say(`Removed this device (${me.device}) from @${me.handle} through the office.`)
+  }
+  for (const line of await service.uninstall(run, host)) prompter.say(`Stopped: ${line}`)
+  const company = path.join(run.home, "company")
+  if (found.listed && me && !removedOnline) prompter.say(await removeOffline(run, company, me))
+
+  for (const file of found.state) {
+    removePath(file)
+    prompter.say(`Removed ${file}`)
+  }
+  try {
+    fs.unlinkSync(path.join(run.home, ".lock"))
+  } catch {
+    // Gone already; anything but a file is left, and keeps the home.
+  }
+
+  if (found.company !== null) {
+    // Checked again: the office, or the device's removal, may have committed since.
+    const why = fs.existsSync(path.join(found.company, ".git"))
+      ? await unpushed(found.company, ownSubjects(me), environ)
+      : "it isn't a git repo"
+    if (why === null || deleteCompany) {
+      removePath(found.company)
+      prompter.say(`Removed the company repo at ${found.company}`)
+    } else {
+      await userGit(["-C", found.company, "worktree", "prune"], { env: environ })
+      prompter.say(`Kept the company repo at ${found.company}: ${why}.`)
+    }
+  }
+  try {
+    fs.rmdirSync(run.home)
+    prompter.say(`Removed ${run.home}, now empty`)
+  } catch {
+    // Something is left in it: the kept company, or what isn't ours.
+  }
+  reportLaunchers(prompter, environ, repo)
 }
