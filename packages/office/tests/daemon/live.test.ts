@@ -392,8 +392,9 @@ test("a reply streams live under the transcripts ids", async () => {
   const office = new LiveOffice(relay)
   await run(advanceJob(job, { deliver: [send("s1", "hi")] }), office, { env: fake.env() })
   expect(waitingAt(office)).toEqual(["chat#1/heard"])
+  const reply = [...iterRunRecords(job.log, { kinds: ["node_started"] })].find((entry) => entry.nodeId === REPLY)!
   const want = fetched(transcript, job)
-  expect(want.map((m) => m.id)).toEqual(replyIds(job.log))
+  expect(want.map((m) => m.id)).toEqual([messageId(reply.seq)])
   expect(fold(events)).toEqual(want)
   expect(events.every((event) => event.session_id === job.session_id)).toBe(true)
   expect(lines).toEqual([])
@@ -416,10 +417,42 @@ test("a chunk of a shown live part is published as a delta", async () => {
   expect((opened.data as unknown as Message).parts).toEqual([{ id: partId, type: "text", text: "" }])
   const deltas = events.filter((event) => event.type === "part.delta").map((event) => event.data)
   expect(deltas.length).toBeGreaterThan(1)
-  expect(deltas.every((data) => data.message_id === replyIds(job.log)[0] && data.part_id === partId)).toBe(true)
+  const messageOf = replyIds(job.log)[0]
+  expect(deltas.every((data) => data.message_id === messageOf && data.part_id === partId)).toBe(true)
   expect(deltas.map((data) => data.text).join("")).toBe(content)
   expect(fold(events).flatMap((m) => m.parts)).toEqual([{ id: partId, type: "text", text: content }])
   expect(lines).toEqual([])
+})
+
+test("a render or publish that fails is logged by its type", async () => {
+  const failed = "run r1: live events were not published (TypeError)"
+  const job = await waitingRun()
+  const lines: string[] = []
+  const throwing = () => {
+    throw new TypeError("secret text")
+  }
+  const rendering = new LiveRelay({
+    bus: { publishLive: () => {} },
+    transcript: { messages: throwing },
+    log: (line) => void lines.push(line),
+  })
+  expect(() => rendering.frame(new StubWorker(job), snapshot(lastSeq(job.log)))).not.toThrow()
+  expect(lines).toEqual([failed])
+  expect(rendering.calls("r1")).toEqual([])
+  const { job: recorded, frames } = await recordedTurn("Hello there my good friend", "r1")
+  lines.length = 0
+  const publishing = new LiveRelay({
+    bus: { publishLive: throwing },
+    transcript: new Transcript(runsOf(recorded)),
+    log: (line) => void lines.push(line),
+  })
+  const worker = new StubWorker(recorded)
+  for (const frame of frames) expect(() => publishing.frame(worker, frame)).not.toThrow()
+  expect(lines.length).toBeGreaterThan(0)
+  expect(lines.every((line) => line === failed)).toBe(true)
+  // The view still applied every frame.
+  expect(publishing.calls("r1")).toEqual([])
+  expect(worker.follows).toBe(0)
 })
 
 test("a lagging relay never doubles a reply", async () => {
@@ -442,9 +475,7 @@ test("a reply that started but sent no chunk already shows", async () => {
   const worker = await inProcessWorker(advanceJob(job, { deliver: [send("s1", "hi")] }), office, { env: fake.env() })
   const start = await waitFor(() => office.streams.find((frame) => frame.type === "start"), { what: "the start" })
   const empty: Part = { id: `r1:${REPLY}:${start.n}`, type: "text", text: "" }
-  const shows = () =>
-    events.some((event) => event.type === "message.updated" && (event.data as unknown as Message).parts.length > 0)
-  await waitFor(shows, { what: "the reply's message" })
+  await waitFor(() => events.some((event) => event.type === "message.updated"), { what: "the reply's message" })
   const opened = events.find((event) => event.type === "message.updated")!
   expect((opened.data as unknown as Message).parts).toEqual([empty])
   // A hold that starts after a release would never end.
@@ -499,17 +530,19 @@ test("a failed attempt leaves no text behind", async () => {
   const job = await waitingChat(fake)
   const { relay, events, lines, transcript } = makeRelay(runsOf(job))
   const office = new LiveOffice(relay)
+  // Not a race: yian sends the start frame before its request, and writes the failed step only after the fake's
+  // response is handled on the same loop, so the render at start shows the failed attempt's part.
   await run(advanceJob(job, { deliver: [send("s1", "hi")] }), office, { env: fake.env() })
   expect(waitingAt(office)).toEqual(["chat#1/heard"])
   const starts = office.streams.filter((frame) => frame.type === "start" && frame.node === REPLY)
   expect(starts.map((frame) => frame.n)).toEqual([starts[0]!.n, (starts[0]!.n as number) + 1])
   const failed = `r1:${REPLY}:${starts[0]!.n}`
-  expect(events.some((event) => partOf(event)?.id === failed && (partOf(event) as { text: string }).text === "")).toBe(
-    true,
-  )
+  const emptied = events.map(partOf).some((part) => part?.id === failed && part.type === "text" && part.text === "")
+  expect(emptied).toBe(true)
   const folded = fold(events)
-  expect(folded.flatMap((m) => m.parts).find((part) => part.id === `r1:${REPLY}:${starts[1]!.n}`)).toEqual({
-    id: `r1:${REPLY}:${starts[1]!.n}`,
+  const retried = `r1:${REPLY}:${starts[1]!.n}`
+  expect(folded.flatMap((m) => m.parts).find((part) => part.id === retried)).toEqual({
+    id: retried,
     type: "text",
     text: "Whole answer.",
   })
@@ -554,10 +587,8 @@ test("a worker reaches only its own session", async () => {
       turn.events.push(...events.slice(before))
     }
   }
-  for (const [turn, session] of [
-    [turns[0]!, "s1"],
-    [turns[1]!, "s2"],
-  ] as const) {
+  for (const turn of turns) {
+    const session = turn.worker.job.session_id
     expect(turn.events.length).toBeGreaterThan(0)
     expect(turn.events.every((event) => event.session_id === session)).toBe(true)
     const messages = turn.events.filter((event) => event.type === "message.updated").map((event) => event.data)

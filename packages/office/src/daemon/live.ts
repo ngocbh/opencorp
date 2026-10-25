@@ -166,8 +166,9 @@ export class LiveRelay implements LiveCalls {
     } else if (frame.type !== "end") this.#show(entry.worker)
   }
 
-  /** Renders `worker`'s run with the views' live calls and publishes its assistant messages' changes since it was last
-   *  shown, then moves its floor. A render or publish that throws is logged. */
+  /** Renders `worker`'s run with the relay's live calls of the run (none once no worker feeds it) and publishes its
+   *  assistant messages' changes since it was last shown, then moves its floor. A render or publish that throws is
+   *  logged. */
   #show(worker: LiveWorker): void {
     const { run_id: runId, session_id: sessionId } = worker.job
     try {
@@ -180,22 +181,20 @@ export class LiveRelay implements LiveCalls {
         shown = { floor, messages: new Map() }
         this.#shown.set(runId, shown)
       }
-      const publish = (type: LiveEvent["type"], data: LiveEvent["data"]) =>
-        this.#bus.publishLive({ type, session_id: sessionId, data })
       const byId = new Map<string, Message>()
       for (const message of rendered) {
         if (message.id < shown.floor) continue
         byId.set(message.id, message)
         const parts = shown.messages.get(message.id)
         if (parts === undefined) {
-          publish("message.updated", message)
+          this.#publish(worker, "message.updated", message)
           shown.messages.set(message.id, new Map(message.parts.map((part) => [part.id, part])))
           continue
         }
         for (const part of message.parts) {
           const was = parts.get(part.id)
           if (was !== undefined && JSON.stringify(was) === JSON.stringify(part)) continue
-          publish("part.updated", { message_id: message.id, part })
+          this.#publish(worker, "part.updated", { message_id: message.id, part })
           parts.set(part.id, part)
         }
       }
@@ -205,7 +204,7 @@ export class LiveRelay implements LiveCalls {
         const kept = new Set(byId.get(id)?.parts.map((part) => part.id))
         for (const [partId, part] of parts) {
           if (part.type !== "text" || kept.has(partId)) continue
-          if (part.text !== "") publish("part.updated", { message_id: id, part: { ...part, text: "" } })
+          if (part.text !== "") this.#publish(worker, "part.updated", { message_id: id, part: { ...part, text: "" } })
           parts.delete(partId)
         }
         if (parts.size === 0) shown.messages.delete(id)
@@ -220,18 +219,22 @@ export class LiveRelay implements LiveCalls {
   /** Publishes `text`, the next chunk of `worker`'s call `node`/`n`, as a delta of the call's text part, if that part
    *  shows the call's text so far, `before`; a part that shows other text already shows the log's. */
   #delta(worker: LiveWorker, node: string, n: number, before: string, text: string): void {
-    const { run_id: runId, session_id: sessionId } = worker.job
+    const runId = worker.job.run_id
     const partId = `${runId}:${node}:${n}`
     for (const [messageId, parts] of this.#shown.get(runId)?.messages ?? []) {
       const part = parts.get(partId)
       if (part?.type !== "text") continue
       if (part.text !== before) return
-      const data = { message_id: messageId, part_id: partId, text }
-      this.#bus.publishLive({ type: "part.delta", session_id: sessionId, data })
+      this.#publish(worker, "part.delta", { message_id: messageId, part_id: partId, text })
       // A new value, since the bus may still hold the old one in a published event.
       parts.set(partId, { ...part, text: part.text + text })
       return
     }
+  }
+
+  /** Publishes an event of `type` with `data` on `worker`'s session. */
+  #publish(worker: LiveWorker, type: LiveEvent["type"], data: LiveEvent["data"]): void {
+    this.#bus.publishLive({ type, session_id: worker.job.session_id, data })
   }
 
   /** A snapshot of `entry` that didn't build: a gap, or past the cap, the end of following its worker. */

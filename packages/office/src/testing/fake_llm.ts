@@ -223,10 +223,13 @@ export class FakeLLM {
       const frames: Obj[] = [chunk({ role: "assistant", content: "" })]
       for (const piece of (reply.content ?? "").match(PIECES) ?? []) frames.push(chunk({ content: piece }))
       calls.forEach((call, index) => frames.push(chunk({ tool_calls: [{ index, ...call }] })))
-      if (!reply.cut) frames.push(chunk({}, finish))
-      if (!reply.cut && body.stream_options?.include_usage) frames.push({ ...head, choices: [], usage: usageOf(reply) })
+      let done = ""
+      if (!reply.cut) {
+        frames.push(chunk({}, finish))
+        if (body.stream_options?.include_usage) frames.push({ ...head, choices: [], usage: usageOf(reply) })
+        done = "data: [DONE]\n\n"
+      }
       res.writeHead(200, { "content-type": "text/event-stream" })
-      const done = reply.cut ? "" : "data: [DONE]\n\n"
       res.end(frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + done)
       return
     }
