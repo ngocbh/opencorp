@@ -9,13 +9,16 @@ import { tokenSha256 } from "../../src/auth/tokens.ts"
 import { CompanyGit } from "../../src/company/git.ts"
 import { loadRepo } from "../../src/company/loader.ts"
 import { type Owner, writeCompany } from "../../src/company_template/index.ts"
-import { type Env, launch, which } from "../../src/install/launch.ts"
+import * as fallback from "../../src/install/fallback.ts"
+import { type Env, launch, officeAnswers, which } from "../../src/install/launch.ts"
 import * as launchd from "../../src/install/launchd.ts"
 import { CONFIRM, Declined, KEEP, launchers, OffboardError, offboard, REMOVE } from "../../src/install/offboard.ts"
 import { makeDevice, makeHome } from "../../src/install/onboard.ts"
+import * as service from "../../src/install/service.ts"
+import { selfSpawnEnv } from "../../src/platform.ts"
 import { git, gitEnv } from "../company/helpers.ts"
-import { tempDir } from "../helpers.ts"
-import { makeHost, Runner, Script } from "./helpers.ts"
+import { shortDir, tempDir } from "../helpers.ts"
+import { daemonHost, killedAtEnd, makeHost, Runner, Script } from "./helpers.ts"
 
 /** An office's folders. */
 interface Paths {
@@ -251,6 +254,35 @@ test("an office that wont stop keeps its state", async () => {
   expect(fs.existsSync(path.join(paths.office, "provider.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(true)
 }, 30_000)
+
+test(
+  "offboard removes the device through a running office",
+  async () => {
+    const spawned = killedAtEnd()
+    const dir = shortDir()
+    const paths = await office(path.join(dir, "home"))
+    // Python's `no_web_port`: HQ stays off its TCP port, which the owner's own office holds.
+    fs.writeFileSync(path.join(paths.office, "hq.json"), '{"tcp": false}')
+    const environ = { ...gitEnv(selfSpawnEnv(process.env)), HOME: tempDir() }
+    const run = launch(paths.home, { environ, userHome: dir })
+    const host = daemonHost(dir, spawned)
+    try {
+      await service.install(run, host, "background")
+      await service.wait(run, host)
+      const me = (await readIdentity(path.join(paths.home, "identity.json")))!
+      const ask = new Script()
+      await offboard(paths.home, ask, { yes: true, host, environ: { ...environ, PATH: gitOnly(dir).PATH } })
+      expect(devices(paths)).toEqual([])
+      expect(subjects(paths.company)[0]).toBe(`devices(@me): remove ${me.device}`)
+      expect(ask.seen).toContain(`Removed this device (${me.device}) from @me through the office.`)
+      expect(await officeAnswers(run.socket)).toBe(false)
+      expect(fs.readdirSync(paths.home).sort()).toEqual(["company"])
+    } finally {
+      await fallback.stopProcess(run)
+    }
+  },
+  120_000,
+)
 
 test("offboard reports how opencorp was put on path and keeps the checkout", async () => {
   const dir = tempDir()
