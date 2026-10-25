@@ -35,6 +35,7 @@ import {
 import { type Frame, FrameTooLarge } from "../worker/channel.ts"
 import type { Delivery, Job, Seed } from "../worker/job.ts"
 import { type AskRequest, BaseHandlers, errorName, type OfficeTool, type WorkerHandlers } from "../worker/rpc.ts"
+import { STOP_REASON } from "../worker/main.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
 import { type Connections, runRecord } from "./connections.ts"
 import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
@@ -594,7 +595,7 @@ export class SessionActor implements LiveCalls {
       const owner = session.opened_by ?? this.#pins.ceo
       const asks = this.#runId === null ? [] : store.listQuestions({ runId: this.#runId, status: "open" })
       const who = asks.map((q) => (q.source === "ask_manager" ? this.#assignee(q) : owner))
-      const held = session.cost >= costCap(session, this.#pins.defaults)
+      const held = overCap(session, this.#pins)
       if (held) who.push(this.#capItem(session)?.assignee ?? this.#pins.manager)
       const run = this.#run
       const spawning = this.#starting !== null || this.#readvance || this.#next.some((p) => p.delivery.op === "send")
@@ -1125,18 +1126,21 @@ export class SessionActor implements LiveCalls {
   // --- worker frames ----------------------------------------------------------------------
 
   /** Tracks the nodes in flight and the turn; a reply node that succeeds counts a turn; a call that closed before
-   *  its answer closes its question. */
+   *  its answer closes its question; a model call is charged, even once the session finished. */
   #event(run: WorkerRun, frame: Frame): void {
-    if (run !== this.#run || this.#finished) return
+    if (run !== this.#run) return
     const data = (typeof frame.data === "object" && frame.data !== null ? frame.data : {}) as Record<string, unknown>
+    // Charged even once finished: the call was paid for.
+    if (frame.name === "ModelCallFinished") {
+      if (typeof data.usage === "object" && data.usage !== null) this.#charge(run, data)
+      return
+    }
+    if (this.#finished) return
     const node = typeof data.node_id === "string" ? data.node_id : null
     switch (frame.name) {
       case "RunStarted":
         this.#staleReplaced()
         this.#trySettle("after a run started")
-        return
-      case "ModelCallFinished":
-        if (typeof data.usage === "object" && data.usage !== null) this.#charge(run, data)
         return
       case "history_not_seeded":
         this.#log(`session ${this.sessionId}: its fresh run starts without history (${typeName(data.error_type)})`)
@@ -1185,11 +1189,16 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Records the price of `run`'s model call (`data`, a `ModelCallFinished` with usage) and the session's cost, then
-   *  acts on the cap. */
+   *  acts on the cap; a usage without token counts is logged unpriced. */
   #charge(run: WorkerRun, data: Record<string, unknown>): void {
     const { store } = this.#ctx
+    const usage = data.usage as Record<string, unknown>
+    if (!Number.isFinite(usage.input_tokens) || !Number.isFinite(usage.output_tokens)) {
+      this.#log(`session ${this.sessionId}: a model call is unpriced (its usage has no token counts)`)
+      return
+    }
     const model = typeof data.model === "string" ? data.model : null
-    const usd = callUsd(run.provider?.prices ?? {}, model, data.usage as CallUsage, { default: run.defaultPrice })
+    const usd = callUsd(run.provider?.prices ?? {}, model, usage as unknown as CallUsage, { default: run.defaultPrice })
     store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd })
     store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
     this.#overCap()
@@ -1252,7 +1261,7 @@ export class SessionActor implements LiveCalls {
   /** Whether the session's cost is at or over its cap, as stored now. */
   #capped(): boolean {
     const session = this.#ctx.store.getSession(this.sessionId)
-    return this.#pins !== null && session !== undefined && session.cost >= costCap(session, this.#pins.defaults)
+    return this.#pins !== null && session !== undefined && overCap(session, this.#pins)
   }
 
   /** Adds one finished reply to the session's turns. */
@@ -1347,8 +1356,9 @@ export class SessionActor implements LiveCalls {
   /**
    * The worker is gone; its outcome decides what comes next. After a `waiting` result, see `#waited`. A succeeded
    * run ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once
-   * (`#died`), but over the cost cap a stopped or crashed run only gets its deliveries, and an ending session over
-   * it ends `ENDED_OVER_CAP`; a run another process holds is tried once more (`#runBusy`); any other outcome fails
+   * (`#died`), but a run the cap stopped, a delivering job's, or one stopped or crashed over the cap isn't a death:
+   * its deliveries go on, with a real advance once the cap is raised; an ending session over the cap ends
+   * `ENDED_OVER_CAP`; a run another process holds is tried once more (`#runBusy`); any other outcome fails
    * the session.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
@@ -1373,20 +1383,25 @@ export class SessionActor implements LiveCalls {
     const busy = status === "error" && String(outcome!.message ?? "").startsWith("RunBusyError:")
     // A run the cap's stop cut short throws the stop's reason, which the worker reports as an error; its log says
     // the run stopped.
-    if (status === "error" && !busy && run.capStopped) status = "stopped"
+    if (status === "error" && run.capStopped && String(outcome!.message ?? "").startsWith(`Error: ${STOP_REASON}`)) {
+      status = "stopped"
+    }
     if (status === "waiting" || status === "succeeded") this.#deaths = 0
     if (!busy) {
       this.#busyRetried = false
       this.#rested = status === "waiting"
     }
     const stopped = status === "stopped" || status === "crashed"
+    // Decided by how it stopped, not only by the cap now: a raise before the exit doesn't make a cap stop a death.
+    const capStop = stopped && (run.capStopped || run.worker?.job.advance === false || this.#capped())
     if ((status === null || stopped) && this.#ending && this.#capped()) {
       // Over the cap an advance would resume the run and spend: it is cancelled, and the session ends.
       this.#log(`session ${this.sessionId}: ends over its cost cap`)
       this.#finish("ended", null, ENDED_OVER_CAP, run)
-    } else if (stopped && this.#capped()) {
-      // The cap stopped it (or it crashed over the cap): not a death. Only its deliveries go on, until a raise.
-      this.#log(`session ${this.sessionId}: its run ${status} over its cost cap`)
+    } else if (capStop) {
+      // The cap stopped it (or it crashed over the cap): not a death. Only its deliveries go on until a raise; after
+      // one, a real advance resumes it.
+      this.#log(`session ${this.sessionId}: its run ${status} at its cost cap`)
       this.#carry(run)
       await this.#spawnQuietly("advance")
     } else if (status === null || stopped) {
@@ -1413,10 +1428,17 @@ export class SessionActor implements LiveCalls {
    * too, but not again when the last spawn was such a plain re-advance and the run still waits on the same calls,
    * each as settled as before: it made no progress, so it waits for the next command. With no worker started, the
    * timer waits for the earliest deadline. Over the cost cap, unless ending, only deliveries are taken to the run,
-   * and the advance waits for a raise; an advance the cap held back is spawned once it is raised.
+   * and the advance waits for a raise; an advance the cap held back is spawned once it is raised. An ending session
+   * over the cap with a settled wait ends `ENDED_OVER_CAP`.
    */
   async #waited(run: WorkerRun, readvance: boolean): Promise<void> {
     const waits = this.#waits ?? []
+    if (this.#ending && this.#capped() && waits.some((wait) => wait.settled)) {
+      // A settled call would wake the agent and spend, as in End's path with no worker.
+      this.#log(`session ${this.sessionId}: ends over its cost cap`)
+      this.#finish("ended", null, ENDED_OVER_CAP, run)
+      return
+    }
     const from = this.#readvancedFrom
     this.#carry(run)
     // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
@@ -1717,6 +1739,7 @@ export class SessionActor implements LiveCalls {
     // Over the cap the timed-out calls wait for a raise.
     if (this.#capped()) {
       this.#needsAdvance = true
+      this.#log(`session ${this.sessionId}: its wake-at timer waits for its cost cap to be raised`)
       return
     }
     if (await this.#spawnQuietly("advance")) {
@@ -1821,6 +1844,11 @@ export class SessionActor implements LiveCalls {
       this.#ctx.log(line)
     } catch {}
   }
+}
+
+/** Whether `session`'s cost is at or over its cap, the pinned default if it has none of its own. */
+function overCap(session: SessionRecord, pins: Pins): boolean {
+  return session.cost >= costCap(session, pins.defaults)
 }
 
 /** The error type an `error` frame names (its message reads `<type>: <message>`), never its message. */

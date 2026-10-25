@@ -36,6 +36,8 @@ export const EXIT_FAILED = 1
 export const EXIT_ORPHANED = 3
 /** How long, in ms, a worker keeps answering deliveries after its last frame, waiting for the office to close. */
 export const LINGER_MS = 5000
+/** The reason a `stop` frame stops the run with; the worker's `error` frame then reads `Error: <reason>`. */
+export const STOP_REASON = "the office stopped the run"
 
 /** The worker's environment, passed in explicitly. */
 export type WorkerEnv = Readonly<Record<string, string | undefined>>
@@ -499,7 +501,7 @@ async function readFrames(
         // Never awaited here: a delivery can wait on the run, which may need store replies only this loop delivers.
         deliveries.push(parsed.data)
       } else if (frame.type === "stop") {
-        if (!state.finished) stopper.abort(new Error("the office stopped the run"))
+        if (!state.finished) stopper.abort(new Error(STOP_REASON))
       } else if (typeof frame.type === "string" && REPLY_TYPES.has(frame.type)) {
         rpc.deliver(frame)
       }

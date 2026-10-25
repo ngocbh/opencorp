@@ -385,7 +385,7 @@ export function capGate(): {
           stops += 1
           // Opened once the stop frame is written, so the worker reads the stop before the tool's answer.
           const sent = stop()
-          void sent.finally(open)
+          sent.then(open, open)
           return sent
         }
       })

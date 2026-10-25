@@ -8,7 +8,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, type JobInput } from "../../src/worker/job.ts"
-import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report, serve } from "../../src/worker/main.ts"
+import { EXIT_FAILED, EXIT_OK, EXIT_ORPHANED, isOfficeChannel, report, STOP_REASON, serve } from "../../src/worker/main.ts"
 import type { AskRequest, OfficeTool } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { shortDir, tempDir, waitFor } from "../helpers.ts"
@@ -27,7 +27,7 @@ import {
 
 setDefaultTimeout(30_000)
 
-const STOPPED = "Error: the office stopped the run"
+const STOPPED = `Error: ${STOP_REASON}`
 
 const shout: OfficeTool = {
   description: "Return text in capitals.",

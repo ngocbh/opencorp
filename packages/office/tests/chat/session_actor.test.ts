@@ -10,6 +10,7 @@ import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPE
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Delivery } from "../../src/worker/job.ts"
+import { STOP_REASON } from "../../src/worker/main.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
 import { waitFor } from "../helpers.ts"
@@ -32,6 +33,7 @@ import {
   PRICEY,
   reopen,
   say,
+  type ScriptedWorker,
   scriptedWorker,
   session,
   startActor,
@@ -1124,7 +1126,9 @@ test("a capped session advances nothing and a raise answers what it queued", asy
   // The deadline comes: the timer doesn't advance a capped run.
   clock.now = Date.parse(deadline)
   sleeps.at(-1)!.wake()
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  await waitFor(() => o.logs.some((line) => line.includes("timer waits for its cost cap to be raised")), {
+    what: "the capped wake",
+  })
   await actor.checkCap()
   expect(workers).toHaveLength(2)
   // The raise advances the run, which takes the queued message.
@@ -1201,4 +1205,130 @@ test("end over the cost cap on a stopped reply ends the session at once", async 
   await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
   expect(o.jobs.at(-1)).toMatchObject({ run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
   expect(fake.requests()).toHaveLength(requests)
+})
+
+/** Counts the stops sent to `scripted`'s worker. */
+function countStops(scripted: ScriptedWorker): () => number {
+  let stops = 0
+  scripted.worker.stop = async () => {
+    stops += 1
+    return true
+  }
+  return () => stops
+}
+
+/** `scripted`'s run finishes a model call of `tokens` input tokens: $`tokens` at `PRICES`. */
+function modelCall(scripted: ScriptedWorker, tokens: number): void {
+  const usage = { input_tokens: tokens, output_tokens: 0 }
+  scripted.handlers.event(scripted.worker, { type: "event", name: "ModelCallFinished", data: { model: "stub", usage } })
+}
+
+/** The `error` frame of a run the office's stop cut short. */
+const STOPPED_ERROR = { type: "error", message: `Error: ${STOP_REASON}`, traceback: "" }
+
+test("a model call that finishes after the session finished is charged", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { prices: PRICES })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  const stops = countStops(first)
+  await actor.fail()
+  expect(status(o, sid)).toBe("failed")
+  // The worker still runs its reply's model call when the session fails.
+  modelCall(first, 6)
+  await waitFor(() => session(o, sid).cost === 6, { what: "the charge" })
+  // Finished: nothing is left to stop or hold.
+  await actor.checkCap().catch(() => {})
+  expect(stops()).toBe(0)
+  expect(capItem(o)).toBeUndefined()
+})
+
+test("a run the cap stopped is not a death when the cap is raised before its worker exits", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { prices: PRICES })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  const stops = countStops(first)
+  modelCall(first, 6)
+  await waitFor(() => stops() === 1 && capItem(o) !== undefined, { what: "the stop at the cap" })
+  await actor.setCostCap(20)
+  expect(workers).toHaveLength(1)
+  first.handlers.error(first.worker, STOPPED_ERROR)
+  first.handlers.exited(first.worker, 1)
+  // The raise came first: the stopped reply resumes for real.
+  await waitFor(() => workers.length === 2, { what: "the resumed worker" })
+  expect(workers[1]!.job).toMatchObject({ kind: "advance", advance: true })
+  // Its first death gets the one retry.
+  workers[1]!.handlers.exited(workers[1]!.worker, 1)
+  await waitFor(() => workers.length === 3, { what: "the retry" })
+  expect(workers[2]!.job).toMatchObject({ kind: "advance", advance: true })
+  expect(status(o, sid)).not.toBe("failed")
+})
+
+test("end while a reply runs then a call over the cap ends the session over its cap", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { prices: PRICES })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const first = workers[0]!
+  const stops = countStops(first)
+  first.handlers.event(first.worker, { type: "event", name: "NodeStarted", data: { node_id: "chat#0/reply" } })
+  await actor.end()
+  expect(first.deliveries.map((d) => d.op)).toEqual(["interrupt", "close"])
+  expect(stops()).toBe(0)
+  // The reply's model call crosses the cap before the interrupt cut it.
+  modelCall(first, 6)
+  await waitFor(() => stops() === 1, { what: "the stop at the cap" })
+  first.handlers.error(first.worker, STOPPED_ERROR)
+  first.handlers.exited(first.worker, 1)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(ENDED_OVER_CAP)
+  await waitFor(() => workers.length === 2, { what: "the cancel job" })
+  expect(o.jobs.slice(1)).toMatchObject([{ run_id: runId, advance: false, deliver: [{ op: "cancel" }] }])
+})
+
+test("end over the cap with a lingering worker and a settled wait ends the session over its cap", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  const first = workers[0]!
+  const stops = countStops(first)
+  o.office.store.updateSession(sid, { cost: 6 })
+  await actor.end()
+  expect(stops()).toBe(1)
+  // The run came to rest before the stop, with a call settled: an advance would wake the agent and spend.
+  const settled = { node: "chat#0/reply", call_id: "q1", tool: "ask_user", inbox: null, deadline: null, settled: true }
+  first.handlers.result(first.worker, waitingResult(runId, [settled]))
+  first.handlers.exited(first.worker, 0)
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(ENDED_OVER_CAP)
+  await waitFor(() => workers.length === 2, { what: "the cancel job" })
+  expect(o.jobs.slice(1)).toMatchObject([{ run_id: runId, advance: false, deliver: [{ op: "cancel" }] }])
+})
+
+test("a model call with no token counts is logged unpriced", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake, { prices: PRICES })
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const first = workers[0]!
+  const usage = { input_tokens: "6", output_tokens: null }
+  first.handlers.event(first.worker, { type: "event", name: "ModelCallFinished", data: { model: "stub", usage } })
+  await waitFor(() => o.logs.some((line) => line.includes("unpriced")), { what: "the log line" })
+  expect(session(o, sid).cost).toBe(0)
 })
