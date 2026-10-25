@@ -5,12 +5,13 @@ import net from "node:net"
 import path from "node:path"
 import type { ServerResponse } from "node:http"
 import { expect, onTestFinished } from "bun:test"
-import { LIMITS, type Limits, createServer } from "../../src/daemon/http.ts"
+import { type Limits, createServer } from "../../src/daemon/http.ts"
 import type { Office } from "../../src/daemon/office.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { createHqApp } from "../../src/hq/api.ts"
 import { type Hq, attach } from "../../src/hq/core.ts"
-import { BODY_TIMEOUT, HEADERS, type Inner, hqGuard } from "../../src/hq/guard.ts"
+import { HEADERS, type Inner, hqGuard } from "../../src/hq/guard.ts"
+import { HQ_LIMITS } from "../../src/hq/servers.ts"
 import { shortDir } from "../helpers.ts"
 import { CEO, type Reply, request } from "../daemon/helpers.ts"
 
@@ -101,9 +102,9 @@ export class HqClient {
   }
 }
 
-/** Serves `createHqApp(hq, {port})` on a unix socket until the test finishes; a client sending `host` and
- *  `headers` whose requests come from `peer` (null: none, as on hq.sock) (Python's `hq_client`; ASGITransport's
- *  default peer was 127.0.0.1). */
+/** Serves `createHqApp(hq, {port})` on a unix socket with `limits` (HQ's by default) until the test finishes; a
+ *  client sending `host` and `headers` whose requests come from `peer` (null: none, as on hq.sock) (Python's
+ *  `hq_client`; ASGITransport's default peer was 127.0.0.1). */
 export async function hqClient(
   hq: Hq,
   {
@@ -111,7 +112,14 @@ export async function hqClient(
     host = HOST,
     peer = "127.0.0.1",
     headers = {},
-  }: { port?: number | null; host?: string; peer?: string | null; headers?: Record<string, string> } = {},
+    limits = HQ_LIMITS,
+  }: {
+    port?: number | null
+    host?: string
+    peer?: string | null
+    headers?: Record<string, string>
+    limits?: Limits
+  } = {},
 ): Promise<HqClient> {
   const app = createHqApp(hq, { port })
   const server = createServer(
@@ -120,7 +128,7 @@ export async function hqClient(
       if (peer !== null) Object.defineProperty(req.socket, "remoteAddress", { value: peer, configurable: true })
       return app(req, res)
     },
-    { ...LIMITS, requestTimeout: BODY_TIMEOUT },
+    limits,
   )
   const sock = path.join(shortDir(), "hq.sock")
   onTestFinished(async () => {

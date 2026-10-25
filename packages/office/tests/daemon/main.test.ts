@@ -7,6 +7,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { trackRequests } from "../../src/daemon/http.ts"
 import {
   AlreadyRunning,
   PidFile,
@@ -15,7 +16,6 @@ import {
   crashReport,
   main,
   officeLogger,
-  trackRequests,
 } from "../../src/daemon/main.ts"
 import { type Office, OfficePaths } from "../../src/daemon/office.ts"
 import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/daemon/sockets.ts"

@@ -447,7 +447,7 @@ export interface Limits {
  *  - The runtime checks `headersTimeout` and `requestTimeout` only every `connectionsCheckingInterval`, hence 1 s
  *    rather than the 30 s default.
  *  - `requestTimeout` covers receiving the request only: a slow handler's reply isn't cut.
- *  - HQ's listeners pass `{...LIMITS, requestTimeout: BODY_TIMEOUT, maxConnections: 64}` (hq/guard.ts). */
+ *  - HQ's listeners use `HQ_LIMITS` (hq/servers.ts). */
 export const LIMITS: Readonly<Limits> = {
   connectionsCheckingInterval: 1000,
   headersTimeout: 10_000,
@@ -471,6 +471,35 @@ export function createServer(listener: RequestListener, limits: Limits = LIMITS)
   server.timeout = 0
   if (maxConnections !== undefined) server.maxConnections = maxConnections
   return server
+}
+
+/** How long a stop waits for request handlers still running before the store closes. */
+export const HANDLER_WAIT_MS = 5000
+
+/** Wraps a request listener so the requests it is still handling can be awaited: `settled(ms)` resolves
+ *  once every running handler has settled or after `ms`, whichever is first. */
+export function trackRequests(listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>): {
+  listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>
+  settled(ms: number): Promise<void>
+} {
+  const running = new Set<Promise<void>>()
+  return {
+    listener(req, res) {
+      const handling: Promise<void> = listener(req, res).finally(() => running.delete(handling))
+      running.add(handling)
+      return handling
+    },
+    settled(ms) {
+      return new Promise((resolve) => {
+        // Ref'd: the stop's wait must keep the process alive until the store closes and the pidfile and lock go.
+        const timer = setTimeout(resolve, ms)
+        void Promise.allSettled(running).then(() => {
+          clearTimeout(timer)
+          resolve()
+        })
+      })
+    },
+  }
 }
 
 /** A log line's level. */

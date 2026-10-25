@@ -1,7 +1,7 @@
 /** The daemon process: one daemon per home, held by a lock beside its pidfile; its start, its stop on a signal,
  *  and its log. */
 import fs from "node:fs"
-import type { IncomingMessage, Server, ServerResponse } from "node:http"
+import type { Server } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { type FileLock, FileLockError, waitForLock } from "@ngocbh/yian/platform"
@@ -15,7 +15,7 @@ import { Store } from "../store/store.ts"
 import { reap } from "../worker/reaper.ts"
 import { DeviceTokens } from "./auth.ts"
 import { Bus } from "./bus.ts"
-import { type Level, createServer, logLine, requestListener } from "./http.ts"
+import { HANDLER_WAIT_MS, type Level, createServer, logLine, requestListener, trackRequests } from "./http.ts"
 import { Office, OfficePaths } from "./office.ts"
 import { allRoutes } from "./routes/index.ts"
 import { OfficeStartError, checkSocketPath, listenUnix, makeOfficeDir, removeStaleSocket } from "./sockets.ts"
@@ -244,35 +244,6 @@ export function buildOffice(
   } catch (error) {
     store.close()
     throw error
-  }
-}
-
-/** How long a stop waits for request handlers still running before the store closes. */
-export const HANDLER_WAIT_MS = 5000
-
-/** Wraps a request listener so the requests it is still handling can be awaited: `settled(ms)` resolves
- *  once every running handler has settled or after `ms`, whichever is first. */
-export function trackRequests(listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>): {
-  listener: (req: IncomingMessage, res: ServerResponse) => Promise<void>
-  settled(ms: number): Promise<void>
-} {
-  const running = new Set<Promise<void>>()
-  return {
-    listener(req, res) {
-      const handling: Promise<void> = listener(req, res).finally(() => running.delete(handling))
-      running.add(handling)
-      return handling
-    },
-    settled(ms) {
-      return new Promise((resolve) => {
-        // Ref'd: the stop's wait must keep the process alive until the store closes and the pidfile and lock go.
-        const timer = setTimeout(resolve, ms)
-        void Promise.allSettled(running).then(() => {
-          clearTimeout(timer)
-          resolve()
-        })
-      })
-    },
   }
 }
 
