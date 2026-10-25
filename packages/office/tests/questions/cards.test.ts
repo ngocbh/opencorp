@@ -71,6 +71,11 @@ function card(office: Office, over?: Partial<Question>): QuestionRecord {
   return office.store.addQuestion(question(s.id, over))
 }
 
+/** A fixed timestamp `n` seconds after 2026-01-01, so cards made in one test have a known order. */
+function at(n: number): string {
+  return new Date(Date.UTC(2026, 0, 1, 0, 0, n)).toISOString()
+}
+
 /** The `HarnessError` that `action` rejected with; fails the test if it resolved or threw something else. */
 async function refusal(action: () => Promise<unknown>): Promise<HarnessError> {
   try {
@@ -138,6 +143,13 @@ test("a turn question is no card", async () => {
   expect(cards.check(node, 42, "text")).toBe("the answer must be text")
   const error = await refusal(() => cards.openSide(turn.id, "why?"))
   expect([error.status, error.code]).toEqual([422, "not_a_card"])
+
+  const stale = office.store.addQuestion(
+    question(turn.session_id, { discussion: [{ role: "user", text: "why?" }], created_at: at(0) }),
+  )
+  office.store.setQuestionStatus(stale.id, "stale")
+  cards.stored(turn)
+  expect(office.store.getQuestion(turn.id)!.carried_from).toBeNull()
 })
 
 test("an invalid answer is refused before the actor sees it", async () => {
@@ -168,7 +180,8 @@ test("no harness means no cards", () => {
   const { cards, actor } = wire(office)
   expect(office.cards).toBe(cards)
   expect(actor.hooks.answerCheck).toHaveLength(1)
-  expect(office.onStop).toHaveLength(1)
+  expect([actor.hooks.questionStored.length, actor.hooks.sessionEnded.length]).toEqual([1, 1])
+  expect([office.onStart.length, office.onStop.length]).toEqual([1, 1])
 })
 
 test("a secret pages answer is never in a refusal or a log line", async () => {
@@ -311,6 +324,67 @@ test("a dismissed carry over is cleared", () => {
   const dismissed = cards.dismissCarried(q.id)
   expect(dismissed.carried_from).toBeNull()
   expect(office.store.getQuestion(q.id)).toEqual(dismissed)
+})
+
+test("an expired questions discussion is carried into the next card", async () => {
+  const office = makeOffice()
+  const { cards, actor } = wire(office)
+  const said = [{ role: "user" as const, text: "why?" }]
+  /** A stale card made at `n` in session `sid`. */
+  const expired = (sid: string, n: number, discussion: Question["discussion"]) => {
+    const q = office.store.addQuestion(question(sid, { discussion, created_at: at(n) }))
+    return office.store.setQuestionStatus(q.id, "stale")
+  }
+  const carried = (id: string) => office.store.getQuestion(id)!.carried_from
+
+  const s1 = office.store.createSession(session())
+  const old1 = expired(s1.id, 1, said)
+  const next1 = office.store.addQuestion(question(s1.id, { created_at: at(2) }))
+  cards.stored(next1)
+  expect(carried(next1.id)).toBe(old1.id)
+
+  const s2 = office.store.createSession(session())
+  expired(s2.id, 1, [])
+  const next2 = office.store.addQuestion(question(s2.id, { created_at: at(2) }))
+  cards.stored(next2)
+  expect(carried(next2.id)).toBeNull()
+
+  const s3 = office.store.createSession(session())
+  const old3 = expired(s3.id, 1, said)
+  office.store.addQuestion(question(s3.id, { source: "ask", node_id: "chat#1/ask", created_at: at(2) }))
+  const next3 = office.store.addQuestion(question(s3.id, { created_at: at(3) }))
+  cards.stored(next3)
+  expect(carried(next3.id)).toBe(old3.id)
+
+  const s4 = office.store.createSession(session())
+  const old4 = expired(s4.id, 1, said)
+  const next4 = office.store.addQuestion(question(s4.id, { created_at: at(2) }))
+  await actor.hooks.notify("questionStored", next4)
+  expect(carried(next4.id)).toBe(old4.id)
+})
+
+test("a session that ends expires its open cards", async () => {
+  const office = makeOffice()
+  const { actor } = wire(office)
+  const s = office.store.createSession(session({ status: "failed" }))
+  const open = [office.store.addQuestion(question(s.id)), office.store.addQuestion(question(s.id))]
+  const done = office.store.addQuestion(question(s.id))
+  const answered = office.store.answerQuestion(done.id, "Postgres", "text", "lan")
+  const other = card(office)
+  await actor.hooks.notify("sessionEnded", s)
+  for (const q of open) expect(office.store.getQuestion(q.id)!.status).toBe("stale")
+  expect(office.store.getQuestion(done.id)).toEqual(answered)
+  expect(office.store.getQuestion(other.id)!.status).toBe("open")
+})
+
+test("the start sweep expires cards of sessions with no live run", async () => {
+  const office = makeOffice()
+  wire(office)
+  const opened = (["failed", "ended", "idle"] as const).map((status) =>
+    office.store.addQuestion(question(office.store.createSession(session({ status })).id)),
+  )
+  await office.start()
+  expect(opened.map((q) => office.store.getQuestion(q.id)!.status)).toEqual(["stale", "stale", "open"])
 })
 
 test("card actions on a closed question are 409 not open", async () => {

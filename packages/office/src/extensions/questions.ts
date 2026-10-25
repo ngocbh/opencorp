@@ -9,5 +9,9 @@ export function register(office: Office): void {
   const cards = new Cards(office, harness)
   office.cards = cards
   harness.hooks.answerCheck.push(cards.check.bind(cards))
+  harness.hooks.questionStored.push(cards.stored.bind(cards))
+  harness.hooks.sessionEnded.push(cards.ended.bind(cards))
+  // The sweep must run after the actor's own onStart, which resumes the sessions it can.
+  office.onStart.push(() => cards.sweep())
   office.onStop.push(() => cards.close())
 }

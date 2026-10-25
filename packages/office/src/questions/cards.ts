@@ -4,7 +4,7 @@ import { HarnessError, LIVE } from "../chat/state.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
-import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
+import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
 import { InvalidAnswer, checkAnswer } from "./checker.ts"
 import { INTERRUPTED } from "./format.ts"
 
@@ -138,6 +138,42 @@ export class Cards {
       throw error
     }
     return null
+  }
+
+  /** `questionStored`: a new card carries the discussion of the card before it in its session if that one expired. */
+  stored(question: QuestionRecord): void {
+    const session = this.store.getSession(question.session_id)
+    if (session === undefined) return
+    // A side chat's turns copy its discussion onto the card once side chats exist.
+    if (session.kind === "side") return
+    if (this.#isTurn(question)) return
+    const earlier = this.store
+      .listQuestions({ sessionId: question.session_id })
+      .filter((q) => q.id !== question.id && q.created_at <= question.created_at && !this.#isTurn(q))
+    const last = earlier.at(-1)
+    if (last !== undefined && last.status === "stale" && last.discussion.length > 0) {
+      this.store.updateQuestion(question.id, { carried_from: last.id })
+    }
+  }
+
+  /** `sessionEnded`: an ended or failed run answers nothing more, so its open questions expire. */
+  ended(session: SessionRecord): void {
+    for (const q of this.store.listQuestions({ sessionId: session.id, status: "open" })) {
+      try {
+        this.store.setQuestionStatus(q.id, "stale")
+      } catch (error) {
+        // Answered meanwhile.
+        if (!(error instanceof InvalidTransition)) throw error
+      }
+    }
+  }
+
+  /** At start, after the actor resumed what it could: expire open questions of sessions with no live run. */
+  sweep(): void {
+    for (const q of this.store.listQuestions({ status: "open" })) {
+      const session = this.store.getSession(q.session_id)
+      if (session !== undefined && !LIVE.includes(session.status)) this.ended(session)
+    }
   }
 
   /** Runs `body` after every queued body before it, failed or not, so one send-back's re-check, note and answer
