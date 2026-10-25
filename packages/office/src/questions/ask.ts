@@ -101,7 +101,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
  * store's life, ends an `ask_manager` question's work item whenever its question is answered (`done`, resolved by
  * whoever answered) or goes stale (`cancelled`), whoever stores that. An item already `done` or `cancelled`, or
  * missing, is left as it is, where Python overwrote it. The item's update is its own commit after the question's, so
- * a crash between leaves the item open; an office stop writes nothing, so the item stays open too.
+ * a crash between leaves the item open; an office stop writes nothing, so the item stays open too. The listener
+ * settles the item again when the question is `consumed`, which closes an item a crash left open; so an item reopened
+ * by hand between the answer and `consumed` is closed again, where Python closed it once.
  */
 export class Answers {
   readonly store: Store
@@ -203,7 +205,6 @@ export class Answers {
   ): Promise<void> {
     const own = calls.filter((call) => call.callId.startsWith(`${runId}/`))
     const listed = new Set(own.map((call) => call.callId))
-    // Stale first, so a question rebuilt below is never taken for an unlisted one.
     for (const question of this.store.listQuestions({ runId, status: "open" })) {
       if (question.call_id === null || listed.has(question.call_id)) continue
       try {

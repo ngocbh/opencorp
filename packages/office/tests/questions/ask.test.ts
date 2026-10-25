@@ -3,13 +3,16 @@ import { type PendingCall, pendingCalls } from "@ngocbh/yian/run"
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { isPending, ToolSet } from "@ngocbh/yian/tools"
 import { Question } from "@opencorp/protocol"
+import { loadRepo } from "../../src/company/loader.ts"
 import { Answers, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
 import { DuplicateKey, NotFound, StoreError, newId, type QuestionRecord } from "../../src/store/store.ts"
+import { companyTools } from "../../src/tools/company/work.ts"
 import { EXIT_OK } from "../../src/worker/main.ts"
 import { ASK_KEYS, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
 import { fakeLlm } from "../chat/helpers.ts"
+import { company } from "../tools/helpers.ts"
 import { base, inProcessWorker, makeJob, officeEnd, Pending, Recorder, writeFiles } from "../worker/helpers.ts"
 
 setDefaultTimeout(30_000)
@@ -483,9 +486,12 @@ test("reconcile marks an unlisted question stale and stores an unstored call", a
   const calls = [
     pendingCall({ callId: "run-1/reply/2/0", arguments: { question: "Which city?", options: ["Paris", "Rome"] } }),
     pendingCall({ callId: "run-1/reply/4/0", arguments: { question: "Which db?" } }),
+    pendingCall({ callId: "run-1/reply/6/0", tool: "ask_manager", arguments: { question: "Deploy now?" } }),
   ]
   const askUser = makeAskUser(s, "run-1", (q, o) => answers.ask(q, o))
-  await answers.reconcile("run-1", calls, { askUser })
+  const tools = companyTools(store, loadRepo(company()), s, "run-1", (q, o) => answers.ask(q, o))
+  const askManager = (args: Record<string, unknown>, callId: string) => tools.ask_manager!.call(args, { callId })
+  await answers.reconcile("run-1", calls, { askUser, askManager })
   expect(store.getQuestion(unlisted.id)!.status).toBe("stale")
   expect(store.getQuestion(kept.id)).toEqual(kept)
   expect(store.getQuestion(other.id)!.status).toBe("open")
@@ -494,8 +500,11 @@ test("reconcile marks an unlisted question stale and stores an unstored call", a
   expect(stored.map((q) => [q.call_id, q.source, q.question, q.options])).toEqual([
     ["run-1/reply/4/0", "ask_user", "Which db?", []],
     ["run-1/reply/2/0", "ask_user", "Which city?", ["Paris", "Rome"]],
+    ["run-1/reply/6/0", "ask_manager", "Deploy now?", []],
   ])
-  expect(store.listQuestions({ sessionId: sid })).toHaveLength(5)
+  const item = store.getWorkItem(stored[2]!.work_item_id!)!
+  expect([item.status, item.assignee]).toEqual(["open", "ngocbh"])
+  expect(store.listQuestions({ sessionId: sid })).toHaveLength(6)
   expect(lines).toEqual([])
 })
 

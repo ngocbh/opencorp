@@ -17,7 +17,7 @@ export const TITLE_CHARS = 80
 export interface CompanyTool {
   readonly description: string
   readonly parameters: Record<string, unknown>
-  call(args: Record<string, unknown>, options?: ToolCallOptions): unknown | Promise<unknown>
+  call(args: Record<string, unknown>, options?: ToolCallOptions): unknown
 }
 
 const ASK =
