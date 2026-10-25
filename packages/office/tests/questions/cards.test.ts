@@ -138,24 +138,6 @@ test("a typed card gives the actor the converted values", async () => {
   expect(office.store.getQuestion(q.id)!.answer).toEqual(typed)
 })
 
-test("a turn question is no card", async () => {
-  const office = makeOffice()
-  const { cards } = wire(office)
-  const turn = card(office, { source: "ask", node_id: "chat#1/heard", created_at: at(1) })
-  expect(cards.check(turn, 42, "text")).toBeNull()
-  const node = card(office, { source: "ask", node_id: "setup" })
-  expect(cards.check(node, 42, "text")).toBe("the answer must be text")
-  const error = await refusal(() => cards.openSide(turn.id, "why?"))
-  expect([error.status, error.code]).toEqual([422, "not_a_card"])
-
-  const stale = office.store.addQuestion(
-    question(turn.session_id, { discussion: [{ role: "user", text: "why?" }], created_at: at(0) }),
-  )
-  office.store.setQuestionStatus(stale.id, "stale")
-  cards.stored(turn)
-  expect(office.store.getQuestion(turn.id)!.carried_from).toBeNull()
-})
-
 test("an invalid answer is refused before the actor sees it", async () => {
   const office = makeOffice()
   const { cards, actor } = wire(office)
@@ -352,13 +334,6 @@ test("an expired questions discussion is carried into the next card", async () =
   const next2 = office.store.addQuestion(question(s2.id, { created_at: at(2) }))
   cards.stored(next2)
   expect(carried(next2.id)).toBeNull()
-
-  const s3 = office.store.createSession(session())
-  const old3 = expired(s3.id, 1, said)
-  office.store.addQuestion(question(s3.id, { source: "ask", node_id: "chat#1/heard", created_at: at(2) }))
-  const next3 = office.store.addQuestion(question(s3.id, { created_at: at(3) }))
-  cards.stored(next3)
-  expect(carried(next3.id)).toBe(old3.id)
 
   const s4 = office.store.createSession(session())
   const old4 = expired(s4.id, 1, said)

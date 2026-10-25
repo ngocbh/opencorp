@@ -1,7 +1,6 @@
 /** Question-card actions (answer, chat about this, send back, stop). */
 import type { Hooks } from "../chat/hooks.ts"
 import { HarnessError, LIVE } from "../chat/state.ts"
-import { MAIN_CHAT } from "../chat/turns.ts"
 import type { Office } from "../daemon/office.ts"
 import { strip } from "../perm/redact.ts"
 import { InvalidTransition, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
@@ -65,9 +64,6 @@ export class Cards {
   async openSide(questionId: string, _text: string, _options: { by?: string | null } = {}): Promise<SessionRecord> {
     const question = this.#open(questionId)
     this.#notHarness(question)
-    if (this.#isTurn(question)) {
-      throw new HarnessError(422, "not_a_card", "a chat turn is not a question card; reply in the chat")
-    }
     throw new HarnessError(501, "not_implemented", "side chats are not implemented yet")
   }
 
@@ -128,9 +124,8 @@ export class Cards {
     await this.#tail
   }
 
-  /** `answerCheck`: refuse an answer that doesn't fit its card (turn questions aren't cards). */
+  /** `answerCheck`: refuse an answer that doesn't fit its card. */
   check(question: QuestionRecord, answer: unknown, kind: AnswerKind): string | null {
-    if (this.#isTurn(question)) return null
     try {
       checkAnswer(question, answer, kind)
     } catch (error) {
@@ -146,10 +141,9 @@ export class Cards {
     if (session === undefined) return
     // A side chat's turns copy its discussion onto the card once side chats exist.
     if (session.kind === "side") return
-    if (this.#isTurn(question)) return
     const earlier = this.store
       .listQuestions({ sessionId: question.session_id })
-      .filter((q) => q.id !== question.id && q.created_at <= question.created_at && !this.#isTurn(q))
+      .filter((q) => q.id !== question.id && q.created_at <= question.created_at)
     const last = earlier.at(-1)
     if (last !== undefined && last.status === "stale" && last.discussion.length > 0) {
       this.store.updateQuestion(question.id, { carried_from: last.id })
@@ -196,10 +190,5 @@ export class Cards {
   /** Throws `422 harness_card` for a harness card, which a side chat, send back or stop can't reach. */
   #notHarness(question: QuestionRecord): void {
     if (question.source === "harness") throw new HarnessError(422, "harness_card", HARNESS_ONLY_ANSWER)
-  }
-
-  #isTurn(question: QuestionRecord): boolean {
-    // Both chat flows the office runs share the turn path chat/heard.
-    return question.source === "ask" && MAIN_CHAT.isTurn(question.node_id)
   }
 }
