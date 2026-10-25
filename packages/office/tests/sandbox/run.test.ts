@@ -1,5 +1,5 @@
 /** Running one command in the sandbox, in its own process group. */
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -194,21 +194,42 @@ test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits 
   expect(reaped).toBe("ESRCH")
 })
 
+/** Whether this runtime leaves a killed child it hasn't awaited as a zombie. Bun reaps on its own thread where
+ *  the kernel has no pidfd_open (RHEL 8), so there a killed child is gone at once. */
+async function zombiesLinger(): Promise<boolean> {
+  const child = spawn("/bin/sleep", ["30"], { stdio: "ignore" })
+  const exited = new Promise((resolve) => child.once("exit", resolve))
+  process.kill(child.pid!, "SIGKILL")
+  // Blocks the loop, so only a runtime that reaps on its own thread can reap meanwhile.
+  const until = performance.now() + 300
+  while (performance.now() < until);
+  const stat = psField("stat", child.pid!)
+  await exited
+  // A runtime that reaps on its own thread may show Z for an instant, never after 300 ms.
+  return stat.startsWith("Z")
+}
+
 test.skipIf(!sandboxAvailable())("on timeout the leader is killed before it is reaped", async () => {
-  // The cleanup runs after the kill and before the leader is awaited. `sleep 30` can't exit
-  // by itself, so a zombie leader there was killed before it was reaped; blocking the loop is
-  // safe, since nothing reaps meanwhile.
+  // The cleanup runs after the kill and before the leader is awaited. `sleep 30` can't exit by itself, so a
+  // leader that is dead at cleanup was killed while alive. Where the runtime leaves a killed, unawaited child a
+  // zombie (macOS; Linux with pidfd_open), the leader must be a zombie at cleanup: killed but not yet reaped;
+  // blocking the loop keeps it so. Where the runtime reaps on its own thread (no pidfd_open, RHEL 8), the
+  // leader must be gone at cleanup; there the test can't tell kill, await, cleanup from kill, cleanup, await,
+  // so the macOS run is what pins that order. A leader still alive at cleanup fails either way.
+  const lingers = await zombiesLinger()
   let stat = ""
   const result = await sh(makePolicy().make(), "sleep 30", {
     timeout: 0.5,
     track: (pid) => () => {
+      // Where the runtime reaps on its own thread, polls through a brief Z until the leader is gone.
       const deadline = performance.now() + 1_000
       do stat = psField("stat", pid)
-      while (!stat.startsWith("Z") && performance.now() < deadline)
+      while ((lingers ? !stat.startsWith("Z") : stat !== "") && performance.now() < deadline)
     },
   })
   expect(result.timedOut).toBe(true)
-  expect(stat).toStartWith("Z")
+  if (lingers) expect(stat).toStartWith("Z")
+  else expect(stat).toBe("")
 })
 
 test.skipIf(!sandboxAvailable())("setsid child dies with the call", async () => {

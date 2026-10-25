@@ -191,8 +191,10 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       } finally {
         try {
           // On a natural exit the runtime has already reaped the leader, so in theory its pid (the
-          // group id) could be reused before this kill; on timeout, cancel or error the leader isn't
-          // reaped yet, so the kill can't reach an unrelated group.
+          // group id) could be reused before this kill. On timeout, cancel or error the leader is
+          // normally still running, so the kill can't reach an unrelated group; where the runtime
+          // reaps on its own thread, a leader that exits by itself just as the timeout fires is
+          // already reaped, the same window as a natural exit.
           killGroup(pid)
           if (canary) killEscaped(canary)
         } finally {
