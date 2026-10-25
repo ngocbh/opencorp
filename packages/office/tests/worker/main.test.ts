@@ -61,6 +61,14 @@ function logLines(log: string): string[] {
   return lines
 }
 
+/** Whether the run-log entry `entry` is a model call's step. */
+function isModelCall(entry: RunLogEntry): boolean {
+  return (
+    entry.kind === "node_step" &&
+    (entry.envelope.record as unknown as { step: { kind: string } }).step.kind === "model_call"
+  )
+}
+
 /** The snapshot of the follow frame `frame`; fails unless it is one. */
 function snapshotOf(frame: Frame | undefined): LiveSnapshot {
   expect(frame?.type).toBe("snapshot")
@@ -84,14 +92,13 @@ function checkLive(streams: Frame[], log: string, { bare = [] }: { bare?: number
     if (bare.includes(seq)) expect(frame).toEqual({ type: "record", seq })
     else expect(frame.line).toBe(lines[seq]!)
   }
-  replay(log, snapshot, streams.slice(1))
+  replay(log, snapshot, streams.slice(1), lines)
   return snapshot
 }
 
 /** Builds a view from the log `log` and `snapshot`, and checks it applies each of `frames` (a record without its line
- *  given the log's) and ends with no calls. */
-function replay(log: string, snapshot: LiveSnapshot, frames: Frame[]): void {
-  const lines = logLines(log)
+ *  given the log's, from `lines`) and ends with no calls. */
+function replay(log: string, snapshot: LiveSnapshot, frames: Frame[], lines = logLines(log)): void {
   const view = LiveView.from(iterRunRecords(log, { payloads: false }), snapshot)
   for (const frame of frames) {
     const bare = frame.type === "record" && frame.line === undefined
@@ -426,10 +433,7 @@ test("a resumed run follows after its offline deliveries without a gap", async (
   expect((await run(advanceJob(job, { deliver: [hi] }), new Recorder(), { env: fake.env() })).outcome?.status).toBe(
     "succeeded",
   )
-  const replyCall = (entry: RunLogEntry) =>
-    entry.kind === "node_step" &&
-    entry.nodeId === "reply" &&
-    (entry.envelope.record as unknown as { step: { kind: string } }).step.kind === "model_call"
+  const replyCall = (entry: RunLogEntry) => entry.kind === "node_step" && entry.nodeId === "reply" && isModelCall(entry)
   const log = logPrefix(job.log, (entry) => !replyCall(entry), tempDir())
   expect(inspectRun(log).status).toBe("crashed")
   const more = { ...hi, event: "more" }
@@ -484,11 +488,7 @@ test("a record frame over the frame limit goes without its line", async () => {
   const names = rec.names()
   expect(names[0]).toBe("RunStarted")
   expect(names.at(-1)).toBe("RunSucceeded")
-  const call = [...iterRunRecords(job.log)].find(
-    (entry) =>
-      entry.kind === "node_step" &&
-      (entry.envelope.record as unknown as { step: { kind: string } }).step.kind === "model_call",
-  )!
+  const call = [...iterRunRecords(job.log)].find(isModelCall)!
   checkLive(rec.streams, job.log, { bare: [call.seq] })
 })
 

@@ -73,7 +73,7 @@ export class Channel {
   }
 
   /** The largest frame body, in bytes, this channel sends or accepts. */
-  get maxFrame(): number {
+  maxFrame(): number {
     return this.#maxFrame
   }
 

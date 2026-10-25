@@ -234,7 +234,7 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   /** A Yian run event: `{name, data}`. */
   event(worker: W, frame: Frame): void
   /** A live frame of the run: `{type: "stream", frame}`, `frame` a yian `LiveFollowFrame` (a `record` possibly
-   *  without its `line`, when the frame would pass the channel's limit). */
+   *  without its `line`, when the frame would exceed the channel's limit). */
   stream(worker: W, frame: Frame): void
   /** A delivery's answer: `{id, seq, closed?}`, `{id, refused}` or `{id, failed}`; never a message text. */
   deliverReply(worker: W, frame: Frame): void

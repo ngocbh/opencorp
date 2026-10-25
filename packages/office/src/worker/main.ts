@@ -268,8 +268,7 @@ export function advanceAppended(log: string, before: number | null): boolean {
  */
 class LiveFollow {
   readonly #channel: Channel
-  #live: LiveChannel | null = null
-  #stop: (() => void) | null = null
+  #again: (() => void) | null = null
 
   /** A follow whose frames go out on `channel`. */
   constructor(channel: Channel) {
@@ -278,27 +277,28 @@ class LiveFollow {
 
   /** Follows `live` from inside its first frame. */
   bind(live: LiveChannel): void {
-    this.#live = live
     const unsubscribe = live.subscribe(() => {
       unsubscribe()
       // `wrap` sets `last_seq` when the run boundary opens the log, so a snapshot before the first frame would be
       // stale for an advance. The channel updates its state before it sends, so this snapshot already includes this
       // frame.
-      this.#stop = live.follow(this.#forward)
+      let stop = live.follow(this.#forward)
+      this.#again = () => {
+        stop()
+        stop = live.follow(this.#forward)
+      }
     })
   }
 
   /** Stops the current follow and follows again, from a fresh snapshot; a no-op until following has started. */
   again(): void {
-    if (this.#stop === null) return
-    this.#stop()
-    this.#stop = this.#live!.follow(this.#forward)
+    this.#again?.()
   }
 
   /** Sends `frame` as a `stream` frame; a `record` frame over the channel's limit goes without its `line`, which the
    *  office reads from the log. */
   readonly #forward = (frame: LiveFollowFrame): void => {
-    const max = this.#channel.maxFrame
+    const max = this.#channel.maxFrame()
     let out: Frame = { type: "stream", frame }
     // A UTF-16 unit is at most 3 UTF-8 bytes once JSON-escaped, so most lines skip the exact count.
     if (frame.type === "record" && 3 * frame.line.length + 256 > max && Buffer.byteLength(encode(out)) > max) {
@@ -565,7 +565,8 @@ async function readFrames(
       } else if (frame.type === "stop") {
         if (!state.finished) stopper.abort(new Error(STOP_REASON))
       } else if (frame.type === "follow") {
-        // A no-op before the run's first frame and for a check job; after the run call the channel sends nothing more.
+        // A no-op before the run's first frame and for a check job; after the run call it sends one last snapshot and
+        // nothing after it.
         state.follow.again()
       } else if (typeof frame.type === "string" && REPLY_TYPES.has(frame.type)) {
         rpc.deliver(frame)
