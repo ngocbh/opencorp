@@ -1,6 +1,6 @@
 /** The run state the session actor writes: waiting (and on whom), busy, idle (Python's
  *  `tests/chat/test_waiting.py`). */
-import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
+import { afterAll, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { now, Question } from "@opencorp/protocol"
 import type { SessionActor } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
@@ -11,17 +11,23 @@ import {
   ASK_MANAGER,
   ASK_USER,
   ASKED,
+  asleep,
+  capItem,
+  capGate,
   card,
   type ChatOffice,
   chatOffice,
   fakeLlm,
   GATE_ANSWER,
   GATE_FILES,
+  free,
   KAI,
   LAN,
   makeActor,
   newSession,
   noWorkersLeft,
+  PRICES,
+  PRICEY,
   reopen,
   scriptedWorker,
   session,
@@ -256,4 +262,99 @@ test("settle leaves a session whose finish is in flight", async () => {
   // The finish stored the end; a settle after it leaves it.
   actor.settle()
   expect(state(o, sid)).toEqual({ status: "ended", waiting_on: [], capped: false })
+})
+
+test("settle holds a session over its cap on its manager", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  // Over the company's $5.
+  o.office.store.updateSession(sid, { cost: 6 })
+  actor.settle()
+  expect(state(o, sid)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+})
+
+test("the cost hold waits on the cap item then the manager and raising the cap frees it", async () => {
+  const fake = await fakeLlm()
+  fake.script(PRICEY, free("done"), free("spare"))
+  const gate = capGate()
+  const o = await chatOffice(fake, { prices: PRICES, files: LAN, groups: gate.groups })
+  const { actor, sid } = await startActor(o)
+  gate.watch(o)
+  await actor.prompt("hi")
+  // Held from the charge on: the reply's worker is stopped, not interrupted, and its run waits for a raise.
+  const held = JSON.stringify(["waiting", [CEO]])
+  await waitFor(() => capItem(o) !== undefined && !actor.hasWorker && JSON.stringify(waits(o, sid)) === held, {
+    what: "the hold",
+  })
+  expect(gate.stops()).toBe(1)
+  expect(session(o, sid)).toMatchObject({ capped: true, turns: 0 })
+  o.office.store.updateWorkItem(capItem(o)!.id, { assignee: "lan" })
+  actor.settle()
+  expect(waits(o, sid)).toEqual(["waiting", ["lan"]])
+  // Closed some other way: the cost is still over the cap.
+  o.office.store.updateWorkItem(capItem(o)!.id, { status: "done" })
+  actor.settle()
+  // The manager at the pinned commit.
+  expect(waits(o, sid)).toEqual(["waiting", [CEO]])
+  await actor.setCostCap(20)
+  // The raise advances the stopped reply, which then finishes once.
+  await waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "idle after the raise" })
+  expect(session(o, sid)).toMatchObject({ capped: false, turns: 1 })
+})
+
+test("raising the cap of a sleeping session frees it without a worker", async () => {
+  const fake = await fakeLlm()
+  fake.script(PRICEY, free("done"), free("spare"))
+  const gate = capGate()
+  const o = await chatOffice(fake, { prices: PRICES, groups: gate.groups })
+  const first = await startActor(o)
+  gate.watch(o)
+  await first.actor.prompt("hi")
+  const { sid } = first
+  await waitFor(() => status(o, sid) === "waiting" && capItem(o) !== undefined, { what: "the hold" })
+  const actor = await reopen(o, first.actor)
+  const before = o.kinds.length
+  await actor.setCostCap(20)
+  // One advance resumes the stopped reply.
+  await waitFor(() => status(o, sid) === "idle" && !actor.hasWorker, { what: "idle after the raise" })
+  expect(o.kinds.slice(before)).toEqual(["advance"])
+  expect(state(o, sid)).toEqual({ status: "idle", waiting_on: [], capped: false })
+})
+
+test("a cap raise whose settle fails still stands", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor } = await startActor(o)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  spyOn(actor, "settle").mockImplementation(() => {
+    throw new Error("the pin can't be read")
+  })
+  // Logged, not a route error.
+  expect((await actor.setCostCap(20)).cost_cap_usd).toBe(20)
+  expect(o.logs.some((line) => line.includes("no state after its cap was raised (Error)"))).toBe(true)
+})
+
+test("a late cap check after the cap was raised does nothing", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  // Under the cap: posted before a raise, run after it.
+  await actor.checkCap()
+  expect(capItem(o)).toBeUndefined()
+  expect(waits(o, sid)).toEqual(["idle", []])
+})
+
+test("a failed wake whose settle fails still answers cant wake", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  o.failNextSpawn()
+  spyOn(actor, "settle").mockImplementation(() => {
+    throw new Error("the pin can't be read")
+  })
+  await expect(actor.prompt("hi")).rejects.toMatchObject({ status: 503, code: "cant_wake" })
+  expect(actor.hasWorker).toBe(false)
+  expect(status(o, sid)).toBe("idle")
 })

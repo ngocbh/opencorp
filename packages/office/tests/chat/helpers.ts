@@ -19,7 +19,7 @@ import { sameProcess, startTime } from "../../src/install/proc.ts"
 import { Monitor } from "../../src/perm/monitor.ts"
 import { Answers } from "../../src/questions/ask.ts"
 import { SecretStore, writePrivate } from "../../src/secrets.ts"
-import { newId, type QuestionRecord, type SessionRecord } from "../../src/store/store.ts"
+import { newId, type QuestionRecord, type SessionRecord, type WorkItemRecord } from "../../src/store/store.ts"
 import { FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { type Delivery, Job, type JobInput } from "../../src/worker/job.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
@@ -345,6 +345,65 @@ export const GATE_FILES = {
 
 /** An answer to the gate's pages. */
 export const GATE_ANSWER = { db: "Postgres", features: ["auth"] }
+
+/** Prices the fake's model at $1 an input token, so one call can pass the company's $5 cap. */
+export const PRICES = { stub: { input: 1_000_000, output: 0 } }
+
+/** A model turn that calls `noop` and costs $6 at `PRICES`, over the company's $5 cap. */
+export const PRICEY: ScriptedReply = {
+  tool_calls: [{ name: "noop", arguments: {} }],
+  usage: { prompt_tokens: 6, completion_tokens: 1 },
+}
+
+/** A `noop` tool (`groups`, for `chatOffice`) that answers only once the cap stopped a watched worker, so the reply
+ *  still runs when the stop comes; a resumed reply's call answers at once. */
+export function capGate(): {
+  groups: Record<string, Record<string, OfficeTool>>
+  /** How often the watched workers were stopped. */
+  stops: () => number
+  /** Watches `o`'s next spawned worker. */
+  watch: (o: ChatOffice) => void
+} {
+  let stops = 0
+  let open!: () => void
+  const opened = new Promise<void>((resolve) => (open = resolve))
+  const noop: OfficeTool = {
+    description: "Does nothing.",
+    parameters: EMPTY,
+    call: async () => {
+      await opened
+      return "ok"
+    },
+  }
+  return {
+    groups: { toolbox: { noop } },
+    stops: () => stops,
+    watch(o) {
+      o.afterSpawn((worker) => {
+        const stop = worker.stop.bind(worker)
+        worker.stop = () => {
+          stops += 1
+          // Opened once the stop frame is written, so the worker reads the stop before the tool's answer.
+          const sent = stop()
+          void sent.finally(open)
+          return sent
+        }
+      })
+    },
+  }
+}
+
+/** A model turn saying `content` that costs nothing. */
+export function free(content: string): ScriptedReply {
+  return { content, usage: { prompt_tokens: 0, completion_tokens: 0 } }
+}
+
+/** The open "raise the cost cap" work item, if any. */
+export function capItem(o: ChatOffice): WorkItemRecord | undefined {
+  return o.office.store
+    .listWorkItems({ status: ["open", "in_progress"] })
+    .find((item) => item.title.startsWith("Raise the cost cap"))
+}
 
 /** Each worker a chat office spawned: its pid and start time. */
 const spawnedWorkers: { pid: number; started: number | null }[] = []

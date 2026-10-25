@@ -4,7 +4,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { Message as RunMessage } from "@ngocbh/yian/run"
-import { CompanyDefaults, now, OFFICE } from "@opencorp/protocol"
+import { CompanyDefaults, now, OFFICE, WorkItem } from "@opencorp/protocol"
 import type { z } from "zod"
 import type { CompanyGit } from "../company/git.ts"
 import { loadRepo } from "../company/loader.ts"
@@ -18,19 +18,28 @@ import { formatAnswer } from "../questions/format.ts"
 import {
   COULDNT_RESUME,
   COULDNT_START,
+  ENDED_OVER_CAP,
   flowLabel,
   NEW_MODEL,
   OFFICE as OFFICE_DRIVER,
   WORKER_STOPPED,
 } from "../runs/outcomes.ts"
-import { InvalidTransition, newId, type QuestionRecord, type SessionRecord, type Store } from "../store/store.ts"
+import {
+  InvalidTransition,
+  newId,
+  type QuestionRecord,
+  type SessionRecord,
+  type Store,
+  type WorkItemRecord,
+} from "../store/store.ts"
 import { type Frame, FrameTooLarge } from "../worker/channel.ts"
 import type { Delivery, Job, Seed } from "../worker/job.ts"
 import { type AskRequest, BaseHandlers, errorName, type OfficeTool, type WorkerHandlers } from "../worker/rpc.ts"
 import { RegistryClosed, type Worker, workerEnv } from "../worker/spawn.ts"
 import { type Connections, runRecord } from "./connections.ts"
+import { type CallUsage, callUsd, costCap, DEFAULT_PRICE, ZERO_PRICE } from "./cost.ts"
 import type { Hooks } from "./hooks.ts"
-import { type Provider, ProviderError } from "./provider.ts"
+import { type Price, type Provider, ProviderError } from "./provider.ts"
 import { chatJob, type RunSpec } from "./run_spec.ts"
 import { HarnessError, LIVE, notWaiting, runState, SETTLED, writeState } from "./state.ts"
 import { type LiveCalls, type Transcript, userMessage } from "./transcript.ts"
@@ -63,6 +72,9 @@ export interface ActorContext {
   /** Gets log lines; never an error's message. */
   log(line: string): void
 }
+
+/** How the work item that asks to raise a session's cost cap is titled. */
+const CAP_TITLE = "Raise the cost cap"
 
 /** What the actor uses of a worker; `Worker` fits. */
 export type ActorWorker = Pick<Worker, "job" | "pid" | "deliver" | "stop">
@@ -151,6 +163,10 @@ class WorkerRun {
   worker: ActorWorker | null = null
   /** The provider it was spawned with, whose key no hook or reason may show. */
   provider: Provider | null = null
+  /** The price of a model call `provider` doesn't list. */
+  defaultPrice: Price = DEFAULT_PRICE
+  /** Whether the cost cap stopped it. */
+  capStopped = false
   /** Its job's deliveries, then each one sent to it. */
   readonly given: Pending[]
   /** Its `result` or `error` frame, recorded when it arrives. */
@@ -202,7 +218,10 @@ export class SessionActor implements LiveCalls {
   #next: Pending[] = []
   /** Whether a worker accepted a delivery after its `result`, so the run needs another `advance`. */
   #readvance = false
-  /** Whether a worker accepted a message after its `result`: the next worker's take will read it. */
+  /** Whether the run needs an `advance` that the cost cap held back (a job over the cap only delivers). */
+  #needsAdvance = false
+  /** Whether a worker accepted a message after its `result`, or in a job that only delivers: the next worker's take
+   *  will read it. */
   #lateSend = false
   /** The waits the last spawn started from when it was a plain re-advance for a settled wait, else null. */
   #readvancedFrom: Wait[] | null = null
@@ -357,7 +376,7 @@ export class SessionActor implements LiveCalls {
     const author = by ?? (await this.#owner(session))
     const reply = this.#replyNow(session)
     const parts = [{ type: "text", text }]
-    if (reply !== "steer") {
+    if (!this.#replying()) {
       const results = this.#ctx.hooks.fire("turnContext", session, text, { first: session.turns === 0 })
       const context = results.find((result) => typeof result === "string")
       if (typeof context === "string") parts.unshift({ type: "text", text: context })
@@ -464,8 +483,9 @@ export class SessionActor implements LiveCalls {
    * End: the session is `ending` at once, and its run gets an `interrupt` (while a reply runs or the agent waits on
    * a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
    * session ends. Resolves once they are queued; a second End does nothing. A spawn for them that fails fails the
-   * session, and End throws its error. Refused with `404 not_found` (the session row is gone), `409 not_live` or `503
-   * stopping`.
+   * session, and End throws its error. Over the cost cap a waiting run is ended the same way; a reply that runs is
+   * stopped, and a run stopped, crashed or unknown is cancelled, ending the session `ENDED_OVER_CAP`. Refused with
+   * `404 not_found` (the session row is gone), `409 not_live` or `503 stopping`.
    */
   end(): Promise<void> {
     return this.#command(async () => {
@@ -483,19 +503,30 @@ export class SessionActor implements LiveCalls {
     this.#ctx.store.updateSession(this.sessionId, notWaiting("ending"))
     const inbox = (await this.#specOf(session)).chat.inbox
     const run = this.#run
-    const replying = run !== null && run.outcome === null && [...run.inFlight].some((node) => this.#chat.isReply(node))
+    const capped = this.#capped()
+    const rests = this.#rested && !(this.#waits ?? []).some((wait) => wait.settled)
+    if (capped && run === null && !rests) {
+      // The reply was stopped at the cap, crashed or is unknown, or a settled call would wake the agent: an advance
+      // would spend, so the run is cancelled and the session ends.
+      this.#finish("ended", null, ENDED_OVER_CAP)
+      return
+    }
     const ops: Delivery[] = [{ id: newId(), op: "close", inbox }]
-    if (replying || this.#agentWaits()) ops.unshift({ id: newId(), op: "interrupt", inbox })
+    if (this.#replying() || this.#agentWaits()) ops.unshift({ id: newId(), op: "interrupt", inbox })
     let spawn = false
     for (const op of ops) spawn = (await this.#give(new Pending(op))) || spawn
+    // A reply running over the cap stops; its exit ends the session, as a stopped reply's does.
+    if (capped && run !== null) this.#stopAtCap(run)
     if (!spawn) return
     try {
+      // While ending, a waiting run gets a real advance even over the cap: its take reads the inbox closed, so no
+      // model call happens.
       await this.#spawn("advance")
     } catch (error) {
       if (error instanceof RegistryClosed || this.#closed) throw stopping()
       this.#log(`session ${this.sessionId} can't end (${errorName(error)})`)
       // Left open it could never be ended.
-      this.#finish("failed", null, COULDNT_RESUME)
+      this.#finish("failed", null, this.#cantStartWhy())
       throw this.#wakeError(error)
     }
   }
@@ -507,8 +538,48 @@ export class SessionActor implements LiveCalls {
   }
 
   /**
+   * Sets the session's cost cap to `usd`, closes its "raise the cost cap" item and returns the stored session. With
+   * no worker, an `advance` the cap held back starts now: when one was needed, deliveries wait, a settled call waits,
+   * or the run's waits are unknown (with a worker, its exit decides). A spawn or settle that fails is logged, and the
+   * raise stands. Refused with `422 cap_too_low` (not above the cost so far), `404 not_found` or `503 stopping`.
+   */
+  setCostCap(usd: number): Promise<SessionRecord> {
+    return this.#command(async () => {
+      const { store } = this.#ctx
+      const session = this.#session()
+      if (usd <= session.cost) {
+        const why = `the cap must be above the cost so far ($${session.cost.toFixed(4)})`
+        throw new HarnessError(422, "cap_too_low", why)
+      }
+      const item = this.#capItem(session)
+      store.updateSession(this.sessionId, { cost_cap_usd: usd })
+      if (item !== undefined) store.updateWorkItem(item.id, { status: "done" })
+      const waits = this.#waits
+      const held =
+        this.#needsAdvance || this.#next.length > 0 || waits === null || waits.some((wait) => wait.settled)
+      if (held && !this.hasWorker && !this.#finished && this.#runId !== null && LIVE.includes(session.status)) {
+        try {
+          await this.#spawn("advance")
+        } catch (error) {
+          // Its deliveries' callers have their answer; the session waits for the next message.
+          this.#log(`session ${this.sessionId}: a worker can't start after its cap was raised (${errorName(error)})`)
+        }
+      }
+      this.#trySettle("after its cap was raised")
+      return this.#session()
+    })
+  }
+
+  /** Acts on the cost cap, as a charge does: over it, the running reply is stopped, the manager gets an item to raise
+   *  it and the session settles; under it (a check that comes after a raise), nothing happens. */
+  checkCap(): Promise<void> {
+    return this.#command(async () => this.#overCap())
+  }
+
+  /**
    * Writes the session's run state from what its run waits in: waiting while a question is open on its current run
-   * (on the `ask_manager` item's assignee, else on the owner); else busy while a worker is being spawned or is sure
+   * (on the `ask_manager` item's assignee, else on the owner), or while its cost is at or over its cap (on the open
+   * cap item's assignee, else the pinned manager); else busy while a worker is being spawned or is sure
    * to be (a re-advance, or a message held for the next job), or while a worker runs the run and it isn't at its
    * turn; else idle. `writeState` leaves ending and finished sessions alone.
    * Called inside queue jobs. Every command reads the pinned company first, so it throws for missing pins only
@@ -523,10 +594,12 @@ export class SessionActor implements LiveCalls {
       const owner = session.opened_by ?? this.#pins.ceo
       const asks = this.#runId === null ? [] : store.listQuestions({ runId: this.#runId, status: "open" })
       const who = asks.map((q) => (q.source === "ask_manager" ? this.#assignee(q) : owner))
+      const held = session.cost >= costCap(session, this.#pins.defaults)
+      if (held) who.push(this.#capItem(session)?.assignee ?? this.#pins.manager)
       const run = this.#run
       const spawning = this.#starting !== null || this.#readvance || this.#next.some((p) => p.delivery.op === "send")
       const running = spawning || (run !== null && run.outcome === null && !this.#runAtTurn(run))
-      writeState(store, this.sessionId, runState({ waiting: asks.length > 0, running }), who)
+      writeState(store, this.sessionId, runState({ waiting: asks.length > 0 || held, running }), who, { capped: held })
     })
   }
 
@@ -635,13 +708,17 @@ export class SessionActor implements LiveCalls {
     return this.#run === null
   }
 
-  /** The decided reply of a message queued now. */
+  /** The decided reply of a message queued now: `queued` over the cost cap, where no turn runs until a raise. */
   #replyNow(session: SessionRecord): MessageReply {
-    const run = this.#run
-    if (run !== null && run.outcome === null && [...run.inFlight].some((node) => this.#chat.isReply(node))) {
-      return "steer"
-    }
+    if (this.#capped()) return "queued"
+    if (this.#replying()) return "steer"
     return this.#atTurn(session) ? "turn" : "queued"
+  }
+
+  /** Whether a reply node runs in the current worker. */
+  #replying(): boolean {
+    const run = this.#run
+    return run !== null && run.outcome === null && [...run.inFlight].some((node) => this.#chat.isReply(node))
   }
 
   /** Whether the run waits only at its turn: a worker's run with nothing in flight, no message pending for the
@@ -676,6 +753,8 @@ export class SessionActor implements LiveCalls {
    * `complete` for each stored answer that never reached the run. A `chat` job records what its run starts on, and
    * starts from `seed` (a retry's) unless it is a fresh run's. On failure, the job's deliveries are answered with the
    * error (`#wakeError`) and dropped, and the error is thrown. `plain` marks a re-advance only for a settled wait.
+   * Over the cost cap, unless ending, an `advance` only delivers (`advance: false`, no record check), and none
+   * starts without deliveries; the advance waits for a raise (`#needsAdvance`). Whether a worker started.
    */
   async #spawn(
     kind: "chat" | "advance",
@@ -684,9 +763,15 @@ export class SessionActor implements LiveCalls {
       replace = null,
       seed = null,
     }: { plain?: boolean; replace?: string | null; seed?: Seed | null } = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { store, paths } = this.#ctx
     const sid = this.sessionId
+    // A job over the cap never calls the model, so no endpoint is replayed: no record check.
+    const advance = kind === "chat" || this.#ending || !this.#capped()
+    if (!advance) {
+      this.#needsAdvance = true
+      if (this.#next.length === 0) return false
+    }
     let pendings = this.#next
     this.#next = []
     // This spawn is the re-advance; one that fails leaves nothing to wait for.
@@ -699,7 +784,8 @@ export class SessionActor implements LiveCalls {
       if (this.#closed) throw stopping()
       const { session, name, model, provider } = await this.#checkProvider()
       const spec = await this.#specOf(session)
-      const why = replace ?? (kind === "advance" ? this.#recordCheck(run.runId, name, model, provider) : null)
+      const checked = kind === "advance" && advance
+      const why = replace ?? (checked ? this.#recordCheck(run.runId, name, model, provider) : null)
       if (why !== null) {
         seed = await this.#seed(session)
         await this.#replace(session, spec, why)
@@ -733,16 +819,20 @@ export class SessionActor implements LiveCalls {
         turns: session.turns,
         seed,
         deliver: pendings.map((p) => p.delivery),
+        advance,
       })
       if (run.kind === "chat") store.setRunConfig(runId, runRecord(name, model, provider))
+      const defaultPrice = await this.#defaultPrice(name)
       const handlers = this.#handlers(run, ask, tools, spec.stores)
       // The office may have stopped during the awaits above.
       if (this.#closed) throw stopping()
       run.provider = provider
+      run.defaultPrice = defaultPrice
       run.seed = seed
       run.worker = await this.#ctx.workers.spawn(job, paths.sessionDir(sid), handlers, { env: provider.env })
       // Only now: a spawn that fails leaves it for the next worker's take.
       this.#lateSend = false
+      if (advance) this.#needsAdvance = false
       this.#run = run
       this.#starting = null
       // The worker's result arms it again.
@@ -750,12 +840,25 @@ export class SessionActor implements LiveCalls {
       void this.#ctx.hooks.notify("runStarted", session, runId)
       // Busy before any caller hears back: the run isn't at its turn until it shows it.
       if (!this.#closed) this.#trySettle("after a spawn")
+      return true
     } catch (error) {
       const refusal = this.#wakeError(error)
       for (const p of pendings) p.reject(refusal)
       throw error
     } finally {
       if (this.#starting === run) this.#starting = null
+    }
+  }
+
+  /** The price of a model call connection `name`'s file doesn't list: none for a subscription, which already pays
+   *  for its calls. */
+  async #defaultPrice(name: string): Promise<Price> {
+    try {
+      return (await this.#ctx.connections.get(name)).method === "subscription" ? ZERO_PRICE : DEFAULT_PRICE
+    } catch (error) {
+      // Removed or broken since it resolved: the run still has what it resolved.
+      if (!(error instanceof ProviderError)) throw error
+      return DEFAULT_PRICE
     }
   }
 
@@ -945,22 +1048,27 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `#spawn` for a step no command waits on (a worker's exit, the timer), logging its failure, which it already
-   *  answered; an ending session whose spawn fails then fails (`COULDNT_RESUME`): left open it could never be ended.
+   *  answered; an ending session whose spawn fails then fails (`#cantStartWhy`): left open it could never be ended.
    *  Whether a worker started. */
   async #spawnQuietly(
     kind: "chat" | "advance",
     options: { plain?: boolean; replace?: string; seed?: Seed | null } = {},
   ): Promise<boolean> {
     try {
-      await this.#spawn(kind, options)
-      return true
+      return await this.#spawn(kind, options)
     } catch (error) {
       this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
       if (this.#ending && !(error instanceof RegistryClosed) && !this.#closed) {
-        this.#finish("failed", null, COULDNT_RESUME)
+        this.#finish("failed", null, this.#cantStartWhy())
       }
       return false
     }
+  }
+
+  /** Why a session whose worker can't start fails: its run `COULDNT_START` when it has no log (a fresh run that
+   *  never started), else `COULDNT_RESUME`. */
+  #cantStartWhy(): string {
+    return this.#runId !== null && fs.existsSync(this.#logOf(this.#runId)) ? COULDNT_RESUME : COULDNT_START
   }
 
   /** One worker's handlers: its notifications go to the queue, its requests run at once. */
@@ -1027,6 +1135,9 @@ export class SessionActor implements LiveCalls {
         this.#staleReplaced()
         this.#trySettle("after a run started")
         return
+      case "ModelCallFinished":
+        if (typeof data.usage === "object" && data.usage !== null) this.#charge(run, data)
+        return
       case "history_not_seeded":
         this.#log(`session ${this.sessionId}: its fresh run starts without history (${typeName(data.error_type)})`)
         return
@@ -1071,6 +1182,77 @@ export class SessionActor implements LiveCalls {
     }
     run.nodeEvent = true
     this.#trySettle("after a node event")
+  }
+
+  /** Records the price of `run`'s model call (`data`, a `ModelCallFinished` with usage) and the session's cost, then
+   *  acts on the cap. */
+  #charge(run: WorkerRun, data: Record<string, unknown>): void {
+    const { store } = this.#ctx
+    const model = typeof data.model === "string" ? data.model : null
+    const usd = callUsd(run.provider?.prices ?? {}, model, data.usage as CallUsage, { default: run.defaultPrice })
+    store.recordUsage({ sessionId: this.sessionId, runId: run.runId, model: model ?? "", usd })
+    store.updateSession(this.sessionId, { cost: store.sessionUsageUsd(this.sessionId) })
+    this.#overCap()
+  }
+
+  /** Over the cost cap: the running reply is stopped, the person's manager gets one item to raise the cap, and the
+   *  session settles (waiting on that item's assignee). Under it, or once finished, nothing happens. */
+  #overCap(): void {
+    if (this.#finished || !this.#capped()) return
+    const { store } = this.#ctx
+    if (this.#run !== null) this.#stopAtCap(this.#run)
+    const session = this.#session()
+    // Else the manager already has one to act on.
+    if (this.#capItem(session) === undefined) {
+      const cap = costCap(session, this.#pins!.defaults)
+      const t = now()
+      store.createWorkItem(
+        WorkItem.parse({
+          id: newId(),
+          title: `${CAP_TITLE} of @${session.person}'s session`,
+          kind: "task",
+          status: "open",
+          requester: session.person,
+          assignee: this.#pins!.manager,
+          parent_id: session.work_item_id,
+          summary:
+            `Session ${session.id} reached its $${cap.toFixed(2)} cap (cost $${session.cost.toFixed(4)}). ` +
+            "Its turns wait until the cap is raised.",
+          created_at: t,
+          updated_at: t,
+        }),
+      )
+    }
+    this.#trySettle("at its cap")
+  }
+
+  /** Stops `run`'s worker, once, while it runs an advance that may call the model: an interrupt would only cut the
+   *  reply, and the run would go on to its next turn. */
+  #stopAtCap(run: WorkerRun): void {
+    const worker = run.worker
+    if (worker === null || run.outcome !== null || run.capStopped || !worker.job.advance) return
+    run.capStopped = true
+    worker.stop().catch((error) => this.#log(`session ${this.sessionId}: a stop can't be sent (${errorName(error)})`))
+  }
+
+  /** The session's open "raise the cost cap" work item, if any. */
+  #capItem(session: SessionRecord): WorkItemRecord | undefined {
+    // The summary names the session, so sessions with no work item don't share one.
+    const mine = `Session ${session.id} `
+    return this.#ctx.store
+      .listWorkItems({ status: ["open", "in_progress"] })
+      .find(
+        (item) =>
+          item.parent_id === session.work_item_id &&
+          item.title.startsWith(CAP_TITLE) &&
+          (item.summary ?? "").startsWith(mine),
+      )
+  }
+
+  /** Whether the session's cost is at or over its cap, as stored now. */
+  #capped(): boolean {
+    const session = this.#ctx.store.getSession(this.sessionId)
+    return this.#pins !== null && session !== undefined && session.cost >= costCap(session, this.#pins.defaults)
   }
 
   /** Adds one finished reply to the session's turns. */
@@ -1124,7 +1306,8 @@ export class SessionActor implements LiveCalls {
       const closed = Array.isArray(reply.closed) ? reply.closed.map(String) : []
       for (const callId of closed) this.#closedCall(run.runId, callId, op === "cancel" ? "cancelled" : "interrupted")
       if (p.late && (op === "send" || op === "complete" || op === "close" || closed.length > 0)) this.#readvance = true
-      if (p.late && op === "send") this.#lateSend = true
+      // A job that only delivers leaves the message for the next advance's take too.
+      if (op === "send" && (p.late || run.worker?.job.advance === false)) this.#lateSend = true
       if (p.questionId !== null) this.#consume(p.questionId)
       // The stored status is busy, and a message shown, before the caller hears back.
       this.#trySettle("after a reply")
@@ -1164,7 +1347,9 @@ export class SessionActor implements LiveCalls {
   /**
    * The worker is gone; its outcome decides what comes next. After a `waiting` result, see `#waited`. A succeeded
    * run ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once
-   * (`#died`); a run another process holds is tried once more (`#runBusy`); any other outcome fails the session.
+   * (`#died`), but over the cost cap a stopped or crashed run only gets its deliveries, and an ending session over
+   * it ends `ENDED_OVER_CAP`; a run another process holds is tried once more (`#runBusy`); any other outcome fails
+   * the session.
    * Every delivery not carried is answered. A finished actor only starts its run's hard stop that waited for this
    * exit.
    */
@@ -1184,14 +1369,27 @@ export class SessionActor implements LiveCalls {
     const readvance = this.#readvance
     this.#readvance = false
     const outcome = run.outcome
-    const status = outcome === null ? null : outcome.type === "result" ? String(outcome.status) : "error"
+    let status = outcome === null ? null : outcome.type === "result" ? String(outcome.status) : "error"
     const busy = status === "error" && String(outcome!.message ?? "").startsWith("RunBusyError:")
+    // A run the cap's stop cut short throws the stop's reason, which the worker reports as an error; its log says
+    // the run stopped.
+    if (status === "error" && !busy && run.capStopped) status = "stopped"
     if (status === "waiting" || status === "succeeded") this.#deaths = 0
     if (!busy) {
       this.#busyRetried = false
       this.#rested = status === "waiting"
     }
-    if (status === null || status === "stopped" || status === "crashed") {
+    const stopped = status === "stopped" || status === "crashed"
+    if ((status === null || stopped) && this.#ending && this.#capped()) {
+      // Over the cap an advance would resume the run and spend: it is cancelled, and the session ends.
+      this.#log(`session ${this.sessionId}: ends over its cost cap`)
+      this.#finish("ended", null, ENDED_OVER_CAP, run)
+    } else if (stopped && this.#capped()) {
+      // The cap stopped it (or it crashed over the cap): not a death. Only its deliveries go on, until a raise.
+      this.#log(`session ${this.sessionId}: its run ${status} over its cost cap`)
+      this.#carry(run)
+      await this.#spawnQuietly("advance")
+    } else if (status === null || stopped) {
       await this.#died(run, status)
     } else if (busy) {
       await this.#runBusy(run)
@@ -1214,7 +1412,8 @@ export class SessionActor implements LiveCalls {
    * `#next` holds some, or when a delivery came after the result (`readvance`). A settled wait alone is advanced
    * too, but not again when the last spawn was such a plain re-advance and the run still waits on the same calls,
    * each as settled as before: it made no progress, so it waits for the next command. With no worker started, the
-   * timer waits for the earliest deadline.
+   * timer waits for the earliest deadline. Over the cost cap, unless ending, only deliveries are taken to the run,
+   * and the advance waits for a raise; an advance the cap held back is spawned once it is raised.
    */
   async #waited(run: WorkerRun, readvance: boolean): Promise<void> {
     const waits = this.#waits ?? []
@@ -1222,7 +1421,12 @@ export class SessionActor implements LiveCalls {
     this.#carry(run)
     // Armed before the spawn, which disarms it once its worker starts: a spawn that fails leaves the timer.
     this.#arm(waits)
-    if (readvance || this.#next.length > 0) {
+    if (!this.#ending && this.#capped()) {
+      if (readvance || waits.some((wait) => wait.settled)) this.#needsAdvance = true
+      if (this.#next.length > 0) await this.#spawnQuietly("advance")
+      return
+    }
+    if (readvance || this.#needsAdvance || this.#next.length > 0) {
       await this.#spawnQuietly("advance")
       return
     }
@@ -1237,8 +1441,9 @@ export class SessionActor implements LiveCalls {
 
   /** `run`'s worker found the run held by another process (`RunBusyError`): the first time, the same spawn goes
    *  again with what it never applied (but an `interrupt`); the second time, every delivery left, `#next`'s
-   *  included, is answered `503 run_busy`. When no retry runs, the actor stays as it was: a later busy run gets its
-   *  own retry, and a run that rested `waiting` gets its timer back. */
+   *  included, is answered `503 run_busy`, and an ending session fails (`COULDNT_RESUME`). When no retry runs, the
+   *  actor stays as it was: a later busy run gets its own retry, and a run that rested `waiting` gets its timer
+   *  back. */
   async #runBusy(run: WorkerRun): Promise<void> {
     this.#log(`session ${this.sessionId}: its run is held by another process (RunBusyError)`)
     if (!this.#busyRetried) {
@@ -1251,6 +1456,11 @@ export class SessionActor implements LiveCalls {
       }
     } else {
       this.#answerRest([...run.given, ...this.#next.splice(0)], runBusy(), runBusy())
+      // Left ending it could never be ended.
+      if (this.#ending) {
+        this.#finish("failed", null, COULDNT_RESUME, run)
+        return
+      }
     }
     this.#busyRetried = false
     // The timer's advance never ran, so its deadline may wake the run again.
@@ -1304,8 +1514,10 @@ export class SessionActor implements LiveCalls {
   }
 
   /** `run`'s worker is gone with no outcome (`status` null), or its run `stopped` or `crashed`: the first time, a
-   *  plain `advance` takes over with what it carried (one that can't start after a death fails the session,
-   *  `COULDNT_RESUME`); again before a `waiting` or `succeeded` result, the session fails (`WORKER_STOPPED`). */
+   *  plain `advance` takes over with what it carried. After a worker gone with no outcome, one that can't start fails
+   *  the session (`#cantStartWhy`); after a `stopped` or `crashed` run, a failed spawn is only logged and the session
+   *  waits for the next message (an ending one fails, as `#spawnQuietly` says). Again before a `waiting` or
+   *  `succeeded` result, the session fails (`WORKER_STOPPED`). */
   async #died(run: WorkerRun, status: string | null): Promise<void> {
     this.#log(`session ${this.sessionId}: ${status === null ? "its worker exited (no outcome)" : `its run ${status}`}`)
     if (this.#deaths >= 1) {
@@ -1323,7 +1535,7 @@ export class SessionActor implements LiveCalls {
       await this.#spawn("advance")
     } catch (error) {
       this.#log(`session ${this.sessionId}: a worker can't start (${errorName(error)})`)
-      if (!(error instanceof RegistryClosed) && !this.#closed) this.#finish("failed", null, COULDNT_RESUME, run)
+      if (!(error instanceof RegistryClosed) && !this.#closed) this.#finish("failed", null, this.#cantStartWhy(), run)
     }
   }
 
@@ -1496,11 +1708,17 @@ export class SessionActor implements LiveCalls {
     this.#timer = null
   }
 
-  /** The deadline `at` of `timer` has come: with no worker, a plain `advance` times its calls out. */
+  /** The deadline `at` of `timer` has come: with no worker and under the cost cap, a plain `advance` times its calls
+   *  out. */
   async #wake(timer: AbortController, at: string): Promise<void> {
     if (timer !== this.#timer) return
     this.#timer = null
     if (this.#finished || this.hasWorker) return
+    // Over the cap the timed-out calls wait for a raise.
+    if (this.#capped()) {
+      this.#needsAdvance = true
+      return
+    }
     if (await this.#spawnQuietly("advance")) {
       this.#spent = at
       this.#run!.wakeAt = at

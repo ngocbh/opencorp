@@ -6,7 +6,7 @@ import { type Scheduler, SLEEP_CHUNK_MS } from "@ngocbh/yian/platform"
 import type { LiveEvent } from "@opencorp/protocol"
 import { INTERRUPTED_CALL, type Wait } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
-import { COULDNT_RESUME, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
+import { COULDNT_RESUME, COULDNT_START, ENDED_OVER_CAP, NEW_MODEL, WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { writePrivate } from "../../src/secrets.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { Delivery } from "../../src/worker/job.ts"
@@ -17,19 +17,25 @@ import {
   ASK_USER,
   ASKED,
   asleep,
+  capGate,
+  capItem,
   card,
   type ChatOffice,
   chatOffice,
   EMPTY,
   fakeLlm,
+  free,
   makeActor,
   newSession,
   noWorkersLeft,
+  PRICES,
+  PRICEY,
   reopen,
   say,
   scriptedWorker,
   session,
   startActor,
+  state,
   status,
   TAKE,
   texts,
@@ -970,7 +976,8 @@ test("a fresh run that cant spawn at end stops the run it replaced", async () =>
   const fresh = actor.runId!
   expect(session(o, sid).run_ids).toEqual([old, fresh])
   expect(o.office.store.getRun(old)?.endReason).toBe(NEW_MODEL)
-  expect(o.office.store.getRun(fresh)?.endReason).toBe(COULDNT_RESUME)
+  // The fresh run never started.
+  expect(o.office.store.getRun(fresh)?.endReason).toBe(COULDNT_START)
   // Nothing cancelled the old run, which has a log: one cancel job for it; the fresh run never started.
   await waitFor(() => workers.length === 2, { what: "the cancel job" })
   expect(o.jobs.slice(1)).toMatchObject([{ run_id: old, advance: false, deliver: [{ op: "cancel" }] }])
@@ -996,7 +1003,8 @@ test("an ending session whose fresh run cant spawn fails", async () => {
   second.handlers.exited(second.worker, 1)
   // Left ending it could never be ended.
   await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
-  expect(o.office.store.getRun(actor.runId!)?.endReason).toBe(COULDNT_RESUME)
+  // The fresh run never started.
+  expect(o.office.store.getRun(actor.runId!)?.endReason).toBe(COULDNT_START)
   await expect(actor.end()).rejects.toMatchObject({ status: 409, code: "not_live" })
 })
 
@@ -1055,4 +1063,142 @@ test("the wake at timer fires again after a busy run fails twice", async () => {
   // The advance never ran: the timer is armed for the same deadline, which has come.
   expect(o.kinds).toEqual(["chat", "advance", "advance", "advance"])
   expect(o.jobs[3]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+})
+
+test("an ending session whose run is busy twice fails", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = actor.runId!
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(runId))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "asleep at the turn" })
+  await actor.end()
+  // End's advance, then its retry, find the run held by another process.
+  for (const n of [1, 2]) {
+    await waitFor(() => workers.length === n + 1, { what: `worker ${n + 1}` })
+    const { worker, handlers, job } = workers[n]!
+    expect(job.deliver.map((d) => d.op)).toEqual(["close"])
+    handlers.error(worker, { type: "error", message: `RunBusyError: run ${runId} is running`, traceback: "" })
+    handlers.exited(worker, 1)
+  }
+  // Left ending it could never be ended.
+  await waitFor(() => status(o, sid) === "failed", { what: "the failure" })
+  expect(o.office.store.getRun(runId)?.endReason).toBe(COULDNT_RESUME)
+})
+
+test("a capped session advances nothing and a raise answers what it queued", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const start = Date.parse("2026-10-25T00:00:00.000Z")
+  const { scheduler, sleeps, clock } = steppedScheduler(start)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid, { scheduler })
+  await actor.start()
+  const runId = actor.runId!
+  const deadline = new Date(start + 3_600_000).toISOString()
+  const take = { ...TAKE, deadline }
+  workers[0]!.handlers.result(workers[0]!.worker, waitingResult(runId, [take]))
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle" && sleeps.length === 1, {
+    what: "asleep at the turn",
+  })
+  // Over the company's $5 while idle at the turn.
+  o.office.store.updateSession(sid, { cost: 6 })
+  const sent = actor.prompt("hi")
+  await waitFor(() => workers.length === 2, { what: "the delivering job" })
+  const second = workers[1]!
+  // It only delivers: no model call may start over the cap.
+  expect(second.job).toMatchObject({ kind: "advance", advance: false })
+  expect(second.job.deliver.map((d) => d.op)).toEqual(["send"])
+  second.handlers.deliverReply(second.worker, { type: "deliver_reply", id: second.job.deliver[0]!.id, seq: 3 })
+  expect(await sent).toBe("queued")
+  second.handlers.result(second.worker, waitingResult(runId, [take]))
+  second.handlers.exited(second.worker, 0)
+  await waitFor(() => !actor.hasWorker && sleeps.length === 2, { what: "the timer armed again" })
+  expect(state(o, sid)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+  // The deadline comes: the timer doesn't advance a capped run.
+  clock.now = Date.parse(deadline)
+  sleeps.at(-1)!.wake()
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  await actor.checkCap()
+  expect(workers).toHaveLength(2)
+  // The raise advances the run, which takes the queued message.
+  const raised = await actor.setCostCap(20)
+  expect(raised.cost_cap_usd).toBe(20)
+  expect(workers).toHaveLength(3)
+  const third = workers[2]!
+  expect(third.job).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+  expect(status(o, sid)).toBe("busy")
+  /** The third worker's run sends `name` for `node`. */
+  const event = (name: string, data: Record<string, unknown>) =>
+    third.handlers.event(third.worker, { type: "event", name, data })
+  event("NodeWoken", { node_id: "chat#0/heard" })
+  event("NodeSucceeded", { node_id: "chat#0/heard" })
+  event("NodeStarted", { node_id: "chat#0/reply" })
+  event("NodeSucceeded", { node_id: "chat#0/reply" })
+  event("NodeWaiting", { node_id: "chat#1/heard", call_ids: ["c2"] })
+  third.handlers.result(third.worker, waitingResult(runId, [{ ...TAKE, node: "chat#1/heard", call_id: "c2" }]))
+  third.handlers.exited(third.worker, 0)
+  await waitFor(() => !actor.hasWorker && status(o, sid) === "idle", { what: "the reply" })
+  expect(session(o, sid)).toMatchObject({ turns: 1, capped: false })
+})
+
+test("a new actor over a capped session sends without advancing", async () => {
+  const fake = await fakeLlm()
+  fake.script(free("late"))
+  const o = await chatOffice(fake)
+  const { actor, sid } = await asleep(o)
+  o.office.store.updateSession(sid, { cost: 6 })
+  const before = o.kinds.length
+  expect(await actor.prompt("hi")).toBe("queued")
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: false }])
+  expect(fake.requests()).toHaveLength(0)
+  expect(state(o, sid)).toEqual({ status: "waiting", waiting_on: [CEO], capped: true })
+  // The raise advances the run to the message it holds.
+  await actor.setCostCap(20)
+  await waitFor(() => texts(o, sid).includes("late") && status(o, sid) === "idle", { what: "the reply" })
+  expect(o.kinds.slice(before)).toEqual(["advance", "advance"])
+})
+
+test("end over the cost cap on a waiting run closes it without a model call", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const { actor, sid } = await startActor(o)
+  await waitFor(() => !actor.hasWorker, { what: "the worker to exit" })
+  o.office.store.updateSession(sid, { cost: 6 })
+  const before = o.kinds.length
+  await actor.end()
+  // The one advance a capped session may run: the take reads the inbox closed and the run succeeds.
+  await waitFor(() => status(o, sid) === "ended", { what: "the end" })
+  expect(o.jobs.slice(before)).toMatchObject([{ kind: "advance", advance: true, deliver: [{ op: "close" }] }])
+  expect(fake.requests()).toHaveLength(0)
+})
+
+test("end over the cost cap on a stopped reply ends the session at once", async () => {
+  const fake = await fakeLlm()
+  fake.script(PRICEY, free("spare"))
+  const gate = capGate()
+  const o = await chatOffice(fake, { prices: PRICES, groups: gate.groups })
+  const { actor, sid } = await startActor(o)
+  gate.watch(o)
+  await actor.prompt("hi")
+  await waitFor(() => capItem(o) !== undefined && !actor.hasWorker && status(o, sid) === "waiting", {
+    what: "the reply stopped at the cap",
+  })
+  const runId = actor.runId!
+  const requests = fake.requests().length
+  const before = o.kinds.length
+  // An advance would resume the stopped reply and spend: the run is cancelled and the session ends.
+  await actor.end()
+  expect(status(o, sid)).toBe("ended")
+  expect(o.office.store.getRun(runId)?.endReason).toBe(ENDED_OVER_CAP)
+  await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
+  expect(o.jobs.at(-1)).toMatchObject({ run_id: runId, advance: false, deliver: [{ op: "cancel" }] })
+  expect(fake.requests()).toHaveLength(requests)
 })
