@@ -47,6 +47,8 @@ export const EVENT_BYTES = 2 << 20
 /** The deepest a payload is shown: a container nested deeper shows as "…", so showing and serializing it recurse a
  *  bounded depth. */
 export const DEPTH_CAP = 128
+/** The most characters of JSON pointers one event's `cut` names; an event whose cuts would name more is a size stub. */
+export const CUT_CHARS = 64 << 10
 /** The longest record one opened record parses; a longer one is a stub with its size, read without holding its line
  *  (parsing a record takes several times its size in memory). The download has it whole. */
 export const HUGE_LINE = 16 << 20
@@ -463,42 +465,40 @@ interface Line {
 
 /**
  * The complete lines of `fd` between byte `start` and byte `stop`, one at a time, after skipping `skip` of them. Lines
- * are scanned CHUNK at a time: a skipped line is only counted, and a line longer than `cap` is never held, only its
- * first 256 bytes and its size.
+ * are scanned CHUNK at a time for newlines, keeping only a line's start and first 256 bytes; a line no longer than
+ * `cap` is then read whole in one read, and a longer one is never held.
  */
 function* lines(fd: number, start: number, stop: number, cap: number, skip: number): Generator<Line> {
-  let parts: Buffer[] = []
+  const chunk = Buffer.allocUnsafe(Math.min(CHUNK, stop - start))
+  let at = start
   let head = Buffer.alloc(0)
-  let size = 0
   for (let pos = start; pos < stop;) {
-    // A fresh buffer per read, so the parts of a line kept from the last read stay as they were.
-    const chunk = Buffer.allocUnsafe(Math.min(CHUNK, stop - pos))
-    const count = fs.readSync(fd, chunk, 0, chunk.length, pos)
+    const count = fs.readSync(fd, chunk, 0, Math.min(chunk.length, stop - pos), pos)
     if (count === 0) return
-    pos += count
     const data = chunk.subarray(0, count)
     for (let from = 0; from < count;) {
       const nl = data.indexOf(0x0a, from)
       const end = nl === -1 ? count : nl + 1
-      if (skip === 0) {
-        if (head.length < 256) {
-          head = Buffer.concat([head, data.subarray(from, Math.min(end, from + 256 - head.length))])
-        }
-        size += end - from
-        if (size <= cap) parts.push(data.subarray(from, end))
-        else parts = []
+      if (skip === 0 && head.length < 256) {
+        head = Buffer.concat([head, data.subarray(from, Math.min(end, from + 256 - head.length))])
       }
       from = end
       if (nl === -1) break
       if (skip > 0) {
         skip -= 1
-        continue
+      } else {
+        const size = pos + end - at
+        let bytes: Buffer | null = null
+        if (size <= cap) {
+          bytes = Buffer.allocUnsafe(size)
+          bytes = bytes.subarray(0, fs.readSync(fd, bytes, 0, size, at))
+        }
+        yield { bytes, head, size }
+        head = Buffer.alloc(0)
       }
-      yield { bytes: size <= cap ? Buffer.concat(parts, size) : null, head, size }
-      parts = []
-      head = Buffer.alloc(0)
-      size = 0
+      at = pos + end
     }
+    pos += count
   }
 }
 
@@ -507,8 +507,24 @@ function escape(key: string): string {
   return key.replaceAll("~", "~0").replaceAll("/", "~1")
 }
 
-/** `text` cut to FIELD_CHARS code points and "…" when it is longer, its pointer added to `cut`. */
-function cutText(text: string, pointer: string, cut: string[]): string {
+/** The JSON pointers of one event's cut values, their characters bounded by CUT_CHARS. */
+class Cuts {
+  readonly pointers: string[] = []
+  private chars = 0
+
+  /** Adds `pointer`; throws TooManyCuts when the pointers would pass CUT_CHARS. */
+  add(pointer: string): void {
+    this.chars += pointer.length
+    if (this.chars > CUT_CHARS) throw new TooManyCuts()
+    this.pointers.push(pointer)
+  }
+}
+
+/** An event's cuts would name more than CUT_CHARS: the walk stops and the event is a size stub. */
+class TooManyCuts extends Error {}
+
+/** `text` cut to FIELD_CHARS code points and "…" when it is longer, its pointer added to `cuts`. */
+function cutText(text: string, pointer: string, cuts: Cuts): string {
   if (text.length <= FIELD_CHARS) return text
   // Walked a code point at a time, so a surrogate pair is never split and no copy of the whole string is made.
   let end = 0
@@ -518,7 +534,7 @@ function cutText(text: string, pointer: string, cut: string[]): string {
     end += pair ? 2 : 1
   }
   if (end >= text.length) return text
-  cut.push(pointer)
+  cuts.add(pointer)
   return text.slice(0, end) + "…"
 }
 
@@ -526,30 +542,30 @@ function cutText(text: string, pointer: string, cut: string[]): string {
  * `value` at JSON pointer `pointer`, `depth` containers deep, in its display form: an int as a JSON number when it is
  * a safe integer, else its decimal string; an infinite float as "Infinity" or "-Infinity"; a file as `{uri, mime,
  * name}`; an inbox handle as its name. Strings longer than FIELD_CHARS code points are cut when `cutting`, and a
- * container DEPTH_CAP deep is "…"; each pointer is added to `cut`.
+ * container DEPTH_CAP deep is "…"; each pointer is added to `cuts`.
  */
-function shown(value: unknown, pointer: string, cut: string[], depth: number, cutting: boolean): unknown {
-  if (typeof value === "string") return cutting ? cutText(value, pointer, cut) : value
+function shown(value: unknown, pointer: string, cuts: Cuts, depth: number, cutting: boolean): unknown {
+  if (typeof value === "string") return cutting ? cutText(value, pointer, cuts) : value
   if (typeof value === "bigint") {
     return value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER ? Number(value) : value.toString()
   }
   if (value === Infinity) return "Infinity"
   if (value === -Infinity) return "-Infinity"
   if (FileRef.isFileRef(value)) {
-    return shown({ uri: value.uri, mime: value.mime, name: value.name }, pointer, cut, depth, cutting)
+    return shown({ uri: value.uri, mime: value.mime, name: value.name }, pointer, cuts, depth, cutting)
   }
-  if (InboxRef.isInboxRef(value)) return shown(value.inbox, pointer, cut, depth, cutting)
+  if (InboxRef.isInboxRef(value)) return shown(value.inbox, pointer, cuts, depth, cutting)
   if (typeof value !== "object" || value === null) return value
   if (depth >= DEPTH_CAP) {
-    cut.push(pointer)
+    cuts.add(pointer)
     return "…"
   }
-  if (Array.isArray(value)) return value.map((item, i) => shown(item, `${pointer}/${i}`, cut, depth + 1, cutting))
+  if (Array.isArray(value)) return value.map((item, i) => shown(item, `${pointer}/${i}`, cuts, depth + 1, cutting))
   // Built with fromEntries, so a key named like an Object member (`__proto__`) stays a plain data key.
   return Object.fromEntries(
     Object.entries(value).map(([key, item]) => [
       key,
-      shown(item, `${pointer}/${escape(key)}`, cut, depth + 1, cutting),
+      shown(item, `${pointer}/${escape(key)}`, cuts, depth + 1, cutting),
     ]),
   )
 }
@@ -559,12 +575,12 @@ function shown(value: unknown, pointer: string, cut: string[], depth: number, cu
 function shownPayload(
   payload: Record<string, unknown>,
   kind: string,
-  cut: string[],
+  cuts: Cuts,
   cutting: boolean,
 ): Record<string, unknown> {
   const { value } = payload
   if (kind !== "pool_commit" || !Object.hasOwn(payload, "kind") || value === null || value === undefined) {
-    return shown(payload, "", cut, 0, cutting) as Record<string, unknown>
+    return shown(payload, "", cuts, 0, cutting) as Record<string, unknown>
   }
   let decoded: unknown = value
   try {
@@ -572,7 +588,7 @@ function shownPayload(
   } catch (error) {
     if (!(error instanceof RangeError)) throw error
   }
-  return shown({ ...payload, value: decoded }, "", cut, 0, cutting) as Record<string, unknown>
+  return shown({ ...payload, value: decoded }, "", cuts, 0, cutting) as Record<string, unknown>
 }
 
 /** The node a payload names: its `node_id`, else its `spawner_id`, else its failure's `node_id`. */
@@ -602,9 +618,8 @@ function stub(head: Buffer, seq: number, size: number): RunEvent {
 }
 
 /**
- * Line `seq` (`bytes`) as a page shows it, or as one opened record shows it when `whole`: its strings cut only when its
- * payload is over EVENT_BYTES, and a stub with its size when it is still over. Null when it no longer reads as record
- * `seq` (the file changed since it was indexed).
+ * Line `seq` (`bytes`) as a page shows it, or as one opened record shows it when `whole` (see `fitted`). Null when it
+ * no longer reads as record `seq` (the file changed since it was indexed).
  */
 function decode(bytes: Buffer, seq: number, whole: boolean): RunEvent | null {
   let record: unknown
@@ -617,17 +632,40 @@ function decode(bytes: Buffer, seq: number, whole: boolean): RunEvent | null {
   if (!isRecord(record) || record.seq !== BigInt(seq)) return null
   const kind = typeof record.kind === "string" && record.kind !== "" ? record.kind : "unknown"
   const raw = isRecord(record.payload) ? record.payload : null
-  let cut: string[] = []
-  let payload = raw === null ? null : shownPayload(raw, kind, cut, !whole)
-  if (raw !== null && whole && Buffer.byteLength(JSON.stringify(payload)) > EVENT_BYTES) {
-    cut = []
-    payload = shownPayload(raw, kind, cut, true)
-    // Many short strings: cutting each can't bring it under.
-    if (Buffer.byteLength(JSON.stringify(payload)) > EVENT_BYTES) {
-      return { seq, kind, node_id: nodeOf(payload), size: bytes.length }
+  if (raw === null) return { seq, kind, node_id: null, payload: null, cut: [] }
+  return fitted(seq, kind, raw, bytes.length, whole, (cuts, cutting) => shownPayload(raw, kind, cuts, cutting))
+}
+
+/**
+ * Record `seq` of kind `kind` (`size` bytes, payload `raw`) with the payload `show(cuts, cutting)` gives: on a page its
+ * strings cut; when `whole`, its strings cut only when the payload and its cuts are over EVENT_BYTES, and a stub with
+ * its size when they are still over. A stub too when its cuts would name more than CUT_CHARS.
+ */
+function fitted(
+  seq: number,
+  kind: string,
+  raw: Record<string, unknown>,
+  size: number,
+  whole: boolean,
+  show: (cuts: Cuts, cutting: boolean) => Record<string, unknown>,
+): RunEvent {
+  try {
+    let cuts = new Cuts()
+    let payload = show(cuts, !whole)
+    if (whole && Buffer.byteLength(JSON.stringify({ payload, cut: cuts.pointers })) > EVENT_BYTES) {
+      cuts = new Cuts()
+      payload = show(cuts, true)
+      // Many short strings: cutting each can't bring it under.
+      if (Buffer.byteLength(JSON.stringify({ payload, cut: cuts.pointers })) > EVENT_BYTES) {
+        return { seq, kind, node_id: nodeOf(payload), size }
+      }
     }
+    return { seq, kind, node_id: nodeOf(payload), payload, cut: cuts.pointers }
+  } catch (error) {
+    if (!(error instanceof TooManyCuts)) throw error
+    const nodeId = nodeOf(raw)
+    return { seq, kind, node_id: nodeId === null ? null : cutText(nodeId, "", new Cuts()), size }
   }
-  return { seq, kind, node_id: nodeOf(payload), payload, cut }
 }
 
 /**
@@ -711,7 +749,7 @@ export function logStream(path: string): Readable {
   }
   if (end === 0) {
     fs.closeSync(fd)
-    return Readable.from([])
+    return Readable.from([], { objectMode: false })
   }
   return fs.createReadStream(path, { fd, start: 0, end: end - 1, highWaterMark: CHUNK })
 }

@@ -6,6 +6,7 @@ import {
   BIG_LINE,
   CHUNK,
   cost,
+  CUT_CHARS,
   DEPTH_CAP,
   ERROR_KEPT,
   EVENT_BYTES,
@@ -507,11 +508,17 @@ test("a commit value shows in its display form", async () => {
   const file = logOf(
     runStarted(0), started(1, "a"), committed(2, "a", 2n ** 60n, "int"), committed(3, "a", 5n, "int"),
     committed(4, "a", 1.5, "float"), committed(5, "a", Infinity, "float"), committed(6, "a", -Infinity, "float"),
-    committed(7, "a", { inbox: "messages" }, "inbox"), committed(8, "a", ref, "file"),
+    committed(7, "a", { inbox: "messages" }, "inbox"), committed(8, "a", ref, "file"), committed(9, "a", 123n, "int"),
   )
   const index = await refresh(file, null)
+  // A wire fromWire refuses can't be indexed (yian's reader refuses it too); it reaches a page only as a line
+  // rewritten since, here one of the same length.
+  const refused = committed(9, "a", "x", "int")
+  const data = fs.readFileSync(file)
+  expect(refused.length).toBe(committed(9, "a", 123n, "int").length)
+  fs.writeFileSync(file, Buffer.concat([data.subarray(0, data.length - refused.length), refused]))
   const values = readEvents(file, index, { after: 1, limit: 10 }).events.map((e) => e.payload!.value)
-  expect(values).toEqual(["1152921504606846976", 5, 1.5, "Infinity", "-Infinity", "messages", ref])
+  expect(values).toEqual(["1152921504606846976", 5, 1.5, "Infinity", "-Infinity", "messages", ref, "x"])
   expect(readEvent(file, index, 2)!.payload!.value).toBe("1152921504606846976")
   expect(readEvent(file, index, 8)!.payload!.value).toEqual(ref)
   expect(readEvent(file, index, 1)!.payload).toEqual({ node_id: "a" })
@@ -520,13 +527,56 @@ test("a commit value shows in its display form", async () => {
 test("a deeply nested payload is cut at its depth", async () => {
   let deep: unknown = "end"
   for (let i = 0; i < 10_000; i++) deep = [deep]
-  const file = logOf(runStarted(0), started(1, "a"), committed(2, "a", deep, "list[Any]"))
+  let keyed: unknown = "end"
+  for (let i = 0; i < 10_000; i++) keyed = { "a/~b": keyed }
+  const file = logOf(
+    runStarted(0), started(1, "a"), committed(2, "a", deep, "list[Any]"), committed(3, "a", keyed, "object"),
+  )
   const index = await refresh(file, null)
-  const pointer = "/value" + "/0".repeat(DEPTH_CAP - 1)
-  for (const event of [readEvents(file, index, { after: 1, limit: 10 }).events[0]!, readEvent(file, index, 2)!]) {
-    expect([DEPTH_CAP, event.cut]).toEqual([128, [pointer]])
-    let at = event.payload!.value
-    for (let depth = 1; depth < DEPTH_CAP; depth++) at = (at as unknown[])[0]
-    expect(at).toBe("…")
+  const page = readEvents(file, index, { after: 1, limit: 10 }).events
+  const cases: [number, string, (at: unknown) => unknown][] = [
+    [0, "/0", (at) => (at as unknown[])[0]],
+    [1, "/a~1~0b", (at) => (at as Record<string, unknown>)["a/~b"]],
+  ]
+  for (const [n, segment, step] of cases) {
+    const pointer = "/value" + segment.repeat(DEPTH_CAP - 1)
+    for (const event of [page[n]!, readEvent(file, index, 2 + n)!]) {
+      expect([DEPTH_CAP, event.cut]).toEqual([128, [pointer]])
+      let at = event.payload!.value
+      for (let depth = 1; depth < DEPTH_CAP; depth++) at = step(at)
+      expect(at).toBe("…")
+    }
+  }
+})
+
+/** `inner` under `levels` nested objects, each keyed by a distinct `length`-character key. */
+function underKeys(inner: unknown, levels: number, length: number): unknown {
+  let value = inner
+  for (let i = 0; i < levels; i++) value = { [String(i).padStart(4, "0") + "k".repeat(length - 4)]: value }
+  return value
+}
+
+test("a payload whose cuts would name too much is a size stub", async () => {
+  // Each pointer to an empty array at depth 128 is about 50 K characters: two pass CUT_CHARS.
+  const fan = underKeys(Object.fromEntries(Array.from({ length: 500 }, (_, i) => [`a${i}`, []])), 126, 400)
+  // Each pointer to a cut string is about 10 K characters; on a page every string is cut, by seq only once the
+  // record is over EVENT_BYTES.
+  const strings = (count: number) =>
+    underKeys(Array.from({ length: count }, () => "s".repeat(FIELD_CHARS + 1)), 10, 1000)
+  const records = [
+    committed(1, "fan", fan), committed(2, "few", strings(20)), committed(3, "many", strings(600)),
+  ]
+  expect([records[1]!.length < BIG_LINE, records[2]!.length > EVENT_BYTES, CUT_CHARS]).toEqual([true, true, 64 << 10])
+  const file = logOf(runStarted(0), ...records)
+  const index = await refresh(file, null)
+  const page = readEvents(file, index, { after: 0, limit: 10 })
+  expect(page.events.slice(0, 2)).toEqual([
+    { seq: 1, kind: "pool_commit", node_id: "fan", size: records[0]!.length },
+    { seq: 2, kind: "pool_commit", node_id: "few", size: records[1]!.length },
+  ])
+  expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(1024)
+  for (const seq of [1, 3]) {
+    const size = records[seq - 1]!.length
+    expect(readEvent(file, index, seq)).toEqual({ seq, kind: "pool_commit", node_id: seq === 1 ? "fan" : "many", size })
   }
 })
