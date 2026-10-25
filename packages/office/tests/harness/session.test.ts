@@ -17,8 +17,11 @@ function live(sessionId: string, cwd: string, stopped = false) {
     cwd,
     stopped,
     launching: null as CodexProcess | null,
-    launchingAs(process: CodexProcess) {
-      if (!this.stopped) this.launching = process
+    /** Whether the app-server had not spawned yet when it was registered. */
+    unspawned: null as boolean | null,
+    launchingAs(proc: CodexProcess) {
+      this.unspawned = proc.proc === null
+      if (!this.stopped) this.launching = proc
       return !this.stopped
     },
     notified() {},
@@ -32,11 +35,15 @@ test("launch registers the app server before it starts and refuses once stopped"
   const s1 = live("S1", workspace)
   const p = await sessions.launch(s1)
   expect(s1.launching).toBe(p)
+  expect(s1.unspawned).toBe(true)
   expect(p.alive).toBe(true)
   expect(store.listWorkers().map((r) => r.key)).toEqual(["harness:S1"])
   expect(fs.statSync(office.paths.runDir("S1")).mode & 0o777).toBe(0o700)
   await p.close(1000)
-  await expect(sessions.launch(live("S2", workspace, true))).rejects.toBeInstanceOf(CodexStartError)
+  const refused = sessions.launch(live("S2", workspace, true))
+  await expect(refused).rejects.toBeInstanceOf(CodexStartError)
+  await expect(refused).rejects.toThrow("The office is stopping.")
+  expect(fs.existsSync(office.paths.runDir("S2"))).toBe(false)
   expect(store.listWorkers()).toEqual([])
   // With no env given, an app-server gets the worker environment and CODEX_HOME, nothing else.
   const plain = new CodexSessions(office, hooks, { command: () => fake.command() })

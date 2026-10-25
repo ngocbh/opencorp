@@ -19,7 +19,7 @@ import { allRoutes } from "../../src/daemon/routes/index.ts"
 import { listenUnix } from "../../src/daemon/sockets.ts"
 import { blobId } from "../../src/profile/store.ts"
 import { Store } from "../../src/store/store.ts"
-import { company, git, makeCompany } from "../company/helpers.ts"
+import { git, makeCompany } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 
 /** The base company's CEO. */
@@ -30,8 +30,8 @@ export const ULID = "01JA1H0000000000000000000A"
 /**
  * An office over a fresh home: the base company at `paths.company`, a store, company git and a bus; not started
  * (Python's `office` fixture). `log` gets the office's raw log messages. The listing and the sign-in are offline
- * stand-ins unless `models`/`logins` give others: the defaults reach OpenAI. `files` gives the company
- * `makeCompany`'s overrides instead of the base company.
+ * stand-ins unless `models`/`logins` give others: the defaults reach OpenAI. `files` are `makeCompany` overrides on
+ * the base company.
  *
  * When the test finishes it is stopped and its store closed, before its temp dir is removed. A test that already
  * called `stop()` gets a second one then, after its assertions; that is harmless, though `stop` is not idempotent
@@ -59,8 +59,7 @@ export function makeOffice({
     }
   })
   const home = tempDir()
-  if (files) makeCompany(files, home)
-  else company(home)
+  makeCompany(files ?? {}, home)
   const paths = new OfficePaths(home)
   store = new Store(paths.store)
   office = new Office({

@@ -29,19 +29,19 @@ export class CodexSession {
     this.author = author
   }
 
-  /** Records `process` as the app-server being started, so office stop kills it; false once stopped. */
-  launchingAs(process: CodexProcess): boolean {
+  /** Records `proc` as the app-server being started, so office stop kills it; false once stopped. */
+  launchingAs(proc: CodexProcess): boolean {
     if (this.stopped) return false
-    this.launching = process
+    this.launching = proc
     return true
   }
 
-  /** A notification from `process`. */
-  notified(_process: CodexProcess, _method: string, _params: unknown): void {}
+  /** A notification from `proc`. */
+  notified(_proc: CodexProcess, _method: string, _params: unknown): void {}
 
-  /** A server request from `process`, which waits for the reply to `id`. */
-  requested(_process: CodexProcess, _id: unknown, _method: string, _params: unknown): void {}
+  /** A server request from `proc`, which waits for the reply to `id`. */
+  requested(_proc: CodexProcess, _id: unknown, _method: string, _params: unknown): void {}
 
-  /** `process` exited. */
-  exited(_process: CodexProcess): void {}
+  /** `proc` exited. */
+  exited(_proc: CodexProcess): void {}
 }

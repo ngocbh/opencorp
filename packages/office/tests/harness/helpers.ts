@@ -88,12 +88,12 @@ export function requestsValid(fake: FakeCodex): void {
 /** A process the tests started, and its start time. */
 type Spawned = { pid: number; started: number | null }
 
-/** Every app-server any test of this file recorded, for `allGone`. */
-export const SPAWNED: Spawned[] = []
+// Every app-server any test of this file recorded, for allGone.
+const spawned: Spawned[] = []
 
-/** Waits until every process in `SPAWNED` is gone (10 s each); each test file's `afterAll`. */
+/** Waits until every app-server the file's tests recorded is gone (10 s each); each test file's `afterAll`. */
 export async function allGone(): Promise<void> {
-  for (const { pid, started } of SPAWNED)
+  for (const { pid, started } of spawned)
     await waitFor(() => isGone(pid, started), { timeout: 10_000, what: `process ${pid} to go` })
 }
 
@@ -103,7 +103,7 @@ function tracked(store: Store): void {
   const spy = spyOn(store, "recordWorker")
   onTestFinished(() => {
     for (const [, { pid, startTime: started }] of spy.mock.calls) {
-      SPAWNED.push({ pid, started })
+      spawned.push({ pid, started })
       if (started && sameProcess(pid, started)) killGroup(pid)
     }
   })

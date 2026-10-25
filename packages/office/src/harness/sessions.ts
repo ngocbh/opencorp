@@ -59,10 +59,6 @@ export class CodexSessions {
   async launch(live: Launchable): Promise<CodexProcess> {
     const env = this.#env()
     const runDir = this.office.paths.runDir(live.sessionId)
-    // The umask may narrow the mode, and an earlier stretch's dir keeps its old one; the app-server's own mkdir of
-    // its log's dir uses the default mode.
-    fs.mkdirSync(runDir, { recursive: true, mode: 0o700 })
-    fs.chmodSync(runDir, 0o700)
     const command = this.#command
       ? this.#command()
       : appServerCommand(this.office.tools.codex, process.env.OPENCORP_CODEX_BIN)
@@ -79,6 +75,10 @@ export class CodexSessions {
     })
     // Before it spawns, so office stop can kill it mid-handshake.
     if (!live.launchingAs(proc)) throw new CodexStartError("The office is stopping.")
+    // Made 0o700 here: CodexProcess.start's mkdir uses the default mode, the umask may narrow ours, and a dir left
+    // by an earlier app-server keeps its old mode.
+    fs.mkdirSync(runDir, { recursive: true, mode: 0o700 })
+    fs.chmodSync(runDir, 0o700)
     await proc.start()
     return proc
   }
