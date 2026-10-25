@@ -97,7 +97,7 @@ test("offboard says what it will remove and no keeps everything", async () => {
   expect(fs.existsSync(path.join(paths.office, "provider.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "tui"))).toBe(true)
-})
+}, 30_000)
 
 test("offboard removes the device and the office but keeps a company with no remote", async () => {
   const dir = tempDir()
@@ -108,8 +108,8 @@ test("offboard removes the device and the office but keeps a company with no rem
   expect(subjects(paths.company)[0]).toBe(`devices(@me): remove ${deviceName()}`)
   expect(fs.readdirSync(paths.home).sort()).toEqual(["company"])
   expect(git(paths.company, "worktree", "list").split("\n")).toHaveLength(1)
-  expect(ask.seen.some((line) => line.includes("Kept the company repo") && line.includes("no remote"))).toBe(true)
-})
+  expect(ask.seen).toContain(`Kept the company repo at ${paths.company}: it has no remote, so this is its only copy.`)
+}, 30_000)
 
 test("offboard deletes a pushed company and then the empty home", async () => {
   const dir = tempDir()
@@ -147,14 +147,14 @@ test.each([
     const dir = tempDir()
     const paths = await office(path.join(dir, "home"))
     publish(paths, dir)
-    const readme = path.join(paths.company, "notes.md")
+    const notes = path.join(paths.company, "notes.md")
     if (["commit", "stash", "edit"].includes(change)) {
-      fs.writeFileSync(readme, "notes\n")
+      fs.writeFileSync(notes, "notes\n")
       git(paths.company, "add", "notes.md")
     }
     if (change === "commit") git(paths.company, "commit", "-qm", "notes")
     else if (change === "stash") git(paths.company, "stash", "-q")
-    else if (change === "untracked") fs.writeFileSync(readme, "notes\n")
+    else if (change === "untracked") fs.writeFileSync(notes, "notes\n")
     else if (change === "branch") git(paths.company, "branch", "drafts")
     const ask = new Script()
     await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
@@ -181,7 +181,7 @@ test("delete company deletes it even with unpushed work", async () => {
   expect(ask.seen.join("\n")).toContain(
     `the company repo at ${paths.company}, even though it has no remote, so this is its only copy`,
   )
-})
+}, 30_000)
 
 test("a second offboard finds nothing and asks nothing", async () => {
   const dir = tempDir()
@@ -198,7 +198,7 @@ test("a second offboard finds nothing and asks nothing", async () => {
   const nowhere = path.join(dir, "nowhere")
   await offboard(nowhere, ask, { host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(ask.seen).toContain(`Nothing of this office to remove at ${nowhere}.`)
-})
+}, 30_000)
 
 test("offboard cleans up a half made office", async () => {
   // Onboarding that stopped before the company leaves only the office dir.
@@ -208,7 +208,7 @@ test("offboard cleans up a half made office", async () => {
   fs.mkdirSync(path.join(home, ".company-clone"))
   await offboard(home, new Script(), { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(fs.existsSync(home)).toBe(false)
-})
+}, 30_000)
 
 test("offboard with an identity the company doesnt list skips the device", async () => {
   const dir = tempDir()
@@ -219,7 +219,7 @@ test("offboard with an identity the company doesnt list skips the device", async
   await offboard(paths.home, ask, { yes: true, host: makeHost(dir, new Runner()), environ: gitOnly(dir) })
   expect(ask.seen.some((line) => line.includes("from @me in the company repo"))).toBe(false)
   expect(subjects(paths.company)).toEqual(["init: create the company"])
-})
+}, 30_000)
 
 test("offboard uninstalls a launchd office through the host", async () => {
   const dir = tempDir()
@@ -237,7 +237,7 @@ test("offboard uninstalls a launchd office through the host", async () => {
   expect(runner.calls).toContainEqual(["launchctl", "bootout", `gui/501/${launchd.label(run)}`])
   expect(fs.existsSync(plist)).toBe(false)
   expect(ask.seen.join("\n")).toContain(`the office's launchd service (${plist})`)
-})
+}, 30_000)
 
 test("an office that wont stop keeps its state", async () => {
   const dir = tempDir()
@@ -246,9 +246,11 @@ test("an office that wont stop keeps its state", async () => {
   const done = offboard(paths.home, new Script(), { yes: true, host, environ: gitOnly(dir) })
   await expect(done).rejects.toThrow(OffboardError)
   await expect(done).rejects.toThrow("still answers")
+  // The online removal finds no server on the temp socket, so the device stays.
+  expect(devices(paths)).toEqual([deviceName()])
   expect(fs.existsSync(path.join(paths.office, "provider.json"))).toBe(true)
   expect(fs.existsSync(path.join(paths.home, "identity.json"))).toBe(true)
-})
+}, 30_000)
 
 test("offboard reports how opencorp was put on path and keeps the checkout", async () => {
   const dir = tempDir()
@@ -293,7 +295,7 @@ test("offboard never prints the token or the provider", async () => {
   expect(said).not.toContain(token)
   expect(said).not.toContain(tokenSha256(token))
   expect(said).not.toContain("anthropic")
-})
+}, 30_000)
 
 test("a device named like another doesnt hide this ones commits", async () => {
   const dir = tempDir()

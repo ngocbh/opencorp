@@ -217,11 +217,13 @@ async function removeOnline(run: Launch, me: Identity): Promise<boolean> {
   }
 }
 
-/** Removes this device from its human in the company repo at `company` by a local commit, once the office is
- *  stopped; what to tell the owner. */
-async function removeOffline(run: Launch, company: string, me: Identity): Promise<string> {
+/** Removes this device from its human in the office's company repo by a local commit, once the office is stopped;
+ *  what to tell the owner. */
+async function removeOffline(run: Launch, me: Identity): Promise<string> {
+  const company = path.join(run.home, "company")
+  const worktrees = path.join(run.office, "worktrees")
   try {
-    await removeDevice(new CompanyGit(company, path.join(run.office, "worktrees")), me.handle, me.device, me.handle)
+    await removeDevice(new CompanyGit(company, worktrees), me.handle, me.device, me.handle)
   } catch (error) {
     if (error instanceof DeviceRefused && error.status === 404) {
       return `This device (${me.device}) was already gone from @${me.handle}.`
@@ -310,8 +312,7 @@ export async function offboard(
     throw new OffboardError(`${error.message}; nothing else was removed`)
   }
   for (const line of stopped) prompter.say(`Stopped: ${line}`)
-  const company = path.join(run.home, "company")
-  if (found.listed && me && !removedOnline) prompter.say(await removeOffline(run, company, me))
+  if (found.listed && me && !removedOnline) prompter.say(await removeOffline(run, me))
 
   for (const file of found.state) {
     removePath(file)
