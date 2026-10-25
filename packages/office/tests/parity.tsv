@@ -44,7 +44,8 @@ chat/test_logins.py::test_the_sign_in_is_saved_before_the_connection	changed	pac
 chat/test_models.py	ported	packages/office/tests/chat/models.test.ts	—	O2-20
 chat/test_models.py::test_a_host_that_times_out_in_composer_makes_offers_time_out	changed	packages/office/tests/chat/models.test.ts::a host that times out in composer makes offers time out	Y1: yian's transport ProviderError isn't public, so the timeout comes from a local server that never answers	O2-20
 chat/test_models.py::test_a_request_that_fails_says_why_in_composers_words	changed	packages/office/tests/chat/models.test.ts::a request that fails says why in composers words [%s]	Y1: yian's transport ProviderError isn't public, so the cases come from a throwing sender, a malformed reply and a local server that never answers	O2-20
-chat/test_provider.py	open	—	split: O2-19 → O3-4	O3-4
+chat/test_provider.py	ported	packages/office/tests/chat/provider.test.ts	—	O3-4
+chat/test_provider.py::test_a_key_in_llm_config_reaches_the_model_and_nothing_else	changed	packages/office/tests/chat/provider.test.ts::a key in llm config reaches the model and nothing else	#1001: no session memory; design §6.5's scan: frames other than start, worker.log, the run log, the log lines office.log gets, the worker env; a 401 turn too; the live relay's frames come with #997, §2.6, not built here	O3-4
 chat/test_restart.py	open	—	split: O4a-6 → O4b-1	O4b-1
 chat/test_run_records.py	open	—	—	O4a-5
 chat/test_sandbox.py	open	—	—	O4a-4
@@ -235,7 +236,7 @@ install/test_provider_setup.py::test_the_key_is_asked_without_echo_and_written_p
 install/test_service.py	ported	packages/office/tests/install/service.test.ts	—	O2-12
 install/test_systemd.py	ported	packages/office/tests/install/systemd.test.ts	—	O2-12
 install/test_systemd.py::test_spaces_percents_and_dollars_reach_the_daemon_unchanged	changed	packages/office/tests/install/systemd.test.ts::spaces percents and dollars reach the daemon unchanged	design §9.3 (argv selfCommand() + daemon --home H, cwd the office dir)	O2-12
-perm/test_frames.py	open	—	—	O3-4
+perm/test_frames.py	ported	packages/office/tests/perm/frames.test.ts	—	O3-4
 perm/test_monitor.py	ported	packages/office/tests/perm/monitor.test.ts	—	O3-2
 perm/test_monitor.py::test_where_matches_type_as_well_as_value	changed	packages/office/tests/perm/monitor.test.ts::where matches type as well as value	D15: 1 equals 1.0 (JSON numbers are one type; a bigint equals the same number); true, "1" and [1] still differ	O1-13
 perm/test_office.py	ported	packages/office/tests/perm/office.test.ts	—	O1-13
@@ -269,10 +270,11 @@ protocol/test_invalid.py::test_model_rejects	dropped	—	one schema now; schema 
 protocol/test_now.py	ported	packages/protocol/test/time.test.ts	§5.4	O0-6
 protocol/test_schema.py	ported	packages/protocol/test/schemas.test.ts	zod schemas (D6, §5.4)	O0-6
 protocol/test_schema.py::test_schema_is_valid	changed	packages/protocol/test/schemas.test.ts::schema is valid	zod is the source; checks every schema converts to JSON Schema (D6)	O0-6
-questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
+questions/test_ask.py	ported	packages/office/tests/questions/ask.test.ts	—	O3-4
 questions/test_ask.py::test_a_human_input_call_keeps_its_node_pages_and_schema	changed	packages/office/tests/questions/ask.test.ts::an ask node call keeps its node pages and schema	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_a_re_asked_human_input_finds_its_stored_question	changed	packages/office/tests/questions/ask.test.ts::an ask node asked again finds its stored question	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_an_answer_from_another_process_is_found_by_polling	dropped	—	design §3.3: only the daemon writes the store; the 30 s poll goes and waiters wake on its after-commit events	O3-8a
+questions/test_ask.py::test_the_handler_passes_composers_check_and_takes_its_calls	changed	packages/office/tests/questions/ask.test.ts::the handler passes composers check and takes its calls	yian #1078: yian's ToolSet hands the ask slot camelCase fields, adapted to an AskRequest as askUserStub does; the flow side is a TOOL ask node, so the source is ask	O3-4
 questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9; O3-9's tests are in packages/office/tests/questions/cards.test.ts	O4a-9
 questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
 questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
@@ -399,7 +401,7 @@ worker/test_job_loading.py::test_a_missing_group_fails_before_any_model_call	cha
 worker/test_job_loading.py::test_a_planted_json_module_is_not_imported	changed	packages/office/tests/worker/job_loading.test.ts::a planted env file or bunfig preload in the worker cwd is not loaded	§6 rule 2: the TS worker's cwd risk is Bun's .env/bunfig, not a Python module	O3-3
 worker/test_main.py	ported	packages/office/tests/worker/main.test.ts	—	O3-3
 worker/test_main.py::test_after_its_last_frame_a_worker_answers_steers_until_the_office_closes	changed	packages/office/tests/worker/main.test.ts::after its last frame a worker answers steers until the office closes	O0-10 P1: Bun passes no fd past stdio to children; the inheritable-fd assert goes, O3-1's grandchild test keeps the rule; yian #1089: the steer names an inbox	O3-17
-worker/test_reaper.py	open	—	split: O2-11a → O3-4	O3-4
+worker/test_reaper.py	ported	packages/office/tests/worker/reaper.test.ts	—	O3-4
 worker/test_remote_store.py	ported	packages/office/tests/worker/remote_store.test.ts	—	O3-2
 worker/test_remote_store.py::test_an_undecodable_document_is_a_value_error	changed	packages/office/tests/worker/remote_store.test.ts::an undecodable document is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2
 worker/test_remote_store.py::test_an_unknown_version_is_a_lookup_error	changed	packages/office/tests/worker/remote_store.test.ts::an unknown version is a range error	design §4.1, Y3: yian's MarkdownStore throws RangeError for both	O3-2

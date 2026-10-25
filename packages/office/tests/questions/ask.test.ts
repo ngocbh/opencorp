@@ -1,5 +1,6 @@
 /** The office side of a run's ask_user: the handler, and storing then waiting for answers. */
 import { expect, onTestFinished, spyOn, test } from "bun:test"
+import { ToolSet } from "@ngocbh/yian/tools"
 import { Question } from "@opencorp/protocol"
 import { Answers, AnswersClosed, QuestionExpired, makeAskUser, type OnQuestion } from "../../src/questions/ask.ts"
 import {
@@ -11,8 +12,9 @@ import {
   type QuestionRecord,
   type WorkItemRecord,
 } from "../../src/store/store.ts"
-import type { AskRequest } from "../../src/worker/rpc.ts"
+import { ASK_KEYS, type AskRequest, askUserStub, BaseHandlers } from "../../src/worker/rpc.ts"
 import { openStore, question, session, workItem } from "../store/helpers.ts"
+import { officeEnd } from "../worker/helpers.ts"
 
 const PAGES = [
   { question: "Which db?", header: "DB", options: [{ label: "sqlite", description: "local" }], multi_select: false },
@@ -59,6 +61,56 @@ class Desk {
     return { ...q, status: "answered", answer: this.answer, answer_kind: this.kind }
   }
 }
+
+test("the handler passes composers check and takes its calls", async () => {
+  const desk = new Desk("B")
+  const handler = makeAskUser(session(), "run-1", desk.call)
+  // Yian's ask slot hands the request with camelCase fields, adapted to an AskRequest as askUserStub does.
+  const tools = new ToolSet({
+    ask: (r) =>
+      handler({
+        question: r.question ?? null,
+        questions: r.questions ?? null,
+        answer_schema: r.answerSchema ?? null,
+        title: r.title ?? null,
+        node_id: r.nodeId ?? null,
+        options: r.options ?? null,
+      }),
+  })
+  expect(await tools.invoke("ask_user", { question: "A or B?", options: '["A","B"]' })).toBe(
+    'The user chose "B" (option 2 of the 2 shown).',
+  )
+  desk.answer = { DB: "sqlite" }
+  const call = askNodeCall()
+  expect(
+    await tools.invokeTrusted("ask", {
+      prompt: call.question,
+      questions: call.questions,
+      answerSchema: call.answer_schema,
+      title: call.title,
+      nodeId: call.node_id,
+    }),
+  ).toEqual({ DB: "sqlite" })
+  expect(desk.asked.map((q) => q.source)).toEqual(["ask_user", "ask"])
+  expect(new Set<string>(ASK_KEYS)).toEqual(new Set(Object.keys(modelCall())))
+})
+
+test("the handler answers through the workers stub", async () => {
+  const desk = new Desk("B")
+  const handler = makeAskUser(session(), "run-1", desk.call)
+  const rpc = await officeEnd(
+    new (class extends BaseHandlers {
+      override askUser(_w: unknown, r: AskRequest) {
+        return handler(r)
+      }
+    })(),
+    { concurrent: true },
+  )
+  const tools = new ToolSet({ ask: askUserStub(rpc) })
+  const got = await tools.invoke("ask_user", { question: "A or B?", options: ["A", "B"] })
+  expect(got).toBe('The user chose "B" (option 2 of the 2 shown).')
+  expect(desk.asked[0]!.options).toEqual(["A", "B"])
+})
 
 test("a model call stores a flat question and returns the formatted answer", async () => {
   const s = session({ work_item_id: "01J9ZZZZZZZZZZZZZZZZZZZZZZ" })

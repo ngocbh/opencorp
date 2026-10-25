@@ -3,12 +3,12 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
-import { onTestFinished } from "bun:test"
+import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import type { Store } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
-import { type Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
+import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
@@ -26,6 +26,32 @@ import { spawnProcess, type Worker, WorkerRegistry } from "../../src/worker/spaw
 import { CHAT } from "../company/helpers.ts"
 import { shortDir, tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
+
+/** `value` as JSON, a bigint written as its digits. */
+export function json(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v))
+}
+
+/** Records, as `json`, every frame this process's channels send and receive until the test finishes: for a spawned
+ *  worker, both directions of the office's end. */
+export function recordFrames(): string[] {
+  const frames: string[] = []
+  const { send, recv } = Channel.prototype
+  const sending = spyOn(Channel.prototype, "send").mockImplementation(function (this: Channel, frame: Frame) {
+    frames.push(json(frame))
+    return send.call(this, frame)
+  })
+  const receiving = spyOn(Channel.prototype, "recv").mockImplementation(async function (this: Channel) {
+    const frame = await recv.call(this)
+    frames.push(json(frame))
+    return frame
+  })
+  onTestFinished(() => {
+    sending.mockRestore()
+    receiving.mockRestore()
+  })
+  return frames
+}
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
  *  flow, `inputs` to its inputs. */

@@ -1,12 +1,21 @@
-/** The provider file: defaults, checked fields, refused env names and values, and errors that never echo it. */
+/** The provider file: defaults, checked fields, refused env names and values, and errors that never echo it; and a
+ *  key in llm config that reaches the model and nothing else. */
 import fs from "node:fs"
 import path from "node:path"
 import { inspect } from "node:util"
-import { expect, test } from "bun:test"
+import { expect, setDefaultTimeout, test } from "bun:test"
 import type { z } from "zod"
 import { checked, loadProvider, Provider, ProviderError, providerSchema } from "../../src/chat/provider.ts"
 import { writePrivate } from "../../src/secrets.ts"
-import { tempDir } from "../helpers.ts"
+import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
+import type { OfficeTool } from "../../src/worker/rpc.ts"
+import type { SpawnLog } from "../../src/worker/spawn.ts"
+import { envText, tempDir } from "../helpers.ts"
+import { openStore } from "../store/helpers.ts"
+import { base, json, makeJob, makeRegistry, Recorder, recordFrames, runWorker } from "../worker/helpers.ts"
+import { fakeLlm } from "./helpers.ts"
+
+setDefaultTimeout(60_000)
 
 const SENTINEL = "sk-sentinel-4b1d9e"
 
@@ -211,4 +220,72 @@ test("runtime settings that arent loader variables are kept", async () => {
   const kept = { NODE_ENV: "production", BUNDLE_PATH: "/b", NODE_EXTRA_CA_CERTS: "/etc/ssl/ca.pem" }
   const file = write(path.join(tempDir(), "provider.json"), { env: kept })
   expect((await loadProvider(file, Provider.parse)).env).toEqual(kept)
+})
+
+/** The files under `root`, relative to it, whose bytes hold `text`. */
+function filesHolding(root: string, text: string): string[] {
+  if (!fs.existsSync(root)) return []
+  return fs
+    .readdirSync(root, { recursive: true, encoding: "utf8" })
+    .filter((rel) => fs.statSync(path.join(root, rel)).isFile() && fs.readFileSync(path.join(root, rel)).includes(text))
+}
+
+test("a key in llm config reaches the model and nothing else", async () => {
+  // The key travels only in the start frame, never in another frame, a file the run leaves, a log line
+  // (the registry's log stands in for office.log) or the worker's env; on a failed turn too.
+  const where = base()
+  const fake = await fakeLlm()
+  const store = openStore()
+  const lines: string[] = []
+  const log: SpawnLog = (level, line) => void lines.push(`${level} ${line}`)
+  const registry = makeRegistry(store, { log })
+  const frames = recordFrames()
+  const sessionDir = path.join(where.root, "sessions", "s1")
+  const envs: string[] = []
+  const echo: OfficeTool = {
+    description: "Return text.",
+    parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+    call: (args) => {
+      // The worker is blocked on this reply, so it is still running.
+      envs.push(envText(registry.get("s1")!.pid))
+      return String(args.text)
+    },
+  }
+  const llmConfig = { ...LLM_CONFIG, api_key: SENTINEL }
+
+  fake.script({ tool_calls: [{ name: "echo", arguments: { text: "ping" } }] }, { content: "done" })
+  const ok = new Recorder({ tools: { toolbox: { echo } } })
+  await runWorker(registry, makeJob(where, "flows/tools.yaml", { llm_config: llmConfig }, ok), ok, sessionDir, {
+    env: fake.env(),
+  })
+  fake.script({ error: 401 })
+  const refused = new Recorder({ tools: { toolbox: { echo } } })
+  const job = makeJob(where, "flows/tools.yaml", { run_id: "r2", llm_config: llmConfig }, refused)
+  await runWorker(registry, job, refused, sessionDir, { env: fake.env() })
+
+  const leaks = [
+    ...frames.filter((f) => f.includes(SENTINEL) && !f.startsWith('{"type":"start"')).map((f) => `frame ${f}`),
+    ...fake.requests().filter((r) => json(r).includes(SENTINEL)).map(() => "a model request"),
+    ...[sessionDir, where.runs, path.dirname(store.path)].flatMap((root) =>
+      filesHolding(root, SENTINEL).map((rel) => `file ${path.join(root, rel)}`),
+    ),
+    ...lines.filter((line) => line.includes(SENTINEL)).map((line) => `log line ${line}`),
+    ...envs.filter((text) => text.includes(SENTINEL)).map(() => "the worker env"),
+    ...(json(refused.outcome?.failure).includes(SENTINEL) ? ["the failure"] : []),
+  ]
+  expect(leaks).toEqual([])
+  // The key did travel: in the office's two start frames, and to the model.
+  expect(frames.filter((f) => f.includes(SENTINEL))).toHaveLength(2)
+  expect(envs).toHaveLength(1)
+  expect(envs[0]).toContain("VLLM_BASE_URL")
+  // The scan reads both run logs, run_started included.
+  expect(filesHolding(where.runs, '"kind":"run_started"').sort()).toEqual(["r1/log.jsonl", "r2/log.jsonl"])
+  expect(new Set(fake.authorizations())).toEqual(new Set([`Bearer ${SENTINEL}`]))
+  expect(json(ok.frames)).toContain("ToolCallFinished")
+  expect(ok.outcome?.status).toBe("succeeded")
+  expect(ok.returncode).toBe(0)
+  expect(refused.outcome?.status).toBe("failed")
+  expect(refused.outcome?.failure).toBeTruthy()
+  expect(fs.existsSync(path.join(sessionDir, "worker.log"))).toBe(true)
+  expect(fs.existsSync(job.log)).toBe(true)
 })
