@@ -621,8 +621,7 @@ test("a model that answers has no problem", async () => {
 test("a model check given an env runs in that env", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "OK" })
-  // The fake is reachable only through the given env.
-  expect(process.env.VLLM_BASE_URL).toBeUndefined()
+  // The fake listens on a random port that only the given env names, so an answer means that env was used.
   expect(await modelProblem(Provider.parse({ llm_config: LLM_CONFIG }), { env: fake.env() })).toBeNull()
   expect(fake.requests()).toHaveLength(1)
 })

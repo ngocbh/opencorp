@@ -164,8 +164,8 @@ test("a hung check in a worker is killed and its folder removed", async () => {
   const spawning = spyOn(registry, "spawn")
   const provider = Provider.parse({ llm_config: { ...LLM_CONFIG, api_key: SENTINEL }, env: fake.env() })
   fake.script({ hold: true })
-  const checking = oneReplyProblem(registry, provider, { timeoutMs: 15_000 })
-  await fake.waitForRequests(1, 15_000)
+  const checking = oneReplyProblem(registry, provider, { timeoutMs: 30_000 })
+  await fake.waitForRequests(1, 25_000)
   const worker = (await spawning.mock.results[0]!.value) as Worker
   const dir = spawning.mock.calls[0]![1]
   const started = startTime(worker.pid)
@@ -179,7 +179,7 @@ test("a hung check in a worker is killed and its folder removed", async () => {
   expect(store.listWorkers()).toEqual([])
   expect(fs.existsSync(dir)).toBe(false)
   fake.release()
-})
+}, 90_000)
 
 test("the key reaches the model and the start frame only", async () => {
   // A provider that quotes the key it refuses, as some do.

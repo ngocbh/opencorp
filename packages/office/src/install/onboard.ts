@@ -35,6 +35,7 @@ import { repr } from "../perm/redact.ts"
 import { embedded } from "../platform.ts"
 import { strerror } from "../sandbox/fs_helper.ts"
 import { PrivateFileError, writePrivate } from "../secrets.ts"
+import type { WorkerEnv } from "../worker/main.ts"
 import { workerEnv } from "../worker/spawn.ts"
 import checkModelYaml from "./flows/check_model.yaml" with { type: "file" }
 import { type Completed, defaultHost, type Env, type Host, launch, runCommand, ServiceError } from "./launch.ts"
@@ -908,7 +909,7 @@ export async function runSetup(
   }: {
     tools: NonNullable<RunFlowOptions["tools"]>
     context?: unknown
-    env?: Readonly<Record<string, string | undefined>>
+    env?: WorkerEnv
   },
 ): Promise<{ result: RunResult | null; message: string | null }> {
   // The run gets the environment office runs get, so it authenticates the way they will: a shell variable the
@@ -942,7 +943,7 @@ export async function runSetup(
  *  answers; the run's environment is as `runSetup`'s, `env` replacing the default base. */
 export async function modelProblem(
   provider: Provider,
-  { env }: { env?: Readonly<Record<string, string | undefined>> } = {},
+  { env }: { env?: WorkerEnv } = {},
 ): Promise<string | null> {
   const flow = await loadFlow(embedded(checkModelYaml).toString("utf8"), {
     sourceLabel: "install/flows/check_model.yaml",

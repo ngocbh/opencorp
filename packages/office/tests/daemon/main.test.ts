@@ -533,8 +533,8 @@ test("build office checks a model in a worker of its registry", async () => {
     await office.stop()
     await expect(office.checkModel(provider)).rejects.toBeInstanceOf(RegistryClosed)
   } finally {
-    // A failed assert leaves no worker behind.
-    await (office.workers as WorkerRegistry).closeAll()
+    // A failed assert leaves no worker behind; a second stop after the test's own is harmless.
+    await office.stop()
     office.store.close()
   }
 })
