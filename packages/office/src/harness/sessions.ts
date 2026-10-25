@@ -1,12 +1,16 @@
 /** The office's live Codex sessions, each with its own app-server. */
 import fs from "node:fs"
 import path from "node:path"
+import type { HarnessPolicy } from "@opencorp/protocol"
 import type { Hooks } from "../chat/hooks.ts"
+import { HarnessError, notWaiting } from "../chat/state.ts"
+import { loadRepo } from "../company/loader.ts"
 import type { Office } from "../daemon/office.ts"
-import type { Store } from "../store/store.ts"
+import type { SessionRecord, Store } from "../store/store.ts"
 import { workerEnv } from "../worker/spawn.ts"
+import type { HarnessEvent } from "./adapter.ts"
 import { CLOSE_GRACE_MS, CodexProcess, CodexStartError, appServerCommand } from "./codex.ts"
-import { type CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
+import { CodexSession, END_WAIT_MS, REPLY_WAIT_MS, STOP_WAIT_MS } from "./session.ts"
 
 /** What `CodexSessions.launch` needs of a session. */
 export type Launchable = Pick<CodexSession, "sessionId" | "cwd" | "launchingAs" | "notified" | "requested" | "exited">
@@ -40,6 +44,9 @@ export class CodexSessions {
   readonly log: (line: string) => void
   readonly #command: (() => string[]) | undefined
   readonly #env: () => Record<string, string>
+  readonly #live = new Map<string, CodexSession>()
+  /** Set by `closeAll`: no session starts after office stop. */
+  #closed = false
 
   constructor(office: Office, hooks: Hooks, options: CodexSessionsOptions = {}) {
     this.office = office
@@ -52,6 +59,88 @@ export class CodexSessions {
     this.endWaitMs = options.endWaitMs ?? END_WAIT_MS
     this.replyWaitMs = options.replyWaitMs ?? REPLY_WAIT_MS
     this.log = options.log ?? ((line) => console.error(line))
+  }
+
+  /** The live session `sessionId`, if it has one. */
+  get(sessionId: string): CodexSession | undefined {
+    return this.#live.get(sessionId)
+  }
+
+  /** Loads `session`'s thread in a new app-server, as a job of the session's queue; a failure there fails the
+   *  session. Rejects only if the session can't be set up at all, before anything is live. */
+  async start(session: SessionRecord, { resume = false }: { resume?: boolean } = {}): Promise<void> {
+    const author = await this.opener(session)
+    if (this.#closed) return // the office is stopping: the session stays as it is, for restore
+    const live = new CodexSession(this, session, { author })
+    this.#live.set(session.id, live)
+    live.start({ resume })
+  }
+
+  /** A message: `turn`, `steer` (a turn was running), or `queued` (until the thread is loaded). */
+  async prompt(sessionId: string, text: string, { by = null }: { by?: string | null } = {}) {
+    return this.#must(sessionId).prompt(text, { by })
+  }
+
+  /** Ends the session `sessionId`. */
+  async end(sessionId: string): Promise<void> {
+    await this.#must(sessionId).end()
+  }
+
+  /** Office stop: kills every app-server and skips every session's later jobs; sessions keep their status for
+   *  `restore`. Once it resolves, no Codex session touches the store (unless a job outlived `stopWaitMs`). */
+  async closeAll(): Promise<void> {
+    this.#closed = true
+    const live = [...this.#live.values()]
+    this.#live.clear()
+    // In parallel, so the stop stays bounded by one session's wait, whatever the number of sessions.
+    await Promise.all(live.map((session) => session.shutdown()))
+  }
+
+  /** Drops `live` and ends its session: `ended` (or the first `endStatus`, such as `debriefing`) or `failed`.
+   *  `sessionEnded` fires once. */
+  async finished(live: CodexSession, status: "ended" | "failed"): Promise<void> {
+    if (this.#live.get(live.sessionId) === live) this.#live.delete(live.sessionId)
+    const session = this.store.getSession(live.sessionId)
+    let final: SessionRecord["status"] = status
+    if (status === "ended" && session !== undefined) {
+      final = this.hooks.fire("endStatus", session).find((s) => s) ?? "ended"
+      // First, so no client sees an ended session with its work still open.
+      if (session.work_item_id) this.store.updateWorkItem(session.work_item_id, { status: "done" })
+    }
+    const updated = this.store.updateSession(live.sessionId, notWaiting(final))
+    await this.hooks.notify("sessionEnded", updated)
+  }
+
+  /** The session's person's harness policy at the session's pinned commit. */
+  async policy(sessionId: string): Promise<HarnessPolicy | null> {
+    const session = this.store.getSession(sessionId)
+    if (session === undefined) return null
+    const person = loadRepo(await this.office.git.pin(session.repo_commit)).people.get(session.person)
+    return person?.harness_policy ?? null
+  }
+
+  /** Who a message with no named sender is from: the session's opener, else the pinned company's CEO. */
+  async opener(session: SessionRecord): Promise<string | null> {
+    if (session.opened_by) return session.opened_by
+    const repo = loadRepo(await this.office.git.pin(session.repo_commit))
+    return repo.company?.ceo ?? null
+  }
+
+  /** Publishes what `live`'s translator writes on the bus, as live events.
+   *
+   *  Requests and their resolutions are not handled yet: the question cards will store the question and mark it
+   *  stale. */
+  event(live: CodexSession, e: HarnessEvent): void {
+    const session_id = live.sessionId
+    if (e.type === "message") this.office.bus.publishLive({ type: "message.updated", session_id, data: e.message })
+    else if (e.type === "part")
+      this.office.bus.publishLive({ type: "part.updated", session_id, data: { message_id: e.messageId, part: e.part } })
+    else if (e.type === "delta")
+      this.office.bus.publishLive({
+        type: "part.delta",
+        session_id,
+        data: { message_id: e.messageId, part_id: e.partId, text: e.text },
+      })
   }
 
   /** A started, initialized app-server for `live`, in its cwd, with the worker environment; rejects with
@@ -81,5 +170,13 @@ export class CodexSessions {
     fs.chmodSync(runDir, 0o700)
     await proc.start()
     return proc
+  }
+
+  #must(sessionId: string): CodexSession {
+    const live = this.#live.get(sessionId)
+    if (live !== undefined) return live
+    if (this.store.getSession(sessionId) === undefined)
+      throw new HarnessError(404, "not_found", `no session ${sessionId}`)
+    throw new HarnessError(409, "not_live", `session ${sessionId} has no live Codex app-server`)
   }
 }

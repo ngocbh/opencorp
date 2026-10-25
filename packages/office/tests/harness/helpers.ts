@@ -3,15 +3,17 @@
 import fs from "node:fs"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import type { LiveEvent, Message, Part } from "@opencorp/protocol"
 import { onTestFinished, spyOn } from "bun:test"
 import { Ajv } from "ajv"
 import { Hooks } from "../../src/chat/hooks.ts"
 import { type CodexSessionsOptions, CodexSessions } from "../../src/harness/sessions.ts"
 import { killGroup, sameProcess } from "../../src/install/proc.ts"
-import type { Store } from "../../src/store/store.ts"
+import type { SessionRecord, Store } from "../../src/store/store.ts"
 import { person } from "../company/helpers.ts"
-import { makeOffice } from "../daemon/helpers.ts"
+import { CEO, makeOffice } from "../daemon/helpers.ts"
 import { isGone, tempDir, waitFor } from "../helpers.ts"
+import { recordEvents, session, workItem } from "../store/helpers.ts"
 
 /** minh, allowed the composer and Codex harnesses. */
 export const CODEX_PERSON = { "people/minh/person.yaml": person("minh", { harnesses: ["composer", "codex"] }) }
@@ -110,13 +112,22 @@ function tracked(store: Store): void {
 }
 
 /** An office whose minh may use Codex (plus `files`), and its `CodexSessions` running `fake` with a fixed
- *  environment; `options` replace the sessions' others. `lines` gets the sessions' and hooks' log lines. Call inside
- *  a test: when it finishes the office stops, then every app-server it recorded that is still running is killed. */
+ *  environment; `options` replace the sessions' others. `lines` gets the sessions' and hooks' log lines, `events`
+ *  every live event the bus got, `storeEvents` every event the store delivered. Call inside a test: when it finishes
+ *  the office stops (closing the sessions before the store closes), then every app-server it recorded that is still
+ *  running is killed. */
 export function makeCodex({ files = {}, ...options }: { files?: Record<string, unknown> } & CodexSessionsOptions = {}) {
   const office = makeOffice({ files: { ...CODEX_PERSON, ...files } })
   const store = office.store
   // After makeOffice, so its stop runs first: onTestFinished runs callbacks in registration order.
   tracked(store)
+  const storeEvents = recordEvents(store)
+  const events: LiveEvent[] = []
+  const publish = office.bus.publishLive.bind(office.bus)
+  spyOn(office.bus, "publishLive").mockImplementation((event) => {
+    events.push(event)
+    publish(event)
+  })
   const lines: string[] = []
   const log = (line: string) => lines.push(line)
   const home = tempDir()
@@ -129,5 +140,111 @@ export function makeCodex({ files = {}, ...options }: { files?: Record<string, u
     log,
     ...options,
   })
-  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines }
+  office.onStop.push(() => sessions.closeAll())
+  return { office, store, hooks, sessions, fake, workspace: tempDir(), lines, events, storeEvents }
+}
+
+/** What `makeCodex` returns. */
+export type Codex = ReturnType<typeof makeCodex>
+
+/** Stores `handle`'s Codex session in `cwd` (starting, with its work item in progress, at the company's head) and
+ *  starts it, as the chat harness's `startSession` does; returns the stored row. `openedBy` null makes the sessions
+ *  look the opener up. */
+export async function startSession(
+  h: Codex,
+  handle: string,
+  cwd: string,
+  { openedBy = null }: { openedBy?: string | null } = {},
+): Promise<SessionRecord> {
+  const head = await h.office.git.head()
+  const item = h.store.createWorkItem(workItem({ status: "in_progress", requester: openedBy ?? CEO, assignee: handle }))
+  const row = h.store.createSession(
+    session({
+      person: handle,
+      harness: "codex",
+      cwd: fs.realpathSync(cwd),
+      repo_commit: head,
+      status: "starting",
+      kind: "main",
+      work_item_id: item.id,
+      opened_by: openedBy,
+      connection: "office",
+    }),
+  )
+  await h.sessions.start(row)
+  return row
+}
+
+/** Starts minh's Codex session in `workspace` as `by`, waits for its load, and returns its id. */
+export async function start(h: Codex, workspace: string, by = "ngocbh"): Promise<string> {
+  const { id } = await startSession(h, "minh", workspace, { openedBy: by })
+  await waitFor(() => status(h, id) === "idle", { what: "the Codex session to load" })
+  return id
+}
+
+/** The session's stored status. */
+export function status(h: Codex, sid: string): SessionRecord["status"] | undefined {
+  return h.store.getSession(sid)?.status
+}
+
+/** The messages `events` build, in order: a `part.updated` replaces the part with its id or adds it, and a
+ *  `part.delta` appends to its part's text. */
+export function fold(events: readonly LiveEvent[]): Message[] {
+  const messages = new Map<string, Message>()
+  for (const { type, data } of events) {
+    if (type === "message.updated") {
+      const message = structuredClone(data) as Message
+      messages.set(message.id, message)
+      continue
+    }
+    const message = messages.get(data.message_id as string)
+    if (message === undefined) continue
+    if (type === "part.updated") {
+      const part = structuredClone(data.part) as Part
+      const at = message.parts.findIndex((p) => p.id === part.id)
+      if (at === -1) message.parts.push(part)
+      else message.parts[at] = part
+    } else {
+      const part = message.parts.find((p) => p.id === data.part_id)
+      if (part?.type === "text") part.text += data.text as string
+    }
+  }
+  return [...messages.values()]
+}
+
+/** The session's messages, from the live events. */
+export function messages(h: Codex, sid: string): Message[] {
+  return fold(h.events.filter((e) => e.session_id === sid))
+}
+
+/** The text parts of the session's messages with `role`, in order. */
+export function texts(h: Codex, sid: string, role = "assistant"): string[] {
+  return messages(h, sid)
+    .filter((m) => m.role === role)
+    .flatMap((m) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])))
+}
+
+/** The error parts' messages of the session, in order. */
+export function errors(h: Codex, sid: string): string[] {
+  return messages(h, sid).flatMap((m) => m.parts.flatMap((p) => (p.type === "error" ? [p.message] : [])))
+}
+
+/** The `part.delta` texts the bus got, in order. */
+export function deltas(h: Codex): string[] {
+  return h.events.filter((e) => e.type === "part.delta").map((e) => e.data.text as string)
+}
+
+/** Everything the office keeps or sent of a session, as text: its row, every live event, and every store event's
+ *  data. */
+export function stored(h: Codex, sid: string): string {
+  return [
+    JSON.stringify(h.store.getSession(sid)),
+    ...h.events.map((e) => JSON.stringify(e)),
+    ...h.storeEvents.map((e) => JSON.stringify(e.data)),
+  ].join("\n")
+}
+
+/** The session's codex.log: its app-servers' stderr. */
+export function codexLog(h: Codex, sid: string): string {
+  return fs.readFileSync(path.join(h.office.paths.runDir(sid), "codex.log"), "utf8")
 }
