@@ -1,9 +1,9 @@
 """E2E fixtures: a real office daemon on a temp home, onboarded with the fake LLM as its provider."""
 
 import os
+import shlex
 import shutil
 import stat
-import sys
 
 import pytest
 
@@ -16,6 +16,7 @@ from tests.sandbox.conftest import sandbox_available  # noqa: F401
 from .fixtures.office import RunningOffice, folder
 
 SERVICE_TOOLS = ("launchctl", "systemctl", "loginctl", "tmux")
+FAKE = REPO / "packages" / "office" / "src" / "testing" / "fake_codex.ts"
 
 
 @pytest.fixture(autouse=True)
@@ -37,10 +38,21 @@ def no_service_tools(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fake_codex_on_path(tmp_path_factory, monkeypatch):
-    """Put the fake Codex first on ``PATH`` as ``codex``, so `opencorp doctor` never runs the developer's real one."""
+    """Put the fake Codex first on ``PATH`` as ``codex``, so `opencorp doctor` never runs the developer's real one.
+
+    The fake is ``testing/fake_codex.ts`` run by Bun, which reads no ``.env`` or ``bunfig.toml`` in any folder,
+    in a fixed env and cwd.
+    """
     root = tmp_path_factory.mktemp("codex")
     codex = root / "codex"
-    codex.write_text(f'#!/bin/sh\nexec "{sys.executable}" -I -m opencorp.testing.fake_codex "$@"\n')
+    bun = shutil.which("bun") or "bun"
+    home = shlex.quote(str(root))
+    codex.write_text(
+        "#!/bin/sh\n"
+        f"cd {home} || exit 1\n"
+        f"exec /usr/bin/env -i PATH=/usr/bin:/bin HOME={home} {shlex.quote(bun)}"
+        f' --no-install --no-env-file --config=/dev/null {shlex.quote(str(FAKE))} "$@"\n'
+    )
     codex.chmod(codex.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{root}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.delenv("OPENCORP_CODEX_BIN", raising=False)
