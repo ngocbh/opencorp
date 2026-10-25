@@ -24,9 +24,11 @@ import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
 import { Store } from "../../src/store/store.ts"
+import { RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { company, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
+import { Recorder, base, makeJob } from "../worker/helpers.ts"
 import { frames, makeOffice, request, served, take, within } from "./helpers.ts"
 
 setDefaultTimeout(60_000)
@@ -456,6 +458,23 @@ test("build office lists models on start and cancels sign ins on stop", async ()
   expect(close).not.toHaveBeenCalled()
   await office.stop()
   expect(close).toHaveBeenCalledTimes(1)
+})
+
+test("build office gives the office a worker registry that stops with it", async () => {
+  const rec = recordingGit(tempDir())
+  const office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  try {
+    expect(office.workers).toBeInstanceOf(WorkerRegistry)
+    const workers = office.workers as WorkerRegistry
+    await office.start()
+    await office.stop()
+    const where = base()
+    const spawning = workers.spawn(makeJob(where), path.join(where.root, "sessions", "s1"), new Recorder())
+    await expect(spawning).rejects.toBeInstanceOf(RegistryClosed)
+    expect(office.store.listWorkers()).toEqual([])
+  } finally {
+    office.store.close()
+  }
 })
 
 /** How a process exited. */
