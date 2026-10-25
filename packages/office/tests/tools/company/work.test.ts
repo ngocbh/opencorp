@@ -160,7 +160,7 @@ test("bad arguments are errors for the model", () => {
 test("company tool arguments of the wrong type store nothing", async () => {
   const { store, s, item, tools } = setup()
   const V = 4242424242
-  /** The error `fn` throws, which must be a TypeError naming `field` and not quoting `V`. */
+  /** Asserts `fn` throws a TypeError naming `field` without quoting `V`. */
   const typeError = (fn: () => unknown, field: string) => {
     let error: unknown
     try {

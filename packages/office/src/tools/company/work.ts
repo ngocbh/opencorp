@@ -99,7 +99,7 @@ export function companyTools(
           { workItem: item },
         )
         store.updateWorkItem(item.id, { status: "done", resolved_by: answered.answered_by })
-        // An ask_manager question is never human_input, so its formatted answer is text.
+        // An ask_manager question is never an `ask` node's, so its formatted answer is text.
         return formatAnswer(answered, carried ? carried(answered) : []) as string
       },
     },
