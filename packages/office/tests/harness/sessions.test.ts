@@ -132,6 +132,8 @@ test.each([
     422,
     "invalid_body",
   ],
+  // Absolute, so it reaches the folder check.
+  ["nul byte", {}, () => ["minh", path.join(tempDir(), "a\u0000b")], 422, "invalid_body"],
   ["root", {}, () => ["minh", "/"], 422, "unsafe_workspace"],
   ["office files", {}, (h: Codex) => ["minh", h.office.paths.company], 422, "unsafe_workspace"],
   [

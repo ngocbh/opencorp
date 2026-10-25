@@ -529,21 +529,21 @@ export class CodexSessions implements CardActor {
   }
 }
 
-/** Folds a message, part or delta into `live`'s current turn, as a client folds the live events: a user message that
- *  comes while no turn runs, after the assistant answered, starts a new turn. Clones, since the translator keeps
- *  changing its parts. */
-/** Whether `p` is a folder; a path that can't name one (missing, below a file, a link loop) is not. */
+/** Whether `p` is a folder; a path that can't name one (missing, below a file, a link loop, a NUL byte) is not. */
 function isFolder(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory()
   } catch (error) {
     // As Python's `Path.is_dir()`: these mean no folder there; anything else (EACCES) is raised.
     const code = (error as NodeJS.ErrnoException).code
-    if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP" || code === "EBADF") return false
+    if (["ENOENT", "ENOTDIR", "ELOOP", "EBADF", "ERR_INVALID_ARG_VALUE"].includes(code ?? "")) return false
     throw error
   }
 }
 
+/** Folds a message, part or delta into `live`'s current turn, as a client folds the live events: a user message that
+ *  comes while no turn runs, after the assistant answered, starts a new turn. Clones, since the translator keeps
+ *  changing its parts. */
 function remember(live: CodexSession, e: HarnessEvent): void {
   if (e.type === "message") {
     const message = e.message
