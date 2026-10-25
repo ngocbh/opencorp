@@ -1,7 +1,7 @@
 /** The office object and its paths: what the routes and services share. */
 import path from "node:path"
 import type { MarkdownStore } from "@ngocbh/yian"
-import { now } from "@opencorp/protocol"
+import { type Message, now } from "@opencorp/protocol"
 import { Connections, type ConnectionsOptions } from "../chat/connections.ts"
 import { Hiring } from "../chat/hire.ts"
 import { Logins, type LoginsOptions } from "../chat/logins.ts"
@@ -16,7 +16,7 @@ import { GitProfileStore } from "../profile/store.ts"
 import type { CardActor, Cards } from "../questions/cards.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
-import type { Store } from "../store/store.ts"
+import type { SessionRecord, Store } from "../store/store.ts"
 import type { Bus } from "./bus.ts"
 
 /** Where the office keeps its files under an OpenCorp home. */
@@ -52,6 +52,37 @@ export class OfficePaths {
   runDir(sessionId: string): string {
     return path.join(this.runs, sessionId)
   }
+}
+
+/** The office's harness for the session routes: the card actions, plus what the session routes call. Each call
+ *  throws `HarnessError` for an API error (404 not_found, 409 not_live, 422 refused, 501 not_implemented, ...). */
+export interface SessionHarness extends CardActor {
+  /** Starts `handle`'s main chat in `cwd` on `harness`, opened by `openedBy`; `connection` and `model` are their
+   *  pick, which the harness may pass over. */
+  startSession(
+    handle: string,
+    cwd: string,
+    options: {
+      harness: SessionRecord["harness"]
+      openedBy: string | null
+      connection: string | null
+      model: string | null
+    },
+  ): Promise<SessionRecord>
+  /** A message from `by` (the opener when null): a turn, a steer, an answer or queued. */
+  prompt(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
+  /** Steers the running reply as `by`; with no reply running it is a `prompt`. */
+  steer(sessionId: string, text: string, options?: { by?: string | null }): Promise<string>
+  /** Ends the session, interrupting a busy reply first; ending one already ending is a no-op. */
+  end(sessionId: string): Promise<void>
+  /** Continues an ended session as a new one opened by `by`. */
+  continueSession(sessionId: string, options?: { by?: string | null }): Promise<SessionRecord>
+  /** Sets the session's cost cap. */
+  setCostCap(sessionId: string, usd: number): Promise<SessionRecord>
+  /** Switches the session's connection and model for its next turn. */
+  setModel(sessionId: string, connection: string, model: string): Promise<SessionRecord>
+  /** What a client reads of the session before following its live events. */
+  messages(sessionId: string): Message[] | Promise<Message[]>
 }
 
 /** The worker registry, as the office sees it. */
@@ -100,8 +131,8 @@ export class Office {
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
-  /** The session actor card actions go through; set before the extensions load. */
-  harness: CardActor | undefined
+  /** The session harness that card actions and the session routes go through; set before the extensions load. */
+  harness: SessionHarness | undefined
   /** The question cards, once the questions extension built them. */
   cards: Cards | undefined
   /** The office's live Codex sessions; set by buildOffice. */

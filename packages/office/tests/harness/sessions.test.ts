@@ -166,6 +166,40 @@ test.each([
   },
 )
 
+/** Each session call a yian chat isn't served for yet. */
+const CALLS: [string, (h: Codex, id: string) => Promise<unknown>][] = [
+  ["prompt", (h, id) => h.sessions.prompt(id, "sk-sentinel")],
+  ["steer", (h, id) => h.sessions.steer(id, "sk-sentinel")],
+  ["end", (h, id) => h.sessions.end(id)],
+  ["setCostCap", (h, id) => h.sessions.setCostCap(id, 10)],
+  ["setModel", (h, id) => h.sessions.setModel(id, "office", "sk-sentinel")],
+  ["messages", (h, id) => Promise.resolve().then(() => h.sessions.messages(id))],
+]
+
+test.each(CALLS)("a session on another harness is not served yet [%s]", async (_name, call) => {
+  const h = makeCodex()
+  const s = h.store.createSession(session({ harness: "composer", status: "idle" }))
+  const chat = await rejection(call(h, s.id))
+  expect(chat).toBeInstanceOf(HarnessError)
+  expect([chat.status, chat.code]).toEqual([501, "not_implemented"])
+  expect(chat.message).not.toContain("sk-sentinel")
+  const missing = await rejection(call(h, ULID))
+  expect(missing).toBeInstanceOf(HarnessError)
+  expect([missing.status, missing.code]).toEqual([404, "not_found"])
+  expect(h.store.getSession(s.id)).toEqual(s)
+})
+
+test.each([
+  ["composer", 501, "not_implemented"],
+  ["claude", 422, "unsupported_harness"],
+] as const)("a start on another harness is refused before any write [%s]", async (harness, status, code) => {
+  const h = makeCodex()
+  const error = await rejection(h.sessions.startSession("minh", h.workspace, { harness, openedBy: "ngocbh" }))
+  expect(error).toBeInstanceOf(HarnessError)
+  expect([error.status, error.code]).toEqual([status, code])
+  expect(h.store.listSessions()).toEqual([])
+})
+
 test("a start whose default connection cant be read takes office and says so", async () => {
   const h = makeCodex()
   h.office.connections.ensureDir()
