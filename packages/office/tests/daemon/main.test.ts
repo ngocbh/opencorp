@@ -7,6 +7,7 @@ import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { isLocked } from "@ngocbh/yian/platform"
 import { afterAll, expect, onTestFinished, setDefaultTimeout, spyOn, test } from "bun:test"
+import { Hooks } from "../../src/chat/hooks.ts"
 import { trackRequests } from "../../src/daemon/http.ts"
 import {
   AlreadyRunning,
@@ -20,6 +21,7 @@ import {
 import { type Office, OfficePaths } from "../../src/daemon/office.ts"
 import { OfficeStartError, listenUnix, makeOfficeDir } from "../../src/daemon/sockets.ts"
 import type { Extension } from "../../src/extensions/index.ts"
+import { CodexSessions } from "../../src/harness/sessions.ts"
 import { launch as officeLaunch, resolveHome } from "../../src/install/launch.ts"
 import { args, killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
@@ -28,6 +30,7 @@ import { RegistryClosed, WorkerRegistry } from "../../src/worker/spawn.ts"
 import { company, recordingGit } from "../company/helpers.ts"
 import { cwdOf, envNames, isGone, ps, reexecMarks, shortDir, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { freePort } from "../hq/helpers.ts"
+import { session } from "../store/helpers.ts"
 import { Recorder, base, makeJob } from "../worker/helpers.ts"
 import { frames, makeOffice, request, served, take, within } from "./helpers.ts"
 
@@ -475,6 +478,42 @@ test("build office gives the office a worker registry that stops with it", async
   } finally {
     office.store.close()
   }
+})
+
+test("build office runs codex sessions closed on stop", async () => {
+  let office: Office | undefined
+  // Registered before home()'s removal, as in makeOffice: onTestFinished runs callbacks in registration order.
+  onTestFinished(async () => {
+    try {
+      await office?.stop()
+    } finally {
+      office?.store.close()
+    }
+  })
+  const rec = recordingGit(tempDir())
+  office = buildOffice(new OfficePaths(home()), { tools: { git: rec.git }, guards: {}, write: collect().write })
+  const codex = office.codex!
+  expect(codex).toBeInstanceOf(CodexSessions)
+  expect(codex.hooks).toBeInstanceOf(Hooks)
+  spyOn(office.models, "warm").mockImplementation(() => new Promise(() => {}))
+  // Calls through, so the sessions really close.
+  const close = spyOn(codex, "closeAll")
+  await office.start()
+  expect(close).not.toHaveBeenCalled()
+  await office.stop()
+  expect(close).toHaveBeenCalledTimes(1)
+  const row = office.store.createSession(
+    session({
+      harness: "codex",
+      status: "starting",
+      cwd: tempDir(),
+      repo_commit: await office.git.head(),
+      opened_by: "ngocbh",
+    }),
+  )
+  await codex.start(row)
+  expect(codex.get(row.id)).toBeUndefined()
+  expect(office.store.listWorkers()).toEqual([])
 })
 
 /** How a process exited. */

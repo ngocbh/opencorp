@@ -8,6 +8,7 @@ import { Logins, type LoginsOptions } from "../chat/logins.ts"
 import { ModelCache, type ModelCacheOptions } from "../chat/models.ts"
 import type { CompanyGit } from "../company/git.ts"
 import { CompanySnapshots } from "../company/snapshot.ts"
+import type { CodexSessions } from "../harness/sessions.ts"
 import type { Hq } from "../hq/core.ts"
 import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
@@ -100,6 +101,8 @@ export class Office {
   harness: CardActor | undefined
   /** The question cards, once the questions extension built them. */
   cards: Cards | undefined
+  /** The office's live Codex sessions; set by buildOffice. */
+  codex: CodexSessions | undefined
   /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
   profileStore: ((handle: string) => MarkdownStore) | null
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
