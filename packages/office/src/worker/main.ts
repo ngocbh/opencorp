@@ -17,16 +17,18 @@ import {
   type EventHook,
   inspectRun,
   iterRunRecords,
+  LiveChannel,
+  type LiveFollowFrame,
   type RunInspection,
   type RunResult,
   runLogPath,
-  type StreamHook,
 } from "@ngocbh/yian/run"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
 import { cancelReplaced, readSeed } from "../chat/history.ts"
 import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
+import { encode } from "./codec.ts"
 import { Delivery, type Job, parseJob, STOP_REASON } from "./job.ts"
 import { RemoteMarkdownStore } from "./remote_store.ts"
 import { askUserStub, errorMessage, errorName, remoteTool, REPLY_TYPES, Rpc } from "./rpc.ts"
@@ -259,9 +261,62 @@ export function advanceAppended(log: string, before: number | null): boolean {
   }
 }
 
-/** What `serve` and `readFrames` share: whether the job finished. */
+/**
+ * The worker's follow of its run's live channel: each follow frame goes to the office as `{type: "stream", frame}`.
+ * `serve` makes one; `runJob` binds it to the run call's channel, which it follows from inside the first frame; the
+ * office's `follow` frame restarts it with a fresh snapshot.
+ */
+class LiveFollow {
+  readonly #channel: Channel
+  #live: LiveChannel | null = null
+  #stop: (() => void) | null = null
+
+  /** A follow whose frames go out on `channel`. */
+  constructor(channel: Channel) {
+    this.#channel = channel
+  }
+
+  /** Follows `live` from inside its first frame. */
+  bind(live: LiveChannel): void {
+    this.#live = live
+    const unsubscribe = live.subscribe(() => {
+      unsubscribe()
+      // `wrap` sets `last_seq` when the run boundary opens the log, so a snapshot before the first frame would be
+      // stale for an advance. The channel updates its state before it sends, so this snapshot already includes this
+      // frame.
+      this.#stop = live.follow(this.#forward)
+    })
+  }
+
+  /** Stops the current follow and follows again, from a fresh snapshot; a no-op until following has started. */
+  again(): void {
+    if (this.#stop === null) return
+    this.#stop()
+    this.#stop = this.#live!.follow(this.#forward)
+  }
+
+  /** Sends `frame` as a `stream` frame; a `record` frame over the channel's limit goes without its `line`, which the
+   *  office reads from the log. */
+  readonly #forward = (frame: LiveFollowFrame): void => {
+    const max = this.#channel.maxFrame
+    let out: Frame = { type: "stream", frame }
+    // A UTF-16 unit is at most 3 UTF-8 bytes once JSON-escaped, so most lines skip the exact count.
+    if (frame.type === "record" && 3 * frame.line.length + 256 > max && Buffer.byteLength(encode(out)) > max) {
+      out = { type: "stream", frame: { type: "record", seq: frame.seq } }
+    }
+    // Not awaited: `send` hands the bytes over before its first await, so frames keep call order with the awaited
+    // `event` and `result` frames.
+    this.#channel.send(out).catch((error: unknown) => {
+      if (error instanceof ChannelClosed) return
+      process.stderr.write(`opencorp __worker: a live frame was not sent (${errorName(error)})\n`)
+    })
+  }
+}
+
+/** What `serve` and `readFrames` share: whether the job finished, and the run's live follow. */
 interface WorkerState {
   finished: boolean
+  follow: LiveFollow
 }
 
 /**
@@ -295,7 +350,7 @@ export async function serve(
   // A reply that can't be sent (a closed channel) has nobody to read it.
   const deliveries = new Deliveries((frame) => channel.send(frame).catch(() => {}))
   const stopper = new AbortController()
-  const state: WorkerState = { finished: false }
+  const state: WorkerState = { finished: false, follow: new LiveFollow(channel) }
   const officeClosed = readFrames(channel, rpc, deliveries, stopper, state, exit)
   let last: Frame
   let code: number
@@ -314,7 +369,10 @@ export async function serve(
       last = { type: "result", problem: await runCheck(job, env) }
     } else {
       log = job.log
-      last = { type: "result", ...(await runJob(job, channel, rpc, deliveries, { env, signal: stopper.signal })) }
+      last = {
+        type: "result",
+        ...(await runJob(job, channel, rpc, deliveries, state.follow, { env, signal: stopper.signal })),
+      }
       // After the run call a delivery applies offline, with yian taking the lock; a no-op once RunStarted opened it.
       deliveries.open()
     }
@@ -347,19 +405,20 @@ export async function serve(
   return code
 }
 
-/** Runs `job`, sending its event and stream frames, and lets `deliveries` apply to the run once it can take them;
- *  returns the result frame's fields. A chat job runs its flow afresh; with a seed, its `summary` and `history`
- *  inputs are the replaced run's, read from that run's log (confined to the pin), or `""` and `[]` with a
- *  `history_not_seeded` event when they can't be read; the replaced run's unread messages go to the fresh run
- *  first, as quiet deliveries, and with `seed.cancel` that run is cancelled when it hasn't finished. An advance job
- *  applies the deliveries the run can take now, then moves the run on from its log with yian's `advance` (or, with
- *  `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
+/** Runs `job`, sending its event frames and, through `follow`, its live frames, and lets `deliveries` apply to the run
+ *  once it can take them; returns the result frame's fields. A chat job runs its flow afresh; with a seed, its
+ *  `summary` and `history` inputs are the replaced run's, read from that run's log (confined to the pin), or `""` and
+ *  `[]` with a `history_not_seeded` event when they can't be read; the replaced run's unread messages go to the fresh
+ *  run first, as quiet deliveries, and with `seed.cancel` that run is cancelled when it hasn't finished. An advance
+ *  job applies the deliveries the run can take now, then moves the run on from its log with yian's `advance` (or,
+ *  with `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
  *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`. */
 async function runJob(
   job: Job,
   channel: Channel,
   rpc: Rpc,
   deliveries: Deliveries,
+  follow: LiveFollow,
   { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
   const read = reader(env)
@@ -379,11 +438,16 @@ async function runJob(
     // A send that fails rejects the run.
     return channel.send({ type: "event", name: event.type, data: event.toJSON() })
   }
-  const onStream: StreamHook = (chunk) => channel.send({ type: "stream", ...chunk.toJSON() })
+  // Each job makes at most one run call, so this is one channel per run call.
+  const live = new LiveChannel({
+    onSubscriberError: (error) =>
+      process.stderr.write(`opencorp __worker: a live frame was dropped (${errorName(error)})\n`),
+  })
+  follow.bind(live)
   const common = {
     log,
     onEvent,
-    onStream,
+    live,
     memory: jobMemory(job, rpc, read),
     tools: jobTools(job, rpc),
     skills: pickSkills(job.pin, job.person, job.skills),
@@ -500,6 +564,9 @@ async function readFrames(
         deliveries.push(parsed.data)
       } else if (frame.type === "stop") {
         if (!state.finished) stopper.abort(new Error(STOP_REASON))
+      } else if (frame.type === "follow") {
+        // A no-op before the run's first frame and for a check job; after the run call the channel sends nothing more.
+        state.follow.again()
       } else if (typeof frame.type === "string" && REPLY_TYPES.has(frame.type)) {
         rpc.deliver(frame)
       }

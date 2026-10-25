@@ -431,6 +431,17 @@ test("a worker sends a delivery as a deliver frame", async () => {
   expect(await worker.deliver({ id: "d2", op: "close", inbox: "steers" })).toBe(false)
 })
 
+test("a worker sends a follow frame", async () => {
+  const { office, worker: far } = await channelPair()
+  const worker = workerOver(exitedChild(), office, new Recorder())
+  await worker.start()
+  expect((await far.recv()).type).toBe("start")
+  expect(await worker.follow()).toBe(true)
+  expect(await far.recv()).toEqual({ type: "follow" })
+  office.close()
+  expect(await worker.follow()).toBe(false)
+})
+
 test("a malformed delivery rejects and sends nothing", async () => {
   const { office, worker: far } = await channelPair()
   const worker = workerOver(exitedChild(), office, new Recorder())
@@ -470,15 +481,14 @@ test("a chat job streams events and a result", async () => {
   const names = rec.names()
   expect(names[0]).toBe("RunStarted")
   expect(names.at(-1)).toBe("RunSucceeded")
-  const reply = rec.frames.filter(
-    (frame) => (frame.data as { node_id?: unknown } | undefined)?.node_id === "reply" || frame.node_id === "reply",
-  )
-  const kinds = reply.map((frame) => String(frame.name ?? "stream"))
+  const reply = rec.frames.filter((frame) => (frame.data as { node_id?: unknown }).node_id === "reply")
+  const kinds = reply.map((frame) => String(frame.name))
   expect(kinds[0]).toBe("NodeStarted")
   expect(kinds.at(-1)).toBe("NodeSucceeded")
-  expect(kinds).toContain("stream")
-  const chunks = rec.frames.filter((frame) => frame.type === "stream").map((frame) => frame.chunk)
+  const chunks = rec.streams.filter((frame) => frame.type === "chunk").map((frame) => frame.text)
   expect(chunks.join("")).toBe("hello there")
+  expect(rec.streams[0]?.type).toBe("snapshot")
+  expect(rec.streams.some((frame) => frame.type === "record")).toBe(true)
   expect(registry.get("s1")).toBeUndefined()
   expect(store.listWorkers()).toEqual([])
   expect(fs.statSync(path.join(sessionDir, "worker.log")).mode & 0o777).toBe(0o600)

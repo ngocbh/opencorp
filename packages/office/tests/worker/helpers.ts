@@ -338,7 +338,10 @@ export async function startWorker({ env = {}, linger }: { env?: WorkerEnv; linge
 
 /** Handlers that record every frame and answer questions from a list. */
 export class Recorder extends BaseHandlers {
+  /** Each `event` frame, in order. */
   readonly frames: Frame[] = []
+  /** The live frame of each `stream` frame, in order. */
+  readonly streams: Frame[] = []
   readonly asked: AskRequest[] = []
   readonly answers: unknown[]
   /** Each `deliver_reply` frame, in order. */
@@ -361,7 +364,7 @@ export class Recorder extends BaseHandlers {
   }
 
   override stream(_worker: unknown, frame: Frame): void {
-    this.frames.push(frame)
+    this.streams.push(frame.frame as Frame)
   }
 
   override deliverReply(_worker: unknown, frame: Frame): void {
@@ -419,6 +422,8 @@ export interface TestWorker extends JobWorker {
   deliver(delivery: Delivery): Promise<boolean>
   /** Sends a stop; false if the channel is closed. */
   stop(): Promise<boolean>
+  /** Asks for a fresh live snapshot (a `follow` frame); false if the channel is closed. */
+  follow(): Promise<boolean>
   /** Closes the office end; the worker exits 3 if its job has not finished. */
   closeChannel(): void
   /** The exit code once `handlers.exited` has run; `null` if that takes longer than `ms`. Rethrows the first error
@@ -433,14 +438,19 @@ export interface TestWorker extends JobWorker {
  * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
  * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
  * the test fails if `serve` hasn't returned within 10 s. Each of `early` goes as a `deliver` frame sent right after the
- * start frame, before `serve` starts.
+ * start frame, before `serve` starts. Both channels cap frames at `maxFrame`.
  */
 export async function inProcessWorker(
   job: Job,
   handlers: WorkerHandlers<TestWorker>,
-  { env = {}, linger, early = [] }: { env?: WorkerEnv; linger?: number; early?: Delivery[] } = {},
+  {
+    env = {},
+    linger,
+    early = [],
+    maxFrame,
+  }: { env?: WorkerEnv; linger?: number; early?: Delivery[]; maxFrame?: number } = {},
 ): Promise<TestWorker> {
-  const { office, worker: workerSide } = await channelPair()
+  const { office, worker: workerSide } = await channelPair({ maxFrame })
   // Not awaited before `serve` starts: a job larger than the socket buffers would wait for a reader. The bytes still
   // go out in call order.
   const sent = [
@@ -475,6 +485,7 @@ export async function inProcessWorker(
     job,
     deliver: (delivery) => send({ type: "deliver", ...delivery }),
     stop: () => send({ type: "stop" }),
+    follow: () => send({ type: "follow" }),
     closeChannel: () => office.close(),
     wait: async (ms = 30_000) => {
       let timer: ReturnType<typeof setTimeout> | undefined

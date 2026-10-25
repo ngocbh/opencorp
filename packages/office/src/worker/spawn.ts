@@ -202,6 +202,11 @@ export class Worker implements JobWorker {
     return this.#send({ type: "stop" })
   }
 
+  /** Asks the worker for a fresh live snapshot (a `follow` frame); false if the channel is closed. */
+  follow(): Promise<boolean> {
+    return this.#send({ type: "follow" })
+  }
+
   /** Closes the office's end; the worker exits (code 3) if its job has not finished. */
   closeChannel(): void {
     this.channel.close()

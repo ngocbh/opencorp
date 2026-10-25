@@ -72,6 +72,11 @@ export class Channel {
     transport.readable.on("close", () => this.stop(new ChannelClosed()))
   }
 
+  /** The largest frame body, in bytes, this channel sends or accepts. */
+  get maxFrame(): number {
+    return this.#maxFrame
+  }
+
   /** Sends one frame. Rejects with `FrameTooLarge`, or with `ChannelClosed` after `closeSend()` or `close()`, or
    *  once the transport broke. The bytes are handed to the transport before the first `await`, so frames go out in
    *  call order; it resolves once the transport has taken them. */
