@@ -1,6 +1,5 @@
 /** `opencorp init`: the model, the company from the flags or the interview with its teammates, the CEO's password,
  *  this device and the remote, then onboarding this machine. */
-import { spawnSync } from "node:child_process"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -598,6 +597,8 @@ test("without anyone to ask there is no remote", async () => {
   expect(await remoteStep(prompter, "")).toBe("")
 })
 
+// Not interactive, so the company comes from the flags and no real model is asked; the CLI never runs init this way
+// (it is interactive whenever the provider isn't on stdin).
 const CEO: Known = { company: "Acme", name: "Hong Ngoc Bui", handle: "ngocbh" }
 
 /** A short home whose office really starts in the background, and the options that run it: listers and a model
@@ -617,7 +618,7 @@ function realOffice(spawned: ReturnType<typeof killedAtEnd>) {
     checkModel: async () => null,
     loginDefaults: () => ["Hong Ngoc Bui", "ngocbh"],
   } satisfies Partial<InitOptions>
-  return { dir, environ, options, stop: () => fallback.stopProcess(launch(dir, { environ, userHome: dir })) }
+  return { dir, options, stop: () => fallback.stopProcess(launch(dir, { environ, userHome: dir })) }
 }
 
 /** Every regular file under `root` that holds `text`, links skipped. */
@@ -636,9 +637,9 @@ test(
   async () => {
     const { dir, options, stop } = realOffice(killedAtEnd())
     const company = path.join(dir, "company")
-    const file = setupConnectionFile(path.join(dir, "office"))
+    const connection = setupConnectionFile(path.join(dir, "office"))
     const pidfile = path.join(dir, "office", "office.pid")
-    const installed = path.join(dir, "office", "install.json")
+    const installFile = path.join(dir, "office", "install.json")
     const first = new Script(["openai", "", "", PASSWORD, PASSWORD, "1"], { interactive: false })
     try {
       await init(dir, first, { ...options, known: CEO })
@@ -653,18 +654,18 @@ test(
       expect(git(company, "log", "--format=%s").split("\n")).toEqual(["init: create the company"])
       const me = (await readIdentity(path.join(dir, "identity.json")))!
       expect(repo.people.get("ngocbh")?.devices.map((d) => d.name)).toEqual([me.device])
-      expect(fs.statSync(file).mode & 0o777).toBe(0o600)
+      expect(fs.statSync(connection).mode & 0o777).toBe(0o600)
       const head = git(company, "rev-parse", "HEAD")
       const pid = fs.readFileSync(pidfile, "utf8")
-      const saved = fs.statSync(file, { bigint: true }).mtimeNs
-      const install = fs.readFileSync(installed, "utf8")
+      const saved = fs.statSync(connection, { bigint: true }).mtimeNs
+      const installed = fs.readFileSync(installFile, "utf8")
 
       const again = new Script() // no answers: a second run must not ask anything
       await onboard(dir, again, options)
       expect(git(company, "rev-parse", "HEAD")).toBe(head)
       expect(fs.readFileSync(pidfile, "utf8")).toBe(pid)
-      expect(fs.statSync(file, { bigint: true }).mtimeNs).toBe(saved)
-      expect(fs.readFileSync(installed, "utf8")).toBe(install)
+      expect(fs.statSync(connection, { bigint: true }).mtimeNs).toBe(saved)
+      expect(fs.readFileSync(installFile, "utf8")).toBe(installed)
       expect(again.seen.some((line) => line.includes("up to date"))).toBe(true)
     } finally {
       await stop()
@@ -687,9 +688,7 @@ test(
       expect(holding(dir, KEY)).toEqual([file])
       expect(holding(dir, token)).toEqual([path.join(dir, "identity.json")])
       // Git objects are compressed, so the byte search above can't see into them.
-      const objects = spawnSync("git", ["cat-file", "--batch-all-objects", "--batch"], {
-        cwd: path.join(dir, "company"),
-      }).stdout
+      const objects = git(path.join(dir, "company"), "cat-file", "--batch-all-objects", "--batch")
       expect(objects.length).toBeGreaterThan(0)
       expect(objects.includes(KEY)).toBe(false)
       expect(objects.includes(token)).toBe(false)
