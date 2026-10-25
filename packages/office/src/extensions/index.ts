@@ -1,5 +1,6 @@
 /** Office extensions: each has `register(office)`, called once at start-up. */
 import type { Office } from "../daemon/office.ts"
+import { register } from "./questions.ts"
 
 /** One office extension: `register` hooks it into the office once, at start-up. */
 export interface Extension {
@@ -12,9 +13,8 @@ export class ExtensionError extends Error {
   override name = "ExtensionError"
 }
 
-/** The office's extensions, in the order they register (an explicit list, no folder discovery).
- *  Empty until the question cards land. */
-export const EXTENSIONS: readonly Extension[] = []
+/** The office's extensions, in the order they register (an explicit list, no folder discovery). */
+export const EXTENSIONS: readonly Extension[] = [{ name: "questions", register }]
 
 /** Calls each extension's `register(office)` in list order; returns the names registered. The first that
  *  throws stops loading with an `ExtensionError` naming it; an `ExtensionError` it throws passes through. */

@@ -272,7 +272,7 @@ questions/test_ask.py	open	—	split: O3-8a → O3-4	O3-4
 questions/test_ask.py::test_a_human_input_call_keeps_its_node_pages_and_schema	changed	packages/office/tests/questions/ask.test.ts::an ask node call keeps its node pages and schema	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_a_re_asked_human_input_finds_its_stored_question	changed	packages/office/tests/questions/ask.test.ts::an ask node asked again finds its stored question	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask	O3-17
 questions/test_ask.py::test_an_answer_from_another_process_is_found_by_polling	dropped	—	design §3.3: only the daemon writes the store; the 30 s poll goes and waiters wake on its after-commit events	O3-8a
-questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9	O4a-9
+questions/test_cards.py	open	—	split: O3-9 → O4a-4 → O4a-9; O3-9's tests are in packages/office/tests/questions/cards.test.ts	O4a-9
 questions/test_checker.py	ported	packages/office/tests/questions/checker.test.ts	—	O3-7
 questions/test_checker.py::test_a_single_answer_that_does_not_fit_is_refused[entry4-2.0-a whole number]	changed	packages/office/tests/questions/checker.test.ts::a whole float is a whole number	plain JSON numbers (D15's rule applied to answers; design §1.4): JS can't tell 2.0 from 2, so a whole float is a whole number; 2.5 is still refused	O3-7
 questions/test_format.py	ported	packages/office/tests/questions/format.test.ts	—	O3-7
@@ -770,6 +770,13 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/questions/ask.test.ts::an ask whose signal is already aborted stores nothing	design §3.3 (tool calls race their AbortSignal)	O3-8a
 —	new	packages/office/tests/questions/ask.test.ts::carried returns the expired questions discussion or nothing	Answers.carried had no Python test (design §3.2 API)	O3-8a
 —	new	packages/office/tests/questions/ask.test.ts::waiters that stop leave no listeners	design §3.3: a promise per waiter, removed with its abort listener when it stops waiting	O3-8a
+—	new	packages/office/tests/questions/cards.test.ts::a secret pages answer is never in a refusal or a log line	design §6 rules 1 and 13: no answer value in errors or logs	O3-9
+—	new	packages/office/tests/questions/cards.test.ts::a turn question is no card	card behaviour through a stand-in actor (rule 1); the chat run of `daemon/test_routes_questions.py::test_chat_about_a_question_then_answer_it` is O4a-9's	O3-9
+—	new	packages/office/tests/questions/cards.test.ts::a typed card gives the actor the converted values	card behaviour through a stand-in actor (rule 1); the chat run of `test_a_typed_gate_takes_labels_and_the_harness_accepts_their_converted_values` is O4a-4's	O3-9
+—	new	packages/office/tests/questions/cards.test.ts::an ask nodes card cant be sent back or stopped and takes a record keyed by header	card behaviour through a stand-in actor (rule 1); the chat run of `test_a_gate_takes_a_record_keyed_by_header_and_offers_no_send_back_or_stop` is O4a-4's	O3-9
+—	new	packages/office/tests/questions/cards.test.ts::an invalid answer is refused before the actor sees it	card behaviour through a stand-in actor (rule 1); the chat run of `daemon/test_routes_questions.py::test_chat_about_a_question_then_answer_it` is O4a-9's	O3-9
+—	new	packages/office/tests/questions/cards.test.ts::chat about this answers 501 until side chats land	design §3.2 / plan derivation 11: no side chats before O4a-9	O3-9
+—	new	packages/office/tests/questions/cards.test.ts::no harness means no cards	D23, design §2.3: the extension registers only with a session actor	O3-9
 —	new	packages/office/tests/questions/checker.test.ts::answer keys on the prototype are not answers	design §6: prototype safety for answers (own-key lookups; records built with own keys)	O3-7
 —	new	packages/office/tests/questions/format.test.ts::an astral discussion is cut by code points	design §1.4 deviation: the discussion cap counts code points as Python's len, so the cut never splits a surrogate pair	O3-7
 —	new	packages/office/tests/sandbox/bwrap.test.ts::a shell argv binds no helper	§2.5 helper rules only in the helper's argv	O1-9

@@ -11,6 +11,7 @@ import { CompanySnapshots } from "../company/snapshot.ts"
 import type { Hq } from "../hq/core.ts"
 import type { Tools } from "../install/tools.ts"
 import { GitProfileStore } from "../profile/store.ts"
+import type { CardActor, Cards } from "../questions/cards.ts"
 import type { OfficePaths as SandboxOfficePaths } from "../sandbox/policy.ts"
 import { SecretStore } from "../secrets.ts"
 import type { Store } from "../store/store.ts"
@@ -95,6 +96,10 @@ export class Office {
   workers: WorkerPool | undefined
   /** HQ, once `attach` put it here. */
   hq: Hq | undefined
+  /** The session actor card actions go through; set before the extensions load. */
+  harness: CardActor | undefined
+  /** The question cards, once the questions extension built them. */
+  cards: Cards | undefined
   /** Builds the profile store for one person, per request; null means the profile routes answer 501. */
   profileStore: ((handle: string) => MarkdownStore) | null
   /** When this office object was built, which is the daemon's start, as a protocol timestamp. */
