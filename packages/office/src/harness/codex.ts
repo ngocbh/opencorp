@@ -144,7 +144,8 @@ export class CodexProcess {
   /** Spawns, records, initializes with `experimentalApi`, and checks the sign-in; resolves with initialize's result.
    *
    *  Rejects with `CodexStartError` (or `CodexSignedOut`): a command that can't be run says to run `opencorp doctor`,
-   *  and a failed handshake also names the log, where Codex's output is. Nothing is left running or recorded.
+   *  and a failed handshake also names the log, where Codex's output is; a store error from recording the worker is
+   *  rethrown as is, after the group is killed. Nothing is left running or recorded.
    *  A process already killed never spawns. */
   async start(): Promise<unknown> {
     const { command, cwd, log } = this.#options
