@@ -1,16 +1,11 @@
 /**
  * The office's entry: the first argument picks the mode. `packages/cli/src/main.ts` hands its
- * internal modes (`__worker`, `__fs-helper`) and `daemon` here before it loads anything else.
+ * internal modes (`__worker`, `__fs-helper`), `daemon` and `install` here before it loads anything
+ * else.
  */
 
 /** A mode's entry point: takes the arguments after the mode, resolves to an exit code. */
 export type ModeMain = (argv: string[]) => Promise<number>
-
-/** Says on stderr that `mode` isn't built yet; exit code 1. */
-function notBuilt(mode: string): number {
-  console.error(`opencorp ${mode}: not built yet`)
-  return 1
-}
 
 /** The office daemon, one per home. It exits as soon as `main` returns, so a live handle (a git child, a timer)
  *  can't keep an old daemon running after it released the lock, and at once on a crash. */
@@ -32,8 +27,9 @@ export const workerMain: ModeMain = async (argv) => {
 }
 /** One file operation inside the sandbox. */
 export const fsHelperMain: ModeMain = async () => (await import("./sandbox/fs_helper.ts")).fsHelperMain()
-/** The setup commands (init, onboard, offboard, doctor, start, restart). */
-export const installMain: ModeMain = async () => notBuilt("install")
+/** The setup commands (init, onboard, offboard, doctor, start, restart). It exits once stdout and stderr have
+ *  drained, with 130 on Ctrl-C and 1 for an unexpected error, its stack on stderr. */
+export const installMain: ModeMain = async (argv) => (await import("./install/main.ts")).run(argv)
 
 const MODES: Record<string, ModeMain> = {
   daemon: daemonMain,

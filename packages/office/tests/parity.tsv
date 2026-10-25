@@ -305,9 +305,18 @@ install/test_launch.py	ported	packages/office/tests/install/launch.test.ts,packa
 install/test_launch.py::test_repo_is_this_checkout	changed	packages/office/tests/install/tools.test.ts::repo is this checkout	design §6.1 (no REPO: the install path, the checkout root in a checkout)	O2-11b
 install/test_launch.py::test_the_launch_command_is_the_daemons_with_absolute_paths	changed	packages/office/tests/install/launch.test.ts::the launch command is the daemons with absolute paths	design §9.3 (selfCommand() + daemon --home H, cwd the office dir)	O2-11b
 install/test_launchd.py	ported	packages/office/tests/install/launchd.test.ts	—	O2-12
+install/test_launchd.py::test_the_plist_matches_the_golden_file	changed	packages/office/tests/install/launchd.test.ts::the plist matches the golden file	#449: ExitTimeOut 30 so launchd doesn't SIGKILL the daemon inside its 25 s stop budget (fallback.STOP_TIMEOUT_MS); Python's plist had launchd's 20 s default	O2-13b
 install/test_launchd.py::test_xml_special_characters_and_newlines_survive_the_plist	changed	packages/office/tests/install/launchd.test.ts::xml special characters and newlines survive the plist	design §9.3 (hand-written plist; checked as text and with plutil, not plistlib)	O2-12
 install/test_legacy.py	dropped	—	legacy.py goes; no migration (D24, D4)	O0-9
-install/test_main.py	open	—	—	O2-13b
+install/test_main.py	ported	packages/office/tests/install/main.test.ts	—	O2-13b
+install/test_main.py::test_another_home_is_not_held_up_by_the_old_one	dropped	—	D24: legacy.py is not ported	O2-13b
+install/test_main.py::test_doctor_looks_for_leftovers_once	dropped	—	D24: legacy.py is not ported	O2-13b
+install/test_main.py::test_doctor_prints_the_commands_that_finish_the_move	dropped	—	D24: legacy.py is not ported	O2-13b
+install/test_main.py::test_init_flags_are_known_answers_for_the_interview	changed	packages/office/tests/install/main.test.ts::init flags are known answers for the interview	O2-13a: TtyPrompter keeps its preset private; the test checks an interactive TtyPrompter and the flags as known	O2-13b
+install/test_main.py::test_init_in_a_real_process_keeps_the_key_off_the_terminal	changed	packages/office/tests/install/main.test.ts::init in a real process keeps the key off the terminal	P3/D13: the key is in office/connections/office.json; the child is selfCommand() + install init	O2-13b
+install/test_main.py::test_install_tests_get_a_stand_in_codex_check	dropped	—	design §10: no conftest; each doctor test passes its own codex stand-in through Setup.doctor	O2-13b
+install/test_main.py::test_onboard_with_json_prompts_in_a_real_process_keeps_the_channel_clean	changed	packages/office/tests/install/main.test.ts::onboard with json prompts in a real process keeps the channel clean	P3/D13: the connection file; design §9.1: the stray output is a console.log and a direct process.stdout.write, through a driver calling run()	O2-13b
+install/test_main.py::test_the_default_home_waits_for_the_old_one_to_be_moved	dropped	—	D24: legacy.py is not ported	O2-13b
 install/test_offboard.py	ported	packages/office/tests/install/offboard.test.ts	—	O2-18b
 install/test_onboard.py	ported	packages/office/tests/install/onboard.test.ts	—	O2-15
 install/test_onboard.py::test_a_running_office_is_not_topped_up_behind_its_back	changed	packages/office/tests/install/onboard.test.ts::a running office is not topped up behind its back	D32: no debrief flow in the template; side_chat and profile_manager are the two dropped flows	O2-15
@@ -558,6 +567,7 @@ worker/test_steering.py::test_an_interrupt_returns_the_text_so_far	changed	packa
 worker/test_steering.py::test_close_refuses_new_steers_and_returns_every_queued_one	dropped	—	yian #1100: interrupt(run, inbox) replaces node signals; yian holds the inbox	O4a-0a
 worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089: steers go to the agent's steer inbox through yian's send; unread steers stay in the inbox; yian queues steers per inbox, not per node	O3-17
 —	new	packages/cli/test/entry.test.ts::opencorp daemon reaches the office daemon mode	§2.1: the CLI hands daemon to the office before it loads anything else	O2-5
+—	new	packages/cli/test/entry.test.ts::opencorp install reaches the office install mode	§2.1: the CLI hands install to the office before it loads anything else	O2-13b
 —	new	packages/cli/test/entry.test.ts::opencorp through the npm shim from a folder holding .env and a bunfig.toml preload sees neither	§2.7, §6.2	O2-26
 —	new	packages/cli/test/entry.test.ts::plain bun from a folder holding .env shows the planted identity	§2.7 (control for the binary checks)	O2-26
 —	new	packages/cli/test/entry.test.ts::the CODE worker shim only imports the code-worker entry of yian	§2.7, O0-3	O2-26
@@ -937,6 +947,13 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/install/launch.test.ts::which finds a runnable program on the absolute path entries only	design §6.1 (tools pinned to absolute paths, R2 I5)	O2-11b
 —	new	packages/office/tests/install/launchd.test.ts::a control character in a value is a service error	design §9.3 (hand-written plist refuses what plistlib refuses, CR included)	O2-12
 —	new	packages/office/tests/install/launchd.test.ts::a plist that cant be written is a service error and only the probe ran	design §9.3 (service files: a failed write is a ServiceError with the system's text)	O2-12
+—	new	packages/office/tests/install/launchd.test.ts::the plist gives the daemon longer to stop than the office waits	#449: launchd's ExitTimeOut must outlast fallback.STOP_TIMEOUT_MS	O2-13b
+—	new	packages/office/tests/install/main.test.ts::a missing or unknown command or flag is a usage error	install/__main__.py: argparse exits 2 on a usage error	O2-13b
+—	new	packages/office/tests/install/main.test.ts::a service mode that isnt one is a usage error	O2-12: the service modes are service.MODES; __main__.py's --service choices add auto	O2-13b
+—	new	packages/office/tests/install/main.test.ts::all of stdout reaches the reader before setup exits	O2-13a handoff: exit only after stdout drains	O2-13b
+—	new	packages/office/tests/install/main.test.ts::an input error after a prompt failed is not a crash	O2-13a: node:readline re-emits the terminal EIO under clack	O2-13b
+—	new	packages/office/tests/install/main.test.ts::an unexpected error is exit 1 with its stack on stderr	install/__main__.py: an unexpected error is a traceback on stderr, exit 1; Bun only prints an unhandled rejection	O2-13b
+—	new	packages/office/tests/install/main.test.ts::ctrl c at a numbered question is exit 130 with only a newline	O2-13a handoff: a SIGINT during a numbered list is exit 130	O2-13b
 —	new	packages/office/tests/install/offboard.test.ts::launchers finds a link to the checkout wrapper and a script naming it	O0-5 handoff: packages/cli/bin/opencorp is the checkout's launcher; a link's hint names its target	O2-18b
 —	new	packages/office/tests/install/offboard.test.ts::offboard outside a checkout reports no launchers	design §2.1/O2-26: the compiled binary has no checkout, so there is no launcher to report	O2-18b
 —	new	packages/office/tests/install/onboard.test.ts::a model check given an env runs in that env	P2 and Decision 1 (o3-5 plan): the check job runs modelProblem in the worker's own env, which holds the provider env	O3-5

@@ -13,17 +13,12 @@ test("office and composer import", () => {
   expect(typeof runFlow).toBe("function")
 })
 
-test("each office mode is a stub until its item lands, and an unknown mode exits 2", async () => {
+test("an unknown office mode exits 2", async () => {
   const errors: string[] = []
   const saved = console.error
   console.error = (...args: unknown[]) => void errors.push(args.join(" "))
   try {
-    // __worker and daemon are real and end with process.exit, so only their child-process tests run them.
-    for (const mode of ["install"]) {
-      errors.length = 0
-      expect(await office.officeMain([mode, "x"])).toBe(1)
-      expect(errors).toEqual([`opencorp ${mode}: not built yet`])
-    }
+    // The known modes run in child processes only, in their own tests.
     for (const argv of [["nope"], [], ["__proto__"], ["toString"]]) {
       errors.length = 0
       expect(await office.officeMain(argv)).toBe(2)
