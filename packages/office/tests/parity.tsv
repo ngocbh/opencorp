@@ -357,12 +357,12 @@ testing/test_codex_spike.py	dropped	—	codex_spike.py stays a dev-only script, 
 testing/test_fake_codex.py	ported	packages/office/tests/testing/fake_codex.test.ts	—	O3-10
 tools/company/test_draft.py	ported	packages/office/tests/tools/company/draft.test.ts	—	O2-16b
 tools/company/test_work.py	ported	packages/office/tests/tools/company/work.test.ts	—	O2-22b
-tools/test_build.py	open	—	—	O2-22b
+tools/test_build.py	ported	packages/office/tests/tools/build.test.ts	—	O2-22b
 tools/test_work_items.py	ported	packages/office/tests/tools/work_items.test.ts	—	O2-22a
 worker/test_channel.py	ported	packages/office/tests/worker/channel.test.ts,packages/office/tests/worker/codec.test.ts	—	O3-1
 worker/test_channel.py::test_jsonable_unpacks_observer_values	changed	packages/office/tests/worker/codec.test.ts::observer values are sent as their JSON form	design §2.4: the office codec replaces jsonable; TS values have no dataclass, enum, pydantic or Path kinds	O3-1
 worker/test_fake_llm.py	ported	packages/office/tests/worker/fake_llm.test.ts	—	O2-20
-worker/test_job.py	open	—	split: O3-1 → O2-22b	O2-22b
+worker/test_job.py	ported	packages/office/tests/worker/job.test.ts	—	O2-22b
 worker/test_job.py::test_a_job_round_trips_through_json	changed	packages/office/tests/worker/job.test.ts::a job round trips through json	design §2.4: no session memory (#1001), env (R2 m5) or feedback (D32)	O3-1
 worker/test_job.py::test_bad_jobs_are_refused	changed	packages/office/tests/worker/job.test.ts::bad jobs are refused	design §2.4: also refuses backward, feedback, learnable (D32), session memory (#1001), env (R2 m5); yian #1078: a group named ask (the ask slot) too	O3-17
 worker/test_job.py::test_tool_spec_of_a_base_tool_uses_the_given_name	changed	packages/office/tests/worker/job.test.ts::tool spec uses the given name	D20: explicit schemas, no langchain tools	O3-1
@@ -780,6 +780,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/store/runs.test.ts::a runs config is recorded at spawn	resume or fresh run reads it (§5.1, §8.4)	O1-3
 —	new	packages/office/tests/store/runs.test.ts::an end time needs an end reason	§5.1	O1-3
 —	new	packages/office/tests/store/sessions.test.ts::a field with no column needs a store migration	CLAUDE.md's store-migration rule (§5.1)	O1-3
+—	new	packages/office/tests/tools/build.test.ts::the office tool specs equal the saved copy	D20 (Python's compare-only tools/test_spec_dump.py: all four groups through groupSpecs equal tests/fixtures/tool_specs.json)	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager titles its work item with the question on one line	Python's TITLE_CHARS rule, untested there: whitespace collapsed, 80 code points, "Question" fallback	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::ask manager without an on question callback stores nothing	plan choice 2: no onQuestion rejects before anything is stored	O2-22b
 —	new	packages/office/tests/tools/company/work.test.ts::company tool arguments of the wrong type store nothing	design §6 rule 9 (a worker tool call's args are untrusted: only a string id reaches SQLite; no value in errors)	O2-22b

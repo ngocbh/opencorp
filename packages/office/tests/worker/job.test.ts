@@ -1,6 +1,7 @@
 /** The worker job: round trips, refusals with value-free errors, person flows and tool specs from declared tools. */
 import { expect, test } from "bun:test"
 import { inspect } from "node:util"
+import { workspaceToolFunctions } from "../../src/tools/workspace.ts"
 import { decode, encode } from "../../src/worker/codec.ts"
 import { groupSpecs, JobError, parseJob, personFlow, toolSpec } from "../../src/worker/job.ts"
 
@@ -88,6 +89,12 @@ test("tool spec uses the given name", () => {
   const shout = { description: "Shout it.", parameters }
   const spec = toolSpec("yell", shout)
   expect([spec.name, spec.description, spec.parameters.required]).toEqual(["yell", "Shout it.", ["text"]])
+})
+
+test("group specs names tools by their keys", () => {
+  const groups = groupSpecs({ workspace: workspaceToolFunctions(async () => "") })
+  const names = groups.workspace!.map((s) => s.name)
+  expect(names).toEqual(["read_file", "write_file", "edit_file", "list", "search", "shell"])
 })
 
 test("a bad job error holds no input value", () => {

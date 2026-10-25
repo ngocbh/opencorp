@@ -3,3 +3,4 @@
  */
 export { company, makeCompany } from "../company/helpers.ts"
 export { openStore, question, session, workItem } from "../store/helpers.ts"
+export { tempDir } from "../helpers.ts"
