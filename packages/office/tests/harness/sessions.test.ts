@@ -87,6 +87,16 @@ test("the current turn is a copy and empty for a session that is not live", asyn
   expect(kept[0]!.parts.length).toBe(1)
 })
 
+/** What `promise` rejects with; fails the test if it resolves. */
+async function rejection(promise: Promise<unknown>): Promise<HarnessError> {
+  return promise.then(
+    () => {
+      throw new Error("expected a rejection")
+    },
+    (error: unknown) => error as HarnessError,
+  )
+}
+
 test.each([
   ["no person", {}, (h: Codex) => ["nobody", h.workspace], 404, "not_found"],
   ["not an agent", {}, (h: Codex) => ["ngocbh", h.workspace], 422, "not_an_agent"],
@@ -111,6 +121,17 @@ test.each([
     422,
     "invalid_body",
   ],
+  [
+    "under a file",
+    {},
+    () => {
+      const file = path.join(tempDir(), "file")
+      fs.writeFileSync(file, "")
+      return ["minh", path.join(file, "below")]
+    },
+    422,
+    "invalid_body",
+  ],
   ["root", {}, () => ["minh", "/"], 422, "unsafe_workspace"],
   ["office files", {}, (h: Codex) => ["minh", h.office.paths.company], 422, "unsafe_workspace"],
   [
@@ -129,17 +150,13 @@ test.each([
   async (name, files, setup, status, code) => {
     const h = makeCodex({ files })
     const [handle, cwd] = setup(h)
-    const error = await h.sessions.startSession(handle!, cwd!, { openedBy: "ngocbh" }).then(
-      () => {
-        throw new Error("expected a rejection")
-      },
-      (e: unknown) => e as HarnessError,
-    )
+    const error = await rejection(h.sessions.startSession(handle!, cwd!, { openedBy: "ngocbh" }))
     expect(error).toBeInstanceOf(HarnessError)
     expect([error.status, error.code]).toEqual([status, code])
     // A 422 never echoes a path the request gave that isn't a usable folder.
     if (code === "invalid_body") expect(error.message).not.toContain(cwd!)
     if (name === "office guards") expect(error.message).toContain("a folder on the office's PATH")
+    if (name === "office files") expect(error.message).toContain("overlaps the office's files")
     expect(h.store.listSessions()).toEqual([])
     expect(h.store.listWorkItems()).toEqual([])
   },

@@ -85,7 +85,8 @@ export class CodexSessions implements CardActor {
    *
    *  `openedBy` is the human who opened it; the work item is theirs (the CEO's when null). `connection` is their
    *  pick for the session's debrief. A start that fails before anything is live leaves the session `failed` and
-   *  rejects with 500 `start_failed` naming it; a load that fails later fails the session with why. */
+   *  rejects with the start's `HarnessError`, or 500 `start_failed` naming it for anything else; a load that fails
+   *  later fails the session with why. */
   async startSession(
     handle: string,
     cwd: string,
@@ -437,7 +438,7 @@ export class CodexSessions implements CardActor {
       throw new HarnessError(422, "unsupported_harness", `${handle} doesn't use the codex harness`)
     // A 422 never echoes the request's path: it may not be a folder at all.
     if (!path.isAbsolute(cwd)) throw new HarnessError(422, "invalid_body", "cwd is not an absolute path")
-    if (!fs.statSync(cwd, { throwIfNoEntry: false })?.isDirectory())
+    if (!isFolder(cwd))
       throw new HarnessError(422, "invalid_body", "cwd is not a folder")
     // Clients match folders by their resolved path (/tmp is /private/tmp on macOS).
     const real = realPath(cwd)
@@ -531,6 +532,18 @@ export class CodexSessions implements CardActor {
 /** Folds a message, part or delta into `live`'s current turn, as a client folds the live events: a user message that
  *  comes while no turn runs, after the assistant answered, starts a new turn. Clones, since the translator keeps
  *  changing its parts. */
+/** Whether `p` is a folder; a path that can't name one (missing, below a file, a link loop) is not. */
+function isFolder(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory()
+  } catch (error) {
+    // As Python's `Path.is_dir()`: these mean no folder there; anything else (EACCES) is raised.
+    const code = (error as NodeJS.ErrnoException).code
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "ELOOP" || code === "EBADF") return false
+    throw error
+  }
+}
+
 function remember(live: CodexSession, e: HarnessEvent): void {
   if (e.type === "message") {
     const message = e.message

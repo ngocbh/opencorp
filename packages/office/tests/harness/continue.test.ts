@@ -77,7 +77,7 @@ test("continuing makes a new row on the same thread and resumes it", async () =>
   // Only the first stretch started a thread.
   expect(h.fake.calls("thread/start")).toHaveLength(1)
   await h.sessions.prompt(fresh.id, "two")
-  await waitFor(() => texts(h, fresh.id).join() === "Second" && status(h, fresh.id) === "idle", {
+  await waitFor(() => Bun.deepEquals(texts(h, fresh.id), ["Second"]) && status(h, fresh.id) === "idle", {
     what: "the second stretch",
   })
   await waitFor(() => h.store.getSession(fresh.id)!.harness_usage !== null, { what: "usage" })
@@ -205,7 +205,7 @@ test("a session ended before an office restart continues after it", async () => 
   await waitFor(() => status(r, fresh.id) === "idle", { what: "the resume" })
   expect((h.fake.calls("thread/resume")[0] as { threadId: string }).threadId).toBe("thr_1")
   await r.sessions.prompt(fresh.id, "two")
-  await waitFor(() => texts(r, fresh.id).join() === "Second", { what: "the second stretch" })
+  await waitFor(() => Bun.deepEquals(texts(r, fresh.id), ["Second"]), { what: "the second stretch" })
   expect(texts(r, fresh.id)).toEqual(["Second"])
 })
 

@@ -103,8 +103,8 @@ test("a codex session starts with an owner load", async () => {
   await waitFor(() => status(h, row.id) === "idle", { what: "the Codex session to load" })
   const s = h.store.getSession(row.id)!
   expect([s.harness, s.kind, s.harness_session_id, s.harness_model]).toEqual(["codex", "main", "thr_1", "gpt-5.5-codex"])
-  // The debrief's connection.
   expect(s.work_item_id).toBeTruthy()
+  // The debrief's connection.
   expect(s.connection).toBe("office")
   const inits = h.fake.calls("initialize") as { capabilities: unknown }[]
   expect(inits).toHaveLength(1)
