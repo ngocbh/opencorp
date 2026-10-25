@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import fs from "node:fs"
 import net from "node:net"
 import path from "node:path"
+import { pending } from "@ngocbh/yian/tools"
 import { onTestFinished, spyOn } from "bun:test"
 import { killGroup, sameProcess, startTime } from "../../src/install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../../src/platform.ts"
@@ -10,7 +11,7 @@ import type { Store } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
-import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
+import { type Delivery, Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
   type AskRequest,
@@ -50,11 +51,11 @@ export function recordFrames(): string[] {
 }
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
- *  flow, `inputs` to its inputs. */
-export function agentFlow(name: string, { node = "", top = "", inputs = "" } = {}): string {
+ *  flow, `inputs` to its inputs; `output` is the agent's output type. */
+export function agentFlow(name: string, { node = "", top = "", inputs = "", output = "str" } = {}): string {
   return (
     `id: ${name}\nname: ${name}\n${top}input:\n${inputs}  message: !str\nnodes:\n  reply:\n    kind: agent\n` +
-    `${node}    input:\n      message: \${input.message}\n    output: str\n` +
+    `${node}    input:\n      message: \${input.message}\n    output: ${output}\n` +
     `    prompt: "\${message}"\noutput: \${reply.output}\n`
   )
 }
@@ -66,6 +67,41 @@ export const TOOLS = agentFlow("tools", { node: "    tools: [toolbox]\n" })
 export const STEERABLE = agentFlow("steerable", {
   inputs: "  steers: !Inbox(str)\n",
   node: "    tools: [toolbox]\n    steer_inbox: \${input.steers}\n",
+})
+// Steerable, but a cut reply's null output still succeeds.
+export const CUTTABLE = agentFlow("cuttable", {
+  inputs: "  steers: !Inbox(str)\n",
+  node: "    tools: [toolbox]\n    steer_inbox: \${input.steers}\n",
+  output: "Optional(str)",
+})
+// One take that waits for a message on the `messages` inbox, so the run quiesces as waiting.
+export const INBOX =
+  "id: inbox\nname: inbox\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
+// The inbox flow's take feeding an agent that answers what it heard, so the run waits, then calls the model.
+export const HEARD =
+  "id: heard\nname: heard\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    input:\n      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
+  '      said: ${heard.output.events}\n    output: str\n    prompt: "${said}"\noutput: ${reply.output}\n'
+// A CODE node whose function is in a file beside the flow, then the inbox flow's take, so the run waits with a CODE
+// reference recorded.
+export const CODED =
+  "id: coded\nname: coded\ninput:\n  messages: !Inbox(str)\nnodes:\n  prep:\n    kind: code\n" +
+  "    code: ./helpers.ts:fn\n    output: str\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    depends_on: [prep]\n    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
+export const CODED_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
+// One turn: a TOOL ask and a take on the `messages` inbox, both waiting, then an agent that uses both outputs.
+export const TURN =
+  "id: turn\nname: turn\ninput:\n  messages: !Inbox(str)\nnodes:\n  asked:\n    kind: tool\n    tool_id: ask\n" +
+  '    input:\n      prompt: "Where to?"\n  heard:\n    kind: tool\n    tool_id: take\n    input:\n' +
+  "      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
+  '      where: ${asked.output}\n      said: ${heard.output.events}\n    output: str\n    prompt: "${said} ${where}"\n' +
+  "output: ${reply.output}\n"
+// An agent that may ask the user and can be interrupted; a cut reply's null output still succeeds.
+export const ASK_CUT = agentFlow("ask_cut", {
+  inputs: "  steers: !Inbox(str)\n",
+  node: "    tools: [ask_user]\n    steer_inbox: \${input.steers}\n",
+  output: "Optional(str)",
 })
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
@@ -92,9 +128,16 @@ export function writePin(root: string): string {
     "flows/chat.yaml": CHAT,
     "flows/tools.yaml": TOOLS,
     "flows/steerable.yaml": STEERABLE,
+    "flows/cuttable.yaml": CUTTABLE,
+    "flows/inbox.yaml": INBOX,
+    "flows/heard.yaml": HEARD,
+    "flows/coded.yaml": CODED,
+    "flows/helpers.ts": CODED_HELPERS,
     "flows/profiled.yaml": PROFILED,
     "flows/skilled.yaml": SKILLED,
     "flows/nap.yaml": NAP,
+    "flows/turn.yaml": TURN,
+    "flows/ask_cut.yaml": ASK_CUT,
   })
 }
 
@@ -298,9 +341,9 @@ export class Recorder extends BaseHandlers {
   readonly frames: Frame[] = []
   readonly asked: AskRequest[] = []
   readonly answers: unknown[]
-  /** Each `steer_left` frame's inbox and texts. */
-  readonly left: [string, string[]][] = []
-  /** The types of the `steer_left`, `result` and `error` frames, in order. */
+  /** Each `deliver_reply` frame, in order. */
+  readonly replies: Frame[] = []
+  /** The types of the `deliver_reply`, `result` and `error` frames, in order. */
   readonly order: string[] = []
   outcome: Frame | null = null
   returncode: number | null = null
@@ -321,9 +364,9 @@ export class Recorder extends BaseHandlers {
     this.frames.push(frame)
   }
 
-  override steerLeft(_worker: unknown, inbox: string, texts: string[]): void {
-    this.left.push([inbox, texts])
-    this.order.push("steer_left")
+  override deliverReply(_worker: unknown, frame: Frame): void {
+    this.replies.push(frame)
+    this.order.push("deliver_reply")
   }
 
   override result(_worker: unknown, frame: Frame): void {
@@ -352,12 +395,28 @@ export class Recorder extends BaseHandlers {
   }
 }
 
+/** A `Recorder` whose questions all answer later: it records each and returns yian's pending marker. */
+export class Pending extends Recorder {
+  override askUser(_worker: unknown, request: AskRequest): unknown {
+    this.asked.push(request)
+    return pending()
+  }
+}
+
+/** The waits of the result `rec` recorded. */
+export function waitsOf(rec: Recorder): Record<string, unknown>[] {
+  return rec.outcome?.waits as Record<string, unknown>[]
+}
+
+/** An advance job of the run `chat` started: same run, log, pin, grants and model config; `over` replaces fields. */
+export function advanceJob(chat: Job, over: Partial<JobInput> = {}): Job {
+  return Job.parse({ ...chat, kind: "advance", deliver: [], ...over })
+}
+
 /** The office's handle on an in-process worker, as handlers receive it. */
 export interface TestWorker extends JobWorker {
-  /** Sends a steer to the run's `inbox`; false if the channel is closed. */
-  steer(inbox: string, text: string): Promise<boolean>
-  /** Sends an interrupt for `nodeId`; false if the channel is closed. */
-  interrupt(nodeId: string): Promise<boolean>
+  /** Sends `delivery` as a `deliver` frame; false if the channel is closed. */
+  deliver(delivery: Delivery): Promise<boolean>
   /** Sends a stop; false if the channel is closed. */
   stop(): Promise<boolean>
   /** Closes the office end; the worker exits 3 if its job has not finished. */
@@ -373,19 +432,27 @@ export interface TestWorker extends JobWorker {
  * `result` or `error` the office stops sending. A throwing notification handler doesn't end the read loop; `wait`
  * rethrows the first such error. Once the office read loop has ended and the worker's code is known, the office end
  * closes and `handlers.exited` runs; a `serve` that rejects is `EXIT_FAILED`. At test end the office end closes and
- * the test fails if `serve` hasn't returned within 10 s.
+ * the test fails if `serve` hasn't returned within 10 s. Each of `early` goes as a `deliver` frame sent right after the
+ * start frame, before `serve` starts.
  */
 export async function inProcessWorker(
   job: Job,
   handlers: WorkerHandlers<TestWorker>,
-  { env = {}, linger }: { env?: WorkerEnv; linger?: number } = {},
+  { env = {}, linger, early = [] }: { env?: WorkerEnv; linger?: number; early?: Delivery[] } = {},
 ): Promise<TestWorker> {
   const { office, worker: workerSide } = await channelPair()
+  // Not awaited before `serve` starts: a job larger than the socket buffers would wait for a reader. The bytes still
+  // go out in call order.
+  const sent = [
+    office.send({ type: "start", job }),
+    ...early.map((delivery) => office.send({ type: "deliver", ...delivery })),
+  ]
   let settle!: (code: number) => void
   // Resolving twice does nothing, so the first of `exit` and the return value wins.
   const code = new Promise<number>((resolve) => (settle = resolve))
   const served = serve(workerSide, { env, linger, exit: settle })
   served.then(settle, () => settle(EXIT_FAILED))
+  await Promise.all(sent)
   let failure: { error: unknown } | undefined
   // A handler's error is kept, never thrown into the read loop or left unobserved.
   const notify = (call: () => void) => {
@@ -406,8 +473,7 @@ export async function inProcessWorker(
   }
   const worker: TestWorker = {
     job,
-    steer: (inbox, text) => send({ type: "steer", inbox, text }),
-    interrupt: (nodeId) => send({ type: "interrupt", node_id: nodeId }),
+    deliver: (delivery) => send({ type: "deliver", ...delivery }),
     stop: () => send({ type: "stop" }),
     closeChannel: () => office.close(),
     wait: async (ms = 30_000) => {
@@ -426,12 +492,12 @@ export async function inProcessWorker(
         const kind = frame.type
         if (isRequest(kind)) {
           void replyTo(office, frame, handlers, worker)
-        } else if (kind === "steer_left") {
-          notify(() => handlers.steerLeft(worker, frame.inbox as string, frame.texts as string[]))
+        } else if (kind === "deliver_reply") {
+          notify(() => handlers.deliverReply(worker, frame))
         } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
           notify(() => handlers[kind](worker, frame))
-          // The run is over: later steers fail here, and the worker, having answered the ones already sent, sees the
-          // end of stream and returns.
+          // The run is over: later deliveries fail here, and the worker, having answered the ones already sent, sees
+          // the end of stream and returns.
           if (kind === "result" || kind === "error") office.closeSend()
         }
       }
@@ -439,7 +505,7 @@ export async function inProcessWorker(
       if (!(error instanceof ChannelClosed)) failure ??= { error }
     }
   }
-  // Not closed when the code settles: late steer_left frames may still be buffered. Both waits are bounded, since
+  // Not closed when the code settles: late deliver_reply frames may still be buffered. Both waits are bounded, since
   // `serve` always closes the worker's channel on its way out.
   const finished = (async () => {
     await readLoop()
@@ -456,7 +522,6 @@ export async function inProcessWorker(
     clearTimeout(timer)
     if (late) throw new Error("the worker did not return within 10 s of the office closing")
   })
-  await office.send({ type: "start", job })
   return worker
 }
 

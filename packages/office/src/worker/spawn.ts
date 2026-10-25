@@ -11,7 +11,7 @@ import { killGroup, startTime } from "../install/proc.ts"
 import { selfCommand, selfSpawnEnv } from "../platform.ts"
 import type { Store } from "../store/store.ts"
 import { type Channel, ChannelClosed, type Frame, socketChannel } from "./channel.ts"
-import type { Job } from "./job.ts"
+import { Delivery, type Job } from "./job.ts"
 import { reap } from "./reaper.ts"
 import { errorName, isRequest, type JobWorker, replyTo, type WorkerHandlers } from "./rpc.ts"
 
@@ -184,17 +184,17 @@ export class Worker implements JobWorker {
     killGroup(this.pgid)
   }
 
-  /** Sends `text` to the run's steer inbox `inbox`; false if the channel is closed or the run is over.
+  /** Sends `delivery` to the worker as a `deliver` frame.
    *
-   *  Once this returns true, the run either reads the steer or hands it back through `handlers.steerLeft` (before or
-   *  after `result`). Call it off the read loop: a notification handler must not await it. */
-  steer(inbox: string, text: string): Promise<boolean> {
-    return this.#send({ type: "steer", inbox, text })
-  }
-
-  /** Asks the steerable node `nodeId` to stop and return its text so far; false if the channel is closed. */
-  interrupt(nodeId: string): Promise<boolean> {
-    return this.#send({ type: "interrupt", node_id: nodeId })
+   *  Once this returns true, the worker answers it with one `deliver_reply` (before or after `result`) unless it
+   *  exits first, in which case the caller resends it per its lost-ack rule; rejects for a malformed delivery or a
+   *  frame over the limit (`FrameTooLarge`); false once the channel is closed. Call it off the read loop: a
+   *  notification handler must not await it. */
+  async deliver(delivery: Delivery): Promise<boolean> {
+    // Checked here, so an actor's bug fails at its call instead of making the worker drop the channel and orphan
+    // the run.
+    const parsed = Delivery.parse(delivery)
+    return this.#send({ ...parsed, type: "deliver" })
   }
 
   /** Asks the run to stop; false if the channel is closed. */
@@ -255,16 +255,13 @@ export class Worker implements JobWorker {
     if (isRequest(kind)) {
       // Requests may wait for a person, so the loop never awaits them.
       void replyTo(this.channel, frame, this.handlers, this, { log: this.#log })
-    } else if (kind === "steer_left") {
-      const { inbox, texts } = frame
-      if (typeof inbox !== "string" || !Array.isArray(texts) || !texts.every((text) => typeof text === "string")) {
-        throw new TypeError("a steer_left frame needs an inbox and texts")
-      }
-      this.#notify("steerLeft", () => this.handlers.steerLeft(this, inbox, texts))
+    } else if (kind === "deliver_reply") {
+      if (!isDeliverReply(frame)) throw new TypeError("a deliver_reply frame is malformed")
+      this.#notify("deliverReply", () => this.handlers.deliverReply(this, frame))
     } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
       this.#notify(kind, () => this.handlers[kind](this, frame))
-      // The run is over: later steers fail here, and the worker, having answered the ones already sent, sees the end
-      // of stream and exits.
+      // The run is over: later deliveries fail here, and the worker, having answered the ones already sent, sees the
+      // end of stream and exits.
       if (kind === "result" || kind === "error") this.channel.closeSend()
     } else {
       this.#log("WARNING", `worker ${this.sessionId} sent an unknown frame type`)
@@ -441,6 +438,25 @@ export class WorkerRegistry implements WorkerPool {
       this.#log("ERROR", `could not remove the record of worker ${worker.sessionId} (${errorName(error)})`)
     }
   }
+}
+
+/** Whether `frame` is a well-formed `deliver_reply`: a non-empty `id` and exactly one of `seq` (a non-negative
+ *  safe integer or null, with `closed` absent or a list of call ids), `refused` or `failed` (strings). */
+function isDeliverReply(frame: Frame): boolean {
+  if (typeof frame.id !== "string" || frame.id === "") return false
+  const has = (key: string) => Object.hasOwn(frame, key)
+  if (has("seq")) {
+    const { seq, closed } = frame
+    // The codec revives NaN and the infinities, so a number alone is not enough.
+    return (
+      (seq === null || (Number.isSafeInteger(seq) && (seq as number) >= 0)) &&
+      (!has("closed") || (Array.isArray(closed) && closed.every((id) => typeof id === "string"))) &&
+      !has("refused") &&
+      !has("failed")
+    )
+  }
+  if (has("closed")) return false
+  return has("refused") ? typeof frame.refused === "string" && !has("failed") : typeof frame.failed === "string"
 }
 
 /** A child's exit as a return code: its exit code, or minus the number of the signal that ended it. */

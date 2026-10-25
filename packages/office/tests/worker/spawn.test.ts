@@ -13,7 +13,7 @@ import { selfCommand } from "../../src/platform.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
-import type { Job } from "../../src/worker/job.ts"
+import type { Delivery, Job } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_ORPHANED, jobTools } from "../../src/worker/main.ts"
 import type { OfficeTool, WorkerHandlers } from "../../src/worker/rpc.ts"
 import {
@@ -28,7 +28,19 @@ import {
 import { fakeLlm } from "../chat/helpers.ts"
 import { cwdOf, envEntries, envNames, isGone, ps, startGroup, tempDir, waitFor } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
-import { base, channelPair, makeJob, makeRegistry, officeEnd, Recorder, runWorker, writeFiles } from "./helpers.ts"
+import {
+  advanceJob,
+  base,
+  channelPair,
+  makeJob,
+  makeRegistry,
+  officeEnd,
+  Pending,
+  Recorder,
+  runWorker,
+  waitsOf,
+  writeFiles,
+} from "./helpers.ts"
 
 setDefaultTimeout(60_000)
 
@@ -291,18 +303,49 @@ test("the office closes the channel of a worker that sends a bad frame", async (
   expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
 })
 
-test("a steer left frame without its fields is a bad frame", async () => {
+const BAD_REPLIES: Frame[] = [
+  { id: 3 },
+  { id: "", seq: 1 },
+  { id: "a" },
+  { id: "a", seq: 1, refused: "x" },
+  { id: "a", refused: "x", closed: [] },
+  { id: "a", seq: "1" },
+  { id: "a", seq: 1, closed: [1] },
+  { id: "a", failed: 3 },
+  { id: "a", seq: -1 },
+  { id: "a", seq: 1.5 },
+  { id: "a", seq: NaN },
+]
+
+test.each(BAD_REPLIES.map((fields) => [inspect(fields, { breakLength: Infinity }), fields] as const))(
+  "a deliver reply frame without its fields is a bad frame [%s]",
+  async (_shape, fields) => {
+    const { office, worker: far } = await channelPair()
+    const rec = new Recorder()
+    const { lines, log } = recordingLog()
+    const worker = workerOver(exitedChild(), office, rec, makeJob(base()), { log })
+    await worker.start()
+    expect((await far.recv()).type).toBe("start")
+    await far.send({ type: "deliver_reply", ...fields })
+    await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
+    expect(await worker.wait(10_000)).toBe(0)
+    expect(rec.replies).toEqual([])
+    expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
+  },
+)
+
+test("a well formed deliver reply frame reaches the handler", async () => {
   const { office, worker: far } = await channelPair()
   const rec = new Recorder()
   const { lines, log } = recordingLog()
   const worker = workerOver(exitedChild(), office, rec, makeJob(base()), { log })
   await worker.start()
   expect((await far.recv()).type).toBe("start")
-  await far.send({ type: "steer_left", inbox: 3 })
-  await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
-  expect(await worker.wait(10_000)).toBe(0)
-  expect(rec.left).toEqual([])
-  expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
+  const reply = { type: "deliver_reply", id: "a", seq: null, closed: ["c1"] }
+  await far.send(reply)
+  await waitFor(() => rec.replies.length === 1, { timeout: 10_000, what: "the reply to reach the handler" })
+  expect(rec.replies).toEqual([reply])
+  expect(lines).toEqual([])
 })
 
 test("a worker that keeps running after its channel closes is killed after the grace", async () => {
@@ -368,9 +411,35 @@ test("a worker starts only once", async () => {
   await expect(worker.start()).rejects.toThrow("the worker was already started")
   expect((await far.recv()).type).toBe("start")
   // A frame the office can't read makes it close the channel: the stream ends with no second start frame.
-  await far.send({ type: "steer_left", inbox: 3 })
+  await far.send({ type: "deliver_reply", id: 3 })
   await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
   expect(await worker.wait(10_000)).toBe(0)
+})
+
+test("a worker sends a delivery as a deliver frame", async () => {
+  const { office, worker: far } = await channelPair()
+  const rec = new Recorder()
+  const worker = workerOver(exitedChild(), office, rec)
+  await worker.start()
+  expect((await far.recv()).type).toBe("start")
+  expect(await worker.deliver({ id: "d1", op: "close", inbox: "steers" })).toBe(true)
+  expect(await far.recv()).toEqual({ type: "deliver", id: "d1", op: "close", inbox: "steers" })
+  await far.send({ type: "deliver_reply", id: "d1", seq: 4 })
+  await waitFor(() => rec.replies.length === 1, { timeout: 5000, what: "the reply" })
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "d1", seq: 4 }])
+  office.close()
+  expect(await worker.deliver({ id: "d2", op: "close", inbox: "steers" })).toBe(false)
+})
+
+test("a malformed delivery rejects and sends nothing", async () => {
+  const { office, worker: far } = await channelPair()
+  const worker = workerOver(exitedChild(), office, new Recorder())
+  await worker.start()
+  expect((await far.recv()).type).toBe("start")
+  const bad = { id: "d1", op: "send", event: "hi" } as unknown as Delivery
+  await expect(worker.deliver(bad)).rejects.toThrow()
+  expect(await worker.deliver({ id: "d2", op: "close", inbox: "steers" })).toBe(true)
+  expect(await far.recv()).toEqual({ type: "deliver", id: "d2", op: "close", inbox: "steers" })
 })
 
 test("a worker shows no job when inspected or serialized", async () => {
@@ -396,6 +465,7 @@ test("a chat job streams events and a result", async () => {
     run_id: "r1",
     output: "hello there",
     failure: null,
+    waits: [],
   })
   const names = rec.names()
   expect(names[0]).toBe("RunStarted")
@@ -736,12 +806,20 @@ test("a model ask user call reaches the office", async () => {
     },
     { content: "Booked Paris." },
   )
-  const job = makeJob(where, "flows/ask.yaml")
-  const rec = await runWorker(registry, job, new Recorder({ answers: ["Paris"] }), sessionDir, { env: fake.env() })
+  const chat = makeJob(where, "flows/ask.yaml")
+  const rec = await runWorker(registry, chat, new Pending(), sessionDir, { env: fake.env() })
   expect(rec.asked).toHaveLength(1)
   const [asked] = rec.asked
   expect([asked!.question, asked!.node_id, asked!.options]).toEqual(["Which city?", null, ["Paris", "Rome"]])
-  expect(rec.outcome?.output).toBe("Booked Paris.")
+  expect(rec.outcome?.status).toBe("waiting")
+  expect(waitsOf(rec)).toEqual([expect.objectContaining({ node: "reply", tool: "ask_user", settled: false })])
+  const callId = String(waitsOf(rec)[0]!.call_id)
+  const answered = advanceJob(chat, {
+    deliver: [{ id: "c1", op: "complete", call_id: callId, result: { output: "Paris" } }],
+  })
+  const done = await runWorker(registry, answered, new Recorder(), sessionDir, { env: fake.env() })
+  expect(done.replies).toEqual([{ type: "deliver_reply", id: "c1", seq: expect.any(Number) }])
+  expect([done.outcome?.status, done.outcome?.output]).toEqual(["succeeded", "Booked Paris."])
   expect(JSON.stringify(fake.requests().at(-1)?.messages)).toContain("Paris")
 })
 
@@ -751,16 +829,25 @@ test("an ask node asks through the same stub", async () => {
   const registry = makeRegistry(openStore())
   const sessionDir = path.join(where.root, "sessions", "s1")
   fake.script({ content: "hello" })
-  const job = makeJob(where, "flows/chat.yaml", { inputs: {} })
-  const rec = await runWorker(registry, job, new Recorder({ answers: ["hi there"] }), sessionDir, { env: fake.env() })
+  const chat = makeJob(where, "flows/chat.yaml", { inputs: {} })
+  const rec = await runWorker(registry, chat, new Pending(), sessionDir, { env: fake.env() })
   expect(rec.asked).toHaveLength(1)
   const [asked] = rec.asked
   expect([asked!.question, asked!.node_id]).toEqual(["you> ", "ask"])
-  expect(rec.outcome?.output).toBe("hello")
+  expect(rec.outcome?.status).toBe("waiting")
+  expect(waitsOf(rec)).toEqual([expect.objectContaining({ node: "ask", tool: "ask", settled: false })])
+  expect(fake.requests()).toEqual([])
+  const callId = String(waitsOf(rec)[0]!.call_id)
+  const answered = advanceJob(chat, {
+    deliver: [{ id: "c1", op: "complete", call_id: callId, result: { output: "hi there" } }],
+  })
+  const done = await runWorker(registry, answered, new Recorder(), sessionDir, { env: fake.env() })
+  expect(done.replies).toEqual([{ type: "deliver_reply", id: "c1", seq: expect.any(Number) }])
+  expect([done.outcome?.status, done.outcome?.output]).toEqual(["succeeded", "hello"])
   expect(JSON.stringify(fake.requests().at(-1)?.messages)).toContain("hi there")
 })
 
-test.each(["chat", "resume"] as const)("every job kind gets the ask user stub [%s]", async (kind) => {
+test.each(["chat", "advance"] as const)("every job kind gets the ask user stub [%s]", async (kind) => {
   const groups = { toolbox: [{ name: "shout", description: "", parameters: { type: "object", properties: {} } }] }
   const rpc = await officeEnd(new Recorder())
   const tools = jobTools(makeJob(base(), "flows/echo.yaml", { kind, groups }), rpc)

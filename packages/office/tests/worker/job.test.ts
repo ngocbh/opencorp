@@ -55,12 +55,57 @@ test("bad jobs are refused", () => {
     [{ feedback: 1 }, "an extra field"],
     [{ learnable: true }, "an extra field"],
     [{ num_workers: 1.5 }, "num_workers"],
+    [{ kind: "resume" }, "kind"],
+    [{ advance: false }, "advance"],
+    [{ deliver: [{ id: "d1", op: "steer", inbox: "steers", event: "hi" }] }, "deliver"],
+    [{ deliver: [{ id: "", op: "cancel" }] }, "deliver"],
+    [{ deliver: [{ op: "cancel" }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "send", inbox: "steers" }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "send", event: "hi" }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "complete", call_id: "r1/ask", result: {} }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "complete", call_id: "r1/ask", result: { output: 1, error: "x" } }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "complete", call_id: "r1/ask", result: { error: 3 } }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "complete", result: { output: 1 } }] }, "deliver"],
+    [{ deliver: [{ id: "d1", op: "cancel", inbox: "steers" }] }, "deliver"],
   ]
   for (const [change, field] of cases) {
     const label = JSON.stringify(change)
     expect(() => parseJob({ ...BASE, ...change }), label).toThrow(JobError)
     expect(() => parseJob({ ...BASE, ...change }), label).toThrow(new RegExp(`^${field}: `))
   }
+})
+
+test("a job carries deliveries and the advance flag", () => {
+  const deliver = [
+    { id: "d1", op: "send", inbox: "steers", event: "hi" },
+    { id: "d2", op: "complete", call_id: "r1/ask", result: { output: "Paris" } },
+    { id: "d3", op: "close", inbox: "steers" },
+    { id: "d4", op: "interrupt", inbox: "steers" },
+    { id: "d5", op: "cancel" },
+  ]
+  const job = parseJob({ ...BASE, kind: "advance", deliver, advance: false })
+  expect(job.kind).toBe("advance")
+  expect(job.deliver).toEqual(deliver as typeof job.deliver)
+  expect(job.advance).toBe(false)
+  expect(parseJob(JSON.parse(JSON.stringify(job)))).toEqual(job)
+
+  const chat = parseJob(BASE)
+  expect(chat.deliver).toEqual([])
+  expect(chat.advance).toBe(true)
+})
+
+test("a bad delivery error holds no input value", () => {
+  let caught: unknown
+  try {
+    parseJob({ ...BASE, deliver: [{ id: "d1", op: "send", inbox: 7, event: "sk-SECRET-123" }] })
+  } catch (error) {
+    caught = error
+  }
+  expect(caught).toBeInstanceOf(JobError)
+  const error = caught as JobError
+  expect(error.message).not.toContain("sk-SECRET-123")
+  expect(inspect(error)).not.toContain("sk-SECRET-123")
+  expect(error.message).toContain("deliver")
 })
 
 test("person flow is relative to the person directory", () => {

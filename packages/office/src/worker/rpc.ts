@@ -1,6 +1,6 @@
 /** Request/reply calls over a worker channel, and the office-side handler interface. */
 import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
-import { type AskUserHandler, type FunctionTool, ReportedToolError, tool } from "@ngocbh/yian/tools"
+import { type AskHandler, type FunctionTool, isPending, pending, ReportedToolError, tool } from "@ngocbh/yian/tools"
 import { z } from "zod"
 import { repr } from "../perm/redact.ts"
 import { ChannelClosed, type Channel, type Frame } from "./channel.ts"
@@ -158,8 +158,9 @@ export function modelFromSchema(
 }
 
 /**
- * A tool that runs `spec` in the office: one `tool_call` request per call. The model sees `spec.parameters`
- * unchanged; Yian checks a call against it, then `modelFromSchema` fills the defaults.
+ * A tool that runs `spec` in the office: one `tool_call` request per call, with the call's id. The model sees
+ * `spec.parameters` unchanged; Yian checks a call against it, then `modelFromSchema` fills the defaults. A pending
+ * reply returns Yian's pending marker: the office answers the call later.
  *
  * An error reply throws `ReportedToolError` (`error: <message>`), which an AGENT's model reads as the call's result.
  * The request ends when the call's signal aborts, as it does when the run stops.
@@ -173,8 +174,9 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
     parametersJsonSchema: spec.parameters as JsonObject,
     execute: async (args, ctx) => {
       try {
-        const reply = await rpc.request("tool_call", { group, name: spec.name, args }, { signal: ctx.signal })
-        return reply.result ?? null
+        const fields = { group, name: spec.name, args, call_id: ctx.callId }
+        const reply = await rpc.request("tool_call", fields, { signal: ctx.signal })
+        return reply.pending === true ? pending() : (reply.result ?? null)
       } catch (error) {
         if (isInstance(error, RemoteError)) throw new ReportedToolError(`error: ${error.message}`)
         throw error
@@ -183,10 +185,11 @@ export function remoteTool(rpc: Rpc, group: string, spec: ToolSpec): FunctionToo
   })
 }
 
-/** Yian's `ask_user` handler, answered by the office through an `ask_user` request with the six `ASK_KEYS`; the
- *  request ends when the call's signal aborts, as it does when the run stops. */
-export function askUserStub(rpc: Rpc): AskUserHandler {
-  return async ({ question, questions, answerSchema, title, nodeId, options }, ctx) => {
+/** Yian's ask handler, answered by the office through an `ask_user` request with the six `ASK_KEYS`, the call's id
+ *  and its deadline; a pending reply returns Yian's pending marker. The request ends when the call's signal aborts,
+ *  as it does when the run stops. */
+export function askUserStub(rpc: Rpc): AskHandler {
+  return async ({ question, questions, answerSchema, title, nodeId, options, callId, deadline }, ctx) => {
     const request = {
       question: question ?? null,
       questions: questions ?? null,
@@ -196,7 +199,8 @@ export function askUserStub(rpc: Rpc): AskUserHandler {
       options: options ?? null,
     }
     try {
-      return (await rpc.request("ask_user", { request }, { signal: ctx.signal })).answer ?? null
+      const reply = await rpc.request("ask_user", { request, call_id: callId, deadline }, { signal: ctx.signal })
+      return reply.pending === true ? pending() : (reply.answer ?? null)
     } catch (error) {
       if (isInstance(error, RemoteError)) throw new Error(`ask_user failed: ${error.message}`)
       throw error
@@ -225,18 +229,24 @@ export interface WorkerHandlers<W extends JobWorker = JobWorker> {
   event(worker: W, frame: Frame): void
   /** A Yian stream chunk's fields. */
   stream(worker: W, frame: Frame): void
-  /** Steers yian refused for `inbox` (the run ended or hadn't started, or no such inbox) or could not take (one may
-   *  then also be in the log). */
-  steerLeft(worker: W, inbox: string, texts: string[]): void
-  /** The job finished: `status`, `run_id`, `output`, `failure`; a `check` job's is `{problem}`. */
+  /** A delivery's answer: `{id, seq, closed?}`, `{id, refused}` or `{id, failed}`; never a message text. */
+  deliverReply(worker: W, frame: Frame): void
+  /** The job finished: `status`, `run_id`, `output`, `failure`, `waits`; a `check` job's is `{problem}`. */
   result(worker: W, frame: Frame): void
   /** The job threw before it could finish. */
   error(worker: W, frame: Frame): void
   /** The worker process is gone; called once, last. */
   exited(worker: W, returncode: number | null): void
-  /** Answers a question for `worker.job.session_id`. */
+  /**
+   * Answers a question for `worker.job.session_id`. It may return Yian's `pending()` instead: the reply is then
+   * `{pending: true}`, and the office answers the call later by its `call_id` from the run's `waits`.
+   */
   askUser(worker: W, request: AskRequest): unknown
-  /** Runs tool `name` of `group` with `args`; the result must be JSON data. */
+  /**
+   * Runs tool `name` of `group` with `args`; the result must be JSON data. It may return Yian's `pending()` instead:
+   * the reply is then `{pending: true}`, and the office answers the call later by its `call_id` from the run's
+   * `waits`.
+   */
   toolCall(worker: W, group: string, name: string, args: Record<string, unknown>): unknown
   /** `MarkdownStore.read` on the office store named `store`. */
   storeRead(
@@ -274,7 +284,7 @@ export class BaseHandlers implements WorkerHandlers {
 
   stream(_worker: unknown, _frame: Frame): void {}
 
-  steerLeft(_worker: unknown, _inbox: string, _texts: string[]): void {}
+  deliverReply(_worker: unknown, _frame: Frame): void {}
 
   result(_worker: unknown, _frame: Frame): void {}
 
@@ -320,7 +330,8 @@ export class BaseHandlers implements WorkerHandlers {
 export type RpcLog = (level: "INFO" | "WARNING", line: string) => void
 
 /**
- * The reply frame for a worker's request `frame`, from `handlers`, after checking it against `worker.job`.
+ * The reply frame for a worker's request `frame`, from `handlers`, after checking it against `worker.job`. A question
+ * or tool call whose handler returns Yian's `pending()` is `{pending: true}`.
  *
  * A malformed request, a tool not in the job's groups, or a failing tool or question is `{error: "failed",
  * message}`. A store error is `mismatch` (with `expected` and `current`) for `MarkdownVersionMismatch`;
@@ -347,10 +358,14 @@ export async function answerRequest(
   try {
     checkJob(worker.job, args)
     switch (args.kind) {
-      case "ask_user":
-        return { ...head, answer: (await handlers.askUser(worker, args.request)) ?? null }
-      case "tool_call":
-        return { ...head, result: (await handlers.toolCall(worker, args.group, args.name, args.args)) ?? null }
+      case "ask_user": {
+        const answer = await handlers.askUser(worker, args.request)
+        return isPending(answer) ? { ...head, pending: true } : { ...head, answer: answer ?? null }
+      }
+      case "tool_call": {
+        const result = await handlers.toolCall(worker, args.group, args.name, args.args)
+        return isPending(result) ? { ...head, pending: true } : { ...head, result: result ?? null }
+      }
       case "store_read": {
         const [text, version] = await handlers.storeRead(worker, args.store, args.version)
         return { ...head, text, version }
