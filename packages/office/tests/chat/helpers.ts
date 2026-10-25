@@ -25,7 +25,7 @@ export const SIGNATURE = "fake-signature-6e2a90d4"
 export const REFRESH = "fake-refresh-b81c5f37"
 
 /** A token shaped like OpenAI's, naming `account`; its signature part is a fake secret. */
-export function jwt(account = "account-test"): string {
+function jwt(account = "account-test"): string {
   const claims = { "https://api.openai.com/auth": { chatgpt_account_id: account } }
   return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.${SIGNATURE}`
 }

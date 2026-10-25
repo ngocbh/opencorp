@@ -265,7 +265,7 @@ export class Connections {
       const code = errnoCode(error)
       // A symlink or a file gives ENOTDIR (O_DIRECTORY is checked first), else ELOOP; FreeBSD says EMLINK.
       if (code === "ENOTDIR" || code === "ELOOP" || code === "EMLINK") {
-        throw new ProviderError(`${this.dir} must be a directory, not a symlink`)
+        throw new ProviderError(`${this.dir} must be a directory of its own, not a file or a symlink`)
       }
       // A folder this process can't read, its own or another user's: refused with a fix, not repaired through a path.
       if (code === "EACCES") throw new ProviderError(`can't open ${this.dir}; it must be this user's folder, mode 0700`)

@@ -498,7 +498,7 @@ function openai(): { fake: FakeOpenAI; auth: NonNullable<LoginsOptions["auth"]> 
   }
 }
 
-/** The sign-in `id` once it reaches `state` (at most 10 s). */
+/** The reply to `GET /connections/login/:id` once the sign-in reaches `state` (at most 10 s). */
 function poll(sock: string, id: string, headers: Record<string, string>, state: string): Promise<Reply> {
   return waitFor(
     async () => {
