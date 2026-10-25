@@ -88,11 +88,16 @@ test("the pinned codex makes the app server command", () => {
 })
 
 test("a relative override or path entry is not codex", () => {
-  const dir = tempDir()
-  const bin = path.join(dir, "bin")
-  fs.mkdirSync(bin)
+  const bin = tempDir()
   script(path.join(bin, "codex"))
-  expect(thrown(() => codexCommand({ PATH: bin }, { OPENCORP_CODEX_BIN: "./codex" }))).toBeInstanceOf(CodexMissing)
-  expect(thrown(() => codexCommand({ PATH: "rel" }, {}))).toBeInstanceOf(CodexMissing)
+  const relative = path.relative(process.cwd(), bin)
+  expect(path.isAbsolute(relative)).toBe(false)
+  const override = thrown(() =>
+    codexCommand({ PATH: path.join(bin, "empty") }, { OPENCORP_CODEX_BIN: path.join(relative, "codex") }),
+  )
+  expect(override).toBeInstanceOf(CodexMissing)
+  expect(override.message).toContain("OPENCORP_CODEX_BIN names")
+  expect(thrown(() => codexCommand({ PATH: relative }, {}))).toBeInstanceOf(CodexMissing)
+  // No PATH means no entries, not the test process's own PATH.
   expect(thrown(() => codexCommand({}, {}))).toBeInstanceOf(CodexMissing)
 })
