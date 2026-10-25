@@ -320,6 +320,26 @@ test("a failed model attempt shows nothing", async () => {
   expect(read.map((m) => m.parts.length)).toEqual([1])
 })
 
+test("a tool call whose arguments did not parse shows no tool part", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Trying.", tool_calls: [{ id: "bad", name: "shell", arguments: "{not json" }] })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "hi")])
+  const call = steps(job.log).find((step) => step.kind === "model_call" && step.purpose === "chat")!
+  const parts = (call.output as { parts: Step[] }).parts
+  expect(parts.find((part) => part.type === "tool_call")).toEqual({
+    type: "tool_call",
+    id: "bad",
+    name: "shell",
+    raw_arguments: "{not json",
+  })
+  expect(shown(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["hi"]],
+    ["assistant", ["Trying."]],
+  ])
+})
+
 test("a waiting ask user call shows running while the session sleeps", async () => {
   const fake = await fakeLlm()
   fake.script({ content: "", tool_calls: [{ id: "q1", name: "ask_user", arguments: { question: "Which?" } }] })
@@ -536,10 +556,12 @@ test("a reply in flight shows its live text under the id its step gets", async (
   expect(replies(live)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "hello " }]])
   // The live part is not kept: a read without live calls shows none.
   expect(replies()).toEqual([])
-  // A call that has streamed nothing yet still shows; a call for a node the run never started does not.
+  // A call that has streamed nothing yet still shows; a call for a node the run never started, or for a node
+  // other than a reply, does not.
   const quiet = liveCalls([
     { node: "chat#0/reply", n, text: "", nextIndex: 0 },
     { node: "chat#9/reply", n: 0, text: "x", nextIndex: 1 },
+    { node: "chat#0/context/compacted/folded/summarize", n: 1, text: "SUMMARY", nextIndex: 1 },
   ])
   expect(replies(quiet)).toEqual([[{ id: `r1:chat#0/reply:${n}`, type: "text", text: "" }]])
   const full = messages(runs, newId(), ["r1"]).filter((m) => m.role === "assistant")

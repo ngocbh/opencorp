@@ -276,20 +276,17 @@ function render(
           .join("")
         if (text !== "") add(node, { id: `${runId}:${node}:${n}`, type: "text", text })
         const current = new Map<string, ToolPart>()
+        // A call whose arguments didn't parse never runs, so it shows nothing and takes no index.
         parts
-          .filter((part) => part.type === "tool_call")
+          .filter((part) => part.type === "tool_call" && isPlain(part.arguments))
           .forEach((call, i) => {
-            const args = call.arguments
-            const input = isPlain(args)
-              ? (plain(args) as Record<string, unknown>)
-              : { arguments: call.raw_arguments ?? null }
             const part: ToolPart = {
               id: `${runId}:${node}:${n}:${i}`,
               type: "tool",
               call_id: call.id as string,
               tool: call.name as string,
               state: "running",
-              input,
+              input: plain(call.arguments) as Record<string, unknown>,
               output: {},
               error: null,
             }

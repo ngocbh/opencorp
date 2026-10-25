@@ -640,6 +640,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/chat/transcript.test.ts::a run id that is not one folder name is skipped	§6 rule 1, §8.3: a run id is read only as one folder under the runs folder	O4a-7a
 —	new	packages/office/tests/chat/transcript.test.ts::a run without a log yet has no messages	§8.3: a run with no log yet (ENOENT) has no messages	O4a-7a
 —	new	packages/office/tests/chat/transcript.test.ts::a send no take has read is a queued message of the last run only	§8.3: unread sends are queued messages; a replaced run's unread sends were moved into the fresh run	O4a-7a
+—	new	packages/office/tests/chat/transcript.test.ts::a tool call whose arguments did not parse shows no tool part	§8.3: a call whose arguments didn't parse never runs in yian, so it shows no tool part and takes no part index	O4a-7a
 —	new	packages/office/tests/chat/transcript.test.ts::a turn context part never shows	§8.3: a user message shows its send's last text part; earlier ones are the turn's context	O4a-7a
 —	new	packages/office/tests/chat/transcript.test.ts::a waiting ask user call shows running while the session sleeps	§8.3: a call with a pending step runs while its run is the session's last; a cancelled run or a later run leaves it interrupted	O4a-7a
 —	new	packages/office/tests/chat/transcript.test.ts::an orphan take commit leaves its messages queued	§8.3: only a take its node_succeeded accepted consumes its sends	O4a-7a
