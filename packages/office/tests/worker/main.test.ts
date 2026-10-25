@@ -1,4 +1,4 @@
-/** The worker's frame loop: the start frame, closing frames, steers after the last frame, the linger, and how a run
+/** The worker's frame loop: the start frame, closing frames, deliveries after the last frame, the linger, and how a run
  *  ends: waiting, stopped, orphaned or refused. */
 import fs from "node:fs"
 import net from "node:net"
@@ -68,12 +68,12 @@ test("a bad start frame is an error that never shows the env", async () => {
   for (const line of traceback.split("\n")) expect(line).toMatch(/^\s+at /)
 })
 
-test("after its last frame a worker answers steers until the office closes", async () => {
+test("after its last frame a worker answers deliveries until the office closes", async () => {
   const { office, out } = await startWorker()
   await office.send(badStart())
   expect((await office.recv()).type).toBe("error")
-  await office.send({ type: "steer", inbox: "steers", text: "too late" })
-  expect(await office.recv()).toEqual({ type: "steer_left", inbox: "steers", texts: ["too late"] })
+  await office.send({ type: "deliver", id: "d1", op: "send", inbox: "steers", event: "too late" })
+  expect(await office.recv()).toEqual({ type: "deliver_reply", id: "d1", refused: "not_started" })
   expect(out.code).toBeUndefined()
   office.closeSend()
   await waitFor(() => out.code !== undefined, { timeout: 5000, what: "the worker to return" })
@@ -90,10 +90,10 @@ test("a worker stops waiting for the office after a while", async () => {
 
 test("a result too large to send becomes an error", async () => {
   const { office, worker } = await channelPair({ maxFrame: 2000 })
-  const left = { type: "steer_left", inbox: "steers", texts: ["x"] }
-  const code = await report(worker, [left, { type: "result", output: "x".repeat(5000) }], EXIT_OK)
+  const reply = { type: "deliver_reply", id: "d1", seq: 4 }
+  const code = await report(worker, [reply, { type: "result", output: "x".repeat(5000) }], EXIT_OK)
   expect(code).toBe(EXIT_FAILED)
-  expect(await office.recv()).toEqual(left)
+  expect(await office.recv()).toEqual(reply)
   const error = await office.recv()
   expect(error.type).toBe("error")
   expect(String(error.message).startsWith("FrameTooLarge")).toBe(true)
@@ -109,7 +109,7 @@ test("a worker exits 3 when the office closes before the start frame", async () 
 
 test("a frame other than start is an error", async () => {
   const { office } = await startWorker()
-  await office.send({ type: "steer", inbox: "steers", text: "y" })
+  await office.send({ type: "deliver", id: "d1", op: "send", inbox: "steers", event: "y" })
   const frame = await office.recv()
   expect(frame.type).toBe("error")
   expect(frame.message).toBe("TypeError: expected a start frame")
@@ -121,6 +121,16 @@ test("a waiting run ends normally with its status", async () => {
   const rec = await run(makeJob(where, "flows/nap.yaml", { inputs: {} }), new Recorder(), { env: fake.env() })
   expect(rec.order).toEqual(["result"])
   expect(rec.outcome?.status).toBe("waiting")
+  expect(rec.outcome?.waits).toEqual([
+    {
+      node: "nap",
+      call_id: expect.any(String),
+      tool: "sleep",
+      inbox: null,
+      deadline: expect.any(String),
+      settled: false,
+    },
+  ])
   expect(rec.returncode).toBe(EXIT_OK)
   expect(fake.requests()).toEqual([])
 })

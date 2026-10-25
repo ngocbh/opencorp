@@ -10,7 +10,7 @@ import type { Store } from "../../src/store/store.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import { Channel, ChannelClosed, type Frame, socketChannel } from "../../src/worker/channel.ts"
 import { encode } from "../../src/worker/codec.ts"
-import { Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
+import { type Delivery, Job, groupSpecs, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, serve, type WorkerEnv } from "../../src/worker/main.ts"
 import {
   type AskRequest,
@@ -50,11 +50,11 @@ export function recordFrames(): string[] {
 }
 
 /** A one-agent flow: input `message`, output the agent's reply. `node` adds lines to the agent node, `top` to the
- *  flow, `inputs` to its inputs. */
-export function agentFlow(name: string, { node = "", top = "", inputs = "" } = {}): string {
+ *  flow, `inputs` to its inputs; `output` is the agent's output type. */
+export function agentFlow(name: string, { node = "", top = "", inputs = "", output = "str" } = {}): string {
   return (
     `id: ${name}\nname: ${name}\n${top}input:\n${inputs}  message: !str\nnodes:\n  reply:\n    kind: agent\n` +
-    `${node}    input:\n      message: \${input.message}\n    output: str\n` +
+    `${node}    input:\n      message: \${input.message}\n    output: ${output}\n` +
     `    prompt: "\${message}"\noutput: \${reply.output}\n`
   )
 }
@@ -67,6 +67,16 @@ export const STEERABLE = agentFlow("steerable", {
   inputs: "  steers: !Inbox(str)\n",
   node: "    tools: [toolbox]\n    steer_inbox: \${input.steers}\n",
 })
+// Steerable, but a cut reply's null output still succeeds.
+export const CUTTABLE = agentFlow("cuttable", {
+  inputs: "  steers: !Inbox(str)\n",
+  node: "    tools: [toolbox]\n    steer_inbox: \${input.steers}\n",
+  output: "Optional(str)",
+})
+// One take that waits for a message on the `messages` inbox, so the run quiesces as waiting.
+export const INBOX =
+  "id: inbox\nname: inbox\ninput:\n  messages: !Inbox(str)\nnodes:\n  heard:\n    kind: tool\n    tool_id: take\n" +
+  "    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
 // A run whose one node sleeps an hour, so it quiesces as waiting.
@@ -92,6 +102,8 @@ export function writePin(root: string): string {
     "flows/chat.yaml": CHAT,
     "flows/tools.yaml": TOOLS,
     "flows/steerable.yaml": STEERABLE,
+    "flows/cuttable.yaml": CUTTABLE,
+    "flows/inbox.yaml": INBOX,
     "flows/profiled.yaml": PROFILED,
     "flows/skilled.yaml": SKILLED,
     "flows/nap.yaml": NAP,
@@ -298,9 +310,9 @@ export class Recorder extends BaseHandlers {
   readonly frames: Frame[] = []
   readonly asked: AskRequest[] = []
   readonly answers: unknown[]
-  /** Each `steer_left` frame's inbox and texts. */
-  readonly left: [string, string[]][] = []
-  /** The types of the `steer_left`, `result` and `error` frames, in order. */
+  /** Each `deliver_reply` frame, in order. */
+  readonly replies: Frame[] = []
+  /** The types of the `deliver_reply`, `result` and `error` frames, in order. */
   readonly order: string[] = []
   outcome: Frame | null = null
   returncode: number | null = null
@@ -321,9 +333,9 @@ export class Recorder extends BaseHandlers {
     this.frames.push(frame)
   }
 
-  override steerLeft(_worker: unknown, inbox: string, texts: string[]): void {
-    this.left.push([inbox, texts])
-    this.order.push("steer_left")
+  override deliverReply(_worker: unknown, frame: Frame): void {
+    this.replies.push(frame)
+    this.order.push("deliver_reply")
   }
 
   override result(_worker: unknown, frame: Frame): void {
@@ -354,10 +366,8 @@ export class Recorder extends BaseHandlers {
 
 /** The office's handle on an in-process worker, as handlers receive it. */
 export interface TestWorker extends JobWorker {
-  /** Sends a steer to the run's `inbox`; false if the channel is closed. */
-  steer(inbox: string, text: string): Promise<boolean>
-  /** Sends an interrupt for `nodeId`; false if the channel is closed. */
-  interrupt(nodeId: string): Promise<boolean>
+  /** Sends `delivery` as a `deliver` frame; false if the channel is closed. */
+  deliver(delivery: Delivery): Promise<boolean>
   /** Sends a stop; false if the channel is closed. */
   stop(): Promise<boolean>
   /** Closes the office end; the worker exits 3 if its job has not finished. */
@@ -406,8 +416,7 @@ export async function inProcessWorker(
   }
   const worker: TestWorker = {
     job,
-    steer: (inbox, text) => send({ type: "steer", inbox, text }),
-    interrupt: (nodeId) => send({ type: "interrupt", node_id: nodeId }),
+    deliver: (delivery) => send({ type: "deliver", ...delivery }),
     stop: () => send({ type: "stop" }),
     closeChannel: () => office.close(),
     wait: async (ms = 30_000) => {
@@ -426,12 +435,12 @@ export async function inProcessWorker(
         const kind = frame.type
         if (isRequest(kind)) {
           void replyTo(office, frame, handlers, worker)
-        } else if (kind === "steer_left") {
-          notify(() => handlers.steerLeft(worker, frame.inbox as string, frame.texts as string[]))
+        } else if (kind === "deliver_reply") {
+          notify(() => handlers.deliverReply(worker, frame))
         } else if (kind === "event" || kind === "stream" || kind === "result" || kind === "error") {
           notify(() => handlers[kind](worker, frame))
-          // The run is over: later steers fail here, and the worker, having answered the ones already sent, sees the
-          // end of stream and returns.
+          // The run is over: later deliveries fail here, and the worker, having answered the ones already sent, sees
+          // the end of stream and returns.
           if (kind === "result" || kind === "error") office.closeSend()
         }
       }
@@ -439,7 +448,7 @@ export async function inProcessWorker(
       if (!(error instanceof ChannelClosed)) failure ??= { error }
     }
   }
-  // Not closed when the code settles: late steer_left frames may still be buffered. Both waits are bounded, since
+  // Not closed when the code settles: late deliver_reply frames may still be buffered. Both waits are bounded, since
   // `serve` always closes the worker's channel on its way out.
   const finished = (async () => {
     await readLoop()

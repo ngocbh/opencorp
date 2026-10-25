@@ -291,17 +291,17 @@ test("the office closes the channel of a worker that sends a bad frame", async (
   expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
 })
 
-test("a steer left frame without its fields is a bad frame", async () => {
+test("a deliver reply frame without its fields is a bad frame", async () => {
   const { office, worker: far } = await channelPair()
   const rec = new Recorder()
   const { lines, log } = recordingLog()
   const worker = workerOver(exitedChild(), office, rec, makeJob(base()), { log })
   await worker.start()
   expect((await far.recv()).type).toBe("start")
-  await far.send({ type: "steer_left", inbox: 3 })
+  await far.send({ type: "deliver_reply", id: 3 })
   await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
   expect(await worker.wait(10_000)).toBe(0)
-  expect(rec.left).toEqual([])
+  expect(rec.replies).toEqual([])
   expect(lines).toEqual([["WARNING", BAD_FRAME_LINE]])
 })
 
@@ -368,9 +368,24 @@ test("a worker starts only once", async () => {
   await expect(worker.start()).rejects.toThrow("the worker was already started")
   expect((await far.recv()).type).toBe("start")
   // A frame the office can't read makes it close the channel: the stream ends with no second start frame.
-  await far.send({ type: "steer_left", inbox: 3 })
+  await far.send({ type: "deliver_reply", id: 3 })
   await expect(far.recv()).rejects.toBeInstanceOf(ChannelClosed)
   expect(await worker.wait(10_000)).toBe(0)
+})
+
+test("a worker sends a delivery as a deliver frame", async () => {
+  const { office, worker: far } = await channelPair()
+  const rec = new Recorder()
+  const worker = workerOver(exitedChild(), office, rec)
+  await worker.start()
+  expect((await far.recv()).type).toBe("start")
+  expect(await worker.deliver({ id: "d1", op: "close", inbox: "steers" })).toBe(true)
+  expect(await far.recv()).toEqual({ type: "deliver", id: "d1", op: "close", inbox: "steers" })
+  await far.send({ type: "deliver_reply", id: "d1", seq: 4 })
+  await waitFor(() => rec.replies.length === 1, { timeout: 5000, what: "the reply" })
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "d1", seq: 4 }])
+  office.close()
+  expect(await worker.deliver({ id: "d2", op: "close", inbox: "steers" })).toBe(false)
 })
 
 test("a worker shows no job when inspected or serialized", async () => {
@@ -396,6 +411,7 @@ test("a chat job streams events and a result", async () => {
     run_id: "r1",
     output: "hello there",
     failure: null,
+    waits: [],
   })
   const names = rec.names()
   expect(names[0]).toBe("RunStarted")
