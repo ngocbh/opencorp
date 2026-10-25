@@ -148,13 +148,14 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       own?.stdin?.destroy()
       own?.stdout.destroy()
       own?.stderr.destroy()
-      throw error
-    } finally {
       own?.closeChildEnds()
+      throw error
     }
     const outPipe = own?.stdout ?? child.stdout!
     const errPipe = own?.stderr ?? child.stderr!
     const input = own ? own.stdin : child.stdin
+    // EPIPE when the call exits without reading its input.
+    input?.on("error", () => {})
     const exit = new Promise<void>((resolve) =>
       child.once("exit", (code, sig) => {
         exited = { code, signal: sig }
@@ -169,6 +170,7 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
       outPipe.destroy()
       errPipe.destroy()
       input?.destroy()
+      own?.closeChildEnds()
       throw await failed
     }
     const out = capture(outPipe, maxOutput)
@@ -178,11 +180,9 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
     let untrack: (() => void) | undefined
     try {
       try {
-        if (input) {
-          // The call may exit without reading its input.
-          input.on("error", () => {})
-          input.end(stdin)
-        }
+        // Inside the kill path, so a close that throws still has the call killed and its streams destroyed.
+        own?.closeChildEnds()
+        input?.end(stdin)
         untrack = track?.(pid)
         if (signal?.aborted) settle("abort")
         timer = setTimeout(() => settle("timeout"), timeout * 1000)
@@ -246,26 +246,36 @@ export async function run(policy: SandboxPolicy, argv: readonly string[], option
  *  /dev/stderr or /dev/fd/N on a socket fails (ENXIO), unlike Python's pipes. `stdio` holds the child's ends,
  *  which `closeChildEnds()` closes here once the child holds its copies; each stream closes its own fd. */
 function ownPipes(withStdin: boolean) {
-  const pipes: [number, number][] = []
+  let out: [number, number] | undefined
+  let err: [number, number] | undefined
+  let input: [number, number] | undefined
   try {
-    for (let i = withStdin ? 3 : 2; i > 0; i--) pipes.push(pipe())
+    out = pipe()
+    err = pipe()
+    if (withStdin) input = pipe()
   } catch (error) {
-    for (const fd of pipes.flat()) fs.closeSync(fd)
+    for (const fd of [...(out ?? []), ...(err ?? [])]) fs.closeSync(fd)
     throw error
   }
-  const [out, err, input] = pipes as [[number, number], [number, number], [number, number]?]
   const childEnds = [out[1], err[1], ...(input ? [input[0]] : [])]
-  // A file stream closes its fd at its end or on destroy.
-  const stdin = input && fs.createWriteStream("", { fd: input[1] })
-  // A child that never reads its input makes the write fail with EPIPE.
-  stdin?.on("error", () => {})
+  // This runtime's file streams don't hold a pool thread on a pipe (probed; the fd test runs three at once).
+  // Each closes its fd at its end or on destroy.
   return {
     stdio: [input ? input[0] : "ignore", out[1], err[1]] as StdioOptions,
-    stdin,
+    stdin: input && fs.createWriteStream("", { fd: input[1] }),
     stdout: fs.createReadStream("", { fd: out[0] }),
     stderr: fs.createReadStream("", { fd: err[0] }),
+    /** Closes every child end, then throws the first error: a runtime that closed one itself shows as EBADF. */
     closeChildEnds: () => {
-      for (const fd of childEnds) fs.closeSync(fd)
+      let first: unknown
+      for (const fd of childEnds) {
+        try {
+          fs.closeSync(fd)
+        } catch (error) {
+          first ??= error
+        }
+      }
+      if (first !== undefined) throw first
     },
   }
 }

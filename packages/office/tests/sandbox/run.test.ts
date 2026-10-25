@@ -151,8 +151,10 @@ test.skipIf(!sandboxAvailable())("a call leaves no fd open", async () => {
 test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no pipe of another call", async () => {
   const policy = makePolicy().make()
   let leader = 0
-  const first = sh(policy, "cat; sleep 2", {
+  const stop = new AbortController()
+  const first = sh(policy, "cat; sleep 30", {
     stdin: "a",
+    signal: stop.signal,
     track: (pid) => {
       leader = pid
       return () => {}
@@ -169,7 +171,10 @@ test.skipIf(process.platform !== "linux" || !sandboxAvailable())("a call sees no
     .map((line) => line.match(/\s(\d+) -> (.*)$/))
     .filter((m) => m !== null && !["0", "1", "2"].includes(m[1]!) && /^(pipe|socket):/.test(m[2]!))
   expect(leaked, listing).toEqual([])
-  expect((await first).stdout.toString()).toBe("a")
+  stop.abort()
+  const done = await first
+  expect(done.stdout.toString()).toBe("a")
+  expect(done.interrupted).toBe(true)
 })
 
 test.skipIf(!sandboxAvailable())("the group is killed after a leader that exits by itself", async () => {
@@ -211,11 +216,8 @@ async function zombiesLinger(): Promise<boolean> {
 
 test.skipIf(!sandboxAvailable())("on timeout the leader is killed before it is reaped", async () => {
   // The cleanup runs after the kill and before the leader is awaited. `sleep 30` can't exit by itself, so a
-  // leader that is dead at cleanup was killed while alive. Where the runtime leaves a killed, unawaited child a
-  // zombie (macOS; Linux with pidfd_open), the leader must be a zombie at cleanup: killed but not yet reaped;
-  // blocking the loop keeps it so. Where the runtime reaps on its own thread (no pidfd_open, RHEL 8), the
-  // leader must be gone at cleanup; there the test can't tell kill, await, cleanup from kill, cleanup, await,
-  // so the macOS run is what pins that order. A leader still alive at cleanup fails either way.
+  // leader dead at cleanup was killed while alive; one still alive fails. Where the runtime reaps on its own
+  // thread, the test can't tell kill, await, cleanup from kill, cleanup, await: the macOS run pins that order.
   const lingers = await zombiesLinger()
   let stat = ""
   const result = await sh(makePolicy().make(), "sleep 30", {
