@@ -31,9 +31,10 @@ export interface OfficePaths {
   /** The office's install folders: refused as, around or inside a workspace; write-denied by Seatbelt. */
   install?: readonly string[]
   /** Programs the office runs (git, codex, tmux, bwrap, ps, who, and its own runtime in a checkout): refused
-   *  in a workspace as found, as realpath, and every link on the way. */
+   *  in a workspace as found, as realpath, and every folder or link the path walks through. */
   tools?: readonly string[]
-  /** The daemon's PATH entries: refused in a workspace as found, as realpath, and every link on the way. */
+  /** The daemon's PATH entries: refused in a workspace as found, as realpath, and every folder or link the
+   *  path walks through. */
   path?: readonly string[]
 }
 
@@ -50,11 +51,11 @@ export function helperFiles(helper: Helper): string[] {
  * replaced by its target before later components (`..` included) apply, a missing component is
  * kept as given, and a dangling link resolves to its target. A link met again while its own target
  * is being resolved is a loop and is kept as given, as Python's `os.path.realpath` does. The longest
- * existing part with no `\` then gets its on-disk spelling (case, firmlinks). When `links` is given,
- * each link the walk follows is pushed to it, as its folder's on-disk spelling plus its own name.
+ * existing part with no `\` then gets its on-disk spelling (case, firmlinks). When `visited` is given,
+ * each path the walk enters is pushed to it, as its folder's on-disk spelling plus its own name.
  * Throws if a link's target is not valid UTF-8.
  */
-export function realPath(p: string, links?: string[]): string {
+export function realPath(p: string, visited?: string[]): string {
   // Seatbelt matches resolved paths (/private/var/..., not /var/...), so every
   // path the profile names must be resolved the same way. The walk uses only lstat
   // and readlink on the raw string: path.resolve and realpathSync drop `..` before
@@ -89,6 +90,7 @@ export function realPath(p: string, links?: string[]): string {
       resolved = known
       continue
     }
+    visited?.push(path.join(onDisk(resolved), name))
     let isLink = false
     try {
       isLink = fs.lstatSync(next).isSymbolicLink()
@@ -98,7 +100,6 @@ export function realPath(p: string, links?: string[]): string {
       continue
     }
     seen.set(next, null)
-    links?.push(path.join(onDisk(resolved), name))
     const raw = fs.readlinkSync(next, { encoding: "buffer" })
     const target = raw.toString("utf8")
     // A lossy decode would make the walk look up a different name than the OS follows.
@@ -144,8 +145,8 @@ function realEntries(entries: readonly string[] | undefined): string[] {
 
 /** Throws `UnsafeWorkspace` if `workspace` is `/`, contains the home directory, is or lies inside a
  *  sensitive home path (`SENSITIVE_HOME_PATHS`), contains or lies inside the office install, contains
- *  a program the office runs or a folder on its PATH (or a link on the way to one), or if any office
- *  path is relative. */
+ *  a program the office runs or a folder on its PATH (or a folder or link the path walks through), or if
+ *  any office path is relative. */
 export function checkWorkspace(workspace: string, office: OfficePaths = {}): void {
   const ws = realPath(workspace)
   const home = realPath(office.home ?? os.homedir())
@@ -158,18 +159,19 @@ export function checkWorkspace(workspace: string, office: OfficePaths = {}): voi
       throw new UnsafeWorkspace(`workspace ${ws} is inside the sensitive path ${sensitive}; use a project folder`)
     }
   }
-  const resolvedEntry = (entry: string, kind: string, links?: string[]): string => {
-    if (path.isAbsolute(entry)) return realPath(entry, links)
+  const resolvedEntry = (entry: string, kind: string, visited?: string[]): string => {
+    if (path.isAbsolute(entry)) return realPath(entry, visited)
     throw new UnsafeWorkspace(
       `workspace ${ws} is refused: the office's ${kind} has a relative entry ${JSON.stringify(entry)}; use absolute paths`,
     )
   }
-  // A link on the way to a tool or a PATH folder is as dangerous as its end: whoever can write the
-  // workspace can repoint it.
+  // The OS walks a tool or PATH path on every spawn, so any folder or link it enters inside the
+  // workspace could be swapped by whoever writes the workspace. Entering the workspace itself is
+  // harmless: its root can't be replaced from inside.
   const contained = (entry: string, kind: string): string | undefined => {
-    const links: string[] = []
-    const real = resolvedEntry(entry, kind, links)
-    return [...links, real].find((p) => within(p, ws))
+    const visited: string[] = []
+    const real = resolvedEntry(entry, kind, visited)
+    return within(real, ws) ? real : visited.find((p) => p !== ws && within(p, ws))
   }
   for (const entry of office.install ?? []) {
     const install = resolvedEntry(entry, "install")
@@ -209,7 +211,7 @@ export interface PolicyInit {
 }
 
 /** The access one sandboxed call gets. Every path is resolved except tool and PATH entries, which are
- *  checked through their links on every build.
+ *  checked through every folder and link they walk through on every build.
  *
  *  Throws `Error` if `workspace` or `tmpdir` is not an existing directory, and `UnsafeWorkspace`
  *  if `checkWorkspace` refuses the workspace. */

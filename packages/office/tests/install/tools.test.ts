@@ -89,7 +89,7 @@ test("a linked tool still runs after its target is replaced", () => {
 test("a multi call tool sees the name it was found by", () => {
   const root = tempDir()
   const bin = path.join(root, "bin")
-  script(path.join(root, "box", "busybox"), 'basename "$0"')
+  script(path.join(root, "box", "busybox"), 'echo "${0##*/}"')
   fs.mkdirSync(bin)
   fs.symlinkSync("../box/busybox", path.join(bin, "ps"))
   const ran = spawnSync(resolveTools({ PATH: bin }).ps!, [], { env: {}, encoding: "utf8", timeout: 5000 })

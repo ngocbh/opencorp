@@ -406,4 +406,9 @@ test("a workspace holding a link in a tools chain is refused", () => {
   // A linked folder above a PATH entry's last part.
   fs.symlinkSync(elsewhere!, path.join(x!, "lnk"))
   expectRefused(x!, tmp, { home, path: [path.join(x!, "lnk/bin")] }, onPath(x!, path.join(x!, "lnk")))
+  // A plain folder entered and left with `..` is on the way too: it could be replaced by a link.
+  const [sub] = mkdirs(path.join(proj!, "sub"))
+  fs.writeFileSync(path.join(x!, "git"), "")
+  expectRefused(proj!, tmp, { home, tools: [`${sub}/../../x/git`] }, runs(proj!, sub!))
+  expectRefused(proj!, tmp, { home, path: [`${sub}/../../x`] }, onPath(proj!, sub!))
 })
