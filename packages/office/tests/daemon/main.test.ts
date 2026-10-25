@@ -764,9 +764,7 @@ test(
     const stream = frames(await overTcp(port, "GET", "/api/events", { origin, cookie }))
     expect(await take(stream, 1)).toEqual([["comment", null, "connected"]])
     await stopDaemon(dir, d) // SIGTERM with the stream open: the server side closes first, into TIME_WAIT
-    // Read to EOF, so closing sends a FIN, not a RST that clears TIME_WAIT. The stop cuts the response short, so
-    // the client reports it aborted once the connection has closed.
-    await within(Array.fromAsync(stream).catch((error: Error) => expect(error.message).toBe("aborted")))
+    await within(Array.fromAsync(stream)) // read to EOF, so closing sends a FIN, not a RST that clears TIME_WAIT
 
     // Unlike Python's, this never skips: node:net always sets SO_REUSEADDR, so it can't probe TIME_WAIT with a
     // plain socket, and the assertion holds either way.

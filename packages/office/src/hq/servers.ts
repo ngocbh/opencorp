@@ -186,8 +186,9 @@ export class Listeners {
     })
   }
 
-  /** Stops binding, stops every server (their streams already ended with the office's bus), removes hq.sock.
-   *  What goes wrong on the way is logged: the office's other stop hooks still run. Never rejects. */
+  /** Stops binding, gives every server's running handlers up to HANDLER_WAIT_MS to finish (their streams already
+   *  ended with the office's bus), then closes every server and its connections, and removes hq.sock. What goes
+   *  wrong on the way is logged: the office's other stop hooks still run. Never rejects. */
   async stop(): Promise<void> {
     const hq = this.#hq
     this.#stopping = true
@@ -196,8 +197,9 @@ export class Listeners {
     await this.#binding
     this.#binding = null
     const servers = this.#servers
-    await Promise.all(servers.map((served) => close(served.server)))
+    // Settled before closing, so a stream that is writing its end isn't cut short.
     await Promise.all(servers.map((served) => served.requests.settled(HANDLER_WAIT_MS)))
+    await Promise.all(servers.map((served) => close(served.server)))
     this.#servers = []
     hq.boundPort = hq.tcpError = hq.nextRetryAt = hq.socketError = null
     this.#said = null
