@@ -2,11 +2,13 @@
 import fs from "node:fs"
 import path from "node:path"
 import { foldRunLog, inspectRun, PoolCommitRecord } from "@ngocbh/yian/run"
+import { pending } from "@ngocbh/yian/tools"
 import { expect, onTestFinished, setDefaultTimeout, test } from "bun:test"
 import { type FakeLLM, LLM_CONFIG, type ScriptedReply } from "../../src/testing/fake_llm.ts"
 import { ChannelClosed, type Frame } from "../../src/worker/channel.ts"
 import { Job, type JobInput } from "../../src/worker/job.ts"
 import { EXIT_FAILED, EXIT_OK } from "../../src/worker/main.ts"
+import type { AskRequest } from "../../src/worker/rpc.ts"
 import { fakeLlm } from "../chat/helpers.ts"
 import { tempDir, waitFor } from "../helpers.ts"
 import {
@@ -540,4 +542,62 @@ test("an advance job sends the key only to the model", async () => {
   const holding = frames.filter((frame) => frame.includes(key)).map((frame) => JSON.parse(frame).type)
   expect(holding).toEqual(["start", "start", "start", "start"])
   expect(fs.readFileSync(chat.log, "utf8")).not.toContain(key)
+})
+
+/** A `Recorder` whose questions all answer later: it records each and returns yian's pending marker. */
+class Pending extends Recorder {
+  override askUser(_worker: unknown, request: AskRequest): unknown {
+    this.asked.push(request)
+    return pending()
+  }
+}
+
+test("one advance job with send and complete deliveries runs a turn", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "Off we go." })
+  const chat = makeJob(base(), "flows/turn.yaml", { inputs: {} })
+  const asking = await run(chat, new Pending(), { env: fake.env() })
+  expect(asking.outcome?.status, String(asking.outcome?.message)).toBe("waiting")
+  expect(asking.asked.map((request) => [request.question, request.node_id])).toEqual([["Where to?", "asked"]])
+  const waits = asking.outcome?.waits as Record<string, unknown>[]
+  expect(waits.map((wait) => [wait.node, wait.tool]).sort()).toEqual([
+    ["asked", "ask"],
+    ["heard", "take"],
+  ])
+  const ask = waits.find((wait) => wait.tool === "ask")!
+  const rec = await run(
+    advanceJob(chat, {
+      deliver: [
+        { id: "s1", op: "send", inbox: "messages", event: "to Rome" },
+        { id: "c1", op: "complete", call_id: String(ask.call_id), result: { output: "Paris" } },
+      ],
+    }),
+    new Recorder(),
+    { env: fake.env() },
+  )
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", "Off we go."])
+  expect(rec.replies).toEqual([
+    { type: "deliver_reply", id: "s1", seq: expect.any(Number) },
+    { type: "deliver_reply", id: "c1", seq: expect.any(Number) },
+  ])
+  expect(fake.requests()).toHaveLength(1)
+  const request = JSON.stringify(fake.requests()[0]!.messages)
+  expect(request).toContain("to Rome")
+  expect(request).toContain("Paris")
+})
+
+test("an offline interrupt reply lists the closed calls", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "", tool_calls: [{ name: "ask_user", arguments: { question: "Which city?" } }] })
+  const chat = makeJob(base(), "flows/ask_cut.yaml")
+  const asking = await run(chat, new Pending(), { env: fake.env() })
+  expect(asking.outcome?.status, String(asking.outcome?.message)).toBe("waiting")
+  expect(asking.asked.map((request) => request.question)).toEqual(["Which city?"])
+  const waits = asking.outcome?.waits as Record<string, unknown>[]
+  expect(waits).toEqual([expect.objectContaining({ node: "reply", tool: "ask_user", settled: false })])
+  const job = advanceJob(chat, { deliver: [{ id: "i1", op: "interrupt", inbox: "steers" }] })
+  const rec = await run(job, new Recorder(), { env: fake.env() })
+  expect(rec.replies).toEqual([{ type: "deliver_reply", id: "i1", seq: null, closed: [waits[0]!.call_id] }])
+  expect([rec.outcome?.status, rec.outcome?.output], String(rec.outcome?.message)).toEqual(["succeeded", null])
+  expect(fake.requests()).toHaveLength(1)
 })

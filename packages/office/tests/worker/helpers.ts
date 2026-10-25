@@ -89,6 +89,19 @@ export const CODED =
   "    code: ./helpers.ts:fn\n    output: str\n  heard:\n    kind: tool\n    tool_id: take\n" +
   "    depends_on: [prep]\n    input:\n      from: ${input.messages}\n      take: all\noutput: ${heard.output}\n"
 export const CODED_HELPERS = 'export function fn(): string {\n  return "ready"\n}\n'
+// One turn: a TOOL ask and a take on the `messages` inbox, both waiting, then an agent that answers both.
+export const TURN =
+  "id: turn\nname: turn\ninput:\n  messages: !Inbox(str)\nnodes:\n  asked:\n    kind: tool\n    tool_id: ask\n" +
+  '    input:\n      prompt: "Where to?"\n  heard:\n    kind: tool\n    tool_id: take\n    input:\n' +
+  "      from: ${input.messages}\n      take: all\n  reply:\n    kind: agent\n    input:\n" +
+  '      where: ${asked.output}\n      said: ${heard.output.events}\n    output: str\n    prompt: "${said} ${where}"\n' +
+  "output: ${reply.output}\n"
+// An agent that may ask the user and can be interrupted; a cut reply's null output still succeeds.
+export const ASK_CUT = agentFlow("ask_cut", {
+  inputs: "  steers: !Inbox(str)\n",
+  node: "    tools: [ask_user]\n    steer_inbox: \${input.steers}\n",
+  output: "Optional(str)",
+})
 export const PROFILED = agentFlow("profiled", { top: "long_term_memory: profile\n" })
 export const SKILLED = agentFlow("skilled", { node: "    skills: all\n" })
 // A run whose one node sleeps an hour, so it quiesces as waiting.
@@ -122,6 +135,8 @@ export function writePin(root: string): string {
     "flows/profiled.yaml": PROFILED,
     "flows/skilled.yaml": SKILLED,
     "flows/nap.yaml": NAP,
+    "flows/turn.yaml": TURN,
+    "flows/ask_cut.yaml": ASK_CUT,
   })
 }
 

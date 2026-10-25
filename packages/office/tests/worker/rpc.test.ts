@@ -2,7 +2,7 @@
 import { PassThrough } from "node:stream"
 import { expect, onTestFinished, test } from "bun:test"
 import { MarkdownVersionMismatch, type MarkdownStore } from "@ngocbh/yian"
-import { isReportedToolError, ToolSet } from "@ngocbh/yian/tools"
+import { isPending, isReportedToolError, pending, ToolSet } from "@ngocbh/yian/tools"
 import { z } from "zod"
 import { Channel, ChannelClosed, FrameTooLarge, type Frame } from "../../src/worker/channel.ts"
 import { groupSpecs, toolSpec } from "../../src/worker/job.ts"
@@ -22,7 +22,7 @@ import {
   type RpcLog,
 } from "../../src/worker/rpc.ts"
 import { waitFor } from "../helpers.ts"
-import { officeEnd, workerFor } from "./helpers.ts"
+import { officeEnd, recordFrames, workerFor } from "./helpers.ts"
 
 /** A tool taking string `properties`, all required, that runs `call`. */
 function tool(call: (args: Record<string, unknown>) => unknown, properties = ["text"]): OfficeTool {
@@ -498,8 +498,13 @@ test("ask user sends the six keys and returns the answer", async () => {
     }
   }
   const handlers = new Answering()
+  const frames = recordFrames()
   const asking = new ToolSet({ ask_user: askUserStub(await officeEnd(handlers)) })
-  expect(await asking.invoke("ask_user", { question: "Which city?", options: ["Paris", "Rome"] })).toBe("Paris")
+  const deadline = "2026-10-26T12:00:00.000Z"
+  const args = { question: "Which city?", options: ["Paris", "Rome"], deadline }
+  expect(await asking.invokeTrusted("ask_user", args, { callId: "r1/reply/1/0" })).toBe("Paris")
+  const [sent] = sentFrames(frames, "ask_user")
+  expect([sent!.call_id, sent!.deadline]).toEqual(["r1/reply/1/0", deadline])
   expect(handlers.request).toEqual({
     question: "Which city?",
     questions: null,
@@ -512,6 +517,63 @@ test("ask user sends the six keys and returns the answer", async () => {
   await expect(nobody.invoke("ask_user", { question: "Hello?" })).rejects.toThrow(
     "ask_user failed: nobody is here to answer",
   )
+})
+
+/** The frames of `type` among the `recorded` ones, decoded. */
+function sentFrames(recorded: string[], type: string): Frame[] {
+  return recorded.map((text) => JSON.parse(text) as Frame).filter((frame) => frame.type === type)
+}
+
+/** Handlers whose questions and tools all answer later: each returns yian's pending marker. */
+class Later extends BaseHandlers {
+  override askUser(): unknown {
+    return pending()
+  }
+
+  override async toolCall(): Promise<unknown> {
+    return pending()
+  }
+}
+
+test("a pending reply becomes the yian pending marker", async () => {
+  const handlers = new Later()
+  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout } }) })
+  const rpc = await officeEnd(handlers, { worker })
+  const tools = new ToolSet({
+    ask_user: askUserStub(rpc),
+    toolbox: [remoteTool(rpc, "toolbox", toolSpec("shout", shout))],
+  })
+  expect(isPending(await tools.invoke("ask_user", { question: "Which city?" }))).toBe(true)
+  expect(isPending(await tools.invoke("shout", { text: "hi" }))).toBe(true)
+})
+
+test("a remote tool sends its call id", async () => {
+  const frames = recordFrames()
+  const rpc = await officeEnd(new BaseHandlers({ tools: { toolbox: { shout } } }))
+  const tools = new ToolSet({ toolbox: [remoteTool(rpc, "toolbox", toolSpec("shout", shout))] })
+  expect(await tools.invoke("shout", { text: "hi" }, { callId: "r1/reply/1/0" })).toBe("HI")
+  const [sent] = sentFrames(frames, "tool_call")
+  expect(sent).toEqual({
+    type: "tool_call",
+    id: 1,
+    group: "toolbox",
+    name: "shout",
+    args: { text: "hi" },
+    call_id: "r1/reply/1/0",
+  })
+})
+
+test("a pending handler result is a pending reply", async () => {
+  const handlers = new Later()
+  const worker = workerFor(handlers, { groups: groupSpecs({ toolbox: { shout } }) })
+  const asked = await answerRequest({ type: "ask_user", id: 5, request: { question: "Go?" } }, handlers, worker)
+  expect(asked).toEqual({ type: "answer", id: 5, pending: true })
+  const called = await answerRequest(
+    { type: "tool_call", id: 6, group: "toolbox", name: "shout", args: { text: "x" }, call_id: "r1/t" },
+    handlers,
+    worker,
+  )
+  expect(called).toEqual({ type: "tool_result", id: 6, pending: true })
 })
 
 test("model from schema covers the json types", () => {
