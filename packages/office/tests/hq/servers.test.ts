@@ -108,18 +108,18 @@ function sockHealth(hq: Hq): Promise<Reply> {
   return request(hq.socket, "GET", "/api/health", { headers: { host: "127.0.0.1:5555" }, setHost: false })
 }
 
+const closeServer = (server: net.Server) => new Promise<void>((resolve) => server.close(() => resolve()))
+
 /** A plain `net` server listening on 127.0.0.1:`port`, closed when the test finishes. */
 async function hold(port: number): Promise<net.Server> {
   const holder = net.createServer()
-  onTestFinished(() => new Promise<void>((resolve) => holder.close(() => resolve())))
+  onTestFinished(() => closeServer(holder))
   await new Promise<void>((resolve, reject) => {
     holder.once("error", reject)
     holder.listen(port, "127.0.0.1", () => resolve())
   })
   return holder
 }
-
-const closeServer = (server: net.Server) => new Promise<void>((resolve) => server.close(() => resolve()))
 
 test("the 65th connection is closed and office sock still answers", async () => {
   const { office, hq } = await setup()
@@ -135,7 +135,7 @@ test("a connection without a full request head is closed", async () => {
   const client = await hqServed(hq, { ...HQ_LIMITS, headersTimeout: 300, connectionsCheckingInterval: 100 })
   const stalled = await attempt(client.sock, STALLED, { line: false })
   expect(stalled.closed).toBe(true)
-  if (stalled.text) expect(stalled.text).toStartWith("HTTP/1.1 408")
+  expect(stalled.text).toStartWith("HTTP/1.1 408")
   expect((await attempt(client.sock, REQUEST)).text).toStartWith("HTTP/1.1 200")
 })
 
@@ -384,7 +384,10 @@ test.skipIf(process.getuid?.() === 0)("stop logs what went wrong instead of rais
   shortOffice(office, dir)
   const listeners = new Listeners(hq)
   await listeners.start()
-  await sleep(50)
+  await waitFor(() => logs.some((line) => line.includes("127.0.0.1:70000")), {
+    timeout: 2000,
+    what: "the bind's warning",
+  })
   // hq.sock can't be removed now.
   fs.chmodSync(dir, 0o500)
   try {

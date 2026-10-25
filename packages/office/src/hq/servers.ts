@@ -1,7 +1,6 @@
 /** HQ's listeners: one node:http server each, so HQ's limits and failures never reach office.sock. */
 import fs from "node:fs"
-import type http from "node:http"
-import type { IncomingMessage, ServerResponse } from "node:http"
+import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import { stamp } from "@opencorp/protocol"
 import {
   HANDLER_WAIT_MS,
@@ -28,7 +27,7 @@ export const HQ_LIMITS: Readonly<Limits> = { ...LIMITS, requestTimeout: BODY_TIM
 
 /** One running HQ server, its TCP port (null for hq.sock), and its running requests (`trackRequests`). */
 export interface Served {
-  server: http.Server
+  server: Server
   port: number | null
   requests: { settled(ms: number): Promise<void> }
 }
@@ -44,7 +43,7 @@ function typeOf(error: unknown): string {
 }
 
 /** Closes `server` and its connections; resolves once closed, whatever its callback reports. */
-function close(server: http.Server): Promise<void> {
+function close(server: Server): Promise<void> {
   server.closeAllConnections()
   // closeAllConnections already stopped the listener on this runtime, so close reports ERR_SERVER_NOT_RUNNING.
   return new Promise((resolve) => server.close(() => resolve()))
@@ -103,18 +102,21 @@ export class Listeners {
   async #bindTcp(): Promise<void> {
     const hq = this.#hq
     const port = hq.config.port
+    let server: Server | undefined
+    let bound = false
     try {
       // The app needs the bound port (hq.json may say 0), so it is set once the bind resolves, which happens
       // before any request on the server can be read.
       let app: App | undefined
       const tracked = trackRequests(async (req, res) => {
+        // Only a fallback: the app is always set before a request can arrive.
         if (app) return app(req, res)
         res.destroy()
       })
-      const server = createServer(tracked.listener, HQ_LIMITS)
-      let bound: number
+      server = createServer(tracked.listener, HQ_LIMITS)
+      let at: number
       try {
-        bound = await listenTcp(server, port)
+        at = await listenTcp(server, port)
       } catch (error) {
         if (this.#stopping) return
         const why = messageOf(error)
@@ -127,19 +129,24 @@ export class Listeners {
         }
         return
       }
+      bound = true
       if (this.#stopping) {
         await close(server)
         return
       }
-      app = createHqApp(hq, { port: bound })
-      this.#keep({ server, port: bound, requests: tracked })
-      hq.boundPort = bound
+      app = createHqApp(hq, { port: at })
+      this.#keep({ server, port: at, requests: tracked })
+      hq.boundPort = at
       hq.tcpError = null
       hq.nextRetryAt = null
       this.#said = null
-      this.#log("INFO", `HQ listening on http://127.0.0.1:${bound}/`)
+      this.#log("INFO", `HQ listening on http://127.0.0.1:${at}/`)
     } catch (error) {
       this.#log("ERROR", `HQ's TCP bind failed: ${typeOf(error)}`)
+      // A kept server serves on; one that isn't must not stay open without an app.
+      if (this.#servers.some((s) => s.server === server)) return
+      if (server && bound) await close(server)
+      if (!this.#stopping) this.#retry()
     }
   }
 
