@@ -1,7 +1,8 @@
 /** A session's transcript, read from its runs' logs (Python's `tests/chat/test_transcript.py`). */
 import { expect, setDefaultTimeout, test } from "bun:test"
 import { iterRunRecords, type PoolCommitRecord } from "@ngocbh/yian/run"
-import { Message } from "@opencorp/protocol"
+import { pending } from "@ngocbh/yian/tools"
+import { Message, type ToolPart } from "@opencorp/protocol"
 import { Transcript } from "../../src/chat/transcript.ts"
 import { MAIN_CHAT } from "../../src/chat/turns.ts"
 import { newId } from "../../src/store/store.ts"
@@ -9,7 +10,7 @@ import type { FakeLLM } from "../../src/testing/fake_llm.ts"
 import type { Delivery, Job } from "../../src/worker/job.ts"
 import { tempDir } from "../helpers.ts"
 import { advanceJob, run } from "../worker/helpers.ts"
-import { advance, fakeLlm, logPrefix, send, TemplateOffice, waitingChat } from "./helpers.ts"
+import { advance, fakeLlm, logPrefix, send, TemplateOffice, templateJob, waitingAt, waitingChat } from "./helpers.ts"
 
 setDefaultTimeout(30_000)
 
@@ -23,6 +24,20 @@ function messages(runs: string, sessionId: string, runIds: string[]): Message[] 
 /** Each message as its role and its text parts' texts. */
 function texts(read: Message[]): [string, string[]][] {
   return read.map((m) => [m.role, m.parts.flatMap((part) => (part.type === "text" ? [part.text] : []))])
+}
+
+/** Each tool part of `read` as its call id, state, output and error. */
+function tools(read: Message[]): [string, string, unknown, string | null | undefined][] {
+  return read.flatMap((m) =>
+    m.parts.flatMap((part) => (part.type === "tool" ? [[part.call_id, part.state, part.output, part.error]] : [])),
+  ) as [string, string, unknown, string | null | undefined][]
+}
+
+/** The step of each `node_step` record in the log `log`. */
+function steps(log: string): Record<string, unknown>[] {
+  return [...iterRunRecords(log, { kinds: ["node_step"] })].map(
+    (entry) => (entry.envelope.record as unknown as { step: Record<string, unknown> }).step,
+  )
 }
 
 /** Applies `deliver` to the waiting run `job` without moving it on. */
@@ -108,4 +123,148 @@ test("an orphan take commit leaves its messages queued", async () => {
     ["user", ["one"]],
     ["user", ["two"]],
   ])
+})
+
+/** A chat run whose reply calls `shell` three times and `search` once, its last shell call answering last; its job,
+ *  run to waiting at the next turn under `runs` as `r1`. */
+async function toolRun(runs: string): Promise<Job> {
+  const fake = await fakeLlm()
+  fake.script(
+    {
+      content: "",
+      tool_calls: [
+        { id: "c1", name: "shell", arguments: { command: "ls", count: 3 } },
+        { id: "c2", name: "search", arguments: { pattern: "x" } },
+        { id: "c3", name: "shell", arguments: { command: "sleep 9" } },
+      ],
+    },
+    { content: "done" },
+  )
+  const shell = {
+    description: "Runs a command.",
+    parameters: { type: "object", properties: { command: { type: "string" }, count: { type: "integer" } } },
+    call: async (args: Record<string, unknown>) => {
+      if (args.command === "sleep 9") await Bun.sleep(100)
+      return "a.txt"
+    },
+  }
+  const search = {
+    description: "Searches.",
+    parameters: { type: "object", properties: { pattern: { type: "string" } } },
+    call: () => {
+      throw new Error("no index")
+    },
+  }
+  const office = new TemplateOffice("chat", { toolbox: { shell, search } })
+  const job = templateJob("chat", office, {}, { runs })
+  await run(job, office, { env: fake.env() })
+  const rec = await run(advanceJob(job, { deliver: [send("s1", "go")] }), office, { env: fake.env() })
+  expect(waitingAt(rec)).toEqual(["chat#1/heard"])
+  return job
+}
+
+/** The log of `job` cut before c3's tool result, under a fresh runs folder; returns that folder. */
+function beforeC3(job: Job): string {
+  const crashed = tempDir()
+  logPrefix(
+    job.log,
+    (entry) => {
+      const step = entry.kind === "node_step" ? (entry.envelope.record as unknown as { step: Record<string, unknown> }).step : null
+      return !(step?.kind === "tool_result" && step.call_id === "c3")
+    },
+    crashed,
+  )
+  return crashed
+}
+
+test("tool calls become tool parts", async () => {
+  const runs = tempDir()
+  const job = await toolRun(runs)
+  const read = messages(runs, newId(), ["r1"])
+  const recorded = steps(job.log).find((step) => step.kind === "tool_result" && step.call_id === "c2")!
+  expect(recorded.is_error).toBe(true)
+  expect(tools(read)).toEqual([
+    ["c1", "completed", "a.txt", null],
+    ["c2", "error", {}, recorded.output as string],
+    ["c3", "completed", "a.txt", null],
+  ])
+  expect(texts(read)).toEqual([
+    ["user", ["go"]],
+    ["assistant", ["done"]],
+  ])
+  const c1 = read[1]!.parts.find((part) => part.type === "tool" && part.call_id === "c1") as ToolPart
+  expect(c1.input).toEqual({ command: "ls", count: 3 })
+  expect(() => JSON.stringify(read)).not.toThrow()
+  expect(tools(messages(beforeC3(job), newId(), ["r1"]))[2]).toEqual(["c3", "interrupted", {}, null])
+})
+
+test("a node that never called a model writes nothing", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "SUMMARY-OF-TURN-0" }, { content: "Hello." }, { content: "SUMMARY-OF-TURN-1" })
+  const history = [0, 1, 2, 3, 4].map((k) => [
+    { role: "user", parts: [{ type: "text", text: `u${k}`.padEnd(8000, "u") }] },
+    { role: "assistant", parts: [{ type: "text", text: `a${k}`.padEnd(8000, "a") }] },
+  ])
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", { history }, { runs })
+  await advance(job, fake, [send("s1", "next")])
+  expect(fake.requests().length).toBe(3)
+  expect(texts(messages(runs, newId(), ["r1"]))).toEqual([
+    ["user", ["next"]],
+    ["assistant", ["Hello."]],
+  ])
+})
+
+test("each occurrence gets its own message", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "one" }, { content: "two" })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "first")])
+  await advance(job, fake, [send("s2", "second")])
+  const read = messages(runs, newId(), ["r1"])
+  expect(texts(read.filter((m) => m.role === "assistant")).map(([, said]) => said)).toEqual([["one"], ["two"]])
+})
+
+test("a run nothing runs shows a call a crash left without its result as interrupted", async () => {
+  const job = await toolRun(tempDir())
+  const read = messages(beforeC3(job), newId(), ["r1"])
+  expect(tools(read)).toEqual([
+    ["c1", "completed", "a.txt", null],
+    ["c2", "error", {}, expect.any(String)],
+    ["c3", "interrupted", {}, null],
+  ])
+  expect(texts(read)).toEqual([
+    ["user", ["go"]],
+    ["assistant", []],
+  ])
+})
+
+test("a failed model attempt shows nothing", async () => {
+  const fake = await fakeLlm()
+  fake.script({ error: 500 })
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  await advance(job, fake, [send("s1", "hi")])
+  expect(steps(job.log).some((step) => step.kind === "model_call" && step.error != null)).toBe(true)
+  const read = messages(runs, newId(), ["r1"])
+  expect(texts(read)).toEqual([["user", ["hi"]]])
+  expect(read.map((m) => m.parts.length)).toEqual([1])
+})
+
+test("a waiting ask user call shows running while the session sleeps", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "", tool_calls: [{ id: "q1", name: "ask_user", arguments: { question: "Which?" } }] })
+  class Asking extends TemplateOffice {
+    override askUser(): unknown {
+      return pending()
+    }
+  }
+  const runs = tempDir()
+  const job = await waitingChat(fake, "chat", {}, { runs })
+  const rec = await run(advanceJob(job, { deliver: [send("s1", "pick one")] }), new Asking(), { env: fake.env() })
+  expect(waitingAt(rec)).toEqual(["chat#0/reply"])
+  expect(tools(messages(runs, newId(), ["r1"]))).toEqual([["q1", "running", {}, null]])
+  await waitingChat(fake, "chat", {}, { runs, runId: "r2" })
+  expect(tools(messages(runs, newId(), ["r1", "r2"]))).toEqual([["q1", "interrupted", {}, null]])
 })
