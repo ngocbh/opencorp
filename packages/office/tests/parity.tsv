@@ -349,7 +349,7 @@ questions/test_normalize.py	ported	packages/office/tests/questions/normalize.tes
 questions/test_seed.py	open	—	—	O4a-8
 questions/test_side.py	open	—	—	O4a-8
 questions/test_side_chat_flow.py	ported	packages/office/tests/questions/side_chat_flow.test.ts	—	O4a-1
-questions/test_side_chat_flow.py::test_side_chat_template_loads_and_has_the_chat_shape	changed	packages/office/tests/questions/side_chat_flow.test.ts::side chat template loads and has the chat shape	4a-revision §1: a take on the messages inbox and an Optional reply with steer_inbox replace human_input, the exit case and session memory	O4a-1
+questions/test_side_chat_flow.py::test_side_chat_template_loads_and_has_the_chat_shape	changed	packages/office/tests/questions/side_chat_flow.test.ts::side chat template loads and has the chat shape	4a-revision §1: a take on the messages inbox and an Optional reply with steer_inbox replace human_input, the exit case and session memory; the profile memory moved from the flow onto the reply, so the summariser doesn't recall the profile	O4a-1
 runs/test_as_stored.py	open	—	—	O4b-7
 runs/test_debriefs.py	deferred: learning	—	learning is redesigned on TS yian after the port (D32)	O0-9
 runs/test_detail.py	open	—	—	O4b-7
