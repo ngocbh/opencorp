@@ -204,12 +204,10 @@ test("an end that wakes the session turns a racing prompt away", async () => {
   const ending = actor.end()
   await held.entered
   const late = outcome(actor.prompt("late"))
-  await pause(200)
   held.release()
   await ending
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })
-  // Ending while the run lives; not live once the finish ran.
-  expect(["409 ending", "409 not_live"]).toContain(await late)
+  expect(await late).toBe("409 ending")
   expect(fake.requests()).toEqual([])
 })
 
@@ -223,7 +221,6 @@ test("an end racing the prompt that wakes the session ends it", async () => {
   const sent = outcome(actor.prompt("hi"))
   await held.entered
   const ending = outcome(actor.end())
-  await pause(200)
   held.release()
   expect(await ending).toBe("undefined")
   await waitFor(() => status(o, sid) === "ended", { what: "the end" })

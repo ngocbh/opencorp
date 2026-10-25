@@ -190,7 +190,8 @@ export class SessionActor implements LiveCalls {
   #finished = false
   #closed = false
   #ending = false
-  /** Workers that exited with no outcome since the last outcome. */
+  /** Workers that exited with no outcome, or with a `stopped` or `crashed` run, since the last `waiting` or
+   *  `succeeded` result. */
   #deaths = 0
   /** Whether the finished run's hard stop waits for its lingering worker's exit. */
   #stopAfterExit = false
@@ -449,7 +450,8 @@ export class SessionActor implements LiveCalls {
    * End: the session is `ending` at once, and its run gets an `interrupt` (while a reply runs or the agent waits on
    * a model question) and a `close` of its inbox, whose turn then reads it closed, so the run succeeds and the
    * session ends. Resolves once they are queued; a second End does nothing. A spawn for them that fails fails the
-   * session, and End throws its error. Refused with `409 not_live` or `503 stopping`.
+   * session, and End throws its error. Refused with `404 not_found` (the session row is gone), `409 not_live` or `503
+   * stopping`.
    */
   end(): Promise<void> {
     return this.#command(async () => {
@@ -485,7 +487,7 @@ export class SessionActor implements LiveCalls {
   }
 
   /** Fails the session: its run, when the run hasn't ended, ends `COULDNT_RESUME` and gets a hard stop. Refused
-   *  `503 stopping` after `close`. */
+   *  `404 not_found` (the session row is gone) or `503 stopping` after `close`. */
   fail(): Promise<void> {
     return this.#command(async () => this.#finish("failed", null, COULDNT_RESUME))
   }
@@ -955,16 +957,19 @@ export class SessionActor implements LiveCalls {
   /**
    * The worker is gone; its outcome decides what comes next. After a `waiting` result, the deliveries it never
    * answered (but an `interrupt`) and those it refused `not_started` are carried into the next worker, which is
-   * spawned when there are any, when `#next` holds some, or when a delivery came after the result; a `stopped` or
-   * `crashed` run is advanced with them. A succeeded run ends the session; a worker gone with no outcome is
-   * replaced once (`#died`); any other outcome fails the session. Every delivery not carried is answered. A
-   * finished actor only starts its run's hard stop that waited for this exit.
+   * spawned when there are any, when `#next` holds some, or when a delivery came after the result. A succeeded run
+   * ends the session; a worker gone with no outcome, or a `stopped` or `crashed` run, is replaced once (`#died`);
+   * any other outcome fails the session. Every delivery not carried is answered. A finished actor only starts its
+   * run's hard stop that waited for this exit.
    */
   async #exited(run: WorkerRun, returncode: number | null): Promise<void> {
     if (run !== this.#run) return
     this.#run = null
     const session = this.#ctx.store.getSession(this.sessionId)
     if (session !== undefined) void this.#ctx.hooks.notify("workerExited", session, returncode)
+    // Nobody is left to read what these calls return, finished or not.
+    this.#interruptWorkspace()
+    this.#answerCalls()
     if (this.#finished) {
       if (this.#stopAfterExit) {
         this.#stopAfterExit = false
@@ -975,23 +980,19 @@ export class SessionActor implements LiveCalls {
     // Read and cleared first: an outcome that spawns nothing leaves no re-advance behind.
     const readvance = this.#readvance
     this.#readvance = false
-    this.#interruptWorkspace()
-    this.#answerCalls()
     const outcome = run.outcome
-    if (outcome === null) {
-      await this.#died(run)
+    const status = outcome === null ? null : outcome.type === "result" ? String(outcome.status) : "error"
+    if (status === "waiting" || status === "succeeded") this.#deaths = 0
+    if (status === null || status === "stopped" || status === "crashed") {
+      await this.#died(run, status)
+    } else if (status === "waiting") {
+      this.#carry(run)
+      if (readvance || this.#next.length > 0) await this.#spawnQuietly("advance")
+    } else if (status === "succeeded") {
+      this.#finish("ended", outcome, null, run)
     } else {
-      this.#deaths = 0
-      const status = outcome.type === "result" ? String(outcome.status) : "error"
-      if (status === "waiting" || status === "stopped" || status === "crashed") {
-        this.#carry(run)
-        if (status !== "waiting" || readvance || this.#next.length > 0) await this.#spawnQuietly("advance")
-      } else if (status === "succeeded") {
-        this.#finish("ended", outcome, null, run)
-      } else {
-        this.#log(`session ${this.sessionId}: its run ended (${status})`)
-        this.#finish("failed", outcome, null, run)
-      }
+      this.#log(`session ${this.sessionId}: its run ended (${status})`)
+      this.#finish("failed", outcome, null, run)
     }
     this.#trySettle("after a worker exit")
   }
@@ -1009,18 +1010,19 @@ export class SessionActor implements LiveCalls {
     this.#next = [...carry, ...this.#next]
   }
 
-  /** `run`'s worker is gone with no outcome: the first time, a plain `advance` takes over with what it carried (one
-   *  that can't start fails the session, `COULDNT_RESUME`); again before any outcome, the session fails
-   *  (`WORKER_STOPPED`). */
-  async #died(run: WorkerRun): Promise<void> {
-    this.#log(`session ${this.sessionId}: its worker exited (no outcome)`)
+  /** `run`'s worker is gone with no outcome (`status` null), or its run `stopped` or `crashed`: the first time, a
+   *  plain `advance` takes over with what it carried (one that can't start after a death fails the session,
+   *  `COULDNT_RESUME`); again before a `waiting` or `succeeded` result, the session fails (`WORKER_STOPPED`). */
+  async #died(run: WorkerRun, status: string | null): Promise<void> {
+    this.#log(`session ${this.sessionId}: ${status === null ? "its worker exited (no outcome)" : `its run ${status}`}`)
     if (this.#deaths >= 1) {
-      // A third try won't do better.
+      // A third try won't do better: a run that stops or crashes on every launch must not respawn forever.
       this.#finish("failed", null, WORKER_STOPPED, run)
       return
     }
     this.#deaths += 1
     this.#carry(run)
+    if (status !== null) return this.#spawnQuietly("advance")
     try {
       await this.#spawn("advance")
     } catch (error) {
@@ -1031,37 +1033,42 @@ export class SessionActor implements LiveCalls {
 
   /**
    * Finishes the session with `status` (`ended`: the first `endStatus` result, its work item done; or `failed`) in
-   * one transaction with the run's office end reason `why`, written only when no yian `outcome` ended the run.
-   * `runFinished` (the result frame, key redacted) then `sessionEnded` are notified in order, not awaited. Every
-   * delivery not answered gets `409 not_live`. A run yian may still see unfinished gets a hard stop.
+   * one transaction with the run's office end reason `why`, written only when no yian outcome ended the run (`outcome`,
+   * else the one `run`'s worker recorded). `runFinished` (the result frame, key redacted) then `sessionEnded` are
+   * notified in order, not awaited. Every delivery not answered gets `409 not_live`. A run yian may still see
+   * unfinished gets a hard stop. Throws `HarnessError` (`404`) when the session row is gone; a store write that
+   * fails is logged by its type.
    */
   #finish(status: "ended" | "failed", outcome: Frame | null, why: string | null, run = this.#run): void {
     if (this.#finished) return
     this.#finished = true
     const { store, hooks } = this.#ctx
     const runId = this.#runId
+    outcome ??= run?.outcome ?? null
     const ended = outcome?.type === "result" && ["succeeded", "failed", "cancelled"].includes(String(outcome.status))
     try {
-      let session = this.#session()
+      const session = this.#session()
       let final: SessionRecord["status"] = status
       if (status === "ended") {
         final = hooks.fire("endStatus", session).find((result) => !!result) ?? "ended"
         // First, so no client sees an ended session with its work still open.
         if (session.work_item_id) store.updateWorkItem(session.work_item_id, { status: "done" })
       }
-      session = store.transaction(() => {
-        const finished = store.updateSession(this.sessionId, notWaiting(final))
+      const finished = store.transaction(() => {
+        const updated = store.updateSession(this.sessionId, notWaiting(final))
         if (why !== null && !ended && runId !== null) store.endRun(runId, why)
-        return finished
+        return updated
       })
       const frame = outcome?.type === "result" ? (redactKey(outcome, run?.provider ?? null) as Frame) : null
-      const done = session
       // In order, outside the queue: a slow hook never holds the session's next step.
       void (async () => {
-        if (runId !== null) await hooks.notify("runFinished", done, runId, frame)
-        await hooks.notify("sessionEnded", done)
+        if (runId !== null) await hooks.notify("runFinished", finished, runId, frame)
+        await hooks.notify("sessionEnded", finished)
       })()
-      this.#ctx.transcript.forget(session.run_ids)
+      this.#ctx.transcript.forget(finished.run_ids)
+    } catch (error) {
+      if (error instanceof HarnessError) throw error
+      this.#log(`session ${this.sessionId} can't store the end (${errorName(error)})`)
     } finally {
       const given = [...(run?.given ?? []), ...(this.#run?.given ?? []), ...this.#next.splice(0)]
       this.#answerRest(given, new HarnessError(409, "not_live", `session ${this.sessionId} has no live run`))
@@ -1108,7 +1115,19 @@ export class SessionActor implements LiveCalls {
         deliver: [{ id: newId(), op: "cancel" }],
         advance: false,
       })
-      await this.#ctx.workers.spawn(job, paths.sessionDir(this.sessionId), new BaseHandlers(), { env: provider.env })
+      const note = (line: string) => this.#log(`session ${this.sessionId}: its run's cancel ${line}`)
+      // Its frames are ignored, but a cancel that didn't take is logged by its reason or error type only.
+      const handlers = new (class extends BaseHandlers {
+        override deliverReply(_worker: unknown, frame: Frame): void {
+          if (typeof frame.refused === "string") note(`was refused (${frame.refused})`)
+          else if (typeof frame.failed === "string") note(`failed (${frame.failed})`)
+        }
+
+        override error(_worker: unknown, frame: Frame): void {
+          note(`ended in an error (${errorType(frame)})`)
+        }
+      })()
+      await this.#ctx.workers.spawn(job, paths.sessionDir(this.sessionId), handlers, { env: provider.env })
     } catch (error) {
       this.#log(`session ${this.sessionId}: its run can't be stopped (${errorName(error)})`)
     }
@@ -1231,21 +1250,10 @@ export class SessionActor implements LiveCalls {
   }
 }
 
-/** Characters of a failure reason people may read. */
-const WHY_CHARS = 500
-
-/** Why a run failed, for people: `<cause type>: <message>` from `outcome`'s failure (else its message), without
- *  `provider`'s model key and cut to 500 characters; with no outcome, its worker stopped. */
-export function whyOf(outcome: Frame | null, provider: Pick<Provider, "llm_config"> | null): string {
-  if (outcome === null) return "its worker stopped or couldn't start; see the office log"
-  const failure = (typeof outcome.failure === "object" && outcome.failure !== null ? outcome.failure : {}) as Record<
-    string,
-    unknown
-  >
-  const cause = failure.cause_type
-  const message = failure.message || outcome.message || "no reason given"
-  const why = redactKey(cause ? `${cause}: ${message}` : String(message), provider) as string
-  return why.length <= WHY_CHARS ? why : `${why.slice(0, WHY_CHARS - 1)}…`
+/** The error type an `error` frame names (its message reads `<type>: <message>`), never its message. */
+function errorType(frame: Frame): string {
+  const type = String(frame.message ?? "").split(":", 1)[0]!
+  return /^[A-Za-z_][\w.]*$/.test(type) ? type : "Error"
 }
 
 /** `value` with `provider`'s model key replaced by `[redacted]` wherever it appears. */

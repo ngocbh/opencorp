@@ -1,8 +1,11 @@
 /** The session actor's host loop rules that have no Python test of their own. */
+import fs from "node:fs"
+import path from "node:path"
 import { afterAll, expect, setDefaultTimeout, test } from "bun:test"
 import type { LiveEvent } from "@opencorp/protocol"
-import { INTERRUPTED_CALL, SessionActor, whyOf } from "../../src/chat/session_actor.ts"
+import { INTERRUPTED_CALL, SessionActor } from "../../src/chat/session_actor.ts"
 import { INTERRUPTED } from "../../src/questions/format.ts"
+import { WORKER_STOPPED } from "../../src/runs/outcomes.ts"
 import { LLM_CONFIG } from "../../src/testing/fake_llm.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
 import { CEO } from "../daemon/helpers.ts"
@@ -12,6 +15,7 @@ import {
   ASKED,
   asleep,
   card,
+  type ChatOffice,
   chatOffice,
   EMPTY,
   fakeLlm,
@@ -407,11 +411,111 @@ test("the provider key never reaches a reason a hook a log or the store", async 
   expect(finishedRun).toBe(runId)
   expect(frame.failure.message).toStartWith("bad key [redacted] xxx")
   expect(frame.failure.details).toEqual([{ input: { api_key: "[redacted]" } }, "[redacted]"])
-  const why = whyOf(failed, { llm_config: { api_key: key } })
-  expect(why).toStartWith("AuthError: bad key [redacted] xxx")
-  expect([why.length, why.at(-1)]).toEqual([500, "…"])
   const stored = JSON.stringify([session(o, sid), o.office.store.getRun(runId)])
-  for (const text of [JSON.stringify(seen), o.logs.join("\n"), JSON.stringify(live), stored, why]) {
+  for (const text of [JSON.stringify(seen), o.logs.join("\n"), JSON.stringify(live), stored]) {
     expect(text).not.toContain(key)
+  }
+})
+
+/** Gives the current run of `actor` a log, as a run that started has. */
+function withLog(o: ChatOffice, actor: SessionActor): string {
+  const runId = actor.runId!
+  const log = path.join(o.office.paths.runs, runId, "log.jsonl")
+  fs.mkdirSync(path.dirname(log), { recursive: true })
+  fs.writeFileSync(log, "")
+  return runId
+}
+
+/** Records the order `runFinished` and `sessionEnded` fire in. */
+function hookOrder(o: ChatOffice): string[] {
+  const fired: string[] = []
+  o.hooks.runFinished.push(() => void fired.push("runFinished"))
+  o.hooks.sessionEnded.push(() => void fired.push("sessionEnded"))
+  return fired
+}
+
+test("a second worker death fails the session", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const fired = hookOrder(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = withLog(o, actor)
+  workers[0]!.handlers.exited(workers[0]!.worker, 1)
+  await waitFor(() => workers.length === 2, { what: "the retry" })
+  expect(o.jobs[1]).toMatchObject({ kind: "advance", advance: true, deliver: [] })
+  workers[1]!.handlers.exited(workers[1]!.worker, 1)
+  await waitFor(() => workers.length === 3 && fired.length === 2, { what: "the hard stop" })
+  expect(status(o, sid)).toBe("failed")
+  expect(o.office.store.getRun(runId)?.endReason).toBe(WORKER_STOPPED)
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(o.jobs[2]).toMatchObject({ advance: false, deliver: [{ op: "cancel" }] })
+  expect(fired).toEqual(["runFinished", "sessionEnded"])
+})
+
+test("a run that stops on every advance fails after one retry", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  const runId = withLog(o, actor)
+  const stopped = { type: "result", status: "stopped", run_id: runId, output: null, failure: null, waits: [] }
+  workers[0]!.handlers.result(workers[0]!.worker, stopped)
+  workers[0]!.handlers.exited(workers[0]!.worker, 0)
+  await waitFor(() => workers.length === 2, { what: "the retry" })
+  workers[1]!.handlers.result(workers[1]!.worker, stopped)
+  workers[1]!.handlers.exited(workers[1]!.worker, 0)
+  await waitFor(() => workers.length === 3, { what: "the hard stop" })
+  expect(status(o, sid)).toBe("failed")
+  expect(o.office.store.getRun(runId)?.endReason).toBe(WORKER_STOPPED)
+  expect(o.kinds).toEqual(["chat", "advance", "advance"])
+  expect(o.jobs[2]).toMatchObject({ advance: false, deliver: [{ op: "cancel" }] })
+})
+
+test("fail with a live worker cancels through it", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  const sid = await newSession(o)
+  const actor = makeActor(o, sid)
+  await actor.start()
+  withLog(o, actor)
+  await actor.fail()
+  expect(status(o, sid)).toBe("failed")
+  await waitFor(() => workers[0]!.deliveries.length === 1, { what: "the cancel" })
+  expect(workers[0]!.deliveries.map((d) => d.op)).toEqual(["cancel"])
+  expect(o.kinds).toEqual(["chat"])
+})
+
+test("a hard stop waits for the lingering worker and skips a run with no log", async () => {
+  const fake = await fakeLlm()
+  const o = await chatOffice(fake)
+  const workers = scriptedWorker(o)
+  // One session whose run has a log, then one whose run has none.
+  for (const logged of [true, false]) {
+    const sid = await newSession(o)
+    const actor = makeActor(o, sid)
+    await actor.start()
+    const before = o.kinds.length
+    if (logged) withLog(o, actor)
+    const scripted = workers.at(-1)!
+    // The worker read its last frame: the cancel isn't sent.
+    scripted.accept = () => false
+    await actor.fail()
+    await waitFor(() => scripted.deliveries.length === 1, { what: "the cancel" })
+    expect(o.kinds.length).toBe(before)
+    scripted.handlers.exited(scripted.worker, 0)
+    // Queued after the exit: the exit job has run when it answers.
+    await expect(actor.end()).rejects.toMatchObject({ status: 409, code: "not_live" })
+    if (logged) {
+      await waitFor(() => o.kinds.length === before + 1, { what: "the cancel job" })
+      expect(o.jobs.at(-1)).toMatchObject({ kind: "advance", advance: false, deliver: [{ op: "cancel" }] })
+    } else {
+      expect(o.kinds.length).toBe(before)
+    }
   }
 })
