@@ -202,8 +202,8 @@ test("a side run gets the askers identity and who opened it", async () => {
 })
 
 test("a side run offers read tools then work items", async () => {
-  const { session, spec } = (await office()).side()
-  const groups = spec.groups({ session, runId: "run-1" })
+  const { session: side, spec } = (await office()).side()
+  const groups = spec.groups({ session: side, runId: "run-1" })
   expect(Object.entries(groups).map(([g, t]) => [g, Object.keys(t)])).toEqual([
     ["workspace", ["read_file", "list", "search"]],
     ["work_items", ["list_work_items", "read_work_item"]],
