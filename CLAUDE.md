@@ -71,8 +71,7 @@ The office is being ported to TypeScript on TS Yian (#302). Until the cut-over:
   (`uv run pytest -q packages/corp_office/tests --ignore=packages/corp_office/tests/e2e`) in any PR
   that touches it; the CLI now runs the TS install, so its e2e suite runs only per milestone.
   Touch `packages/corp_office`, `pyproject.toml` or `uv.lock` only for such a fix or when a port
-  issue names them. The cut-over deletes it, with no
-  migration of its data.
+  issue names them. The cut-over deletes it, with no migration of its data.
 - **The TS office** lives in `packages/office` (`@opencorp/office`) and mirrors the Python
   packages: `opencorp/<pkg>/<mod>.py` becomes `packages/office/src/<pkg>/<mod>.ts`, and
   `tests/<pkg>/test_<mod>.py` becomes `packages/office/tests/<pkg>/<mod>.test.ts`, keeping each

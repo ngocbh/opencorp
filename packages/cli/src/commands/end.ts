@@ -10,7 +10,7 @@ const ENDABLE = new Set<Session["status"]>(["starting", "idle", "busy", "waiting
 
 /**
  * Ends session `id`, or else the most recently updated live main session in `cwd`; resolves to
- * the session. The office interrupts a busy session first, then runs its debrief.
+ * the session. The office interrupts a busy session first.
  */
 export async function endSession(opts: { client: OfficeClient; cwd: string; id?: string }): Promise<Session> {
   const { client, cwd } = opts
@@ -39,8 +39,7 @@ export const run: CommandRun = async (argv) => {
     // The office keys folders by their real path.
     const session = await endSession({ client, cwd: realpathSync(process.cwd()), id })
     const who = `@${session.person}`
-    // Only a main session is debriefed.
-    if (session.kind === "main") console.log(`Ending ${who}'s session ${session.id}; its debrief follows.`)
+    if (session.kind === "main") console.log(`Ending ${who}'s session ${session.id}.`)
     else console.log(`Ending ${who}'s ${session.kind.replace("_", " ")} session ${session.id}.`)
     return 0
   } catch (e) {
