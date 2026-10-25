@@ -193,9 +193,13 @@ test("office stop makes an answer waiting for its reply give up at once", async 
   await began
   // No await comes between the answer's store write and its reply job's post, so the job is queued now.
   const answering = h.sessions.answer(q.id, "Approve", "option", { by: "ngocbh" })
-  await h.sessions.closeAll()
-  expect((await answering).status).toBe("stale")
-  release()
+  try {
+    expect(h.store.getQuestion(q.id)!.status).toBe("answered")
+    await h.sessions.closeAll()
+    expect((await answering).status).toBe("stale")
+  } finally {
+    release()
+  }
   expect(1 in h.fake.replies()).toBe(false)
 })
 
@@ -407,6 +411,7 @@ test("a secret answer no reply can be made from is in no log error or reply", as
     await cards.close()
   }
   expect(h.lines.join("\n")).not.toContain(SENTINEL)
+  expect(codexLog(h, sid)).not.toContain(SENTINEL)
   expect(JSON.stringify(h.storeEvents)).not.toContain(SENTINEL)
   expect(JSON.stringify(h.events)).not.toContain(SENTINEL)
   storeLacksSentinel(h)
