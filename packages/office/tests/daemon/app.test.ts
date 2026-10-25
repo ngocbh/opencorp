@@ -100,8 +100,8 @@ const STREAMS: [string, string][] = [["GET", "/events"]]
 //   prompt, steer, interrupt, end, continue, cost-cap and model;
 // - questions: GET /questions, GET /questions/:id, and POST /questions/:id/ answer, side, send-back, stop and
 //   carried/dismiss.
-// GET /health, GET /office, GET /whoami, the device routes, GET /costs, the GET /runs* stubs and the connection
-// routes weren't in Python's table.
+// GET /health, GET /office, GET /whoami, the device routes, GET /costs, the GET /runs* stubs, the connection
+// routes and HQ's socket routes (/hq*) weren't in Python's table.
 const TABLE: [string, string, string, unknown][] = [
   ["GET", "/health", "/health", null],
   ["GET", "/office", "/office", null],
@@ -132,6 +132,10 @@ const TABLE: [string, string, string, unknown][] = [
   ["DELETE", "/connections/login/:id", `/connections/login/${ULID}`, null],
   ["DELETE", "/connections/:name", "/connections/nope", null],
   ["GET", "/connections/:name/models", "/connections/office/models", null],
+  ["GET", "/hq", "/hq", null],
+  ["POST", "/hq/pair", "/hq/pair", {}],
+  ["GET", "/hq/browsers", "/hq/browsers", null],
+  ["DELETE", "/hq/browsers/:id", `/hq/browsers/${ULID}`, null],
 ]
 
 test("every table route is served", async () => {

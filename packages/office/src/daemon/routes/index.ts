@@ -1,4 +1,5 @@
 /** The office's routes, one module per area. */
+import { ROUTES as hqSocketRoutes } from "../../hq/socket_routes.ts"
 import type { Route } from "../http.ts"
 import type { RequestContext } from "../office.ts"
 import { ROUTES as connectionRoutes } from "./connections.ts"
@@ -22,5 +23,6 @@ export function allRoutes({ pingMs }: { pingMs?: number } = {}): Route<RequestCo
     ...costRoutes,
     ...runRoutes,
     ...connectionRoutes,
+    ...hqSocketRoutes,
   ]
 }

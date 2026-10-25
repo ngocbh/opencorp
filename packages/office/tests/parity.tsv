@@ -196,7 +196,7 @@ hq/test_servers.py::test_an_os_error_at_hq_sock_is_the_socket_error_too	changed	
 hq/test_servers.py::test_stop_logs_what_went_wrong_instead_of_raising	changed	packages/office/tests/hq/servers.test.ts::stop logs what went wrong instead of raising	design §2.3 and §10.1: no bind task or uvicorn server to patch; a port the runtime refuses and an hq.sock that can't be removed stand for the failures	O2-10
 hq/test_sessions.py	ported	packages/office/tests/hq/sessions.test.ts	—	O2-8
 hq/test_sessions.py::test_a_revoke_marks_the_entry_a_check_made_while_it_read_the_row	changed	packages/office/tests/hq/sessions.test.ts::a revoke marks the entry a check made while it read the row	design §3.3: the TS store is synchronous, so a revoke's row read can't interleave with a check; the test checks that a revoke marks, never replaces or drops, the entry a check made	O2-8
-hq/test_socket_routes.py	open	—	—	O2-10
+hq/test_socket_routes.py	ported	packages/office/tests/hq/socket_routes.test.ts	—	O2-10
 hq/test_source.py	ported	packages/office/tests/hq/source.test.ts	—	O2-9
 hq/test_static.py	ported	packages/office/tests/hq/static.test.ts	—	O2-7
 hq/test_status.py	ported	packages/office/tests/hq/status.test.ts	—	O2-7
