@@ -124,6 +124,7 @@ function rowFacts(row: RunIndexRow): YianRun {
 export class YianRuns {
   readonly #index: ReadonlyMap<string, RunIndexRow>
   readonly #inspections: Inspections
+  #children: Map<string, string[]> | undefined
 
   constructor(index: ReadonlyMap<string, RunIndexRow>, inspections: Inspections) {
     this.#index = index
@@ -138,13 +139,20 @@ export class YianRuns {
   /** The run ids of the index rows whose parent is one of `parentIds`, by parent id; a parent with none is left
    *  out. */
   children(parentIds: Iterable<string>): Map<string, string[]> {
-    const parents = new Set(parentIds)
+    if (!this.#children) {
+      // The index doesn't change for this lookup, so it is scanned once.
+      this.#children = new Map()
+      for (const row of this.#index.values()) {
+        if (row.parentRunId === null) continue
+        const kids = this.#children.get(row.parentRunId)
+        if (kids) kids.push(row.runId)
+        else this.#children.set(row.parentRunId, [row.runId])
+      }
+    }
     const out = new Map<string, string[]>()
-    for (const row of this.#index.values()) {
-      if (row.parentRunId === null || !parents.has(row.parentRunId)) continue
-      const kids = out.get(row.parentRunId) ?? []
-      kids.push(row.runId)
-      out.set(row.parentRunId, kids)
+    for (const id of parentIds) {
+      const kids = this.#children.get(id)
+      if (kids) out.set(id, [...kids])
     }
     return out
   }
@@ -386,14 +394,18 @@ export class Summaries {
   ): RunSummary {
     const { status, reason, failedNode } = statusOf(row, session, live, this.#yian, this.#log)
     const asleep = (status === "idle" || status === "waiting") && !live.runs.has(row.runId)
-    const waits = asleep ? (this.#yian.ofRun(row.runId)?.waits ?? []) : []
+    // yian's answer gives an asleep run's waits and the end yian recorded, from the log too while the index lags; an
+    // ended run's inspection is cached, so asking again after statusOf doesn't read its log twice.
+    const endedInYian =
+      status === "finished" || status === "failed" || (status === "interrupted" && reason === CANCELLED)
+    const run = row.endReason === null && (asleep || endedInYian) ? this.#yian.ofRun(row.runId) : null
+    const waits = asleep ? (run?.waits ?? []) : []
     const open = questions.filter((q) => q.status === "open")
     const { nodes, asking, held } = currentNodes(status, row.runId, open, live, waits)
     const answerers = questions.map((q) => q.answered_by)
-    const index = this.#yian.row(row.runId)
     let endedAt: string | null = null
     if (row.endReason !== null) endedAt = row.endedAt
-    else if (index && ENDED.has(index.status)) endedAt = index.endedAt
+    else if (run?.status && ENDED.has(run.status)) endedAt = run.endedAt
     return RunSummary.parse({
       run_id: row.runId,
       session_id: row.sessionId,
@@ -402,7 +414,7 @@ export class Summaries {
       person: session.person,
       driver: row.driver,
       participants: participants(row.driver, session.person, [...answerers, ...openers]),
-      parent_run_id: index?.parentRunId ?? null,
+      parent_run_id: this.#yian.row(row.runId)?.parentRunId ?? null,
       status,
       reason: reason === null ? null : cutReason(reason, REASON_CHARS),
       failed_node: failedNode,

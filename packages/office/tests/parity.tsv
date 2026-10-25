@@ -470,6 +470,7 @@ runs/test_records.py::test_a_fresh_run_replaces_the_run_whose_end_is_its_launch	
 runs/test_records.py::test_a_starting_sessions_current_run_is_running	changed	packages/office/tests/runs/records.test.ts::a starting sessions current run is running	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_a_waiting_or_idle_sessions_current_run_has_its_status_awake_or_asleep	changed	packages/office/tests/runs/records.test.ts::a waiting or idle sessions current run has its status awake or asleep	§5.1 rule 2: the actor's memory, not the stored session status	O4b-6
 runs/test_records.py::test_current_nodes_by_status	changed	packages/office/tests/runs/records.test.ts::current nodes by status	O4a-1: turns are takes, not questions; nodes from the actor or the index's waits (O4b-5 handoff)	O4b-6
+runs/test_records.py::test_participants_come_from_answers_and_side_chat_openers	changed	packages/office/tests/runs/records.test.ts::participants come from answers and side chat openers	yian #1078: human_input is gone; a flow asks with a TOOL ask node, so the source is ask; the side chat's parent comes from yian's index (§5.1)	O4b-6
 runs/test_records.py::test_two_live_reads_merge_so_a_run_live_in_either_is_live	changed	packages/office/tests/runs/records.test.ts::two live reads merge so a run live in either is live	the actor's memory is one map by run id; no waking or debrief sets (D32)	O4b-6
 runs/test_sweep.py	open	—	—	O4b-6
 sandbox/test_bwrap.py	ported	packages/office/tests/sandbox/bwrap.test.ts	—	O1-9
@@ -1211,6 +1212,7 @@ worker/test_steering.py::test_steers_queue_until_drained	dropped	—	yian #1089:
 —	new	packages/office/tests/runs/records.test.ts::a cancelled run shows interrupted with the office reason	§5.1 status mapping	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a crashed running or missing index row asks the log and else has no outcome	§5.1 status mapping; rules 4 and 5	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a failed run shows failed with yians failure and node	§5.1 status mapping	O4b-6
+—	new	packages/office/tests/runs/records.test.ts::a run whose end only its log shows has the logs end time	§5.1: end times come from yian, also while the index lags	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a run with no outcome is warned about once	§5.1 rule 5: logged once per run	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a stale waiting or stopped row asks the log	§5.1 index lag: a row whose offset is not its log size is stale and goes to rule 4	O4b-6
 —	new	packages/office/tests/runs/records.test.ts::a stopped run shows interrupted stopped	§5.1 status mapping	O4b-6

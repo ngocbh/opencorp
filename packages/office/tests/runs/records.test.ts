@@ -410,6 +410,23 @@ test("a reopened side chat doesnt replace its earlier run", () => {
   expect(built.get(a)!.ended_at).toBe("2026-10-20T10:05:00.000Z")
 })
 
+test("a run whose end only its log shows has the logs end time", () => {
+  const store = openStore()
+  const s = store.createSession(session({ status: "ended" }))
+  const runId = newId()
+  store.addSessionRun(s.id, runId)
+  store.addRun(row(s, runId))
+  const end = "2026-10-20T10:07:00.000Z"
+  const shown = (yian: YianRuns) => new Summaries(store, new Live(), yian).build([store.getRun(runId)!]).get(runId)!
+  const ended = (status: "succeeded" | "failed") => () => inspection({ status, endedAt: end })
+  for (const rows of [[indexRow(runId, { status: "running" })], []]) {
+    const one = shown(yianOf(rows, ended("succeeded")))
+    expect([one.status, one.ended_at]).toEqual(["finished", end])
+  }
+  const stale = shown(yianOf([indexRow(runId, { status: "stopped" })], ended("failed"), [runId]))
+  expect([stale.status, stale.ended_at]).toEqual(["failed", end])
+})
+
 test("two live reads merge so a run live in either is live", () => {
   const first = live({ R1: { status: "running", nodes: ["a"] }, X: { status: "running", nodes: [] } })
   const later = live({ R1: { status: "idle", nodes: ["n"] }, R2: { status: "waiting", nodes: [] } })
