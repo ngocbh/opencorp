@@ -261,8 +261,26 @@ test("get office answers pid home started at and version", async () => {
     home: office.paths.home,
     started_at: office.startedAt,
     version: VERSION,
+    tools: {},
+    guards: { install: [], tools: [], path: [] },
   })
   expect(OfficeInfo.parse(r.json())).toEqual(r.json() as OfficeInfo)
+})
+
+test("get office names the tools and guards the office pinned", async () => {
+  const office = makeOffice({
+    tools: { git: "/usr/bin/git", ps: "/bin/ps" },
+    guards: { install: ["/opt/x"], tools: ["/usr/bin/git"], path: ["/usr/bin"], home: "/Users/x" },
+  })
+  const { sock } = await served(office, { tokens: true })
+  const r = await request(sock, "GET", "/office")
+  expect(r.status).toBe(200)
+  const info = r.json() as OfficeInfo
+  expect(info.tools).toEqual({ git: "/usr/bin/git", ps: "/bin/ps" })
+  // The user's home dir is one of the guards but never part of the reply.
+  expect(info.guards).toEqual({ install: ["/opt/x"], tools: ["/usr/bin/git"], path: ["/usr/bin"] })
+  expect(r.text).not.toContain("/Users/x")
+  expect(OfficeInfo.parse(info)).toEqual(info)
 })
 
 test("get office needs a token once tokens are needed", async () => {
