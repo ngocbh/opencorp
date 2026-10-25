@@ -89,6 +89,12 @@ test("a line over the line cap makes the log unreadable before yian reads it", a
   const error = await refused(logOf(runStarted(0), committed(1, "a", { output: "x".repeat(LINE_CAP + 1024) })))
   expect(error).toBeInstanceOf(UnreadableLog)
   expect(error.message).toBe("This log has a record too large to read (line 2)")
+  const file = logOf(runStarted(0), started(1, "a"))
+  const index = await refresh(file, null)
+  fs.appendFileSync(file, committed(2, "a", { output: "x".repeat(LINE_CAP + 1024) }))
+  const again = await refresh(file, index).catch((caught: Error) => caught)
+  expect(again).toBeInstanceOf(UnreadableLog)
+  expect((again as Error).message).toBe("This log has a record too large to read (line 3)")
 })
 
 test("a torn last line is left for later", async () => {
@@ -244,7 +250,6 @@ test("two first requests build once", async () => {
   }
   const reader = new RunLogReader({ refresh: slow })
   const both = Promise.all([reader.index(file), reader.index(file)])
-  await Bun.sleep(20)
   release()
   const [a, b] = await both
   expect([a === b, calls]).toEqual([true, [1]])

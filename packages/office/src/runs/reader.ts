@@ -275,7 +275,8 @@ async function scan(path: string, index: Index, pace: () => Promise<void>): Prom
  * the new bytes first, so a line over LINE_CAP is refused before yian's reader holds it, and yian's reader is stopped
  * at the last complete line the scan saw, so it never reads a tail being written. Yields to the event loop about every
  * 10 ms. The last line read is hashed after the loop: a writer that rewrites that line between the read and the hash
- * makes the next refresh rebuild once.
+ * makes the next refresh rebuild once. A writer that replaces or rewrites the scanned bytes between the scan and
+ * yian's read can still make yian hold a line over LINE_CAP: only a line cap in yian's reader closes that.
  */
 export async function readOn(path: string, index: Index, resumed: boolean, nodeCap: number): Promise<void> {
   const pace = pacer()
@@ -292,7 +293,7 @@ export async function readOn(path: string, index: Index, resumed: boolean, nodeC
     index.offset = entry.end
     index.lastStart = entry.offset
     index.lastSeq = entry.seq
-    index.runId = entry.runId
+    if (index.runId !== entry.runId) index.runId = own(entry.runId)
     if (entry.seq === 0) index.startEnd = entry.end
     if (entry.end === scanEnd) break
     if (++count % 256 === 0) await pace()
@@ -311,13 +312,13 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
       learnable: boolean
       effectiveLlmByStaticPath: Record<string, Record<string, unknown>>
     }
-    index.fingerprint = start.flowFingerprint
+    index.fingerprint = own(start.flowFingerprint)
     index.learnable = start.learnable
     // Built with fromEntries, so a static path named like an Object member is an own key.
     index.models = Object.fromEntries(
       Object.entries(start.effectiveLlmByStaticPath)
         .filter(([, llm]) => typeof llm.model === "string" && llm.model !== "")
-        .map(([staticPath, llm]) => [staticPath, llm.model as string]),
+        .map(([staticPath, llm]) => [own(staticPath), own(llm.model as string)]),
     )
   } else if (kind === "node_started") {
     started(index, seq, nodeId!, nodeCap)
@@ -333,7 +334,8 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
       attempt.status = "restarted"
       index.open.delete(id)
     }
-    const retried = (record as unknown as { retryNodeIds: readonly string[] }).retryNodeIds.slice(0, OPEN_CAP)
+    const ids = (record as unknown as { retryNodeIds: readonly string[] }).retryNodeIds
+    const retried = ids.slice(0, OPEN_CAP).map(own)
     index.dividers.push([seq, retried])
     index.held += retried.reduce((sum, id) => sum + id.length, 0)
     if (index.dividers.length > DIVIDER_CAP) {
@@ -342,8 +344,16 @@ function apply(index: Index, entry: RunLogEntry, nodeCap: number): void {
   }
 }
 
+/** A copy of `s` that shares no memory with the line it was parsed from: JSC keeps a substring's parent string alive,
+ *  so a kept id or error would pin its whole (maybe multi-MiB) line in every cached index. A structured clone copies
+ *  the code units as they are, a lone surrogate included. */
+function own(s: string): string {
+  return structuredClone(s)
+}
+
 /** A new open attempt of `nodeId`, replacing its earlier open one. */
-function started(index: Index, seq: number, nodeId: string, nodeCap: number): void {
+function started(index: Index, seq: number, id: string, nodeCap: number): void {
+  const nodeId = own(id)
   const attempt: Attempt = { seq, nodeId, endSeq: null, status: "open", handle: null, error: null }
   index.open.delete(nodeId)
   index.open.set(nodeId, attempt)
@@ -368,14 +378,14 @@ function ended(index: Index, seq: number, kind: string, nodeId: string, record: 
   let failure: Failure | null = null
   if (kind === "node_routed") {
     const route = record as { handle: string; terminalFailure: Failure | null }
-    attempt.handle = route.handle
+    attempt.handle = own(route.handle)
     failure = route.terminalFailure
   } else if (kind === "node_failed") {
     failure = (record as { failure: Failure }).failure
   }
   if (failure !== null) {
     // The slice keeps cutReason from splitting a huge message; the cut is the same.
-    attempt.error = cutReason((failure.message || failure.code).slice(0, 2 * ERROR_KEPT), ERROR_KEPT) || null
+    attempt.error = own(cutReason((failure.message || failure.code).slice(0, 2 * ERROR_KEPT), ERROR_KEPT)) || null
     index.held += attempt.error?.length ?? 0
   }
 }
