@@ -544,8 +544,8 @@ test("an advance confines the recorded flow to the pin", async () => {
   const send = { id: "s1", op: "send", inbox: "messages", event: "hi" } as const
   const rec = await run(advanceJob(chat, { pin: tempDir(), deliver: [send] }), new Recorder())
   expect(rec.replies).toEqual([{ type: "deliver_reply", id: "s1", failed: "LoadError" }])
-  expect(rec.order).toEqual(["deliver_reply", "error"])
-  expect(String(rec.outcome?.message)).toStartWith("LoadError:")
+  expect(rec.order).toEqual(["deliver_reply", "result"])
+  expect(rec.outcome).toEqual({ type: "result", status: "not_resumed", run_id: "r1", error_type: "LoadError" })
   expect(sent(chat, "messages")).toEqual([])
 })
 

@@ -11,7 +11,7 @@ import type { Carried, OnQuestion } from "../questions/ask.ts"
 import type { QuestionRecord, SessionRecord, Store } from "../store/store.ts"
 import { build } from "../tools/index.ts"
 import type { WorkspaceTools } from "../tools/workspace.ts"
-import { groupSpecs, type Job, parseJob, personFlow, type ProfileMemorySpec } from "../worker/job.ts"
+import { groupSpecs, type Job, parseJob, personFlow, type ProfileMemorySpec, type Seed } from "../worker/job.ts"
 import type { OfficeTool } from "../worker/rpc.ts"
 import { personInputs, talkingTo } from "./identity.ts"
 import { HarnessError } from "./state.ts"
@@ -196,7 +196,8 @@ export function managerSpec({
  * The worker job that runs `spec` for `session` as run `runId`, its office tools being `tools` (what
  * `spec.groups` built for this run).
  *
- * A new chat starts with an empty history at `turns`, the session's turns so far. A profile memory with no model
+ * A new chat starts with an empty history at `turns`, the session's turns so far; with a `seed` (the run it
+ * replaces) the worker replaces the empty `summary` and `history` with that run's. A profile memory with no model
  * config of its own uses `llmConfig`. Throws `JobError`, whose message holds no value, when a field is invalid.
  */
 export function chatJob(
@@ -210,6 +211,7 @@ export function chatJob(
     log,
     llmConfig,
     turns,
+    seed = null,
   }: {
     kind: "chat" | "advance"
     session: SessionRecord
@@ -218,6 +220,7 @@ export function chatJob(
     log: string
     llmConfig: Record<string, unknown> | null
     turns: number
+    seed?: Seed | null
   },
 ): Job {
   const memory = Object.fromEntries(
@@ -236,5 +239,6 @@ export function chatJob(
     skills: spec.skills,
     groups: groupSpecs(tools),
     memory,
+    seed,
   })
 }

@@ -180,3 +180,38 @@ test("group specs builds a spec for each tool under its key", () => {
   const empty = { type: "object", properties: {} }
   expect(groups.company).toEqual([{ name: "list_people", description: "", parameters: empty }])
 })
+
+test("a chat job carries a seed", () => {
+  const seed = { log: "/abs/runs/r0/log.jsonl", env: { PATH: "/bin" }, cancel: true }
+  const job = parseJob({ ...BASE, seed })
+  expect(job.seed).toEqual(seed)
+  expect(parseJob(JSON.parse(JSON.stringify(job)))).toEqual(job)
+  expect(parseJob(BASE).seed).toBeNull()
+})
+
+test("a seed needs a chat job with an absolute log", () => {
+  const seed = { log: "/abs/runs/r0/log.jsonl", env: { PATH: "/bin" }, cancel: false }
+  const cases: Record<string, unknown>[] = [
+    { kind: "advance", seed },
+    { seed: { ...seed, log: "runs/r0/log.jsonl" } },
+    { seed: { ...seed, env: { PATH: 1 } } },
+    { seed: { ...seed, extra: 1 } },
+  ]
+  for (const change of cases) {
+    const label = JSON.stringify(change)
+    expect(() => parseJob({ ...BASE, ...change }), label).toThrow(JobError)
+    expect(() => parseJob({ ...BASE, ...change }), label).toThrow(/^seed: /)
+  }
+
+  let caught: unknown
+  try {
+    parseJob({ ...BASE, seed: { log: "sk-SECRET-log", env: { TOKEN: 7, KEY: "sk-SECRET-123" }, cancel: true } })
+  } catch (error) {
+    caught = error
+  }
+  expect(caught).toBeInstanceOf(JobError)
+  const error = caught as JobError
+  expect(error.message).not.toContain("sk-SECRET")
+  expect(inspect(error)).not.toContain("sk-SECRET")
+  expect(error.message).toContain("seed")
+})

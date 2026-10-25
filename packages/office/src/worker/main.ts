@@ -16,12 +16,15 @@ import {
 import {
   type EventHook,
   inspectRun,
+  iterRunRecords,
   type RunInspection,
   type RunResult,
   runLogPath,
   type StreamHook,
 } from "@ngocbh/yian/run"
 import { loadSkills, type Skill } from "@ngocbh/yian/skills"
+import { cancelReplaced, readSeed } from "../chat/history.ts"
+import { MAIN_CHAT } from "../chat/turns.ts"
 import { loadConfined } from "../company/flows.ts"
 import { type Channel, ChannelClosed, type Frame, FrameTooLarge, fdChannel } from "./channel.ts"
 import { Delivery, type Job, parseJob } from "./job.ts"
@@ -77,15 +80,19 @@ export function jobMemory(job: Job, rpc: Rpc, env: Env): Map<string, ProfileMemo
 /** A delivery's answer: a `deliver_reply` without its `type` and `id`. */
 type Outcome = { seq: number | null; closed?: string[] } | { refused: string } | { failed: string }
 
+/** A queued delivery; a `quiet` one is a message moved from the replaced run, which the office never sent. */
+type Queued = { delivery: Delivery; quiet: boolean }
+
 /**
- * The deliveries a worker applies to its run, in order, each answered by one `deliver_reply`.
+ * The deliveries a worker applies to its run, in order, each answered by one `deliver_reply`; a quiet one is answered
+ * by nobody, and writes a stderr line instead when it isn't applied.
  *
  * `held` keeps them queued until the run can take them; `open` applies them one at a time; `refusing` answers each
  * `refused: "not_started"` at once.
  */
 class Deliveries {
   #state: "held" | "open" | "refusing" = "held"
-  #queue: Delivery[] = []
+  #queue: Queued[] = []
   #busy = false
   #idle: (() => void)[] = []
   #apply: ((delivery: Delivery) => Promise<Outcome>) | null = null
@@ -103,13 +110,13 @@ class Deliveries {
 
   /** Queues `delivery` last. On an open, idle queue it is applied before this returns. */
   push(delivery: Delivery): void {
-    this.#queue.push(delivery)
+    this.#queue.push({ delivery, quiet: false })
     this.#pump()
   }
 
-  /** Queues `deliveries` ahead of everything queued, in their order. */
-  pushFront(deliveries: readonly Delivery[]): void {
-    this.#queue.unshift(...deliveries)
+  /** Queues `deliveries` ahead of everything queued, in their order; `quiet` ones get no `deliver_reply`. */
+  pushFront(deliveries: readonly Delivery[], { quiet = false }: { quiet?: boolean } = {}): void {
+    this.#queue.unshift(...deliveries.map((delivery) => ({ delivery, quiet })))
     this.#pump()
   }
 
@@ -133,7 +140,7 @@ class Deliveries {
     const first = this.#queue.splice(0, n)
     this.#busy = true
     try {
-      for (const delivery of first) await this.#run(delivery)
+      for (const queued of first) await this.#run(queued)
     } finally {
       this.#busy = false
       this.#pump()
@@ -149,7 +156,7 @@ class Deliveries {
 
   #pump(): void {
     if (this.#state === "refusing") {
-      for (const { id } of this.#queue.splice(0)) this.#reply({ type: "deliver_reply", id, refused: "not_started" })
+      for (const queued of this.#queue.splice(0)) this.#answer(queued, { refused: "not_started" })
     } else if (this.#state === "open" && !this.#busy && this.#queue.length > 0) {
       this.#busy = true
       // `#run` never rejects: `#apply` is bound before `open()`, and the applier catches every error.
@@ -163,9 +170,19 @@ class Deliveries {
   }
 
   // Calls `apply` before its first await, so a delivery to the live run commits in this tick.
-  async #run(delivery: Delivery): Promise<void> {
-    const outcome = await this.#apply!(delivery)
-    this.#reply({ type: "deliver_reply", id: delivery.id, ...outcome })
+  async #run(queued: Queued): Promise<void> {
+    this.#answer(queued, await this.#apply!(queued.delivery))
+  }
+
+  /** Sends `queued`'s `deliver_reply`; for a quiet one, a stderr line when it wasn't applied. */
+  #answer({ delivery, quiet }: Queued, outcome: Outcome): void {
+    if (!quiet) {
+      this.#reply({ type: "deliver_reply", id: delivery.id, ...outcome })
+    } else if ("refused" in outcome || "failed" in outcome) {
+      // The reason or the error's type only: the message's text is the person's.
+      const why = "refused" in outcome ? outcome.refused : outcome.failed
+      process.stderr.write(`opencorp __worker: a moved message was not delivered (${why})\n`)
+    }
   }
 }
 
@@ -213,6 +230,31 @@ function waitingFields(log: string): Frame {
   return { status: inspection.status, waits: wireWaits(inspection.waits), failure: inspection.failure }
 }
 
+/** Whether an `advance` that threw `error` was refused before it appended anything: a yian refusal (each is a
+ *  `RangeError`: `LoadError`, `MemorySetupError`, `DefaultsMismatchError`, a resume refusal) and nothing of its
+ *  own appended. */
+export function notResumed(error: unknown, appended: boolean): boolean {
+  return error instanceof RangeError && !appended
+}
+
+/** The record kinds an `advance` starts each of its appends with; no delivery writes any of them. */
+const ADVANCE_KINDS = ["run_resumed", "node_woken", "node_started"]
+
+/** Whether `advance` appended a record of its own to `log` after seq `before`; true when unsure. Each of its appends
+ *  starts with a `run_resumed`, `node_woken` or `node_started` record, and no delivery writes any of them, so a
+ *  delivery that lands after `advance` let go of the log, or a torn-tail repair, doesn't count. */
+export function advanceAppended(log: string, before: number | null): boolean {
+  if (before === null) return true
+  try {
+    for (const record of iterRunRecords(log, { payloads: false, kinds: ADVANCE_KINDS })) {
+      if (record.seq > before) return true
+    }
+    return false
+  } catch {
+    return true
+  }
+}
+
 /** What `serve` and `readFrames` share: whether the job finished. */
 interface WorkerState {
   finished: boolean
@@ -220,14 +262,17 @@ interface WorkerState {
 
 /**
  * Runs the job the office sends on `channel`; returns the exit code. A `check` job sends only its result frame,
- * `{type: "result", problem}`.
+ * `{type: "result", problem}`. A seeded chat job whose replaced run's history can't be read sends
+ * `{type: "event", name: "history_not_seeded", data: {error_type}}` before its run starts.
  *
  * Each delivery (the job's `deliver` list first, then each `deliver` frame) is applied to the run with a yian host
  * call once the run has started, in order, and answered by one `deliver_reply`; ones the run can't take because it
  * never started are refused `not_started`. The last frame is `result` (or `error`), sent once every delivery received
  * so far is answered. After it the worker keeps applying and answering deliveries until the office closes its side
- * (or `linger` ms pass). If the office closes the channel before the job finished, `exit` is called with
- * `EXIT_ORPHANED`: nobody can answer a question or read the result.
+ * (or `linger` ms pass). A run's result is `{type: "result", status, run_id, output, failure, waits}`, or, for an
+ * advance yian refused before it appended anything, `{type: "result", status: "not_resumed", run_id, error_type}`.
+ * If the office closes the channel before the job finished, `exit` is called with `EXIT_ORPHANED`: nobody can answer
+ * a question or read the result.
  */
 export async function serve(
   channel: Channel,
@@ -299,9 +344,13 @@ export async function serve(
 }
 
 /** Runs `job`, sending its event and stream frames, and lets `deliveries` apply to the run once it can take them;
- *  returns the result frame's fields. A chat job runs its flow afresh; an advance job applies the deliveries the run
- *  can take now, then moves the run on from its log with yian's `advance` (or, with `advance: false`, only
- *  delivers). */
+ *  returns the result frame's fields. A chat job runs its flow afresh; with a seed, its `summary` and `history`
+ *  inputs are the replaced run's, read from that run's log (confined to the pin), or `""` and `[]` with a
+ *  `history_not_seeded` event when they can't be read; the replaced run's unread messages go to the fresh run
+ *  first, as quiet deliveries, and with `seed.cancel` that run is cancelled when it hasn't finished. An advance job
+ *  applies the deliveries the run can take now, then moves the run on from its log with yian's `advance` (or, with
+ *  `advance: false`, only delivers); when yian refuses the advance before appending anything, the fields are
+ *  `{status: "not_resumed", run_id, error_type}` and the deliveries still held are refused `not_started`. */
 async function runJob(
   job: Job,
   channel: Channel,
@@ -309,7 +358,7 @@ async function runJob(
   deliveries: Deliveries,
   { env, signal }: { env: WorkerEnv; signal: AbortSignal },
 ): Promise<Frame> {
-  const read: Env = (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
+  const read = reader(env)
   const flow = job.kind === "chat" ? await loadConfined(job.pin, path.join(job.pin, job.flow)) : null
   const runs = path.dirname(path.dirname(job.log))
   if (job.log !== path.join(runs, job.run_id, "log.jsonl")) {
@@ -339,14 +388,32 @@ async function runJob(
   }
   let result: RunResult
   if (flow !== null) {
-    result = await runFlow(flow, job.inputs, {
+    let inputs = job.inputs
+    if (job.seed !== null) {
+      const seedOptions = { env: reader(job.seed.env), codeRoot: job.pin }
+      const seeded = await readSeed(job.seed.log, seedOptions)
+      if (seeded.error !== null) {
+        process.stderr.write(`opencorp __worker: history not seeded (${seeded.error})\n`)
+        await channel.send({ type: "event", name: "history_not_seeded", data: { error_type: seeded.error } })
+      }
+      inputs = { ...job.inputs, summary: seeded.summary, history: seeded.history }
+      // After a stop the fresh run won't start, so the replaced run stays as it is for the next fresh run.
+      if (job.seed.cancel && !signal.aborted) await cancelReplaced(job.seed.log, seedOptions)
+      // Ahead of the job's own deliveries, which `serve` queued first.
+      deliveries.pushFront(
+        seeded.unread.map((event, n) => ({ id: `moved-${n}`, op: "send", inbox: MAIN_CHAT.inbox, event })),
+        { quiet: true },
+      )
+    }
+    result = await runFlow(flow, inputs, {
       ...common,
       runId: job.run_id,
       numWorkers: job.num_workers,
       llmConfig: job.llm_config,
     })
   } else {
-    const status = inspectRun(log).status
+    const inspection = inspectRun(log)
+    const status = inspection.status
     if (!job.advance) {
       // This job only delivers to a run at rest; a running one is someone else's to move.
       if (status === "running") throw new RunBusyError(log)
@@ -368,14 +435,23 @@ async function runJob(
     // is then as its log says, as after a job that only delivers.
     if (signal.aborted) return { run_id: job.run_id, output: null, ...waitingFields(log) }
     const config = job.llm_config ?? {}
-    result = await advance({
-      ...common,
-      codeRoot: job.pin,
-      // `null` keeps the recorded bound: a changed one would make a waiting run write RunResumed.
-      numWorkers: null,
-      apiKey: typeof config.api_key === "string" ? config.api_key : null,
-      headers: stringRecord(config.headers),
-    })
+    // Read before the deliveries applied: none writes a run_resumed, node_woken or node_started record.
+    const before = inspection.lastSeq
+    try {
+      result = await advance({
+        ...common,
+        codeRoot: job.pin,
+        // `null` keeps the recorded bound: a changed one would make a waiting run write RunResumed.
+        numWorkers: null,
+        apiKey: typeof config.api_key === "string" ? config.api_key : null,
+        headers: stringRecord(config.headers),
+      })
+    } catch (error) {
+      if (!notResumed(error, advanceAppended(log, before))) throw error
+      deliveries.refuse()
+      // The type only: a yian message can quote a value or a path.
+      return { status: "not_resumed", run_id: job.run_id, error_type: errorName(error) }
+    }
   }
   return {
     status: result.status,
@@ -384,6 +460,11 @@ async function runJob(
     failure: result.failure,
     waits: wireWaits(result.waits),
   }
+}
+
+/** How yian reads a variable of `env`: its own entries only. */
+function reader(env: WorkerEnv): Env {
+  return (name) => (Object.hasOwn(env, name) ? env[name] : undefined)
 }
 
 /** `value` when it is a record of strings, else `null`. */

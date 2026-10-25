@@ -6,7 +6,7 @@ import { expect, setDefaultTimeout, test } from "bun:test"
 import { groupSpecs } from "../../src/worker/job.ts"
 import { pickSkills } from "../../src/worker/main.ts"
 import type { OfficeTool } from "../../src/worker/rpc.ts"
-import { fakeLlm } from "../chat/helpers.ts"
+import { fakeLlm, nextRun, TemplateOffice, send, templateJob } from "../chat/helpers.ts"
 import { tempDir } from "../helpers.ts"
 import { openStore } from "../store/helpers.ts"
 import { base, makeJob, makeRegistry, Recorder, run, runWorker, writeFiles } from "./helpers.ts"
@@ -140,4 +140,18 @@ test("a planted env file or bunfig preload in the worker cwd is not loaded", asy
   expect(exit).toBe(0)
   expect(fs.existsSync(path.join(sessionDir, "MARKER"))).toBe(false)
   expect(fake.requests()).toEqual([])
+})
+
+test("session memory carries history between runs", async () => {
+  const fake = await fakeLlm()
+  fake.script({ content: "ok" }, { content: "ok" })
+  const first = new TemplateOffice()
+  const r1 = templateJob("chat", first, {}, { deliver: [send("n1", "remember the word teal")] })
+  expect((await run(r1, first, { env: fake.env() })).outcome?.status).toBe("waiting")
+  const r2 = nextRun(r1, {
+    seed: { log: r1.log, env: fake.env(), cancel: true },
+    deliver: [send("n1", "which word?")],
+  })
+  expect((await run(r2, new TemplateOffice(), { env: fake.env() })).outcome?.status).toBe("waiting")
+  expect(JSON.stringify(fake.requests()[1]!.messages)).toContain("teal")
 })
